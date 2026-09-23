@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "home-manager"
+version = "0.1.0"
+description = "Local, read-only document inventory and immutable capture"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi==0.141.1", "uvicorn==0.53.0", "pydantic==2.13.5",
+  "pillow==12.3.0", "zxing-cpp==3.1.1", "rapidocr-onnxruntime==1.2.3",
+  "onnxruntime==1.30.0", "numpy==2.5.3", "opencv-python==5.0.0.93",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1", "httpx==0.28.1"]
+browser-test = ["playwright==1.63.0"]
+
+[project.scripts]
+home-manager = "home_manager.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+home_manager = ["static/*", "migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
