@@ -1,6 +1,6 @@
 # Run and manually test D1–D2
 
-Implemented: configurable local directories, immutable capture/history, and PNG/JPEG receipt OCR or local vision transcription, batch parsing, generated titles, QR decoding and provisional financial fields. See [receipt manual testing](receipt-parsing.md) for model setup and the batch button. No financial posting, Gmail or Excel report generation yet.
+Implemented: configurable local directories, immutable capture/history, and PNG/JPEG text-only vision transcription, batch extraction and QR decoding. Interpretation, titles and classification await a separate reasoning model. See [receipt manual testing](receipt-parsing.md) for model setup and the batch button. No financial posting, Gmail or Excel report generation yet.
 
 ## Start on Windows
 
@@ -19,7 +19,7 @@ No browser is opened automatically. If port 8765 is busy, run with `--port 8766`
 
 ## Choose directories in the UI
 
-Open the **gear icon → Settings → Directories**. Model settings now live in the neighboring **Local model** tab. See [the folder browser and Trash](library-browser.md) for automatic post-scan organization and deletion/restoration.
+Open **Settings → Library & sources** in the sidebar. Model settings live under **Settings → Local models**. See [the folder browser and Trash](library-browser.md) for automatic post-scan organization and deletion/restoration.
 
 For example:
 
@@ -92,4 +92,4 @@ This verifies directory setup, scans, edited-file versions and browser authentic
 
 ## Implementation note
 
-D1–D2 use the Python SQLite driver behind `Store`; schema 2 adds receipt parsing runs and backs up schema 1 before upgrading. The earlier SQLAlchemy/Alembic recommendation remains a future persistence decision. OCR uses a separate process with Windows resource limits; OS access confinement is not implemented. See [receipt parsing](receipt-parsing.md) for the precise security boundary.
+D1–D2 use the Python SQLite driver behind `Store`; schema 2 adds receipt parsing runs and backs up schema 1 before upgrading. The earlier SQLAlchemy/Alembic recommendation remains a future persistence decision. Image preparation and barcode decoding use a separate process with Windows resource limits; OS access confinement is not implemented. See [receipt parsing](receipt-parsing.md) for the precise security boundary.

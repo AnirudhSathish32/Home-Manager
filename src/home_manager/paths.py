@@ -61,13 +61,41 @@ def validate_roots(source_value: str, managed_value: str, control: Path) -> tupl
         raise PathError("Choose dedicated folders, not a drive root.")
     if overlaps(source, managed):
         raise PathError("Source and managed-data directories must be separate, non-overlapping folders.")
-    # Protect this checkout/package and application settings from inventory or writes.
-    package = Path(__file__).resolve().parent
-    checkout = package.parents[1] if (package.parents[1] / "pyproject.toml").exists() else package
-    for reserved in (checkout, control):
+    for reserved in reserved_paths(control):
         if overlaps(source, reserved) or overlaps(managed, reserved):
             raise PathError("Choose data folders outside the application and its settings directory.")
     return source, managed
+
+
+def reserved_paths(control: Path) -> tuple[Path, Path]:
+    """This checkout/package and the application settings: never inventoried or written as data."""
+    package = Path(__file__).resolve().parent
+    checkout = package.parents[1] if (package.parents[1] / "pyproject.toml").exists() else package
+    return checkout, control
+
+
+def separate_folder(value: str, control: Path, others=()) -> Path:
+    """A local folder for backup or restore that overlaps no library, source, settings or application folder."""
+    path = local_absolute(value)
+    if path == Path(path.anchor):
+        raise PathError("Choose a dedicated folder, not a drive root.")
+    for reserved in (*reserved_paths(control), *(Path(item) for item in others if item)):
+        if overlaps(path, reserved):
+            raise PathError("Choose a folder outside the managed library, source folders, backups being read, and the application's own folders.")
+    return path
+
+
+def write_atomic(path: Path, data: bytes | str, limit: int | None = None):
+    """Durably replace an app-owned file; readers see the old or the complete new bytes."""
+    data = data.encode("utf-8") if isinstance(data, str) else data
+    if limit is not None and len(data) > limit:
+        raise ValueError(f"Output exceeds the {limit // 1024**2} MiB limit; no truncated result was saved.")
+    temp = safe_path(path.with_name(path.name + ".pending"))
+    with open(temp, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp, safe_path(path))
 
 
 def signature(info: os.stat_result) -> tuple[int, int, int, int, int]:

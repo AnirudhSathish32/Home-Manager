@@ -1,5 +1,4 @@
 import base64
-import time
 
 import pytest
 from pydantic import ValidationError
@@ -7,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from home_manager.api import create_app
 from home_manager.manager import Manager
-from home_manager.scanner import ScanLimits, Scanner
+from home_manager.scanner import ScanLimits
 from home_manager.vision import VisionConfig, transcribe
 from test_receipts import make_receipt
 
@@ -23,14 +22,15 @@ def test_real_http_image_payload_and_invalid_responses(tmp_path, local_model):
     image = tmp_path / "receipt.png"
     make_receipt(image)
     output = transcribe(local_model["config"], image)
-    assert output.title == local_model["output"]["title"]
+    assert output.full_text == local_model["output"]["full_text"]
     request = local_model["requests"][0]
     assert local_model["path"] == "/v1/chat/completions"
     assert request["model"] == "synthetic-vision"
     assert request["response_format"]["type"] == "json_schema"
     schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["required"] == ["title", "full_text", "folder"]
-    assert "03_Purchases/Receipts" in schema["properties"]["folder"]["enum"]
+    assert schema["required"] == ["full_text"]
+    assert set(schema["properties"]) == {"full_text"}
+    assert schema["additionalProperties"] is False
     payload = request["messages"][1]["content"][1]["image_url"]["url"]
     assert base64.b64decode(payload.split(",", 1)[1]) == image.read_bytes()
     local_model["finish_reason"] = "length"
@@ -94,13 +94,13 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
         assert len(local_model["requests"]) == 1
         documents = manager.store.documents(source)["items"]
         receipt = next(doc for doc in documents if doc["relative_path"].endswith("receipt.png"))
-        assert receipt["title"] == local_model["output"]["title"]
+        assert receipt["title"] is None and receipt["folder"] == "Unfiled"
         run = manager.receipts.history(receipt["id"])[0]
         result = manager.receipts.get(run["id"])["result"]
         assert result["transcription_method"] == "vision_model"
         assert result["model_text"] == local_model["output"]["full_text"]
         assert qr in result["extracted_text"]
-        assert result["fields"]["calculation_status"] == "matches"
+        assert result["fields"] is None
         assert not result["blocks"]  # Never fabricate spatial evidence for generated text.
         old_hash = receipt["current_hash"]
         manager.start_receipt_batch(); wait(manager)
@@ -149,10 +149,10 @@ def test_batch_api_settings_auth_and_busy(tmp_path, local_model, monkeypatch):
         manager.start(); wait(manager)
         entered, release = threading.Event(), threading.Event()
         original = manager.batches.run
-        def held(batch):
+        def held(batch, work):
             entered.set()
             release.wait(timeout=15)
-            original(batch)
+            original(batch, work)
         monkeypatch.setattr(manager.batches, "run", held)
         try:
             response = client.post("/api/receipt-batches", json={})

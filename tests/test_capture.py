@@ -91,7 +91,7 @@ def test_ignored_unsupported_invalid_empty_and_limits(setup):
     source, store = setup
     write(source, "~$statement.xlsx", b"lock")
     write(source, "file.csv.part", b"copying")
-    write(source, "document.pdf", b"pdf")
+    write(source, "notes.txt", b"text")
     write(source, "empty.csv", b"")
     write(source, "big.csv", b"123456")
     (source / "loose.csv").write_text("loose")

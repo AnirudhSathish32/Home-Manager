@@ -1,9 +1,11 @@
-"""Lossless OCR evidence plus explicitly provisional financial candidates."""
+"""Transcription evidence, with compatibility for historical OCR and field results."""
 
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from .folders import DocumentFolder
+from .folders import HistoricalFolder
 
+# Legacy defaults allow historical results to remain readable. New published runs
+# explicitly set the vision parser version and transcription method.
 PARSER_VERSION = "receipt-ocr-v1"
 
 
@@ -60,12 +62,17 @@ class ReceiptFields(StrictModel):
     calculation_note: str
 
 
+def code_transcript(codes) -> str:
+    """Decoded QR/barcode payloads appended verbatim after the visible text."""
+    return "".join(f"\n\n[{code.id}: {code.format}; {'decoded' if code.valid else 'decode error'}]\n{code.text}" for code in codes)
+
+
 class ReceiptResult(StrictModel):
     schema_version: Literal[1] = 1
     parser_version: str = PARSER_VERSION
     transcription_method: Literal["ocr", "vision_model"] = "ocr"
     title: str | None = Field(default=None, min_length=1, max_length=160)
-    folder: DocumentFolder | None = None
+    folder: HistoricalFolder | None = None
     model_text: str | None = Field(default=None, max_length=1_000_000)
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     image_format: Literal["PNG", "JPEG"]
@@ -83,7 +90,7 @@ class ReceiptResult(StrictModel):
     ocr_text: str = Field(max_length=1_000_000)
     codes: list[CodeEvidence] = Field(max_length=100)
     extracted_text: str = Field(max_length=2_000_000)
-    fields: ReceiptFields
+    fields: ReceiptFields | None = None
     issues: list[Issue] = Field(max_length=1000)
     coverage: Literal["full_image_attempted_not_verified"] = "full_image_attempted_not_verified"
 
@@ -99,17 +106,14 @@ class ReceiptResult(StrictModel):
             if self.transcription_method == "ocr" and line.text != " ".join(blocks[key].text for key in line.block_ids):
                 raise ValueError("Text differs from preserved OCR evidence.")
         text = self.model_text if self.transcription_method == "vision_model" else self.ocr_text
-        if self.transcription_method == "vision_model" and (self.blocks or self.ocr_text or not self.title):
-            raise ValueError("Vision output must not invent OCR regions/scores and must include a title.")
+        if self.transcription_method == "vision_model" and (self.blocks or self.ocr_text):
+            raise ValueError("Vision output must not invent OCR regions/scores.")
         if text != "\n".join(line.text for line in self.lines):
-            raise ValueError("Incomplete OCR text.")
-        expected_text = text
-        for code in self.codes:
-            expected_text += f"\n\n[{code.id}: {code.format}; {'decoded' if code.valid else 'decode error'}]\n{code.text}"
-        if self.extracted_text != expected_text:
+            raise ValueError("Incomplete transcription text.")
+        if self.extracted_text != text + code_transcript(self.codes):
             raise ValueError("Complete extraction must retain every recognized line and code payload.")
         ids = set(blocks) | {line.id for line in self.lines} | {code.id for code in self.codes}
-        for candidate in [self.fields.date, self.fields.currency, self.fields.total, *self.fields.components]:
+        for candidate in ([self.fields.date, self.fields.currency, self.fields.total, *self.fields.components] if self.fields else []):
             if not set(candidate.evidence_ids) <= ids:
                 raise ValueError("Candidate cites nonexistent evidence.")
         for evidence in [*self.blocks, *self.codes]:

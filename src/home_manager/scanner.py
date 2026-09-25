@@ -9,11 +9,9 @@ import stat
 import time
 import uuid
 
+from .formats import SUPPORTED, extension
 from .paths import PathError, is_link, safe_path, signature, source_reader
 from .storage import Store
-
-
-SUPPORTED = {".csv", ".xlsx", ".png", ".jpg", ".jpeg"}
 
 
 @dataclass(frozen=True)
@@ -29,17 +27,19 @@ class Scanner:
         self.store = store
         self.limits = limits or ScanLimits()
 
-    def run(self, job: str, source: Path, year=None, month=None):
+    def run(self, job: str, source: Path, year=None, month=None, *, inbox=False):
         self.store.job_state(job, "running")
         try:
-            self._run(job, source, year, month)
+            if inbox and source != self.store.library.inbox:
+                raise PathError("Inbox scans must use the app-owned Library/Inbox.")
+            self._run(job, source, year, month, inbox=inbox)
         except (PathError, RuntimeError) as exc:
             self.store.job_state(job, "failed", str(exc))
         except Exception:
             # Do not log document contents or platform error paths to console.
             self.store.job_state(job, "failed", "Scan stopped unexpectedly. Completed captures are retained; check access/storage and rescan.")
 
-    def _run(self, job: str, source: Path, year=None, month=None):
+    def _run(self, job: str, source: Path, year=None, month=None, *, inbox=False):
         safe_path(source)
         if not source.is_dir():
             self.store.job_state(job, "failed", "Source root is unavailable. No files marked missing.")
@@ -68,7 +68,8 @@ class Scanner:
                         if count > self.limits.max_entries:
                             raise RuntimeError("Scan entry limit reached. Select a smaller year/month scope.")
                         path = Path(entry.path)
-                        relative = path.relative_to(source).as_posix()
+                        parts = path.relative_to(source).parts
+                        relative = "/".join(parts)
                         try:
                             if is_link(path):
                                 self.store.observe(job, source, relative, "rejected")
@@ -79,7 +80,10 @@ class Scanner:
                             # Path.stat matches fstat on our later capture handle.
                             info = path.stat(follow_symlinks=False)
                             if stat.S_ISDIR(info.st_mode):
-                                parts = path.relative_to(source).parts
+                                if inbox:
+                                    self.store.event(job, relative, "invalid_folder", "Place Inbox documents directly in Library/Inbox, not subfolders.")
+                                    issues = True
+                                    continue
                                 valid = (len(parts) > 2 or
                                          (len(parts) == 1 and re.fullmatch(r"[1-9][0-9]{3}", parts[0])) or
                                          (len(parts) == 2 and re.fullmatch(r"0[1-9]|1[0-2]", parts[1])))
@@ -100,20 +104,19 @@ class Scanner:
                             if lower.startswith("~$") or lower.endswith((".tmp", ".part", ".crdownload", ".download")):
                                 self.store.event(job, relative, "ignored", "Temporary/download/lock file.")
                                 continue
-                            parts = path.relative_to(source).parts
-                            if len(parts) < 3:
+                            if not inbox and len(parts) < 3:
                                 self.store.event(job, relative, "invalid_folder", "Place files beneath YYYY/MM.")
                                 issues = True
                                 continue
-                            if path.suffix.lower() not in SUPPORTED:
-                                self.store.event(job, relative, "unsupported", "Capture supports CSV, XLSX, PNG, JPG and JPEG. No contents were read.")
+                            if extension(path) not in SUPPORTED:
+                                self.store.event(job, relative, "unsupported", "Capture supports " + ", ".join(sorted(SUPPORTED)) + " files. No contents were read.")
                                 issues = True
                                 continue
                             if not 0 < info.st_size <= self.limits.max_file_bytes:
                                 self.store.event(job, relative, "rejected", "Empty file or file exceeds the capture size limit.")
                                 issues = True
                                 continue
-                            candidates.append((path, relative, info, int(parts[0]), int(parts[1])))
+                            candidates.append((path, relative, info, 0 if inbox else int(parts[0]), 0 if inbox else int(parts[1])))
                         except (OSError, PathError):
                             self.store.observe(job, source, relative, "unavailable")
                             self.store.event(job, relative, "unavailable", "Cannot inspect this entry. Check permissions or file locks.")
@@ -174,6 +177,10 @@ class Scanner:
             self.store.prepare(capture_id, job, source, relative, year, month, digest, size, before.st_mtime_ns)
             prepared = True
             self.store.publish(capture_id)
+            try:
+                self.store.library.ensure_capture(source, relative, digest)
+            except (ValueError, OSError, RuntimeError):
+                self.store.event(job, relative, "organization_failed", "Captured evidence is safe; library organization needs attention or retry.", digest)
         finally:
             if not prepared:
                 temp.unlink(missing_ok=True)

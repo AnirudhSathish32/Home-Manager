@@ -1,5 +1,7 @@
 # AI Home Manager: proposed architecture
 
+Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
+
 Status: architecture proposal, updated 2026-09-22 with confirmed deployment and reporting requirements. The user subsequently authorized D1–D2 document capture implementation; those slices are now available. Later components remain proposed. See [manual testing](manual-testing.md).
 
 Confirmed: Windows host with 16 GB VRAM and 32 GB RAM; inference on the same machine; one user with same-machine access; Gmail as the first email provider; multiple currencies required; downloaded CSV exports, Excel workbooks, and scanned images stored locally as source evidence; Excel financial report generation exposed as a typed tool. USD is the consolidated reporting currency, including conversion of validated foreign-currency receipt totals. Exchange-rate source selection is delegated to this design.
@@ -157,9 +159,9 @@ For a foreign-currency document that needs reference conversion, the agent retri
 
 Record the rate ID with the derived analysis result and propagate it into approved reporting facts and Excel provenance. Report generation reuses that pinned conversion basis rather than quietly fetching a different rate; a changed basis produces a new version. Multiple lines may reuse one valid lookup for the same currency/date/policy. Deterministic batch ingestion and reporting use the same rate and conversion services without requiring unnecessary model calls for every row. USD-denominated amounts need no FX lookup. If a validated actual USD settlement exists, show it as the authoritative reporting basis; a requested reference conversion can still be displayed separately as an estimate without replacing or duplicating the settlement.
 
-Conversion of an unreviewed OCR candidate can be shown as a provisional analysis, but it cannot promote that candidate into financial records. Unknown currency or date must be resolved before requesting a rate. A failed lookup stops that conversion and is surfaced to the user, not repaired by a rate guessed by the model.
+Conversion of an unreviewed interpreted candidate can be shown as a provisional analysis, but it cannot promote that candidate into financial records. Unknown currency or date must be resolved before requesting a rate. A failed lookup stops that conversion and is surfaced to the user, not repaired by a rate guessed by the model.
 
-Receipt review and transaction matching precede authoritative expense recognition. A reviewed receipt can establish a standalone expense when no bank posting is represented, but any later match must replace/link that representation without double-counting. OCR or conversion alone never establishes that money moved.
+Receipt review and transaction matching precede authoritative expense recognition. A reviewed receipt can establish a standalone expense when no bank posting is represented, but any later match must replace/link that representation without double-counting. Transcription or conversion alone never establishes that money moved.
 
 ## Model adapters and Laya
 
@@ -169,7 +171,7 @@ Both requested models remain candidates. OpenAI describes gpt-oss-20b as an open
 
 Before choosing, run the same contract/evaluation cases on each exact model/runtime configuration: valid tool JSON, invalid arguments, unknown tool, multiple tool calls, no-tool answer, reasoning/content separation, truncation, timeout, structured result grounding, and prompt injection. Record model revision, quantization, runtime/parser version, template, decoding settings, hardware, and context budget. Pin a passing configuration; swapping models reruns the suite. V1 needs one passing configuration, not simultaneous production support for both.
 
-Evaluate Laya in V1 as a local document-assessment/router behind its own adapter. It assesses bounded text/structured evidence after parsing or preliminary OCR; it is not an image reader. Use LangChain for stage composition, with routing and validation enforced in application code. Its scores remain advisory until domain evaluation/calibration passes. Low confidence, incomplete evidence or deterministic failures escalate to the appropriate local text or vision model, or human review. Jev is excluded unless a supported local deployment is verified. See [the detailed assessment design](document-reading.md) for sources, evaluation gates and capability boundaries. Laya cannot authorize tools, approve financial records or serve as the sole correctness oracle. Broader tool-behavior evaluation remains a later experiment.
+A separate local reasoning adapter will consume saved transcription for field interpretation, titles and classification after model selection. Optional Laya assessment can be revisited later; it cannot read image pixels, approve records or replace source review. The earlier preliminary-OCR routing proposal is superseded. See [the reading design](document-reading.md).
 
 ## Ingestion and document lifecycle
 
@@ -177,11 +179,11 @@ The dedicated local source directory follows `sources/YYYY/MM/`, with bank state
 
 Pipeline: acquire read-only source data -> capture immutable original -> validate MIME/size -> extract text in an isolated worker -> classify -> extract typed candidates -> deterministic validation -> stage/review -> publish approved records -> index.
 
-Required inputs are CSV exports, Excel workbooks, scanned receipts/bills and PDF statements. The first implemented reader handles PNG/JPEG receipts; the remaining readers follow separately. Preserve full recognized text and decoded QR/barcode payloads without filtering relevance, alongside evidence-linked provisional date, currency, total and component fields. Preserve originals and validate an import preview before committing financial records. CSV/XLSX need explicit column/sheet mappings; PDF needs page-level text extraction with OCR for scanned pages. Legacy `.xls`, encrypted files and macro-enabled workbooks need a later parser decision and must not be silently accepted. See [receipt parsing](receipt-parsing.md) for current scope and limits.
+Required inputs are CSV exports, Excel workbooks, scanned receipts/bills and PDF statements. The first implemented reader handles PNG/JPEG receipts; the remaining readers follow separately. Preserve full recognized text and decoded QR/barcode payloads without filtering relevance, with financial interpretation deferred to a separate reasoning model. Preserve originals and validate an import preview before committing financial records. CSV/XLSX need explicit column/sheet mappings; PDF needs page-level text extraction with local vision transcription for scanned pages. Legacy `.xls`, encrypted files and macro-enabled workbooks need a later parser decision and must not be silently accepted. See [receipt parsing](receipt-parsing.md) for current scope and limits.
 
 Spreadsheet ingestion reads data without running macros, external links, or formulas. Formula-only financial cells without a trustworthy stored value cannot become authoritative; cached values can be stale and require review/source reconciliation. Preserve cell references, workbook epoch/date interpretation, currencies, and precision. Never overwrite a downloaded workbook. A generated report must be identifiable so it is not automatically imported as independent evidence.
 
-Image ingestion preserves original bytes, creates bounded local preprocessing derivatives, and runs OCR in the isolated worker. Store OCR text with image coordinates, engine/version, and extraction candidates. Verify totals, decimal separators, currency, dates, and signs using deterministic checks and a review screen showing the original crop alongside proposed fields. V1 requires explicit review of OCR-derived financial records; OCR confidence alone cannot approve them. Deduplicate evidence across CSV/workbook/image imports without counting a receipt and its bank posting as two expenses. Benchmark a local OCR engine on representative synthetic images; prefer CPU execution initially to preserve primary-model VRAM, and impose image pixel/decompression limits. Cloud OCR is excluded.
+Image ingestion preserves original bytes and prepares bounded oriented previews in a child process. The local vision model transcribes text only; QR/barcodes are decoded independently. Store text, line references and model/run provenance without fabricated coordinates. A separate future reasoning model will consume this evidence to propose fields, titles and classification, followed by deterministic validation and review. No OCR fallback or label-based inference remains.
 
 User-initiated import/review endpoints may write local records; this is separate from external integration permissions and agent tools. The minimal review UI is part of V1 because scanned financial evidence cannot be safely handled through an invisible background import alone.
 
@@ -232,7 +234,7 @@ src/home_manager/
   documents/                 # local blob storage and search interface
   reports/                   # report specs, snapshots, XLSX writer, manifests
   ingestion/                 # jobs, parsing, staging, validation
-    ocr/                     # local OCR adapter, coordinates, staged fields
+    vision.py                # local text-only vision transcription
   connectors/                # CSV, local files, later read-only email
     exchange_rates/          # read-only ECB downloads and validated local rate imports
   tools/                     # schemas, registry, policy, service wrappers
@@ -274,4 +276,7 @@ Runtime database, originals, extracted text, indexes, secrets, private fixtures,
 
 No architecture-blocking question remains from the current clarification round. USD consolidated reporting is confirmed; this proposal selects historical ECB rates and the explicit conversion policy above. Actual source samples will establish required currency coverage and import mappings during implementation planning.
 
-Confirmed deployment, Gmail, source-format, and USD-reporting choices supersede the original assumptions. V1 includes CSV, XLSX, scanned-image OCR with review, historical USD conversion, and Excel report generation. Gmail integration remains proposed after the initial local-file release. The exact Laya checkpoint and GPU model can be confirmed at their respective spikes; they do not block the core architecture.
+Confirmed deployment, Gmail, source-format, and USD-reporting choices supersede the original assumptions. V1 includes CSV, XLSX, scanned-image vision transcription with review, historical USD conversion, and Excel report generation. Gmail integration remains proposed after the initial local-file release. The exact Laya checkpoint and GPU model can be confirmed at their respective spikes; they do not block the core architecture.
+# V2 implementation update
+
+The supplied `Home_Manager_Architecture_Implementation_Spec.docx` governs the incremental V2 work. [Phase 1](managed-library.md) adds flat-folder migration and managed Library/Inbox organization. [The concrete change plan](phase-1-plan.md) records the implementation boundary. Earlier descriptions below of logical-only folders and mandatory source year/month organization are superseded for the app-owned Inbox; legacy external imports remain supported.

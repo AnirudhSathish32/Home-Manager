@@ -1,14 +1,14 @@
 # Document parsing: decisions for the next slices
 
-Implementation update, 2026-09-23: local vision transcription/title generation and a persistent batch queue are implemented for PNG/JPEG. See [receipt parsing](receipt-parsing.md) for current behavior, supported API configuration and limits. Financial fields still use provisional label-based extraction from returned text. Model judges and broader financial interpretation remain planned.
+Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
 
-Status: architecture with an implemented first receipt slice. The user confirmed CSV, Excel, scanned receipts/bills and PDF statements, prioritizing scanned receipts. PNG/JPEG OCR, QR decoding, full retained text, provisional fields and the evidence viewer are now implemented; see [receipt parsing](receipt-parsing.md) for actual behavior and limits. Remaining sections describe the broader target, not a claim that all proposed controls exist. In particular, the initial worker has resource limits but no restricted Windows identity, ACL confinement or enforced network denial; those earlier proposed deployment gates remain unmet hardening work. Companion: [document reading](document-reading.md).
+Implemented: text-only vision extraction and barcode decoding for PNG/JPEG, immutable evidence and a viewer. Further sections describe planned readers and interpretation. Worker resource limits exist; restricted identity/ACL/network confinement remains future hardening.
 
 ## Outcome and current integration point
 
 The next usable result is a document detail screen showing preserved source evidence, extracted text/tables, proposed financial fields, and explicit issues. Capturing a file and successfully parsing it are independently testable. D1–D2 already test byte preservation and history; parsing adds content-level testing rather than replacing those checks.
 
-The application has a `Scanner`, SQLite `Store`, immutable blobs, occurrence/version history and a serial work coordinator. Receipt parsing adds typed extraction results, `parse_runs`, a CPU OCR subprocess and an evidence viewer. The existing `jobs` table still represents scans. Financial tables and model interpretation remain future work.
+The application has a `Scanner`, SQLite `Store`, immutable blobs, occurrence/version history and a serial work coordinator. Receipt parsing adds typed extraction results, `parse_runs`, a bounded image-preparation subprocess and local vision request and an evidence viewer. The existing `jobs` table still represents scans. Financial tables and model interpretation remain future work.
 
 Do not add financial extraction directly to `Scanner.capture`. After a successful capture commit, a coordinator can queue parsing by immutable blob hash. On restart or repeat scans, reconcile eligible captured blobs against parse-run records so a crash between capture and queueing cannot strand a document. Backfill already captured files through the same mechanism; users should not need to edit or recopy their originals.
 
@@ -21,8 +21,8 @@ Do not add financial extraction directly to `Scanner.capture`. After a successfu
 | Required formats | PNG/JPEG receipts first; CSV/XLSX, scanned bills and PDF statements next | Confirmed by user |
 | CSV reader | Python standard-library `csv`, explicit string-preserving dialect/encoding handling | Ready |
 | XLSX reader | openpyxl with hardened package inspection and preservation of raw numerical evidence | Ready, exact dependency pin at implementation |
-| OCR engine | Initial bundled RapidOCR ONNX adapter on CPU; benchmark on representative receipts before calling accuracy established | Initial adapter implemented |
-| Model routing | Existing LangChain + local Laya assessment proposal; judge initially advisory; escalate text ambiguity to text LLM and visual ambiguity to local VLM | Existing policy retained |
+| Image text reader | Local vision returns only full text; no OCR fallback or financial inference | Implemented |
+| Interpretation | Separate local reasoning model consumes saved evidence; optional judge assessment follows later | Awaiting model selection and integration |
 | Persistence | Add versioned SQLite extraction tables and artifact manifests; retain existing inventory tables | Ready |
 | Trigger | UI option to parse newly captured supported files, plus Parse/Reprocess on existing captured versions | Ready; default off until parser setup passes |
 | Review | Source alongside proposed fields, editable corrections with provenance; no model approval rights | Ready |
@@ -42,9 +42,9 @@ Define Pydantic contracts before implementing any reader. `ParseResult` is a man
 | Raw cell/text | Original extracted string or source lexical value, source type/format, normalized display value if any, extraction method |
 | Parse issue | Machine-readable code, severity, affected unit/field, recoverable flag, user-facing explanation |
 
-Anchor IDs are scoped to a parse run. Never silently reuse them after a new parser or OCR version changes segmentation. Record input byte hash and all derivation steps so an anchor is resolvable even if a source file moves or changes later.
+Anchor IDs are scoped to a parse run. Never silently reuse them after a new parser or vision version changes segmentation. Record input byte hash and all derivation steps so an anchor is resolvable even if a source file moves or changes later.
 
-For images, store dimensions and transformations linking any rotated/deskewed OCR derivative back to original coordinates. Preserve reading order as a proposed order and indicate uncertain table/column structure. For CSV quoted multiline fields, a logical record number is not the same as a physical line number; retain both. For workbook cells, preserve sheet names and explicit cell coordinates rather than trusting column headers to be unique.
+For images, store dimensions and transformations linking any oriented image derivative back to original coordinates. Preserve reading order as a proposed order and indicate uncertain table/column structure. For CSV quoted multiline fields, a logical record number is not the same as a physical line number; retain both. For workbook cells, preserve sheet names and explicit cell coordinates rather than trusting column headers to be unique.
 
 `succeeded` means the requested content was extracted within declared scope, not that its interpretation is correct. `partial` must enumerate omitted sheets, image regions, rows or pages. An empty result must distinguish genuinely empty content, no readable text, unsupported content and failure. No hidden truncation.
 
@@ -66,15 +66,13 @@ Preserve the raw numeric lexical values from worksheet XML alongside decoded val
 
 ### PNG/JPEG
 
-Verify decoding and enforce pixel/memory limits before generating previews. Preserve original bytes and produce safe preview/OCR derivatives without overwriting them. Treat orientation, blur, contrast and clipping indicators as signals. OCR emits text with geometric anchors; Tesseract supports TSV output containing positional information ([official CLI documentation](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)). PaddleOCR is a second local candidate to benchmark for the actual layouts ([official documentation](https://www.paddleocr.ai/main/en/index.html)). Neither is declared the most accurate in advance.
+Verify decoding and enforce pixel/memory limits before preview generation. Send the oriented image to the configured local vision model for text only. Preserve full transcription and line IDs without fabricated geometric anchors or confidence scores. Decode QR/barcodes separately with exact bytes and coordinates.
 
-One source image initially forms one image unit. Multiple receipts within it create candidate regions with explicit coverage; uncertain splitting requires review. Multiple source images are not automatically joined into a statement because they share a month or filename prefix. Add explicit grouping and page order when a multi-page scan needs it.
-
-Choose the OCR engine by critical-field transcription accuracy and coverage, not just average word accuracy or speed. Test small decimal points, minus signs, faded totals, multi-column statements, currency abbreviations and supported languages. Check native Windows/Python runtime compatibility in a separate worker environment if needed; do not force an OCR runtime upgrade onto the working API environment. Download dependencies/model assets during setup, then disable runtime cloud/download fallbacks.
+One image initially forms one evidence unit. Multi-image grouping/page order require future support. Evaluate transcription coverage, decimals, signs, faded text, columns and languages locally. Interpretation belongs in the separate reasoning stage.
 
 ### PDF decision
 
-Current capture rejects PDF. If real statements are PDFs, PDF support must move into the next scope with both capture eligibility and a tested reader, not merely a new extension in the allowlist. The design would classify each page as native text, scanned or mixed, preserving page coordinates and OCRing regions that need it. It must not assume the existence of a text layer means the entire page is correctly represented. PDF engine, encrypted-file handling and page limits are decisions to settle if this format is confirmed.
+Current capture rejects PDF. If real statements are PDFs, PDF support must move into the next scope with both capture eligibility and a tested reader, not merely a new extension in the allowlist. The design would classify each page as native text, scanned or mixed, preserving page coordinates and transcribing scanned regions with the vision model. It must not assume the existence of a text layer means the entire page is correctly represented. PDF engine, encrypted-file handling and page limits are decisions to settle if this format is confirmed.
 
 ## C. Interpretation and financial schemas
 
@@ -100,7 +98,7 @@ Import profiles are versioned data describing sheet/range/header, field mappings
 
 Use the existing `ExtractionAssessment` contract and local-only capability boundaries. Format reading happens before Laya's textual assessment. Laya does not have image pixels and cannot certify visual transcription correctness; a low score is one escalation trigger, not the only one.
 
-Pass bounded evidence packets containing the candidate, surrounding rows/text, headers, relevant totals, OCR diagnostic signals and deterministic check results. Truncated evidence must be explicit and prevent a high-confidence pass. Split large statements by coherent tables/row groups with repeated header/context references, then validate whole-document coverage; never equate the first context window with the whole statement.
+Pass bounded evidence packets containing the candidate, surrounding rows/text, headers, relevant totals, transcription completeness signals and deterministic check results. Truncated evidence must be explicit and prevent a high-confidence pass. Split large statements by coherent tables/row groups with repeated header/context references, then validate whole-document coverage; never equate the first context window with the whole statement.
 
 Keep distinct routing results: sufficient-for-review, needs-text-interpretation, needs-vision-inspection, needs-profile, needs-better-source, and unavailable. Hard schema, coverage or arithmetic failures cannot be overridden by a model score. Re-evaluation after escalation compares alternatives without dropping the original. Unresolved disagreement remains visible to the user.
 
@@ -124,15 +122,15 @@ D1–D2 currently copy bytes in one in-process worker. Parsing invokes complex t
 
 For Windows, implement a restricted worker identity/token plus explicit file ACLs and a network-denial mechanism; use a Job Object for process-tree cleanup and CPU/memory limits. Validate the actual confinement with tests before parsing personal files. The parent owns the database and invokes model endpoints separately; the parser itself does not receive a loopback-network exemption or bearer credentials. If enforcing this boundary needs setup outside ordinary user permissions, document that concrete setup requirement before implementation; do not claim sandboxing merely from using a subprocess.
 
-Start with one parse/OCR job at a time. Proposed initial limits for benchmarking: 120 seconds and 1 GiB worker memory per document, 40 megapixels per image, 100,000 rows/one million nonempty cells across a workbook, 256 MiB expanded workbook content, and 64 MiB extracted output. These are conservative starting values, not accuracy targets; overruns return an explicit partial/limit result and allow a controlled rerun, never silent truncation. Separate local model budgets and VRAM admission apply when escalation is enabled.
+Start with one extraction job at a time. Proposed initial limits for benchmarking: 120 seconds and 1 GiB worker memory per document, 40 megapixels per image, 100,000 rows/one million nonempty cells across a workbook, 256 MiB expanded workbook content, and 64 MiB extracted output. These are conservative starting values, not accuracy targets; overruns return an explicit partial/limit result and allow a controlled rerun, never silent truncation. Separate local model budgets and VRAM admission apply when escalation is enabled.
 
-Do not render workbook/CSV content as executable HTML, formulas or hyperlinks. Serve authorized image previews through opaque IDs, with correct MIME and no external resources. Raw originals, previews, OCR text and interpretation outputs are equally private. Logs keep IDs, statuses and timings rather than document contents. Hosted tracing remains disabled.
+Do not render workbook/CSV content as executable HTML, formulas or hyperlinks. Serve authorized image previews through opaque IDs, with correct MIME and no external resources. Raw originals, previews, transcribed text and interpretation outputs are equally private. Logs keep IDs, statuses and timings rather than document contents. Hosted tracing remains disabled.
 
 ## G. UI and API additions
 
 Keep Scan documents as capture/discovery. Add explicit Parse selected / Parse pending controls, then an optional auto-parse-after-capture preference once engines are configured. Display capture, parsing, interpretation and review status independently.
 
-Add a document details panel with version selector, parsed-sheet/table preview or image with OCR highlights, field candidates, issues and run provenance. Selecting a candidate should highlight its evidence. A user can correct values or import-profile settings, request another parse, and compare versions. Initial parse-only slices may show evidence without financial fields, clearly labeled; financial review is a subsequent capability.
+Add a document details panel with version selector, parsed-sheet/table preview or image with transcription and barcode highlights, field candidates, issues and run provenance. Selecting a candidate should highlight its evidence. A user can correct values or import-profile settings, request another parse, and compare versions. Initial parse-only slices may show evidence without financial fields, clearly labeled; financial review is a subsequent capability.
 
 Proposed authenticated API contracts: enqueue parsing for a captured version, retrieve parse-run status, paginate units, retrieve a bounded unit/preview, list interpretation fields/issues, and create a review revision bound to an exact run. Never accept filesystem paths from a model or document. Unknown run IDs, inaccessible artifacts and stale revision submissions fail explicitly. Existing loopback auth/origin checks continue to apply.
 
@@ -141,17 +139,17 @@ FX lookup/conversion remains after amount/currency/date interpretation; preserve
 ## H. Implementation order and gates
 
 1. **Contracts and migration:** synthetic parse results, versioning, durable jobs, and empty-state UI; no reader dependency yet.
-2. **Image OCR plus evidence viewer:** initial PNG/JPEG implementation is available. Validate accuracy on local examples; strengthen worker confinement separately.
+2. **Vision transcription plus evidence viewer:** initial PNG/JPEG implementation is available. Validate accuracy on local examples; strengthen worker confinement separately.
 3. **Remaining readers:** CSV then XLSX and PDF statements/scanned bills. Exact strings, cell/page anchors and declared coverage are independently testable without models.
 4. **Interpretation and judge cascade:** one document type end to end, local adapters and Laya shadow results; build calibration dataset before enabling confidence-based shortcuts.
 5. **Review integration:** typed corrections, revision conflicts, deterministic validations, and explicit publication boundary; then connect approved records to the financial services roadmap.
 
-Test parsing success/failure independently of model behavior. Structured-reader fixtures require exact raw evidence preservation, including leading zeros, duplicate headers, newline-containing cells, formula caches, merged/hidden sheets and decimal/date conventions. OCR/model fixtures require field-level ground truth and acceptable abstentions, with splits by source/layout. Measure missing-row/region rate, critical-field error and false-acceptance rate alongside readability scores and latency. Keep real document test sets local and out of Git; synthetic fixtures remain the committed regression suite.
+Test parsing success/failure independently of model behavior. Structured-reader fixtures require exact raw evidence preservation, including leading zeros, duplicate headers, newline-containing cells, formula caches, merged/hidden sheets and decimal/date conventions. Vision/reasoning fixtures require field-level ground truth and acceptable abstentions, with splits by source/layout. Measure missing-row/region rate, critical-field error and false-acceptance rate alongside readability scores and latency. Keep real document test sets local and out of Git; synthetic fixtures remain the committed regression suite.
 
 ## User inputs that change the next slice
 
 - Resolved: scanned receipts first; CSV, Excel, scanned bills and PDF statements are also required.
-- Which document languages are required? This changes OCR language assets, judge checkpoint evaluation and parsing conventions.
+- Which document languages are required? This changes vision language evaluation, judge checkpoint evaluation and parsing conventions.
 - Resolved: show both complete extracted receipt text/decoded codes and provisional financial fields. Formal model interpretation and editable review remain subsequent capabilities.
 
 Representative redacted layouts will eventually be needed for accurate mappings and evaluation. GPU model and inference runtime remain necessary before the vision/model spike, but not for deciding or implementing deterministic parser contracts. No additional permission question is needed merely to continue architecture work.

@@ -1,25 +1,29 @@
-"""Trusted coordinator for durable receipt runs and a bounded local OCR child."""
+"""Trusted coordinator for durable receipt runs and a bounded image preparation child."""
 
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import uuid
 from pydantic import ValidationError
 
+from .formats import TEXT_READERS, extension
+from .jobs import Cancelled, Work
+from .model_client import resolve_identity
 from .paths import safe_path
-from .receipt_schema import PARSER_VERSION, ReceiptResult
+from .receipt_schema import ReceiptResult
+from .pdf_reader import PDF_VERSION, PDFResult, complete_pdf
 from .storage import Store, digest_file, now
 from .worker_limits import WorkerJob
-from .vision import VisionConfig, VISION_VERSION, interpret_preview
+from .vision import VisionConfig, VISION_VERSION, transcribe_preview
+
+UNRESOLVED = object()
 
 
 class ReceiptService:
     def __init__(self, store: Store):
         self.store = store
-        self.progress = None
         self.root = safe_path(store.root / "extracted")
         self.root.mkdir(exist_ok=True)
 
@@ -28,31 +32,38 @@ class ReceiptService:
             raise ValueError("Invalid parsing run ID.")
         return safe_path(self.root / run_id)
 
-    def enqueue(self, document_id, digest=None, rotation=0, force=False, vision=None, organize=True):
+    def enqueue(self, document_id, digest=None, rotation=0, force=False, vision=None, identity=UNRESOLVED):
+        """Reuse an in-flight run, or a completed one only for the same verified model identity."""
         document, selected = self.store.document_version(document_id, digest)
         if document.get("deleted_at"):
             raise ValueError("Restore the document from Trash before parsing it.")
-        if Path(document["relative_path"]).suffix.lower() not in (".png", ".jpg", ".jpeg"):
-            raise ValueError("Receipt parsing currently supports PNG/JPEG images. CSV, Excel and PDF readers are planned separately.")
+        suffix = extension(document["relative_path"])
+        if suffix not in TEXT_READERS:
+            raise ValueError("Text extraction supports PNG, JPEG and PDF documents. CSV and Excel files use transaction import.")
+        is_pdf = suffix == ".pdf"
         if rotation not in (0, 90, 180, 270):
             raise ValueError("Rotation must be 0, 90, 180 or 270 degrees clockwise.")
-        options_data = {"clockwise_rotation": rotation}
-        parser = PARSER_VERSION
-        if vision and vision.model:
-            options_data["vision"] = vision.model_dump()
-            options_data["organize"] = organize
-            parser = VISION_VERSION
-        options = json.dumps(options_data, sort_keys=True)
+        vision = vision or VisionConfig()
+        if not is_pdf and not vision.model:
+            raise ValueError("Configure a local vision model in Settings before extracting text. OCR is no longer supported.")
+        if identity is UNRESOLVED:
+            identity = resolve_identity(self.store, vision) if vision.model else None
+        parser = PDF_VERSION if is_pdf else VISION_VERSION
+        options = json.dumps({"clockwise_rotation": rotation, "vision": vision.model_dump()}, sort_keys=True)
         with self.store.connection() as db:
-            reusable = db.execute("SELECT id,status FROM parse_runs WHERE blob_hash=? AND parser_version=? AND options_json=? "
+            existing = db.execute("SELECT id,status,model_identity FROM parse_runs WHERE blob_hash=? AND parser_version=? AND options_json=? "
                                   "AND status IN ('queued','running','succeeded','partial') ORDER BY created_at DESC",
                                   (selected["hash"], parser, options)).fetchall()
-            for row in reusable:
-                if row["status"] in ("queued", "running") or not force:
+            for row in existing:
+                if row["status"] in ("queued", "running"):
+                    return row["id"], False
+                # No model configured (digital PDF) or the same identified weights; an
+                # unidentifiable model never reuses a result merely because its ID matches.
+                if not force and (row["model_identity"] == identity and (identity or not vision.model)):
                     return row["id"], False
             run_id = uuid.uuid4().hex
-            db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at) VALUES(?,?,?,?,'queued',?,?)",
-                       (run_id, selected["hash"], parser, options, now(), now()))
+            db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at,model_identity) VALUES(?,?,?,?,'queued',?,?,?)",
+                       (run_id, selected["hash"], parser, options, now(), now(), identity))
         return run_id, True
 
     def get(self, run_id):
@@ -64,6 +75,7 @@ class ReceiptService:
         result["options"] = json.loads(result.pop("options_json"))
         payload = result.pop("result_json")
         result["result"] = json.loads(payload) if payload else None
+        result["model_runs"] = self.store.model_runs(run_id)
         return result
 
     def history(self, document_id, digest=None):
@@ -79,6 +91,18 @@ class ReceiptService:
     def publish(self, run_id):
         run = self.get(run_id)
         folder = self.folder(run_id)
+        if run["parser_version"] == PDF_VERSION:
+            path = safe_path(folder / "result.json")
+            if path.stat().st_size > 4 * 1024**2:
+                raise ValueError("PDF evidence exceeds storage limits.")
+            result = PDFResult.model_validate_json(path.read_bytes())
+            if result.input_hash != run["blob_hash"]:
+                raise ValueError("PDF evidence does not match preserved bytes.")
+            payload = result.model_dump()
+            payload["lines"] = [line.model_dump() for line in result.lines]
+            with self.store.connection() as db:
+                db.execute("UPDATE parse_runs SET status='succeeded',result_json=?,updated_at=?,error=NULL WHERE id=?", (json.dumps(payload), now(), run_id))
+            return
         result_path, preview = safe_path(folder / "result.json"), safe_path(folder / "preview.png")
         if result_path.stat().st_size > 4 * 1024**2 or preview.stat().st_size > 64 * 1024**2:
             raise ValueError("Parser output exceeds the configured limits.")
@@ -92,9 +116,11 @@ class ReceiptService:
             db.execute("UPDATE parse_runs SET status=?,result_json=?,preview_hash=?,updated_at=?,error=NULL WHERE id=?",
                        (status, result.model_dump_json(), digest_file(preview), now(), run_id))
 
-    def run(self, run_id, timeout=180):
+    def run(self, run_id, work=None, timeout=180):
+        work = work or Work.detached()
         process = job = None
         try:
+            work.check()
             run = self.get(run_id)
             artifact_bytes = sum(safe_path(path).stat().st_size for path in self.root.glob("*/*") if path.is_file())
             if artifact_bytes > 2 * 1024**3 - 68 * 1024**2:
@@ -109,24 +135,40 @@ class ReceiptService:
             env = {key: value for key, value in os.environ.items() if key.upper() in ("SYSTEMROOT", "WINDIR", "PATH", "COMSPEC")}
             env.update({"TEMP": str(folder), "TMP": str(folder), "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
             vision = run["options"].get("vision")
-            process = subprocess.Popen([sys.executable, "-I", "-m", "home_manager.receipt_worker", str(source), str(folder), str(run["options"]["clockwise_rotation"]), "prepare" if vision else "ocr"],
+            is_pdf = run["parser_version"] == PDF_VERSION
+            if not is_pdf and (not vision or not vision.get("model")):
+                raise ValueError("This legacy run cannot be executed. Create a new run with a configured vision model.")
+            vision = VisionConfig.model_validate(vision or {})
+            identity = None
+            if vision.model:
+                # Record the weights actually used, which may differ from those seen at enqueue.
+                identity = resolve_identity(self.store, vision)
+                with self.store.connection() as db:
+                    db.execute("UPDATE parse_runs SET model_identity=? WHERE id=?", (identity, run_id))
+            process = subprocess.Popen([sys.executable, "-I", "-m", "home_manager.pdf_reader" if is_pdf else "home_manager.receipt_worker", str(source), str(folder), str(run["options"]["clockwise_rotation"])],
                                        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        cwd=folder, env=env,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             job = WorkerJob(process)
-            process.communicate(input=b"start\n", timeout=timeout)
+            with work.on_cancel(process.kill):  # Terminates only this run's bounded child.
+                process.communicate(input=b"start\n", timeout=timeout)
+            work.check()
             if process.returncode:
                 error_file = safe_path(folder / "error.json")
                 if error_file.exists() and error_file.stat().st_size < 8192:
                     raise ValueError(json.loads(error_file.read_text(encoding="utf-8"))["error"])
                 raise ValueError("Receipt worker stopped before completion. Check dependencies and image size; retry or rotate the receipt.")
-            if vision:
-                job.close()
-                job = None
-                interpret_preview(folder, VisionConfig.model_validate(vision),
-                                  progress=lambda value: setattr(self, "progress", {"run_id": run_id, **value}),
-                                  organize=run["options"].get("organize", True))
+            job.close()
+            job = None
+            with work.attribute("transcription", run_id, run["parser_version"], identity):
+                if is_pdf:
+                    complete_pdf(folder, vision, run["blob_hash"], work)
+                else:
+                    transcribe_preview(folder, vision, work)
+            work.check()  # A cancellation request always wins over late publication.
             self.publish(run_id)
+        except Cancelled as exc:
+            self.state(run_id, "cancelled", str(exc))
         except subprocess.TimeoutExpired:
             self.state(run_id, "failed", "Receipt parsing exceeded 180 seconds. Try an individual receipt or a smaller scan.")
         except Exception as exc:
@@ -135,7 +177,6 @@ class ReceiptService:
                        else "Local receipt parsing failed. Check image integrity, available memory and disk access.")
             self.state(run_id, "failed", message[:1200])
         finally:
-            self.progress = None
             if job:
                 job.close()
             if process and process.poll() is None:

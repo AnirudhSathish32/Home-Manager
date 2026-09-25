@@ -1,8 +1,10 @@
 """Persistent batches over a snapshot of all current preserved image versions."""
 
-from pathlib import Path
 import uuid
 
+from .formats import TEXT_READERS, extension
+from .jobs import Cancelled, Work
+from .model_client import resolve_identity
 from .paths import path_key
 from .storage import now
 
@@ -15,27 +17,31 @@ class ReceiptBatches:
         with self.store.connection() as db:
             db.execute("UPDATE receipt_batches SET status='interrupted' WHERE status IN ('queued','running')")
 
-    def enqueue(self, source, vision, force=False, scan_job=None):
-        if not vision.model:
-            raise ValueError("Save a local vision model ID before parsing all receipts.")
+    def enqueue(self, source, vision, force=False, scan_job=None, document_ids=None):
         with self.store.connection() as db:
-            query = "SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.source_root=? AND o.deleted_at IS NULL"
-            params = [path_key(source)]
+            query = "SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.source_root IN (?,?) AND o.deleted_at IS NULL"
+            params = [path_key(source), path_key(self.store.library.inbox)]
             if scan_job:
                 query += " AND EXISTS(SELECT 1 FROM events e WHERE e.job_id=? AND e.relative_path=o.relative_path AND e.hash=o.current_hash AND e.status IN ('captured','duplicate','new_version'))"
                 params.append(scan_job)
+            if document_ids is not None:
+                query += f" AND o.id IN ({','.join('?' * len(document_ids))})"
+                params += list(document_ids)
             documents = list(db.execute(query + " ORDER BY o.id", params))
-        images = [doc for doc in documents if Path(doc["relative_path"]).suffix.lower() in (".png", ".jpg", ".jpeg")]
+        images = [doc for doc in documents if extension(doc["relative_path"]) in TEXT_READERS]
         if not images:
             if scan_job:
                 return None
-            raise ValueError("No preserved PNG/JPEG documents are available. Scan the source folder first.")
+            if document_ids is not None:
+                raise ValueError("None of the selected documents can be read. Text reading supports PNG, JPEG and PDF; CSV and Excel files use Import transactions.")
+            raise ValueError("No preserved PNG, JPEG or PDF documents are available. Scan the source folder first.")
         batch = uuid.uuid4().hex
         with self.store.connection() as db:
             db.execute("INSERT INTO receipt_batches VALUES(?,?,'queued',?,?)", (batch, path_key(source), now(), len(documents)-len(images)))
+        identity = resolve_identity(self.store, vision) if vision.model else None  # Once per batch.
         try:
             for document in images:
-                run_id, created = self.receipts.enqueue(document["id"], document["current_hash"], force=force, vision=vision)
+                run_id, created = self.receipts.enqueue(document["id"], document["current_hash"], force=force, vision=vision, identity=identity)
                 with self.store.connection() as db:
                     db.execute("INSERT INTO receipt_batch_items VALUES(?,?,?,?)", (batch, document["id"], run_id, int(not created)))
         except Exception:
@@ -48,16 +54,24 @@ class ReceiptBatches:
         with self.store.connection() as db:
             db.execute("UPDATE receipt_batches SET status=? WHERE id=?", (state, batch))
 
-    def run(self, batch):
+    def run(self, batch, work=None):
+        work = work or Work.detached()
         self.state(batch, "running")
         try:
             with self.store.connection() as db:
                 runs = [row[0] for row in db.execute("SELECT DISTINCT run_id FROM receipt_batch_items WHERE batch_id=?", (batch,))]
             for run_id in runs:
+                work.check()
                 if self.receipts.get(run_id)["status"] == "queued":
-                    self.receipts.run(run_id)
+                    self.receipts.run(run_id, work)
+            work.check()
             counts = self.get(batch)["counts"]
-            self.state(batch, "partial" if any(counts.get(key, 0) for key in ("failed", "interrupted", "partial")) else "completed")
+            self.state(batch, "partial" if any(counts.get(key, 0) for key in ("failed", "interrupted", "partial", "cancelled")) else "completed")
+        except Cancelled as exc:
+            with self.store.connection() as db:
+                db.execute("UPDATE parse_runs SET status='cancelled',error=?,updated_at=? WHERE status='queued' AND id IN "
+                           "(SELECT run_id FROM receipt_batch_items WHERE batch_id=?)", (str(exc), now(), batch))
+            self.state(batch, "cancelled")
         except Exception:
             self.receipts.recover()
             self.state(batch, "interrupted")

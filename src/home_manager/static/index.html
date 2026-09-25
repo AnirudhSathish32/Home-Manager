@@ -3,125 +3,304 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Home Manager · Documents</title>
+  <title>Home Manager</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/ui.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/receipt.js" defer></script>
   <script src="/library.js" defer></script>
+  <script src="/finance.js" defer></script>
+  <script src="/shell.js" defer></script>
 </head>
 <body>
-<main>
-  <header class="page-header"><div><p class="eyebrow">HOME MANAGER · LOCAL DOCUMENTS</p><h1>Your document library</h1>
-    <p>A home for your household paperwork.</p></div>
-    <button id="open-settings" class="icon-button" type="button" aria-label="Open settings" title="Settings">
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.5 1.6v2.8L2.3 15l2 3.5 2.1-.6 2 .9L9 21h4l.6-2.2 2-.9 2.1.6 2-3.5-1.5-1.6v-2.8L19.7 9l-2-3.5-2.1.6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>
-    </button>
-  </header>
-  <p id="notice" role="status" aria-live="polite"></p>
-  <nav class="tabs" role="tablist" aria-label="Workspace">
-    <button id="documents-tab" type="button" role="tab" aria-selected="true" aria-controls="library-panel">Inspect documents</button>
-    <button id="scan-tab" type="button" role="tab" aria-selected="false" aria-controls="scan-panel" tabindex="-1">Scan documents</button>
-  </nav>
-  <section id="scan-panel" role="tabpanel" aria-labelledby="scan-tab" hidden>
-    <h2 id="scan-title">Scan for documents</h2>
-    <p>Capture files from your year/month source folders. With a local model configured, new PNG/JPEG images are read and organized automatically after scanning. CSV/Excel content readers and PDF capture are coming later.</p>
-    <form id="scan-form" class="inline">
-      <label>Year (optional)<input id="year" type="number" min="1000" max="9999" placeholder="All years"></label>
-      <label>Month (optional)<select id="month"><option value="">All months</option>
-        <option value="1">01</option><option value="2">02</option><option value="3">03</option><option value="4">04</option>
-        <option value="5">05</option><option value="6">06</option><option value="7">07</option><option value="8">08</option>
-        <option value="9">09</option><option value="10">10</option><option value="11">11</option><option value="12">12</option>
-      </select></label>
-      <button id="scan" type="submit" disabled>Scan documents</button>
-    </form>
-    <label for="scans">Recent scans</label><select id="scans"><option value="">No scans yet</option></select>
-    <p id="scan-state" aria-live="polite">Save directories to begin.</p>
-    <div class="table-wrap"><table><thead><tr><th>Path</th><th>Result</th><th>Details</th></tr></thead><tbody id="events"></tbody></table></div>
-    <div class="pager"><button id="events-prev" type="button">Previous results</button><span id="events-page"></span><button id="events-next" type="button">Next results</button></div>
-  </section>
-  <section id="library-panel" role="tabpanel" aria-labelledby="documents-tab">
-    <div class="library-heading"><div><h2 id="library-title">Inspect preserved documents</h2><p class="muted">Organized in Home Manager. Original files stay in their source locations.</p></div>
-    <button id="parse-all-receipts" type="button" disabled>Parse and organize all images</button></div>
-    <label><input id="force-receipts" type="checkbox"> Reprocess previously completed receipts</label>
-    <p class="muted batch-hint">Processes all active PNG/JPEG documents across folders and months. Model-assigned titles and folders are unverified; you can correct the folder.</p>
-    <p id="receipt-batch-status" role="status" aria-live="polite"></p>
-    <div class="file-browser">
-      <nav id="folder-tree" aria-label="Document folders"><p class="muted">Configure your directories in Settings to begin.</p></nav>
-      <div class="file-pane">
-        <div class="file-toolbar"><h3 id="folder-breadcrumb">All documents</h3><button id="refresh" class="secondary" type="button">Refresh</button></div>
-        <p id="document-count" aria-live="polite"></p>
-        <p id="folder-description" class="muted"></p>
-        <div class="table-wrap"><table><thead><tr><th>Document / source path</th><th>Folder</th><th>Status</th><th>Size</th><th>Actions</th></tr></thead><tbody id="documents"></tbody></table></div>
-        <p id="empty-folder" class="empty-state" hidden>No documents in this folder.</p>
-        <div class="pager"><button id="docs-prev" type="button">Previous</button><span id="docs-page"></span><button id="docs-next" type="button">Next</button></div>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
+    <nav class="nav" aria-label="Primary">
+      <a id="nav-finances" class="nav-link" href="#/finances" data-route="finances" data-icon="wallet"><span class="nav-label">Finances</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
+      <p class="nav-group">Records</p>
+      <a id="nav-documents" class="nav-link" href="#/documents" data-route="documents" data-icon="file"><span class="nav-label">Documents</span></a>
+      <div class="nav-sub">
+        <button id="nav-inbox" class="nav-sublink" type="button" data-folder="Inbox"><span class="nav-label">Inbox</span><span class="nav-count"></span></button>
+        <button id="nav-unfiled" class="nav-sublink" type="button" data-folder="Unfiled"><span class="nav-label">Unfiled</span><span class="nav-count"></span></button>
       </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="activity-indicator" class="activity-indicator" role="status" aria-live="polite" hidden></div>
+      <nav class="nav" aria-label="System">
+        <a id="nav-processing" class="nav-link" href="#/processing" data-route="processing" data-icon="activity"><span class="nav-label">Processing</span></a>
+        <a id="nav-settings" class="nav-link" href="#/settings" data-route="settings" data-icon="settings"><span class="nav-label">Settings</span></a>
+      </nav>
     </div>
-  </section>
-  <footer>Receipt transcription and title generation use your configured local vision model. QR decoding stays local. Text, titles and financial fields are unverified; no email integration, exchange-rate conversion or financial posting occurs.</footer>
-</main>
-<dialog id="settings-dialog" aria-labelledby="settings-title">
-  <div class="dialog-heading"><h2 id="settings-title">Settings</h2><button id="close-settings" class="secondary" type="button">Close</button></div>
-  <nav class="tabs" role="tablist" aria-label="Settings">
-    <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Directories</button>
-    <button id="model-tab" type="button" role="tab" aria-selected="false" aria-controls="model-panel" tabindex="-1">Local model</button>
-  </nav>
-  <p id="settings-notice" role="status"></p>
-  <div id="directories-panel" role="tabpanel" aria-labelledby="directories-tab">
-    <h3>Choose directories</h3>
-    <form id="settings-form">
-      <label for="source">Source directory</label><input id="source" required placeholder="C:\Household\sources" autocomplete="off" spellcheck="false">
-      <small>Existing folder containing YYYY/MM subfolders. Source files stay untouched.</small>
-      <label for="managed">Managed-data directory</label><input id="managed" required placeholder="C:\Household\managed" autocomplete="off" spellcheck="false">
-      <small>A separate empty local folder or an existing Home Manager store. Changing this selects a different library.</small>
-      <button id="save-settings" type="submit">Save directories</button>
-    </form><p id="limits" class="muted"></p>
-  </div>
-  <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
-    <h3>Local vision model settings</h3>
-    <form id="vision-form">
-      <label for="vision-url">Local API base URL</label><input id="vision-url" required value="http://127.0.0.1:1234/v1">
-      <label for="vision-model">Loaded vision model ID</label><input id="vision-model" placeholder="Copy the model ID from your local server">
-      <p>Load an image-capable model in your local server, such as Qwen3.5-9B. Saving settings does not load the model or test the connection.</p>
-      <label><input id="auto-organize" type="checkbox" checked> Read and organize newly scanned images automatically</label>
-      <button id="save-vision" type="submit">Save model settings</button>
-    </form>
-  </div>
+  </aside>
+  <main id="main" tabindex="-1">
+    <div id="app-alert"></div>
+
+    <section id="finance-panel" class="page" data-page="finances" aria-labelledby="finance-title" hidden>
+      <header class="page-header"><div><h1 id="finance-title" tabindex="-1">Finances</h1>
+        <p class="page-subtitle">Computed exactly from imported and reviewed records. Nothing here is estimated by a model.</p></div>
+        <div class="page-actions"><label class="inline-field">Month <input id="finance-month" type="month"></label>
+          <button id="reconcile" type="button">Reconcile now</button></div></header>
+      <div class="finance-grid">
+        <section class="panel"><h2>Spending</h2><ul id="finance-spending" class="finance-list"></ul><p id="finance-coverage" class="muted small"></p></section>
+        <section class="panel"><h2>Needs review</h2><ul id="finance-queue" class="finance-list"></ul></section>
+        <section class="panel"><h2>Accounts</h2><ul id="finance-accounts" class="finance-list"></ul></section>
+        <section class="panel"><h2>By category</h2><ul id="finance-categories" class="finance-list"></ul></section>
+        <section class="panel"><h2>Upcoming bills</h2><ul id="finance-bills" class="finance-list"></ul></section>
+        <section class="panel"><h2>Recurring payments</h2><ul id="finance-recurring" class="finance-list"></ul></section>
+        <section class="panel"><h2>Refunds</h2><ul id="finance-refunds" class="finance-list"></ul></section>
+        <section class="panel"><h2>Unmatched receipts</h2><ul id="finance-unmatched" class="finance-list"></ul><p id="finance-unmatched-note" class="muted small"></p></section>
+      </div>
+      <section class="panel"><h2>Transactions this month</h2>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Posted</th><th scope="col">Account</th><th scope="col">Description</th><th scope="col">Type</th><th scope="col" class="numeric">Amount</th><th scope="col">Receipt</th><th scope="col">Review</th><th scope="col">Category</th></tr></thead><tbody id="finance-transactions"></tbody></table></div>
+      </section>
+    </section>
+
+    <section id="library-panel" class="page" data-page="documents" aria-labelledby="library-title" hidden>
+      <header class="page-header"><div><h1 id="library-title" tabindex="-1">Documents</h1>
+        <p class="page-subtitle">Your managed library. External sources stay read-only; model-derived values stay proposed until you verify them.</p></div>
+        <div class="page-actions"><button id="refresh" type="button">Refresh</button></div></header>
+      <div class="toolbar">
+        <input id="document-search" type="search" placeholder="Search merchant, title or file name" aria-label="Search documents" autocomplete="off">
+        <div id="work-filters" class="work-filters" role="group" aria-label="Filter by state"></div>
+        <div class="toolbar-actions">
+          <label class="inline-field">From <input id="date-from" type="date" aria-label="Document date from"></label>
+          <label class="inline-field">To <input id="date-to" type="date" aria-label="Document date to"></label>
+          <label class="inline-field">Sort <select id="document-sort"><option value="date">Document date</option><option value="name">Name</option><option value="added">Recently added</option><option value="path">File path</option></select></label>
+        </div>
+      </div>
+      <div class="file-browser">
+        <nav id="folder-tree" aria-label="Document folders"><p class="muted small">Configure your directories in Settings to begin.</p></nav>
+        <div class="file-pane">
+          <div class="file-toolbar"><h2 id="folder-breadcrumb">All documents</h2><p id="document-count" aria-live="polite"></p></div>
+          <p id="folder-description" class="muted small"></p>
+          <div id="selection-bar" class="selection-bar" role="region" aria-label="Selected documents" hidden>
+            <span id="selection-count"></span>
+            <button id="read-selected" type="button">Read selected</button>
+            <button id="move-selected" type="button">Move…</button>
+            <button id="trash-selected" class="danger-text" type="button">Delete…</button>
+            <button id="restore-selected" type="button">Restore</button>
+            <button id="clear-selection" class="quiet" type="button">Clear selection</button>
+          </div>
+          <div class="table-wrap"><table class="data-table documents-table"><thead><tr>
+            <th scope="col" class="select-col"><input id="select-all" type="checkbox" aria-label="Select all documents on this page"></th>
+            <th scope="col">Name</th><th scope="col" class="col-type">Type</th><th scope="col" class="col-date">Date</th><th scope="col" class="numeric col-amount">Amount</th><th scope="col" class="col-state">State</th>
+            <th scope="col" class="col-actions"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="documents"></tbody></table></div>
+          <div id="empty-folder" class="empty-state" hidden></div>
+          <div class="pager"><button id="docs-prev" type="button">Previous</button><span id="docs-page"></span><button id="docs-next" type="button">Next</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="document-page" class="page inspector" data-page="document" aria-labelledby="receipt-title" hidden>
+      <header class="inspector-header">
+        <a id="close-receipt" class="back-link" href="#/documents">Documents</a>
+        <div class="inspector-heading"><h1 id="receipt-title" tabindex="-1">Document</h1><p id="receipt-subtitle" class="page-subtitle"></p></div>
+        <div class="page-actions"><span id="document-state"></span><span id="inspector-menu"></span></div>
+      </header>
+      <div id="version-banner"></div>
+      <div class="inspector-body">
+        <section class="inspector-pane source-pane" aria-labelledby="source-heading">
+          <div class="pane-heading"><h2 id="source-heading">Source evidence</h2><span class="status-badge" data-tone="neutral">Original preserved</span></div>
+          <div class="source-toolbar">
+            <div class="tabs source-tabs" role="tablist" aria-label="Document evidence">
+              <button id="source-image-tab" type="button" role="tab" aria-selected="true" aria-controls="source-image-panel">Image</button>
+              <button id="source-text-tab" type="button" role="tab" aria-selected="false" aria-controls="source-text-panel" tabindex="-1">Text</button>
+            </div>
+            <label id="pdf-page-label" class="inline-field" hidden>Page <select id="pdf-page"></select></label>
+          </div>
+          <div id="source-image-panel" role="tabpanel" aria-labelledby="source-image-tab">
+            <iframe id="receipt-pdf" title="Preserved PDF document" hidden></iframe>
+            <div class="image-scroll"><div id="receipt-image-frame"><img id="receipt-image" alt="Preserved document"><svg id="receipt-overlay" aria-label="Recognized text regions"></svg></div></div>
+            <p class="muted small">Select a highlighted region to find the recorded rows that cite it.</p>
+          </div>
+          <div id="source-text-panel" role="tabpanel" aria-labelledby="source-text-tab" hidden>
+            <textarea id="receipt-text" readonly rows="24" aria-label="Complete extracted document text"></textarea>
+            <button id="copy-receipt-text" type="button">Copy text</button>
+          </div>
+          <details class="source-extras"><summary>Reading notes &amp; codes</summary>
+            <ul id="receipt-issues"></ul><h3>QR codes and barcodes</h3><div id="receipt-codes"></div>
+          </details>
+        </section>
+        <section class="inspector-pane record-pane" aria-labelledby="record-heading">
+          <div class="pane-heading"><h2 id="record-heading">Recorded information</h2></div>
+          <div id="record-empty"></div>
+          <p id="extraction-status" role="status" aria-live="polite"></p>
+          <div id="extraction-result"></div>
+        </section>
+      </div>
+      <section class="inspector-footer" aria-label="Processing and details">
+        <ol class="process-steps" aria-label="Processing steps">
+          <li><span class="step-title">Read</span><span id="text-state"></span>
+            <button id="parse-receipt" type="button">Read document</button><small id="text-step-note">Reads the preserved copy locally.</small></li>
+          <li><span class="step-title">Recorded</span><span id="extraction-state"></span>
+            <button id="extract-ledger" class="primary" type="button">Extract to ledger</button><small>Checked fields for your review.</small></li>
+        </ol>
+        <div class="tabs" role="tablist" aria-label="Document details">
+          <button id="details-tab" type="button" role="tab" aria-selected="true" aria-controls="details-panel">Details</button>
+          <button id="history-tab" type="button" role="tab" aria-selected="false" aria-controls="receipt-history" tabindex="-1">History</button>
+        </div>
+        <div id="details-panel" role="tabpanel" aria-labelledby="details-tab">
+          <dl id="document-details" class="detail-list"></dl>
+          <h3>How the text was read</h3>
+          <dl id="receipt-provenance" class="detail-list"></dl>
+        </div>
+        <div id="receipt-history" role="tabpanel" aria-labelledby="history-tab" hidden>
+          <div class="history-section"><h3>Text reading</h3>
+            <p id="receipt-status" role="status" aria-live="polite"></p>
+            <label>Saved readings<select id="receipt-runs"><option value="">Not read yet</option></select></label>
+            <label>Rotate clockwise before reading<select id="receipt-rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+            <button id="reparse-receipt" type="button">Read again as a new run</button>
+            <p id="receipt-telemetry" class="muted small"></p>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section id="scan-panel" class="page" data-page="processing" aria-labelledby="processing-title" hidden>
+      <header class="page-header"><div><h1 id="processing-title" tabindex="-1">Processing</h1>
+        <p class="page-subtitle">Capture and model work run on separate queues. You can browse, move and review documents while a model is generating.</p></div></header>
+      <section class="panel"><h2>Now running</h2><ul id="activity" class="activity-list"></ul></section>
+      <section class="panel"><h2>Capture</h2>
+        <p id="inbox-location" class="path-text"></p>
+        <p class="muted small">Drop files into Inbox. While Home Manager is running, new files are captured automatically, read and filed; uncertain ones go to Unfiled. Source folders use YYYY/MM subfolders and stay read-only; captured files get organized Library copies.</p>
+        <div class="button-row"><button id="scan-inbox" class="primary" type="button" disabled>Scan Inbox</button>
+          <button id="scan" type="button" disabled>Scan source folders</button></div>
+      </section>
+      <section class="panel"><h2>Read documents</h2>
+        <p class="muted small">Reads every preserved image and PDF with the local vision model. To read only some documents, select them in Documents.</p>
+        <div class="button-row"><button id="parse-all-receipts" type="button" disabled>Read all documents</button>
+          <label class="compact-check"><input id="force-receipts" type="checkbox"> Also re-read documents that already have text</label></div>
+        <p id="receipt-batch-status" class="batch-status" role="status" aria-live="polite"></p>
+      </section>
+      <section class="panel"><h2>Scan history</h2>
+        <label class="inline-field">Scan <select id="scans"><option value="">No scans yet</option></select></label>
+        <p id="scan-state" aria-live="polite">No scans yet.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Path</th><th scope="col">Result</th><th scope="col">Details</th></tr></thead><tbody id="events"></tbody></table></div>
+        <div class="pager"><button id="events-prev" type="button">Previous results</button><span id="events-page"></span><button id="events-next" type="button">Next results</button></div>
+      </section>
+      <section id="model-history-panel" class="panel"><h2>Model runs</h2>
+        <p class="muted small">Measured per request. Token counts come from the model server when it reports them; “~” marks rates estimated from characters.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Started</th><th scope="col">Task</th><th scope="col">Model</th><th scope="col">Status</th><th scope="col" class="numeric">Prompt tokens</th><th scope="col" class="numeric">Completion tokens</th><th scope="col" class="numeric">Time to first token</th><th scope="col" class="numeric">Generation</th><th scope="col" class="numeric">Model time</th></tr></thead><tbody id="model-history"></tbody></table></div>
+      </section>
+    </section>
+
+    <section id="settings-panel" class="page" data-page="settings" aria-labelledby="settings-title" hidden>
+      <header class="page-header"><div><h1 id="settings-title" tabindex="-1">Settings</h1></div></header>
+      <div class="settings-layout">
+        <div class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+          <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Library &amp; sources</button>
+          <button id="preferences-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences-panel" tabindex="-1">Financial preferences</button>
+          <button id="model-tab" type="button" role="tab" aria-selected="false" aria-controls="model-panel" tabindex="-1">Local models</button>
+          <button id="checks-tab" type="button" role="tab" aria-selected="false" aria-controls="checks-panel" tabindex="-1">Independent checks</button>
+          <button id="privacy-tab" type="button" role="tab" aria-selected="false" aria-controls="privacy-panel" tabindex="-1">Privacy &amp; security</button>
+        </div>
+        <div class="settings-content">
+          <div id="directories-panel" role="tabpanel" aria-labelledby="directories-tab">
+            <h2>Library &amp; sources</h2>
+            <form id="settings-form" class="form">
+              <div class="field"><label for="managed">Managed library folder</label><input id="managed" required placeholder="C:\Household\managed" autocomplete="off" spellcheck="false">
+                <small>A separate empty local folder or an existing Home Manager store. Changing it switches to a different library.</small></div>
+              <div class="field"><label for="source">Source folder (read-only)</label><input id="source" required placeholder="C:\Household\sources" autocomplete="off" spellcheck="false">
+                <small>An existing folder with YYYY/MM subfolders. Home Manager reads it and never changes it.</small></div>
+              <div class="button-row"><button id="save-settings" class="primary" type="submit">Save folders</button></div>
+            </form>
+            <p id="limits" class="muted small"></p>
+          </div>
+          <div id="preferences-panel" role="tabpanel" aria-labelledby="preferences-tab" hidden>
+            <h2>Financial preferences</h2>
+            <form id="household-form" class="form">
+              <div class="field"><label for="home-currency">Home currency</label>
+                <select id="home-currency"><option value="">Not set: such documents stay unpublished</option><option>USD</option><option>CAD</option><option>AUD</option><option>NZD</option><option>MXN</option><option>EUR</option><option>GBP</option><option>INR</option><option>JPY</option></select>
+                <small>Used only when a document prints an amount with a symbol such as $ but no currency code, and every symbol on it can mean this currency. Nothing else is inferred. Amounts in this currency are shown with its symbol.</small></div>
+              <div class="button-row"><button id="save-household" class="primary" type="submit">Save home currency</button></div>
+            </form>
+          </div>
+          <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
+            <h2>Local models</h2>
+            <p class="muted small">Models run in a local server on this computer, such as LM Studio. Only loopback addresses are accepted. Saving does not load a model or test the connection.</p>
+            <form id="vision-form" class="form"><h3>Vision model</h3>
+              <div class="field"><label for="vision-url">Local API base URL</label><input id="vision-url" required value="http://127.0.0.1:1234/v1"></div>
+              <div class="field"><label for="vision-model">Loaded vision model ID</label><input id="vision-model" placeholder="Copy the model ID from your local server">
+                <small>An image-capable model, such as Qwen3.5-9B. It reads images and scanned pages.</small></div>
+              <label class="check-field"><input id="auto-organize" type="checkbox" checked> Read newly scanned images automatically</label>
+              <div class="button-row"><button id="save-vision" class="primary" type="submit">Save vision model</button></div>
+            </form>
+            <form id="reasoning-form" class="form"><h3>Reasoning model</h3>
+              <div class="field"><label for="reasoning-url">Reasoning API base URL</label><input id="reasoning-url" required value="http://127.0.0.1:1234/v1"></div>
+              <div class="field"><label for="reasoning-model">Reasoning model ID</label><input id="reasoning-model" placeholder="Copy the text model ID from your local server">
+                <small>Classifies and extracts saved transcriptions. Independent of the vision model.</small></div>
+              <div class="button-row"><button id="save-reasoning" class="primary" type="submit">Save reasoning model</button></div>
+            </form>
+          </div>
+          <div id="checks-panel" role="tabpanel" aria-labelledby="checks-tab" hidden>
+            <h2>Independent checks</h2>
+            <p id="laya-status" class="muted small"></p>
+            <p class="muted small">Laya checks every ledger extraction on this computer. A value it cannot confirm sends the record to review; it never approves one.</p>
+          </div>
+          <div id="privacy-panel" role="tabpanel" aria-labelledby="privacy-tab" hidden>
+            <h2>Privacy &amp; security</h2>
+            <ul class="guarantees">
+              <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry.</li>
+              <li><strong>Source folders are read-only.</strong> Files are copied into the managed library; originals are never moved, renamed or deleted.</li>
+              <li><strong>Evidence is immutable.</strong> Every captured file is preserved under its SHA-256 hash; a changed file becomes a new version.</li>
+              <li><strong>Models propose, you decide.</strong> Model output stays proposed until you verify it, and totals come from exact arithmetic, never from a model.</li>
+              <li><strong>The session is locked to its launch link.</strong> Other programs on this computer can't use the interface without it.</li>
+            </ul>
+            <p class="muted small">Backup to a separate location isn't available yet.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toasts" class="toast-region" aria-live="polite"></div>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+  <h2 id="confirm-title"></h2><p id="confirm-message"></p>
+  <div class="dialog-actions"><button id="confirm-cancel" type="button">Cancel</button><button id="confirm-accept" type="button"></button></div>
+</dialog>
+<dialog id="description-dialog" aria-labelledby="description-title">
+  <form id="description-form">
+    <h2 id="description-title">Edit description</h2>
+    <p id="description-document" class="muted small"></p>
+    <div class="field"><label for="description-input">What was this?</label>
+      <input id="description-input" maxlength="60" autocomplete="off">
+      <small>One or two words, such as Snacks/Office or Bed frame. The title is Merchant - Location - this description. Leave empty to use the AI's.</small></div>
+    <p id="description-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button id="cancel-description" type="button">Cancel</button><button class="primary" type="submit">Save</button></div>
+  </form>
 </dialog>
 <dialog id="library-action-dialog" aria-labelledby="library-action-title">
   <h2 id="library-action-title">Move document</h2><p id="library-action-document"></p><p id="library-action-description"></p>
   <label id="move-folder-label">Destination folder<select id="move-folder"></select></label>
   <p id="library-action-error" role="alert"></p>
-  <div class="inline"><button id="confirm-library-action" type="button">Move</button><button id="cancel-library-action" class="secondary" type="button">Cancel</button></div>
+  <div class="dialog-actions"><button id="cancel-library-action" type="button">Cancel</button><button id="confirm-library-action" class="primary" type="button">Move</button></div>
 </dialog>
-<dialog id="versions-dialog"><h2>Preserved versions</h2><p id="versions-path"></p><div id="versions-content"></div><button id="close-versions" type="button">Close</button></dialog>
-<dialog id="receipt-dialog" aria-labelledby="receipt-title">
-  <div class="receipt-heading"><div><h2 id="receipt-title">Inspect receipt</h2><p id="receipt-path"></p></div><button id="close-receipt" type="button">Close</button></div>
-  <p id="receipt-version" class="muted"></p>
-  <p id="receipt-status" role="status" aria-live="polite"></p>
-  <div class="inline receipt-actions">
-    <label>Rotate clockwise before OCR<select id="receipt-rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
-    <button id="parse-receipt" type="button">Parse receipt</button>
-    <button id="reparse-receipt" type="button">Create a new parsing run</button>
-    <label>Saved parsing runs<select id="receipt-runs"><option value="">Not parsed yet</option></select></label>
+<dialog id="import-dialog" aria-labelledby="import-title">
+  <div class="dialog-heading"><h2 id="import-title">Import transactions</h2><button id="close-import" class="secondary" type="button">Close</button></div>
+  <p id="import-document" class="muted"></p>
+  <p class="muted">Read deterministically from the preserved copy; no model is involved. Re-importing the same rows never creates duplicates.</p>
+  <label>Account<select id="import-account"></select></label>
+  <fieldset id="import-new-account"><legend>New account</legend>
+    <div class="inline"><label>Institution<input id="import-institution" autocomplete="off"></label>
+      <label>Type<select id="import-type"><option value="checking">Checking</option><option value="savings">Savings</option><option value="credit_card">Credit card</option><option value="brokerage">Brokerage</option><option value="loan">Loan</option><option value="other">Other</option></select></label></div>
+    <div class="inline"><label>Currency (ISO code)<input id="import-currency" value="USD" maxlength="3" autocomplete="off"></label>
+      <label>Last four digits (optional)<input id="import-last-four" maxlength="4" inputmode="numeric" autocomplete="off"></label></div>
+  </fieldset>
+  <div class="inline">
+    <label>Date column<select id="import-map-date"></select></label><label>Description column<select id="import-map-description"></select></label>
+    <label>Amount column<select id="import-map-amount"></select></label><label>Debit column<select id="import-map-debit"></select></label><label>Credit column<select id="import-map-credit"></select></label>
   </div>
-  <div class="receipt-layout">
-    <div class="receipt-source"><h3>Preserved image / OCR evidence</h3>
-      <p class="muted">The original is unchanged. After parsing, this view shows the oriented preview. Select a field or text region to highlight its evidence.</p>
-      <div id="receipt-image-frame"><img id="receipt-image" alt="Preserved receipt"><svg id="receipt-overlay" aria-label="Recognized text regions"></svg></div>
-    </div>
-    <div class="receipt-details">
-      <h3>Structured financial fields</h3><p>Provisional label-based extraction. Missing or ambiguous values are not guessed. No financial records have been created.</p>
-      <div id="receipt-fields"></div>
-      <h3>How the total was formed</h3><div id="receipt-components"></div><p id="receipt-calculation"></p>
-      <h3>Extraction issues</h3><ul id="receipt-issues"></ul>
-      <h3>QR codes and barcodes</h3><p class="muted">Payloads are saved as text and exact bytes. Links are never opened automatically.</p><div id="receipt-codes"></div>
-      <h3>Complete extracted text</h3><p class="muted">Every recognized text region is retained, including low-confidence text and nonfinancial wording. Decoded code payloads are appended. OCR can still miss content; compare with the image.</p>
-      <button id="copy-receipt-text" type="button">Copy extracted text</button>
-      <textarea id="receipt-text" readonly rows="18" aria-label="Complete extracted receipt text"></textarea>
-      <details><summary>Text regions and engine scores</summary><div id="receipt-regions"></div></details>
-      <details><summary>Parsing provenance</summary><pre id="receipt-provenance"></pre></details>
-    </div>
+  <div class="inline">
+    <label>Date format<select id="import-date-format"><option value="auto">Detect when unambiguous</option><option>YYYY-MM-DD</option><option>MM/DD/YYYY</option><option>DD/MM/YYYY</option></select></label>
+    <label>Amount sign<select id="import-sign"><option value="negative_is_outflow">Negative amounts are money out</option><option value="positive_is_outflow">Positive amounts are money out (many card exports)</option></select></label>
   </div>
+  <div class="dialog-actions"><button id="preview-import" type="button">Preview</button><button id="confirm-import" class="primary" type="button" disabled>Import transactions</button></div>
+  <p id="import-status" role="status" aria-live="polite"></p>
+  <ul id="import-issues" class="analysis-limitations"></ul>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Row</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="numeric">Amount</th></tr></thead><tbody id="import-preview"></tbody></table></div>
 </dialog>
+<dialog id="versions-dialog" aria-labelledby="versions-title"><h2 id="versions-title">Preserved versions</h2><p id="versions-path"></p><div id="versions-content"></div><div class="dialog-actions"><button id="close-versions" type="button">Close</button></div></dialog>
 </body>
 </html>

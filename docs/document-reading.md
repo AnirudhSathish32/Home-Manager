@@ -1,5 +1,9 @@
 # Directory-based document reading
 
+Implementation update: a separate, configurable [financial reasoning stage](financial-reasoning.md) now analyzes saved vision transcriptions with field-level citations and durable history. Below, proposed review, posting, automatic filing and multi-document analysis remain future work.
+
+Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
+
 Status: component design, updated 2026-09-22. D1–D2 and an initial PNG/JPEG receipt reader are implemented. See [receipt parsing](receipt-parsing.md) for the implemented scope and limitations; broader model assessment and review slices remain planned. CSV, Excel, scanned bills and PDF statements are required follow-up readers. Extends [the architecture](architecture.md) and [milestones](milestones.md). See [manual testing](manual-testing.md) for the local UI. No personal source directory is created automatically.
 
 ## Purpose and boundary
@@ -27,7 +31,7 @@ HomeManagerData/
         ...
   managed/                      # application-managed, private
     originals/                  # immutable byte snapshots keyed by hash
-    extracted/                  # versioned text/tables/OCR coordinates
+    extracted/                  # versioned text/tables/transcription line references
     work/                       # bounded temporary processing space
     database/                   # SQLite records, jobs, search metadata
   reports/                      # generated Excel reports; never scanned as input
@@ -73,11 +77,11 @@ Separate these concepts:
 | --- | --- |
 | Source occurrence | A path under a configured root, folder period, observation times, and the captured content hash |
 | Document/blob | One preserved set of bytes with format and content hash |
-| Extraction run | Reader/OCR/model/schema versions and outputs for that exact document |
+| Extraction run | Reader/model/schema versions and outputs for that exact document |
 | Financial candidate | Proposed typed values with evidence locations and validation state |
 | Financial record | Approved normalized fact with links to evidence and approval/revision history |
 
-Identical bytes at another path create another source occurrence, not duplicate transactions or unnecessary OCR. Renaming or moving a file changes occurrence metadata, not financial dates. Different bytes at the same path create a new version candidate; they do not silently replace previously approved facts. Missing files on a later scan mark source occurrences unavailable but do not delete captured evidence or records. If a new version is a correction, review determines what it supersedes.
+Identical bytes at another path create another source occurrence, not duplicate transactions or unnecessary transcription. Renaming or moving a file changes occurrence metadata, not financial dates. Different bytes at the same path create a new version candidate; they do not silently replace previously approved facts. Missing files on a later scan mark source occurrences unavailable but do not delete captured evidence or records. If a new version is a correction, review determines what it supersedes.
 
 Content hashing does not solve financial duplication: a CSV, workbook, and image can represent the same purchase with different hashes. Handle those links later using stable transaction identifiers and reviewed matching rules. A statement export and a overlapping statement export must not double-count repeated rows.
 
@@ -89,40 +93,21 @@ File format and document type are independent. An XLSX may contain a bank statem
 | --- | --- | --- |
 | CSV | Rows, columns, original cell strings, row/column coordinates, encoding/delimiter metadata | Versioned per-layout mappings specify account, dates, signs and currency; ambiguous encoding/date/decimal conventions require review |
 | XLSX | Sheets, cells, values, formulas as inert evidence, stored values, cell coordinates | Preserve identifiers/leading zeros and date conventions; no macro, external-link, or formula execution; financial formula results require review |
-| Scanned image | Local OCR text, reading order, bounding boxes, engine/version and quality indicators | Preserve original image; preprocessing is a derivative; do not treat confidence as proof of amount/date/currency correctness |
+| Scanned image | Local vision transcription, line references and model/version; no invented text coordinates | Preserve original image; preprocessing is a derivative; do not treat confidence as proof of amount/date/currency correctness |
 
-V1 begins with CSV, XLSX, PNG, and JPEG; any additional extension needs a tested reader. Bills and statements describe semantic document types, not an implicit requirement to parse PDFs. If PDF sources are later added, provide text extraction with local OCR fallback as a separate reader milestone. Encrypted, unsupported, corrupt, or resource-exceeding files remain visible with a clear status.
+V1 begins with CSV, XLSX, PNG, and JPEG; any additional extension needs a tested reader. Bills and statements describe semantic document types, not an implicit requirement to parse PDFs. If PDF sources are later added, provide native-text reading and local vision transcription of scanned pages as a separate reader milestone. Encrypted, unsupported, corrupt, or resource-exceeding files remain visible with a clear status.
 
-Apply byte, expanded-size, sheet/row/cell, pixel, runtime, and output limits. Process one extraction job at a time initially on the Windows host, keeping OCR on CPU where practical and avoiding competition with the primary model. A plain subprocess is not automatically a security sandbox: implement restricted permissions and network isolation explicitly before using untrusted parsers with private real data.
+Apply byte, expanded-size, sheet/row/cell, pixel, runtime, and output limits. Process one extraction job at a time initially on the Windows host, scheduling vision and reasoning requests to avoid model memory contention. A plain subprocess is not automatically a security sandbox: implement restricted permissions and network isolation explicitly before using untrusted parsers with private real data.
 
-### 4. Classify and extract candidates
+### 4. Separate interpretation (future)
 
-Use deterministic layout mappings for recognized CSV/XLSX templates and OCR-derived candidate text for images, then the local assessment cascade below. Laya is now a V1 evaluation candidate for routing and evidence-support judgments, rather than a post-V1-only experiment. A local text LLM interprets ambiguous text; direct image interpretation requires a separately validated local vision model. Models never receive filesystem, external network, or execution tools during extraction. Unknown/ambiguous classification is a valid result.
+The vision model transcribes visible text only. It does not choose titles, folders, dates, currencies or totals. No preliminary OCR pass or OCR fallback remains. CSV/XLSX readers will preserve structured evidence directly when implemented.
 
-### 4a. Quality assessment and model escalation
+A separate local reasoning model will consume saved text and evidence IDs and propose typed fields, titles and classification. Persist interpretation independently with its source run and model version. Do not rewrite source evidence to fit candidates. Missing/ambiguous facts stay unresolved; validation and review precede financial publication.
 
-The user's preferred design is a small local judge that decides whether extraction is sufficient and escalates difficult cases to a larger local model. Adopt this as an evaluated routing policy, not an assumption that a judge's confidence proves the source was read correctly. This supersedes the earlier suggestion to invoke a large LLM for every document. Accuracy takes precedence over avoiding calls or reducing latency.
+### 4a. Quality assessment (future)
 
-Capability findings checked on 2026-09-22:
-
-- Laya is a text/structured-state decision model. Its publisher notes domain calibration requirements and limited zero-shot performance on some typed-decision tasks. It cannot inspect image pixels to verify OCR; evaluate the exact checkpoint and language coverage on this task ([publisher model card](https://huggingface.co/convaiinnovations/laya)).
-- Jev exposes typed decisions through TypeSafe's documented service. A supported local deployment was not established by the reviewed official documentation, so it is excluded from private-data processing under the local-only requirement. Reconsider only after verifying a local deployment, not by silently using its hosted API ([official documentation](https://docs.typesafe.ai/introduction)).
-- The current orchestration candidates are text models. gpt-oss-20b does not support image input, and the named Qwen3-30B-A3B is not a Qwen vision-language model. Direct pixel interpretation needs a separate local VLM adapter and hardware evaluation ([OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-oss-20b), [Qwen model card](https://huggingface.co/Qwen/Qwen3-30B-A3B)).
-
-Proposed sequence for images:
-
-1. After immutable capture but before expensive interpretation, inspect decoding, pixel dimensions, orientation, blur/contrast indicators and suspected clipping. These are signals, not a definitive readability score. Corrupt images stop with a clear error; obvious missing content requests a better source instead of inviting a model to invent it.
-2. Run a preliminary local OCR pass. Retain text, coordinates, missing regions and per-region quality signals. A text-only judge cannot decide from raw pixels whether OCR would be sufficient before any OCR has run. Digital CSV/XLSX documents instead supply parser results directly.
-3. Give Laya bounded evidence packets containing source text, candidate fields, OCR/quality diagnostics, and deterministic validation results. Ask narrow questions such as whether the candidate currency is explicit, whether total versus subtotal is ambiguous, or whether a field is supported by the supplied text. Separate document classification, textual support, and escalation decisions. A judgment of textual support is not a probability that the image was transcribed correctly.
-4. Route through deterministic policy. Familiar mappings, complete evidence and validated judge behavior may permit the OCR/parser interpretation to proceed to human review without a large-model call. Low confidence, missing fields, disagreement, unrecognized layouts/languages, truncated context or hard validation failures escalate regardless of other high scores. If the judge is unavailable or unvalidated, use conservative model escalation or human review; never treat an error as approval.
-5. For semantic ambiguity in readable text, use the local text LLM. For uncertain characters, layouts or image content, use a local vision-language model with original image regions and sufficient surrounding context. A second local OCR pass may provide useful independent evidence. Record the original extraction and each alternative; do not silently overwrite them. If no validated VLM is available, return needs-review/needs-better-image rather than sending pixels to a text model.
-6. Re-run deterministic validation and a field-level judge assessment against the evidence. Judge/model disagreement and unsupported critical values stay unresolved. Two models agreeing on the same incorrect OCR is not independent verification. Human review remains required for OCR financial facts; missing/cropped evidence cannot be recovered by confidence alone.
-
-Before calibration, operate the judge in shadow mode: record its recommendations while conservative processing and human review continue. Do not select an arbitrary threshold such as 0.9 as a correctness guarantee. Use held-out, human-labeled documents spanning banks, layouts, languages, blur, decimal errors, cropped totals and unfamiliar currencies. Split by document/layout, not near-duplicate pages. Measure false acceptance of incorrect critical fields, recall of cases needing escalation, final amount/date/currency accuracy, abstention, calibration and coverage. Sample high-confidence cases for independent checks to expose confidently wrong routing.
-
-Compare the cascade against OCR plus review, always-local-LLM interpretation, and local vision extraction plus review. Enable model-skipping only if the cascade meets the same critical-field accuracy target on held-out data; otherwise keep the more conservative path. No classifier fine-tuning project is assumed necessary for V1: if Laya does not pass, retain its interface and use escalation/review rather than making acceptance dependent on training a model.
-
-Define a Pydantic `ExtractionAssessment` contract with document/extraction IDs, evidence region IDs, assessment type, candidate-field ID, supported/contradicted/unknown decision, raw score, calibration version (nullable), reasons from a fixed vocabulary, model/checkpoint version, context-completeness flag and recommended route. Do not invent free-text explanations from a classifier that does not generate them. Derived route decisions and any deterministic override are logged separately. Avoid one averaged confidence score that hides uncertainty in the total or currency behind easy fields.
+Evaluate transcription on local labeled documents spanning languages, faded text, decimal/sign errors, clipping and unfamiliar layouts. A text reasoning model cannot verify pixels it never saw. Missing/unreadable evidence requires inspection or a better scan; agreement between models is not proof of correctness. Optional judge evaluation can be revisited after the transcription/reasoning separation works.
 
 ### 4b. LangChain boundary and local execution
 
@@ -130,7 +115,7 @@ Use LangChain for local model invocation, typed output handling and composition 
 
 Pin and contract-test the installed LangChain/adapters against the actual local endpoints. Configure explicit capabilities and bounded retries rather than relying on automatic provider inference. Do not use hosted LangSmith tracing or cloud model fallbacks. Use the existing SQLite job checkpoints rather than adding a second persistence system just for orchestration.
 
-Keep the small judge/OCR on CPU if measurements support it; schedule primary text-model and vision-model requests with explicit memory admission on the 16 GB VRAM / 32 GB RAM host. Do not assume both large models can remain loaded together. Model unload/reload is acceptable when needed for accuracy. VLM choice remains a dedicated capability/accuracy spike; this design does not assert that either existing text-model candidate can read images.
+For future model composition, schedule primary text-model and vision-model requests with explicit memory admission on the 16 GB VRAM / 32 GB RAM host. Do not assume both large models can remain loaded together. Model unload/reload is acceptable when needed for accuracy. VLM choice remains a dedicated capability/accuracy spike; this design does not assert that either existing text-model candidate can read images.
 
 Minimum semantic types: bank statement, credit-card statement, receipt, bill, and unknown. Preserve component-level types for mixed workbooks or multi-receipt images; do not force all content into one transaction. Basic reading can produce searchable evidence even when financial extraction is not supported for that layout.
 
@@ -149,7 +134,7 @@ Validate schemas, date/currency ambiguity, sign conventions, required fields, su
 
 Keep folder period, document issue date, statement coverage, transaction/posted date, purchase date, and due date as separate fields. Folder mismatch generates a warning without changing dates or moving the file. Queries for spending use approved transaction-date policies; queries for 'documents in September's folder' use folder metadata. Statements spanning months are found by coverage overlap across all indexed folders.
 
-The review screen shows source evidence beside proposed values and explains each blocking issue. Initial V1 requires approval for new financial import batches, with explicit review of all OCR-derived financial facts. Reusable mappings reduce review effort without removing provenance or validation. Approval is an authenticated application command, unavailable to the model. Publish a document/import batch transactionally; partial approval must be explicit, with excluded rows and incomplete coverage retained.
+The review screen shows source evidence beside proposed values and explains each blocking issue. Initial V1 requires approval for new financial import batches, with explicit review of all transcription-derived financial facts. Reusable mappings reduce review effort without removing provenance or validation. Approval is an authenticated application command, unavailable to the model. Publish a document/import batch transactionally; partial approval must be explicit, with excluded rows and incomplete coverage retained.
 
 Do not make searching dependent on approval. Text can become searchable as soon as a bounded successful extraction is published, labeled as unreviewed evidence. Only approved financial records feed authoritative totals. Correcting a candidate does not modify the original and triggers downstream conversion/matching invalidation when amount, currency, or date changes.
 
@@ -189,7 +174,7 @@ Avoid exposing the scanner as a general filesystem agent tool. In V1, a user ini
 
 The user adds a bank CSV, credit-card XLSX, a euro receipt image, and an electricity bill image to `sources/2026/09/`, then selects Scan documents.
 
-The worker captures four originals, reads structured rows, OCRs the two images, and makes the extracted content searchable. It proposes postings, balance snapshots, a receipt, and a bill; each retains its own actual dates. The user reviews the candidates. The receipt is matched to a card posting if supported, avoiding duplicate spending; the bank payment to that card is treated as a transfer when confirmed. The electricity bill remains an obligation until payment evidence exists.
+The worker captures four originals, reads structured rows, transcribes the two images with the vision model, and makes the extracted content searchable. It proposes postings, balance snapshots, a receipt, and a bill; each retains its own actual dates. The user reviews the candidates. The receipt is matched to a card posting if supported, avoiding duplicate spending; the bank payment to that card is treated as a transfer when confirmed. The electricity bill remains an obligation until payment evidence exists.
 
 For a foreign receipt needing conversion, the agent looks up the applicable historical rate and calls the deterministic conversion tool. When asked for a September report, financial services select approved September records across the entire database, including any located in other folder months. The Excel tool writes a new report containing USD totals, original amounts, evidence and rate references, plus unresolved-source warnings. It never overwrites an input workbook.
 
@@ -200,10 +185,10 @@ For a foreign receipt needing conversion, the agent looks up the applicable hist
 | D1 | Directory contract, scan inventory, stability handling and durable captures | Nested month files discovered; incomplete/locked files deferred; repeated scan does not duplicate captures; sources remain byte-identical |
 | D2 | Version/occurrence tracking and recovery | Copy, rename, delete, and overwrite scenarios preserve evidence and approvals; crash after capture recovers without duplicate jobs |
 | D3 | CSV/XLSX readers and extraction schema | Exact source coordinates and values; unsupported formats and formulas handled explicitly; no model required |
-| D4 | Local image OCR and searchable evidence | Known synthetic text/crops recovered; low-quality results visible; oversized images rejected; no outbound network |
+| D4 | Local vision transcription and evidence | Text-only contract, retained text, visible unreadable markers, bounded images and no OCR fallback |
 | D4a | Local Laya adapter, LangChain stage composition and shadow-mode assessments | Bounded evidence, versioned scores, unsupported-language/context handling, no hosted requests; compare judgments to human labels |
 | D4b | Local text/vision escalation and calibrated routing | Exact-image evidence preserved; critical-field errors and false acceptance measured; model outage/disagreement forces review; memory-safe local execution |
 | D5 | Typed candidates and review UI | Bank/card/receipt/bill semantics preserved; ambiguous dates/currencies blocked; unreviewed evidence cannot affect totals |
 | D6 | Matching, FX, and existing report integration | No duplicate receipt/card expense or card-payment spend; rate ID reused; partial coverage disclosed; cross-month dates handled correctly |
 
-D1-D4 establish basic capture and reading. D4a-D4b evaluate the requested judge/model cascade; D5-D6 make its results safe and useful for financial tasks. These refine M2/M2b/M3/M3b and the model-adapter milestones. Parser/OCR tests use small synthetic fixtures; no actual household documents enter Git or hosted evaluation services.
+D1-D4 establish basic capture and reading. D4a-D4b remain future assessment work after separate reasoning; D5-D6 make its results safe and useful for financial tasks. These refine M2/M2b/M3/M3b and the model-adapter milestones. Parser/vision tests use small synthetic fixtures; no actual household documents enter Git or hosted evaluation services.
