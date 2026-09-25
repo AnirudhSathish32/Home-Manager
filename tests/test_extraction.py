@@ -157,14 +157,23 @@ def test_hallucinated_amount_is_rejected_after_one_correction_and_nothing_is_pub
     assert "total: the amount is not printed" in correction and "Total 25.00" not in correction
 
 
-def test_unstated_currency_blocks_publication_instead_of_guessing(receipt, local_model):
-    manager, doc, parse_id = receipt
-    local_model["outputs"] = [classification(), receipt_summary(currency=MISSING), identity(), receipt_items()]
-    run = extract(manager, doc, parse_id)
-    assert run["status"] == "succeeded" and run["publication"]["status"] == "blocked"
-    assert "currency" in run["publication"]["reason"]
-    with manager.store.connection() as db:
-        assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 0
+@pytest.mark.parametrize("currency_text,expected", [("", "USD"), ("$", "USD"), ("EUR", None), ("£", None)])
+def test_receipt_defaults_to_usd_without_currency_but_respects_foreign_evidence(tmp_path, local_model, currency_text, expected):
+    lines = [*RECEIPT]
+    lines[2] = currency_text or "Thank you"
+    manager, doc, parse_id = transcribe(tmp_path, local_model, lines)
+    try:
+        local_model["outputs"] = [classification(), receipt_summary(currency=MISSING), identity(), receipt_items(), {"description": "Lunch"}]
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        if expected:
+            record = manager.ledger.record("receipt", run["publication"]["id"])
+            assert (record["currency"], record["total_minor"], record["review_status"]) == ("USD", 2500, "verified")
+            assert "assumed to be USD" in run["result"]["normalized"]["notes"][0]
+        else:
+            assert run["publication"]["status"] == "blocked"
+    finally:
+        manager.close()
 
 
 def test_unknown_or_uncited_classifications_never_publish_or_choose_folders(receipt, local_model):
@@ -207,13 +216,13 @@ def test_real_model_quirks_quotes_split_taxes_brand_footer_and_home_currency(tmp
         # The seller is printed only in the footer; the city in the header is the store's location, not the merchant.
         where = {"seller": quoted("Target", 12, "informtarget.com"), "seller_basis": "printed", "location": quoted("Milton", 1, lines[0])}
         local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office"}]
-        blocked = extract(manager, doc, parse_id)
-        assert blocked["status"] == "succeeded", blocked["error"]
-        assert blocked["publication"]["status"] == "blocked" and "home currency" in blocked["publication"]["reason"]
+        defaulted = extract(manager, doc, parse_id)
+        assert defaulted["status"] == "succeeded", defaulted["error"]
+        assert defaulted["publication"]["status"] == "published"
         manager.configure_household(manager.household.model_copy(update={"home_currency": "USD"}))
         local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office"}]
         run = extract(manager, doc, parse_id)
-        assert run["id"] != blocked["id"]  # The home currency is part of the reuse key.
+        assert run["id"] != defaulted["id"]  # The home currency is part of the reuse key.
         record = manager.ledger.record("receipt", run["publication"]["id"])
         assert (record["merchant"], record["purchase_date"], record["review_status"], record["issues"]) == ("Target", "2026-09-19", "verified", [])
         assert (record["subtotal_minor"], record["tax_minor"], record["total_minor"]) == (1288, 64, 1352)

@@ -77,7 +77,9 @@ function renderFolders(catalog) {
     return chip;
   }));
   $("folder-breadcrumb").textContent = folderLabel(activeFolder);
-  $("folder-description").textContent = activeFolder === "trash" ? "Hidden from your library. Restore returns a document; nothing is deleted from disk."
+  $("empty-trash").hidden = activeFolder !== "trash";
+  $("empty-trash").disabled = false;
+  $("folder-description").textContent = activeFolder === "trash" ? "Restore documents or empty Trash to permanently delete them."
     : activeFolder === "Inbox" ? "Newly dropped files waiting to be read and filed." : activeFolder === "Unfiled" ? "Documents whose type, merchant or date could not be confirmed. Extract them to the ledger or use Move." : "";
 }
 function actionButton(label, callback, className = "") {
@@ -252,6 +254,19 @@ $("description-form").addEventListener("submit", async event => {
   } catch (error) { $("description-error").textContent = error.message; }
 });
 
+$("empty-trash").addEventListener("click", () => {
+  pendingLibraryAction = {action: "empty", docs: []};
+  $("library-action-title").textContent = "Permanently empty Trash?";
+  $("library-action-document").textContent = `All ${libraryCatalog.counts.trash} documents in Trash, including those hidden by filters or on other pages.`;
+  $("library-action-description").textContent = "Permanently deletes managed copies, preserved versions, extracted text and associated ledger records. Data still used by other documents is kept. This cannot be undone. External source files and existing backups remain; rescanning an external source can add its documents again.";
+  $("move-folder-label").hidden = true;
+  $("confirm-library-action").textContent = "Permanently empty Trash";
+  $("confirm-library-action").className = "danger";
+  $("library-action-error").textContent = "";
+  $("library-action-dialog").showModal();
+  $("cancel-library-action").focus();
+});
+
 function openLibraryAction(docs, action) {
   if (!docs.length) return;
   pendingLibraryAction = {docs, action};
@@ -276,6 +291,15 @@ $("confirm-library-action").addEventListener("click", async () => {
   const {docs, action} = pendingLibraryAction, folder = $("move-folder").value;
   $("confirm-library-action").disabled = true;
   try {
+    if (action === "empty") {
+      const result = await api("/api/trash/empty", {method: "POST", body: JSON.stringify({confirmed: true})});
+      pendingLibraryAction = null; $("library-action-dialog").close();
+      closeReceipt();
+      await afterLibraryChange();
+      notice(`${result.deleted} documents permanently deleted.`);
+      if (result.cleanup_pending) notice("Some files could not be removed. Close them in other programs and retry Empty trash, or restart the app to retry cleanup.", true);
+      return;
+    }
     const failures = await eachDocument(docs, doc => api(`/api/documents/${doc.id}/${action === "trash" ? "trash" : "folder"}`,
       {method: action === "trash" ? "POST" : "PUT", body: JSON.stringify(action === "trash" ? {expected_hash: doc.current_hash, confirmed: true} : {expected_hash: doc.current_hash, folder})}));
     if (failures.length === docs.length) { $("library-action-error").textContent = failures.join(" "); return; }
@@ -285,7 +309,8 @@ $("confirm-library-action").addEventListener("click", async () => {
     notice(action === "trash" ? (done === 1 ? "Document moved to Trash. Its source file is unchanged." : `${done} documents moved to Trash. Their source files are unchanged.`)
       : (done === 1 ? "Document moved to the selected folder." : `${done} documents moved to the selected folder.`));
     if (failures.length) notice(`${failures.length} couldn't be changed. ${failures.join(" ")}`, true);
-  } finally { $("confirm-library-action").disabled = false; }
+  } catch (error) { $("library-action-error").textContent = error.message; }
+  finally { $("confirm-library-action").disabled = false; }
 });
 
 const MAP_KEYS = ["date", "description", "amount", "debit", "credit"];

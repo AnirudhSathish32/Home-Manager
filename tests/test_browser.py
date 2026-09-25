@@ -211,6 +211,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#model-history")).to_contain_text("reasoning")
             playwright.expect(page.locator("#model-history")).to_contain_text("transcription")
             gate.clear()
+            local_model["response_gate"] = gate
             try:
                 page.locator("#force-receipts").check()
                 page.locator("#parse-all-receipts").click()
@@ -293,6 +294,21 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.goto(f"http://127.0.0.1:{port}/#/documents/{image_doc['id']}")
             playwright.expect(page.locator("#receipt-image")).to_be_visible()
             playwright.expect(page.locator("#receipt-pdf")).to_be_hidden()
+            page.locator("#nav-documents").click()
+            page.locator('.folder-link[data-folder="all"]').click()
+            row_action(page, "Delete", "preview.pdf")
+            page.locator("#confirm-library-action").click()
+            page.locator('.folder-link[data-folder="trash"]').click()
+            playwright.expect(page.locator("#documents")).to_contain_text("preview.pdf")
+            page.locator("#document-search").fill("nothing-matches-this")
+            page.locator("#empty-trash").click()
+            playwright.expect(page.locator("#library-action-description")).to_contain_text("cannot be undone")
+            page.locator("#cancel-library-action").click()
+            page.locator("#empty-trash").click()
+            page.locator("#confirm-library-action").click()
+            playwright.expect(page.locator("#toasts")).to_contain_text("1 documents permanently deleted")
+            page.locator("#document-search").fill("")
+            playwright.expect(page.locator("#documents")).not_to_contain_text("preview.pdf")
             assert all(url.startswith(f"http://127.0.0.1:{port}/") or url.startswith("blob:") for url in requests)
             assert "token=" not in page.url
             assert not failures

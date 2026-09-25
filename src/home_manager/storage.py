@@ -95,6 +95,8 @@ class Store:
             from .managed_library import ManagedLibrary
             self.library = ManagedLibrary(self)
             self.library.recover()
+            from .trash import cleanup
+            cleanup(self)
         except BaseException:
             self.lock.close()
             raise

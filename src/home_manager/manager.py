@@ -334,6 +334,13 @@ class Manager:
             self.require(False).library_action(self.source, document_id, expected_hash, action, folder)
             return {"status": action}
 
+    def empty_trash(self):
+        from .trash import empty
+        with self.mutex:
+            store = self.require(None, "Wait for running work to finish before emptying Trash.")
+            with store.library.lock:
+                return empty(store, self.source)
+
     def start_organization(self, document_id, digest):
         with self.mutex:
             self.require(False)

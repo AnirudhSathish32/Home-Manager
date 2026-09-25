@@ -1,6 +1,8 @@
 # Library folders, settings and Trash
 
-The sidebar opens **Finances**, **Documents** (the default page, with Inbox and Unfiled shortcuts), **Processing** (capture controls, scan history and model runs) and **Settings** (library folders, home currency, local models, independent checks). Secondary document actions live in each row's **More actions** menu.
+The sidebar opens **Home** (the default dashboard), **Finances**, **Documents** (with Inbox and Unfiled shortcuts), **Processing** (capture controls, scan history and model runs) and **Settings** (library folders, home currency, local models, independent checks). Home shows spending totals, monthly and category charts, attention counts and upcoming bills; chart links open filtered Finances records. Secondary document actions live in each row's **More actions** menu.
+
+Receipt ledger extraction assumes USD when currency is missing, including when the vision model did not read a dollar sign. The assumption is recorded in extraction notes. Explicit currencies and the existing home-currency setting for compatible printed symbols take precedence; conflicting foreign-currency evidence is not replaced with USD.
 
 ## Folder layout
 
@@ -44,7 +46,7 @@ Use **Move** to correct a folder. The manual choice overrides model classificati
 
 ## Delete and restore
 
-**Delete** opens a confirmation dialog naming the document and source path. **Delete to Trash** removes that occurrence from active views and future parsing batches. It retains originals, extraction history and the source file on disk. Trash offers **Restore**. There is no permanent purge or disk-space reclamation in this release.
+**Delete** opens a confirmation dialog naming the document and source path. **Delete to Trash** removes that occurrence from active views and future parsing batches. It retains originals, extraction history and the source file on disk. Trash offers **Restore** and **Empty trash…**. Empty trash permanently removes all trashed documents across filters and pages after confirmation, including managed copies, preserved versions, readings and associated ledger records. Evidence still used by other documents is retained. External originals and existing backups remain; rescanning an external original can add it again after permanent deletion. Edited managed files block deletion so edits can be preserved first. Running background work must finish before emptying Trash. Interrupted file removal is retried on restart or the next Empty trash action.
 
 Rescanning does not resurrect a trashed entry, even if the source still exists. A newly discovered path is a distinct entry. Removing one entry does not remove another entry that shares identical bytes. Restoring retains a manual folder if its source hash still matches. Library changes are refused while capture/parsing is active; stale source hashes require refreshing and reconfirming. The model has no delete/restore capability.
 

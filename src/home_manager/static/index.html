@@ -10,6 +10,7 @@
   <script src="/receipt.js" defer></script>
   <script src="/library.js" defer></script>
   <script src="/finance.js" defer></script>
+  <script src="/home.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -18,6 +19,7 @@
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
     <nav class="nav" aria-label="Primary">
+      <a id="nav-home" class="nav-link" href="#/home" data-route="home" data-icon="home"><span class="nav-label">Home</span></a>
       <a id="nav-finances" class="nav-link" href="#/finances" data-route="finances" data-icon="wallet"><span class="nav-label">Finances</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
       <p class="nav-group">Records</p>
       <a id="nav-documents" class="nav-link" href="#/documents" data-route="documents" data-icon="file"><span class="nav-label">Documents</span></a>
@@ -37,6 +39,16 @@
   <main id="main" tabindex="-1">
     <div id="app-alert"></div>
 
+    <section id="home-panel" class="page" data-page="home" aria-labelledby="home-title" hidden>
+      <header class="page-header"><div><h1 id="home-title" tabindex="-1">Home</h1><p class="page-subtitle">Your household, at a glance.</p></div>
+        <div class="page-actions"><label class="inline-field">Month <input id="home-month" type="month"></label>
+          <label class="inline-field">Currency <select id="home-currency-select" aria-label="Dashboard currency"></select></label>
+          <button id="home-refresh" type="button">Refresh</button></div></header>
+      <p id="home-status" class="muted small" role="status"></p>
+      <div id="home-error" role="alert"></div>
+      <div id="home-content"></div>
+    </section>
+
     <section id="finance-panel" class="page" data-page="finances" aria-labelledby="finance-title" hidden>
       <header class="page-header"><div><h1 id="finance-title" tabindex="-1">Finances</h1>
         <p class="page-subtitle">Computed exactly from imported and reviewed records. Nothing here is estimated by a model.</p></div>
@@ -52,8 +64,9 @@
         <section class="panel"><h2>Refunds</h2><ul id="finance-refunds" class="finance-list"></ul></section>
         <section class="panel"><h2>Unmatched receipts</h2><ul id="finance-unmatched" class="finance-list"></ul><p id="finance-unmatched-note" class="muted small"></p></section>
       </div>
-      <section class="panel"><h2>Transactions this month</h2>
+      <section class="panel" id="finance-transaction-panel"><h2>Transactions</h2><p id="finance-filter-note" class="muted small"></p>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Posted</th><th scope="col">Account</th><th scope="col">Description</th><th scope="col">Type</th><th scope="col" class="numeric">Amount</th><th scope="col">Receipt</th><th scope="col">Review</th><th scope="col">Category</th></tr></thead><tbody id="finance-transactions"></tbody></table></div>
+        <div class="pagination"><button id="finance-previous" type="button">Previous</button><span id="finance-page-count"></span><button id="finance-next" type="button">Next</button></div>
       </section>
     </section>
 
@@ -73,7 +86,7 @@
       <div class="file-browser">
         <nav id="folder-tree" aria-label="Document folders"><p class="muted small">Configure your directories in Settings to begin.</p></nav>
         <div class="file-pane">
-          <div class="file-toolbar"><h2 id="folder-breadcrumb">All documents</h2><p id="document-count" aria-live="polite"></p></div>
+          <div class="file-toolbar"><h2 id="folder-breadcrumb">All documents</h2><p id="document-count" aria-live="polite"></p><button id="empty-trash" type="button" class="danger-text" hidden>Empty trash…</button></div>
           <p id="folder-description" class="muted small"></p>
           <div id="selection-bar" class="selection-bar" role="region" aria-label="Selected documents" hidden>
             <span id="selection-count"></span>

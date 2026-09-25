@@ -24,7 +24,7 @@ from .vision import VisionConfig
 
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "style.css": "text/css"}
+          "library.js": "text/javascript", "finance.js": "text/javascript", "home.js": "text/javascript", "style.css": "text/css"}
 
 
 class SettingsInput(BaseModel):
@@ -55,6 +55,11 @@ class ReceiptInput(BaseModel):
 class BatchInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     force: bool = False
+
+
+class EmptyTrashInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    confirmed: Literal[True]
 
 
 class ReceiptBatchInput(BatchInput):
@@ -273,6 +278,14 @@ def create_app(control: Path | None = None, token: str | None = None,
     def household_settings(value: HouseholdConfig):
         return manager().configure_household(value)
 
+    @app.get("/api/dashboard")
+    def home_dashboard(month: str = Query(pattern=r"^\d{4}-\d{2}$"), months: int = Query(6, ge=6, le=12),
+                       currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
+        from .dashboard import dashboard
+        owner = manager()
+        with owner.mutex:
+            return dashboard(owner.require(False), owner.source, month, months, currency, owner.household.home_currency)
+
     @app.put("/api/reasoning-settings")
     def reasoning_settings(value: ReasoningConfig):
         return manager().configure_reasoning(value)
@@ -480,6 +493,10 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.put("/api/documents/{document_id}/folder")
     def move_document(document_id: int, value: MoveInput):
         return manager().library_action(document_id, value.expected_hash, "move", value.folder.value)
+
+    @app.post("/api/trash/empty")
+    def empty_trash(value: EmptyTrashInput):
+        return manager().empty_trash()
 
     @app.post("/api/documents/{document_id}/trash")
     def trash_document(document_id: int, value: DeleteInput):

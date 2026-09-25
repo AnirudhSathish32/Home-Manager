@@ -3,6 +3,7 @@
 
 // Icon paths adapted from Lucide (ISC License, https://lucide.dev). Drawn inline so the CSP needs no extra sources.
 const ICONS = {
+  home: ["m3 10 9-7 9 7", "M5 9v12h14V9", "M9 21v-8h6v8"],
   check: ["M20 6 9 17l-5-5"],
   "check-circle": ["circle", "m9 12 2 2 4-4"],
   alert: ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],

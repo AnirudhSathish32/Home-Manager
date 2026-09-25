@@ -1,6 +1,18 @@
 "use strict";
 // Finances workspace: every figure comes from deterministic server tools as exact display text.
 const tool = (name, args = {}) => api(`/api/finance/tools/${name}`, {method:"POST", body:JSON.stringify(args)});
+let financeScope = {}, financeOffset = 0;
+async function openFinanceRoute(params) {
+  financeScope = {}; financeOffset = 0;
+  for (const key of ["start", "end", "currency", "metric", "as_of"]) if (params.get(key)) financeScope[key] = params.get(key);
+  if (params.get("categories")) {
+    try { const values = JSON.parse(params.get("categories")); if (Array.isArray(values) && values.every(value => typeof value === "string")) financeScope.categories = values; } catch {}
+  }
+  if (financeScope.start) $("finance-month").value = financeScope.start.slice(0, 7);
+  await loadFinance();
+  const target = {transactions: "finance-transaction-panel", unmatched: "finance-unmatched", review: "finance-queue", bills: "finance-bills"}[params.get("section")];
+  if (target) { $(target).scrollIntoView({block: "start"}); $(target).setAttribute("tabindex", "-1"); $(target).focus({preventScroll: true}); }
+}
 
 function monthRange(value) {
   const [year, month] = value.split("-").map(Number);
@@ -86,14 +98,17 @@ async function loadFinance() {
   if (!configured) return;
   if (!$("finance-month").value) $("finance-month").value = new Date().toISOString().slice(0, 7);
   const load = ++financeLoad;  // A newer month selection supersedes slower in-flight requests.
-  const period = monthRange($("finance-month").value), before = monthRange(previousMonth($("finance-month").value));
+  const period = financeScope.start && financeScope.end ? {start: financeScope.start, end: financeScope.end} : monthRange($("finance-month").value), before = monthRange(previousMonth($("finance-month").value));
+  const transactionScope = {...period, include_pending: !financeScope.metric, limit: 200, offset: financeOffset};
+  for (const key of ["currency", "metric", "categories"]) if (financeScope[key]) transactionScope[key] = financeScope[key];
+  const inCurrency = row => !financeScope.currency || row.currency === financeScope.currency;
   const [spending, categories, comparison, cashflow, accounts, queue, bills, recurring, refunds, transactions, unmatched] = await Promise.all([
     tool("get_spending", period), tool("get_spending_by_category", period), tool("compare_periods", {first: before, second: period}),
-    tool("calculate_cashflow", period), tool("get_accounts"), tool("review_queue"), tool("get_upcoming_bills", {as_of: period.start, days: 45}),
-    tool("get_recurring_obligations"), tool("get_refunds"), tool("get_transactions", {start: period.start, end: period.end, include_pending: true, limit: 200}),
+    tool("calculate_cashflow", period), tool("get_accounts"), tool("review_queue"), tool("get_upcoming_bills", {as_of: financeScope.as_of || period.start, days: financeScope.as_of ? 30 : 45}),
+    tool("get_recurring_obligations"), tool("get_refunds"), tool("get_transactions", transactionScope),
     tool("get_unmatched_receipts", period)]);
   if (load !== financeLoad) return;
-  financeList("finance-spending", spending.by_currency, row => {
+  financeList("finance-spending", spending.by_currency.filter(inCurrency), row => {
     const change = comparison.by_currency.find(item => item.currency === row.currency);
     const flow = cashflow.by_currency.find(item => item.currency === row.currency);
     const li = element("li", `${row.net_spending.display} net spending (${row.spending.display} spent, ${row.refunds.display} refunded, ${row.transactions} transactions)`);
@@ -101,10 +116,10 @@ async function loadFinance() {
     if (flow) li.appendChild(element("small", `Cash flow: in ${flow.inflow.display}, out ${flow.outflow.display}, net ${flow.net.display}.`));
     return li;
   }, "No counted spending in this month.");
-  for (const pending of spending.pending_review) $("finance-spending").appendChild(element("li", `${pending.amount.display} across ${pending.transactions} extracted transactions awaits your review and is not counted.`, "item-warning"));
+  for (const pending of spending.pending_review.filter(inCurrency)) $("finance-spending").appendChild(element("li", `${pending.amount.display} across ${pending.transactions} extracted transactions awaits your review and is not counted.`, "item-warning"));
   $("finance-coverage").textContent = `${spending.excluded_transfers_and_card_payments} transfers and card payments excluded. Coverage: ` +
     (spending.coverage.map(item => `${item.display_name} ${item.transactions ? `${item.first} to ${item.last}` : "no data this month"}`).join("; ") || "no accounts yet") + ". " + spending.notes.join(" ");
-  financeList("finance-categories", categories.categories, row => element("li", `${row.category}: ${row.spending.display} (${row.transactions})`), "No categorized spending.");
+  financeList("finance-categories", categories.categories.filter(inCurrency), row => element("li", `${row.category}: ${row.spending.display} (${row.transactions})`), "No categorized spending.");
   financeList("finance-accounts", accounts.accounts, account => {
     const li = element("li", `${account.display_name} · ${account.currency}`);
     li.appendChild(element("small", account.balance ? `${account.balance.meaning} ${account.balance.display} as of ${account.balance.as_of} (${account.balance.days_old} days old)` : "No statement balance; a current balance is not estimated."));
@@ -115,19 +130,24 @@ async function loadFinance() {
   const queueItems = [...queue.records.map(record => ({entry: "record", ...record})), ...queue.links.map(link => ({entry: "link", ...link})),
                       ...queue.issues.map(issue => ({entry: "issue", ...issue}))];
   financeList("finance-queue", queueItems, renderReviewEntry, "Nothing needs review.");
-  financeList("finance-unmatched", unmatched.receipts, unmatchedItem, "Every receipt this month matches a transaction.");
-  if (unmatched.undated.length) {
+  financeList("finance-unmatched", unmatched.receipts.filter(inCurrency), unmatchedItem, "No unmatched dated receipts in this period.");
+  if (unmatched.undated.filter(inCurrency).length) {
     $("finance-unmatched").appendChild(element("li", "Without a purchase date (add one with Edit details):", "muted small"));
-    for (const receipt of unmatched.undated) $("finance-unmatched").appendChild(unmatchedItem(receipt));
+    for (const receipt of unmatched.undated.filter(inCurrency)) $("finance-unmatched").appendChild(unmatchedItem(receipt));
   }
-  $("finance-unmatched-note").textContent = (unmatched.by_currency.length ? `${unmatched.by_currency.map(row => `${row.total.display} in ${row.receipts} receipt${row.receipts === 1 ? "" : "s"}`).join("; ")}. ` : "")
+  $("finance-unmatched-note").textContent = (unmatched.by_currency.filter(inCurrency).length ? `${unmatched.by_currency.filter(inCurrency).map(row => `${row.total.display} in ${row.receipts} receipt${row.receipts === 1 ? "" : "s"}`).join("; ")}. ` : "")
     + "Not counted in spending: a receipt counts through the transaction it matches.";
-  financeList("finance-bills", bills.bills, bill => element("li", `${bill.provider || "Bill"} due ${bill.due_date}: ${bill.amount_due ? bill.amount_due.display : "amount unresolved"} · ${bill.payment_state.replaceAll("_", " ")}`), "No bills due soon.");
+  financeList("finance-bills", bills.bills.filter(inCurrency), bill => element("li", `${bill.provider || "Bill"} due ${bill.due_date}: ${bill.amount_due ? bill.amount_due.display : "amount unresolved"} · ${bill.payment_state.replaceAll("_", " ")}`), "No bills due soon.");
   financeList("finance-recurring", recurring.obligations, row => element("li", `${row.merchant}: ${row.expected_amount.display} ${row.frequency}, next about ${row.next_due_date} (${row.status})`), "No recurring payments detected.");
   financeList("finance-refunds", [...refunds.posted_credits.map(row => `${row.posted_date} ${row.description_raw}: ${row.amount.display}${row.purchase_id ? " · linked to its purchase" : ""}`),
                                   ...refunds.refund_evidence.map(row => `${row.merchant || "Refund receipt"} ${row.purchase_date || ""}: ${row.amount.display} · ${row.settlement.replaceAll("_", " ")}`)],
               text => element("li", text), "No refunds.");
   $("finance-transactions").replaceChildren();
+  $("finance-filter-note").replaceChildren(document.createTextNode([`${period.start} – ${period.end}`, financeScope.currency, financeScope.metric,
+    financeScope.categories?.join(", ")].filter(Boolean).join(" · ") + ". "), homeLink("Clear filters", "#/finances"));
+  $("finance-page-count").textContent = `${transactions.total_matching ? financeOffset + 1 : 0}–${financeOffset + transactions.transactions.length} of ${transactions.total_matching}`;
+  $("finance-previous").disabled = !financeOffset;
+  $("finance-next").disabled = financeOffset + transactions.transactions.length >= transactions.total_matching;
   for (const row of transactions.transactions) {
     const tr = document.createElement("tr");
     cell(tr, "").appendChild(dateDisplay(row.posted_date)); cell(tr, row.account); cell(tr, row.description_raw); cell(tr, statusLabel(row.transaction_type));
@@ -144,7 +164,15 @@ async function loadFinance() {
     $("finance-transactions").appendChild(tr);
   }
 }
-$("finance-month").addEventListener("change", () => loadFinance().catch(error => notice(error, true)));
+$("finance-month").addEventListener("change", () => {
+  if (!$("finance-month").value) return;
+  const next = `#/finances?${new URLSearchParams(monthRange($("finance-month").value))}`;
+  if (location.hash === next) { financeScope = {}; financeOffset = 0; loadFinance().catch(error => notice(error, true)); }
+  else location.hash = next;
+});
+for (const [id, delta] of [["finance-previous", -200], ["finance-next", 200]]) $(id).addEventListener("click", () => {
+  financeOffset = Math.max(0, financeOffset + delta); loadFinance().catch(error => notice(error, true));
+});
 $("reconcile").addEventListener("click", () => api("/api/finance/reconcile", {method:"POST", body:"{}"})
   .then(result => { notice(`Reconciliation proposed ${result.receipt_links} receipt links, ${result.transfers} transfers and ${result.refunds} refunds; ${result.open_issues} ambiguous cases need you.`); return loadFinance(); })
   .catch(error => notice(error, true)));

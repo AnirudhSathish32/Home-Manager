@@ -1,14 +1,18 @@
 "use strict";
 // Application shell: hash routes select a page; the URL keeps the view across reloads and Back.
 const ROUTES = {
-  finances: {title: "Finances", show: () => loadFinance()},
-  documents: {title: "Documents", show: () => configured ? loadDocuments() : null},
+  home: {title: "Home", show: () => loadHome()},
+  finances: {title: "Finances", show: route => openFinanceRoute(route.params)},
+  documents: {title: "Documents", show: route => {
+    if (route.params.get("status")) { activeStatus = route.params.get("status"); activeFolder = "all"; docOffset = 0; selection.clear(); }
+    return configured ? loadDocuments() : null;
+  }},
   // #/documents/ID[?version=HASH] opens the inspector over the preserved list state.
   document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version")) : null},
   processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory()]) : null},
   settings: {title: "Settings", show: () => null},
 };
-const DEFAULT_ROUTE = "documents";
+const DEFAULT_ROUTE = "home";
 let currentRoute = null, listScroll = 0, openedFromList = false;
 
 for (const link of document.querySelectorAll(".nav-link[data-icon]")) {

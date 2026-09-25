@@ -246,6 +246,7 @@ async function poll() {
       const wasBusy = anyBusy(); setBusy(settings); controls();
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
       if (anyBusy() || wasBusy) await refresh();
+      if (wasBusy && !anyBusy() && currentRoute?.name === "home") await loadHome();
       if (typeof pollReceipt === "function") await pollReceipt();
     }
     if (pollFailure) { pollFailure = null; $("app-alert").replaceChildren(); }

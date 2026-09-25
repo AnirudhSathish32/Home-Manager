@@ -108,6 +108,9 @@ class TransactionsInput(ToolInput):
     statuses: list[Literal[*STATUS_FILTERS]] | None = Field(default=None, min_length=1, max_length=len(STATUS_FILTERS),
                                                            description="Defaults to counted rows, plus pending ones when include_pending is true.")
     include_pending: bool = False
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    categories: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    metric: Literal["spending", "inflow", "cashflow", "categories"] | None = None
     has_receipt: bool | None = None
     sort: Literal[*TRANSACTION_SORTS] = "date_desc"
     offset: int = Field(default=0, ge=0, le=1_000_000)
@@ -204,6 +207,17 @@ class FinanceTools:
         if value.category:
             clauses.append("coalesce(t.category,'uncategorized')=?")
             params.append(" ".join(value.category.split()).lower())
+        if value.currency:
+            clauses.append("t.currency=?")
+            params.append(currency_code(value.currency))
+        if value.categories:
+            clauses.append(f"coalesce(t.category,'uncategorized') IN ({','.join('?' * len(value.categories))})")
+            params += value.categories
+        if value.metric:
+            spending = f"t.transaction_type IN ({SPENDING_TYPES},'refund')"
+            inflow = "(t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other'))"
+            clauses.append({"spending": spending, "inflow": inflow, "cashflow": f"({spending} OR {inflow})",
+                            "categories": f"t.transaction_type IN ({SPENDING_TYPES})"}[value.metric])
         if value.transaction_types:
             clauses.append(f"t.transaction_type IN ({','.join('?' * len(value.transaction_types))})")
             params += value.transaction_types
