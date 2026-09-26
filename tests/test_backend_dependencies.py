@@ -161,7 +161,7 @@ def test_resolving_ambiguous_matches_and_reconciliation_history(reconciled):  # 
     assert [(run["trigger"], run["status"], run["open_issues"]) for run in history] == [("manual", "succeeded", 0), ("import", "succeeded", 1)]
     with store.connection() as db:
         states = dict(db.execute(store.library_query() + "SELECT relative_path,reconciliation_status FROM library").fetchall())
-    assert states["2026/09/receipt.png"] == "proposed" and states["2026/09/bill.png"] == "matched" and states["2026/09/export.csv"] is None
+    assert states["receipt.png"] == "proposed" and states["bill.png"] == "matched" and states["export.csv"] is None
 
 
 def test_leaving_a_record_unmatched_is_respected_by_later_passes(reconciled):  # B15
@@ -175,7 +175,7 @@ def test_leaving_a_record_unmatched_is_respected_by_later_passes(reconciled):  #
 def test_job_history_unifies_scans_reconciliation_and_backups(tmp_path, reconciled):  # B11
     store, *_ = reconciled
     history = store.job_history()
-    assert {item["kind"] for item in history} == {"source_scan", "reconciliation"}
+    assert {item["kind"] for item in history} == {"inbox_capture", "reconciliation"}
     assert all(set(item) == {"kind", "id", "status", "started_at", "finished_at", "document_id", "error"} for item in history)
     assert [item["kind"] for item in store.job_history(kinds=["reconciliation"])] == ["reconciliation"]
     with pytest.raises(ValueError):
@@ -195,19 +195,16 @@ def test_connection_check_lists_models_without_sending_content(local_model):  # 
 
 
 def test_backup_is_complete_verified_and_restores_into_a_new_library(tmp_path):  # B13
-    source = tmp_path / "source" / "2026" / "09"
-    source.mkdir(parents=True)
-    (source / "export.csv").write_text("date,amount\n2026-09-01,10.00\n")
     app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
-        client.put("/api/settings", json={"source_directory": str(tmp_path / "source"), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
         manager = app.state.manager
+        (manager.store.library.inbox / "export.csv").write_text("date,amount\n2026-09-01,10.00\n")
         (manager.store.library.inbox / "dropped.csv").write_text("date,amount\n2026-09-02,5.00\n")
         client.post("/api/inbox-scans", json={}); manager.future.result(timeout=30)
-        client.post("/api/scans", json={}); manager.future.result(timeout=30)
         assert client.get("/api/documents").json()["total"] == 2
-        # Backups never go inside the library, a source folder or the application's folders.
-        for inside in (tmp_path / "managed" / "Library", tmp_path / "source", tmp_path / "control"):
+        # Backups never go inside the library or the application's folders.
+        for inside in (tmp_path / "managed" / "Library", tmp_path / "control"):
             assert client.post("/api/backups", json={"destination": str(inside)}).status_code == 400
         destination = tmp_path / "backups"
         destination.mkdir()
@@ -228,7 +225,7 @@ def test_backup_is_complete_verified_and_restores_into_a_new_library(tmp_path): 
     # The restored library opens, and Inbox documents follow it to its new location.
     store = Store(tmp_path / "restored")
     try:
-        assert store.documents(tmp_path / "source")["total"] == 2
+        assert store.documents()["total"] == 2
         with store.connection() as db:
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
@@ -288,11 +285,9 @@ def test_assistant_answers_from_tool_results_and_flags_unsupported_figures(recon
 
 
 def test_new_endpoints_are_typed_and_wired(tmp_path, local_model):
-    source = tmp_path / "source"
-    source.mkdir()
     app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
         test = client.post("/api/model-connection-tests", json={"base_url": local_model["config"].base_url, "model": "synthetic-reasoning"}).json()
         assert test["model_listed"] is True
         assert client.post("/api/model-connection-tests", json={"base_url": "http://example.com/v1", "model": "x"}).status_code == 422

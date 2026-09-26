@@ -1,10 +1,9 @@
-"""D1 discovery and D2 capture. No parsing, OCR, model calls or source writes."""
+"""Inbox discovery and capture. No parsing, OCR or model calls; Inbox files are read, never written."""
 
 from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
-import re
 import stat
 import time
 import uuid
@@ -27,120 +26,88 @@ class Scanner:
         self.store = store
         self.limits = limits or ScanLimits()
 
-    def run(self, job: str, source: Path, year=None, month=None, *, inbox=False):
+    def run(self, job: str):
+        """Capture every supported file placed directly in Library/Inbox."""
         self.store.job_state(job, "running")
         try:
-            if inbox and source != self.store.library.inbox:
-                raise PathError("Inbox scans must use the app-owned Library/Inbox.")
-            self._run(job, source, year, month, inbox=inbox)
+            self._run(job, self.store.library.inbox)
         except (PathError, RuntimeError) as exc:
             self.store.job_state(job, "failed", str(exc))
         except Exception:
             # Do not log document contents or platform error paths to console.
             self.store.job_state(job, "failed", "Scan stopped unexpectedly. Completed captures are retained; check access/storage and rescan.")
 
-    def _run(self, job: str, source: Path, year=None, month=None, *, inbox=False):
-        safe_path(source)
-        if not source.is_dir():
-            self.store.job_state(job, "failed", "Source root is unavailable. No files marked missing.")
-            return
-        selected = source
-        if year is not None:
-            selected /= f"{year:04d}"
-        if month is not None:
-            selected /= f"{month:02d}"
-        safe_path(selected)
-        if selected.exists() and not selected.is_dir():
-            self.store.job_state(job, "failed", "Selected year/month is not a directory. No files marked missing.")
+    def _run(self, job: str, inbox: Path):
+        safe_path(inbox)
+        if not inbox.is_dir():
+            self.store.job_state(job, "failed", "Library/Inbox is unavailable. No files marked missing.")
             return
         candidates = []
         complete, issues, count = True, False, 0
-        pending = [selected] if selected.exists() else []
-        if not pending:
-            self.store.event(job, str(selected.relative_to(source)), "absent_folder", "Selected folder does not exist; prior occurrences in this scope will be marked missing.")
-        while pending:
-            directory = pending.pop()
-            try:
-                safe_path(directory)
-                with os.scandir(directory) as entries:
-                    for entry in entries:
-                        count += 1
-                        if count > self.limits.max_entries:
-                            raise RuntimeError("Scan entry limit reached. Select a smaller year/month scope.")
-                        path = Path(entry.path)
-                        parts = path.relative_to(source).parts
-                        relative = "/".join(parts)
-                        try:
-                            if is_link(path):
-                                self.store.observe(job, source, relative, "rejected")
-                                self.store.event(job, relative, "rejected", "Links and reparse points are not followed.")
-                                complete, issues = False, True
-                                continue
-                            # Windows DirEntry.stat omits device/inode identity.
-                            # Path.stat matches fstat on our later capture handle.
-                            info = path.stat(follow_symlinks=False)
-                            if stat.S_ISDIR(info.st_mode):
-                                if inbox:
-                                    self.store.event(job, relative, "invalid_folder", "Place Inbox documents directly in Library/Inbox, not subfolders.")
-                                    issues = True
-                                    continue
-                                valid = (len(parts) > 2 or
-                                         (len(parts) == 1 and re.fullmatch(r"[1-9][0-9]{3}", parts[0])) or
-                                         (len(parts) == 2 and re.fullmatch(r"0[1-9]|1[0-2]", parts[1])))
-                                if valid:
-                                    pending.append(path)
-                                else:
-                                    self.store.event(job, relative, "invalid_folder", "Expected YYYY/MM. This folder was not scanned.")
-                                    issues = True
-                                continue
-                            # Previously captured bytes remain available but are not
-                            # represented as the verified current source until capture succeeds.
-                            self.store.observe(job, source, relative, "not_captured")
-                            if not stat.S_ISREG(info.st_mode):
-                                self.store.event(job, relative, "rejected", "Only regular files are supported.")
-                                issues = True
-                                continue
-                            lower = path.name.lower()
-                            if lower.startswith("~$") or lower.endswith((".tmp", ".part", ".crdownload", ".download")):
-                                self.store.event(job, relative, "ignored", "Temporary/download/lock file.")
-                                continue
-                            if not inbox and len(parts) < 3:
-                                self.store.event(job, relative, "invalid_folder", "Place files beneath YYYY/MM.")
-                                issues = True
-                                continue
-                            if extension(path) not in SUPPORTED:
-                                self.store.event(job, relative, "unsupported", "Capture supports " + ", ".join(sorted(SUPPORTED)) + " files. No contents were read.")
-                                issues = True
-                                continue
-                            if not 0 < info.st_size <= self.limits.max_file_bytes:
-                                self.store.event(job, relative, "rejected", "Empty file or file exceeds the capture size limit.")
-                                issues = True
-                                continue
-                            candidates.append((path, relative, info, 0 if inbox else int(parts[0]), 0 if inbox else int(parts[1])))
-                        except (OSError, PathError):
-                            self.store.observe(job, source, relative, "unavailable")
-                            self.store.event(job, relative, "unavailable", "Cannot inspect this entry. Check permissions or file locks.")
+        try:
+            with os.scandir(inbox) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > self.limits.max_entries:
+                        raise RuntimeError("Scan entry limit reached. Move some files out of Inbox and scan again.")
+                    path = Path(entry.path)
+                    relative = path.name
+                    try:
+                        if is_link(path):
+                            self.store.observe(job, relative, "rejected")
+                            self.store.event(job, relative, "rejected", "Links and reparse points are not followed.")
                             complete, issues = False, True
-            except OSError:
-                relative = directory.relative_to(source).as_posix()
-                self.store.event(job, relative, "unavailable", "Cannot enumerate directory. No missing-file inference for this scan.")
-                complete, issues = False, True
+                            continue
+                        # Windows DirEntry.stat omits device/inode identity.
+                        # Path.stat matches fstat on our later capture handle.
+                        info = path.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            self.store.event(job, relative, "invalid_folder", "Place Inbox documents directly in Library/Inbox, not subfolders.")
+                            issues = True
+                            continue
+                        # Previously captured bytes remain available but are not
+                        # represented as the verified current file until capture succeeds.
+                        self.store.observe(job, relative, "not_captured")
+                        if not stat.S_ISREG(info.st_mode):
+                            self.store.event(job, relative, "rejected", "Only regular files are supported.")
+                            issues = True
+                            continue
+                        lower = path.name.lower()
+                        if lower.startswith("~$") or lower.endswith((".tmp", ".part", ".crdownload", ".download")):
+                            self.store.event(job, relative, "ignored", "Temporary/download/lock file.")
+                            continue
+                        if extension(path) not in SUPPORTED:
+                            self.store.event(job, relative, "unsupported", "Capture supports " + ", ".join(sorted(SUPPORTED)) + " files. No contents were read.")
+                            issues = True
+                            continue
+                        if not 0 < info.st_size <= self.limits.max_file_bytes:
+                            self.store.event(job, relative, "rejected", "Empty file or file exceeds the capture size limit.")
+                            issues = True
+                            continue
+                        candidates.append((path, relative, info))
+                    except (OSError, PathError):
+                        self.store.observe(job, relative, "unavailable")
+                        self.store.event(job, relative, "unavailable", "Cannot inspect this entry. Check permissions or file locks.")
+                        complete, issues = False, True
+        except OSError:
+            self.store.event(job, "", "unavailable", "Cannot list Library/Inbox. No missing-file inference for this scan.")
+            complete, issues = False, True
         # One stability interval for the inventory, not one delay per document.
         if candidates:
             time.sleep(self.limits.stability_seconds)
-        for path, relative, before, file_year, file_month in candidates:
+        for path, relative, before in candidates:
             try:
-                self.capture(job, source, path, relative, before, file_year, file_month)
+                self.capture(job, path, relative, before)
             except (OSError, PathError) as exc:
-                self.store.observe(job, source, relative, "unavailable")
+                self.store.observe(job, relative, "unavailable")
                 message = str(exc) if isinstance(exc, CaptureError) else "File is locked, changed, or inaccessible; or storage is unavailable. Rescan after checking it."
                 self.store.event(job, relative, "deferred", message)
                 issues = True
         if complete:
-            self.store.mark_missing(job, source, year, month)
+            self.store.mark_missing(job)
         self.store.job_state(job, "partial" if issues else "completed")
 
-    def capture(self, job, source, path, relative, before, year, month):
+    def capture(self, job, path, relative, before):
         safe_path(path)
         if signature(before) != signature(path.stat()):
             raise CaptureError("File changed during the stability interval; rescan when copying is finished.")
@@ -170,15 +137,15 @@ class Scanner:
                     raise CaptureError("File contents changed while being captured; rescan.")
                 safe_path(path)
                 if signature(before) != signature(path.stat()):
-                    raise CaptureError("Source path changed while being captured; rescan.")
+                    raise CaptureError("The Inbox file changed while being captured; rescan.")
             digest = hasher.hexdigest()
             if not self.store.blob_path(digest).exists() and self.store.used_bytes() + size > self.limits.max_store_bytes:
-                raise CaptureError("Managed evidence quota reached (5 GiB by default); source left untouched.")
-            self.store.prepare(capture_id, job, source, relative, year, month, digest, size, before.st_mtime_ns)
+                raise CaptureError("Managed evidence quota reached (5 GiB by default); the Inbox file was left untouched.")
+            self.store.prepare(capture_id, job, relative, digest, size, before.st_mtime_ns)
             prepared = True
             self.store.publish(capture_id)
             try:
-                self.store.library.ensure_capture(source, relative, digest)
+                self.store.library.ensure_capture(relative, digest)
             except (ValueError, OSError, RuntimeError):
                 self.store.event(job, relative, "organization_failed", "Captured evidence is safe; library organization needs attention or retry.", digest)
         finally:

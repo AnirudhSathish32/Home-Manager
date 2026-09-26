@@ -12,14 +12,14 @@ from test_managed_library import library, scan
 
 
 def capture(store, source, name, content=b"date,amount\n2026-09-24,25.00\n"):
-    original = source / "2026" / "09" / name
+    original = source / name
     original.write_bytes(content)
     scan(store, source)
-    return next(doc for doc in store.documents(source)["items"] if doc["relative_path"].endswith(name))
+    return next(doc for doc in store.documents()["items"] if doc["relative_path"].endswith(name))
 
 
 def trash(store, source, doc):
-    store.library_action(source, doc["id"], doc["current_hash"], "trash")
+    store.library_action(doc["id"], doc["current_hash"], "trash")
 
 
 def test_empty_trash_preserves_live_duplicates_and_removes_all_versions(library):
@@ -30,19 +30,18 @@ def test_empty_trash_preserves_live_duplicates_and_removes_all_versions(library)
     first = capture(store, source, "first.csv", b"date,amount\n2026-09-25,99.00\n")
     new_path = store.library.path(first["managed_path"])
     trash(store, source, first)
-    assert empty(store, source) == {"deleted": 1, "cleanup_pending": 0}
+    assert empty(store) == {"deleted": 1, "cleanup_pending": 0}
     assert not old_path.exists() and not new_path.exists()
     assert store.blob_path(second["current_hash"]).exists()
     assert not store.blob_path(first["current_hash"]).exists()
-    assert store.documents(source)["total"] == 1
-    assert store.documents(source, folder="trash")["total"] == 0
-    assert (source / "2026" / "09" / "first.csv").exists()
+    assert store.documents()["total"] == 1
+    assert store.documents(folder="trash")["total"] == 0
     with store.connection() as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     trash(store, source, second)
-    assert empty(store, source)["deleted"] == 1
+    assert empty(store)["deleted"] == 1
     assert not store.blob_path(second["current_hash"]).exists()
-    assert empty(store, source)["deleted"] == 0
+    assert empty(store)["deleted"] == 0
 
 
 def test_empty_trash_removes_readings_artifacts_and_ledger(library):
@@ -62,7 +61,7 @@ def test_empty_trash_removes_readings_artifacts_and_ledger(library):
         db.execute("INSERT INTO financial_evidence_links(record_type,record_id,document_id,blob_hash,parse_run_id,source_key,locator_json,created_at) VALUES('receipt',?,?,?,?,?,'{}',?)",
                    (receipt_id, doc["id"], doc["current_hash"], run_id, "test", now()))
     trash(store, source, doc)
-    assert empty(store, source)["deleted"] == 1
+    assert empty(store)["deleted"] == 1
     assert not folder.exists()
     with store.connection() as db:
         for table in ("receipts", "receipt_items", "financial_evidence_links", "parse_runs", "versions", "occurrences", "trash_cleanup"):
@@ -80,14 +79,14 @@ def test_empty_trash_keeps_shared_imported_transactions(library):
     ledger.import_transactions(first["id"], account["id"])
     ledger.import_transactions(second["id"], account["id"])
     trash(store, source, first)
-    empty(store, source)
+    empty(store)
     with store.connection() as db:
         transaction = db.execute("SELECT * FROM transactions").fetchone()
         assert transaction["source_document_id"] == second["id"]
         assert db.execute("SELECT count(*) FROM financial_evidence_links").fetchone()[0] > 0
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     trash(store, source, second)
-    empty(store, source)
+    empty(store)
     with store.connection() as db:
         assert not db.execute("SELECT * FROM transactions").fetchall()
 
@@ -120,7 +119,7 @@ def test_deleting_statement_preserves_transaction_supported_by_csv(library, impo
         assert before["statement_id"] == statement_id
         assert db.execute("SELECT count(*) FROM financial_evidence_links WHERE record_type='transaction'").fetchone()[0] == 2
     trash(store, source, statement)
-    assert empty(store, source) == {"deleted": 1, "cleanup_pending": 0}
+    assert empty(store) == {"deleted": 1, "cleanup_pending": 0}
     transaction = ledger.record("transaction", before["id"])
     assert transaction["source_document_id"] == csv["id"]
     assert transaction["statement_id"] is None
@@ -131,7 +130,7 @@ def test_deleting_statement_preserves_transaction_supported_by_csv(library, impo
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     # Removing the last independent source still deletes the transaction.
     trash(store, source, csv)
-    empty(store, source)
+    empty(store)
     with store.connection() as db:
         assert not db.execute("SELECT * FROM transactions").fetchall()
 
@@ -145,7 +144,7 @@ def test_duplicate_statement_keeps_transactions_and_review_propagation(library, 
     statement_id = publish_test_statement(ledger, first)
     transaction_id = ledger.record("statement", statement_id)["transactions"][0]["id"]
     trash(store, source, first)
-    empty(store, source)
+    empty(store)
     retained = ledger.record("statement", statement_id)
     assert retained["document_id"] == duplicate["id"]
     assert [row["id"] for row in retained["transactions"]] == [transaction_id]
@@ -155,7 +154,7 @@ def test_duplicate_statement_keeps_transactions_and_review_propagation(library, 
     with store.connection() as db:
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
     trash(store, source, duplicate)
-    empty(store, source)
+    empty(store)
     with store.connection() as db:
         assert not db.execute("SELECT * FROM statements").fetchall()
         assert not db.execute("SELECT * FROM transactions").fetchall()
@@ -170,8 +169,8 @@ def test_edited_files_block_deletion_and_failed_cleanup_can_retry(library, monke
     path.write_bytes(b"edited")
     trash(store, source, doc)
     with pytest.raises(ValueError, match="edited"):
-        empty(store, source)
-    assert store.documents(source, folder="trash")["total"] == 1
+        empty(store)
+    assert store.documents(folder="trash")["total"] == 1
     path.write_bytes(original)
     unlink = Path.unlink
     def locked(self, *args, **kwargs):
@@ -179,7 +178,7 @@ def test_edited_files_block_deletion_and_failed_cleanup_can_retry(library, monke
             raise PermissionError("open elsewhere")
         return unlink(self, *args, **kwargs)
     monkeypatch.setattr(Path, "unlink", locked)
-    assert empty(store, source) == {"deleted": 1, "cleanup_pending": 1}
+    assert empty(store) == {"deleted": 1, "cleanup_pending": 1}
     assert path.exists()
     monkeypatch.setattr(Path, "unlink", unlink)
     assert cleanup(store) == 0
@@ -188,10 +187,9 @@ def test_edited_files_block_deletion_and_failed_cleanup_can_retry(library, monke
 
 def test_empty_trash_api_requires_confirmation(tmp_path):
     app = create_app(tmp_path / "control", "test-token", limits=ScanLimits(stability_seconds=0))
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        app.state.manager.configure(str(source), str(tmp_path / "managed"))
+        app.state.manager.configure(str(tmp_path / "managed"))
+        source = app.state.manager.store.library.inbox
         doc = capture(app.state.manager.store, source, "test.csv")
         trash(app.state.manager.store, source, doc)
         assert client.post("/api/trash/empty", json={"confirmed": True}).status_code == 401

@@ -15,14 +15,6 @@ def test_vision_rejects_interpretation_fields():
 
 
 def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_model):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    image = month / "receipt.png"
-    make_receipt(image)
-    original_bytes = image.read_bytes()
-    (month / "copy.png").write_bytes(original_bytes)
-    (month / "statement.csv").write_text("date,amount\n2026-09-22,25\n")
     control = tmp_path / "control"
     app = create_app(control, "local-test", limits=ScanLimits(stability_seconds=0))
     auth = {"Authorization": "Bearer local-test"}
@@ -30,22 +22,28 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         assert client.get("/api/folders").status_code == 401
         assert client.post("/api/documents/1/trash", json={}).status_code == 401
         client.headers.update(auth)
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        month = app.state.manager.store.library.inbox
+        image = month / "receipt.png"
+        make_receipt(image)
+        original_bytes = image.read_bytes()
+        (month / "copy.png").write_bytes(original_bytes)
+        (month / "statement.csv").write_text("date,amount\n2026-09-22,25\n")
         client.put("/api/vision-settings", json=local_model["config"].model_dump())
-        scan = client.post("/api/scans", json={}).json()["job_id"]
+        scan = client.post("/api/inbox-scans", json={}).json()["job_id"]
         manager = app.state.manager
         manager.future.result(timeout=30)
         job = client.get(f"/api/scans/{scan}").json()
         assert job["status"] == "completed"
         assert job["organization_status"] == "completed", job
         assert len(local_model["requests"]) == 1
-        docs = client.get("/api/documents", params={"folder": "Unfiled"}).json()
+        docs = client.get("/api/documents", params={"folder": "Inbox"}).json()  # Unclassified Inbox documents stay in Inbox.
         assert docs["total"] == 3
         doc = next(doc for doc in docs["items"] if doc["relative_path"].endswith("receipt.png"))
         assert doc["title"] is None and doc["parse_status"] == "succeeded"
         digest = doc["current_hash"]
         blob = manager.store.blob_path(digest)
-        assert client.get("/api/documents", params={"folder": "Unfiled"}).json()["total"] == 3
+        assert client.get("/api/documents", params={"folder": "Inbox"}).json()["total"] == 3
         assert client.get("/api/documents", params={"folder": "Receipts"}).json()["total"] == 0
         counts = client.get("/api/folders").json()["counts"]
         assert counts["Receipts"] == 0 and "03_Purchases" not in counts
@@ -66,9 +64,9 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         assert client.get("/api/documents?folder=trash").json()["total"] == 1
         assert client.post(base + "/receipt-runs", json={}).status_code == 400
         assert client.put(base + "/folder", json={"expected_hash": digest, "folder": "Unfiled"}).status_code == 400
-        manager.start(); manager.future.result(timeout=30)
+        manager.start_inbox(); manager.future.result(timeout=30)
         assert client.get("/api/documents?folder=trash").json()["total"] == 1
-        assert image.read_bytes() == blob.read_bytes() == original_bytes
+        assert not image.exists() and blob.read_bytes() == original_bytes  # Filing moved the Inbox file; evidence is untouched.
     # Trash survives restart and does not affect an identical active occurrence.
     app = create_app(control, "local-test", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers=auth) as client:
@@ -82,46 +80,42 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         manager.start_receipt_batch(force=True); manager.future.result(timeout=30)
         assert client.get("/api/documents?folder=Bills").json()["total"] == 1  # Manual choice wins.
         image.write_bytes(original_bytes + b"new version")
-        manager.start(); manager.future.result(timeout=30)
+        manager.start_inbox(); manager.future.result(timeout=30)
         assert client.get("/api/documents?folder=Bills").json()["total"] == 0
-        assert client.get("/api/documents?folder=Unfiled").json()["total"] == 3
+        assert client.get("/api/documents?folder=Inbox").json()["total"] == 3  # The new version waits in Inbox.
         assert client.post(base + "/trash", json={"expected_hash": digest, "confirmed": True}).status_code == 409
 
 
 def test_bad_classification_keeps_capture_unfiled(tmp_path, local_model):
     from home_manager.manager import Manager
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    make_receipt(month / "receipt.png")
-    local_model["output"]["folder"] = "../../escape"
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     try:
-        manager.configure(str(source), str(tmp_path / "managed"))
+        manager.configure(str(tmp_path / "managed"))
+        month = manager.store.library.inbox
+        make_receipt(month / "receipt.png")
+        local_model["output"]["folder"] = "../../escape"
         manager.configure_vision(local_model["config"])
-        scan = manager.start()
+        scan = manager.start_inbox()
         manager.future.result(timeout=30)
         assert manager.store.job(scan)["status"] == "completed"
         assert manager.store.job(scan)["organization_status"] == "partial"
-        assert manager.store.documents(source, folder="Unfiled")["total"] == 1
-        doc = manager.store.documents(source)["items"][0]
+        assert manager.store.documents(folder="Inbox")["total"] == 1  # Unclassified Inbox documents stay in Inbox.
+        doc = manager.store.documents()["items"][0]
         assert doc["title"] is None and doc["parse_status"] == "failed"
     finally:
         manager.close()
 
 
 def test_document_dates_sorting_single_lookup_and_selected_batches(tmp_path, local_model):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    make_receipt(month / "a-receipt.png")
-    make_receipt(month / "b-receipt.png", ["OTHER SHOP", "Total 9.00"])
-    (month / "c-export.csv").write_text("date,amount\n2026-09-22,25\n")
     app = create_app(tmp_path / "control", "local-test", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer local-test"}) as client:
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        month = app.state.manager.store.library.inbox
+        make_receipt(month / "a-receipt.png")
+        make_receipt(month / "b-receipt.png", ["OTHER SHOP", "Total 9.00"])
+        (month / "c-export.csv").write_text("date,amount\n2026-09-22,25\n")
         manager = app.state.manager
-        client.post("/api/scans", json={}); manager.future.result(timeout=30)
+        client.post("/api/inbox-scans", json={}); manager.future.result(timeout=30)
         docs = {doc["relative_path"].split("/")[-1]: doc for doc in client.get("/api/documents").json()["items"]}
         assert all(doc["document_date"] is None for doc in docs.values())
         dated = docs["b-receipt.png"]

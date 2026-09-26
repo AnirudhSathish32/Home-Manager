@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import uuid
 
@@ -32,8 +33,7 @@ DOCUMENT_SORTS = {
 # Unified job history: every kind of durable work as (kind, id, status, started, finished, document, error).
 # Readings that belong to a batch are listed through their batch, not one by one.
 JOB_HISTORY = {
-    "source_scan": "SELECT 'source_scan',id,status,created_at,updated_at,NULL,error FROM jobs WHERE source_root<>:inbox",
-    "inbox_capture": "SELECT 'inbox_capture',id,status,created_at,updated_at,NULL,error FROM jobs WHERE source_root=:inbox",
+    "inbox_capture": "SELECT 'inbox_capture',id,status,created_at,updated_at,NULL,error FROM jobs",
     "text_batch": "SELECT 'text_batch',id,status,created_at,NULL,NULL,NULL FROM receipt_batches",
     "text_reading": "SELECT 'text_reading',p.id,p.status,p.created_at,p.updated_at,(SELECT o.id FROM occurrences o WHERE o.current_hash=p.blob_hash "
                     "ORDER BY o.id LIMIT 1),p.error FROM parse_runs p WHERE NOT EXISTS(SELECT 1 FROM receipt_batch_items i WHERE i.run_id=p.id)",
@@ -43,9 +43,65 @@ JOB_HISTORY = {
     "reconciliation": "SELECT 'reconciliation',CAST(id AS TEXT),status,started_at,finished_at,NULL,error FROM reconciliation_runs",
     "backup": "SELECT 'backup',id,status,started_at,finished_at,NULL,error FROM backups",
     "assistant": "SELECT 'assistant',id,status,created_at,updated_at,NULL,error FROM assistant_runs",
+    "item_identification": "SELECT 'item_identification',x.id,x.status,x.created_at,x.updated_at,r.document_id,x.error FROM item_resolution_runs x "
+                           "LEFT JOIN receipts r ON r.id=x.receipt_id",
+    "checkin_text": "SELECT 'checkin_text',id,status,created_at,updated_at,NULL,error FROM checkin_runs",
+    "warranty_lookup": "SELECT 'warranty_lookup',id,status,created_at,updated_at,NULL,error FROM warranty_runs",
 }
 # Forward-only schema scripts; NNN_ prefixes match PRAGMA user_version.
+# Same-directory snapshots taken before each schema upgrade. Recovery aids, not backups.
+MIGRATION_COPY = re.compile(r"^inventory\.before-v(\d{1,4})\.sqlite3$")
+KEEP_MIGRATION_COPIES = 2
 MIGRATIONS = sorted((int(path.name[:3]), path) for path in (Path(__file__).parent / "migrations").glob("[0-9][0-9][0-9]_*.sql"))
+
+
+def readable_database(path: Path) -> bool:
+    """Opens read-only and passes SQLite's quick integrity check.
+
+    immutable=1 reads only the file itself, so checking a snapshot never leaves -wal/-shm files beside it.
+    Snapshots are complete SQLite backups with no pending write-ahead log.
+    """
+    try:
+        db = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)
+        try:
+            return db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return False
+
+
+def prune_migration_copies(root: Path, current_version: int, keep=KEEP_MIGRATION_COPIES) -> list[str]:
+    """Delete all but the newest pre-upgrade snapshots. Called only after the upgraded database opened.
+
+    Only exact snapshot names directly in the store, for versions up to the current one, as plain
+    files (no links or reparse points). Nothing is deleted unless the newest kept snapshot is
+    readable, so a damaged recent copy never costs the older good ones. Failures are retried next start.
+    """
+    copies = []
+    for path in root.iterdir():
+        match = MIGRATION_COPY.match(path.name)
+        if match and int(match[1]) <= current_version:
+            try:
+                if safe_path(path).is_file():
+                    copies.append((int(match[1]), path))
+            except PathError:
+                continue
+    copies.sort(reverse=True)
+    if len(copies) <= keep or not readable_database(copies[0][1]):
+        return []
+    removed = []
+    for _, path in copies[keep:]:
+        try:
+            path.unlink()
+            removed.append(path.name)
+            for suffix in ("-wal", "-shm", "-journal"):  # Left by opening a snapshot; useless without it.
+                sidecar = path.with_name(path.name + suffix)
+                if sidecar.is_file() and not sidecar.is_symlink():
+                    sidecar.unlink()
+        except OSError:
+            continue  # In use or locked; the next start tries again.
+    return removed
 
 
 def now() -> str:
@@ -92,6 +148,7 @@ class Store:
                     if version < number:
                         db.executescript("BEGIN IMMEDIATE;\n" + script.read_text() + "\nCOMMIT;")
             self.recover()
+            prune_migration_copies(self.root, MIGRATIONS[-1][0])
             from .managed_library import ManagedLibrary
             self.library = ManagedLibrary(self)
             self.library.recover()
@@ -122,11 +179,12 @@ class Store:
             raise ValueError("Invalid content hash.")
         return safe_path(self.originals / digest[:2] / (digest + ".blob"))
 
-    def create_job(self, source: Path, year=None, month=None) -> str:
+    def create_job(self) -> str:
+        """A capture job for Library/Inbox, the only way documents enter the library."""
         job = uuid.uuid4().hex
         with self.connection() as db:
-            db.execute("INSERT INTO jobs(id,source_root,year,month,status,created_at,updated_at,error) VALUES (?, ?, ?, ?, 'queued', ?, ?, NULL)",
-                       (job, path_key(source), year, month, now(), now()))
+            db.execute("INSERT INTO jobs(id,source_root,year,month,status,created_at,updated_at,error) VALUES (?, ?, NULL, NULL, 'queued', ?, ?, NULL)",
+                       (job, path_key(self.library.inbox), now(), now()))
         return job
 
     def job_state(self, job: str, status: str, error=None):
@@ -140,18 +198,17 @@ class Store:
                        "VALUES(?,?,?,?,?,?)", (job, relative, status, message, digest, now()))
             db.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now(), job))
 
-    def observe(self, job: str, source: Path, relative: str, status="present"):
+    def observe(self, job: str, relative: str, status="present"):
         with self.connection() as db:
             db.execute("UPDATE occurrences SET last_seen=?,last_job=?,source_status=? "
                        "WHERE source_root=? AND path_key=?",
-                       (now(), job, status, path_key(source), path_key(relative)))
+                       (now(), job, status, path_key(self.library.inbox), path_key(relative)))
 
-    def prepare(self, capture_id: str, job: str, source: Path, relative: str,
-                year: int, month: int, digest: str, size: int, mtime_ns: int):
+    def prepare(self, capture_id: str, job: str, relative: str, digest: str, size: int, mtime_ns: int):
+        # Inbox captures have no folder period (0), never an inferred financial date.
         with self.connection() as db:
-            db.execute("INSERT INTO capture_intents VALUES(?,?,?,?,?,?,?,?,?)",
-                       (capture_id, job, path_key(source), relative, year, month,
-                        digest, size, mtime_ns))
+            db.execute("INSERT INTO capture_intents VALUES(?,?,?,?,0,0,?,?,?)",
+                       (capture_id, job, path_key(self.library.inbox), relative, digest, size, mtime_ns))
 
     def publish(self, capture_id: str) -> str:
         with self.connection() as db:
@@ -164,7 +221,7 @@ class Store:
         final.parent.mkdir(exist_ok=True)
         if not final.exists():
             if not temp.is_file() or temp.stat().st_size != item["size"] or digest_file(temp) != item["hash"]:
-                raise OSError("Incomplete capture; rescan its source file.")
+                raise OSError("Incomplete capture; scan Inbox again.")
             try:
                 # Atomic publication without overwriting an existing immutable blob.
                 os.link(temp, final)
@@ -231,14 +288,8 @@ class Store:
             if len(temp.stem) == 32 and all(c in "0123456789abcdef" for c in temp.stem) and temp.stem not in pending:
                 safe_path(temp).unlink()
 
-    def mark_missing(self, job: str, source: Path, year=None, month=None):
-        clauses, params = ["source_root=?", "last_job<>?", "source_status NOT IN ('missing','organized')"], [path_key(source), job]
-        if year is not None:
-            clauses.append("folder_year=?")
-            params.append(year)
-        if month is not None:
-            clauses.append("folder_month=?")
-            params.append(month)
+    def mark_missing(self, job: str):
+        clauses, params = ["source_root=?", "last_job<>?", "source_status NOT IN ('missing','organized')"], [path_key(self.library.inbox), job]
         with self.connection() as db:
             rows = list(db.execute("SELECT id,relative_path,current_hash FROM occurrences WHERE " + " AND ".join(clauses), params))
             for row in rows:
@@ -258,7 +309,7 @@ class Store:
         query = " UNION ALL ".join(JOB_HISTORY[kind] for kind in kinds)
         columns = ("kind", "id", "status", "started_at", "finished_at", "document_id", "error")
         with self.connection() as db:
-            rows = db.execute(f"SELECT * FROM ({query}) ORDER BY 4 DESC LIMIT :limit", {"inbox": path_key(self.library.inbox), "limit": limit})
+            rows = db.execute(f"SELECT * FROM ({query}) ORDER BY 4 DESC LIMIT :limit", {"limit": limit})
             return [dict(zip(columns, row)) for row in rows]
 
     def job(self, job: str):
@@ -340,13 +391,12 @@ class Store:
         row["ledger_amount"] = format_minor(row["ledger_amount_minor"], row["ledger_currency"]) if row["ledger_amount_minor"] is not None else None
         return row
 
-    def documents(self, source: Path, offset=0, limit=100, folder="all", status="all", query=None, sort="path", date_from=None, date_to=None):
+    def documents(self, offset=0, limit=100, folder="all", status="all", query=None, sort="path", date_from=None, date_to=None):
         if sort not in DOCUMENT_SORTS:
             raise ValueError("Unknown document sort order.")
-        clause = "source_root IN (?,?) AND deleted_at IS NULL"
-        params = [path_key(source), path_key(self.library.inbox)]
+        clause, params = "deleted_at IS NULL", []
         if folder == "trash":
-            clause = "source_root IN (?,?) AND deleted_at IS NOT NULL"
+            clause = "deleted_at IS NOT NULL"
         elif folder in LIBRARY_FOLDERS:
             clause += " AND folder=?"
             params.append(folder)
@@ -370,18 +420,17 @@ class Store:
                                                     [*params, limit, offset])]
         return {"total": total, "items": [self.display_amount(row) for row in rows]}
 
-    def document(self, source: Path, document_id: int):
+    def document(self, document_id: int):
         """One library row (including Trash), shaped like a documents() item."""
         with self.connection() as db:
-            row = db.execute(self.library_query() + "SELECT * FROM library WHERE source_root IN (?,?) AND id=?",
-                             (path_key(source), path_key(self.library.inbox), document_id)).fetchone()
+            row = db.execute(self.library_query() + "SELECT * FROM library WHERE id=?", (document_id,)).fetchone()
         if row is None:
             raise ValueError("Document not found.")
         return self.display_amount(dict(row))
 
-    def set_description(self, source: Path, document_id: int, description: str | None):
+    def set_description(self, document_id: int, description: str | None):
         """The user's own description (the last part of the title); None or blank returns to the model's."""
-        self.document(source, document_id)  # Only documents in this library.
+        self.document(document_id)  # Only documents in this library.
         text = " ".join((description or "").split())
         if len(text) > 60:
             raise ValueError("Keep the description to 60 characters or fewer.")
@@ -391,13 +440,12 @@ class Store:
                            (document_id, text, now()))
             else:
                 db.execute("DELETE FROM document_descriptions WHERE document_id=?", (document_id,))
-        return self.document(source, document_id)
+        return self.document(document_id)
 
-    def folders(self, source):
-        roots = (path_key(source), path_key(self.library.inbox))
+    def folders(self):
         with self.connection() as db:
-            rows = db.execute(self.library_query() + "SELECT folder,deleted_at IS NOT NULL AS trashed,count(*) AS count FROM library WHERE source_root IN (?,?) GROUP BY folder,trashed", roots).fetchall()
-            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE source_root IN (?,?) AND deleted_at IS NULL AND {condition}", roots).fetchone()[0]
+            rows = db.execute(self.library_query() + "SELECT folder,deleted_at IS NOT NULL AS trashed,count(*) AS count FROM library GROUP BY folder,trashed").fetchall()
+            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {condition}").fetchone()[0]
                     for name, condition in WORK_FILTERS.items() if name != "all"}
         counts = {folder: 0 for folder in ["all", "trash", *LIBRARY_FOLDERS]}
         for row in rows:
@@ -408,15 +456,15 @@ class Store:
                 counts[row["folder"]] += row["count"]
         return {"folders": LIBRARY_FOLDERS, "counts": counts, "work": work}
 
-    def library_action(self, source, document_id, expected_hash, action, folder=None):
+    def library_action(self, document_id, expected_hash, action, folder=None):
         if action == "move":
             validate_folder(folder)
         if action not in ("move", "trash", "restore"):
             raise ValueError("Unknown library action.")
         with self.connection() as db:
-            doc = db.execute("SELECT * FROM occurrences WHERE id=? AND source_root IN (?,?)", (document_id, path_key(source), path_key(self.library.inbox))).fetchone()
+            doc = db.execute("SELECT * FROM occurrences WHERE id=?", (document_id,)).fetchone()
             if doc is None:
-                raise ValueError("Document not found in the selected source library.")
+                raise ValueError("Document not found in this library.")
             if doc["current_hash"] != expected_hash:
                 raise RuntimeError("Document version changed. Refresh and confirm the action again.")
             if action == "move":
@@ -455,11 +503,22 @@ class Store:
             db.execute("INSERT OR IGNORE INTO model_identities VALUES(?,?,?,?,?)",
                        (fingerprint, config.model, config.base_url, json.dumps(metadata, sort_keys=True), now()))
 
-    def model_runs(self, owner_id=None, limit=50):
+    def model_runs(self, owner_id=None, limit=50, task=None, status=None):
+        clauses, params = [], []
+        for column, value in (("r.owner_id", owner_id), ("r.task", task), ("r.status", status)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
         query = ("SELECT r.*,i.metadata_json FROM model_runs r LEFT JOIN model_identities i ON i.fingerprint=r.model_identity"
-                 + (" WHERE r.owner_id=?" if owner_id else "") + " ORDER BY r.id DESC LIMIT ?")
+                 + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY r.id DESC LIMIT ?")
         with self.connection() as db:
-            return [dict(row) for row in db.execute(query, (owner_id, limit) if owner_id else (limit,))]
+            return [dict(row) for row in db.execute(query, (*params, limit))]
+
+    def model_run_facets(self):
+        """The tasks and statuses present, for filters."""
+        with self.connection() as db:
+            return {"tasks": [row[0] for row in db.execute("SELECT DISTINCT task FROM model_runs ORDER BY 1")],
+                    "statuses": [row[0] for row in db.execute("SELECT DISTINCT status FROM model_runs ORDER BY 1")]}
 
     def used_bytes(self) -> int:
         with self.connection() as db:

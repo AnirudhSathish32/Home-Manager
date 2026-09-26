@@ -37,7 +37,9 @@ HomeManagerData/
   reports/                      # generated Excel reports; never scanned as input
 ```
 
-Accept `YYYY/MM`, with zero-padded months `01` through `12`. Filenames need not follow a naming convention. Optional type subfolders beneath a month may be accepted, but the user does not have to sort receipts separately from statements. Record the relative path and folder year/month as source metadata. Flag misplaced files or invalid month folders in the scan report rather than silently guessing their month. The worker never moves, renames, edits, or deletes user input files.
+**Removed 2026-09-25:** the `YYYY/MM` source folder no longer exists; documents enter only through `Library/Inbox` (see [managed library](managed-library.md)).
+
+Original design: accept `YYYY/MM`, with zero-padded months `01` through `12`. Filenames need not follow a naming convention. Optional type subfolders beneath a month may be accepted, but the user does not have to sort receipts separately from statements. Record the relative path and folder year/month as source metadata. Flag misplaced files or invalid month folders in the scan report rather than silently guessing their month. The worker never moves, renames, edits, or deletes user input files.
 
 Use distinct configurable source and managed roots. Reject overlapping roots, network locations for the initial design, and traversal through symbolic links or Windows reparse points. Reports and internal artifacts cannot enter the source scan. Recognized generated report manifests/hashes also flag accidental manual re-imports for review; do not rely solely on a filename to detect them.
 
@@ -161,7 +163,7 @@ A month dashboard shows last scan time, discovered/captured files, extraction fa
 
 | Interface | Caller and behavior |
 | --- | --- |
-| `scan_source_directory(root_id, optional year/month)` | Authenticated UI command; configured root only; queues discovery and returns job ID |
+| `scan_inbox()` | Authenticated UI command; captures files placed directly in Library/Inbox and returns a job ID (replaced `scan_source_directory`) |
 | `get_ingestion_status(job_id or folder_period)` | UI and read-only agent tool; status, counts, issues and scan freshness |
 | `list_documents(filters, cursor)` | UI and read-only agent tool; distinguish folder period, document type, extracted date/coverage, and review state |
 | `search_documents` / `get_document` | Agent retrieves bounded indexed evidence by ID and location; document content remains untrusted |

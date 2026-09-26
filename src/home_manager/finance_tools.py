@@ -16,6 +16,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .item_analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
+from .items import ItemLedger
 from .finance import COUNTABLE, PENDING, SPENDING, Ledger, name_tokens, normalize_name
 from .money import currency_code, money, to_minor
 from .reconcile import RECEIPT_POSTING_DAYS, shift
@@ -142,6 +144,16 @@ class EmptyInput(ToolInput):
     pass
 
 
+class BudgetInput(ToolInput):
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    as_of: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="The day pace is measured at; defaults to today.")
+
+
+class InventoryInput(ToolInput):
+    query: str | None = Field(default=None, max_length=100, description="Product name, brand or category words; omit for everything in stock.")
+    include_closed: bool = Field(default=False, description="Also list items marked finished or thrown out.")
+
+
 def scope_of(start, end, account_id):
     """SQL predicate and parameters for a posted-date period, optionally one account."""
     scope, params = "t.posted_date BETWEEN ? AND ?", [start, end]
@@ -155,7 +167,7 @@ def totals_view(currency, bucket):
             "net_spending": money(bucket["spending"] - bucket["refunds"], currency), "transactions": bucket["transactions"]}
 
 
-class FinanceTools:
+class FinanceTools(ItemAnalysisTools):
     def __init__(self, store):
         self.store, self.ledger = store, Ledger(store)
 
@@ -342,6 +354,48 @@ class FinanceTools:
         return {"first": value.first.model_dump(), "second": value.second.model_dump(), "categories": rows,
                 "notes": ["percent_change is null when the category had no spending in the first period."]}
 
+    def get_budgets(self, value):
+        """Each monthly budget against the month's counted category spending, with the pace so far.
+        Integer arithmetic only: 'ahead_of_pace' means spent/budget exceeds elapsed days/days in the month."""
+        index = month_index(value.month)
+        start, end = month_label(index) + "-01", last_day(index)
+        today = date.fromisoformat(iso(value.as_of)) if value.as_of else date.today()
+        days = int(end[8:])
+        elapsed = days if today.isoformat() > end else 0 if today.isoformat() < start else today.day
+        spent = self._category_totals(start, end, None)
+        rows = []
+        for budget in self.ledger.budgets():
+            amount, currency = budget["amount_minor"], budget["currency"]
+            used, count = spent.get((currency, budget["category"]), (0, 0))
+            if used > amount:
+                status = "over"
+            elif elapsed == 0:
+                status = "not_started"
+            elif elapsed == days:
+                status = "within"
+            else:
+                status = "ahead_of_pace" if used * days > amount * elapsed else "on_track"
+            rows.append({"id": budget["id"], "category": budget["category"], "currency": currency, "budget": money(amount, currency),
+                         "spent": money(used, currency), "remaining": money(amount - used, currency), "transactions": count,
+                         "percent_used": str((Decimal(used) * 100 / Decimal(amount)).quantize(Decimal("0.1"), ROUND_HALF_EVEN)), "status": status})
+        budgeted = {(row["currency"], row["category"]) for row in rows}
+        unbudgeted = defaultdict(lambda: [0, 0])
+        for (currency, category), (total, count) in spent.items():
+            if (currency, category) not in budgeted:
+                unbudgeted[currency][0] += total
+                unbudgeted[currency][1] += count
+        return {"month": value.month, "period": {"start": start, "end": end}, "days": days, "elapsed_days": elapsed, "budgets": rows,
+                "unbudgeted": [{"currency": currency, "spent": money(total, currency), "transactions": count}
+                               for currency, (total, count) in sorted(unbudgeted.items())],
+                "notes": ["Spent is the month's counted spending in the category before refunds, the same figure as By category.",
+                          "Extracted transactions awaiting review are not counted until verified."]}
+
+    def get_categories(self, _=None):
+        """Every category in use by transactions, budgets or rules, with its transaction count."""
+        rows = self.query("SELECT category,sum(n) AS transactions FROM (SELECT t.category,count(*) AS n FROM transactions t WHERE t.category IS NOT NULL "
+                          "GROUP BY 1 UNION ALL SELECT category,0 FROM budgets UNION ALL SELECT category,0 FROM category_rules) GROUP BY 1 ORDER BY 1")
+        return {"categories": rows}
+
     def calculate_cashflow(self, value):
         scope, params = scope_of(value.start, value.end, value.account_id)
         outflow = {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(scope, params).items()}
@@ -466,6 +520,13 @@ class FinanceTools:
 
     # Review queue -------------------------------------------------------------------
 
+    def get_inventory(self, value):
+        """Household items from approved receipt lines: in stock unless closed ones are asked for."""
+        lots = ItemLedger(self.store).inventory(value.query, value.include_closed, 100)
+        return {"items": [{"lot_id": lot["id"], "product": lot["name"], "brand": lot["brand"], "size": lot["size_text"], "category": lot["category"],
+                           "status": lot["status"], "bought_on": lot["bought_on"], "closed_on": lot["closed_on"], "units": lot["units"]} for lot in lots],
+                "notes": ["Only items from receipt lines the user approved are listed."]}
+
     def review_queue(self, _=None):
         """Everything awaiting a decision, each item carrying display summaries of the records involved."""
         with self.connection() as db:
@@ -510,8 +571,13 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "get_unmatched_receipts": (PeriodInput, "get_unmatched_receipts"),
          "find_purchase": (TransactionsInput, "find_purchase"), "get_statement": (RecordInput, "get_statement"),
          "match_receipt_to_transaction": (RecordInput, "match_receipt_to_transaction"), "get_refunds": (EmptyInput, "get_refunds"),
-         "review_queue": (EmptyInput, "review_queue")}
+         "review_queue": (EmptyInput, "review_queue"), "get_inventory": (InventoryInput, "get_inventory"),
+         "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"), **ITEM_TOOLS, **ANOMALY_TOOLS}
 ToolName = Literal[*TOOLS]
+# Assistant routing (docs/items-assets-search.md §4): item questions see the item tools and spending basics;
+# every other question sees the finance tools. A smaller list keeps a small model's prompt short.
+ITEM_ROUTE = frozenset({*ITEM_TOOLS, "get_inventory", "get_spending", "get_spending_by_category", "get_transactions", "find_receipt"})
+FINANCE_ROUTE = frozenset(name for name in TOOLS if name not in ITEM_TOOLS)
 
 
 def call_tool(tools, name, arguments):

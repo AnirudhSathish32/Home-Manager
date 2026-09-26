@@ -10,7 +10,13 @@
   <script src="/receipt.js" defer></script>
   <script src="/library.js" defer></script>
   <script src="/finance.js" defer></script>
+  <script src="/review.js" defer></script>
+  <script src="/inventory.js" defer></script>
+  <script src="/search.js" defer></script>
+  <script src="/processing.js" defer></script>
+  <script src="/assistant.js" defer></script>
   <script src="/home.js" defer></script>
+  <script src="/forecast.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -18,9 +24,22 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
+    <form id="global-search-form" class="global-search" role="search">
+      <input id="global-search" type="search" placeholder="Search everything" aria-label="Search documents, transactions, items and accounts" aria-keyshortcuts="Control+K" autocomplete="off">
+      <kbd aria-hidden="true">Ctrl K</kbd>
+    </form>
     <nav class="nav" aria-label="Primary">
+      <a id="nav-search" class="nav-link nav-search-link" href="#/search" data-route="search" data-icon="search"><span class="nav-label">Search</span></a>
       <a id="nav-home" class="nav-link" href="#/home" data-route="home" data-icon="home"><span class="nav-label">Home</span></a>
-      <a id="nav-finances" class="nav-link" href="#/finances" data-route="finances" data-icon="wallet"><span class="nav-label">Finances</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
+      <a id="nav-review" class="nav-link" href="#/review" data-route="review" data-icon="list-checks"><span class="nav-label">Review</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
+      <p class="nav-group">Money</p>
+      <a id="nav-transactions" class="nav-link" href="#/transactions" data-route="transactions" data-icon="wallet"><span class="nav-label">Transactions</span></a>
+      <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">Spending &amp; budgets</span></a>
+      <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; recurring</span></a>
+      <a id="nav-accounts" class="nav-link" href="#/accounts" data-route="accounts" data-icon="bank"><span class="nav-label">Accounts</span></a>
+      <a id="nav-forecast" class="nav-link" href="#/forecast" data-route="forecast" data-icon="trend"><span class="nav-label">Forecast</span></a>
+      <p class="nav-group">Household</p>
+      <a id="nav-inventory" class="nav-link" href="#/inventory" data-route="inventory" data-icon="package"><span class="nav-label">Inventory</span><span id="nav-checkin-count" class="nav-count" hidden></span></a>
       <p class="nav-group">Records</p>
       <a id="nav-documents" class="nav-link" href="#/documents" data-route="documents" data-icon="file"><span class="nav-label">Documents</span></a>
       <div class="nav-sub">
@@ -31,12 +50,14 @@
     <div class="sidebar-footer">
       <div id="activity-indicator" class="activity-indicator" role="status" aria-live="polite" hidden></div>
       <nav class="nav" aria-label="System">
+        <button id="nav-ask" class="nav-link nav-button" type="button" data-icon="message" aria-controls="assistant-panel" aria-expanded="false" aria-keyshortcuts="Control+J"><span class="nav-label">Ask</span></button>
         <a id="nav-processing" class="nav-link" href="#/processing" data-route="processing" data-icon="activity"><span class="nav-label">Processing</span></a>
         <a id="nav-settings" class="nav-link" href="#/settings" data-route="settings" data-icon="settings"><span class="nav-label">Settings</span></a>
       </nav>
     </div>
   </aside>
   <main id="main" tabindex="-1">
+    <div id="session-banner"></div>
     <div id="app-alert"></div>
 
     <section id="home-panel" class="page" data-page="home" aria-labelledby="home-title" hidden>
@@ -49,24 +70,192 @@
       <div id="home-content"></div>
     </section>
 
-    <section id="finance-panel" class="page" data-page="finances" aria-labelledby="finance-title" hidden>
-      <header class="page-header"><div><h1 id="finance-title" tabindex="-1">Finances</h1>
-        <p class="page-subtitle">Computed exactly from imported and reviewed records. Nothing here is estimated by a model.</p></div>
-        <div class="page-actions"><label class="inline-field">Month <input id="finance-month" type="month"></label>
-          <button id="reconcile" type="button">Reconcile now</button></div></header>
-      <div class="finance-grid">
-        <section class="panel"><h2>Spending</h2><ul id="finance-spending" class="finance-list"></ul><p id="finance-coverage" class="muted small"></p></section>
-        <section class="panel"><h2>Needs review</h2><ul id="finance-queue" class="finance-list"></ul></section>
-        <section class="panel"><h2>Accounts</h2><ul id="finance-accounts" class="finance-list"></ul></section>
-        <section class="panel"><h2>By category</h2><ul id="finance-categories" class="finance-list"></ul></section>
-        <section class="panel"><h2>Upcoming bills</h2><ul id="finance-bills" class="finance-list"></ul></section>
-        <section class="panel"><h2>Recurring payments</h2><ul id="finance-recurring" class="finance-list"></ul></section>
-        <section class="panel"><h2>Refunds</h2><ul id="finance-refunds" class="finance-list"></ul></section>
-        <section class="panel"><h2>Unmatched receipts</h2><ul id="finance-unmatched" class="finance-list"></ul><p id="finance-unmatched-note" class="muted small"></p></section>
+    <section id="forecast-panel" class="page" data-page="forecast" aria-labelledby="forecast-title" hidden>
+      <header class="page-header"><div><h1 id="forecast-title" tabindex="-1">Forecast</h1>
+        <p class="page-subtitle">Projected from your balances, recent income and spending, and the assets below. Calculated exactly; the same inputs always give the same result.</p></div></header>
+      <div id="forecast-alerts"></div>
+      <section class="panel"><h2>Assumptions</h2>
+        <form id="forecast-form" class="form forecast-form">
+          <div class="forecast-row">
+            <div class="field"><label for="forecast-years">Years ahead</label><input id="forecast-years" type="number" min="1" max="100" value="10" required></div>
+            <div class="field"><label for="forecast-inflation">Inflation per year (%)</label><input id="forecast-inflation" value="2" inputmode="decimal" required></div>
+            <div class="field"><label for="forecast-income-growth">Income growth per year (%)</label><input id="forecast-income-growth" value="0" inputmode="decimal" required></div>
+            <div class="field"><label for="forecast-history">Average over the last (months)</label><input id="forecast-history" type="number" min="1" max="24" value="6" required></div>
+          </div>
+          <h3>Spending changes</h3><p class="muted small">Raise or lower a category from its recent average, e.g. groceries +10.</p>
+          <div id="forecast-spending-changes" class="forecast-list"></div>
+          <button id="add-spending-change" type="button" class="quiet">Add spending change</button>
+          <h3>Income changes</h3><p class="muted small">Added to monthly income from the chosen month on; use a negative amount for a cut.</p>
+          <div id="forecast-income-changes" class="forecast-list"></div>
+          <button id="add-income-change" type="button" class="quiet">Add income change</button>
+          <h3>One-off amounts</h3><p class="muted small">Money in is positive; an expense such as a vacation is negative.</p>
+          <div id="forecast-one-offs" class="forecast-list"></div>
+          <button id="add-one-off" type="button" class="quiet">Add one-off amount</button>
+          <div class="button-row"><button id="run-forecast" class="primary" type="submit">Update forecast</button></div>
+        </form>
+      </section>
+      <section class="panel"><h2>Assets and loans</h2>
+        <p class="muted small">Values you enter count immediately. Values read from statements count after you review them. Yearly rate: growth for an asset, interest for a loan.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col" class="numeric">Value or owed</th><th scope="col">As of</th><th scope="col" class="numeric">Yearly rate</th><th scope="col" class="numeric">Monthly payment</th><th scope="col">Source</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+          <tbody id="asset-rows"></tbody></table></div>
+        <form id="asset-form" class="form forecast-form">
+          <div class="forecast-row">
+            <div class="field"><label for="asset-name">Name</label><input id="asset-name" required maxlength="80" placeholder="Honda Civic"></div>
+            <div class="field"><label for="asset-kind">Kind</label><select id="asset-kind">
+              <option value="vehicle">Vehicle</option><option value="real_estate">Home or property</option><option value="investment">Investment</option>
+              <option value="retirement">Retirement account</option><option value="bond">Bond</option><option value="other_asset">Other asset</option><option value="loan">Loan</option></select></div>
+            <div class="field"><label for="asset-value">Value, or amount owed</label><input id="asset-value" required inputmode="decimal" placeholder="18000.00"></div>
+            <div class="field"><label for="asset-currency">Currency</label><input id="asset-currency" required maxlength="3" value="USD"></div>
+          </div>
+          <div class="forecast-row">
+            <div class="field"><label for="asset-as-of">Value as of</label><input id="asset-as-of" type="date" required></div>
+            <div class="field"><label for="asset-rate">Yearly rate (%)</label><input id="asset-rate" inputmode="decimal" placeholder="Car: -15 if blank"></div>
+            <div class="field"><label for="asset-payment">Monthly payment (loans)</label><input id="asset-payment" inputmode="decimal" disabled></div>
+          </div>
+          <div class="button-row"><button id="add-asset" type="submit">Add</button></div>
+        </form>
+      </section>
+      <section class="panel"><h2>Starting point</h2><div id="forecast-start"></div></section>
+      <div id="forecast-charts" class="forecast-charts"></div>
+    </section>
+
+    <section id="search-panel" class="page" data-page="search" aria-labelledby="search-title" hidden>
+      <header class="page-header"><div><h1 id="search-title" tabindex="-1">Search</h1>
+        <p class="page-subtitle">Documents, transactions, household items and accounts in one place.</p></div></header>
+      <form id="search-page-form" class="toolbar" role="search">
+        <input id="search-page-input" type="search" placeholder="Merchant, description, product or file name" aria-label="Search everything" autocomplete="off">
+        <button type="submit" class="primary">Search</button>
+      </form>
+      <p id="search-status" class="muted small" role="status"></p>
+      <div id="search-results" class="search-results"></div>
+    </section>
+
+    <section id="review-panel" class="page" data-page="review" aria-labelledby="review-title" hidden>
+      <header class="page-header"><div><h1 id="review-title" tabindex="-1">Review</h1>
+        <p class="page-subtitle">What Home Manager needs you to decide. Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>V</kbd> confirm, <kbd>R</kbd> reject.</p></div>
+        <div class="page-actions"><button id="reconcile" type="button">Reconcile now</button><button id="review-refresh" type="button">Refresh</button></div></header>
+      <p id="review-status" class="muted small" role="status"></p>
+      <div class="review-layout">
+        <nav id="review-queue" class="review-queue panel" aria-label="Items to review"></nav>
+        <section id="review-detail" class="panel review-detail" tabindex="-1" aria-live="polite"></section>
       </div>
-      <section class="panel" id="finance-transaction-panel"><h2>Transactions</h2><p id="finance-filter-note" class="muted small"></p>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Posted</th><th scope="col">Account</th><th scope="col">Description</th><th scope="col">Type</th><th scope="col" class="numeric">Amount</th><th scope="col">Receipt</th><th scope="col">Review</th><th scope="col">Category</th></tr></thead><tbody id="finance-transactions"></tbody></table></div>
-        <div class="pagination"><button id="finance-previous" type="button">Previous</button><span id="finance-page-count"></span><button id="finance-next" type="button">Next</button></div>
+      <section class="panel" id="review-unmatched-panel"><h2>Receipts with no matching charge</h2>
+        <p class="muted small">Receipts are evidence, not spending: a receipt counts through the card or bank transaction it matches.</p>
+        <ul id="review-unmatched" class="finance-list"></ul><p id="review-unmatched-note" class="muted small"></p></section>
+    </section>
+
+    <section id="transactions-panel" class="page" data-page="transactions" aria-labelledby="transactions-title" hidden>
+      <header class="page-header"><div><h1 id="transactions-title" tabindex="-1">Transactions</h1>
+        <p class="page-subtitle">Every imported or extracted transaction, with its evidence. Filters run on the server; nothing here is estimated.</p></div></header>
+      <div class="toolbar money-toolbar">
+        <input id="tx-search" type="search" placeholder="Search description or merchant" aria-label="Search transactions" autocomplete="off">
+        <label class="inline-field">Period <select id="tx-period"><option value="custom">Custom</option><option value="this_month">This month</option><option value="last_month">Last month</option>
+          <option value="last_90">Last 90 days</option><option value="year">Year to date</option><option value="all">All dates</option></select></label>
+        <label class="inline-field">From <input id="tx-from" type="date"></label>
+        <label class="inline-field">To <input id="tx-to" type="date"></label>
+        <label class="inline-field">Account <select id="tx-account"><option value="">All accounts</option></select></label>
+        <label class="inline-field">Category <select id="tx-category"><option value="">All categories</option></select></label>
+        <label class="inline-field">Type <select id="tx-type"><option value="">All types</option><option value="purchase,withdrawal">Purchases</option><option value="refund">Refunds</option>
+          <option value="transfer,payment">Transfers &amp; payments</option><option value="deposit">Income</option><option value="fee,interest">Fees &amp; interest</option></select></label>
+        <label class="inline-field">Status <select id="tx-status"><option value="">Counted and awaiting review</option><option value="counted">Counted</option>
+          <option value="pending">Awaiting review</option><option value="rejected">Rejected</option></select></label>
+        <label class="inline-field">Receipt <select id="tx-receipt"><option value="">Any</option><option value="true">Has receipt</option><option value="false">No receipt</option></select></label>
+        <label class="inline-field">Sort <select id="tx-sort"><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option>
+          <option value="amount_asc">Largest spending first</option><option value="amount_desc">Largest money in first</option><option value="description">Description</option></select></label>
+        <button id="tx-clear" type="button" class="quiet">Clear filters</button>
+      </div>
+      <p id="tx-summary" class="muted small" aria-live="polite"></p>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Description</th><th scope="col">Account</th>
+        <th scope="col">Category</th><th scope="col"><span class="visually-hidden">Receipt</span></th><th scope="col">Status</th><th scope="col" class="numeric">Amount</th></tr></thead>
+        <tbody id="tx-rows"></tbody></table></div>
+      <div class="pager"><button id="tx-prev" type="button">Previous</button><span id="tx-page"></span><button id="tx-next" type="button">Next</button></div>
+    </section>
+
+    <section id="spending-panel" class="page" data-page="spending" aria-labelledby="spending-title" hidden>
+      <header class="page-header"><div><h1 id="spending-title" tabindex="-1">Spending &amp; budgets</h1>
+        <p class="page-subtitle">Where the money went, computed exactly from counted transactions. Transfers and card payments are excluded.</p></div>
+        <div class="page-actions"><label class="inline-field">Month <input id="spend-month" type="month"></label>
+          <label class="inline-field">Compare to <select id="spend-compare"><option value="previous">Previous month</option><option value="last_year">Same month last year</option></select></label></div></header>
+      <div id="spend-error"></div>
+      <section class="panel"><div id="spend-figures" class="figure-row"></div><p id="spend-coverage" class="muted small"></p></section>
+      <section class="panel" id="budget-panel"><h2>Budgets</h2>
+        <p class="muted small">A monthly limit per category. Spent is the month's counted spending in the category before refunds.</p>
+        <div id="budget-rows" class="budget-rows"></div>
+        <form id="budget-form" class="inline-form">
+          <label class="inline-field">Category <input id="budget-category" list="category-options" required maxlength="60" autocomplete="off"></label>
+          <label class="inline-field">Currency <input id="budget-currency" required maxlength="3" value="USD" size="4"></label>
+          <label class="inline-field">Monthly amount <input id="budget-amount" required inputmode="decimal" placeholder="450.00" size="10"></label>
+          <button type="submit">Save budget</button></form>
+      </section>
+      <section class="panel"><h2>By category</h2>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Category</th><th scope="col" class="numeric">Spent</th><th scope="col" class="numeric" id="spend-compare-heading">Previous month</th>
+          <th scope="col" class="numeric">Change</th><th scope="col">Budget</th></tr></thead><tbody id="spend-categories"></tbody></table></div></section>
+      <div class="money-columns">
+        <section class="panel"><h2>Top merchants</h2>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="numeric">Spent</th><th scope="col" class="numeric">Transactions</th></tr></thead>
+            <tbody id="spend-merchants"></tbody></table></div></section>
+        <section class="panel"><h2>Refunds</h2><ul id="spend-refunds" class="finance-list"></ul></section>
+      </div>
+      <section class="panel" id="rules-panel"><h2>Category rules</h2>
+        <p class="muted small">Transactions whose merchant or description contain every word get the category, now and when new ones arrive. The most specific rule wins; a category you set by hand on a transaction is never changed.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Words</th><th scope="col">Category</th><th scope="col">Account</th><th scope="col" class="numeric">Transactions</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rule-rows"></tbody></table></div>
+        <form id="rule-form" class="inline-form">
+          <label class="inline-field">Words <input id="rule-pattern" required maxlength="120" placeholder="COSTCO" autocomplete="off"></label>
+          <label class="inline-field">Category <input id="rule-category" list="category-options" required maxlength="60" autocomplete="off"></label>
+          <label class="inline-field">Account <select id="rule-account"><option value="">Any account</option></select></label>
+          <button type="submit">Add rule</button></form>
+      </section>
+      <datalist id="category-options"></datalist>
+    </section>
+
+    <section id="bills-panel" class="page" data-page="bills" aria-labelledby="bills-title" hidden>
+      <header class="page-header"><div><h1 id="bills-title" tabindex="-1">Bills &amp; recurring</h1>
+        <p class="page-subtitle">What you owe, when, and whether a payment was found.</p></div></header>
+      <section class="panel"><h2>Bills</h2><div id="bill-groups"></div>
+        <p class="muted small">A bill is an obligation, not proof of payment. “No payment found” only reflects imported transactions; a state you set takes precedence.</p></section>
+      <section class="panel"><h2>Recurring payments</h2>
+        <p class="muted small">Detected from a steady cadence of equal payments. A detection is a proposal until you confirm it.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="numeric">Expected</th><th scope="col">Every</th><th scope="col">Next about</th>
+          <th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
+    </section>
+
+    <section id="accounts-panel" class="page" data-page="accounts" aria-labelledby="accounts-title" hidden>
+      <header class="page-header"><div><h1 id="accounts-title" tabindex="-1">Accounts</h1>
+        <p class="page-subtitle">Balances come from statements and show their dates. They are not added up: statements from different days don't make a meaningful total.</p></div></header>
+      <div id="account-groups"></div>
+      <p class="muted small">To add transactions, drop a bank or card export (CSV or XLSX) into the Inbox, then choose Import transactions on it in Documents.</p>
+    </section>
+
+    <section id="inventory-panel" class="page" data-page="inventory" aria-labelledby="inventory-title" hidden>
+      <header class="page-header"><div><h1 id="inventory-title" tabindex="-1">Inventory</h1>
+        <p class="page-subtitle">Household items from receipt lines you approved. Your answers apply at once; nothing here needs review.</p></div></header>
+      <section class="panel" id="checkin-panel"><h2>Weekly check-in</h2><div id="checkin-content"></div>
+        <form id="checkin-text-form" class="form checkin-text">
+          <div class="field"><label for="checkin-text">Or answer in your own words</label>
+            <textarea id="checkin-text" rows="2" maxlength="2000" placeholder="Finished the milk on Tuesday, still have rice, threw out the spinach"></textarea>
+            <small>Read by your local model into a list of changes. Nothing changes until you confirm.</small></div>
+          <div class="button-row"><button id="checkin-text-submit" type="submit">Read my answer</button></div></form>
+        <div id="checkin-reading" aria-live="polite"></div>
+      </section>
+      <div class="toolbar">
+        <input id="inventory-search" type="search" placeholder="Search product, brand or category" aria-label="Search inventory" autocomplete="off">
+        <label class="compact-check"><input id="inventory-closed" type="checkbox"> Show finished and thrown out</label>
+      </div>
+      <div id="inventory-groups"></div>
+      <section class="panel"><h2>Receipts with items to identify</h2>
+        <p class="muted small">Identifying names each line's product so it can join your inventory. Every proposal waits for you in Review.</p>
+        <ul id="identify-receipts" class="finance-list"></ul></section>
+      <section class="panel" id="return-policies-panel"><h2>Return policies</h2>
+        <p class="muted small">Non-food items stay returnable while unopened, until the purchase date plus the store's window. A policy printed on the receipt always wins.
+          The typical policies below are starting points: stores change them and have exceptions, so check the receipt before relying on one.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Store</th><th scope="col" class="numeric">Days</th><th scope="col">Notes</th><th scope="col">Source</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="policy-rows"></tbody></table></div>
+        <form id="policy-form" class="inline-form">
+          <label class="inline-field">Store <input id="policy-merchant" required maxlength="80" placeholder="Walmart" autocomplete="off"></label>
+          <label class="inline-field">Days <input id="policy-days" type="number" min="0" max="730" placeholder="No limit" size="6"></label>
+          <label class="inline-field">Notes <input id="policy-note" maxlength="200" autocomplete="off"></label>
+          <button type="submit">Save policy</button></form>
       </section>
     </section>
 
@@ -175,11 +364,17 @@
       <header class="page-header"><div><h1 id="processing-title" tabindex="-1">Processing</h1>
         <p class="page-subtitle">Capture and model work run on separate queues. You can browse, move and review documents while a model is generating.</p></div></header>
       <section class="panel"><h2>Now running</h2><ul id="activity" class="activity-list"></ul></section>
+      <section class="panel"><h2>Pipeline</h2>
+        <p class="muted small">Each stage's live state and its most recent run. Reconciliation and normalization run as part of imports and extraction, not as queued jobs.</p>
+        <div id="pipeline-lanes" class="pipeline-lanes"></div></section>
+      <section class="panel"><h2>Recent work</h2>
+        <div class="toolbar"><label class="inline-field">Show <select id="job-kind"><option value="">All kinds of work</option></select></label></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Work</th><th scope="col">Started</th><th scope="col" class="numeric">Took</th>
+          <th scope="col">Result</th><th scope="col">Details</th></tr></thead><tbody id="job-rows"></tbody></table></div></section>
       <section class="panel"><h2>Capture</h2>
         <p id="inbox-location" class="path-text"></p>
-        <p class="muted small">Drop files into Inbox. While Home Manager is running, new files are captured automatically, read and filed; uncertain ones go to Unfiled. Source folders use YYYY/MM subfolders and stay read-only; captured files get organized Library copies.</p>
-        <div class="button-row"><button id="scan-inbox" class="primary" type="button" disabled>Scan Inbox</button>
-          <button id="scan" type="button" disabled>Scan source folders</button></div>
+        <p class="muted small">Drop files into Inbox. While Home Manager is running, new files are captured automatically, read and filed; uncertain ones go to Unfiled.</p>
+        <div class="button-row"><button id="scan-inbox" class="primary" type="button" disabled>Scan Inbox</button></div>
       </section>
       <section class="panel"><h2>Read documents</h2>
         <p class="muted small">Reads every preserved image and PDF with the local vision model. To read only some documents, select them in Documents.</p>
@@ -195,6 +390,8 @@
       </section>
       <section id="model-history-panel" class="panel"><h2>Model runs</h2>
         <p class="muted small">Measured per request. Token counts come from the model server when it reports them; “~” marks rates estimated from characters.</p>
+        <div class="toolbar"><label class="inline-field">Task <select id="model-task"><option value="">All tasks</option></select></label>
+          <label class="inline-field">Status <select id="model-status"><option value="">All statuses</option></select></label></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Started</th><th scope="col">Task</th><th scope="col">Model</th><th scope="col">Status</th><th scope="col" class="numeric">Prompt tokens</th><th scope="col" class="numeric">Completion tokens</th><th scope="col" class="numeric">Time to first token</th><th scope="col" class="numeric">Generation</th><th scope="col" class="numeric">Model time</th></tr></thead><tbody id="model-history"></tbody></table></div>
       </section>
     </section>
@@ -203,21 +400,21 @@
       <header class="page-header"><div><h1 id="settings-title" tabindex="-1">Settings</h1></div></header>
       <div class="settings-layout">
         <div class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
-          <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Library &amp; sources</button>
+          <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Library folder</button>
           <button id="preferences-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences-panel" tabindex="-1">Financial preferences</button>
           <button id="model-tab" type="button" role="tab" aria-selected="false" aria-controls="model-panel" tabindex="-1">Local models</button>
           <button id="checks-tab" type="button" role="tab" aria-selected="false" aria-controls="checks-panel" tabindex="-1">Independent checks</button>
+          <button id="backup-tab" type="button" role="tab" aria-selected="false" aria-controls="backup-panel" tabindex="-1">Backup &amp; restore</button>
+          <button id="sharing-tab" type="button" role="tab" aria-selected="false" aria-controls="sharing-panel" tabindex="-1">Sharing</button>
           <button id="privacy-tab" type="button" role="tab" aria-selected="false" aria-controls="privacy-panel" tabindex="-1">Privacy &amp; security</button>
         </div>
         <div class="settings-content">
           <div id="directories-panel" role="tabpanel" aria-labelledby="directories-tab">
-            <h2>Library &amp; sources</h2>
+            <h2>Library folder</h2>
             <form id="settings-form" class="form">
               <div class="field"><label for="managed">Managed library folder</label><input id="managed" required placeholder="C:\Household\managed" autocomplete="off" spellcheck="false">
                 <small>A separate empty local folder or an existing Home Manager store. Changing it switches to a different library.</small></div>
-              <div class="field"><label for="source">Source folder (read-only)</label><input id="source" required placeholder="C:\Household\sources" autocomplete="off" spellcheck="false">
-                <small>An existing folder with YYYY/MM subfolders. Home Manager reads it and never changes it.</small></div>
-              <div class="button-row"><button id="save-settings" class="primary" type="submit">Save folders</button></div>
+              <div class="button-row"><button id="save-settings" class="primary" type="submit">Save folder</button></div>
             </form>
             <p id="limits" class="muted small"></p>
           </div>
@@ -227,7 +424,13 @@
               <div class="field"><label for="home-currency">Home currency</label>
                 <select id="home-currency"><option value="">Not set: such documents stay unpublished</option><option>USD</option><option>CAD</option><option>AUD</option><option>NZD</option><option>MXN</option><option>EUR</option><option>GBP</option><option>INR</option><option>JPY</option></select>
                 <small>Used only when a document prints an amount with a symbol such as $ but no currency code, and every symbol on it can mean this currency. Nothing else is inferred. Amounts in this currency are shown with its symbol.</small></div>
-              <div class="button-row"><button id="save-household" class="primary" type="submit">Save home currency</button></div>
+              <div class="field"><label for="checkin-weekday">Weekly check-in day</label>
+                <select id="checkin-weekday"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option>
+                  <option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select>
+                <small>The day Home Manager asks which household items ran out. If the app isn't open that day, the check-in waits until you next open it.</small></div>
+              <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
+              <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
+              <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>
             </form>
           </div>
           <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
@@ -238,13 +441,17 @@
               <div class="field"><label for="vision-model">Loaded vision model ID</label><input id="vision-model" placeholder="Copy the model ID from your local server">
                 <small>An image-capable model, such as Qwen3.5-9B. It reads images and scanned pages.</small></div>
               <label class="check-field"><input id="auto-organize" type="checkbox" checked> Read newly scanned images automatically</label>
-              <div class="button-row"><button id="save-vision" class="primary" type="submit">Save vision model</button></div>
+              <div class="button-row"><button id="save-vision" class="primary" type="submit">Save vision model</button>
+                <button id="test-vision" type="button" data-test="vision">Test connection</button></div>
+              <div id="test-vision-result" class="connection-result" role="status"></div>
             </form>
             <form id="reasoning-form" class="form"><h3>Reasoning model</h3>
               <div class="field"><label for="reasoning-url">Reasoning API base URL</label><input id="reasoning-url" required value="http://127.0.0.1:1234/v1"></div>
               <div class="field"><label for="reasoning-model">Reasoning model ID</label><input id="reasoning-model" placeholder="Copy the text model ID from your local server">
                 <small>Classifies and extracts saved transcriptions. Independent of the vision model.</small></div>
-              <div class="button-row"><button id="save-reasoning" class="primary" type="submit">Save reasoning model</button></div>
+              <div class="button-row"><button id="save-reasoning" class="primary" type="submit">Save reasoning model</button>
+                <button id="test-reasoning" type="button" data-test="reasoning">Test connection</button></div>
+              <div id="test-reasoning-result" class="connection-result" role="status"></div>
             </form>
           </div>
           <div id="checks-panel" role="tabpanel" aria-labelledby="checks-tab" hidden>
@@ -256,17 +463,64 @@
             <h2>Privacy &amp; security</h2>
             <ul class="guarantees">
               <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry.</li>
-              <li><strong>Source folders are read-only.</strong> Files are copied into the managed library; originals are never moved, renamed or deleted.</li>
               <li><strong>Evidence is immutable.</strong> Every captured file is preserved under its SHA-256 hash; a changed file becomes a new version.</li>
               <li><strong>Models propose, you decide.</strong> Model output stays proposed until you verify it, and totals come from exact arithmetic, never from a model.</li>
               <li><strong>The session is locked to its launch link.</strong> Other programs on this computer can't use the interface without it.</li>
             </ul>
-            <p class="muted small">Backup to a separate location isn't available yet.</p>
+          </div>
+          <div id="backup-panel" role="tabpanel" aria-labelledby="backup-tab" hidden>
+            <h2>Back up your library</h2>
+            <p class="muted small">Copies every preserved document, reading and the ledger to a folder outside the library, with a checksum manifest. Use a separate drive for real protection.</p>
+            <form id="backup-form" class="form">
+              <div class="field"><label for="backup-destination">Back up into this existing folder</label><input id="backup-destination" required placeholder="D:\Backups\Home Manager" autocomplete="off" spellcheck="false"></div>
+              <div class="button-row"><button id="backup-start" class="primary" type="submit">Back up now</button></div>
+            </form>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Started</th><th scope="col">Result</th><th scope="col" class="numeric">Files</th>
+              <th scope="col" class="numeric">Size</th><th scope="col">Where</th></tr></thead><tbody id="backup-rows"></tbody></table></div>
+            <h2>Restore a backup</h2>
+            <p class="muted small">Checks a backup against its manifest and rebuilds it as a new library in an empty folder. Your open library is never changed; switch to the restored one in Library folder when you're ready.</p>
+            <form id="restore-form" class="form">
+              <div class="field"><label for="restore-backup">Backup folder</label><input id="restore-backup" required placeholder="D:\Backups\Home Manager\home-manager-backup-…" autocomplete="off" spellcheck="false"></div>
+              <div class="field"><label for="restore-target">Restore into this new, empty folder</label><input id="restore-target" required placeholder="C:\Household\restored" autocomplete="off" spellcheck="false"></div>
+              <div class="button-row"><button id="restore-start" type="submit">Verify and restore</button></div>
+            </form>
+            <p id="restore-status" role="status" aria-live="polite"></p>
+          </div>
+          <div id="sharing-panel" role="tabpanel" aria-labelledby="sharing-tab" hidden>
+            <h2>Share your library</h2>
+            <p class="muted small">Creates one encrypted <code>.hmshare</code> file of this library: documents, extracted text and ledger. Only someone with the passphrase can open it. Tell them the passphrase another way, such as a phone call, never in the same message as the file.</p>
+            <form id="share-form" class="form">
+              <div class="field"><label for="share-destination">Save the file in this folder</label><input id="share-destination" required placeholder="C:\Users\you\Desktop" autocomplete="off" spellcheck="false"></div>
+              <div class="field"><label for="share-label">Name shown to the recipient</label><input id="share-label" maxlength="60" placeholder="Mom's household" autocomplete="off"></div>
+              <div class="field"><label for="share-passphrase">Passphrase</label><input id="share-passphrase" type="password" required minlength="12" autocomplete="new-password">
+                <small>At least 12 characters. Four unrelated words are easy to say and hard to guess.</small></div>
+              <div class="field"><label for="share-passphrase-again">Passphrase again</label><input id="share-passphrase-again" type="password" required minlength="12" autocomplete="new-password"></div>
+              <div class="button-row"><button id="share-export" class="primary" type="submit">Create share file</button></div>
+            </form>
+            <h2>Open a shared library</h2>
+            <p class="muted small">Opens someone's <code>.hmshare</code> file as a temporary copy. Your own library is closed while you look, nothing you do reaches it, and the copy is deleted when you end the session.</p>
+            <form id="session-form" class="form">
+              <div class="field"><label for="session-file">Share file</label><input id="session-file" required placeholder="C:\Users\you\Downloads\home-manager-share-….hmshare" autocomplete="off" spellcheck="false"></div>
+              <div class="field"><label for="session-passphrase">Passphrase</label><input id="session-passphrase" type="password" required autocomplete="off"></div>
+              <div class="button-row"><button id="session-open" class="primary" type="submit">Open shared library</button></div>
+            </form>
           </div>
         </div>
       </div>
     </section>
   </main>
+  <aside id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
+    <header class="assistant-header"><h2 id="assistant-title" tabindex="-1">Ask about your household</h2>
+      <button id="close-assistant" class="icon-button quiet" type="button" aria-label="Close the assistant"></button></header>
+    <p class="muted small">Answers come only from your records, through read-only tools, and each figure is checked against what the tools returned. The page you're on is sent as context.</p>
+    <div id="assistant-log" class="assistant-log" aria-live="polite"></div>
+    <form id="assistant-form" class="assistant-form">
+      <label class="visually-hidden" for="assistant-question">Your question</label>
+      <textarea id="assistant-question" rows="3" maxlength="1000" placeholder="How much did we spend on groceries this month compared with last?"></textarea>
+      <div class="button-row"><button id="assistant-ask" class="primary" type="submit">Ask</button><small class="muted">Ctrl+Enter to send · Ctrl+J to close</small></div>
+    </form>
+    <details id="assistant-earlier" class="assistant-earlier"><summary>Earlier questions</summary><ul id="assistant-history" class="finance-list"></ul></details>
+  </aside>
 </div>
 <div id="toasts" class="toast-region" aria-live="polite"></div>
 <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
@@ -313,6 +567,37 @@
   <p id="import-status" role="status" aria-live="polite"></p>
   <ul id="import-issues" class="analysis-limitations"></ul>
   <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Row</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="numeric">Amount</th></tr></thead><tbody id="import-preview"></tbody></table></div>
+</dialog>
+<dialog id="tx-drawer" class="drawer" aria-labelledby="tx-drawer-title">
+  <div class="dialog-heading"><h2 id="tx-drawer-title">Transaction</h2><button id="close-tx-drawer" class="secondary" type="button">Close</button></div>
+  <div id="tx-drawer-body"></div>
+</dialog>
+<dialog id="item-dialog" aria-labelledby="item-dialog-title">
+  <form id="item-form">
+    <h2 id="item-dialog-title">Approve with changes</h2>
+    <p id="item-dialog-line" class="muted small"></p>
+    <div class="field"><label for="item-name">Product</label><input id="item-name" required maxlength="160" autocomplete="off"></div>
+    <div class="inline"><div class="field"><label for="item-brand">Brand</label><input id="item-brand" maxlength="80" autocomplete="off"></div>
+      <div class="field"><label for="item-size">Size</label><input id="item-size" maxlength="40" autocomplete="off"></div></div>
+    <div class="field"><label for="item-category">Category</label><select id="item-category"></select></div>
+    <label class="check-field"><input id="item-consumable" type="checkbox"> Runs out (food, cleaning supplies, toiletries)</label>
+    <p id="item-dialog-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button id="cancel-item" type="button">Cancel</button><button class="primary" type="submit">Approve</button></div>
+  </form>
+</dialog>
+<dialog id="warranty-dialog" aria-labelledby="warranty-dialog-title">
+  <form id="warranty-form">
+    <h2 id="warranty-dialog-title">Add a warranty</h2>
+    <p id="warranty-dialog-item" class="muted small"></p>
+    <div class="field"><label for="warranty-kind">Kind</label><select id="warranty-kind"><option value="manufacturer">Manufacturer's warranty</option>
+      <option value="store">Store warranty</option><option value="extended">Extended warranty or protection plan</option></select></div>
+    <div class="field"><label for="warranty-months">Length in months</label><input id="warranty-months" type="number" min="1" max="600" placeholder="12">
+      <small>From the purchase date. For two years, enter 24.</small></div>
+    <label class="check-field"><input id="warranty-lifetime" type="checkbox"> Lifetime warranty</label>
+    <div class="field"><label for="warranty-note">Note</label><input id="warranty-note" maxlength="200" placeholder="Registration number, claim phone…" autocomplete="off"></div>
+    <p id="warranty-dialog-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button id="cancel-warranty" type="button">Cancel</button><button class="primary" type="submit">Save warranty</button></div>
+  </form>
 </dialog>
 <dialog id="versions-dialog" aria-labelledby="versions-title"><h2 id="versions-title">Preserved versions</h2><p id="versions-path"></p><div id="versions-content"></div><div class="dialog-actions"><button id="close-versions" type="button">Close</button></div></dialog>
 </body>

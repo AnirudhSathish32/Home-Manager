@@ -11,6 +11,8 @@ dependencies = [
   "fastapi==0.141.1", "uvicorn==0.53.0", "pydantic==2.13.5",
   "pillow==12.3.0", "zxing-cpp==3.1.1",
   "numpy==2.5.3", "pypdfium2==5.13.0",
+  # Encrypted .hmshare files: AES-256-GCM and scrypt.
+  "cryptography==46.0.3",
 ]
 
 [project.optional-dependencies]

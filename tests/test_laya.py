@@ -79,7 +79,7 @@ def test_laya_runs_on_every_extraction_and_a_doubted_value_sends_the_record_to_r
     # A doubted value is a veto; the shadow classification alone is not (its scores are not calibrated for these documents).
     assert record["review_status"] == "needs_review"
     assert record["issues"] == ["Merchant: the independent check could not confirm it from its cited text."]
-    assert manager.store.documents(manager.source)["items"][0]["folder"] == "Receipts"  # Filing unaffected.
+    assert manager.store.documents()["items"][0]["folder"] == "Receipts"  # Filing unaffected.
     assert [row["model_id"] for row in manager.store.model_runs(run["id"])][:2] == ["laya (in-process)"] * 2
     # Confirming the merchant answers the doubt, and the record passes the automatic checks.
     record = manager.ledger.correct("receipt", receipt_id, {"merchant": "Local Test Cafe"})
@@ -115,7 +115,7 @@ def test_laya_audit_review_is_advisory_and_never_blocks_filing(receipt):
         run = {"status": "succeeded", "parse_run_id": parse_id, "result": analysis,
                "review": {"status": status, "result": result, "config_json": ReviewerConfig(provider=reviewer, model="m").model_dump_json()}}
         manager.store.library.file_analysis(doc["id"], run)
-        return manager.store.documents(manager.source)["items"][0]["folder"]
+        return manager.store.documents()["items"][0]["folder"]
 
     assert filed("chat", "failed", None) == "Unfiled"  # A failed chat reviewer still blocks automatic filing.
     assert filed("laya", "failed", None) == "Receipts"  # A failed or doubtful Laya review never does.

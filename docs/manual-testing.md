@@ -15,26 +15,15 @@ Dependencies are already installed in this workspace. On a new checkout, create 
 
 Open the private `http://127.0.0.1:8765/#token=...` link printed by the launcher. It grants access to this running session; do not share it. The page removes the fragment from its address and stores the token in that browser tab's session storage. A new server launch needs its new link. The server binds only to loopback and rejects other Host/Origin values. Stop it with Ctrl+C. Normal shutdown waits for an active scan; force termination is recovered on the next launch.
 
-No browser is opened automatically. If port 8765 is busy, run with `--port 8766`. Settings normally live in `%LOCALAPPDATA%\HomeManager\settings.json`. `--control-dir C:\SomeDedicatedFolder` selects a different settings location; it must remain separate from source/managed directories. Only one process can own a settings directory or managed store at a time.
+No browser is opened automatically. If port 8765 is busy, run with `--port 8766`. Settings normally live in `%LOCALAPPDATA%\HomeManager\settings.json`. `--control-dir C:\SomeDedicatedFolder` selects a different settings location; it must remain separate from the library folder. Only one process can own a settings directory or managed store at a time.
 
-## Choose directories in the UI
+## Choose the library folder
 
-Open **Settings → Library & sources** in the sidebar. Model settings live under **Settings → Local models**. See [the folder browser and Trash](library-browser.md) for automatic post-scan organization and deletion/restoration.
+Open **Settings → Library folder** in the sidebar. Model settings live under **Settings → Local models**. See [the folder browser and Trash](library-browser.md) for automatic filing and deletion/restoration.
 
-For example:
+Set **Managed library folder** to a separate empty folder (the app can create it) or a store this app already initialized, for example `C:\Household\managed`. Paste an absolute path; native folder-picker integration is deferred. Keep it outside the repository, application settings, shared/cloud-synced folders and network drives. Existing nonempty personal folders cannot be selected as managed stores. Windows links/junctions/reparse points are rejected. Use a local filesystem with hard-link support, such as NTFS; captured bytes are published through an internal hard link for atomic no-overwrite publication.
 
-```text
-C:\Household\sources\2026\09\statement.csv
-C:\Household\sources\2026\09\credit-card.xlsx
-C:\Household\sources\2026\09\receipt.jpg
-C:\Household\managed\
-```
-
-Set **Source directory** to `C:\Household\sources`, not to the individual month. It must exist. Set **Managed-data directory** to a separate empty folder (the app can create it) or a store this app already initialized. Paste absolute paths; native folder-picker integration is deferred. Keep these locations outside the repository, application settings, shared/cloud-synced folders and network drives. Existing nonempty personal folders cannot be selected as managed stores.
-
-The source directory is read only to the application. The app creates its marker, process lock, SQLite inventory, `originals/` and `work/` only in managed storage. Source and managed paths cannot overlap; Windows links/junctions/reparse points are rejected. Use a local filesystem with hard-link support, such as NTFS. Captured bytes are published using an internal hard link for atomic no-overwrite publication; originals are never hard-linked to source files.
-
-Changing managed directories selects a different independent library; it does not migrate or delete the previous one. Changing the source directory preserves older source history in the same database; the document list shows the currently selected root. Settings cannot change during a scan.
+Documents enter the library only through its Inbox, `<library>\Library\Inbox`. Drop files directly into it (no subfolders). While the app runs, new files are captured automatically; **Processing → Scan Inbox** captures them at once. Changing the library folder selects a different independent library; it does not migrate or delete the previous one. Settings cannot change during a scan.
 
 ## Manual checks
 
@@ -42,17 +31,16 @@ Use copies of your documents when deliberately testing edits, rename or deletion
 
 | Action | Expected result |
 | --- | --- |
-| Add supported files beneath `2026/09`, save directories, then scan | `captured` entries and hashes in the document library; inputs unchanged |
+| Drop supported files into Inbox, then scan | `captured` entries and hashes in the document library |
 | Scan again without editing anything | `unchanged`; no additional preserved blob or version |
-| Copy identical bytes to a new filename or month | `duplicate`; distinct source path, same content hash and shared preserved bytes |
-| Edit a source file at the same path and rescan | `new_version`; View versions shows both hashes |
-| Rename a file and scan all relevant months | New occurrence reuses existing bytes; old path becomes `missing` |
-| Delete a source copy and rescan | `missing`; original captures and previous versions remain |
-| Scan only September after moving a file out of August | Only September's selected scope is assessed for missing files; scan August/all months to reconcile the old path |
-| Leave a `.part`, `.tmp`, or `~$` file in the month | `ignored`, not captured |
-| Add a PDF, legacy XLS or another unsupported extension | `unsupported`, visible in scan results; no capture |
-| Add a file outside YYYY/MM or beneath month `13` | `invalid_folder`; invalid folders are not traversed |
-| Keep a source file open for writing while scanning | File may be `deferred` due to Windows sharing; close the writer and rescan |
+| Drop identical bytes under a new filename | `duplicate`; same content hash and shared preserved bytes |
+| Edit an Inbox file in place and rescan | `new_version`; View versions shows both hashes |
+| Rename an Inbox file and rescan | New occurrence reuses existing bytes; old name becomes `missing` |
+| Delete an Inbox file before it is filed, then rescan | `missing`; captures and previous versions remain |
+| Leave a `.part`, `.tmp`, or `~$` file in Inbox | `ignored`, not captured |
+| Add a legacy XLS or another unsupported extension | `unsupported`, visible in scan results; no capture |
+| Put a folder inside Inbox | `invalid_folder`; subfolders are not traversed |
+| Keep an Inbox file open for writing while scanning | File may be `deferred` due to Windows sharing; close the writer and rescan |
 | Restart the app | Settings, inventory, versions and scan history persist |
 
 Use **View versions** to inspect each content hash or open a historical receipt image. The `originals/<first-two-hash-characters>/<sha256>.blob` file contains exactly the captured bytes; its extension is intentionally neutral. The receipt viewer supports PNG/JPEG only. You can verify a preserved file's hash using PowerShell `Get-FileHash -Algorithm SHA256 -LiteralPath '...'`.

@@ -18,6 +18,7 @@ import uuid
 from pydantic import Field, ValidationError, create_model, model_validator
 
 from .finance import Ledger, normalize_name
+from .items import printed_return_days
 from .jobs import Cancelled, Work
 from .laya_runtime import LAYA_REVISION, SUPPORT_THRESHOLD
 from .managed_library import iso_date
@@ -39,27 +40,42 @@ HEADERS = {
                               "purchases", "fees", "interest", "statement_balance", "minimum_payment", "due_date", "currency"),
     "bill": ("provider", "account_reference", "issue_date", "due_date", "period_start", "period_end", "amount_due", "currency"),
     "income": ("payer_or_employer", "pay_date", "period_start", "period_end", "gross_pay", "net_pay", "taxes", "deductions", "currency"),
+    # Statement values for the forecast's assets and loans (docs/items-assets-search.md §6).
+    "investment_statement": ("institution", "account_name", "account_reference", "period_end", "ending_value", "currency"),
+    "loan_document": ("institution", "account_name", "account_reference", "period_end", "principal_balance", "interest_rate", "monthly_payment", "currency"),
 }
+# interest_rate is a percentage, not money; it is listed so its value must be printed in its citation.
 AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
-           "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "gross_pay", "net_pay", "taxes", "deductions"}
+           "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "gross_pay", "net_pay", "taxes", "deductions",
+           "ending_value", "principal_balance", "monthly_payment", "interest_rate"}
+ASSET_KINDS = ("investment_statement", "loan_document")
+RETIREMENT = re.compile(r"\b(?:401\s*\(?K\)?|403\s*\(?B\)?|457|IRA|ROTH|SEP|PENSION|RETIREMENT|TSP|THRIFT SAVINGS)\b", re.IGNORECASE)
+BONDS = re.compile(r"\b(?:BONDS?|TREASURY|TREASURIES|T-?BILLS?)\b", re.IGNORECASE)
+PERCENT = re.compile(r"(\d{1,2}(?:\.\d{1,4})?)\s*%")
 DATES = {"purchase_date", "period_start", "period_end", "due_date", "issue_date", "pay_date"}
 # Identity names must share a word with their citation; they feed filenames and merchants.
 NAMES = {"merchant", "institution", "issuer", "provider", "payer_or_employer"}
 # Identifying fields that may be dropped (with a review note) rather than fail a document.
 DROPPABLE = NAMES | DATES | {"document_date", "currency", "account_reference"}
 LABELS = {"receipt": "receipt", "bank_statement": "bank statement", "credit_card_statement": "credit card statement",
-          "bill": "bill or invoice", "income": "pay stub or income statement"}
+          "bill": "bill or invoice", "income": "pay stub or income statement",
+          "investment_statement": "investment, brokerage or retirement account statement (account_name is the account's printed name or type, "
+                                  "such as Roth IRA or Individual Brokerage; ending_value is the total account value at the statement date)",
+          "loan_document": "loan statement for a mortgage, auto, student or personal loan (principal_balance is the unpaid principal; "
+                           "interest_rate is the printed annual rate with its % sign; monthly_payment is the regular scheduled payment)"}
 # Automatic acceptance: fields a record needs before it can count without the user.
 REQUIRED = {"receipt": ("merchant", "purchase_date", "total_minor"), "bank_statement": ("institution", "period_end", "closing_balance_minor"),
             "credit_card_statement": ("institution", "period_end", "statement_balance_minor"), "bill": ("provider", "due_date", "amount_due_minor"),
-            "income": ("payer_or_employer", "pay_date", "net_pay_minor")}
+            "income": ("payer_or_employer", "pay_date", "net_pay_minor"),
+            "investment_statement": ("institution", "period_end", "ending_value_minor"), "loan_document": ("institution", "period_end", "principal_balance_minor")}
 # Kinds whose amounts must pass at least one arithmetic cross-check to count without the user.
 CROSS_CHECKED = {"receipt": "Amounts could not be cross-checked: the subtotal, tax and tip do not add up to a printed total, and item lines do not add up to the subtotal.",
                  "bank_statement": "Balances could not be reconciled: the opening balance and transactions were not all read, or do not reach the closing balance.",
                  "credit_card_statement": "Balances could not be reconciled: the previous balance and transactions were not all read, or do not reach the statement balance."}
 # (merchant field, date field) used for managed filenames.
 IDENTITY = {"receipt": ("merchant", "purchase_date"), "bank_statement": ("institution", "period_end"),
-            "credit_card_statement": ("issuer", "period_end"), "bill": ("provider", "issue_date"), "income": ("payer_or_employer", "pay_date")}
+            "credit_card_statement": ("issuer", "period_end"), "bill": ("provider", "issue_date"), "income": ("payer_or_employer", "pay_date"),
+            "investment_statement": ("institution", "period_end"), "loan_document": ("institution", "period_end")}
 
 
 class Value(StrictModel):
@@ -362,7 +378,9 @@ def normalize(kind, header, rows, currency):
         text = field.value.strip() if field.status == "proposed" else None
         if field.status == "ambiguous" and not (name == "currency" and currency):  # Resolved from an account or your setting.
             issues.append(f"{name.replace('_', ' ').capitalize()} is ambiguous in the document.")
-        if name in AMOUNTS:
+        if name == "interest_rate":
+            record["interest_rate_text"] = text
+        elif name in AMOUNTS:
             record[name + "_minor"] = money(text, name.replace("_", " ").capitalize())
         elif name in DATES:
             record[name] = iso_date(text)
@@ -436,6 +454,31 @@ def normalize(kind, header, rows, currency):
                 issues.append("Gross pay minus taxes and deductions does not equal net pay.")
             else:
                 record["cross_checks"] += 1
+    elif kind == "investment_statement":
+        # Retirement and bond accounts are told apart only by printed words, never guessed.
+        names = f"{record.get('account_name') or ''} {record.get('institution') or ''}"
+        record["asset_kind"] = "retirement" if RETIREMENT.search(names) else "bond" if BONDS.search(names) else "investment"
+        record["value_minor"] = record.get("ending_value_minor")
+        if record["value_minor"] is not None and record["value_minor"] < 0:
+            issues.append("The ending value is negative; an investment account's value can't be below zero.")
+            record["value_minor"] = None
+    elif kind == "loan_document":
+        record["asset_kind"] = "loan"
+        balance = record.get("principal_balance_minor")
+        record["value_minor"] = abs(balance) if balance is not None else None
+        payment = record.get("monthly_payment_minor")
+        record["monthly_payment_minor"] = abs(payment) if payment is not None else None
+        record["annual_rate_bp"] = None
+        rate_text = record.pop("interest_rate_text", None)
+        match = PERCENT.search(rate_text or "")
+        if rate_text and not match:
+            issues.append("Interest rate is not printed as a percentage.")
+        elif match:
+            basis_points = Decimal(match.group(1)) * 100  # Exact: "6.25" -> 625.
+            if basis_points != basis_points.to_integral_value():
+                issues.append(f"Interest rate {match.group(1)}% has more than two decimals; it was rounded to {basis_points.quantize(Decimal(1)) / 100}%.")
+            record["annual_rate_bp"] = int(basis_points.quantize(Decimal(1)))
+    record.pop("interest_rate_text", None)
     record["issues"] = issues
     return record, issues
 
@@ -643,6 +686,8 @@ class ExtractionService:
         record["description"] = description
         record["location"] = (identity or {}).get("location")
         record["merchant_inferred_from"] = (identity or {}).get("inferred_from")
+        if kind == "receipt":  # A return policy printed on the receipt; found in code, not by the model.
+            record["return_days_printed"], record["return_policy_quote"] = printed_return_days(line.text for line in lines)
         issues.extend(notes)  # Dropped identifying fields need a person to check them.
         issues.extend(review_reasons(kind, record, laya, issues))
         if record_notes:
@@ -655,6 +700,12 @@ class ExtractionService:
             return record, {"status": "blocked", "reason": "Currency could not be resolved, so nothing was published. Check the currency in the document text and your home currency in Settings, then extract again."}
         if kind in ("bank_statement", "credit_card_statement") and not record["institution"]:
             return record, {"status": "blocked", "reason": "The statement's institution is unresolved: nothing was published."}
+        if kind in ASSET_KINDS:
+            if not record.get("institution") or record.get("value_minor") is None or not record.get("period_end"):
+                return record, {"status": "blocked", "reason": "The institution, statement date or " + ("ending value" if kind == "investment_statement" else "principal balance")
+                                + " was not found, so no asset was recorded."}
+            # Statement values always wait for the user, whatever the checks found.
+            return record, {**self.ledger.publish_asset(record, source), "review_status": "proposed"}
         publish = {"receipt": self.ledger.publish_receipt, "bank_statement": self.ledger.publish_statement, "credit_card_statement": self.ledger.publish_statement,
                    "bill": self.ledger.publish_bill, "income": self.ledger.publish_income}[kind]
         return record, {**publish(record, source, status), "review_status": status}

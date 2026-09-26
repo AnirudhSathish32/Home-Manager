@@ -1,3 +1,4 @@
+from conftest import inbox_scan
 import base64
 from pathlib import Path
 import sqlite3
@@ -34,16 +35,13 @@ def make_receipt(path, texts=None):
 
 @pytest.fixture
 def receipt_store(tmp_path):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
+    with_store = Store(tmp_path / "managed")
+    month = with_store.library.inbox
     image = month / "receipt.png"
     payload = make_receipt(image)
-    with_store = Store(tmp_path / "managed")
-    job = with_store.create_job(source)
-    Scanner(with_store, ScanLimits(stability_seconds=0)).run(job, source)
-    document = with_store.documents(source)["items"][0]
-    yield source, with_store, document, payload
+    inbox_scan(with_store)
+    document = with_store.documents()["items"][0]
+    yield month, with_store, document, payload
     with_store.close()
 
 
@@ -82,14 +80,12 @@ def test_vision_and_real_qr_persist_exact_evidence(receipt_store, local_model):
 
 
 def test_invalid_image_failure_is_not_empty_success(tmp_path, local_model):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    (month / "bad.jpg").write_bytes(b"not an image")
     store = Store(tmp_path / "managed")
+    month = store.library.inbox
+    (month / "bad.jpg").write_bytes(b"not an image")
     try:
-        Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-        doc = store.documents(source)["items"][0]
+        inbox_scan(store)
+        doc = store.documents()["items"][0]
         service = ReceiptService(store)
         run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
         service.run(run_id)

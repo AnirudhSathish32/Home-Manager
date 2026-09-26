@@ -6,7 +6,6 @@ from decimal import Decimal, ROUND_HALF_EVEN
 from .finance import COUNTABLE
 from .finance_tools import FinanceTools, PeriodInput, CompareInput, AsOfInput, month_index, month_label, last_day, scope_of, totals_view
 from .money import money, currency_code
-from .paths import path_key
 from .storage import now, WORK_FILTERS
 
 
@@ -22,7 +21,7 @@ class SnapshotStore:
         return getattr(self.store, name)
 
 
-def dashboard(store, source, month, months=6, currency=None, home_currency=None, today=None):
+def dashboard(store, month, months=6, currency=None, home_currency=None, today=None):
     today = today or date.today()
     if months not in (6, 12):
         raise ValueError("Choose a six- or twelve-month trend.")
@@ -71,9 +70,7 @@ def dashboard(store, source, month, months=6, currency=None, home_currency=None,
         unmatched = tools.get_unmatched_receipts(period)
         unmatched_total = pick(unmatched["by_currency"])
         queue = tools.review_queue()
-        ready = db.execute(store.library_query() + "SELECT count(*) FROM library WHERE source_root IN (?,?) AND deleted_at IS NULL "
-                           f"AND {WORK_FILTERS['ready_for_ledger']}",
-                           (path_key(source), path_key(store.library.inbox))).fetchone()[0]
+        ready = db.execute(store.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {WORK_FILTERS['ready_for_ledger']}").fetchone()[0]
         bill_result = tools.get_upcoming_bills(AsOfInput(as_of=today.isoformat(), days=30))
         bills = [row for row in bill_result["bills"] if row["currency"] == chosen and row["payment_state"] not in ("paid", "payment_found")]
         coverage = [dict(row) for row in db.execute(f"SELECT a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions "

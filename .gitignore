@@ -11,3 +11,6 @@ dist/
 .runtime/
 private-data/
 *.log
+
+.claude/settings.local.json
+.claude/memory/

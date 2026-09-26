@@ -5,7 +5,7 @@ PNG/JPEG extraction uses the configured local vision model for every new run. It
 ## Operation
 
 1. Start a local image-capable server. In **Settings → Local model**, save its loopback URL and model ID. It must support streaming chat completions, image input and JSON-schema output. The app does not download or load weights.
-2. Scan source folders. With automatic extraction enabled, newly captured PNG/JPEG images are transcribed sequentially. Without a model, capture still works; extraction requires configuration and never falls back to OCR.
+2. Drop documents into Inbox. With automatic extraction enabled, newly captured PNG/JPEG images are transcribed sequentially. Without a model, capture still works; extraction requires configuration and never falls back to OCR.
 3. Use **Processing → Read all documents** (or **Read selected** in Documents) for existing captures. Matching results are reused unless reprocessing is selected. The new prompt version causes older OCR/title/field runs to be transcribed anew. Identical bytes share one run.
 4. Open the document page (select its name in Documents) to compare the complete returned transcription with the preserved image. Rotate and create a new reading under **History** when needed. Independently decoded QR/barcode payloads are appended as inert text; links are never followed.
 5. Use **Move** for manual filing. New documents remain Unfiled until moved.

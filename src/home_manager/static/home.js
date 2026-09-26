@@ -1,6 +1,7 @@
 "use strict";
 let homeLoad = 0, homeMonths = 6;
-const CHART_COLORS = ["#2B5A8A", "#267D78", "#96623C", "#7865A1", "#AC5266", "#557D3F"];
+// Categorical slots 1–6 of the validated palette (forecast-charts skill); the legend and table view relieve the contrast warning.
+const CHART_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"];
 const categoryColors = new Map();
 function localMonth() {
   const now = new Date();
@@ -10,7 +11,7 @@ function homeLink(text, href, className = "") {
   const link = element("a", text, className); link.href = href; return link;
 }
 function financeHref(data, extra = {}) {
-  return `#/finances?${new URLSearchParams({start: data.period.start, end: data.period.end, currency: data.currency, ...extra})}`;
+  return `#/transactions?${new URLSearchParams({start: data.period.start, end: data.period.end, currency: data.currency, ...extra})}`;
 }
 function chartNode(tag, attributes = {}, text = null) {
   const node = document.createElementNS(SVG, tag);
@@ -76,9 +77,9 @@ function homeTrend(data) {
       const x = 45 + index * step, value = row.totals?.net_spending.minor;
       const label = `${row.month}${row.partial ? " (partial)" : ""}: ${row.totals?.net_spending.display || "No recorded transactions"}`;
       if (row.totals) {
-        const link = chartNode("a", {href: financeHref(data, {start: row.start, end: row.end, metric: "spending", section: "transactions"}), "aria-label": label, tabindex: "0"});
+        const link = chartNode("a", {href: financeHref(data, {start: row.start, end: row.end, metric: "spending"}), "aria-label": label, tabindex: "0"});
         const rect = chartNode("rect", {x, y: Math.min(y(value), zero) - (value === 0 ? 1 : 0), width: step - 12,
-          height: Math.max(2, Math.abs(y(value) - zero)), rx: 3, fill: row.partial ? "#E8EFF7" : "#2B5A8A", stroke: "#2B5A8A", "stroke-width": 2});
+          height: Math.max(2, Math.abs(y(value) - zero)), rx: 3, fill: row.partial ? "#dbe8f8" : "#2a78d6", stroke: "#2a78d6", "stroke-width": 2});
         if (row.partial) rect.setAttribute("stroke-dasharray", "4 3");
         link.append(chartNode("title", {}, `${label}; spent ${row.totals.spending.display}; refunds ${row.totals.refunds.display}; ${row.totals.transactions} transactions`), rect);
         svg.append(link);
@@ -90,7 +91,7 @@ function homeTrend(data) {
     panel.append(element("p", `${data.series[0].month} – ${data.series.at(-1).month}. Outlined bars show a partial month.`, "muted small"));
   }
   panel.append(homeTable(["Month", "Spent", "Refunded", "Net", "Transactions"], data.series.map(row => [
-    homeLink(row.month + (row.partial ? " (partial)" : ""), financeHref(data, {start: row.start, end: row.end, metric: "spending", section: "transactions"})),
+    homeLink(row.month + (row.partial ? " (partial)" : ""), financeHref(data, {start: row.start, end: row.end, metric: "spending"})),
     row.totals?.spending.display || "No data", row.totals?.refunds.display || "—", row.totals?.net_spending.display || "—", String(row.totals?.transactions ?? "—")])));
   return panel;
 }
@@ -108,7 +109,7 @@ function categoryColor(name) {
 }
 function homeCategories(data) {
   const panel = homePanel("Spending by category", `${data.month} · Before refunds`);
-  const href = row => financeHref(data, {metric: "categories", categories: JSON.stringify(row.members), section: "transactions"});
+  const href = row => financeHref(data, {metric: "categories", categories: JSON.stringify(row.members)});
   if (data.gross.minor <= 0 || data.categories.some(row => row.spending.minor < 0)) {
     panel.append(emptyState(data.categories.length ? "Category totals include adjustments. See the exact amounts in the table below." : "No category spending recorded for this period."));
   } else {
@@ -142,17 +143,17 @@ function renderHome(data) {
   const content = $("home-content"), metrics = element("div", "", "home-metrics");
   const compare = data.comparison;
   const note = compare ? `Previous period ${compare.first.display}; change ${compare.change.display}${compare.percent_change === null ? "" : ` (${compare.percent_change}%)`}. ${data.previous_period.start} – ${data.previous_period.end}.` : "No recorded spending in the comparison period.";
-  metrics.append(homeMetric("Net spending", data.totals?.net_spending, note, financeHref(data, {metric: "spending", section: "transactions"})),
-    homeMetric("Money in", data.cashflow?.inflow, "Counted inflows for this period", financeHref(data, {metric: "inflow", section: "transactions"})),
-    homeMetric("Net cash flow", data.cashflow?.net, "Inflows less outflows · not an account balance", financeHref(data, {metric: "cashflow", section: "transactions"})));
+  metrics.append(homeMetric("Net spending", data.totals?.net_spending, note, financeHref(data, {metric: "spending"})),
+    homeMetric("Money in", data.cashflow?.inflow, "Counted inflows for this period", financeHref(data, {metric: "inflow"})),
+    homeMetric("Net cash flow", data.cashflow?.net, "Inflows less outflows · not an account balance", financeHref(data, {metric: "cashflow"})));
   const charts = element("div", "", "home-charts"); charts.append(homeTrend(data), homeCategories(data));
   const bottom = element("div", "", "home-bottom"), attention = homePanel("Needs attention", "Receipts remain separate from counted spending.");
   const list = element("ul", "", "finance-list"), counts = data.attention;
   const rows = [
-    [`${counts.unmatched?.receipts || 0} unmatched receipts${counts.unmatched ? ` · ${counts.unmatched.total.display}` : ""}`, financeHref(data, {section: "unmatched"}), "Selected period · not included in spending"],
-    [`${counts.undated} receipts without a purchase date`, financeHref(data, {section: "unmatched"}), `${data.currency} · all dates`],
-    [`${counts.records} financial records awaiting review`, "#/finances?section=review", "All dates and currencies"],
-    [`${counts.links} proposed matches · ${counts.issues} unresolved questions`, "#/finances?section=review", "All dates and currencies"],
+    [`${counts.unmatched?.receipts || 0} unmatched receipts${counts.unmatched ? ` · ${counts.unmatched.total.display}` : ""}`, "#/review", "Selected period · not included in spending"],
+    [`${counts.undated} receipts without a purchase date`, "#/review", `${data.currency} · all dates`],
+    [`${counts.records} financial records awaiting review`, "#/review", "All dates and currencies"],
+    [`${counts.links} proposed matches · ${counts.issues} unresolved questions`, "#/review", "All dates and currencies"],
     [`${counts.ready} documents ready to record`, "#/documents?status=ready_for_ledger", "All dates"]];
   for (const [label, href, note] of rows) { const li = document.createElement("li"); li.append(homeLink(label, href), element("small", note, "muted")); list.append(li); }
   attention.append(list);
@@ -165,14 +166,60 @@ function renderHome(data) {
     bills.append(ul);
   }
   if (!data.bills.total) bills.append(emptyState("No unpaid bills recorded as due soon."));
-  bills.append(homeLink(`View all bills (${data.bills.total} due or overdue)`, `#/finances?section=bills&as_of=${data.bills.as_of}&currency=${data.currency}`, "home-footer"));
+  bills.append(homeLink(`View all bills (${data.bills.total} due or overdue)`, "#/bills", "home-footer"));
   bottom.append(attention, bills);
+  const household = element("div", "", "home-bottom"); household.id = "home-extras";
   const coverage = homePanel("What these numbers cover", `${data.period.start} – ${data.period.end} · ${data.currency}`);
   coverage.append(element("p", data.coverage.map(row => `${row.display_name}: ${row.first} to ${row.last} (${row.transactions} counted transactions)`).join("; ") || "No counted account transactions in this period.", "muted small"));
   if (data.pending) coverage.append(element("p", `${data.pending.amount.display} across ${data.pending.transactions} transactions awaits review and is not counted.`, "item-warning"));
   coverage.append(element("p", "Totals reflect recorded transactions, not all household spending. Transfers and card payments are excluded from spending. Each currency is shown separately.", "muted small"));
   if (!data.totals && counts.unmatched) coverage.append(element("p", "Receipts are recorded, but need matching bank or card transactions before they appear in spending."));
-  content.replaceChildren(metrics, charts, bottom, coverage);
+  content.replaceChildren(metrics, charts, bottom, household, coverage);
+  renderHomeExtras(data.month).catch(() => {});  // Budgets and the check-in load on their own; the dashboard never waits for them.
+}
+async function renderHomeExtras(month = $("home-month").value) {
+  const target = $("home-extras");
+  if (!target) return;
+  const [budgets, checkin, returns, warranties] = await Promise.all([tool("get_budgets", {month, as_of: todayIso()}), api("/api/inventory/checkin"),
+    api("/api/inventory/returns"), api("/api/warranties/expiring")]);
+  const cards = [];
+  if (warranties.length) {
+    const card = homePanel("Warranties ending soon", "Within the next 60 days");
+    const list = element("ul", "", "finance-list");
+    for (const warranty of warranties.slice(0, 6)) {
+      const li = document.createElement("li");
+      li.append(homeLink([warranty.brand, warranty.name].filter(Boolean).join(" "), `#/inventory?${new URLSearchParams({q: warranty.name})}`),
+                element("small", `${statusLabel(warranty.kind)} warranty ends ${dateText(warranty.expires_on)}`, "muted"));
+      list.append(li);
+    }
+    card.append(list); cards.push(card);
+  }
+  if (returns.length) {
+    const card = homePanel("Return windows closing", "Unopened items you can still return in the next two weeks");
+    const list = element("ul", "", "finance-list");
+    for (const lot of returns.slice(0, 6)) {
+      const li = document.createElement("li");
+      li.append(homeLink(productName(lot), `#/inventory?${new URLSearchParams({q: lot.name})}`), element("small", `Return by ${dateText(lot.return_by)}${lot.merchant ? ` · ${lot.merchant}` : ""}`, "muted"));
+      list.append(li);
+    }
+    card.append(list, homeLink("Inventory", "#/inventory", "home-footer")); cards.push(card);
+  }
+  if (budgets.budgets.length) {
+    const card = homePanel("Budgets", `${month}${budgets.elapsed_days && budgets.elapsed_days < budgets.days ? ` · day ${budgets.elapsed_days} of ${budgets.days}` : ""}`);
+    const list = element("ul", "", "finance-list");
+    for (const row of budgets.budgets) {
+      const li = element("li", "", "budget-row");
+      const head = element("div", "", "budget-head"); head.append(homeLink(row.category, "#/spending"), statusBadge(row.status));
+      li.append(head, meter(row), element("small", `${row.spent.display} of ${row.budget.display}`, "muted")); list.append(li);
+    }
+    card.append(list, homeLink("Spending & budgets", "#/spending", "home-footer")); cards.push(card);
+  }
+  if (checkin.lots.length) {
+    const card = homePanel("Weekly check-in"), body = element("div");
+    renderCheckin(body, checkin, {compact: true}); card.append(body); cards.push(card);
+  }
+  target.replaceChildren(...cards);
+  target.hidden = !cards.length;
 }
 async function loadHome() {
   const load = ++homeLoad;

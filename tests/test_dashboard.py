@@ -21,7 +21,7 @@ def test_dashboard_totals_categories_series_and_drilldowns(books):
         db.execute("UPDATE transactions SET category='groceries' WHERE id=?", (ids[2],))
     pending = add(store, ledger, account, docs["export.csv"], [("2026-09-10", "PENDING", -500)], origin="extraction")
     receipt(ledger, docs["receipt.png"], "Unmatched cafe", "2026-09-10", 2500)
-    result = dashboard(store, store.root.parent / "source", "2026-09", today=date(2026, 9, 25))
+    result = dashboard(store, "2026-09", today=date(2026, 9, 25))
     assert result["totals"]["net_spending"]["minor"] == 4000
     assert result["gross"]["minor"] == 5000
     assert result["cashflow"]["inflow"]["minor"] == 20000
@@ -48,7 +48,7 @@ def test_dashboard_other_uncategorized_and_currency_separation(books):
         for index, transaction_id in enumerate(ids[:-1]):
             db.execute("UPDATE transactions SET category=? WHERE id=?", (f"category {index}", transaction_id))
         db.execute("UPDATE transactions SET currency='EUR' WHERE id=?", (ids[0],))
-    result = dashboard(store, store.root.parent / "source", "2026-09", currency="USD", today=date(2026, 9, 25))
+    result = dashboard(store, "2026-09", currency="USD", today=date(2026, 9, 25))
     assert result["currencies"] == ["EUR", "USD"]
     assert result["gross"]["minor"] == 3500
     assert {row["category"] for row in result["categories"]} >= {"Other", "uncategorized"}
@@ -56,7 +56,7 @@ def test_dashboard_other_uncategorized_and_currency_separation(books):
     other = next(row for row in result["categories"] if row["category"] == "Other")
     rows = FinanceTools(store).get_transactions(TransactionsInput(currency="USD", metric="categories", categories=other["members"]))
     assert -sum(row["amount_minor"] for row in rows["transactions"]) == other["spending"]["minor"]
-    euro = dashboard(store, store.root.parent / "source", "2026-09", currency="EUR", today=date(2026, 9, 25))
+    euro = dashboard(store, "2026-09", currency="EUR", today=date(2026, 9, 25))
     assert euro["totals"]["net_spending"]["minor"] == 100
 
 
@@ -65,7 +65,7 @@ def test_dashboard_api_auth_and_empty_state(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        app.state.manager.configure(str(source), str(tmp_path / "managed"))
+        app.state.manager.configure(str(tmp_path / "managed"))
         url = f"/api/dashboard?month={date.today().isoformat()[:7]}&months=12"
         assert client.get(url).status_code == 401
         response = client.get(url, headers={"Authorization": "Bearer token"})

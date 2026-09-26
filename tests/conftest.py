@@ -8,7 +8,21 @@ import threading
 
 import pytest
 
+from home_manager.scanner import Scanner, ScanLimits
 from home_manager.vision import VisionConfig
+
+
+def inbox_scan(store, files=None, **limits):
+    """Put files directly in Library/Inbox, the only way documents enter a library, and capture them."""
+    for name, data in (files or {}).items():
+        (store.library.inbox / name).write_bytes(data)
+    job = store.create_job()
+    Scanner(store, ScanLimits(stability_seconds=0, **limits)).run(job)
+    return job
+
+
+def documents_by_name(store):
+    return {doc["relative_path"]: doc for doc in store.documents()["items"]}
 
 
 @pytest.fixture

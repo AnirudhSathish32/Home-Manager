@@ -1,4 +1,4 @@
-"""App-owned library publication. External source paths are never write targets."""
+"""App-owned library publication: Inbox captures filed into Library folders."""
 
 from datetime import date
 import hashlib
@@ -16,6 +16,9 @@ from .formats import SUPPORTED, extension as file_extension
 from .paths import PathError, path_key, safe_path, signature, source_reader
 from .storage import digest_file, now
 
+# Category folders file into YYYY/MM subfolders by the document's own date. Inbox (awaiting
+# classification) and Unfiled (not confidently identified) stay flat.
+DATED_FOLDERS = frozenset(LIBRARY_FOLDERS) - {"Inbox", "Unfiled"}
 TYPE_FOLDERS = {"receipt": "Receipts", "bank_statement": "Bank_Statements",
                 "credit_card_statement": "Credit_Card_Statements", "bill": "Bills",
                 "income": "Income", "investment_statement": "Investments", "loan_document": "Loans",
@@ -38,6 +41,12 @@ def iso_date(value):
         return date.fromisoformat(value).isoformat()
     except ValueError:
         return None
+
+
+def directory(folder, document_date=None):
+    """Where a folder's files live: Receipts/2026/09 for a dated category document, else the folder itself."""
+    day = iso_date(document_date)
+    return f"{folder}/{day[:4]}/{day[5:7]}" if folder in DATED_FOLDERS and day else folder
 
 
 def filename(document_id, digest, extension, folder, merchant=None, document_date=None, full_hash=False):
@@ -78,12 +87,15 @@ class ManagedLibrary:
         self.inbox = self.root / "Inbox"
 
     def path(self, relative):
+        """Folder/name, or Category/YYYY/MM/name. Nothing else is a library path."""
         parts = PurePosixPath(relative).parts
-        if (not relative or "\\" in relative or ":" in relative or len(parts) != 2
+        dated = (len(parts) == 4 and parts[0] in DATED_FOLDERS and re.fullmatch(r"(19|20)\d{2}", parts[1])
+                 and re.fullmatch(r"0[1-9]|1[0-2]", parts[2]))
+        if (not relative or "\\" in relative or ":" in relative or not (len(parts) == 2 or dated)
                 or parts[0] not in LIBRARY_FOLDERS or any(part in (".", "..") for part in parts)
                 or PurePosixPath(relative).is_absolute() or "/".join(parts) != relative):
             raise PathError("Invalid managed library path.")
-        target = safe_path(self.root / parts[0] / parts[1])
+        target = safe_path(self.root.joinpath(*parts))
         if len(str(target).encode("utf-16-le")) // 2 > 240:
             raise PathError("Managed path exceeds the 240-character limit. Choose a shorter managed root.")
         return target
@@ -93,10 +105,10 @@ class ManagedLibrary:
             row = db.execute("SELECT * FROM managed_files WHERE document_id=? AND blob_hash=?", (document_id, digest)).fetchone()
         return dict(row) if row else None
 
-    def ensure_capture(self, source, relative, digest):
+    def ensure_capture(self, relative, digest):
         with self.store.connection() as db:
             row = db.execute("SELECT id FROM occurrences WHERE source_root=? AND path_key=? AND current_hash=?",
-                             (path_key(source), path_key(relative), digest)).fetchone()
+                             (path_key(self.inbox), path_key(relative), digest)).fetchone()
         if row:
             self.ensure_document(row["id"], digest)
 
@@ -138,10 +150,10 @@ class ManagedLibrary:
         self.organize(document_id, digest, folder, "Migrated folder assignment." if folder != "Unfiled" or manual else "Awaiting supported classification and identifying metadata.")
 
     @locked
-    def organize(self, document_id, digest, folder, reason, *, action="capture", merchant=None, document_date=None, source_override=None):
+    def organize(self, document_id, digest, folder, reason, *, action="capture", merchant=None, document_date=None, source_override=None, keep_name=False):
         validate_folder(folder)
         doc, _ = self.store.document_version(document_id, digest)
-        if doc["current_hash"] != digest and action != "archive":
+        if doc["current_hash"] != digest and action not in ("archive", "layout"):  # Older versions may be archived or re-foldered.
             raise RuntimeError("Document version changed. Refresh before organizing.")
         if doc["deleted_at"]:
             raise ValueError("Restore the document before organizing it.")
@@ -152,11 +164,14 @@ class ManagedLibrary:
             raise ValueError("Only the captured Inbox file may supply an organization source.")
         source = None if action == "archive" else source_override or (existing["relative_path"] if existing else None)
         extension = file_extension(doc["relative_path"])
-        name = filename(document_id, digest, extension, folder, merchant, document_date)
-        target = existing["relative_path"] if source_override and existing else folder + "/" + name
+        # A move keeps the document's known date, so its name and its YYYY/MM folder always agree.
+        document_date = document_date or (self.filing_date(document_id, digest) if folder in DATED_FOLDERS else None)
+        name = PurePosixPath(existing["relative_path"]).name if keep_name and existing else filename(document_id, digest, extension, folder, merchant, document_date)
+        place = directory(folder, document_date)
+        target = existing["relative_path"] if source_override and existing else place + "/" + name
         # Deterministic fallback for the short-hash collision case; never overwrite.
         if self.path(target).exists() and target != source and digest_file(self.path(target)) != digest:
-            target = folder + "/" + filename(document_id, digest, extension, folder, merchant, document_date, full_hash=True)
+            target = place + "/" + filename(document_id, digest, extension, folder, merchant, document_date, full_hash=True)
         with self.store.connection() as db:
             pending = db.execute("SELECT id,target_path FROM managed_organization_intents WHERE document_id=? AND blob_hash=? AND status IN ('pending','blocked')", (document_id, digest)).fetchone()
             if pending:
@@ -182,7 +197,7 @@ class ManagedLibrary:
         stage = safe_path(self.store.work / (intent_id + ".library-stage"))
         try:
             doc, _ = self.store.document_version(intent["document_id"], intent["blob_hash"])
-            if (doc["current_hash"] != intent["blob_hash"] and intent["action"] != "archive") or doc["deleted_at"]:
+            if (doc["current_hash"] != intent["blob_hash"] and intent["action"] not in ("archive", "layout")) or doc["deleted_at"]:
                 with self.store.connection() as db:
                     db.execute("UPDATE managed_organization_intents SET status='superseded',updated_at=? WHERE id=?", (now(), intent_id))
                 return
@@ -195,6 +210,7 @@ class ManagedLibrary:
             if source and source.exists() and digest_file(source) != digest:
                 raise ValueError("Managed file was edited after capture. It was not overwritten or moved; preserve the edit and rescan Inbox or restore this copy before retrying.")
             if not target.exists():
+                self.make_directory(target.parent)
                 if source and source.exists() and os.name == "nt":
                     # Windows rename fails if destination exists. No replace/overwrite.
                     before = signature(source.stat())
@@ -229,6 +245,8 @@ class ManagedLibrary:
                 source.unlink()
             self.finish(intent)
             stage.unlink(missing_ok=True)
+            if source and source != target:
+                self.remove_empty(source.parent)
         except (OSError, ValueError) as exc:
             message = str(exc) if isinstance(exc, ValueError) else "Managed organization could not finish. Check file locks, permissions and disk space; preserved evidence is safe."
             with self.store.connection() as db:
@@ -248,14 +266,67 @@ class ManagedLibrary:
             db.execute("UPDATE occurrences SET source_status='organized' WHERE id=? AND current_hash=? AND source_kind='inbox'", (intent["document_id"], intent["blob_hash"]))
             db.execute("UPDATE managed_organization_intents SET status='succeeded',error=NULL,updated_at=? WHERE id=?", (now(), intent["id"]))
 
+    def make_directory(self, folder):
+        """Create a YYYY/MM folder beneath a category, refusing links at every level."""
+        for level in reversed([folder, *folder.parents]):
+            if level == self.root or self.root not in level.parents:
+                continue
+            safe_path(level).mkdir(exist_ok=True)
+
+    def remove_empty(self, folder):
+        """Tidy a month, then a year, folder that a move left empty. Category folders themselves stay."""
+        for level in (folder, folder.parent):
+            relative = level.relative_to(self.root).parts if self.root in level.parents else ()
+            if len(relative) not in (2, 3) or relative[0] not in DATED_FOLDERS or not relative[-1].isdigit():
+                return
+            try:
+                safe_path(level).rmdir()  # Fails harmlessly unless empty, so nothing of the user's is removed.
+            except OSError:
+                return
+
+    def filing_date(self, document_id, digest):
+        """The document's own date: its ledger record's, else the date its filed name already carries."""
+        with self.store.connection() as db:
+            row = db.execute(self.store.library_query() + "SELECT document_date FROM library WHERE id=? AND current_hash=?", (document_id, digest)).fetchone()
+        if row and iso_date(row["document_date"]):
+            return row["document_date"]
+        existing = self.current_file(document_id, digest)
+        name = PurePosixPath(existing["relative_path"]).name if existing else ""
+        return iso_date(name[:10])
+
+    @locked
+    def relayout(self, document_id=None):
+        """Move category files into their YYYY/MM folder once their date is known. Names never change."""
+        # Every version's file, so an older version's copy lands in its month too.
+        query = ("SELECT m.* FROM managed_files m JOIN occurrences o ON o.id=m.document_id "
+                 "WHERE o.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM managed_organization_intents i WHERE i.document_id=m.document_id "
+                 "AND i.blob_hash=m.blob_hash AND i.status IN ('pending','blocked'))")
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(query + (" AND m.document_id=?" if document_id else ""), (document_id,) if document_id else ())]
+        moved = 0
+        for row in rows:
+            if row["folder"] not in DATED_FOLDERS:
+                continue
+            place = directory(row["folder"], self.filing_date(row["document_id"], row["blob_hash"]))
+            if str(PurePosixPath(row["relative_path"]).parent) == place:
+                continue
+            try:
+                self.organize(row["document_id"], row["blob_hash"], row["folder"], row["reason"], action="layout", keep_name=True)
+                moved += 1
+            except (ValueError, OSError, RuntimeError):
+                pass  # The blocked intent stays visible; the file is left where it is.
+        return moved
+
     @locked
     def file_classified(self, document_id, digest, document_type, merchant, dated, reason):
         """The one filing rule: a supported, evidence-cited type plus unambiguous merchant/issuer and
         ISO date files the copy; anything else goes to Unfiled. A manual choice always wins, and an
         inconclusive later result never undoes an earlier evidence-backed filing."""
         with self.store.connection() as db:
-            if db.execute("SELECT 1 FROM document_folders WHERE document_id=? AND blob_hash=?", (document_id, digest)).fetchone():
-                return None
+            manual = db.execute("SELECT 1 FROM document_folders WHERE document_id=? AND blob_hash=?", (document_id, digest)).fetchone()
+        if manual:
+            self.relayout(document_id)  # The user's folder stands; a newly known date still picks its month.
+            return None
         dated = iso_date(dated)
         if document_type in TYPE_FOLDERS and merchant and dated:
             return self.organize(document_id, digest, TYPE_FOLDERS[document_type], reason, action="classification",
@@ -314,3 +385,4 @@ class ManagedLibrary:
                 self.ensure_document(doc["id"], doc["current_hash"])
             except (ValueError, OSError, RuntimeError):
                 pass
+        self.relayout()  # Also moves files filed before the YYYY/MM layout existed.

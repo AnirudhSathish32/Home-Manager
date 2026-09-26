@@ -9,20 +9,25 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import shutil
 import threading
 import uuid
 
 from .assistant import AssistantService
+from .checkin import CheckinService
+from .warranty import WarrantyService
 from .backup import BackupService, restore_backup
 from .extraction import ExtractionService
 from .finance import HouseholdConfig
 from .laya_runtime import LayaRuntime
 from .finance_tools import FinanceTools
 from .formats import SUPPORTED, extension
+from .item_resolver import ItemResolver
 from .jobs import QUEUES, Cancelled, Work
 from .model_client import check_connection
-from .paths import DirectoryLock, PathError, safe_path, separate_folder, validate_roots, write_atomic
+from .paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
 from .scanner import Scanner, ScanLimits
+from .share import export_share, open_share
 from .storage import Store, now
 from .receipt_service import ReceiptService
 from .receipt_batch import ReceiptBatches
@@ -64,9 +69,15 @@ class Manager:
         self.executors = {queue: ThreadPoolExecutor(max_workers=1, thread_name_prefix=queue) for queue in QUEUES}
         self.pending = {queue: [] for queue in QUEUES}  # (future, work) not yet finished
         self.future = None  # Completion of the most recently started operation, including follow-ups.
-        self.store = self.source = self.receipts = self.batches = self.reasoning = self.organization = None
-        self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = None
+        self.store = self.receipts = self.batches = self.reasoning = self.organization = None
+        self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
         self.restores = {}  # Restore outcomes for this process; a restore may run with no library open.
+        self.shares = {}  # Share exports for this process.
+        # A shared library opened for this process only: never saved to settings, deleted when it ends.
+        self.session = self.session_opening = None
+        self.sessions = safe_path(self.control / "sessions")
+        if self.sessions.exists():
+            shutil.rmtree(self.sessions)  # Temporary copies left by a session the app did not end.
         for attribute, (name, model) in MODEL_SETTINGS.items():
             path = safe_path(self.control / name)
             try:
@@ -80,7 +91,7 @@ class Manager:
         if self.settings_file.exists():
             try:
                 config = json.loads(self.settings_file.read_text(encoding="utf-8"))
-                self.configure(config["source_directory"], config["managed_directory"], persist=False)
+                self.configure(config["managed_directory"], persist=False)  # Older files also name a source folder; it is ignored.
             except (ValueError, KeyError, OSError):
                 self.startup_error = "Saved directories could not be opened. Check their availability or select valid directories."
         self.monitor = threading.Thread(target=self.watch_inbox, name="inbox-monitor", daemon=True)
@@ -130,7 +141,7 @@ class Manager:
     def require(self, queue=None, message=""):
         """Called under self.mutex before starting work or changing shared state."""
         if self.store is None:
-            raise PathError("Configure source and managed-data directories first.")
+            raise PathError("Choose a library folder first.")
         if queue is not False and self.busy(queue):
             raise RuntimeError(message)
         return self.store
@@ -169,8 +180,9 @@ class Manager:
     def settings(self):
         activity = self.activity() if self.store else []
         progress = next((item["progress"] for item in activity if item["queue"] == "inference" and item["progress"]), None)
-        return {"source_directory": str(self.source) if self.source else "",
-                "managed_directory": str(self.store.root) if self.store else "",
+        return {"managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
+                "session": {key: value for key, value in self.session.items() if key != "home"} if self.session else None,
+                "session_opening": self.session_opening,
                 "inbox_directory": str(self.store.library.inbox) if self.store else "",
                 "configured": self.store is not None, "busy": self.busy(),
                 "capture_busy": self.busy("capture"), "inference_busy": self.busy("inference"),
@@ -179,15 +191,21 @@ class Manager:
                 "reasoning": self.reasoning_config.model_dump(),
                 "reviewer": self.reviewer_config.model_dump(),
                 "household": self.household.model_dump(), "laya": self.laya.status(),
-                "receipt_batch": self.batches.latest(self.source) if self.batches else None,
+                "receipt_batch": self.batches.latest() if self.batches else None,
                 "max_file_mib": self.limits.max_file_bytes // (1024 * 1024),
                 "max_store_gib": self.limits.max_store_bytes // (1024 ** 3)}
 
-    def configure(self, source_value, managed_value, persist=True):
+    def configure(self, managed_value, persist=True):
         with self.mutex:
+            if self.session:
+                raise RuntimeError("End the shared-library session before changing the library folder.")
             if self.busy():
-                raise RuntimeError("Wait for active scans and model work before changing directories.")
-            source, managed = validate_roots(source_value, managed_value, self.control)
+                raise RuntimeError("Wait for active scans and model work before changing the library folder.")
+            return self.open_library(validate_managed(managed_value, self.control), persist)
+
+    def open_library(self, managed, persist):
+        """Switch to an already validated library folder. Called under self.mutex with no work running."""
+        with self.mutex:
             previous = self.store
             if previous and previous.root == managed:
                 store, receipts, reasoning, batches, extractions = previous, self.receipts, self.reasoning, self.batches, self.extractions
@@ -202,19 +220,20 @@ class Manager:
                     for service in (receipts, reasoning, batches, extractions):
                         service.recover()
                 if persist:
-                    write_atomic(self.settings_file, json.dumps({"source_directory": str(source), "managed_directory": str(managed)}))
+                    write_atomic(self.settings_file, json.dumps({"managed_directory": str(managed)}))
             except BaseException:
                 if store is not previous:
                     store.close()
                 raise
-            self.store, self.source, self.startup_error = store, source, None
+            self.store, self.startup_error = store, None
             self.inbox_seen = self.inbox_candidate = None
             self.receipts, self.reasoning, self.batches = receipts, reasoning, batches
             self.extractions, self.ledger = extractions, extractions.ledger
             self.reconciler, self.tools = Reconciler(store), FinanceTools(store)
             self.backups, self.assistant = BackupService(store), AssistantService(store, self.tools)
-            self.organization = OrganizationService(store)
-            for service in (self.organization, self.reconciler, self.backups, self.assistant):
+            self.organization, self.items, self.checkins = OrganizationService(store), ItemResolver(store), CheckinService(store)
+            self.warranties = WarrantyService(store, self.items.web)
+            for service in (self.organization, self.reconciler, self.backups, self.assistant, self.items, self.checkins, self.warranties):
                 service.recover()
             if previous and previous is not store:
                 previous.close()
@@ -245,31 +264,20 @@ class Manager:
 
     # Capture and its model follow-up ------------------------------------------
 
-    def start(self, year=None, month=None):
-        with self.mutex:
-            store = self.require("capture", "A scan is already running.")
-            # Recheck roots at use time, including replaced/reparse components.
-            validate_roots(str(self.source), str(store.root), self.control)
-            job = store.create_job(self.source, year, month)
-            store.organization_state(job, "queued", "Waiting for capture to finish.")
-            self.future = self.pipeline(job, self.source, year, month, inbox=False)
-            return job
-
     def start_inbox(self):
         with self.mutex:
             store = self.require("capture", "Wait for the current scan before scanning Inbox.")
-            job = store.create_job(store.library.inbox)
-            self.future = self.pipeline(job, store.library.inbox, None, None, inbox=True)
+            job = store.create_job()
+            self.future = self.pipeline(job)
             return job
 
-    def pipeline(self, job, source, year, month, inbox):
+    def pipeline(self, job):
         """Capture on the capture queue, then transcription on the inference queue."""
         done, follow = Future(), {}
 
         def capture(work):
-            if self.capture(job, source, year, month, inbox):
-                follow["future"] = self.submit("inference", "transcription", "Text extraction for newly captured documents",
-                                               self.process_scan, job, source, inbox)
+            if self.capture(job):
+                follow["future"] = self.submit("inference", "transcription", "Text extraction for newly captured documents", self.process_scan, job)
 
         def settle(outer):
             inner = follow.get("future")
@@ -278,13 +286,17 @@ class Manager:
             else:
                 inner.add_done_callback(lambda future: _settle(future, done))
 
-        self.submit("capture", "capture", "Inbox capture" if inbox else "Source folder scan", capture).add_done_callback(settle)
+        self.submit("capture", "capture", "Inbox capture", capture).add_done_callback(settle)
         return done
 
-    def capture(self, job, source, year, month, inbox):
-        Scanner(self.store, self.limits).run(job, source, year, month, inbox=inbox)
+    def capture(self, job):
+        Scanner(self.store, self.limits).run(job)
         if self.store.job(job)["status"] not in ("completed", "partial"):
             self.store.organization_state(job, "not_started", "Capture did not complete. Preserved copies remain available.")
+            return False
+        if not {"captured", "duplicate", "new_version"} & set(self.store.job(job)["counts"]):
+            # A rescan that found nothing new (the watcher sees files still waiting in Inbox) queues no model work.
+            self.store.organization_state(job, "not_needed", "Nothing new was captured.")
             return False
         if not self.vision.organize_after_scan:
             self.store.organization_state(job, "not_configured", "Automatic text extraction is off or no vision model is configured. Documents remain available in Unfiled.")
@@ -292,10 +304,10 @@ class Manager:
         self.store.organization_state(job, "queued", "Capture finished. Waiting for the model queue.")
         return True
 
-    def process_scan(self, job, source, inbox, work):
+    def process_scan(self, job, work):
         try:
             self.store.organization_state(job, "running", "Transcribing newly captured images with the local model.")
-            batch = self.batches.enqueue(source, self.vision, scan_job=job)
+            batch = self.batches.enqueue(self.vision, scan_job=job)
             if batch is None:
                 self.store.organization_state(job, "not_needed", "No new or changed images or PDFs. Other formats use their own readers.")
                 return
@@ -303,7 +315,7 @@ class Manager:
             self.batches.run(batch, work)
             work.check()
             failures = 0
-            if inbox and self.reasoning_config.model:
+            if self.reasoning_config.model:
                 with self.store.connection() as db:
                     items = list(db.execute("SELECT document_id,run_id FROM receipt_batch_items WHERE batch_id=?", (batch,)))
                 for item in items:
@@ -331,7 +343,7 @@ class Manager:
     def library_action(self, document_id, expected_hash, action, folder=None):
         # Holds the mutex (not a queue) so directories cannot switch mid-move; model work continues.
         with self.mutex:
-            self.require(False).library_action(self.source, document_id, expected_hash, action, folder)
+            self.require(False).library_action(document_id, expected_hash, action, folder)
             return {"status": action}
 
     def empty_trash(self):
@@ -339,7 +351,7 @@ class Manager:
         with self.mutex:
             store = self.require(None, "Wait for running work to finish before emptying Trash.")
             with store.library.lock:
-                return empty(store, self.source)
+                return empty(store)
 
     def start_organization(self, document_id, digest):
         with self.mutex:
@@ -364,7 +376,7 @@ class Manager:
     def start_receipt_batch(self, force=False, document_ids=None):
         with self.mutex:
             self.require("inference", "Model work is running. Wait for it or cancel it first.")
-            batch = self.batches.enqueue(self.source, self.vision, force, document_ids=document_ids)
+            batch = self.batches.enqueue(self.vision, force, document_ids=document_ids)
             label = "Text extraction for all images and PDFs" if document_ids is None else f"Text extraction for {len(document_ids)} selected documents"
             self.future = self.submit("inference", "transcription", label, self.batches.run, batch)
             return {"batch_id": batch}
@@ -389,9 +401,24 @@ class Manager:
 
     def extract_and_file(self, document_id, run_id, work):
         self.extractions.run(run_id, work)
-        if (self.extractions.get(run_id)["publication"] or {}).get("status") == "published":
+        publication = self.extractions.get(run_id)["publication"] or {}
+        if publication.get("status") == "published":
             self.reconciler.run("extraction")
         self.file_extraction(document_id, run_id, work)
+        if publication.get("record_type") == "receipt" and publication.get("status") == "published":
+            self.identify_items(publication["id"], work)
+
+    def identify_items(self, receipt_id, work):
+        """Automatic item identification after a receipt is recorded (docs/warranties-assistant-processing.md §2).
+        Runs in the same model job; every result is still a proposal in Review. Never fails the extraction."""
+        if not self.household.auto_identify_items:
+            return
+        try:
+            run_id = self.items.enqueue(receipt_id, self.reasoning_config)
+        except ValueError:
+            return  # Every line already has a proposal or a product, or the receipt has no lines.
+        work.check()
+        self.items.run(run_id, self.reasoning_config, work)
 
     def file_extraction(self, document_id, run_id, work=None):
         run = self.extractions.get(run_id)
@@ -445,8 +472,10 @@ class Manager:
 
     def start_backup(self, destination_value):
         with self.mutex:
+            if self.session:
+                raise RuntimeError("You are viewing a shared library. End the session to back up your own library.")
             store = self.require("capture", "Wait for the current scan to finish before backing up.")
-            destination = separate_folder(destination_value, self.control, (store.root, self.source))
+            destination = separate_folder(destination_value, self.control, (store.root,))
             if not destination.is_dir():
                 raise PathError("Choose an existing folder for the backup.")
             backup_id = self.backups.begin(destination)
@@ -458,7 +487,7 @@ class Manager:
         with self.mutex:
             if self.busy("capture"):
                 raise RuntimeError("Wait for the current scan or backup to finish before restoring.")
-            open_folders = (self.store.root, self.source) if self.store else ()
+            open_folders = (self.store.root,) if self.store else ()
             backup = separate_folder(backup_value, self.control, open_folders)
             target = separate_folder(target_value, self.control, (*open_folders, backup))
             restore_id = uuid.uuid4().hex
@@ -483,12 +512,117 @@ class Manager:
             raise ValueError("Restore not found. Restores are tracked until Home Manager restarts.")
         return self.restores[restore_id]
 
-    def start_assistant(self, question):
+    def start_assistant(self, question, context=None):
         with self.mutex:
             self.require("inference", "Model work is running. Wait for it or cancel it before asking a question.")
-            run_id = self.assistant.enqueue(question, self.reasoning_config)
+            run_id = self.assistant.enqueue(question, self.reasoning_config, context)
             self.future = self.submit("inference", "assistant", "Answering a question", self.assistant.run, run_id, self.reasoning_config)
             return {"run_id": run_id}
+
+    def start_item_resolution(self, receipt_id):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before identifying receipt items.")
+            run_id = self.items.enqueue(receipt_id, self.reasoning_config)
+            self.future = self.submit("inference", "item_resolution", "Identifying receipt items", self.items.run, run_id, self.reasoning_config)
+            return {"run_id": run_id}
+
+    def start_warranty_lookup(self, lot_id):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before looking up a warranty.")
+            run_id = self.warranties.enqueue(lot_id, self.reasoning_config)
+            self.future = self.submit("inference", "warranty_lookup", "Looking up a warranty", self.warranties.run, run_id, self.reasoning_config)
+            return {"run_id": run_id}
+
+    def start_checkin_text(self, answer):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it, or answer with the buttons.")
+            weekday = self.household.checkin_weekday
+            run_id = self.checkins.enqueue(answer, weekday, self.reasoning_config)
+            self.future = self.submit("inference", "checkin_text", "Reading your check-in answer", self.checkins.run, run_id, self.reasoning_config, weekday)
+            return {"run_id": run_id}
+
+    # Sharing ------------------------------------------------------------------
+
+    def start_share_export(self, destination_value, passphrase, label):
+        """Encrypt this library into one .hmshare file. Only reads the library."""
+        with self.mutex:
+            if self.session:
+                raise RuntimeError("You are viewing a shared library. End the session to share your own library.")
+            store = self.require(None, "Wait for running work to finish before sharing.")
+            destination = separate_folder(destination_value, self.control, (store.root,))
+            if not destination.is_dir():
+                raise PathError("Choose an existing folder for the share file.")
+            from .share import check_passphrase
+            check_passphrase(passphrase)
+            share_id = uuid.uuid4().hex
+            record = self.shares[share_id] = {"id": share_id, "status": "running", "started_at": now(), "finished_at": None, "result": None, "error": None}
+
+            def run(work):
+                try:
+                    record.update(status="succeeded", result=export_share(store, destination, passphrase, label, work))
+                except Cancelled:
+                    record.update(status="cancelled", error="Cancelled by the user.")
+                except (ValueError, OSError) as exc:
+                    record.update(status="failed", error=str(exc))
+                finally:
+                    record["finished_at"] = now()
+
+            self.future = self.submit("capture", "share", "Encrypting a share file", run)
+            return {"share_id": share_id}
+
+    def share(self, share_id):
+        if share_id not in self.shares:
+            raise ValueError("Share not found. Shares are tracked until Home Manager restarts.")
+        return self.shares[share_id]
+
+    def start_session(self, share_value, passphrase):
+        """Open someone's .hmshare as a temporary library. Your own library is closed, never written."""
+        with self.mutex:
+            if self.session:
+                raise RuntimeError("A shared library is already open. End that session first.")
+            if self.store is None:
+                raise PathError("Choose your own library folder first; the session returns to it when it ends.")
+            if self.busy():
+                raise RuntimeError("Wait for running work to finish before opening a shared library.")
+            from .paths import local_absolute
+            from .share import check_passphrase
+            share_file = local_absolute(share_value)
+            check_passphrase(passphrase)
+            session_id = uuid.uuid4().hex
+            target = safe_path(self.sessions / session_id / "library")
+            opening = self.session_opening = {"id": session_id, "status": "running", "error": None}
+            home = self.store.root
+
+            def run(work):
+                try:
+                    result = open_share(share_file, passphrase, target, work)
+                    with self.mutex:
+                        self.open_library(target, persist=False)
+                        self.session = {"id": session_id, "label": result["label"], "shared_at": result["shared_at"],
+                                        "opened_at": now(), "issues": result["issues"], "home": home}
+                    opening.update(status="succeeded")
+                except Cancelled:
+                    opening.update(status="cancelled", error="Cancelled by the user.")
+                except (ValueError, OSError) as exc:
+                    opening.update(status="failed", error=str(exc))
+                if opening["status"] != "succeeded":
+                    shutil.rmtree(self.sessions / session_id, ignore_errors=True)
+
+            self.future = self.submit("capture", "session", "Opening a shared library", run)
+            return {"session_id": session_id}
+
+    def end_session(self):
+        """Close the shared copy, delete it, and reopen your own library."""
+        with self.mutex:
+            if not self.session:
+                raise ValueError("No shared library is open.")
+            if self.busy():
+                raise RuntimeError("Wait for running work to finish, or cancel it, before ending the session.")
+            session = self.session
+            self.open_library(session["home"], persist=False)  # Closes the shared copy.
+            self.session = self.session_opening = None
+            shutil.rmtree(safe_path(self.sessions / session["id"]), ignore_errors=True)
+            return self.settings()
 
     def close(self):
         self.stop_monitor.set()
@@ -497,4 +631,6 @@ class Manager:
             self.executors[queue].shutdown(wait=True, cancel_futures=False)
         if self.store:
             self.store.close()
+        if self.session:
+            shutil.rmtree(self.sessions / self.session["id"], ignore_errors=True)
         self.lock.close()

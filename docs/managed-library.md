@@ -4,17 +4,22 @@ Implemented from `Home_Manager_Architecture_Implementation_Spec.docx`. The appli
 
 ## Workflow
 
-Restart Home Manager to apply pending schema migrations. Existing stores receive one SQLite-consistent `inventory.before-vN.sqlite3` snapshot (N = the latest schema version) before changes. This same-directory snapshot is for migration recovery, not an independent disaster-recovery backup; export/restore is a later milestone.
+Restart Home Manager to apply pending schema migrations. Existing stores receive one SQLite-consistent `inventory.before-vN.sqlite3` snapshot (N = the latest schema version) before changes. This same-directory snapshot is for migration recovery, not an independent disaster-recovery backup; use Backup for that. After an upgraded store opens, only the two newest snapshots are kept. Older ones are deleted only when the newest snapshot passes SQLite's integrity check, and only files with the exact `inventory.before-vN.sqlite3` name.
 
 The configured managed root now contains `Library/Inbox`, `Unfiled`, `Bank_Statements`, `Credit_Card_Statements`, `Receipts`, `Income`, `Bills`, `Taxes`, `Investments`, `Loans`, `Insurance` and `Housing`.
 
-- **External imports:** keep using the existing read-only `YYYY/MM` scanner. Captured files get independent managed copies. External names and bytes are unchanged.
-- **Inbox:** place PNG/JPEG, CSV or XLSX files directly into `Library/Inbox`, then choose **Processing → Scan Inbox**. No year/month folders are needed here. Subfolders, links and unsupported formats are reported, not silently traversed. Files are hashed, fsynced, verified and registered before any organization.
+- **Inbox:** the only way documents enter the library. Place PNG/JPEG, PDF, CSV or XLSX files directly into `Library/Inbox`; they are captured automatically while the app runs, or choose **Processing → Scan Inbox**. No year/month folders are needed here. Subfolders, links and unsupported formats are reported, not silently traversed. Files are hashed, fsynced, verified and registered before any organization.
 - **Automatic filing after analysis:** a successful saved analysis with cited classification and unambiguous merchant/issuer and date metadata can file the managed copy. Receipts use purchase date; statements use period end; other supported documents use issue date. This narrow adapter uses the existing interpretation contract until the dedicated classifier/extractors in Phase 5. Missing/unknown metadata goes to Unfiled; no confidence threshold is invented.
 - **Manual filing:** Move now moves the app-owned physical Library file. A manual choice takes precedence over future automatic filing for the same captured version.
 - **Trash:** still requires confirmation and remains a logical, restorable library action. It does not delete source files, managed files or evidence from disk.
 
-Unclassified Inbox files stay in Inbox. External files without classification appear in Unfiled. The document list includes the original source name, managed path, organization reason and any blocked-organization error. The Inbox count represents captured documents; Scan Inbox discovers newly dropped files. There is no filesystem watcher yet.
+Unclassified Inbox files stay in Inbox. The document list includes the original Inbox name, managed path, organization reason and any blocked-organization error. The Inbox count represents captured documents waiting to be filed.
+
+## Year/month folders
+
+Category folders are organized by the document's own date: `Receipts/2026/09/2026-09-22__Cafe__Receipts__….png`. The date is the ledger record's (purchase date for receipts, period end for statements, due or issue date for bills, pay date for income), or the cited date the document was filed with. `Inbox` and `Unfiled` stay flat. A category document with no known date stays at the top of its category until a date is known, then moves into its month. The app only ever creates `YYYY/MM` folders; a library path is either `Folder/name` or `Category/YYYY/MM/name`.
+
+Moves keep the known date in both the name and the folder. A move that leaves a month or year folder empty removes that empty folder; category folders stay. At startup, every file, including older versions' copies, is checked and moved into its month with the same durable, verified, never-overwriting organization intents; files filed before this layout existed move there on the first start. Names never change during these moves, and the application's folders and views are unchanged.
 
 ## Filenames and integrity
 
@@ -32,4 +37,4 @@ Migration 007 explicitly maps legacy folders to flat folders and appends migrati
 
 ## Next phases
 
-Phases 2–8 (telemetry and cancellation, PDF reading, canonical finance, typed extraction, CSV/XLSX import, reconciliation and deterministic tools) are described in [v2-phases.md](v2-phases.md). The agent and email ingestion remain later phases. Current configuration still includes the legacy external source root; Inbox is an additional import route. No private live database was migrated during development tests.
+Phases 2–8 (telemetry and cancellation, PDF reading, canonical finance, typed extraction, CSV/XLSX import, reconciliation and deterministic tools) are described in [v2-phases.md](v2-phases.md). The agent and email ingestion remain later phases. The earlier read-only `YYYY/MM` source folder was removed (2026-09-25); Inbox is the only import route. Documents captured from a source folder by older versions stay in the library. No private live database was migrated during development tests.

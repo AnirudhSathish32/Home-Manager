@@ -1,5 +1,6 @@
 """Phase 3: page-aware PDF ingestion with embedded text and per-page vision fallback."""
 
+from conftest import inbox_scan
 import json
 
 import pytest
@@ -42,23 +43,21 @@ STATEMENT = "FIRST LOCAL BANK\nStatement period 2026-08-01 to 2026-08-31\nAccoun
 
 @pytest.fixture
 def pdf_store(tmp_path):
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
     store = Store(tmp_path / "managed")
     try:
-        yield source, store
+        yield store.library.inbox, store
     finally:
         store.close()
 
 
 def capture(source, store):
-    Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-    return store.documents(source)["items"][0]
+    inbox_scan(store)
+    return store.documents()["items"][0]
 
 
 def test_mixed_pdf_uses_embedded_text_and_vision_only_for_scanned_pages(pdf_store, local_model):
     source, store = pdf_store
-    make_pdf(source / "2026" / "09" / "statement.pdf", [STATEMENT, None, "Transactions continued\n2026-08-03 GROCERY MART -45.10\n2026-08-09 PAYROLL DEPOSIT +2,000.00"])
+    make_pdf(source / "statement.pdf", [STATEMENT, None, "Transactions continued\n2026-08-03 GROCERY MART -45.10\n2026-08-09 PAYROLL DEPOSIT +2,000.00"])
     doc = capture(source, store)
     local_model["output"] = {"full_text": "SCANNED PAGE TWO\nHandwritten note 12.00"}
     service = ReceiptService(store)
@@ -76,17 +75,17 @@ def test_mixed_pdf_uses_embedded_text_and_vision_only_for_scanned_pages(pdf_stor
     # Every line carries a page-scoped evidence ID; no page is silently omitted.
     assert all(line["id"].startswith(f"page-{page['number']}-line-") for page in result["pages"] for line in page["lines"])
     assert [line["id"] for line in result["lines"]] == [line["id"] for page in result["pages"] for line in page["lines"]]
-    assert store.blob_path(doc["current_hash"]).read_bytes() == (source / "2026" / "09" / "statement.pdf").read_bytes()
+    assert store.blob_path(doc["current_hash"]).read_bytes() == (source / "statement.pdf").read_bytes()
     [telemetry] = store.model_runs(run_id)
     assert telemetry["task"] == "transcription" and telemetry["prompt_version"] == "pdf-pages-v1"
 
 
 def test_digital_pdf_needs_no_vision_model_and_scanned_pages_never_vanish(pdf_store):
     source, store = pdf_store
-    make_pdf(source / "2026" / "09" / "digital.pdf", [STATEMENT])
-    make_pdf(source / "2026" / "09" / "scan.pdf", [None])
-    Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-    docs = {doc["relative_path"].split("/")[-1]: doc for doc in store.documents(source)["items"]}
+    make_pdf(source / "digital.pdf", [STATEMENT])
+    make_pdf(source / "scan.pdf", [None])
+    inbox_scan(store)
+    docs = {doc["relative_path"].split("/")[-1]: doc for doc in store.documents()["items"]}
     service = ReceiptService(store)
     digital, _ = service.enqueue(docs["digital.pdf"]["id"], vision=VisionConfig())
     service.run(digital)
@@ -103,7 +102,7 @@ def test_digital_pdf_needs_no_vision_model_and_scanned_pages_never_vanish(pdf_st
 
 def test_pdf_limits_and_damaged_files_fail_explicitly(pdf_store):
     source, store = pdf_store
-    (source / "2026" / "09" / "damaged.pdf").write_bytes(b"%PDF-1.4\nnot really a pdf")
+    (source / "damaged.pdf").write_bytes(b"%PDF-1.4\nnot really a pdf")
     doc = capture(source, store)
     service = ReceiptService(store)
     run_id, _ = service.enqueue(doc["id"], vision=VisionConfig())
@@ -113,19 +112,16 @@ def test_pdf_limits_and_damaged_files_fail_explicitly(pdf_store):
 
 
 def test_long_statement_analysis_is_chunked_not_one_monolithic_prompt(tmp_path, local_model):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
     rows = [f"2026-08-{day % 28 + 1:02d} MERCHANT {day:03d} -{day}.00" for day in range(1, 181)]
-    make_pdf(month / "long.pdf", ["\n".join(rows[:60]), "\n".join(rows[60:120]), "\n".join(rows[120:])])
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     try:
-        manager.configure(str(source), str(tmp_path / "managed"))
+        manager.configure(str(tmp_path / "managed"))
+        make_pdf(manager.store.library.inbox / "long.pdf", ["\n".join(rows[:60]), "\n".join(rows[60:120]), "\n".join(rows[120:])])
         manager.configure_vision(local_model["config"].model_copy(update={"organize_after_scan": False}))
         manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
-        manager.start()
+        manager.start_inbox()
         manager.future.result(timeout=30)
-        doc = manager.store.documents(source)["items"][0]
+        doc = manager.store.documents()["items"][0]
         parse = manager.start_receipt(doc["id"])
         manager.future.result(timeout=30)
         lines = [line["id"] for line in manager.receipts.get(parse["run_id"])["result"]["lines"]]

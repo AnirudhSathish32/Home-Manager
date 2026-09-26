@@ -70,21 +70,19 @@ def wait(manager):
 
 def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_model):
     local_model["config"].organize_after_scan = False
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    original = month / "receipt.png"
-    qr = make_receipt(original)
-    duplicate = month / "copy.png"
-    duplicate.write_bytes(original.read_bytes())
-    (month / "bad.jpg").write_bytes(b"not an image")
-    (month / "statement.csv").write_text("date,total\n2026-09-22,25\n")
     control = tmp_path / "control"
     manager = Manager(control, ScanLimits(stability_seconds=0))
     try:
-        manager.configure(str(source), str(tmp_path / "managed"))
+        manager.configure(str(tmp_path / "managed"))
+        month = manager.store.library.inbox
+        original = month / "receipt.png"
+        qr = make_receipt(original)
+        duplicate = month / "copy.png"
+        duplicate.write_bytes(original.read_bytes())
+        (month / "bad.jpg").write_bytes(b"not an image")
+        (month / "statement.csv").write_text("date,total\n2026-09-22,25\n")
         manager.configure_vision(local_model["config"])
-        manager.start(); wait(manager)
+        manager.start_inbox(); wait(manager)
         batch = manager.start_receipt_batch()["batch_id"]
         wait(manager)
         status = manager.batches.get(batch)
@@ -92,9 +90,9 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
         assert status["total"] == 3 and status["unique_runs"] == 2 and status["skipped"] == 1
         assert status["status"] == "partial"
         assert len(local_model["requests"]) == 1
-        documents = manager.store.documents(source)["items"]
+        documents = manager.store.documents()["items"]
         receipt = next(doc for doc in documents if doc["relative_path"].endswith("receipt.png"))
-        assert receipt["title"] is None and receipt["folder"] == "Unfiled"
+        assert receipt["title"] is None and receipt["folder"] == "Inbox"
         run = manager.receipts.history(receipt["id"])[0]
         result = manager.receipts.get(run["id"])["result"]
         assert result["transcription_method"] == "vision_model"
@@ -109,8 +107,8 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
         assert len(local_model["requests"]) == 2
         # A changed source version cannot inherit the older generated title.
         original.write_bytes(original.read_bytes() + b"changed bytes")
-        manager.start(); wait(manager)
-        receipt = next(doc for doc in manager.store.documents(source)["items"] if doc["id"] == receipt["id"])
+        manager.start_inbox(); wait(manager)
+        receipt = next(doc for doc in manager.store.documents()["items"] if doc["id"] == receipt["id"])
         assert receipt["title"] is None
         assert manager.receipts.history(receipt["id"], old_hash)
     finally:
@@ -118,8 +116,8 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
     manager = Manager(control)
     try:
         assert manager.vision == local_model["config"]
-        assert manager.batches.latest(source)["status"] == "partial"
-        pending = manager.batches.enqueue(source, manager.vision, force=True)
+        assert manager.batches.latest()["status"] == "partial"
+        pending = manager.batches.enqueue(manager.vision, force=True)
     finally:
         manager.close()
     manager = Manager(control)
@@ -132,21 +130,19 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
 
 def test_batch_api_settings_auth_and_busy(tmp_path, local_model, monkeypatch):
     import threading
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    make_receipt(month / "receipt.png")
     app = create_app(tmp_path / "control", "test-token", limits=ScanLimits(stability_seconds=0))
     auth = {"Authorization": "Bearer test-token"}
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert client.post("/api/receipt-batches", json={}).status_code == 401
         assert client.put("/api/vision-settings", json={}).status_code == 401
         client.headers.update(auth)
-        assert client.put("/api/settings", json={"source_directory":str(source), "managed_directory":str(tmp_path / "managed")}).status_code == 200
+        assert client.put("/api/settings", json={"managed_directory":str(tmp_path / "managed")}).status_code == 200
+        month = app.state.manager.store.library.inbox
+        make_receipt(month / "receipt.png")
         assert client.post("/api/receipt-batches", json={}).status_code == 400
         assert client.put("/api/vision-settings", json=local_model["config"].model_dump()).status_code == 200
         manager = app.state.manager
-        manager.start(); wait(manager)
+        manager.start_inbox(); wait(manager)
         entered, release = threading.Event(), threading.Event()
         original = manager.batches.run
         def held(batch, work):

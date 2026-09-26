@@ -1,5 +1,6 @@
 """Phase 4: canonical finance storage with exact money, evidence links and review states."""
 
+from conftest import inbox_scan
 import sqlite3
 
 import pytest
@@ -51,12 +52,9 @@ def test_merchant_and_transaction_classification_are_deterministic():
 
 @pytest.fixture
 def ledger(tmp_path):
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
-    (source / "2026" / "09" / "export.csv").write_text("date,amount\n")
     store = Store(tmp_path / "managed")
-    Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-    doc = store.documents(source)["items"][0]
+    inbox_scan(store, {"export.csv": b"date,amount\n"})
+    doc = store.documents()["items"][0]
     try:
         yield Ledger(store), store, {"document_id": doc["id"], "blob_hash": doc["current_hash"], "source_key": "import:test"}
     finally:
@@ -104,7 +102,7 @@ def test_equal_entries_stay_distinct_and_reimports_or_second_sources_do_not_doub
         assert db.execute("SELECT count(*), sum(amount_minor) FROM transactions").fetchone()[:] == (3, 199100)
     evidence = finance.evidence("transaction", inserted[0])
     assert [item["source_key"] for item in evidence] == ["import:test", "extraction:statement"]
-    assert evidence[0]["relative_path"] == "2026/09/export.csv" and evidence[0]["locator"] == {"rows": [1]}
+    assert evidence[0]["relative_path"] == "export.csv" and evidence[0]["locator"] == {"rows": [1]}
 
 
 def test_review_is_explicit_and_audited(ledger):

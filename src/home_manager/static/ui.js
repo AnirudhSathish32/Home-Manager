@@ -4,6 +4,7 @@
 // Icon paths adapted from Lucide (ISC License, https://lucide.dev). Drawn inline so the CSP needs no extra sources.
 const ICONS = {
   home: ["m3 10 9-7 9 7", "M5 9v12h14V9", "M9 21v-8h6v8"],
+  trend: ["m3 17 6-6 4 4 8-8", "M15 7h6v6"],
   check: ["M20 6 9 17l-5-5"],
   "check-circle": ["circle", "m9 12 2 2 4-4"],
   alert: ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],
@@ -26,6 +27,13 @@ const ICONS = {
   folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
   transfer: ["M8 3 4 7l4 4", "M4 7h16", "m16 21 4-4-4-4", "M20 17H4"],
   "arrow-left": ["m12 19-7-7 7-7", "M19 12H5"],
+  message: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
+  search: ["M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0", "m21 21-4.3-4.3"],
+  "list-checks": ["m3 17 2 2 4-4", "m3 7 2 2 4-4", "M13 6h8", "M13 12h8", "M13 18h8"],
+  pie: ["M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-8.953-8.951c-.55-.055-.998.398-.998.95v8a1 1 0 0 0 1 1z", "M21.21 15.89A10 10 0 1 1 8 2.83"],
+  calendar: ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
+  bank: ["M3 22h18", "M6 18v-7", "M10 18v-7", "M14 18v-7", "M18 18v-7", "m12 2 8 5H4z"],
+  package: ["M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z", "M12 22V12", "m3.3 7 8.7 5 8.7-5"],
   paperclip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -61,6 +69,11 @@ const STATUS = {
   posted_credit_found: ["Credit posted", "positive", "check"], evidence_only_not_settled: ["Refund not yet posted", "warning", "clock"],
   // Document summary states (docs/ui-design-plan.md §3.7).
   not_read: ["Not read yet", "neutral", null], read: ["Read, not recorded", "neutral", "file"], recorded: ["Recorded", "positive", "check-circle"],
+  // Budgets, bills and inventory.
+  on_track: ["On track", "info", "check"], ahead_of_pace: ["Ahead of pace", "warning", "alert"], over: ["Over budget", "danger", "octagon"],
+  within: ["Within budget", "positive", "check"], not_started: ["Not started", "neutral", "clock"],
+  past_due_unpaid: ["Past due · marked unpaid", "danger", "alert"], paid: ["Paid", "positive", "check"],
+  in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
   ready_to_import: ["Ready to import", "neutral", null], in_trash: ["In Trash", "neutral", null], process_failed: ["Couldn't process", "danger", "octagon"],
 };
 function statusLabel(status) {

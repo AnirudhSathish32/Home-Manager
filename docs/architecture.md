@@ -175,7 +175,7 @@ A separate local reasoning adapter will consume saved transcription for field in
 
 ## Ingestion and document lifecycle
 
-The dedicated local source directory follows `sources/YYYY/MM/`, with bank statements, credit-card statements, receipts, and bills mixed within each month. See [Directory-based document reading](document-reading.md) for discovery, immutable capture, versioning, format readers, review states, and agent interfaces. Folder placement is discovery metadata, not the date authority for transactions or proof of complete monthly coverage.
+**Removed 2026-09-25:** the `YYYY/MM` source folder no longer exists; documents enter only through `Library/Inbox` (see [managed library](managed-library.md)). The original design below used a dedicated local source directory following `sources/YYYY/MM/`, with bank statements, credit-card statements, receipts, and bills mixed within each month. See [Directory-based document reading](document-reading.md) for discovery, immutable capture, versioning, format readers, review states, and agent interfaces. Folder placement is discovery metadata, not the date authority for transactions or proof of complete monthly coverage.
 
 Pipeline: acquire read-only source data -> capture immutable original -> validate MIME/size -> extract text in an isolated worker -> classify -> extract typed candidates -> deterministic validation -> stage/review -> publish approved records -> index.
 

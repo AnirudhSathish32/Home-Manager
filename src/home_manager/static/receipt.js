@@ -64,7 +64,7 @@ function detailRow(list, label, ...values) {
   value.append(...values.map(item => item instanceof Node ? item : document.createTextNode(String(item))));
   list.append(element("dt", label), value);
 }
-const SOURCE_STATES = {present: "In its source folder, unchanged", missing: "No longer in its source folder", organized: "Moved from Inbox into the library"};
+const SOURCE_STATES = {present: "In Inbox, unchanged", missing: "No longer in Inbox", organized: "Moved from Inbox into the library"};
 function renameInspector(doc) {
   // Set on open and after the user edits the description; loading results never rename the page.
   if (receipt) receipt.doc = {...receipt.doc, ...doc};
@@ -359,6 +359,7 @@ async function loadExtraction(state, parseId) {
   const target = $("extraction-result"); target.replaceChildren();
   const publication = run.publication;
   if (run.status !== "succeeded" || !publication || publication.status === "blocked") return;
+  if (publication.record_type === "asset") { await renderAssetRecord(target, publication); return; }
   await renderLedgerRecord(target, publication.record_type, publication.id, publication.status === "kept_reviewed");
   if (run.result.laya) target.appendChild(layaPanel(run.result.laya, run.document_type));
 }
@@ -399,6 +400,24 @@ function ledgerRows(record) {
   wrap.appendChild(table);
   if (rows.length > 200) wrap.appendChild(element("p", `Showing 200 of ${rows.length} rows.`, "muted"));
   return wrap;
+}
+async function renderAssetRecord(target, publication) {
+  // Investment and loan statements feed the forecast's assets; their values wait for review (docs/items-assets-search.md §6).
+  const asset = (await api("/api/assets?include_archived=true")).find(row => row.id === publication.id);
+  if (!asset) { target.replaceChildren(element("p", "The asset recorded from this statement was removed.", "muted")); return; }
+  const heading = element("div", "", "ledger-record-heading");
+  heading.append(element("strong", asset.name), statusBadge(asset.review_status));
+  const facts = element("dl", "", "detail-list");
+  for (const [label, value] of [[asset.kind === "loan" ? "Amount owed" : "Value", asset.value.display], ["As of", dateText(asset.as_of)],
+                                ...(asset.kind === "loan" ? [["Yearly rate", `${asset.annual_rate_percent}%`], ["Monthly payment", asset.monthly_payment?.display || "Not printed"]] : [])]) {
+    facts.append(element("dt", label), element("dd", value));
+  }
+  const notes = [];
+  if (publication.status === "kept_newer") notes.push(element("p", "A newer statement for this account is already recorded, so this one didn't change it.", "muted"));
+  if (publication.status === "kept_reviewed") notes.push(element("p", "You already reviewed this value, so the new extraction did not change it.", "muted"));
+  for (const issue of asset.issues) notes.push(element("p", issue, "item-warning"));
+  const next = asset.review_status === "proposed" ? homeLink("Confirm it in Review", "#/review") : homeLink("See it in Forecast", "#/forecast");
+  target.replaceChildren(heading, facts, ...notes, element("p", "Statement values count in your forecast once you confirm them.", "muted small"), next);
 }
 async function renderLedgerRecord(target, type, id, kept) {
   const record = await api(`/api/finance/records/${type}/${id}`);

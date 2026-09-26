@@ -1,5 +1,6 @@
 """Phase 6: deterministic CSV/XLSX transaction import with explicit mapping and de-duplication."""
 
+from conftest import inbox_scan
 from datetime import date
 import zipfile
 
@@ -115,16 +116,14 @@ def test_xlsx_reads_cached_values_dates_and_binary_noise_without_evaluating_form
 
 
 def test_import_api_is_idempotent_and_statement_rows_do_not_double_count(tmp_path):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    (month / "checking.csv").write_text(EXPORT)
     app = create_app(tmp_path / "control", "import-token", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert client.get("/api/finance/accounts").status_code == 401
         client.headers.update({"Authorization": "Bearer import-token"})
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
-        app.state.manager.start()
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        month = app.state.manager.store.library.inbox
+        (month / "checking.csv").write_text(EXPORT)
+        app.state.manager.start_inbox()
         app.state.manager.future.result(timeout=30)
         doc = client.get("/api/documents").json()["items"][0]
         preview = client.post(f"/api/documents/{doc['id']}/transaction-import/preview", json={"expected_hash": doc["current_hash"], "currency": "USD"}).json()
@@ -155,15 +154,13 @@ def test_import_api_is_idempotent_and_statement_rows_do_not_double_count(tmp_pat
         assert client.get("/api/finance/accounts").json()[0]["account_last_four"] == "4821"
 
 
-def test_imports_read_preserved_bytes_not_the_source_file(tmp_path):
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
-    path = source / "2026" / "09" / "export.csv"
-    path.write_text(EXPORT)
+def test_imports_read_preserved_bytes_not_the_inbox_file(tmp_path):
     store = Store(tmp_path / "managed")
+    path = store.library.inbox / "export.csv"
+    path.write_text(EXPORT)
     try:
-        Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-        doc = store.documents(source)["items"][0]
+        inbox_scan(store)
+        doc = store.documents()["items"][0]
         path.write_text("Date,Description,Amount\n2026-08-01,CHANGED AFTER CAPTURE,-999.00\n")
         ledger = Ledger(store)
         account = ledger.create_account("First Local Bank", "checking", "USD")

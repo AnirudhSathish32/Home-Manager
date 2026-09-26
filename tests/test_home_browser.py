@@ -1,4 +1,5 @@
 """Dashboard behavior and responsive charts, using synthetic household data only."""
+from conftest import inbox_scan
 from datetime import date
 import os
 from pathlib import Path
@@ -17,9 +18,6 @@ from test_reconcile_tools import add
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 def test_home_charts_drilldown_and_mobile(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
-    (source / "2026" / "09" / "spending.csv").write_text("Date,Description,Amount\n")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -34,9 +32,9 @@ def test_home_charts_drilldown_and_mobile(tmp_path):
             time.sleep(.05)
         assert server.started
         manager = app.state.manager
-        manager.configure(str(source), str(tmp_path / "managed"))
-        Scanner(manager.store, ScanLimits(stability_seconds=0)).run(manager.store.create_job(source), source)
-        doc = manager.store.documents(source)["items"][0]
+        manager.configure(str(tmp_path / "managed"))
+        inbox_scan(manager.store, {"spending.csv": b"Date,Description,Amount\n"})
+        doc = manager.store.documents()["items"][0]
         account = manager.ledger.create_account("Household checking", "checking", "USD")
         month = date.today().isoformat()[:7]
         ids = add(manager.store, manager.ledger, account, doc, [(month + "-01", "Groceries", -12500),
@@ -44,6 +42,7 @@ def test_home_charts_drilldown_and_mobile(tmp_path):
         with manager.store.connection() as db:
             db.execute("UPDATE transactions SET category='groceries' WHERE id=?", (ids[0],))
             db.execute("UPDATE transactions SET category='dining' WHERE id=?", (ids[1],))
+        manager.ledger.set_budget("groceries", "USD", "100.00")
         with playwright.sync_playwright() as driver:
             browser = driver.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 1100})
@@ -57,11 +56,13 @@ def test_home_charts_drilldown_and_mobile(tmp_path):
             page.get_by_role("button", name="12 months", exact=True).click()
             playwright.expect(page.get_by_role("button", name="12 months", exact=True)).to_have_attribute("aria-pressed", "true")
             page.locator(".home-legend").get_by_role("link", name="groceries", exact=True).click()
-            playwright.expect(page.locator("#finance-transactions tr")).to_have_count(1)
-            playwright.expect(page.locator("#finance-transactions")).to_contain_text("Groceries")
-            playwright.expect(page.locator("#finance-filter-note")).to_contain_text("groceries")
+            playwright.expect(page.locator("#tx-rows tr")).to_have_count(1)
+            playwright.expect(page.locator("#tx-rows")).to_contain_text("Groceries")
+            playwright.expect(page.locator("#tx-summary")).to_contain_text("groceries")
             page.locator("#nav-home").click()
             playwright.expect(page.locator(".home-donut")).to_be_visible()
+            playwright.expect(page.locator("#home-extras")).to_contain_text("125.00 USD of 100.00 USD")
+            playwright.expect(page.locator("#home-extras")).to_contain_text("Over budget")
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 1100})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width

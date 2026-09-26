@@ -18,7 +18,7 @@ One page with three tabs: **Documents**, **Finances**, **Scans & activity**. The
 |---|---|---|
 | W1 | First run: choose the source and managed directories | Settings modal → Directories |
 | W2 | Configure the vision, reasoning, and checker models (LM Studio or Laya) | Settings modal → Local model |
-| W3 | Capture: drop files in Inbox (auto-watched) or scan source folders | Scans & activity; the Inbox is watched in the background |
+| W3 | Capture: drop files in Inbox (auto-watched) | Scans & activity; the Inbox is watched in the background |
 | W4 | Browse and search the library by folder and work filter | Documents tab |
 | W5 | Extract text, then extract to the ledger (one document or all) | Row primary action, toolbar "Extract text for all", inspector steps |
 | W6 | Inspect a document: image or text evidence beside the ledger record, cite-to-source | Inspector dialog |
@@ -162,7 +162,7 @@ Each screen spec covers: the user's question · primary action · hierarchy · c
 
 | State | Treatment |
 |---|---|
-| Not configured | A full-page welcome with a three-step setup: 1) choose the managed library folder, 2) optionally add a source folder, 3) optionally connect a local model. Nothing else renders. |
+| Not configured | A full-page welcome with a three-step setup: 1) choose the managed library folder, 2) optionally connect a local model. Nothing else renders. |
 | Configured, no financial data | Documents and processing sections render. The money blocks are replaced by one explanation: "No transactions yet. Import a bank CSV/XLSX export or extract a statement to see spending," with two actions. There are no zero-filled charts. |
 | Loading | Skeleton rows at their final dimensions (no spinners in content); figures show `—` placeholders at the final size so nothing shifts. |
 | Error (tool call failed) | Only the failing panel shows an inline alert with "Couldn't load upcoming bills. Retry." The rest of the page still renders. The technical detail is in a disclosure. |
@@ -310,7 +310,7 @@ The audit analysis status is **not** part of the summary. It's an optional, seco
 
 **Backend:** the spec's §20 asks the library to show reconciliation state and an unfiled reason. Neither is in the document list query (B8, B9). There's no document date or type filter (B8). The sort is `relative_path` only (B8).
 
-**States:** unconfigured (link to Settings) · empty library ("Drop files into `<Inbox path>`, or add a source folder", with the copyable Inbox path) · empty folder · no search results · Trash explainer (the existing text, kept) · loading (skeleton) · error.
+**States:** unconfigured (link to Settings) · empty library ("Drop files into `<Inbox path>`", with the copyable Inbox path) · empty folder · no search results · Trash explainer (the existing text, kept) · loading (skeleton) · error.
 
 ### 3.8 Document inspector
 
@@ -358,7 +358,7 @@ The audit analysis status is **not** part of the summary. It's an optional, seco
 **Sections:**
 
 1. **Pipeline status:** five stage lanes (Capture, Transcription, Extraction, Normalization, Reconciliation). Each shows its idle, queued (N), or running state with the current item, stage, elapsed time, and Cancel where supported (inference only; the existing API says capture isn't interruptible, and the UI says so).
-2. **Actions:** Scan Inbox · Scan source folders · Process unread documents (the existing receipt batch, with the "include already-read" option) · Reconcile now.
+2. **Actions:** Scan Inbox · Process unread documents (the existing receipt batch, with the "include already-read" option) · Reconcile now.
 3. **Recent jobs:** a table of jobs: type, started, duration, result (succeeded, partial, failed, cancelled, interrupted), and counts. A row opens the job drawer with scan events (path, result, message), which are today's events table.
 4. **Model runs:** the existing telemetry table (model, task, status, prompt tokens, completion tokens, TTFT, generation tok/s, model time) plus workflow time, with `~` marking estimates. Filter by task and status.
 
@@ -376,7 +376,6 @@ A full page with a left sub-navigation (not a modal). Each section is a narrow 7
 | Section | Contents | Status |
 |---|---|---|
 | **Library** | Managed library folder, Inbox path (copyable), capture limits | Exists |
-| **Sources** | Read-only source folder(s), YYYY/MM legacy notice | Exists (single source); multiple sources is future work |
 | **Financial preferences** | Home currency, date display format (UI-only preference), default period | Currency exists; the others are UI-only |
 | **Local models** | Vision model, reasoning model: URL, model ID, a "Test connection" button (Backend B12), auto-read new files | Exists except the connection test |
 | **Independent checks** | Laya / chat checker, installed state | Exists |
@@ -652,7 +651,9 @@ Implemented notes:
 - **Robustness:** table updates wait while a row menu is open, and menus follow their trigger when a container scrolls.
 - **Still open:** B9 (per-document reconciliation state and an Unfiled reason) is not in the library query yet.
 
-### Phase C: Money screens
+### Phase C: Money screens — done 2026-09-25
+
+Built as `#/transactions`, `#/spending` (with budgets and category rules), `#/bills` and `#/accounts`; `#/finances?…` links forward to them. See [money-review-inventory.md](money-review-inventory.md). Global search (`#/search`, <kbd>Ctrl</kbd>+<kbd>K</kbd>) and B9 in the Documents list followed; see [items-assets-search.md](items-assets-search.md).
 
 - Transactions page with DataTable, filters (client-side over ≤1000 rows until B2), and the drawer (evidence "unavailable" until B3).
 - Spending, Bills & recurring, and Accounts pages built from the existing tools. The trend chart uses N `get_spending` calls until B4.
@@ -660,21 +661,27 @@ Implemented notes:
 - Global search (documents + transactions).
 - Backend: B2, B3, B4 are recommended alongside.
 
-### Phase D: Review workflow
+### Phase D: Review workflow — done 2026-09-25
+
+`#/review`, with recurring-payment proposals and receipt-item resolutions added to the queue. Undo is offered for record decisions; link and issue decisions are final, as in the backend.
 
 - The Review page with a two-pane queue, keyboard flow, and Undo.
 - Requires B1 (summaries) to meet the "no internal IDs" rule. Without B1, Phase D should wait rather than ship an ID-based queue. B15 for ambiguous matches.
 
-### Phase E: Processing and Settings depth
+### Phase E: Processing and Settings depth — done 2026-09-25
+
+See [warranties-assistant-processing.md](warranties-assistant-processing.md) §3.
 
 - Pipeline lanes, the unified job history (B11), the last reconcile (B10), and the model-run filters.
 - Settings sections: Test connection (B12), a Privacy statement, and a Backup placeholder until B13.
 
-### Phase F (after spec Phase 9)
+### Phase F (after spec Phase 9) — done 2026-09-25
+
+The assistant panel (**Ask**, <kbd>Ctrl</kbd>+<kbd>J</kbd>); see [warranties-assistant-processing.md](warranties-assistant-processing.md) §4.
 
 - The Assistant panel, built on the EvidenceReference, AmountDisplay, and Drawer primitives.
 
-**Out of scope for all phases:** dark mode (the tokens make it cheap later), a mobile layout beyond "usable at narrow widths", charts beyond bars and bar lists, and multiple source folders.
+**Out of scope for all phases:** dark mode (the tokens make it cheap later), a mobile layout beyond "usable at narrow widths", and charts beyond bars and bar lists.
 
 ---
 

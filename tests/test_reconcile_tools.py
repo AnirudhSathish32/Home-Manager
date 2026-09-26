@@ -1,5 +1,6 @@
 """Phases 7-8: deterministic reconciliation and financial tools over the canonical ledger."""
 
+from conftest import documents_by_name, inbox_scan
 from fastapi.testclient import TestClient
 import pytest
 
@@ -13,15 +14,10 @@ from home_manager.storage import Store
 
 @pytest.fixture
 def books(tmp_path):
-    source = tmp_path / "source"
-    (source / "2026" / "09").mkdir(parents=True)
-    (source / "2026" / "09" / "export.csv").write_text("date,amount\n")
-    (source / "2026" / "09" / "receipt.png").write_bytes(b"synthetic receipt bytes")
-    (source / "2026" / "09" / "return.png").write_bytes(b"synthetic return receipt")
-    (source / "2026" / "09" / "bill.png").write_bytes(b"synthetic bill")
     store = Store(tmp_path / "managed")
-    Scanner(store, ScanLimits(stability_seconds=0)).run(store.create_job(source), source)
-    docs = {doc["relative_path"].split("/")[-1]: doc for doc in store.documents(source)["items"]}
+    inbox_scan(store, {"export.csv": b"date,amount\n", "receipt.png": b"synthetic receipt bytes",
+                       "return.png": b"synthetic return receipt", "bill.png": b"synthetic bill"})
+    docs = documents_by_name(store)
     ledger = Ledger(store)
     try:
         yield store, ledger, docs
@@ -164,13 +160,11 @@ def test_bills_payment_state_and_tool_api(tmp_path, books):
 
 
 def test_tools_endpoint_validates_typed_arguments(tmp_path):
-    source = tmp_path / "source"
-    source.mkdir()
     app = create_app(tmp_path / "control", "tools-token", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         assert client.post("/api/finance/tools/get_spending", json={}).status_code == 401
         client.headers.update({"Authorization": "Bearer tools-token"})
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
         ok = client.post("/api/finance/tools/get_spending", json={"start": "2026-09-01", "end": "2026-09-30"})
         assert ok.status_code == 200 and ok.json()["by_currency"] == []
         assert client.post("/api/finance/tools/get_spending", json={"start": "2026-09-01"}).status_code == 400

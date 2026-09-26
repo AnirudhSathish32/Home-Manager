@@ -63,8 +63,8 @@ function setBusy(settings) { busy = {capture: settings.capture_busy, inference: 
 function controls() {
   $("parse-all-receipts").disabled = !configured || busy.inference;
   for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "force-receipts", "auto-organize"]) $(id).disabled = busy.inference;
-  for (const id of ["scan", "scan-inbox"]) $(id).disabled = !configured || busy.capture;
-  for (const id of ["save-settings", "source", "managed"]) $(id).disabled = anyBusy();
+  $("scan-inbox").disabled = !configured || busy.capture;
+  for (const id of ["save-settings", "managed"]) $(id).disabled = anyBusy();
   document.querySelectorAll("[data-step]").forEach(button => { button.disabled = busy.inference; });
   if (typeof receiptControls === "function") receiptControls();
   if (typeof renderSelection === "function") renderSelection();
@@ -99,6 +99,7 @@ function renderActivityIndicator(activity) {
 }
 function renderActivity(activity) {
   renderActivityIndicator(activity);
+  if (typeof lastActivity !== "undefined") lastActivity = activity;
   $("activity").replaceChildren();
   if (!activity.length) $("activity").appendChild(element("li", "No active scans or model work.", "muted"));
   for (const work of activity) {
@@ -111,7 +112,10 @@ function renderActivity(activity) {
   }
 }
 async function loadModelHistory() {
-  const runs = await api("/api/model-runs?limit=25");
+  const query = new URLSearchParams({limit: 50});
+  if ($("model-task")?.value) query.set("task", $("model-task").value);
+  if ($("model-status")?.value) query.set("status", $("model-status").value);
+  const runs = await api(`/api/model-runs?${query}`);
   $("model-history").replaceChildren();
   for (const run of runs) {
     const row = document.createElement("tr");
@@ -130,14 +134,41 @@ function cell(row, value, code = false) {
   row.appendChild(td);
   return td;
 }
+// Shared-library session: a banner while one is open; the whole app reloads when it opens or ends.
+let sessionShown = null, sessionFailure = null;
+function renderSession(settings) {
+  const session = settings.session, opening = settings.session_opening;
+  if (opening?.status === "failed" && sessionFailure !== opening.id) {
+    sessionFailure = opening.id; notice(`The shared library could not be opened. ${opening.error || ""}`, true);
+  }
+  if (!session) { $("session-banner").replaceChildren(); }
+  else {
+    const end = element("button", "End session", "primary");
+    end.type = "button"; end.id = "session-end";
+    end.addEventListener("click", async () => {
+      try { await api("/api/sessions/current", {method: "DELETE"}); notice("Session ended. The shared copy was deleted and your library is open again."); await sessionChanged(); }
+      catch (error) { notice(error, true); }
+    });
+    const shared = session.shared_at ? `, shared ${session.shared_at.slice(0, 10)}` : "";
+    $("session-banner").replaceChildren(alertBox(`You are viewing “${session.label}”${shared}. Changes stay in this temporary copy and are deleted when you end the session. Your own library is closed and untouched.`,
+      {tone: "warning", action: end}));
+  }
+  const changed = (session?.id || null) !== sessionShown;
+  sessionShown = session?.id || null;
+  return changed;
+}
+async function sessionChanged() {
+  if (typeof closeReceipt === "function") closeReceipt();
+  selectedJob = ""; docOffset = eventOffset = 0; activeFolder = "all"; activeStatus = "all";
+  await loadSettings(); await refresh(); showRoute(false);
+}
 async function loadSettings() {
   const settings = await api("/api/settings");
-  configured = settings.configured; setBusy(settings); renderActivity(settings.activity);
-  $("source").value = settings.source_directory;
+  configured = settings.configured; setBusy(settings); renderActivity(settings.activity); renderSession(settings);
   $("managed").value = settings.managed_directory;
   inboxDirectory = settings.inbox_directory || "";
   modelsConfigured = {vision: Boolean(settings.vision.model), reasoning: Boolean(settings.reasoning.model)};
-  $("inbox-location").textContent = settings.inbox_directory ? `Drop files into ${settings.inbox_directory}` : "Configure directories to create your managed Inbox.";
+  $("inbox-location").textContent = settings.inbox_directory ? `Drop files into ${settings.inbox_directory}` : "Choose a library folder to create your Inbox.";
   $("vision-url").value = settings.vision.base_url;
   $("vision-model").value = settings.vision.model;
   $("reasoning-url").value = settings.reasoning.base_url;
@@ -147,6 +178,8 @@ async function loadSettings() {
     : `Laya weights are not installed at ${settings.laya.path}.`;
   $("auto-organize").checked = settings.vision.organize_after_scan;
   $("home-currency").value = homeCurrency = settings.household.home_currency || "";
+  $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
+  $("auto-identify").checked = settings.household.auto_identify_items !== false;
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
@@ -223,11 +256,11 @@ $("settings-form").addEventListener("submit", async event => {
       message: `Home Manager will open the library at ${managed}. The current library stays on disk unchanged; switch back by entering its folder again.`,
       confirmLabel: "Switch library"})) return;
   try {
-    await api("/api/settings", {method:"PUT", body:JSON.stringify({source_directory:$("source").value.trim(), managed_directory:managed})});
+    await api("/api/settings", {method:"PUT", body:JSON.stringify({managed_directory:managed})});
     if (typeof closeReceipt === "function") closeReceipt();
     selectedJob = ""; docOffset = eventOffset = 0;
     activeFolder = "all"; activeStatus = "all";
-    await loadSettings(); await refresh(); notice("Directories saved. You can scan your documents now.");
+    await loadSettings(); await refresh(); notice("Library folder saved. Drop documents into its Inbox.");
   } catch (error) { notice(error, true); }
 });
 $("scans").addEventListener("change", () => { selectedJob = $("scans").value; eventOffset = 0; loadEvents().catch(e => notice(e, true)); });
@@ -245,7 +278,11 @@ async function poll() {
       const settings = await api("/api/settings");
       const wasBusy = anyBusy(); setBusy(settings); controls();
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
-      if (anyBusy() || wasBusy) await refresh();
+      if (renderSession(settings)) { await sessionChanged(); return; }
+      if (anyBusy() || wasBusy) {
+        await refresh();
+        if (currentRoute?.name === "processing") await loadProcessing();
+      }
       if (wasBusy && !anyBusy() && currentRoute?.name === "home") await loadHome();
       if (typeof pollReceipt === "function") await pollReceipt();
     }
@@ -260,7 +297,8 @@ async function poll() {
   finally { setTimeout(poll, 1500); }
 }
 let pollFailure = null;
-loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true));
+// Start once every deferred script has run: a fast settings response must not reach showRoute (shell.js) before it exists.
+document.addEventListener("DOMContentLoaded", () => loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true)));
 
 function showReceiptBatch(batch) {
   $("receipt-batch-status").textContent = batch ?
@@ -279,10 +317,31 @@ saveSettingsForm("vision-form", "/api/vision-settings",
 saveSettingsForm("reasoning-form", "/api/reasoning-settings",
   () => ({base_url:$("reasoning-url").value.trim(), model:$("reasoning-model").value.trim()}),
   "Reasoning settings saved. Open a read document and select Extract to ledger.");
-saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null}),
-  "Home currency saved. Extract documents to the ledger again to apply it.");
-for (const [id, path, message] of [["scan", "/api/scans", "Scan started. Source files are read, never changed."],
-                                   ["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
+$("share-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const passphrase = $("share-passphrase").value;
+  if (passphrase !== $("share-passphrase-again").value) { notice("The two passphrases differ.", true); return; }
+  try {
+    const {share_id} = await api("/api/shares", {method: "POST", body: JSON.stringify({destination: $("share-destination").value.trim(), passphrase, label: $("share-label").value.trim()})});
+    $("share-passphrase").value = $("share-passphrase-again").value = "";
+    notice("Creating the encrypted share file…");
+    let record;
+    do { await new Promise(resolve => setTimeout(resolve, 1000)); record = await api(`/api/shares/${share_id}`); } while (record.status === "running");
+    if (record.status === "succeeded") notice(`Share file saved: ${record.result.path}. Send the file, and tell them the passphrase another way.`);
+    else notice(`The share file was not created. ${record.error || ""}`, true);
+  } catch (error) { notice(error, true); }
+});
+$("session-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    await api("/api/sessions", {method: "POST", body: JSON.stringify({share_file: $("session-file").value.trim(), passphrase: $("session-passphrase").value})});
+    $("session-passphrase").value = "";
+    notice("Opening the shared library. Your own library stays closed and unchanged while you look.");
+  } catch (error) { notice(error, true); }
+});
+saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked}),
+  "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
+for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {
     try {
       busy.capture = true; controls();

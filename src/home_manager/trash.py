@@ -2,7 +2,7 @@
 
 from pathlib import PurePosixPath
 
-from .paths import path_key, safe_path
+from .paths import safe_path
 from .storage import digest_file
 
 
@@ -52,14 +52,13 @@ def cleanup(store):
     return failures
 
 
-def empty(store, source):
+def empty(store):
     """Caller holds the manager mutex with background work idle and the library lock."""
     if cleanup(store):
         raise ValueError("Previous trash cleanup could not finish. Close files open in other programs and try again.")
     with store.connection() as db:
         db.execute("BEGIN IMMEDIATE")
-        docs = db.execute("SELECT * FROM occurrences WHERE deleted_at IS NOT NULL AND source_root IN (?,?)",
-                          (path_key(source), path_key(store.library.inbox))).fetchall()
+        docs = db.execute("SELECT * FROM occurrences WHERE deleted_at IS NOT NULL").fetchall()
         ids = {row["id"] for row in docs}
         if not ids:
             return {"deleted": 0, "cleanup_pending": 0}

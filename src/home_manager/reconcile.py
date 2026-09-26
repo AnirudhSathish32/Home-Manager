@@ -86,6 +86,8 @@ class Reconciler:
                 summary = {"receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
                            "recurring": self.recurring(db)}
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
+                # Matched receipts can give transactions a merchant name, which category rules also match.
+                self.ledger.apply_rules(db)
         except Exception as exc:
             with self.store.connection() as db:  # Only the error class: messages could echo document text.
                 db.execute("UPDATE reconciliation_runs SET status='failed',error=?,finished_at=? WHERE id=?", (type(exc).__name__, now(), run_id))
@@ -304,6 +306,8 @@ class Reconciler:
                     if row["review_status"] != "verified":
                         db.execute("UPDATE transactions SET transaction_type=?,updated_at=? WHERE id=?",
                                    (classify_transaction(row["description_raw"], row["amount_minor"], row["account_type"]), now(), transaction))
+            if status == "rejected" and kind == "receipt":  # The merchant name came from the receipt; rules decide again without it.
+                self.ledger.apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
 
     def review_obligation(self, obligation_id, status, note=""):

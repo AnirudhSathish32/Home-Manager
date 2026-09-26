@@ -13,9 +13,9 @@ import unicodedata
 import uuid
 
 from .formats import TABLES, extension
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
-from .money import currency_code, format_minor, money
+from .money import currency_code, format_minor, money, to_minor
 from .receipt_schema import StrictModel
 from .storage import now
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
@@ -72,6 +72,16 @@ def normalize_name(name) -> str:
     return " ".join(text.split())
 
 
+def category_name(value) -> str:
+    """Categories are compared as lower-case words with single spaces."""
+    name = " ".join((value or "").split()).lower()
+    if not name or len(name) > 60:
+        raise ValueError("Enter a category of 1 to 60 characters.")
+    if name == "uncategorized":
+        raise ValueError("'uncategorized' means no category; choose another name.")
+    return name
+
+
 def name_tokens(name) -> set[str]:
     return {token for token in normalize_name(name).split() if len(token) > 2}
 
@@ -104,8 +114,11 @@ def fingerprints(account_id, rows):
 
 
 class HouseholdConfig(StrictModel):
-    """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it."""
+    """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it.
+    checkin_weekday is the day of the weekly household check-in: Monday 0 … Sunday 6."""
     home_currency: str | None = None
+    checkin_weekday: int = Field(default=6, ge=0, le=6)
+    auto_identify_items: bool = True  # Run item identification on each newly recorded receipt.
 
     @field_validator("home_currency")
     @classmethod
@@ -206,6 +219,7 @@ class Ledger:
                 if statement_id:
                     db.execute("UPDATE transactions SET statement_id=coalesce(statement_id,?),updated_at=? WHERE id=?", (statement_id, now(), record))
             self.add_evidence(db, "transaction", record, source, row["locator"])
+        self.apply_rules(db, inserted)
         return inserted, duplicates
 
     # Publication of validated extraction ----------------------------------------
@@ -235,7 +249,8 @@ class Ledger:
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
-                "description": record.get("description"), "location": record.get("location"), "review_status": status, "validation_json": json.dumps(record["issues"])})
+                "description": record.get("description"), "location": record.get("location"), "review_status": status, "validation_json": json.dumps(record["issues"]),
+                "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote")})
             if written:
                 stale = [row[0] for row in db.execute("SELECT id FROM receipt_items WHERE receipt_id=?", (receipt_id,))]
                 db.executemany("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", [(item,) for item in stale])
@@ -248,6 +263,35 @@ class Ledger:
                                                                          item["unit_price_minor"], item["line_total_minor"], item["discount_minor"], status)).lastrowid
                     self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
         return self._published("receipt", receipt_id, written, items=len(record["items"]))
+
+    def publish_asset(self, record, source):
+        """An investment or loan statement's value as the forecast asset for its account (docs/items-assets-search.md §6).
+        One row per account: a newer statement updates it and returns it to proposed; an older one changes nothing."""
+        kind, institution = record["asset_kind"], " ".join(record["institution"].split())
+        label = record.get("account_name") or ("Loan" if kind == "loan" else "Retirement account" if kind == "retirement" else "Investment account")
+        identity = record.get("last_four") or normalize_name(record.get("account_name")) or "-"
+        key = f"{kind}|{normalize_name(institution)}|{identity}|{record['currency']}"
+        name = f"{institution} {label}{' ' + record['last_four'] if record.get('last_four') else ''}"[:80]
+        values = {"value_minor": record["value_minor"], "as_of": record["period_end"], "blob_hash": source["blob_hash"], "document_id": source["document_id"],
+                  "extraction_run_id": source["run_id"], "validation_json": json.dumps(record["issues"]), "updated_at": now()}
+        if kind == "loan":
+            values.update({"monthly_payment_minor": record.get("monthly_payment_minor")} if record.get("monthly_payment_minor") is not None else {})
+            values.update({"annual_rate_bp": record["annual_rate_bp"]} if record.get("annual_rate_bp") is not None else {})
+        with self.store.connection() as db:
+            existing = db.execute("SELECT * FROM assets WHERE account_key=?", (key,)).fetchone()
+            if existing:
+                if existing["as_of"] > record["period_end"]:
+                    return {"record_type": "asset", "id": existing["id"], "status": "kept_newer"}
+                # Re-extracting the statement the user already decided on changes nothing.
+                if existing["blob_hash"] == source["blob_hash"] and existing["as_of"] == record["period_end"] and existing["review_status"] in ("verified", "rejected"):
+                    return {"record_type": "asset", "id": existing["id"], "status": "kept_reviewed"}
+                db.execute(f"UPDATE assets SET {','.join(f'{column}=?' for column in values)},review_status='proposed' WHERE id=?", (*values.values(), existing["id"]))
+                return {"record_type": "asset", "id": existing["id"], "status": "published"}
+            columns = {**values, "name": name, "kind": kind, "currency": record["currency"], "source": "statement", "account_key": key,
+                       "review_status": "proposed", "created_at": now()}
+            columns.setdefault("annual_rate_bp", 0)
+            asset_id = db.execute(f"INSERT INTO assets({','.join(columns)}) VALUES({','.join('?' * len(columns))})", tuple(columns.values())).lastrowid
+        return {"record_type": "asset", "id": asset_id, "status": "published"}
 
     def publish_statement(self, record, source, status):
         card = record["statement_type"] == "credit_card"
@@ -306,7 +350,7 @@ class Ledger:
     # Deterministic CSV/XLSX import ---------------------------------------------
 
     def table_rows(self, document_id, digest, currency, mapping):
-        """Parse the preserved, hash-verified bytes; never the external source file."""
+        """Parse the preserved, hash-verified bytes; never the Inbox or Library file."""
         document, version = self.store.document_version(document_id, digest)
         if document["deleted_at"]:
             raise ValueError("Restore the document from Trash before importing it.")
@@ -407,12 +451,117 @@ class Ledger:
         return value
 
     def set_category(self, transaction_id, category):
-        """User categorization; the only way a category is assigned."""
-        category = " ".join(category.split()).lower() if category else None
+        """The user's own category for one transaction. Clearing it hands the row back to the user's rules."""
+        category = category_name(category) if category else None
         with self.store.connection() as db:
-            if db.execute("UPDATE transactions SET category=?,updated_at=? WHERE id=?", (category, now(), transaction_id)).rowcount == 0:
+            if db.execute("UPDATE transactions SET category=?,category_source=?,category_rule_id=NULL,updated_at=? WHERE id=?",
+                          (category, "user" if category else None, now(), transaction_id)).rowcount == 0:
                 raise ValueError("Transaction not found.")
-        return {"id": transaction_id, "category": category}
+            if category is None:
+                self.apply_rules(db, [transaction_id])
+            row = db.execute("SELECT category,category_source FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+        return {"id": transaction_id, "category": row["category"], "category_source": row["category_source"]}
+
+    # Category rules -------------------------------------------------------------
+    # Rules are the user's own decisions written once: "anything from COSTCO is groceries".
+    # A category set by hand on a transaction always wins over every rule.
+
+    def rules(self):
+        with self.store.connection() as db:
+            rows = db.execute("SELECT r.*,a.display_name AS account,(SELECT count(*) FROM transactions t WHERE t.category_rule_id=r.id) AS transactions "
+                              "FROM category_rules r LEFT JOIN accounts a ON a.id=r.account_id ORDER BY r.category,r.pattern").fetchall()
+        return [dict(row) for row in rows]
+
+    def _rule_values(self, db, pattern, category, account_id):
+        key = normalize_name(pattern)
+        if not key:
+            raise ValueError("Enter merchant or description words the rule should match, such as COSTCO.")
+        if account_id is not None and db.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
+            raise ValueError("Account not found.")
+        return key, category_name(category), account_id
+
+    def add_rule(self, pattern, category, account_id=None):
+        with self.store.connection() as db:
+            values = self._rule_values(db, pattern, category, account_id)
+            if db.execute("SELECT 1 FROM category_rules WHERE pattern=? AND coalesce(account_id,0)=coalesce(?,0)", (values[0], account_id)).fetchone():
+                raise ValueError("A rule for these words already exists. Change that rule instead.")
+            rule_id = db.execute("INSERT INTO category_rules(pattern,category,account_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+                                 (*values, now(), now())).lastrowid
+            changed = self.apply_rules(db)
+        return {**self.rule(rule_id), "changed": changed}
+
+    def update_rule(self, rule_id, pattern, category, account_id=None):
+        with self.store.connection() as db:
+            values = self._rule_values(db, pattern, category, account_id)
+            if db.execute("SELECT 1 FROM category_rules WHERE pattern=? AND coalesce(account_id,0)=coalesce(?,0) AND id<>?", (values[0], account_id, rule_id)).fetchone():
+                raise ValueError("Another rule already uses these words.")
+            if db.execute("UPDATE category_rules SET pattern=?,category=?,account_id=?,updated_at=? WHERE id=?", (*values, now(), rule_id)).rowcount == 0:
+                raise ValueError("Rule not found.")
+            changed = self.apply_rules(db)
+        return {**self.rule(rule_id), "changed": changed}
+
+    def delete_rule(self, rule_id):
+        """Remove a rule. Its transactions go to the next matching rule, or back to uncategorized."""
+        with self.store.connection() as db:
+            if db.execute("DELETE FROM category_rules WHERE id=?", (rule_id,)).rowcount == 0:
+                raise ValueError("Rule not found.")
+            changed = self.apply_rules(db)
+        return {"id": rule_id, "deleted": True, "changed": changed}
+
+    def rule(self, rule_id):
+        found = [rule for rule in self.rules() if rule["id"] == rule_id]
+        if not found:
+            raise ValueError("Rule not found.")
+        return found[0]
+
+    def apply_rules(self, db, transaction_ids=None):
+        """Give every rule-managed or uncategorized transaction its best rule's category. Returns rows changed.
+        The most specific rule wins: the most pattern words, then the newest."""
+        rules = sorted(((set(row["pattern"].split()), row) for row in db.execute("SELECT * FROM category_rules")),
+                       key=lambda item: (len(item[0]), item[1]["id"]), reverse=True)
+        clause, params = "(t.category_source IS NULL OR t.category_source='rule')", []
+        if transaction_ids is not None:
+            ids = sorted(set(transaction_ids))
+            if not ids:
+                return 0
+            clause += f" AND t.id IN ({','.join('?' * len(ids))})"
+            params = ids
+        changed = 0
+        for row in db.execute("SELECT t.id,t.account_id,t.description_raw,t.category,t.category_rule_id,m.canonical_name FROM transactions t "
+                              f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {clause}", params).fetchall():
+            words = set(normalize_name(f"{row['description_raw']} {row['canonical_name'] or ''}").split())
+            match = next((rule for pattern, rule in rules if pattern <= words and rule["account_id"] in (None, row["account_id"])), None)
+            target = (match["category"], "rule", match["id"]) if match else (None, None, None)
+            if (row["category"], row["category_rule_id"]) != (target[0], target[2]):
+                db.execute("UPDATE transactions SET category=?,category_source=?,category_rule_id=?,updated_at=? WHERE id=?", (*target, now(), row["id"]))
+                changed += 1
+        return changed
+
+    # Budgets ------------------------------------------------------------------
+
+    def budgets(self):
+        with self.store.connection() as db:
+            rows = db.execute("SELECT * FROM budgets ORDER BY currency,category").fetchall()
+        return [{**dict(row), "amount": money(row["amount_minor"], row["currency"])} for row in rows]
+
+    def set_budget(self, category, currency, amount):
+        """A monthly budget for one category and currency; setting it again changes the amount."""
+        category, currency = category_name(category), currency_code(currency)
+        amount_minor = to_minor(amount, currency)
+        if amount_minor <= 0:
+            raise ValueError("A budget must be more than zero.")
+        with self.store.connection() as db:
+            db.execute("INSERT INTO budgets(category,currency,amount_minor,created_at,updated_at) VALUES(?,?,?,?,?) "
+                       "ON CONFLICT(category,currency) DO UPDATE SET amount_minor=excluded.amount_minor,updated_at=excluded.updated_at",
+                       (category, currency, amount_minor, now(), now()))
+            row = db.execute("SELECT * FROM budgets WHERE category=? AND currency=?", (category, currency)).fetchone()
+        return {**dict(row), "amount": money(row["amount_minor"], row["currency"])}
+
+    def delete_budget(self, budget_id):
+        with self.store.connection() as db:
+            if db.execute("DELETE FROM budgets WHERE id=?", (budget_id,)).rowcount == 0:
+                raise ValueError("Budget not found.")
+        return {"id": budget_id, "deleted": True}
 
     def review_history(self, record_type, record_id):
         with self.store.connection() as db:

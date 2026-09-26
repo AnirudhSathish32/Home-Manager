@@ -51,20 +51,16 @@ def path_key(path: Path | str) -> str:
     return os.path.normcase(str(path))
 
 
-def validate_roots(source_value: str, managed_value: str, control: Path) -> tuple[Path, Path]:
-    source, managed = local_absolute(source_value), local_absolute(managed_value)
-    if not source.is_dir():
-        raise PathError("The source directory must already exist.")
+def validate_managed(managed_value: str, control: Path) -> Path:
+    managed = local_absolute(managed_value)
     if managed.exists() and not managed.is_dir():
-        raise PathError("The managed-data path must be a directory.")
-    if source == Path(source.anchor) or managed == Path(managed.anchor):
-        raise PathError("Choose dedicated folders, not a drive root.")
-    if overlaps(source, managed):
-        raise PathError("Source and managed-data directories must be separate, non-overlapping folders.")
+        raise PathError("The library path must be a directory.")
+    if managed == Path(managed.anchor):
+        raise PathError("Choose a dedicated folder, not a drive root.")
     for reserved in reserved_paths(control):
-        if overlaps(source, reserved) or overlaps(managed, reserved):
-            raise PathError("Choose data folders outside the application and its settings directory.")
-    return source, managed
+        if overlaps(managed, reserved):
+            raise PathError("Choose a library folder outside the application and its settings directory.")
+    return managed
 
 
 def reserved_paths(control: Path) -> tuple[Path, Path]:
@@ -75,13 +71,13 @@ def reserved_paths(control: Path) -> tuple[Path, Path]:
 
 
 def separate_folder(value: str, control: Path, others=()) -> Path:
-    """A local folder for backup or restore that overlaps no library, source, settings or application folder."""
+    """A local folder for backup or restore that overlaps no library, settings or application folder."""
     path = local_absolute(value)
     if path == Path(path.anchor):
         raise PathError("Choose a dedicated folder, not a drive root.")
     for reserved in (*reserved_paths(control), *(Path(item) for item in others if item)):
         if overlaps(path, reserved):
-            raise PathError("Choose a folder outside the managed library, source folders, backups being read, and the application's own folders.")
+            raise PathError("Choose a folder outside the library, backups being read, and the application's own folders.")
     return path
 
 

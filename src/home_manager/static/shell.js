@@ -2,14 +2,24 @@
 // Application shell: hash routes select a page; the URL keeps the view across reloads and Back.
 const ROUTES = {
   home: {title: "Home", show: () => loadHome()},
-  finances: {title: "Finances", show: route => openFinanceRoute(route.params)},
+  search: {title: "Search", show: route => openSearch(route.params)},
+  review: {title: "Review", show: () => loadReview()},
+  transactions: {title: "Transactions", show: route => configured ? openTransactions(route.params) : null},
+  spending: {title: "Spending & budgets", show: route => configured ? openSpending(route.params) : null},
+  bills: {title: "Bills & recurring", show: () => loadBills()},
+  accounts: {title: "Accounts", show: () => loadAccounts()},
+  inventory: {title: "Inventory", show: route => { if (route.params.has("q")) $("inventory-search").value = route.params.get("q"); return loadInventory(); }},
+  // Old links (#/finances?section=…) forward to the page that now holds that section.
+  finances: {title: "Finances", nav: "transactions", show: route => openFinanceRoute(route.params)},
+  forecast: {title: "Forecast", show: () => configured ? loadForecast() : null},
   documents: {title: "Documents", show: route => {
     if (route.params.get("status")) { activeStatus = route.params.get("status"); activeFolder = "all"; docOffset = 0; selection.clear(); }
+    if (route.params.has("q")) { searchQuery = $("document-search").value = route.params.get("q"); activeFolder = "all"; activeStatus = "all"; docOffset = 0; selection.clear(); }
     return configured ? loadDocuments() : null;
   }},
   // #/documents/ID[?version=HASH] opens the inspector over the preserved list state.
   document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version")) : null},
-  processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory()]) : null},
+  processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory(), loadProcessing()]) : null},
   settings: {title: "Settings", show: () => null},
 };
 const DEFAULT_ROUTE = "home";
@@ -20,7 +30,7 @@ for (const link of document.querySelectorAll(".nav-link[data-icon]")) {
   link.title = link.querySelector(".nav-label").textContent;  // Tooltip when the sidebar collapses to icons.
 }
 $("close-receipt").prepend(icon("arrow-left"));
-wireTabs(["directories-tab", "preferences-tab", "model-tab", "checks-tab", "privacy-tab"]);
+wireTabs(["directories-tab", "preferences-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
 
 function parseRoute() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");

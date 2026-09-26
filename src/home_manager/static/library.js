@@ -26,6 +26,12 @@ function documentState(doc) {
   if (!doc.ledger_status) return "read";
   return {proposed: "needs_review", needs_review: "needs_review", verified: "recorded", rejected: "rejected"}[doc.ledger_status] || doc.ledger_status;
 }
+function matchText(doc) {
+  // B9: a receipt's match to a card or bank charge, or a bill's payment state (docs/ui-design-plan.md §3.7).
+  if (!doc.reconciliation_status || doc.deleted_at) return "";
+  if (doc.folder === "Bills") return {matched: "Paid", unmatched: "Marked unpaid"}[doc.reconciliation_status] || "";
+  return {matched: "Matched to a charge", proposed: "Match proposed", ambiguous: "Several possible charges", unmatched: "No matching charge yet"}[doc.reconciliation_status] || "";
+}
 function documentStateBadge(doc) {
   const badge = statusBadge(documentState(doc));
   const steps = isTable(doc) ? [["Import", doc.ledger_status || "not_imported"]]
@@ -49,11 +55,10 @@ function setNavCount(target, count, label) {
   if (count) target.setAttribute("aria-label", `${count} ${label}`); else target.removeAttribute("aria-label");
 }
 async function renderNavCounts(catalog) {
-  // Sidebar attention counts: Inbox/Unfiled under Documents, pending review on Finances.
+  // Sidebar attention counts: Inbox/Unfiled under Documents, pending decisions on Review, the weekly check-in on Inventory.
   setNavCount($("nav-inbox").querySelector(".nav-count"), catalog.counts.Inbox, "in Inbox");
   setNavCount($("nav-unfiled").querySelector(".nav-count"), catalog.counts.Unfiled, "unfiled");
-  const queue = await api("/api/finance/tools/review_queue", {method:"POST", body:"{}"});
-  setNavCount($("nav-review-count"), queue.records.length + queue.links.length + queue.issues.length, "need review");
+  await loadNavCounts();
 }
 function showFolder(folder) {
   activeFolder = folder; activeStatus = "all";
@@ -141,7 +146,7 @@ function emptyMessage() {
   if (searchQuery || activeStatus !== "all" || activeFrom || activeTo) return emptyState("No documents match these filters.", actionButton("Clear filters", clearFilters));
   if (activeFolder === "trash") return emptyState("Trash is empty.");
   if (activeFolder !== "all") return emptyState(`No documents in ${folderLabel(activeFolder)}.`);
-  const box = emptyState("Your library is empty. Drop files into your Inbox folder, or scan your source folders from Processing.");
+  const box = emptyState("Your library is empty. Drop files into your Inbox folder.");
   if (inboxDirectory) box.append(element("code", inboxDirectory), copyButton(inboxDirectory, "Copy Inbox path"));
   return box;
 }
@@ -173,11 +178,14 @@ function renderDocuments(data) {
     if (doc.description_source === "model") title.firstChild.title = "The description is the AI's. Use Edit description to change it.";
     if (doc.source_status !== "present" && doc.source_status !== "organized") title.appendChild(element("small", SOURCE_STATES[doc.source_status] || `Source ${doc.source_status}`, "item-warning"));
     if (doc.managed_error) title.appendChild(element("small", doc.managed_error, "item-warning"));
+    if (doc.folder === "Unfiled" && doc.unfiled_reason && !doc.deleted_at) title.appendChild(element("small", `Unfiled: ${doc.unfiled_reason}`, "muted unfiled-reason"));
     cell(row, folderLabel(doc.folder)).className = "secondary-cell";
     cell(row, "").appendChild(doc.document_date ? dateDisplay(doc.document_date) : element("span", "—", "muted"));
     const value = cell(row, ""); value.className = "numeric";
     if (doc.ledger_amount) value.appendChild(amount(doc.ledger_amount, {signed: false}));
-    cell(row, "").appendChild(documentStateBadge(doc));
+    const state = cell(row, ""); state.appendChild(documentStateBadge(doc));
+    const matched = matchText(doc);
+    if (matched) state.appendChild(element("small", matched, `match-state muted${doc.reconciliation_status === "ambiguous" ? " item-warning" : ""}`));
     const actions = cell(row, "").appendChild(element("div", "", "document-actions"));  // Flex inside the cell keeps table layout intact.
     const next = nextStep(doc);
     if (next) actions.appendChild(next);
@@ -258,7 +266,7 @@ $("empty-trash").addEventListener("click", () => {
   pendingLibraryAction = {action: "empty", docs: []};
   $("library-action-title").textContent = "Permanently empty Trash?";
   $("library-action-document").textContent = `All ${libraryCatalog.counts.trash} documents in Trash, including those hidden by filters or on other pages.`;
-  $("library-action-description").textContent = "Permanently deletes managed copies, preserved versions, extracted text and associated ledger records. Data still used by other documents is kept. This cannot be undone. External source files and existing backups remain; rescanning an external source can add its documents again.";
+  $("library-action-description").textContent = "Permanently deletes managed copies, preserved versions, extracted text and associated ledger records. Data still used by other documents is kept. This cannot be undone. Existing backups remain.";
   $("move-folder-label").hidden = true;
   $("confirm-library-action").textContent = "Permanently empty Trash";
   $("confirm-library-action").className = "danger";
@@ -274,7 +282,7 @@ function openLibraryAction(docs, action) {
   $("library-action-title").textContent = action === "trash" ? `Delete ${count === 1 ? "document" : plural}?` : `Move ${plural}`;
   $("library-action-document").textContent = count === 1 ? `${documentName(docs[0])} — ${docs[0].relative_path}`
     : docs.slice(0, 3).map(documentName).join(", ") + (count > 3 ? ` and ${count - 3} more` : "");
-  $("library-action-description").textContent = action === "trash" ? "This removes the document from the active library and puts it in Trash. You can restore it. Source files and preserved copies are not deleted from disk, and rescanning will not restore it automatically." : "Move the app-owned Library copy to this folder. External originals stay unchanged. Edited managed files will not be overwritten.";
+  $("library-action-description").textContent = action === "trash" ? "This removes the document from the active library and puts it in Trash. You can restore it. Preserved copies are not deleted from disk, and scanning Inbox again will not restore it automatically." : "Move the Library file to this folder. Its preserved copy stays unchanged. Edited Library files will not be overwritten.";
   $("move-folder-label").hidden = action !== "move";
   $("move-folder").replaceChildren(new Option("Unfiled", "Unfiled"));
   for (const folder of libraryCatalog.folders.filter(folder => !["Unfiled", "Inbox"].includes(folder))) $("move-folder").add(new Option(folder.replaceAll("_", " "), folder));
@@ -306,7 +314,7 @@ $("confirm-library-action").addEventListener("click", async () => {
     pendingLibraryAction = null; $("library-action-dialog").close();
     await afterLibraryChange();
     const done = docs.length - failures.length;
-    notice(action === "trash" ? (done === 1 ? "Document moved to Trash. Its source file is unchanged." : `${done} documents moved to Trash. Their source files are unchanged.`)
+    notice(action === "trash" ? (done === 1 ? "Document moved to Trash. You can restore it from Trash." : `${done} documents moved to Trash. You can restore them from Trash.`)
       : (done === 1 ? "Document moved to the selected folder." : `${done} documents moved to the selected folder.`));
     if (failures.length) notice(`${failures.length} couldn't be changed. ${failures.join(" ")}`, true);
   } catch (error) { $("library-action-error").textContent = error.message; }
@@ -379,6 +387,6 @@ $("confirm-import").addEventListener("click", async () => {
     try { localStorage.setItem("home-manager-import-account", String(result.account_id)); } catch { /* Convenience only. */ }
     $("import-dialog").close();
     notice(`Imported ${result.inserted} new transactions; ${result.duplicates} were already recorded and ${result.rejected} rows were not importable.`);
-    if (typeof loadFinance === "function") loadFinance().catch(() => {});
+    loadNavCounts().catch(() => {});
   } catch (error) { $("import-status").textContent = error.message; $("confirm-import").disabled = false; }
 });

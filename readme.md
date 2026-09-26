@@ -1,12 +1,12 @@
 ## readme
 
-V2 Phase 1 adds an app-owned **Library/Inbox**, flat folders, physical managed copies, and recoverable filing. External source files remain read-only. See [managed-library setup and behavior](docs/managed-library.md).
+Documents enter through the app-owned **Library/Inbox** and are filed into flat Library folders with recoverable moves. See [managed-library setup and behavior](docs/managed-library.md).
 
 Financial reasoning is available as a separate stage over saved vision text. Configure its model in **Settings → Local models**, then open a transcribed document and select **Analyze financial details**. Findings cite source lines and remain unreviewed. See [financial reasoning](docs/financial-reasoning.md).
 
 Home Manager is a local-first household document and financial assistant in development.
 
-D1–D2 and PNG/JPEG reading are implemented: preserve documents from `YYYY/MM` folders, then transcribe images with a configured local vision model. The inspector shows full returned text and decoded QR/barcodes. OCR and label-based fields have been removed. A separately configured reasoning model proposes financial facts, titles, document types and observations with source citations. Financial posting and CSV/Excel/PDF readers follow separately.
+D1–D2 and PNG/JPEG reading are implemented: preserve documents dropped into Inbox, then transcribe images with a configured local vision model. The inspector shows full returned text and decoded QR/barcodes. OCR and label-based fields have been removed. A separately configured reasoning model proposes financial facts, titles, document types and observations with source citations. Financial posting and CSV/Excel/PDF readers follow separately.
 
 From PowerShell:
 

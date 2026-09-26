@@ -17,10 +17,10 @@ class ReceiptBatches:
         with self.store.connection() as db:
             db.execute("UPDATE receipt_batches SET status='interrupted' WHERE status IN ('queued','running')")
 
-    def enqueue(self, source, vision, force=False, scan_job=None, document_ids=None):
+    def enqueue(self, vision, force=False, scan_job=None, document_ids=None):
         with self.store.connection() as db:
-            query = "SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.source_root IN (?,?) AND o.deleted_at IS NULL"
-            params = [path_key(source), path_key(self.store.library.inbox)]
+            query = "SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.deleted_at IS NULL"
+            params = []
             if scan_job:
                 query += " AND EXISTS(SELECT 1 FROM events e WHERE e.job_id=? AND e.relative_path=o.relative_path AND e.hash=o.current_hash AND e.status IN ('captured','duplicate','new_version'))"
                 params.append(scan_job)
@@ -34,10 +34,10 @@ class ReceiptBatches:
                 return None
             if document_ids is not None:
                 raise ValueError("None of the selected documents can be read. Text reading supports PNG, JPEG and PDF; CSV and Excel files use Import transactions.")
-            raise ValueError("No preserved PNG, JPEG or PDF documents are available. Scan the source folder first.")
+            raise ValueError("No preserved PNG, JPEG or PDF documents are available. Put documents in Library/Inbox first.")
         batch = uuid.uuid4().hex
         with self.store.connection() as db:
-            db.execute("INSERT INTO receipt_batches VALUES(?,?,'queued',?,?)", (batch, path_key(source), now(), len(documents)-len(images)))
+            db.execute("INSERT INTO receipt_batches VALUES(?,?,'queued',?,?)", (batch, path_key(self.store.library.inbox), now(), len(documents)-len(images)))
         identity = resolve_identity(self.store, vision) if vision.model else None  # Once per batch.
         try:
             for document in images:
@@ -89,7 +89,7 @@ class ReceiptBatches:
             value["unique_runs"] = db.execute("SELECT count(DISTINCT run_id) FROM receipt_batch_items WHERE batch_id=?", (batch,)).fetchone()[0]
             return value
 
-    def latest(self, source):
+    def latest(self):
         with self.store.connection() as db:
-            row = db.execute("SELECT id FROM receipt_batches WHERE source_root=? ORDER BY created_at DESC LIMIT 1", (path_key(source),)).fetchone()
+            row = db.execute("SELECT id FROM receipt_batches ORDER BY created_at DESC LIMIT 1").fetchone()
         return self.get(row[0]) if row else None

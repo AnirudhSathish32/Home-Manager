@@ -72,7 +72,7 @@ def test_cancel_releases_inference_queue_during_silent_prompt_processing(prepare
     assert manager.busy("inference")
     # Library actions and capture are not blocked by model generation.
     manager.library_action(doc["id"], doc["current_hash"], "move", "Receipts")
-    scan = manager.start()
+    scan = manager.start_inbox()
     started = time.monotonic()
     assert manager.cancel()["cancelled"]
     for _ in range(100):
@@ -86,7 +86,7 @@ def test_cancel_releases_inference_queue_during_silent_prompt_processing(prepare
     assert [row["status"] for row in model_runs(manager, run_id)] == ["cancelled"]
     manager.future.result(timeout=30)
     assert manager.store.job(scan)["status"] == "completed"
-    assert manager.store.documents(manager.source)["items"][0]["folder"] == "Receipts"
+    assert manager.store.documents()["items"][0]["folder"] == "Receipts"
     local_model["response_gate"].set()
     local_model.pop("response_gate")
     retry = manager.start_reasoning(doc["id"], parse_id, force=True)["run_id"]
@@ -95,18 +95,16 @@ def test_cancel_releases_inference_queue_during_silent_prompt_processing(prepare
 
 
 def test_cancelled_batch_marks_remaining_runs_and_api_exposes_activity(tmp_path, local_model):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    for index in range(3):
-        make_receipt(month / f"receipt-{index}.png", [f"RECEIPT {index}", "Total 1.00"])
     app = create_app(tmp_path / "control", "jobs-token", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer jobs-token"}) as client:
         manager = app.state.manager
         local_model["config"].organize_after_scan = False
-        client.put("/api/settings", json={"source_directory": str(source), "managed_directory": str(tmp_path / "managed")})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        month = app.state.manager.store.library.inbox
+        for index in range(3):
+            make_receipt(month / f"receipt-{index}.png", [f"RECEIPT {index}", "Total 1.00"])
         client.put("/api/vision-settings", json=local_model["config"].model_dump())
-        manager.start()
+        manager.start_inbox()
         manager.future.result(timeout=30)
         local_model["response_gate"] = threading.Event()
         batch = client.post("/api/receipt-batches", json={}).json()["batch_id"]
@@ -134,7 +132,7 @@ def test_monitor_and_directory_changes_respect_queues(tmp_path, local_model):
     (source / "2026" / "09").mkdir(parents=True)
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     try:
-        manager.configure(str(source), str(tmp_path / "managed"))
+        manager.configure(str(tmp_path / "managed"))
         # Without auto-transcription, the Inbox scan has no model follow-up to queue.
         manager.configure_vision(local_model["config"].model_copy(update={"organize_after_scan": False}))
         gate, entered = threading.Event(), threading.Event()
@@ -145,7 +143,7 @@ def test_monitor_and_directory_changes_respect_queues(tmp_path, local_model):
             job = manager.start_inbox()  # Capture is independent of model work.
             manager.future.result(timeout=10)
             assert manager.store.job(job)["status"] == "completed"
-            for call in (lambda: manager.configure(str(source), str(tmp_path / "managed")),
+            for call in (lambda: manager.configure(str(tmp_path / "managed")),
                          lambda: manager.configure_vision(local_model["config"])):
                 try:
                     call()

@@ -34,17 +34,16 @@ def proposal():
 @pytest.fixture
 def prepared(tmp_path, local_model):
     local_model["output"]["full_text"] += "\nLATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00"
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    make_receipt(month / "receipt.png", local_model["output"]["full_text"].splitlines())
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
-    manager.configure(str(source), str(tmp_path / "managed"))
+    manager.configure(str(tmp_path / "managed"))
+    month = manager.store.library.inbox
+    make_receipt(month / "receipt.png", local_model["output"]["full_text"].splitlines())
     manager.configure_vision(local_model["config"])
-    manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
-    manager.start()
+    manager.start_inbox()
     manager.future.result(timeout=30)
-    doc = manager.store.documents(source)["items"][0]
+    # Set after capture, so Inbox's automatic ledger extraction does not run and each step is tested on its own.
+    manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+    doc = manager.store.documents()["items"][0]
     run = manager.receipts.history(doc["id"])[0]["id"]
     assert manager.receipts.get(run)["status"] == "succeeded", manager.receipts.get(run)
     local_model["output"] = proposal()
@@ -72,7 +71,7 @@ def test_analysis_http_provenance_reuse_and_preserved_text(prepared, local_model
     assert "image_url" not in json.dumps(payload)
     assert json.loads(payload["messages"][1]["content"])["lines"][6] == {"line_id": "line-7", "text": "Total 25.00"}
     assert manager.start_reasoning(doc["id"], parse_id) == {"run_id": run["id"], "reused": True}
-    assert manager.store.documents(manager.source)["items"][0]["folder"] == "Unfiled"
+    assert manager.store.documents()["items"][0]["folder"] == "Unfiled"
     with manager.store.connection() as db:
         db.execute("UPDATE reasoning_runs SET status='running' WHERE id=?", (run["id"],))
     manager.reasoning.recover()

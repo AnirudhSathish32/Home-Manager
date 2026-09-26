@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from home_manager.finance import HouseholdConfig
 from home_manager.manager import Manager
 from home_manager.reasoning import ReasoningConfig
 from home_manager.scanner import ScanLimits
@@ -53,18 +54,18 @@ def receipt_items():
 
 
 def transcribe(tmp_path, local_model, lines):
-    source = tmp_path / "source"
-    month = source / "2026" / "09"
-    month.mkdir(parents=True)
-    make_receipt(month / "document.png")
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
-    manager.configure(str(source), str(tmp_path / "managed"))
+    manager.configure(str(tmp_path / "managed"))
+    month = manager.store.library.inbox
+    make_receipt(month / "document.png")
     local_model["output"] = {"full_text": "\n".join(lines)}
     manager.configure_vision(local_model["config"])
-    manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
-    manager.start()
+    manager.start_inbox()
     manager.future.result(timeout=30)
-    doc = manager.store.documents(source)["items"][0]
+    # Set after capture, so Inbox's automatic ledger extraction does not run and each step is tested on its own.
+    manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+    manager.configure_household(HouseholdConfig(auto_identify_items=False))  # Item identification is tested in test_warranties.
+    doc = manager.store.documents()["items"][0]
     parse_id = manager.receipts.history(doc["id"])[0]["id"]
     assert manager.receipts.get(parse_id)["status"] == "succeeded"
     return manager, doc, parse_id
@@ -103,16 +104,16 @@ def test_receipt_extraction_publishes_exact_evidence_linked_records_and_files(re
     assert [request["max_tokens"] for request in requests] == [1024, 2048, 1024, 8192, 512]
     assert "image_url" not in json.dumps(requests)
     assert [row["task"] for row in manager.store.model_runs(run["id"])] == ["extraction"] * 5
-    filed = manager.store.documents(manager.source)["items"][0]
+    filed = manager.store.documents()["items"][0]
     assert filed["folder"] == "Receipts" and "2026-09-22__Local_Test_Cafe__Receipts" in filed["managed_path"]
     # The title is Merchant - Location - Description; date, amount and type have their own columns.
     assert (filed["title"], filed["description_source"], filed["merchant"], filed["document_date"]) == ("Local Test Cafe - Coffee & lunch", "model", "Local Test Cafe", "2026-09-22")
     assert filed["ledger_amount"] == "25.00 USD" and filed["ledger_status"] == "verified"
-    assert (record["review_source"], manager.store.folders(manager.source)["work"]["needs_review"]) == ("automatic", 0)
+    assert (record["review_source"], manager.store.folders()["work"]["needs_review"]) == ("automatic", 0)
     store = manager.store
-    assert [len(store.documents(manager.source, status=name)["items"]) for name in ("needs_text", "ready_for_ledger", "needs_review", "failed")] == [0, 0, 0, 0]
-    assert store.documents(manager.source, query="cafe")["total"] == 1 and store.documents(manager.source, query="100%_x")["total"] == 0
-    assert store.folders(manager.source)["work"] == {"needs_text": 0, "ready_for_ledger": 0, "needs_review": 0, "failed": 0}
+    assert [len(store.documents(status=name)["items"]) for name in ("needs_text", "ready_for_ledger", "needs_review", "failed")] == [0, 0, 0, 0]
+    assert store.documents(query="cafe")["total"] == 1 and store.documents(query="100%_x")["total"] == 0
+    assert store.folders()["work"] == {"needs_text": 0, "ready_for_ledger": 0, "needs_review": 0, "failed": 0}
 
 
 def test_missing_summary_merchant_falls_back_to_the_cited_classifier_issuer(receipt, local_model):
@@ -182,7 +183,7 @@ def test_unknown_or_uncited_classifications_never_publish_or_choose_folders(rece
     local_model["outputs"] = [unknown]
     run = extract(manager, doc, parse_id)
     assert run["status"] == "succeeded" and run["publication"] is None and len(local_model["requests"]) == 2
-    assert manager.store.documents(manager.source)["items"][0]["folder"] == "Unfiled"
+    assert manager.store.documents()["items"][0]["folder"] == "Unfiled"
     # A merchant the cited line does not mention (e.g. injected path text) is never used: after one
     # correction it is dropped, the record needs review, and no folder or filename is derived from it.
     hostile = receipt_summary(merchant=value(r"..\..\Windows System32", 1, "LOCAL TEST CAFE"))
@@ -193,7 +194,7 @@ def test_unknown_or_uncited_classifications_never_publish_or_choose_folders(rece
     assert record["merchant"] == "LOCAL TEST CAFE" and record["total_minor"] == 2500  # Cited classifier issuer, never the injected text.
     assert record["issues"] == ["Merchant was not used: the name does not appear in its cited evidence. Check it against the document."]
     assert "Windows" not in local_model["requests"][-2]["messages"][-1]["content"]  # Correction feedback never echoes values.
-    filed = manager.store.documents(manager.source)["items"][0]  # Filed by the classifier's cited issuer instead.
+    filed = manager.store.documents()["items"][0]  # Filed by the classifier's cited issuer instead.
     assert filed["folder"] == "Receipts" and "LOCAL_TEST_CAFE" in filed["managed_path"] and "Windows" not in filed["managed_path"]
 
 
@@ -229,8 +230,8 @@ def test_real_model_quirks_quotes_split_taxes_brand_footer_and_home_currency(tmp
         assert [(item["description"], item["line_total_minor"]) for item in record["items"]] == [("Bitchin'", 899), ("Command", 389)]
         assert record["evidence"][0]["locator"]["quotes"][0] == "informtarget.com"  # Wrapping quote marks removed.
         assert run["result"]["normalized"]["notes"] == ["No currency code is printed; the $ amounts were read as your home currency (USD)."]
-        assert manager.store.documents(manager.source)["items"][0]["folder"] == "Receipts"
-        assert manager.store.documents(manager.source)["items"][0]["title"] == "Target - Milton - Snacks/Office"
+        assert manager.store.documents()["items"][0]["folder"] == "Receipts"
+        assert manager.store.documents()["items"][0]["title"] == "Target - Milton - Snacks/Office"
         with pytest.raises(ValueError):
             manager.configure_household(manager.household.model_validate({"home_currency": "XYZ"}))
     finally:
@@ -322,7 +323,7 @@ def test_receipt_street_location_reaches_document_title(tmp_path, local_model, a
         record = manager.ledger.record("receipt", run["publication"]["id"])
         assert record["location"] == street
         expected = "Local Test Cafe - Main St W - Lunch" if street else "Local Test Cafe - Lunch"
-        assert manager.store.document(manager.source, doc["id"])["title"] == expected
+        assert manager.store.document(doc["id"])["title"] == expected
         prompt = local_model["requests"][3]["messages"][0]["content"]
         assert "only the street name" in prompt
         assert "Never substitute a city or postal code" in prompt
@@ -338,7 +339,7 @@ def test_the_seller_and_location_question_names_the_store_and_online_orders(rece
     run = extract(manager, doc, parse_id)
     record = manager.ledger.record("receipt", run["publication"]["id"])
     assert (record["merchant"], record["location"], record["review_status"]) == ("Local Test Cafe", "Test Cafe", "verified")
-    assert manager.store.document(manager.source, doc["id"])["title"] == "Local Test Cafe - Test Cafe - Snacks/Office"
+    assert manager.store.document(doc["id"])["title"] == "Local Test Cafe - Test Cafe - Snacks/Office"
     names = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][1:]]
     assert names == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription"]
     assert "never the store's location" in local_model["requests"][3]["messages"][0]["content"]
@@ -354,11 +355,11 @@ def test_an_inferred_seller_is_used_and_flagged_and_online_needs_delivery_eviden
     record = manager.ledger.record("receipt", receipt_id)
     assert (record["merchant"], record["location"], record["review_status"]) == ("The Home Depot", None, "needs_review")
     assert record["issues"] == ["Merchant The Home Depot was inferred from “Returns within 14 days”, not printed; confirm it with Edit details."]
-    assert manager.store.document(manager.source, doc["id"])["title"] == "The Home Depot - Bed frame"
+    assert manager.store.document(doc["id"])["title"] == "The Home Depot - Bed frame"
     # Confirming the merchant clears the flag; a location the user enters becomes part of the title.
     record = manager.ledger.correct("receipt", receipt_id, {"merchant": "The Home Depot", "location": "Online"})
     assert (record["review_status"], record["issues"]) == ("verified", [])
-    assert manager.store.document(manager.source, doc["id"])["title"] == "The Home Depot - Online - Bed frame"
+    assert manager.store.document(doc["id"])["title"] == "The Home Depot - Online - Bed frame"
     # An inferred seller that does not look like a business name is never used.
     local_model["outputs"] = [classification(), receipt_summary(), identity(seller=value(r"..\Windows", 8, "Returns within 14 days"), basis="inferred",
                                                                            location=value("Online", 8, "Returns within 14 days")), receipt_items(), {"description": "Bed frame"}]
@@ -376,16 +377,16 @@ def test_descriptions_are_short_plain_labels_and_the_users_own_wins(receipt, loc
     local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Receipt from Local Test Cafe 2026"}]
     run = extract(manager, doc, parse_id)
     assert run["result"]["description"] is None
-    store, source = manager.store, manager.source
-    assert (store.document(source, doc["id"])["title"], store.document(source, doc["id"])["description_source"]) == ("Local Test Cafe", None)
-    named = store.set_description(source, doc["id"], "  Weekend   treats ")
+    store = manager.store
+    assert (store.document(doc["id"])["title"], store.document(doc["id"])["description_source"]) == ("Local Test Cafe", None)
+    named = store.set_description(doc["id"], "  Weekend   treats ")
     assert (named["title"], named["description_source"]) == ("Local Test Cafe - Weekend treats", "user")
-    assert store.documents(source, query="weekend")["total"] == 1 and store.documents(source, query="test cafe")["total"] == 1
+    assert store.documents(query="weekend")["total"] == 1 and store.documents(query="test cafe")["total"] == 1
     with pytest.raises(ValueError, match="60 characters"):
-        store.set_description(source, doc["id"], "x" * 61)
-    assert store.set_description(source, doc["id"], None)["description_source"] is None
+        store.set_description(doc["id"], "x" * 61)
+    assert store.set_description(doc["id"], None)["description_source"] is None
     with pytest.raises(ValueError, match="not found"):
-        store.set_description(source, 9999, "Anything")
+        store.set_description(9999, "Anything")
 
 
 def test_user_corrections_fill_unprinted_dates_survive_re_extraction_and_are_audited(receipt, local_model):
@@ -406,7 +407,7 @@ def test_user_corrections_fill_unprinted_dates_survive_re_extraction_and_are_aud
         ("purchase_date", None, "2026-09-24"), ("merchant", "Local Test Cafe", "Local Test Café")]
     assert any(item["source_key"].startswith("user:correction:") and item["locator"] == {"entered_by_user": ["merchant", "purchase_date"]} for item in record["evidence"])
     assert manager.reconciler.history()[0]["trigger"] == "correction"
-    assert manager.store.document(manager.source, doc["id"])["document_date"] == "2026-09-24"
+    assert manager.store.document(doc["id"])["document_date"] == "2026-09-24"
     # A later extraction rewrites the model's values; the user's corrections are applied again on top.
     local_model["outputs"] = [classification(), receipt_summary(purchase_date=unclear_date), identity(), receipt_items(), {"description": "Coffee"}]
     again = extract(manager, doc, parse_id, force=True)
@@ -441,10 +442,10 @@ def test_descriptions_never_repeat_the_merchant_or_location_already_in_the_title
     # The model is told the seller and location so it does not echo them.
     asked = json.loads(local_model["requests"][-1]["messages"][1]["content"])
     assert (asked["seller"], asked["location"]) == ("Local Test Cafe", "Test Cafe")
-    store, source = manager.store, manager.source
-    assert store.document(source, doc["id"])["title"] == "Local Test Cafe - Test Cafe"
+    store = manager.store
+    assert store.document(doc["id"])["title"] == "Local Test Cafe - Test Cafe"
     # A duplicate saved before this check existed is left out of the title; the user's own words are kept as written.
     with store.connection() as db:
         db.execute("UPDATE receipts SET description='Local Test Cafe' WHERE id=?", (run["publication"]["id"],))
-    assert store.document(source, doc["id"])["title"] == "Local Test Cafe - Test Cafe"
-    assert store.set_description(source, doc["id"], "Test Cafe treats")["title"] == "Local Test Cafe - Test Cafe - Test Cafe treats"
+    assert store.document(doc["id"])["title"] == "Local Test Cafe - Test Cafe"
+    assert store.set_description(doc["id"], "Test Cafe treats")["title"] == "Local Test Cafe - Test Cafe - Test Cafe treats"
