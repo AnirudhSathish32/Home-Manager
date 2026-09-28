@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m pytest *)",
+      "PowerShell(python -m pytest *)",
+      "Bash(python -m pytest *)"
+    ]
+  }
+}
