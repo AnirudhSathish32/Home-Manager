@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..core.categories import FREQUENCIES
 from ..core.folders import DocumentFolder
 from ..core.formats import IMAGES, extension
 from ..documents.reasoning import ReasoningConfig
@@ -105,6 +106,7 @@ class ObligationReviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     status: Literal[*OBLIGATION_DECISIONS]
     note: str = Field(default="", max_length=1000)
+    frequency: Literal[*FREQUENCIES] | None = None  # A correction of how often it recurs, made while deciding.
 
 
 class IssueResolutionInput(BaseModel):
@@ -226,6 +228,17 @@ class DescriptionInput(BaseModel):
     """The user's short label for a document; null or blank returns to the AI's description."""
     model_config = ConfigDict(extra="forbid", strict=True)
     description: str | None = Field(max_length=60)
+
+
+class TaxTableLookupInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    jurisdiction: str = Field(pattern=r"^(US|[A-Z]{2})$", description="US for federal, or a state's two-letter code.")
+    year: int = Field(ge=2000, le=2100)
+
+
+class TaxTableReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["verified", "rejected"]
 
 
 class CategoryInput(BaseModel):
@@ -419,6 +432,16 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().reconciler.run("manual")
 
+    @app.get("/api/finance/statements/awaiting-reconciliation")
+    def statements_awaiting():
+        store()
+        return manager().reconciler.awaiting()
+
+    @app.post("/api/finance/statements/{statement_id}/reconcile")
+    def reconcile_statement(statement_id: int):
+        store()
+        return manager().reconciler.reconcile_statement(statement_id)
+
     @app.get("/api/finance/reconciliation-runs")
     def reconciliation_runs(limit: int = Query(20, ge=1, le=200)):
         store()
@@ -434,10 +457,15 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().ledger.set_bill_payment(bill_id, value.status, value.transaction_id, value.note)
 
+    @app.post("/api/finance/recurring/scan", status_code=202)
+    def recurring_scan():
+        store()
+        return manager().start_recurring_scan()
+
     @app.post("/api/finance/recurring/{obligation_id}/review")
     def review_obligation(obligation_id: int, value: ObligationReviewInput):
         store()
-        return manager().reconciler.review_obligation(obligation_id, value.status, value.note)
+        return manager().reconciler.review_obligation(obligation_id, value.status, value.note, value.frequency)
 
     @app.post("/api/finance/links/{kind}/{link_id}/review")
     def review_link(kind: Literal["receipt", "transfer", "refund"], link_id: int, value: LinkReviewInput):
@@ -457,7 +485,24 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/finance/records/{record_type}/{record_id}")
     def finance_record(record_type: RecordType, record_id: int):
         store()
+        if record_type == "income_record":  # With how its taxes were figured.
+            return manager().paystub(record_id)
         return manager().ledger.record(record_type, record_id)
+
+    @app.get("/api/tax-tables")
+    def tax_tables(status: Literal["proposed", "verified", "rejected"] | None = None):
+        store()
+        return {"tables": manager().tax_tables.tables.list(status)}
+
+    @app.post("/api/tax-tables/lookup", status_code=202)
+    def tax_table_lookup(value: TaxTableLookupInput):
+        store()
+        return manager().start_tax_table_lookup(value.jurisdiction, value.year)
+
+    @app.post("/api/tax-tables/{table_id}/review")
+    def review_tax_table(table_id: int, value: TaxTableReviewInput):
+        store()
+        return manager().tax_tables.tables.review(table_id, value.status)
 
     @app.patch("/api/finance/records/{record_type}/{record_id}")
     def correct_record(record_type: RecordType, record_id: int, value: CorrectionInput):
@@ -791,8 +836,10 @@ def create_app(control: Path | None = None, token: str | None = None,
     def documents(offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200), folder: str = "all",
                   status: str = "all", q: str | None = Query(None, max_length=200), sort: str = "path",
                   date_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-                  date_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
-        return store().documents(offset, limit, folder, status, q, sort, date_from, date_to)
+                  date_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"), category: str | None = Query(None, max_length=40),
+                  scope: Literal["money", "documents"] | None = None, employer: int | None = Query(None, ge=1),
+                  section: Literal["Paystubs", "Documents"] | None = None):
+        return store().documents(offset, limit, folder, status, q, sort, date_from, date_to, category, scope, employer, section)
 
     @app.get("/api/documents/{document_id}")
     def document(document_id: int):
@@ -803,8 +850,8 @@ def create_app(control: Path | None = None, token: str | None = None,
         return store().set_description(document_id, value.description)
 
     @app.get("/api/folders")
-    def folders():
-        return store().folders()
+    def folders(scope: Literal["money", "documents"] | None = None):
+        return store().folders(scope)
 
     @app.put("/api/documents/{document_id}/folder")
     def move_document(document_id: int, value: MoveInput):

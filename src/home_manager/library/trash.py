@@ -120,6 +120,9 @@ def empty(store):
                     # Removing a payment must not remove a bill belonging to another document.
                     if table == "bills" and fk["from"] == "payment_transaction_id":
                         continue
+                    # A recurring bill outlives the receipt or document it was proposed from; only the link is cleared below.
+                    if table == "recurring_obligations" and fk["from"] in ("source_receipt_id", "source_document_id"):
+                        continue
                     targets = {rows[fk["table"]][key][fk["to"]] for key in doomed[fk["table"]]}
                     additions = {key for key, row in rows[table].items() if row[fk["from"]] in targets} - doomed[table]
                     if table == "transactions" and fk["from"] == "statement_id":
@@ -146,6 +149,12 @@ def empty(store):
         for row in rows["bills"].values():
             if row["payment_transaction_id"] in removed_transactions:
                 db.execute("UPDATE bills SET payment_transaction_id=NULL,payment_status='unknown' WHERE id=?", (row["id"],))
+        removed_receipts = {rows["receipts"][key]["id"] for key in doomed["receipts"]}
+        for row in rows["recurring_obligations"].values():
+            receipt = None if row["source_receipt_id"] in removed_receipts else row["source_receipt_id"]
+            document = None if row["source_document_id"] in ids else row["source_document_id"]
+            if (receipt, document) != (row["source_receipt_id"], row["source_document_id"]):
+                db.execute("UPDATE recurring_obligations SET source_receipt_id=?,source_document_id=? WHERE id=?", (receipt, document, row["id"]))
         owners = {rows[table][key]["id"] for table in ("parse_runs", "reasoning_runs", "extraction_runs", "organization_runs") for key in doomed[table]}
         doomed["model_runs"] = {key for key, row in rows["model_runs"].items() if row["owner_id"] in owners}
 

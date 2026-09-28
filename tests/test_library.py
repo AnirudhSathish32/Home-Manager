@@ -54,8 +54,8 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         assert "reasoning model" in response.json()["detail"]
         assert len(local_model["requests"]) == 1
         assert client.put(base + "/folder", json={"expected_hash": digest, "folder": "../invalid"}).status_code == 422
-        assert client.put(base + "/folder", json={"expected_hash": digest, "folder": "Bills"}).status_code == 200
-        assert client.get("/api/documents?folder=Bills").json()["total"] == 1
+        assert client.put(base + "/folder", json={"expected_hash": digest, "folder": "Housing"}).status_code == 200
+        assert client.get("/api/documents?folder=Housing").json()["total"] == 1
         assert client.post(base + "/trash", json={"expected_hash": digest}).status_code == 422
         assert client.post(base + "/trash", json={"expected_hash": digest, "confirmed": False}).status_code == 422
         assert client.post(base + "/trash", json={"expected_hash": "a"*64, "confirmed": True}).status_code == 409
@@ -76,12 +76,12 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         manager.future.result(timeout=30)
         assert manager.batches.get(batch)["total"] == 1
         assert client.post(base + "/restore", json={"expected_hash": digest}).status_code == 200
-        assert client.get("/api/documents?folder=Bills").json()["total"] == 1
+        assert client.get("/api/documents?folder=Housing").json()["total"] == 1
         manager.start_receipt_batch(force=True); manager.future.result(timeout=30)
-        assert client.get("/api/documents?folder=Bills").json()["total"] == 1  # Manual choice wins.
+        assert client.get("/api/documents?folder=Housing").json()["total"] == 1  # Manual choice wins.
         image.write_bytes(original_bytes + b"new version")
         manager.start_inbox(); manager.future.result(timeout=30)
-        assert client.get("/api/documents?folder=Bills").json()["total"] == 0
+        assert client.get("/api/documents?folder=Housing").json()["total"] == 0
         assert client.get("/api/documents?folder=Inbox").json()["total"] == 3  # The new version waits in Inbox.
         assert client.post(base + "/trash", json={"expected_hash": digest, "confirmed": True}).status_code == 409
 

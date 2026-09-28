@@ -34,6 +34,7 @@
       <a id="nav-review" class="nav-link" href="#/review" data-route="review" data-icon="list-checks"><span class="nav-label">Review</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
       <p class="nav-group">Money</p>
       <a id="nav-transactions" class="nav-link" href="#/transactions" data-route="transactions" data-icon="wallet"><span class="nav-label">Transactions</span></a>
+      <a id="nav-receipts" class="nav-link" href="#/receipts" data-route="receipts" data-icon="paperclip"><span class="nav-label">Receipts &amp; statements</span></a>
       <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">Spending &amp; budgets</span></a>
       <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; recurring</span></a>
       <a id="nav-accounts" class="nav-link" href="#/accounts" data-route="accounts" data-icon="bank"><span class="nav-label">Accounts</span></a>
@@ -59,6 +60,7 @@
   <main id="main" tabindex="-1">
     <div id="session-banner"></div>
     <div id="app-alert"></div>
+    <div id="reconcile-prompt" aria-live="polite"></div>
 
     <section id="home-panel" class="page" data-page="home" aria-labelledby="home-title" hidden>
       <header class="page-header"><div><h1 id="home-title" tabindex="-1">Home</h1><p class="page-subtitle">Your household, at a glance.</p></div>
@@ -140,7 +142,7 @@
         <section id="review-detail" class="panel review-detail" tabindex="-1" aria-live="polite"></section>
       </div>
       <section class="panel" id="review-unmatched-panel"><h2>Receipts with no matching charge</h2>
-        <p class="muted small">Receipts are evidence, not spending: a receipt counts through the card or bank transaction it matches.</p>
+        <p class="muted small">Approved receipts count as spending on their own. When a card or bank charge matches one, the charge counts instead, never both.</p>
         <ul id="review-unmatched" class="finance-list"></ul><p id="review-unmatched-note" class="muted small"></p></section>
     </section>
 
@@ -211,11 +213,13 @@
 
     <section id="bills-panel" class="page" data-page="bills" aria-labelledby="bills-title" hidden>
       <header class="page-header"><div><h1 id="bills-title" tabindex="-1">Bills &amp; recurring</h1>
-        <p class="page-subtitle">What you owe, when, and whether a payment was found.</p></div></header>
-      <section class="panel"><h2>Bills</h2><div id="bill-groups"></div>
-        <p class="muted small">A bill is an obligation, not proof of payment. “No payment found” only reflects imported transactions; a state you set takes precedence.</p></section>
+        <p class="page-subtitle">Recurring bills, when they are next due, and whether a payment was found.</p></div></header>
+      <section class="panel"><h2>Upcoming bills</h2><div id="bill-groups"></div>
+        <p class="muted small">Confirmed recurring bills only. Each matched payment moves a bill to its next due date; “no payment found” only reflects imported transactions. The amount is the average of the last three payments.</p></section>
       <section class="panel"><h2>Recurring payments</h2>
-        <p class="muted small">Detected from a steady cadence of equal payments. A detection is a proposal until you confirm it.</p>
+        <p class="muted small">Proposed from a steady cadence of payments, a bill payment, a statement payee the local model reads as a service, or a contract's payment terms. Each is a proposal until you confirm it.</p>
+        <p><button type="button" id="recurring-scan" class="small">Look for recurring bills</button>
+          <span class="muted small">Asks the local model about statement payees it hasn't seen yet.</span></p>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="numeric">Expected</th><th scope="col">Every</th><th scope="col">Next about</th>
           <th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
     </section>
@@ -261,7 +265,7 @@
 
     <section id="library-panel" class="page" data-page="documents" aria-labelledby="library-title" hidden>
       <header class="page-header"><div><h1 id="library-title" tabindex="-1">Documents</h1>
-        <p class="page-subtitle">Your managed library. External sources stay read-only; model-derived values stay proposed until you verify them.</p></div>
+        <p id="library-subtitle" class="page-subtitle">Your important papers: leases, policies, pay stubs, tax forms and more. New files arrive in the Inbox.</p></div>
         <div class="page-actions"><button id="refresh" type="button">Refresh</button></div></header>
       <div class="toolbar">
         <input id="document-search" type="search" placeholder="Search merchant, title or file name" aria-label="Search documents" autocomplete="off">
@@ -428,6 +432,9 @@
                 <select id="checkin-weekday"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option>
                   <option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select>
                 <small>The day Home Manager asks which household items ran out. If the app isn't open that day, the check-in waits until you next open it.</small></div>
+              <div class="field"><label for="filing-status">Tax filing status</label>
+                <select id="filing-status"><option value="single">Single</option><option value="married_joint">Married filing jointly</option><option value="head_of_household">Head of household</option></select>
+                <small>Used to explain the income tax on your pay stubs: which standard deduction and brackets apply.</small></div>
               <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
               <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
               <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>

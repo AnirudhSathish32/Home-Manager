@@ -118,9 +118,15 @@ function renderForecast(result) {
       ["Income growth", `${result.assumptions.income_growth_percent}% a year`]]) facts.append(element("dt", label), element("dd", value));
   const spending = element("ul", "", "forecast-notes");
   for (const row of start.monthly_spending) spending.append(element("li", `${row.category}: ${row.amount.display} a month`));
+  // Confirmed recurring bills are projected on their due dates rather than averaged.
+  const bills = element("ul", "", "finance-list");
+  for (const bill of start.recurring_bills || []) {
+    bills.append(element("li", `${bill.name} (${bill.category}): ${bill.amount.display} ${FREQUENCY_LABELS[bill.frequency].toLowerCase()}${bill.next_due ? `, next ${dateText(bill.next_due)}` : ""}`));
+  }
   $("forecast-start").replaceChildren(facts, element("h3", "Monthly spending by category"),
-    start.monthly_spending.length ? spending : element("p", "No recent counted spending.", "muted"));
-  forecastCategories = start.monthly_spending.map(row => row.category);
+    start.monthly_spending.length ? spending : element("p", "No recent counted spending.", "muted"),
+    ...((start.recurring_bills || []).length ? [element("h3", "Recurring bills"), bills] : []));
+  forecastCategories = [...new Set([...start.monthly_spending.map(row => row.category), ...(start.recurring_bills || []).map(bill => bill.category)])];
   const options = document.getElementById("forecast-category-options") || Object.assign(document.createElement("datalist"), {id: "forecast-category-options"});
   options.replaceChildren(...forecastCategories.map(name => Object.assign(document.createElement("option"), {value: name})));
   document.body.append(options);

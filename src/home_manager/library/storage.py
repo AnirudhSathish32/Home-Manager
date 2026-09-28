@@ -10,7 +10,8 @@ import re
 import sqlite3
 import uuid
 
-from ..core.folders import LIBRARY_FOLDERS, validate_folder
+from ..core.categories import RECEIPT_CATEGORIES
+from ..core.folders import DOCUMENT_FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, MONEY_FOLDERS, validate_folder
 from ..core.money import format_minor
 from ..core.paths import DirectoryLock, PathError, path_key, safe_path
 
@@ -23,6 +24,8 @@ WORK_FILTERS = {
     "needs_review": "ledger_status IN ('proposed','needs_review')",
     "failed": "(parse_status IN ('failed','interrupted') OR extraction_status IN ('failed','interrupted'))",
 }
+# The two stores over one library. New files arrive in the shared Inbox, which belongs to Documents with Unfiled.
+SCOPE_FOLDERS = {"money": MONEY_FOLDERS, "documents": ["Inbox", "Unfiled", *DOCUMENT_FOLDERS]}
 # Library orderings. "date" is the document's own date (purchase, period end, due or pay date).
 DOCUMENT_SORTS = {
     "path": "relative_path",
@@ -334,6 +337,12 @@ class Store:
                 "(SELECT d.description FROM document_descriptions d WHERE d.document_id=o.id) AS user_description,"
                 "(SELECT r.location FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS location,"
                 "(SELECT r.description FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS model_description,"
+                # Jobs: the employer folder and section a document is filed under, its printed name, and a pay stub's date.
+                "(SELECT f.employer_id FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS employer_id,"
+                "(SELECT e.name FROM job_filings f JOIN employers e ON e.id=f.employer_id WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS employer,"
+                "(SELECT f.section FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS job_section,"
+                "(SELECT f.title FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS job_title,"
+                "(SELECT i.pay_date FROM income_records i WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected') AS pay_date,"
                 "coalesce((SELECT m.canonical_name FROM receipts r JOIN merchants m ON m.id=r.merchant_id WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected'),"
                 "(SELECT a.institution FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.blob_hash=o.current_hash AND s.review_status<>'rejected'),"
                 "(SELECT m.canonical_name FROM bills b JOIN merchants m ON m.id=b.provider_merchant_id WHERE b.blob_hash=o.current_hash AND b.review_status<>'rejected'),"
@@ -363,6 +372,8 @@ class Store:
                 # The document's own date from its ledger record, for display, filtering and sorting.
                 "coalesce((SELECT purchase_date FROM receipts WHERE blob_hash=o.current_hash),(SELECT period_end FROM statements WHERE blob_hash=o.current_hash),"
                 "(SELECT coalesce(due_date,issue_date) FROM bills WHERE blob_hash=o.current_hash),(SELECT pay_date FROM income_records WHERE blob_hash=o.current_hash)) AS document_date,"
+                # The spending category of the receipt recorded from this version: the Receipts folder's subfolders.
+                "(SELECT coalesce(r.category,'uncategorized') FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_category,"
                 # Reconciliation of the record published from this version: a receipt's match to a
                 # transaction, or a bill's payment state. NULL where reconciliation does not apply.
                 "coalesce((SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "
@@ -381,7 +392,10 @@ class Store:
                 "THEN NULL ELSE r.model_description END) AS shown_description FROM raw_library r), "
                 "library AS (SELECT r.*,coalesce(a.folder,'Unfiled') AS folder,r.shown_description AS description,"
                 "CASE WHEN r.user_description IS NOT NULL THEN 'user' WHEN r.shown_description IS NOT NULL THEN 'model' END AS description_source,"
-                "nullif(substr(coalesce(' - '||r.merchant,'')||coalesce(' - '||r.location,'')||coalesce(' - '||r.shown_description,''),4),'') AS title,"
+                # A pay stub is titled by its date and a job document by its printed name; your own description follows either.
+                "CASE WHEN r.pay_date IS NOT NULL THEN 'Paystub '||strftime('%m/%d/%Y',r.pay_date)||coalesce(' - '||r.user_description,'') "
+                "WHEN r.job_title IS NOT NULL THEN r.job_title||coalesce(' - '||r.user_description,'') "
+                "ELSE nullif(substr(coalesce(' - '||r.merchant,'')||coalesce(' - '||r.location,'')||coalesce(' - '||r.shown_description,''),4),'') END AS title,"
                 "CASE WHEN coalesce(a.folder,'Unfiled')='Unfiled' THEN r.organization_reason END AS unfiled_reason "
                 "FROM described r LEFT JOIN folder_aliases a ON a.old_folder=r.stored_folder) ")
 
@@ -391,7 +405,17 @@ class Store:
         row["ledger_amount"] = format_minor(row["ledger_amount_minor"], row["ledger_currency"]) if row["ledger_amount_minor"] is not None else None
         return row
 
-    def documents(self, offset=0, limit=100, folder="all", status="all", query=None, sort="path", date_from=None, date_to=None):
+    @staticmethod
+    def scope_clause(scope):
+        """SQL restricting library rows to one store's folders, or nothing for the whole library."""
+        if scope is None:
+            return "", []
+        if scope not in SCOPE_FOLDERS:
+            raise ValueError("Unknown library section.")
+        return f" AND folder IN ({','.join('?' * len(SCOPE_FOLDERS[scope]))})", list(SCOPE_FOLDERS[scope])
+
+    def documents(self, offset=0, limit=100, folder="all", status="all", query=None, sort="path", date_from=None, date_to=None, category=None,
+                  scope=None, employer=None, section=None):
         if sort not in DOCUMENT_SORTS:
             raise ValueError("Unknown document sort order.")
         clause, params = "deleted_at IS NULL", []
@@ -402,6 +426,21 @@ class Store:
             params.append(folder)
         elif folder != "all":
             raise ValueError("Unknown library folder.")
+        scoped, scope_params = self.scope_clause(scope)
+        clause, params = clause + scoped, params + scope_params
+        if category is not None:
+            if category not in (*RECEIPT_CATEGORIES, "uncategorized"):
+                raise ValueError("Unknown receipt category.")
+            clause += " AND receipt_category=?"
+            params.append(category)
+        if employer is not None:
+            clause += " AND employer_id=?"
+            params.append(int(employer))
+        if section is not None:
+            if section not in JOB_SECTIONS:
+                raise ValueError("Unknown job section.")
+            clause += " AND job_section=?"
+            params.append(section)
         if status not in WORK_FILTERS:
             raise ValueError("Unknown document filter.")
         if status != "all":
@@ -442,19 +481,36 @@ class Store:
                 db.execute("DELETE FROM document_descriptions WHERE document_id=?", (document_id,))
         return self.document(document_id)
 
-    def folders(self):
+    def folders(self, scope=None):
+        """Folder counts. With a scope (money or documents), the listed folders, "all", Trash and the work
+        filters cover that store; per-folder counts always cover the whole library."""
+        scoped, scope_params = self.scope_clause(scope)
         with self.connection() as db:
             rows = db.execute(self.library_query() + "SELECT folder,deleted_at IS NOT NULL AS trashed,count(*) AS count FROM library GROUP BY folder,trashed").fetchall()
-            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {condition}").fetchone()[0]
+            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {condition}{scoped}",
+                                     scope_params).fetchone()[0]
                     for name, condition in WORK_FILTERS.items() if name != "all"}
+            categories = dict(db.execute(self.library_query() + "SELECT receipt_category,count(*) FROM library WHERE deleted_at IS NULL "
+                                         "AND folder='Receipts' AND receipt_category IS NOT NULL GROUP BY 1").fetchall())
+            filed = {(row[0], row[1]): row[2] for row in db.execute(self.library_query() + "SELECT employer_id,job_section,count(*) FROM library "
+                                                                     "WHERE deleted_at IS NULL AND folder='Jobs' AND employer_id IS NOT NULL GROUP BY 1,2")}
+            # Every employer is listed, a new one with nothing filed yet too, each with both sections.
+            jobs = [{"id": row["id"], "name": row["name"], "folder": row["folder_name"],
+                     "sections": {section: filed.get((row["id"], section), 0) for section in JOB_SECTIONS}}
+                    for row in db.execute("SELECT * FROM employers ORDER BY name COLLATE NOCASE")]
+        listed = SCOPE_FOLDERS.get(scope, LIBRARY_FOLDERS)
         counts = {folder: 0 for folder in ["all", "trash", *LIBRARY_FOLDERS]}
         for row in rows:
             if row["trashed"]:
-                counts["trash"] += row["count"]
+                counts["trash"] += row["count"] if row["folder"] in listed else 0
             else:
-                counts["all"] += row["count"]
+                counts["all"] += row["count"] if row["folder"] in listed else 0
                 counts[row["folder"]] += row["count"]
-        return {"folders": LIBRARY_FOLDERS, "counts": counts, "work": work}
+        # Every category is listed, empty ones too, so the subfolders stay in a fixed order.
+        receipt_categories = [{"category": name, "count": categories.get(name, 0)} for name in (*RECEIPT_CATEGORIES, "uncategorized")]
+        # Every folder a document can be moved to, by store: moving between stores is allowed.
+        stores = {"documents": DOCUMENT_FOLDERS, "money": MONEY_FOLDERS}
+        return {"folders": list(listed), "counts": counts, "work": work, "receipt_categories": receipt_categories, "stores": stores, "jobs": jobs}
 
     def library_action(self, document_id, expected_hash, action, folder=None):
         if action == "move":

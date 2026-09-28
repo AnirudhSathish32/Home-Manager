@@ -9,15 +9,18 @@ from datetime import date
 import hashlib
 import json
 import re
+from typing import Literal
 import unicodedata
 import uuid
 
-from ..core.formats import TABLES, extension
 from pydantic import Field, field_validator
 
+from ..core.categories import receipt_category
+from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
+from . import paystub
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
@@ -28,9 +31,21 @@ RECORD_TABLES = {"statement": "statements", "transaction": "transactions", "rece
 # Excluded from spending: moving money between the household's own accounts.
 NON_SPENDING = ("transfer", "payment")
 SPENDING = ("purchase", "fee", "interest", "withdrawal")
+# Lines read from a recorded statement the user has not reconciled receipts against yet.
+# Rows that also came from an import keep counting.
+HELD = "t.origin='extraction' AND EXISTS(SELECT 1 FROM statements s WHERE s.id=t.statement_id AND s.reconciliation='awaiting')"
 # Rows that count toward totals: deterministic imports unless rejected; model-extracted
-# rows only after the user verifies them. Everything else is reported as pending review.
-COUNTABLE = "t.review_status<>'rejected' AND (t.origin<>'extraction' OR t.review_status='verified')"
+# rows only after the user verifies them; statement lines once their statement is reconciled.
+# Everything else is reported as pending review.
+COUNTABLE = f"t.review_status<>'rejected' AND (t.origin<>'extraction' OR t.review_status='verified') AND NOT ({HELD})"
+# A receipt counts on its own, as spending, until a card or bank line that is not rejected replaces it.
+# Refund receipts (negative totals) stay evidence until a posted credit settles them.
+STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor>0 AND r.purchase_date IS NOT NULL AND NOT EXISTS("
+                      "SELECT 1 FROM transaction_receipt_links l JOIN transactions lt ON lt.id=l.transaction_id "
+                      "WHERE l.receipt_id=r.id AND l.review_status<>'rejected' AND lt.review_status<>'rejected')")
+# A transaction's category: its own (set by the user or a rule), else its matched receipt's.
+TRANSACTION_CATEGORY = ("coalesce(t.category,(SELECT r.category FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id "
+                        "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' AND r.category IS NOT NULL ORDER BY l.id LIMIT 1),'uncategorized')")
 # Summary columns per record type: one compact "what, when, how much, where from" shape.
 # Each query selects id, date, name, amount_minor, currency, review_status, account, document_id.
 SUMMARY_QUERIES = {
@@ -51,12 +66,14 @@ SUMMARY_CHUNK = 500  # Bound on bound parameters per query.
 # Fields the user may correct: record type -> field -> (column, kind, label used in validation issues).
 CORRECTABLE = {
     "receipt": {"purchase_date": ("purchase_date", "date", "Purchase date"), "merchant": ("merchant_id", "name", "Merchant"),
-                "location": ("location", "text", "Location")},
+                "location": ("location", "text", "Location"), "category": ("category", "category", "Category")},
     "bill": {"issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
              "provider": ("provider_merchant_id", "name", "Provider")},
     "income_record": {"pay_date": ("pay_date", "date", "Pay date"), "payer": ("payer_merchant_id", "name", "Payer or employer")},
 }
-PENDING = "t.origin='extraction' AND t.review_status IN ('proposed','needs_review')"
+PENDING = f"(t.origin='extraction' AND t.review_status IN ('proposed','needs_review') OR t.review_status<>'rejected' AND {HELD})"
+# Transactions reconciliation may match: not rejected, and not waiting on their statement.
+MATCHABLE = f"t.review_status<>'rejected' AND NOT ({HELD})"
 
 TRANSFER = re.compile(r"\b(TRANSFER|XFER|TRNSFR)\b")
 CARD_PAYMENT = re.compile(r"\b(PAYMENT|AUTOPAY|AUTO PAY|AUTOMATIC PAYMENT|PMT|THANK YOU)\b")
@@ -119,6 +136,7 @@ class HouseholdConfig(StrictModel):
     home_currency: str | None = None
     checkin_weekday: int = Field(default=6, ge=0, le=6)
     auto_identify_items: bool = True  # Run item identification on each newly recorded receipt.
+    filing_status: Literal["single", "married_joint", "head_of_household"] = "single"  # For the pay stub tax estimate.
 
     @field_validator("home_currency")
     @classmethod
@@ -249,7 +267,9 @@ class Ledger:
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
-                "description": record.get("description"), "location": record.get("location"), "review_status": status, "validation_json": json.dumps(record["issues"]),
+                "description": record.get("description"), "location": record.get("location"), "category": record.get("category"),
+                "recurrence": record.get("recurrence"),
+                "review_status": status, "validation_json": json.dumps(record["issues"]),
                 "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote")})
             if written:
                 stale = [row[0] for row in db.execute("SELECT id FROM receipt_items WHERE receipt_id=?", (receipt_id,))]
@@ -306,7 +326,7 @@ class Ledger:
                 "opening_balance_minor": record.get("opening_balance_minor"), "closing_balance_minor": record.get("closing_balance_minor"),
                 "statement_balance_minor": record.get("statement_balance_minor"), "minimum_payment_minor": record.get("minimum_payment_minor"),
                 "summary_json": json.dumps(record["summary"]), "currency": record["currency"], "review_status": status,
-                "validation_json": json.dumps(record["issues"])})
+                "validation_json": json.dumps(record["issues"]), "reconciliation": "awaiting"})
             if not written:
                 return self._published("statement", statement_id, False, account_id=account["id"])
             self.add_evidence(db, "statement", statement_id, source, record["locator"])
@@ -341,11 +361,18 @@ class Ledger:
                 "pay_date": record["pay_date"], "period_start": record["period_start"], "period_end": record["period_end"],
                 "gross_pay_minor": record["gross_pay_minor"], "net_pay_minor": record["net_pay_minor"], "taxes_minor": record["taxes_minor"],
                 "deductions_minor": record["deductions_minor"], "currency": record["currency"], "review_status": status,
+                "gross_pay_ytd_minor": record.get("gross_pay_ytd_minor"), "net_pay_ytd_minor": record.get("net_pay_ytd_minor"),
+                "work_state": record.get("work_state"), "pay_frequency": record.get("pay_frequency"),
                 "validation_json": json.dumps(record["issues"])})
             if written:
                 self.add_evidence(db, "income_record", income_id, source, record["locator"])
                 self.apply_corrections(db, "income_record", income_id)
-        return self._published("income_record", income_id, written)
+                db.execute("DELETE FROM income_lines WHERE income_record_id=?", (income_id,))
+                db.executemany("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json) "
+                               "VALUES(?,?,?,?,?,?,?,?)",
+                               [(income_id, position, line["description"], line["line_group"], line["category"], line["current_minor"],
+                                 line["ytd_minor"], json.dumps(line["locator"])) for position, line in enumerate(record.get("lines", []), 1)])
+        return self._published("income_record", income_id, written, lines=len(record.get("lines", [])))
 
     # Deterministic CSV/XLSX import ---------------------------------------------
 
@@ -429,6 +456,12 @@ class Ledger:
                 value["items"] = [dict(item) for item in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (record_id,))]
             if record_type == "statement":
                 value["transactions"] = [dict(item) for item in db.execute("SELECT * FROM transactions WHERE statement_id=? ORDER BY posted_date,id", (record_id,))]
+            if record_type == "income_record":
+                value["lines"] = []
+                for line in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY position", (record_id,)):
+                    line = dict(line)
+                    line["line_ids"] = json.loads(line.pop("locator_json")).get("line_ids", [])
+                    value["lines"].append(line)
             for key in ("merchant_id", "provider_merchant_id", "payer_merchant_id"):
                 if value.get(key):
                     value["merchant"] = db.execute("SELECT canonical_name FROM merchants WHERE id=?", (value[key],)).fetchone()[0]
@@ -443,9 +476,11 @@ class Ledger:
             for row in value.get(key, [])[:500]:
                 row["line_ids"] = [line for evidence in self.evidence(kind, row["id"]) for line in evidence["locator"].get("line_ids", [])]
         # Exact display strings: the browser never does money arithmetic.
-        for row in [value, *value.get("items", []), *value.get("transactions", [])]:
+        for row in [value, *value.get("items", []), *value.get("transactions", []), *value.get("lines", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()
                               if key.endswith("_minor") and isinstance(amount, int)}
+        if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).
+            value["breakdown"] = paystub.with_display(paystub.breakdown(value, value["lines"]), value["currency"])
         value["evidence"] = self.evidence(record_type, record_id)
         value["review_history"] = self.review_history(record_type, record_id)
         return value
@@ -645,6 +680,9 @@ class Ledger:
             except ValueError:
                 raise ValueError(f"Enter the {field.replace('_', ' ')} as a full date (YYYY-MM-DD).") from None
             return text, text
+        if kind == "category":
+            value = receipt_category(text)
+            return value, value
         if kind == "text":
             if len(text) > 60:
                 raise ValueError(f"Keep the {field.replace('_', ' ')} to 60 characters or fewer.")

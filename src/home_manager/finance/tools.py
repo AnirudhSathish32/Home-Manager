@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
-from .ledger import COUNTABLE, PENDING, SPENDING, Ledger, name_tokens, normalize_name
+from .ledger import COUNTABLE, PENDING, SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, name_tokens, normalize_name
 from .reconcile import RECEIPT_POSTING_DAYS, shift
 
 SPENDING_TYPES = ",".join(f"'{kind}'" for kind in SPENDING)
@@ -33,6 +33,9 @@ HAS_RECEIPT = "EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.transact
 # A receipt with no link to a charge that the user has not rejected.
 UNLINKED_RECEIPT = "r.review_status<>'rejected' AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status<>'rejected')"
 MAX_SERIES_MONTHS = 36
+RECEIPT_NOTE = ("Spending counts card and bank lines plus approved receipts that no line has replaced yet (from_receipts, receipts). "
+                "When a statement line matches a receipt, the line counts instead, never both.")
+PENDING_NOTE = "pending_review holds extracted lines awaiting review and statement lines waiting for you to reconcile their statement; they are not counted yet."
 
 
 def iso(value):
@@ -163,8 +166,10 @@ def scope_of(start, end, account_id):
 
 
 def totals_view(currency, bucket):
+    """from_receipts is the part of spending that only receipts show so far; the rest is card and bank lines."""
     return {"currency": currency, "spending": money(bucket["spending"], currency), "refunds": money(bucket["refunds"], currency),
-            "net_spending": money(bucket["spending"] - bucket["refunds"], currency), "transactions": bucket["transactions"]}
+            "net_spending": money(bucket["spending"] - bucket["refunds"], currency), "transactions": bucket["transactions"],
+            "from_receipts": money(bucket["from_receipts"], currency), "receipts": bucket["receipts"]}
 
 
 class FinanceTools(ItemAnalysisTools):
@@ -217,13 +222,13 @@ class FinanceTools(ItemAnalysisTools):
                 clauses.append(f"{column}{operator}?")
                 params.append(item)
         if value.category:
-            clauses.append("coalesce(t.category,'uncategorized')=?")
+            clauses.append(f"{TRANSACTION_CATEGORY}=?")
             params.append(" ".join(value.category.split()).lower())
         if value.currency:
             clauses.append("t.currency=?")
             params.append(currency_code(value.currency))
         if value.categories:
-            clauses.append(f"coalesce(t.category,'uncategorized') IN ({','.join('?' * len(value.categories))})")
+            clauses.append(f"{TRANSACTION_CATEGORY} IN ({','.join('?' * len(value.categories))})")
             params += value.categories
         if value.metric:
             spending = f"t.transaction_type IN ({SPENDING_TYPES},'refund')"
@@ -257,10 +262,12 @@ class FinanceTools(ItemAnalysisTools):
 
     # Spending -----------------------------------------------------------------
 
-    def _totals(self, scope, params, by_month=False):
-        """Counted spending and refunds keyed by (month or None, currency)."""
+    def _totals(self, start, end, account_id, by_month=False):
+        """Counted spending and refunds keyed by (month or None, currency). Spending includes receipts no card or
+        bank line has replaced yet (also reported as from_receipts), unless one account is asked for."""
+        scope, params = scope_of(start, end, account_id)
         month = "substr(t.posted_date,1,7)" if by_month else "NULL"
-        totals = defaultdict(lambda: {"spending": 0, "refunds": 0, "transactions": 0})
+        totals = defaultdict(lambda: {"spending": 0, "refunds": 0, "transactions": 0, "from_receipts": 0, "receipts": 0})
         for row in self.query(f"SELECT {month} AS month,t.currency,t.transaction_type='refund' AS refund,sum(t.amount_minor) AS total,count(*) AS count "
                               f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') GROUP BY 1,2,3", params):
             bucket = totals[(row["month"], row["currency"])]
@@ -269,6 +276,14 @@ class FinanceTools(ItemAnalysisTools):
             else:
                 bucket["spending"] -= row["total"]
             bucket["transactions"] += row["count"]
+        if account_id is None:
+            month = "substr(r.purchase_date,1,7)" if by_month else "NULL"
+            for row in self.query(f"SELECT {month} AS month,r.currency,sum(r.total_minor) AS total,count(*) AS count FROM receipts r "
+                                  f"WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end)):
+                bucket = totals[(row["month"], row["currency"])]
+                bucket["spending"] += row["total"]
+                bucket["from_receipts"] += row["total"]
+                bucket["receipts"] += row["count"]
         return totals
 
     def _pending(self, scope, params, by_month=False):
@@ -283,46 +298,59 @@ class FinanceTools(ItemAnalysisTools):
                           [*params, account_id] if account_id is not None else params)
 
     def _net_by_currency(self, start, end, account_id):
-        return {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(*scope_of(start, end, account_id)).items()}
+        return {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(start, end, account_id).items()}
 
     def get_spending(self, value):
         scope, params = scope_of(value.start, value.end, value.account_id)
-        totals = self._totals(scope, params)
+        totals = self._totals(value.start, value.end, value.account_id)
         excluded = self.query(f"SELECT count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ('transfer','payment')", params)[0]["count"]
         return {"period": {"start": value.start, "end": value.end},
                 "by_currency": [totals_view(currency, bucket) for (_, currency), bucket in sorted(totals.items())],
                 "pending_review": [{"currency": row["currency"], "amount": money(row["total"], row["currency"]), "transactions": row["count"]}
                                    for row in self._pending(scope, params)],
                 "excluded_transfers_and_card_payments": excluded, "coverage": self._coverage(scope, params, value.account_id),
-                "notes": ["Totals cover only the imported or verified transactions of the listed accounts; they are not all household spending.",
-                          "Each currency is totalled separately; no conversion was applied."]}
+                "notes": [RECEIPT_NOTE if value.account_id is None else "Totals cover only this account's imported or verified transactions.",
+                          PENDING_NOTE, "Each currency is totalled separately; no conversion was applied."]}
 
     def spending_series(self, value):
         """Monthly counted spending per currency, in one grouped query. Months without data are listed empty."""
         first, last = month_index(value.start_month), month_index(value.end_month)
         months = [month_label(index) for index in range(first, last + 1)]
         scope, params = scope_of(months[0] + "-01", last_day(last), value.account_id)
-        totals, pending = self._totals(scope, params, by_month=True), defaultdict(list)
+        totals, pending = self._totals(months[0] + "-01", last_day(last), value.account_id, by_month=True), defaultdict(list)
         for row in self._pending(scope, params, by_month=True):
             pending[row["month"]].append({"currency": row["currency"], "amount": money(row["total"], row["currency"]), "transactions": row["count"]})
         return {"months": [{"month": key, "by_currency": [totals_view(currency, bucket) for (item, currency), bucket in sorted(totals.items()) if item == key],
                             "pending_review": pending[key]} for key in months],
                 "coverage": self._coverage(scope, params, value.account_id),
-                "notes": ["Each month counts only imported or verified transactions; months with no rows have no totals.",
-                          "Each currency is totalled separately; no conversion was applied."]}
+                "notes": [RECEIPT_NOTE if value.account_id is None else "Each month counts only this account's imported or verified transactions.",
+                          "Months with no rows have no totals.", "Each currency is totalled separately; no conversion was applied."]}
 
     def _category_totals(self, start, end, account_id):
+        """(currency, category) -> (spending, count), with receipts no line has replaced unless one account is asked for.
+        A transaction without its own category takes its matched receipt's."""
         scope, params = scope_of(start, end, account_id)
-        return {(row["currency"], row["category"]): (row["total"], row["count"]) for row in self.query(
-            f"SELECT t.currency,coalesce(t.category,'uncategorized') AS category,-sum(t.amount_minor) AS total,count(*) AS count "
-            f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)}
+        totals = defaultdict(lambda: [0, 0])
+        rows = self.query(f"SELECT t.currency,{TRANSACTION_CATEGORY} AS category,-sum(t.amount_minor) AS total,count(*) AS count "
+                          f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)
+        if account_id is None:
+            rows += self.query(f"SELECT r.currency,coalesce(r.category,'uncategorized') AS category,sum(r.total_minor) AS total,count(*) AS count "
+                               f"FROM receipts r WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end))
+        for row in rows:
+            totals[(row["currency"], row["category"])][0] += row["total"]
+            totals[(row["currency"], row["category"])][1] += row["count"]
+        return {key: tuple(value) for key, value in totals.items()}
 
     def get_spending_by_category(self, value):
         scope, params = scope_of(value.start, value.end, value.account_id)
         categories = sorted(self._category_totals(value.start, value.end, value.account_id).items(), key=lambda item: (item[0][0], -item[1][0]))
         merchants = defaultdict(lambda: [0, 0])
-        for row in self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS name,t.amount_minor FROM transactions t "
-                              f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES})", params):
+        rows = self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS name,t.amount_minor FROM transactions t "
+                          f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES})", params)
+        if value.account_id is None:
+            rows += self.query(f"SELECT r.currency,coalesce(m.canonical_name,'UNKNOWN') AS name,-r.total_minor AS amount_minor FROM receipts r "
+                               f"LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ?", (value.start, value.end))
+        for row in rows:
             key = (row["currency"], " ".join(normalize_name(row["name"]).split()[:3]) or "UNKNOWN")
             merchants[key][0] -= row["amount_minor"]
             merchants[key][1] += 1
@@ -363,10 +391,19 @@ class FinanceTools(ItemAnalysisTools):
         days = int(end[8:])
         elapsed = days if today.isoformat() > end else 0 if today.isoformat() < start else today.day
         spent = self._category_totals(start, end, None)
+        # Confirmed recurring bills due this month and not yet paid in it: spending the category will still see.
+        due = defaultdict(lambda: [0, []])
+        for bill in self.query("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
+                               "WHERE o.status='verified' AND o.next_due_date BETWEEN ? AND ? AND (o.last_paid_date IS NULL OR o.last_paid_date<?)",
+                               (start, end, start)):
+            key = (bill["currency"], bill["category"] or "bills")
+            due[key][0] += bill["expected_amount_minor"]
+            due[key][1].append(bill["merchant"])
         rows = []
         for budget in self.ledger.budgets():
             amount, currency = budget["amount_minor"], budget["currency"]
             used, count = spent.get((currency, budget["category"]), (0, 0))
+            still_due, payees = due.get((currency, budget["category"]), (0, []))
             if used > amount:
                 status = "over"
             elif elapsed == 0:
@@ -377,7 +414,9 @@ class FinanceTools(ItemAnalysisTools):
                 status = "ahead_of_pace" if used * days > amount * elapsed else "on_track"
             rows.append({"id": budget["id"], "category": budget["category"], "currency": currency, "budget": money(amount, currency),
                          "spent": money(used, currency), "remaining": money(amount - used, currency), "transactions": count,
-                         "percent_used": str((Decimal(used) * 100 / Decimal(amount)).quantize(Decimal("0.1"), ROUND_HALF_EVEN)), "status": status})
+                         "percent_used": str((Decimal(used) * 100 / Decimal(amount)).quantize(Decimal("0.1"), ROUND_HALF_EVEN)), "status": status,
+                         "recurring_due": money(still_due, currency), "recurring_payees": payees,
+                         "projected": money(used + still_due, currency)})
         budgeted = {(row["currency"], row["category"]) for row in rows}
         unbudgeted = defaultdict(lambda: [0, 0])
         for (currency, category), (total, count) in spent.items():
@@ -388,6 +427,7 @@ class FinanceTools(ItemAnalysisTools):
                 "unbudgeted": [{"currency": currency, "spent": money(total, currency), "transactions": count}
                                for currency, (total, count) in sorted(unbudgeted.items())],
                 "notes": ["Spent is the month's counted spending in the category before refunds, the same figure as By category.",
+                          "recurring_due is what confirmed recurring bills in the category still expect this month; projected is spent plus that.",
                           "Extracted transactions awaiting review are not counted until verified."]}
 
     def get_categories(self, _=None):
@@ -398,7 +438,7 @@ class FinanceTools(ItemAnalysisTools):
 
     def calculate_cashflow(self, value):
         scope, params = scope_of(value.start, value.end, value.account_id)
-        outflow = {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(scope, params).items()}
+        outflow = {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(value.start, value.end, value.account_id).items()}
         inflow = {row["currency"]: row["total"] for row in self.query(
             f"SELECT t.currency,sum(t.amount_minor) AS total FROM transactions t WHERE {COUNTABLE} AND {scope} "
             "AND t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other') GROUP BY t.currency", params)}
@@ -414,38 +454,21 @@ class FinanceTools(ItemAnalysisTools):
         rows = self.query("SELECT r.*,m.canonical_name AS merchant FROM recurring_obligations r JOIN merchants m ON m.id=r.merchant_id "
                           "WHERE r.status IN ('proposed','verified') ORDER BY r.next_due_date")
         return {"obligations": [{**row, "expected_amount": money(row["expected_amount_minor"], row["currency"])} for row in rows],
-                "notes": ["Detected from a steady cadence of equal payments; recurrence is a proposal until verified."]}
-
-    def _matched_payment(self, bill):
-        """The single counted outflow that plausibly paid this bill, or None."""
-        if bill["amount_due_minor"] is None:
-            return None
-        start = bill["issue_date"] or shift(bill["due_date"], -45)
-        candidates = self.query(f"SELECT t.* FROM transactions t WHERE {COUNTABLE} AND t.currency=? AND t.amount_minor=? AND t.posted_date BETWEEN ? AND ?",
-                                (bill["currency"], -bill["amount_due_minor"], start, shift(bill["due_date"], 7)))
-        matches = [row for row in candidates if not bill["provider"] or name_tokens(bill["provider"]) & name_tokens(row["description_raw"])]
-        return matches[0]["id"] if len(matches) == 1 else None
+                "notes": ["Proposed from a steady cadence of payments, one bill payment, a statement payee the local model read as a service, "
+                          "or payment terms in a contract (source_document_id, evidence); each is a proposal until verified."]}
 
     def get_upcoming_bills(self, value):
+        """Confirmed recurring bills by next due date. Each matched payment moves a bill's next due date on,
+        so a due date already past means no payment has been found since."""
         until = shift(value.as_of, value.days)
-        bills = self.query("SELECT b.*,m.canonical_name AS provider FROM bills b LEFT JOIN merchants m ON m.id=b.provider_merchant_id "
-                           "WHERE b.review_status<>'rejected' AND b.due_date IS NOT NULL AND b.due_date<=? ORDER BY b.due_date", (until,))
-        result = []
-        for bill in bills:
-            due = bill["due_date"] >= value.as_of
-            # The user's own payment state wins; otherwise look for a matching imported payment.
-            if bill["payment_status"] == "paid":
-                state, payment, source = "paid", bill["payment_transaction_id"], "user"
-            elif bill["payment_status"] == "unpaid":
-                state, payment, source = ("due" if due else "past_due_unpaid"), None, "user"
-            else:
-                payment = self._matched_payment(bill)
-                state, source = ("payment_found" if payment else "due" if due else "past_due_no_payment_found"), ("matched" if payment else None)
-            if due or state not in ("paid", "payment_found"):
-                result.append({**bill, "amount_due": money(bill["amount_due_minor"], bill["currency"]) if bill["amount_due_minor"] is not None else None,
-                               "payment_state": state, "payment_source": source, "payment_transaction_id": payment})
-        return {"as_of": value.as_of, "until": until, "bills": result,
-                "notes": ["A bill is an obligation, not proof of payment. 'No payment found' only reflects imported transactions; a payment state you set takes precedence."]}
+        bills = self.query("SELECT o.id,o.merchant_id,o.account_id,o.category,o.frequency,o.currency,o.expected_amount_minor,o.last_paid_date,"
+                           "o.next_due_date AS due_date,m.canonical_name AS provider FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
+                           "WHERE o.status='verified' AND o.next_due_date IS NOT NULL AND o.next_due_date<=? ORDER BY o.next_due_date,m.canonical_name", (until,))
+        return {"as_of": value.as_of, "until": until,
+                "bills": [{**bill, "amount_due": money(bill["expected_amount_minor"], bill["currency"]),
+                           "payment_state": "due" if bill["due_date"] >= value.as_of else "overdue"} for bill in bills],
+                "notes": ["Confirmed recurring bills only; proposed ones wait in Review.",
+                          "Overdue means no matching payment has been imported since the due date. The amount is the average of the last three payments."]}
 
     def find_receipt(self, value):
         clauses, params = ["r.review_status<>'rejected'"], []
@@ -499,8 +522,8 @@ class FinanceTools(ItemAnalysisTools):
                 "notes": ["Refund documents do not count as settled until a matching posted credit is linked."]}
 
     def get_unmatched_receipts(self, value):
-        """Receipts in the period that no card or bank transaction matches yet. They are evidence, not spending:
-        a receipt counts through the transaction it matches, so these are not in any total."""
+        """Receipts in the period that no card or bank transaction matches yet. Approved ones count as spending
+        on their own (from_receipts) until a matching line replaces them."""
         with self.connection() as db:
             dated = db.execute(f"SELECT r.id,(SELECT i.id FROM reconciliation_issues i WHERE i.issue_type='ambiguous_receipt_match' AND i.record_type='receipt' "
                                f"AND i.record_id=r.id AND i.status='open') AS issue_id FROM receipts r WHERE {UNLINKED_RECEIPT} "
@@ -515,7 +538,7 @@ class FinanceTools(ItemAnalysisTools):
                               "reason": "several_possible_charges" if row["issue_id"] else "no_matching_charge"} for row in dated],
                 "undated": [summaries[receipt_id] for receipt_id in undated],
                 "by_currency": [{"currency": row["currency"], "total": money(row["total"], row["currency"]), "receipts": row["count"]} for row in totals],
-                "notes": ["Unmatched receipts are not counted in spending; a receipt counts through the card or bank transaction it matches.",
+                "notes": ["Approved unmatched receipts count as spending on their own; when a card or bank line matches one, the line counts instead.",
                           "Receipts without a purchase date cannot be placed in a period and are listed separately."]}
 
     # Review queue -------------------------------------------------------------------

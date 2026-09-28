@@ -1,4 +1,4 @@
-"""Deterministic SVG line charts for the forecast. Same data in, byte-identical SVG out.
+"""Deterministic SVG charts: the forecast's line charts and a pay stub's tax buckets. Same data in, byte-identical SVG out.
 
 Follows the app's chart rules: one y-axis, 2px lines, hairline solid gridlines, a legend for
 two or more series plus direct end labels (with leader lines when they would collide), text in
@@ -109,6 +109,55 @@ def line_chart(title, subtitle, labels, series, currency):
         tip = "\n".join([label] + [f"{item['name']}: {full(values[n][i], currency)}" for n, item in enumerate(series)])
         out.append(f'<rect x="{x(i) - band / 2:.1f}" y="{TOP}" width="{band:.1f}" height="{plot_h}" fill="transparent" class="hover-target">'
                    f'<title>{escape(tip)}</title></rect>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+# Tax buckets: rates are ordered magnitudes, so one hue light to dark (sequential blue from step 250, which clears
+# 2:1 on white); the untaxed standard deduction is neutral gray. Every value is also in the page's table.
+BUCKET_BLUES = ("#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b")
+UNTAXED = "#C9CED6"
+BAR_TOP, BAR_HEIGHT, BUCKET_HEIGHT = 30, 34, 116
+BUCKET_WIDTH = 520  # The record pane's width, so labels render near their true 12px size.
+
+
+def tax_buckets_svg(title, buckets, currency, paychecks):
+    """One bar: a year of taxable wages split into its tax buckets (the standard deduction at 0%, then each bracket's
+    slice). Each segment is labelled with its rate above and its income and tax below when it is wide enough; its hover
+    title gives the exact year and per-paycheck amounts."""
+    shown = [bucket for bucket in buckets if bucket["income_minor"] > 0]
+    if not shown:
+        raise ValueError("No wages fall in any bucket.")
+    width = BUCKET_WIDTH - 32
+    whole = sum(bucket["income_minor"] for bucket in shown)
+    taxed = [bucket for bucket in shown if bucket["rate_bp"] > 0]
+    colors = {id(bucket): BUCKET_BLUES[min(len(BUCKET_BLUES) - 1, index * max(1, (len(BUCKET_BLUES) - 1) // max(1, len(taxed) - 1)))]
+              for index, bucket in enumerate(taxed)}
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BUCKET_WIDTH} {BUCKET_HEIGHT}" role="img" aria-labelledby="bt bd" class="tax-buckets" '
+           f'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">',
+           f'<title id="bt">{escape(title)}</title><desc id="bd">A year of wages split into tax buckets; each bucket\'s income and tax, '
+           f'for the year and per paycheck, are in the table below the chart.</desc>',
+           f'<rect width="{BUCKET_WIDTH}" height="{BUCKET_HEIGHT}" fill="{SURFACE}"/>']
+    position = 16.0
+    for bucket in shown:
+        span = width * bucket["income_minor"] / whole
+        fill = UNTAXED if bucket["rate_bp"] == 0 else colors[id(bucket)]
+        drawn = max(span - 2, 1)  # A 2px surface gap between segments.
+        tip = (f"{bucket['label']}\nYear: {full(major(bucket['income_minor'], currency), currency)} of wages, "
+               f"{full(major(bucket['tax_minor'], currency), currency)} tax\nPer paycheck ({paychecks} a year): "
+               f"{full(major(bucket['per_paycheck_income_minor'], currency), currency)} of wages, "
+               f"{full(major(bucket['per_paycheck_tax_minor'], currency), currency)} tax")
+        out.append(f'<rect x="{position:.1f}" y="{BAR_TOP}" width="{drawn:.1f}" height="{BAR_HEIGHT}" fill="{fill}" class="hover-target">'
+                   f'<title>{escape(tip)}</title></rect>')
+        middle = position + drawn / 2
+        name = "0%" if bucket["rate_bp"] == 0 else bucket["label"]
+        income = compact(major(bucket["income_minor"], currency))
+        tax = "deduction" if bucket["rate_bp"] == 0 else f"{compact(major(bucket['tax_minor'], currency))} tax"
+        if drawn >= 7 * max(len(name), len(income), len(tax)) + 4:  # Narrow buckets are labelled in the table and on hover only.
+            out.append(f'<text x="{middle:.1f}" y="{BAR_TOP - 8}" text-anchor="middle" fill="{TEXT}">{escape(name)}</text>'
+                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 18}" text-anchor="middle" fill="{TEXT}">{escape(income)}</text>'
+                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 34}" text-anchor="middle" fill="{MUTED}">{escape(tax)}</text>')
+        position += span
     out.append("</svg>")
     return "".join(out)
 

@@ -147,10 +147,10 @@ function renderHome(data) {
     homeMetric("Money in", data.cashflow?.inflow, "Counted inflows for this period", financeHref(data, {metric: "inflow"})),
     homeMetric("Net cash flow", data.cashflow?.net, "Inflows less outflows · not an account balance", financeHref(data, {metric: "cashflow"})));
   const charts = element("div", "", "home-charts"); charts.append(homeTrend(data), homeCategories(data));
-  const bottom = element("div", "", "home-bottom"), attention = homePanel("Needs attention", "Receipts remain separate from counted spending.");
+  const bottom = element("div", "", "home-bottom"), attention = homePanel("Needs attention", "Receipts count on their own until a statement charge replaces them.");
   const list = element("ul", "", "finance-list"), counts = data.attention;
   const rows = [
-    [`${counts.unmatched?.receipts || 0} unmatched receipts${counts.unmatched ? ` · ${counts.unmatched.total.display}` : ""}`, "#/review", "Selected period · not included in spending"],
+    [`${counts.unmatched?.receipts || 0} receipts with no matching charge${counts.unmatched ? ` · ${counts.unmatched.total.display}` : ""}`, "#/review", "Selected period · approved ones count on their own"],
     [`${counts.undated} receipts without a purchase date`, "#/review", `${data.currency} · all dates`],
     [`${counts.records} financial records awaiting review`, "#/review", "All dates and currencies"],
     [`${counts.links} proposed matches · ${counts.issues} unresolved questions`, "#/review", "All dates and currencies"],
@@ -162,18 +162,17 @@ function renderHome(data) {
     if (!items.length) continue;
     bills.append(element("h3", title));
     const ul = element("ul", "", "finance-list");
-    for (const bill of items) { const li = document.createElement("li"); li.append(homeLink(bill.provider || "Bill", `#/documents/${bill.document_id}`), element("small", `${bill.due_date} · ${bill.amount_due?.display || "Amount unresolved"} · ${bill.payment_state.replaceAll("_", " ")}`)); ul.append(li); }
+    for (const bill of items) { const li = document.createElement("li"); li.append(homeLink(bill.provider, "#/bills"), element("small", `${bill.due_date} · ${bill.amount_due.display} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`)); ul.append(li); }
     bills.append(ul);
   }
-  if (!data.bills.total) bills.append(emptyState("No unpaid bills recorded as due soon."));
+  if (!data.bills.total) bills.append(emptyState("No confirmed recurring bills due in the next 30 days."));
   bills.append(homeLink(`View all bills (${data.bills.total} due or overdue)`, "#/bills", "home-footer"));
   bottom.append(attention, bills);
   const household = element("div", "", "home-bottom"); household.id = "home-extras";
   const coverage = homePanel("What these numbers cover", `${data.period.start} – ${data.period.end} · ${data.currency}`);
   coverage.append(element("p", data.coverage.map(row => `${row.display_name}: ${row.first} to ${row.last} (${row.transactions} counted transactions)`).join("; ") || "No counted account transactions in this period.", "muted small"));
-  if (data.pending) coverage.append(element("p", `${data.pending.amount.display} across ${data.pending.transactions} transactions awaits review and is not counted.`, "item-warning"));
-  coverage.append(element("p", "Totals reflect recorded transactions, not all household spending. Transfers and card payments are excluded from spending. Each currency is shown separately.", "muted small"));
-  if (!data.totals && counts.unmatched) coverage.append(element("p", "Receipts are recorded, but need matching bank or card transactions before they appear in spending."));
+  if (data.pending) coverage.append(element("p", `${data.pending.amount.display} across ${data.pending.transactions} transactions awaits review or reconciliation and is not counted.`, "item-warning"));
+  coverage.append(element("p", "Totals reflect recorded transactions and approved receipts, not all household spending. A receipt counts until a card or bank charge replaces it, never both. Transfers and card payments are excluded from spending. Each currency is shown separately.", "muted small"));
   content.replaceChildren(metrics, charts, bottom, household, coverage);
   renderHomeExtras(data.month).catch(() => {});  // Budgets and the check-in load on their own; the dashboard never waits for them.
 }

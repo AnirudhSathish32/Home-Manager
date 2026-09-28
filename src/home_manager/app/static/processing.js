@@ -2,11 +2,11 @@
 // Processing (docs/ui-design-plan.md §3.9, Phase E): pipeline lanes, one history of every kind of work, and model runs.
 const JOB_KINDS = {inbox_capture: "Inbox capture", text_batch: "Reading documents (batch)", text_reading: "Reading a document", ledger_extraction: "Recording to the ledger",
                    item_identification: "Identifying receipt items", reconciliation: "Reconciliation", backup: "Backup", assistant: "Assistant question",
-                   audit_analysis: "Audit analysis", checkin_text: "Check-in answer", warranty_lookup: "Warranty lookup"};
+                   audit_analysis: "Audit analysis", checkin_text: "Check-in answer", warranty_lookup: "Warranty lookup", tax_table_lookup: "Tax table lookup"};
 // Lane -> [live work kinds, history kinds].
 const LANES = [["Capture", ["capture"], ["inbox_capture"]], ["Reading", ["transcription"], ["text_batch", "text_reading"]],
                ["Recording", ["extraction"], ["ledger_extraction"]], ["Item identification", ["item_resolution"], ["item_identification"]],
-               ["Reconciliation", [], ["reconciliation"]]];
+               ["Reconciliation", ["recurring_scan"], ["reconciliation"]]];
 let processingLoad = 0, lastActivity = [];
 
 function duration(start, end) {

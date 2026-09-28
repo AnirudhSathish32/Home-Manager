@@ -80,7 +80,7 @@ Keep attention visible without making it dominate the page. Show distinct rows f
 
 Unmatched receipts show a count and total for the selected month and currency, labeled **Not included in spending**. Receipts without purchase dates appear as a separate count with an action to add dates. A receipt enters spending through its matched transaction, never as an additional purchase. Review and document-work counts are labeled **All dates** if they are not scoped to the month.
 
-Upcoming bills show the next three unpaid or unresolved bills due within 30 days of today, regardless of the selected historical spending month. Label this period directly. Show provider, due date, amount and payment state. Separate overdue bills from upcoming ones; the current upcoming-bills query alone should not be assumed to supply overdue bills. Link to the full bill list. Bills are obligations, not additional spending until a corresponding transaction is counted.
+Upcoming bills show the next three confirmed recurring bills due within 30 days of today, regardless of the selected historical spending month, and up to three overdue ones (next due date passed with no payment found since). Label this period directly. Show payee, due date, expected amount and how often. Link to the full bill list. Bills are obligations, not additional spending until a corresponding transaction is counted. Bill documents are no longer recorded (see receipts-and-statements.md).
 
 ## Data and implementation plan
 
@@ -95,7 +95,7 @@ The current frontend is plain JavaScript with hash routes and shared UI helpers.
 | Inflow and cash flow | `calculate_cashflow` | Apply the same dates and currency as the headline |
 | Unmatched receipts | `get_unmatched_receipts` | Display its currency totals and separate undated items |
 | Review work | `review_queue` and document folder/work counts | Use complete counts; label all-date scope |
-| Bills | `get_upcoming_bills` | Query relative to today; add an explicit overdue query if included |
+| Bills | `get_upcoming_bills` | Confirmed recurring bills relative to today; a past due date is overdue |
 | Chart drill-down | Existing Finances view | Add route/query filters for dates, currency and category, including Other membership |
 
 Financial totals, differences, shares and rounded amounts must come from the server, using existing integer minor-unit arithmetic. The browser may calculate chart positions, but must not recompute money totals from its paginated transaction table. Existing imported/verified eligibility rules remain authoritative. Pending, rejected, duplicate and unmatched records must not silently enter headline totals.

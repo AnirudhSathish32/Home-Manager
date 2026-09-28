@@ -12,11 +12,9 @@ const ROUTES = {
   // Old links (#/finances?section=…) forward to the page that now holds that section.
   finances: {title: "Finances", nav: "transactions", show: route => openFinanceRoute(route.params)},
   forecast: {title: "Forecast", show: () => configured ? loadForecast() : null},
-  documents: {title: "Documents", show: route => {
-    if (route.params.get("status")) { activeStatus = route.params.get("status"); activeFolder = "all"; docOffset = 0; selection.clear(); }
-    if (route.params.has("q")) { searchQuery = $("document-search").value = route.params.get("q"); activeFolder = "all"; activeStatus = "all"; docOffset = 0; selection.clear(); }
-    return configured ? loadDocuments() : null;
-  }},
+  documents: {title: "Documents", show: route => showLibrary("documents", route)},
+  // Receipts and statements: the money store, on the same library page with its own folders.
+  receipts: {title: "Receipts & statements", page: "documents", show: route => showLibrary("money", route)},
   // #/documents/ID[?version=HASH] opens the inspector over the preserved list state.
   document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version")) : null},
   processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory(), loadProcessing()]) : null},
@@ -40,26 +38,28 @@ function parseRoute() {
 }
 function showRoute(moveFocus) {
   const route = parseRoute(), previous = currentRoute?.name;
-  if (previous === "documents" && route.name !== "documents") listScroll = window.scrollY;
+  const lists = ["documents", "receipts"], page = ROUTES[route.name].page || route.name;
+  if (lists.includes(previous) && !lists.includes(route.name)) listScroll = window.scrollY;
   if (previous === "document" && route.name !== "document") closeReceipt();
-  if (route.name === "document") openedFromList = previous === "documents" || (previous === "document" && openedFromList);
+  if (route.name === "document") openedFromList = lists.includes(previous) || (previous === "document" && openedFromList);
   currentRoute = route;
-  for (const page of document.querySelectorAll("[data-page]")) page.hidden = page.dataset.page !== route.name;
-  const nav = ROUTES[route.name].nav || route.name;
+  for (const section of document.querySelectorAll("[data-page]")) section.hidden = section.dataset.page !== page;
+  // A document belongs to the store its list was opened from.
+  const nav = route.name === "document" && libraryScope === "money" ? "receipts" : ROUTES[route.name].nav || route.name;
   for (const link of document.querySelectorAll(".nav-link[data-route]")) {
     if (link.dataset.route === nav) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   }
   document.title = `${ROUTES[route.name].title} · Home Manager`;
   // Returning from a document restores the list where the user left it.
-  if (route.name === "documents" && previous === "document") requestAnimationFrame(() => window.scrollTo(0, listScroll));
+  if (lists.includes(route.name) && previous === "document") requestAnimationFrame(() => window.scrollTo(0, listScroll));
   else if (moveFocus) window.scrollTo(0, 0);
   // Move focus to the new page's heading so keyboard and screen-reader users land on the content.
-  if (moveFocus) document.querySelector(`[data-page="${route.name}"] h1`)?.focus({preventScroll: true});
+  if (moveFocus) document.querySelector(`[data-page="${page}"] h1`)?.focus({preventScroll: true});
   Promise.resolve().then(() => ROUTES[route.name].show(route)).catch(error => notice(error, true));
 }
 function leaveDocument() {
   // Back to the list the document was opened from, keeping filters, page and scroll position.
-  if (openedFromList) history.back(); else location.hash = "#/documents";
+  if (openedFromList) history.back(); else location.hash = libraryScope === "money" ? "#/receipts" : "#/documents";
 }
 $("close-receipt").addEventListener("click", event => { event.preventDefault(); leaveDocument(); });
 document.addEventListener("keydown", event => {

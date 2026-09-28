@@ -8,19 +8,20 @@ const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "
 const ITEM_CATEGORIES = ["produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages", "household cleaning",
                          "paper & disposables", "personal care", "health", "baby", "pet", "home maintenance", "other"];
 const REVIEW_GROUPS = [["issue", "Questions"], ["link", "Proposed matches"], ["record", "Records to verify"], ["asset", "Statement values to confirm"], ["warranty", "Warranties to confirm"],
-                       ["recurring", "Recurring payments"], ["item", "Receipt items to identify"]];
+                       ["tax_table", "Tax tables to confirm"], ["recurring", "Recurring payments"], ["item", "Receipt items to identify"]];
 const STATEMENT_ASSET_LABELS = {investment: "Investment account", retirement: "Retirement account", bond: "Bonds", loan: "Loan"};
 let reviewItems = [], reviewIndex = 0, reviewLoad = 0, reviewThumb = null;
 
 const proposedAssets = assets => assets.filter(asset => asset.source === "statement" && asset.review_status === "proposed");
-function reviewCount(queue, recurring, items, assets, warranties = []) {
+function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = []) {
   return queue.records.length + queue.links.length + queue.issues.length + recurring.obligations.filter(row => row.status === "proposed").length
-    + items.length + proposedAssets(assets).length + warranties.length;
+    + items.length + proposedAssets(assets).length + warranties.length + taxTables.length;
 }
 async function loadNavCounts() {
-  const [queue, recurring, items, assets, checkin, warranties] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
-    api("/api/items/resolutions?status=proposed&limit=1000"), api("/api/assets"), api("/api/inventory/checkin").catch(() => null), api("/api/warranties?status=proposed")]);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties), "need review");
+  const [queue, recurring, items, assets, checkin, warranties, taxTables] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
+    api("/api/items/resolutions?status=proposed&limit=1000"), api("/api/assets"), api("/api/inventory/checkin").catch(() => null), api("/api/warranties?status=proposed"),
+    api("/api/tax-tables?status=proposed")]);
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables), "need review");
   if (checkin) setNavCount($("nav-checkin-count"), checkin.lots.length + checkin.waiting, "to check in");
 }
 
@@ -29,11 +30,11 @@ async function loadReview(keep = true) {
   if (!configured) { $("review-detail").replaceChildren(emptyState("Set up your library to review records.")); return; }
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
-  let queue, recurring, items, catalog, unmatched, assets, warranties;
+  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables;
   try {
-    [queue, recurring, items, catalog, unmatched, assets, warranties] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
+    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
       api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
-      api("/api/assets"), api("/api/warranties?status=proposed")]);
+      api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed")]);
   } catch (error) {
     if (load === reviewLoad) { $("review-status").textContent = ""; $("review-detail").replaceChildren(alertBox(`Couldn't load the review queue. ${error.message}`, {tone: "error", action: asyncButton("Retry", () => loadReview())})); }
     return;
@@ -43,6 +44,7 @@ async function loadReview(keep = true) {
                  ...queue.records.map(value => ({kind: "record", id: `${value.record_type}-${value.id}`, value})),
                  ...proposedAssets(assets).map(value => ({kind: "asset", id: value.id, value})),
                  ...warranties.map(value => ({kind: "warranty", id: value.id, value})),
+                 ...taxTables.map(value => ({kind: "tax_table", id: value.id, value})),
                  ...recurring.obligations.filter(row => row.status === "proposed").map(value => ({kind: "recurring", id: value.id, value})),
                  ...items.map(value => ({kind: "item", id: value.id, value}))];
   const kept = keep && previous ? reviewItems.findIndex(item => reviewKey(item) === previous) : -1;
@@ -51,7 +53,7 @@ async function loadReview(keep = true) {
   renderReviewQueue(catalog);
   renderReviewDetail();
   renderUnmatched(unmatched);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties), "need review");
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables), "need review");
 }
 function reviewTitle(item) {
   const value = item.value;
@@ -61,6 +63,7 @@ function reviewTitle(item) {
   if (item.kind === "recurring") return `${value.merchant} · ${value.expected_amount.display} ${value.frequency}`;
   if (item.kind === "asset") return value.name;
   if (item.kind === "warranty") return `Warranty: ${[value.brand, value.name].filter(Boolean).join(" ")}`;
+  if (item.kind === "tax_table") return `${value.year} ${value.name} income tax table`;
   return value.line.description;
 }
 function renderReviewQueue(catalog) {
@@ -180,6 +183,24 @@ function reviewParts(item) {
             confirm: decide(path, {status: "verified"}, "Warranty confirmed."), confirmLabel: "Confirm warranty",
             reject: decide(path, {status: "rejected"}, "Rejected."), rejectLabel: "Reject"};
   }
+  if (item.kind === "tax_table") {
+    const path = `/api/tax-tables/${value.id}/review`;
+    const box = element("div", "", "review-side");
+    box.append(element("span", `${value.year} · filing ${value.filing_status.replaceAll("_", " ")}`, "figure-label"),
+               element("strong", `Standard deduction ${value.display.standard_deduction_minor}`, "block"));
+    const brackets = element("ul", "", "tax-brackets");
+    for (const bracket of value.brackets) brackets.appendChild(element("li", `${bracket.display.rate} on taxable income over ${bracket.display.from}`));
+    box.appendChild(brackets);
+    if (value.ss_rate_bp != null) box.appendChild(element("small", `Social Security ${value.ss_rate_bp / 100}% up to ${value.display.ss_wage_base_minor || "?"} · `
+      + `Medicare ${value.medicare_rate_bp / 100}%${value.additional_medicare_rate_bp ? ` + ${value.additional_medicare_rate_bp / 100}% over ${value.display.additional_medicare_threshold_minor}` : ""}`, "block"));
+    const sources = element("div", "", "review-side");
+    sources.appendChild(element("span", "Quoted from", "figure-label"));
+    for (const source of value.sources) sources.append(element("span", `“${source.quote}”`, "block"), element("small", source.url, "muted block mono"));
+    return {why: "The local model looked this table up to explain your pay stub's taxes. Every number is quoted from the page below; pay stubs use it once you confirm it.",
+            evidence: [box, sources], document: null,
+            confirm: decide(path, {status: "verified"}, "Tax table confirmed."), confirmLabel: "Confirm table",
+            reject: decide(path, {status: "rejected"}, "Rejected; it can be looked up again from the pay stub."), rejectLabel: "Reject"};
+  }
   if (item.kind === "asset") {
     const path = `/api/assets/${value.id}/review`;
     const undo = () => api(path, {method: "POST", body: JSON.stringify({status: "proposed"})});
@@ -196,10 +217,25 @@ function reviewParts(item) {
   }
   if (item.kind === "recurring") {
     const path = `/api/finance/recurring/${value.id}/review`;
-    return {why: `Payments of the same amount arrived at a steady ${value.frequency} cadence. Next expected about ${value.next_due_date ? dateText(value.next_due_date) : "unknown"}.`,
-            evidence: [summaryBlock("Recurring payment", {name: value.merchant, amount: value.expected_amount, date: value.next_due_date})],
-            confirm: decide(path, {status: "verified"}, "Recurring payment confirmed."), confirmLabel: "Confirm recurring",
-            reject: decide(path, {status: "rejected"}, "Marked not recurring."), rejectLabel: "Not recurring"};
+    const next = value.next_due_date ? dateText(value.next_due_date) : "unknown";
+    const why = {receipt_single_payment: "A receipt was read as a payment for a service billed on a schedule.",
+                 category_single_payment: `A ${value.category || "bill"} charge: how often it recurs can't be told from one payment, so check it below.`,
+                 statement_model: "The local model read this payee's statement charges as an ongoing service billed on a schedule. Check how often below.",
+                 contract_terms: `Read from the document's payment terms: “${value.evidence || ""}”.`
+                }[value.confidence_source] || `Payments of the same amount arrived at a steady ${FREQUENCY_LABELS[value.frequency]} cadence.`;
+    // Confirming sends the chosen frequency: the body is read when the button is pressed.
+    const body = {status: "verified", frequency: value.frequency};
+    const often = element("label", "How often ", "inline-field");
+    const select = document.createElement("select");
+    for (const [key, label] of Object.entries(FREQUENCY_LABELS)) select.add(new Option(label, key));
+    select.value = value.frequency; select.addEventListener("change", () => { body.frequency = select.value; });
+    often.append(select);
+    const note = value.category ? `Counts under ${categoryLabel(value.category)} in your forecast and budgets once confirmed.` : "Counts in your forecast once confirmed.";
+    return {why: `${why} Next expected about ${next}. ${note}`,
+            evidence: [summaryBlock("Recurring bill", {name: value.merchant, amount: value.expected_amount, date: value.next_due_date})], extra: [often],
+            document: value.source_document_id,
+            confirm: decide(path, body, "Recurring bill confirmed."), confirmLabel: "Confirm recurring",
+            reject: decide(path, {status: "rejected"}, "Marked not recurring; it won't be proposed again."), rejectLabel: "Not recurring"};
   }
   const path = `/api/items/resolutions/${value.id}/review`;
   const proposal = element("div", "", "review-side");

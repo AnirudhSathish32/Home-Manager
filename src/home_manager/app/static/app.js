@@ -180,6 +180,7 @@ async function loadSettings() {
   $("home-currency").value = homeCurrency = settings.household.home_currency || "";
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
   $("auto-identify").checked = settings.household.auto_identify_items !== false;
+  $("filing-status").value = settings.household.filing_status || "single";
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
@@ -213,17 +214,20 @@ async function loadEvents() {
   $("events-page").textContent = events.length ? `${eventOffset + 1}–${eventOffset + events.length}` : "No results on this page";
 }
 async function loadDocuments() {
-  const params = new URLSearchParams({offset: docOffset, limit: pageSize, folder: activeFolder, status: activeStatus, q: searchQuery, sort: activeSort});
-  if (activeFrom) params.set("date_from", activeFrom);
-  if (activeTo) params.set("date_to", activeTo);
-  const requested = params.toString();
+  const query = () => {
+    const params = new URLSearchParams({offset: docOffset, limit: pageSize, folder: activeFolder, status: activeStatus, q: searchQuery, sort: activeSort, scope: libraryScope});
+    if (activeFrom) params.set("date_from", activeFrom);
+    if (activeTo) params.set("date_to", activeTo);
+    if (receiptCategory()) params.set("category", receiptCategory());
+    if (jobFilter()) params.set("employer", jobFilter().employer);
+    if (jobFilter()?.section) params.set("section", jobFilter().section);
+    return params.toString();
+  };
+  const requested = query();
   const data = await api(`/api/documents?${requested}`);
-  const catalog = await api("/api/folders");
-  // A newer filter, page or sort supersedes this response.
-  const current = new URLSearchParams({offset: docOffset, limit: pageSize, folder: activeFolder, status: activeStatus, q: searchQuery, sort: activeSort});
-  if (activeFrom) current.set("date_from", activeFrom);
-  if (activeTo) current.set("date_to", activeTo);
-  if (current.toString() !== requested) return;
+  const catalog = await api(`/api/folders?scope=${libraryScope}`);
+  // A newer filter, page, sort or store supersedes this response.
+  if (query() !== requested) return;
   renderFolders(catalog); renderDocuments(data);
   $("docs-prev").disabled = docOffset === 0;
   $("docs-next").disabled = docOffset + pageSize >= data.total;
@@ -278,12 +282,14 @@ async function poll() {
       const settings = await api("/api/settings");
       const wasBusy = anyBusy(); setBusy(settings); controls();
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
-      if (renderSession(settings)) { await sessionChanged(); return; }
+      if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
       if (anyBusy() || wasBusy) {
         await refresh();
         if (currentRoute?.name === "processing") await loadProcessing();
       }
       if (wasBusy && !anyBusy() && currentRoute?.name === "home") await loadHome();
+      // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
+      if ((wasBusy && !anyBusy()) || !reconcileChecked) { reconcileChecked = true; await loadReconcilePrompt(); }
       if (typeof pollReceipt === "function") await pollReceipt();
     }
     if (pollFailure) { pollFailure = null; $("app-alert").replaceChildren(); }
@@ -296,7 +302,7 @@ async function poll() {
   }
   finally { setTimeout(poll, 1500); }
 }
-let pollFailure = null;
+let pollFailure = null, reconcileChecked = false;
 // Start once every deferred script has run: a fast settings response must not reach showRoute (shell.js) before it exists.
 document.addEventListener("DOMContentLoaded", () => loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true)));
 
@@ -339,7 +345,8 @@ $("session-form").addEventListener("submit", async event => {
     notice("Opening the shared library. Your own library stays closed and unchanged while you look.");
   } catch (error) { notice(error, true); }
 });
-saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked}),
+saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked,
+                                                             filing_status: $("filing-status").value}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

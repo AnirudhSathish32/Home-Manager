@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_EVEN
 from ..core.money import money, currency_code
 from ..library.storage import now, WORK_FILTERS
 from .ledger import COUNTABLE
-from .tools import FinanceTools, PeriodInput, CompareInput, AsOfInput, month_index, month_label, last_day, scope_of, totals_view
+from .tools import FinanceTools, PeriodInput, CompareInput, AsOfInput, month_index, month_label, last_day, totals_view
 
 
 class SnapshotStore:
@@ -39,7 +39,8 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
     with store.connection() as db:
         db.execute("BEGIN")
         tools = FinanceTools(SnapshotStore(store, db))
-        currencies = sorted({row[0] for row in db.execute("SELECT currency FROM transactions UNION SELECT currency FROM receipts UNION SELECT currency FROM bills")})
+        currencies = sorted({row[0] for row in db.execute("SELECT currency FROM transactions UNION SELECT currency FROM receipts "
+                                                          "UNION SELECT currency FROM recurring_obligations WHERE status='verified'")})
         chosen = currency_code(currency) if currency else home_currency if home_currency in currencies else "USD" if "USD" in currencies or not currencies else currencies[0]
         currencies = sorted(set(currencies) | {chosen})
         pick = lambda rows: next((row for row in rows if row["currency"] == chosen), None)
@@ -48,8 +49,7 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
         flow = pick(tools.calculate_cashflow(period)["by_currency"])
         comparison = pick(tools.compare_periods(CompareInput(first=before, second=period))["by_currency"])
         series = []
-        trend_scope, trend_params = scope_of(month_label(index - months + 1) + "-01", end, None)
-        trend_totals = tools._totals(trend_scope, trend_params, by_month=True)
+        trend_totals = tools._totals(month_label(index - months + 1) + "-01", end, None, by_month=True)
         for item in range(index - months + 1, index + 1):
             label = month_label(item)
             stop = min(last_day(item), today.isoformat())
@@ -72,7 +72,7 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
         queue = tools.review_queue()
         ready = db.execute(store.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {WORK_FILTERS['ready_for_ledger']}").fetchone()[0]
         bill_result = tools.get_upcoming_bills(AsOfInput(as_of=today.isoformat(), days=30))
-        bills = [row for row in bill_result["bills"] if row["currency"] == chosen and row["payment_state"] not in ("paid", "payment_found")]
+        bills = [row for row in bill_result["bills"] if row["currency"] == chosen]
         coverage = [dict(row) for row in db.execute(f"SELECT a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions "
                      f"FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE {COUNTABLE} AND t.currency=? AND t.posted_date BETWEEN ? AND ? GROUP BY a.id",
                      (chosen, period.start, period.end))]

@@ -2,22 +2,32 @@
 
 Rules use exact integer amounts, explicit date windows and merchant-name overlap. A
 unique plausible match becomes a proposed link; several plausible matches become an
-open issue and no link. Rejected links are never re-proposed. The model plays no part.
+open issue and no link. Rejected links are never re-proposed. The model plays no part here;
+recurring-bill proposals may use its stored answers about statement payees and contract terms.
 The user answers an open issue by choosing one candidate (a verified link scored by the
 same rules) or by leaving the record unmatched, which later passes respect.
 """
 
 from collections import defaultdict
 from datetime import date, timedelta
+from decimal import ROUND_HALF_EVEN, Decimal
 import json
 
+from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS
 from ..library.storage import now
-from .ledger import COUNTABLE, NON_SPENDING, Ledger, classify_transaction, name_tokens, normalize_name
+from .ledger import (COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction,
+                     name_tokens, normalize_name)
 
 RECEIPT_POSTING_DAYS, TRANSFER_DAYS, REFUND_DAYS = 5, 5, 120
+# A charge up to 30% above a receipt's total (a tip added after printing, a currency conversion)
+# from the same merchant is never linked automatically; the user is asked instead.
+NEAR_PERCENT = 130
 TRANSFERISH = ("transfer", "payment")
 CADENCES = {"weekly": (6, 8), "monthly": (26, 35), "quarterly": (85, 95), "annual": (360, 370)}
-MONTHS = {"monthly": 1, "quarterly": 3, "annual": 12}
+# Charges in these categories propose a recurring bill after a single payment.
+BILL_CATEGORIES = ("housing", "insurance")
+# A later payment pays a bill when it is 50% to 150% of the usual amount: utility bills vary month to month.
+BILL_RANGE = (50, 150)
 TRIGGERS = ("manual", "import", "extraction", "resolution", "correction")
 OBLIGATION_DECISIONS = ("verified", "rejected", "ended")
 # Issue type -> (table of the record the issue is about, how a chosen candidate is linked).
@@ -41,11 +51,47 @@ def gap(first, second):
     return abs((date.fromisoformat(first) - date.fromisoformat(second)).days)
 
 
+def due_after(day, frequency):
+    return shift(day, 7) if frequency == "weekly" else add_months(day, FREQUENCY_MONTHS[frequency])
+
+
+def payee_key(description):
+    """A statement line's payee: its first three normalized words (store numbers and dates vary after them)."""
+    return " ".join(normalize_name(description).split()[:3])
+
+
+def bill_matches(bill, name, currency):
+    """A payee name shares a word with the bill's payee, in the same currency."""
+    return bill["currency"] == currency and bool(name_tokens(bill["merchant"]) & name_tokens(name))
+
+
+def bill_payments(db, bill, start=None, end=None):
+    """Counted payments to a bill's payee within BILL_RANGE of its usual amount, oldest first: card and bank lines,
+    and receipts no line has replaced (so a receipt and its charge are one payment)."""
+    low, high = BILL_RANGE
+    window, params = "", []
+    for column, bound, operator in (("day", start, ">="), ("day", end, "<=")):
+        if bound:
+            window += f" AND {column}{operator}?"
+            params.append(bound)
+    amounts = (bill["currency"], bill["expected_amount_minor"] * low, bill["expected_amount_minor"] * high)
+    rows = db.execute(
+        f"SELECT * FROM (SELECT 'transaction' AS record_type,t.id,coalesce(t.transaction_date,t.posted_date) AS day,-t.amount_minor AS amount,"
+        f"{TRANSACTION_CATEGORY} AS category,t.description_raw||' '||coalesce(m.canonical_name,'') AS name FROM transactions t "
+        f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND t.transaction_type IN ('purchase','fee') AND t.currency=? "
+        f"AND -t.amount_minor*100 BETWEEN ? AND ? "
+        f"UNION ALL SELECT 'receipt',r.id,r.purchase_date,r.total_minor,coalesce(r.category,'uncategorized'),coalesce(m.canonical_name,'') FROM receipts r "
+        f"LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT} AND r.currency=? AND r.total_minor*100 BETWEEN ? AND ?) "
+        f"WHERE 1=1{window} ORDER BY day,record_type,id", (*amounts, *amounts, *params)).fetchall()
+    return [dict(row) for row in rows if bill_matches(bill, row["name"], bill["currency"])]
+
+
 # Scoring rules: integer points plus the signals that earned them. Callers have already
-# required equal amounts and currencies.
+# required equal currencies and, except for a user's choice of a near match, equal amounts.
 
 def receipt_match(receipt, transaction):
-    points, signals = 60, ["amount"]
+    exact = -transaction["amount_minor"] == receipt["total_minor"]
+    points, signals = (60, ["amount"]) if exact else (30, ["near_amount"])
     lag = gap(transaction["transaction_date"] or transaction["posted_date"], receipt["purchase_date"])
     if lag == 0:
         points, signals = points + 20, signals + ["same_day"]
@@ -84,7 +130,8 @@ class Reconciler:
         try:
             with self.store.connection() as db:
                 summary = {"receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
-                           "recurring": self.recurring(db)}
+                           "recurring": self.recurring(db) + self.propose_bills(db)}
+                self.track_bills(db)
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
                 # Matched receipts can give transactions a merchant name, which category rules also match.
                 self.ledger.apply_rules(db)
@@ -198,12 +245,12 @@ class Reconciler:
         receipts = db.execute("SELECT r.*,m.canonical_name AS merchant FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id "
                               "WHERE r.review_status<>'rejected' AND r.total_minor IS NOT NULL AND r.purchase_date IS NOT NULL AND NOT EXISTS("
                               "SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status<>'rejected')").fetchall()
+        unlinked = ("coalesce(t.transaction_date,t.posted_date) BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l "
+                    "WHERE l.transaction_id=t.id AND (l.review_status<>'rejected' OR l.receipt_id=?))")
         for receipt in receipts:
-            candidates = db.execute(
-                "SELECT t.* FROM transactions t WHERE t.currency=? AND t.amount_minor=? AND t.review_status<>'rejected' "
-                "AND coalesce(t.transaction_date,t.posted_date) BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l "
-                "WHERE l.transaction_id=t.id AND (l.review_status<>'rejected' OR l.receipt_id=?))",
-                (receipt["currency"], -receipt["total_minor"], receipt["purchase_date"], shift(receipt["purchase_date"], RECEIPT_POSTING_DAYS), receipt["id"])).fetchall()
+            window = (receipt["purchase_date"], shift(receipt["purchase_date"], RECEIPT_POSTING_DAYS), receipt["id"])
+            candidates = db.execute(f"SELECT t.* FROM transactions t WHERE t.currency=? AND t.amount_minor=? AND {MATCHABLE} AND {unlinked}",
+                                    (receipt["currency"], -receipt["total_minor"], *window)).fetchall()
             scored = sorted(((*receipt_match(receipt, transaction), transaction) for transaction in candidates), key=lambda item: -item[0])
             # One candidate, or one candidate clearly better (by at least one whole rule) than the rest.
             if scored and (len(scored) == 1 or scored[0][0] >= 80 and scored[0][0] - scored[1][0] >= 20):
@@ -212,18 +259,59 @@ class Reconciler:
                 created += 1
             elif len(scored) > 1:
                 self.issue(db, "ambiguous_receipt_match", "receipt", receipt["id"], [item[2]["id"] for item in scored])
+            elif receipt["total_minor"] > 0 and receipt["merchant"]:
+                # No exact charge: a same-merchant charge a little larger is probably this purchase with a tip or
+                # conversion. Counting both would count the purchase twice, so the user decides.
+                near = [row for row in db.execute(
+                    f"SELECT t.* FROM transactions t WHERE t.currency=? AND -t.amount_minor>? AND -t.amount_minor*100<=?*{NEAR_PERCENT} AND {MATCHABLE} AND {unlinked}",
+                    (receipt["currency"], receipt["total_minor"], receipt["total_minor"], *window))
+                        if name_tokens(receipt["merchant"]) & name_tokens(row["description_raw"])]
+                if near:
+                    self.issue(db, "ambiguous_receipt_match", "receipt", receipt["id"], [row["id"] for row in near])
         return created
+
+    # Statements waiting for the user ---------------------------------------------------
+
+    def awaiting(self):
+        """Recorded bank and card statements whose lines wait for the user to reconcile receipts against them."""
+        with self.store.connection() as db:
+            rows = db.execute("SELECT s.id,s.statement_type,s.period_start,s.period_end,s.currency,s.document_id,a.institution,a.display_name AS account,"
+                              "(SELECT count(*) FROM transactions t WHERE t.statement_id=s.id AND t.origin='extraction' AND t.review_status<>'rejected') AS lines,"
+                              "(SELECT count(*) FROM receipts r WHERE r.review_status<>'rejected' AND r.currency=s.currency AND r.purchase_date "
+                              "BETWEEN coalesce(s.period_start,s.period_end) AND s.period_end AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l "
+                              "WHERE l.receipt_id=r.id AND l.review_status<>'rejected')) AS receipts "
+                              "FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.reconciliation='awaiting' AND s.review_status<>'rejected' "
+                              "ORDER BY s.period_end,s.id").fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_statement(self, statement_id):
+        """The user's yes: release the statement's lines, match receipts against them, and report what happened."""
+        with self.store.connection() as db:
+            if db.execute("UPDATE statements SET reconciliation='reconciled',updated_at=? WHERE id=? AND review_status<>'rejected'",
+                          (now(), statement_id)).rowcount == 0:
+                raise ValueError("Statement not found.")
+        summary = self.run("manual")
+        with self.store.connection() as db:
+            lines = [row[0] for row in db.execute("SELECT id FROM transactions WHERE statement_id=? AND origin='extraction' AND review_status<>'rejected' "
+                                                  "AND amount_minor<0", (statement_id,))]
+            marks = ",".join("?" * len(lines))
+            matched = db.execute(f"SELECT count(*) FROM transaction_receipt_links WHERE review_status<>'rejected' AND transaction_id IN ({marks})",
+                                 lines).fetchone()[0] if lines else 0
+            questions = sum(1 for (detail,) in db.execute("SELECT detail_json FROM reconciliation_issues WHERE issue_type='ambiguous_receipt_match' AND status='open'")
+                            if set(json.loads(detail)["candidate_transaction_ids"]) & set(lines))
+        return {"statement_id": statement_id, "charges": len(lines), "matched_receipts": matched, "questions": questions,
+                "charges_without_receipt": len(lines) - matched, "summary": summary}
 
     def transfers(self, db):
         """Equal and opposite amounts between two owned accounts within a few days."""
         created = 0
         outflows = db.execute("SELECT t.*,a.account_type FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE t.amount_minor<0 "
-                              "AND t.review_status<>'rejected' AND t.transaction_type IN ('transfer','payment','purchase','withdrawal') AND NOT EXISTS("
+                              f"AND {MATCHABLE} AND t.transaction_type IN ('transfer','payment','purchase','withdrawal') AND NOT EXISTS("
                               "SELECT 1 FROM transaction_links l WHERE l.link_type='transfer' AND l.from_transaction_id=t.id AND l.review_status<>'rejected')").fetchall()
         for outflow in outflows:
             candidates = db.execute(
                 "SELECT t.*,a.account_type FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE t.account_id<>? AND t.currency=? "
-                "AND t.amount_minor=? AND t.review_status<>'rejected' AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_links l "
+                f"AND t.amount_minor=? AND {MATCHABLE} AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_links l "
                 "WHERE l.link_type='transfer' AND l.to_transaction_id=t.id AND (l.review_status<>'rejected' OR l.from_transaction_id=?))",
                 (outflow["account_id"], outflow["currency"], -outflow["amount_minor"], shift(outflow["posted_date"], -TRANSFER_DAYS),
                  shift(outflow["posted_date"], TRANSFER_DAYS), outflow["id"])).fetchall()
@@ -240,12 +328,12 @@ class Reconciler:
     def refunds(self, db):
         """A credit from the same merchant on the same account after a purchase at least as large."""
         created = 0
-        credits = db.execute("SELECT t.* FROM transactions t WHERE t.amount_minor>0 AND t.transaction_type='refund' AND t.review_status<>'rejected' "
+        credits = db.execute(f"SELECT t.* FROM transactions t WHERE t.amount_minor>0 AND t.transaction_type='refund' AND {MATCHABLE} "
                              "AND NOT EXISTS(SELECT 1 FROM transaction_links l WHERE l.link_type='refund' AND l.to_transaction_id=t.id AND l.review_status<>'rejected')").fetchall()
         for credit in credits:
             candidates = db.execute(
                 "SELECT t.* FROM transactions t WHERE t.account_id=? AND t.currency=? AND t.amount_minor<0 AND -t.amount_minor>=? "
-                "AND t.transaction_type='purchase' AND t.review_status<>'rejected' AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS("
+                f"AND t.transaction_type='purchase' AND {MATCHABLE} AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS("
                 "SELECT 1 FROM transaction_links l WHERE l.link_type='refund' AND l.from_transaction_id=t.id AND l.to_transaction_id=? AND l.review_status='rejected')",
                 (credit["account_id"], credit["currency"], credit["amount_minor"], shift(credit["posted_date"], -REFUND_DAYS), credit["posted_date"], credit["id"])).fetchall()
             plausible = [row for row in candidates if name_tokens(row["description_raw"]) & name_tokens(credit["description_raw"])]
@@ -260,9 +348,10 @@ class Reconciler:
 
     def recurring(self, db):
         """Same account, merchant key and exact amount at a steady cadence, three or more times."""
+        known = self.bills(db)
         groups = defaultdict(list)
         for row in db.execute(f"SELECT t.* FROM transactions t WHERE t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') AND {COUNTABLE} ORDER BY t.posted_date,t.id"):
-            key = " ".join(normalize_name(row["description_raw"]).split()[:3])
+            key = payee_key(row["description_raw"])
             if key:
                 groups[(row["account_id"], key, row["amount_minor"], row["currency"])].append(row)
         found = 0
@@ -272,7 +361,11 @@ class Reconciler:
             if frequency is None:
                 continue
             merchant = self.ledger.merchant(db, key)
-            next_due = shift(rows[-1]["posted_date"], 7) if frequency == "weekly" else add_months(rows[-1]["posted_date"], MONTHS[frequency])
+            # A bill already known for this payee (proposed from a receipt or one payment, or decided by the user) is tracked, not re-proposed.
+            if any(bill_matches(bill, key, currency) and (bill["merchant_id"], bill["account_id"], bill["frequency"]) != (merchant, account_id, frequency)
+                   for bill in known):
+                continue
+            next_due = due_after(rows[-1]["posted_date"], frequency)
             db.execute("INSERT INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,next_due_date,status,"
                        "confidence_source,created_at,updated_at) VALUES(?,?,'subscription_or_bill',?,?,?,?,'proposed',?,?,?) "
                        "ON CONFLICT(merchant_id,account_id,currency,frequency) DO UPDATE SET next_due_date=excluded.next_due_date,updated_at=excluded.updated_at,"
@@ -281,6 +374,96 @@ class Reconciler:
                        (merchant, account_id, -amount, currency, frequency, next_due, f"deterministic_cadence:{len(rows)}_payments", now(), now()))
             found += 1
         return found
+
+    # Recurring bills from one payment ---------------------------------------------------
+    # A receipt the model read as a scheduled bill payment, or a housing or insurance charge, proposes a recurring
+    # bill after a single payment. Later payments to the same payee, within BILL_RANGE of the usual amount, keep it
+    # current: last paid, next due, and an expected amount that follows recent payments (utilities vary).
+
+    @staticmethod
+    def bills(db):
+        return [dict(row) for row in db.execute("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id")]
+
+    def propose_bills(self, db):
+        """Proposals from single payments. A payee with any bill already, including one the user rejected, gets none."""
+        known, created = self.bills(db), 0
+
+        def propose(merchant_id, account_id, amount, currency, frequency, paid, category, source, receipt_id=None):
+            nonlocal created
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,next_due_date,"
+                "status,confidence_source,category,last_paid_date,source_receipt_id,created_at,updated_at) VALUES(?,?,'bill',?,?,?,?,'proposed',?,?,?,?,?,?)",
+                (merchant_id, account_id, amount, currency, frequency, due_after(paid, frequency), source, category, paid, receipt_id, now(), now()))
+            if cursor.rowcount:
+                created += 1
+                known.append(dict(db.execute("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
+                                             "WHERE o.id=?", (cursor.lastrowid,)).fetchone()))
+
+        marks = ",".join("?" * len(BILL_CATEGORIES))
+        for receipt in db.execute("SELECT r.*,m.canonical_name AS merchant FROM receipts r JOIN merchants m ON m.id=r.merchant_id "
+                                  f"WHERE (r.recurrence IS NOT NULL OR r.category IN ({marks})) AND r.review_status='verified' AND r.total_minor>0 "
+                                  "AND r.purchase_date IS NOT NULL ORDER BY r.purchase_date DESC,r.id", BILL_CATEGORIES).fetchall():
+            if not any(bill_matches(bill, receipt["merchant"], receipt["currency"]) for bill in known):
+                propose(receipt["merchant_id"], None, receipt["total_minor"], receipt["currency"], receipt["recurrence"] or "monthly",
+                        receipt["purchase_date"], receipt["category"], "receipt_single_payment", receipt["id"])
+        for row in db.execute(f"SELECT t.*,m.canonical_name AS merchant,{TRANSACTION_CATEGORY} AS spending_category FROM transactions t "
+                              f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') "
+                              f"AND {TRANSACTION_CATEGORY} IN ({marks}) ORDER BY t.posted_date DESC,t.id DESC",
+                              BILL_CATEGORIES).fetchall():
+            name = row["merchant"] or payee_key(row["description_raw"])
+            if name and not any(bill_matches(bill, f"{row['description_raw']} {name}", row["currency"]) for bill in known):
+                # How often is unknown from one charge: monthly, which the user changes when confirming.
+                propose(row["merchant_id"] or self.ledger.merchant(db, name), row["account_id"], -row["amount_minor"], row["currency"], "monthly",
+                        row["transaction_date"] or row["posted_date"], row["spending_category"], "category_single_payment")
+        # Payees the local model read as ongoing services (finance/recurring_scan.py); its answers are stored, so this stays deterministic.
+        answers = {(row["payee_key"], row["currency"]): row for row in db.execute("SELECT * FROM payee_recurrence WHERE recurrence IS NOT NULL")}
+        if answers:
+            for row in db.execute(f"SELECT t.*,m.canonical_name AS merchant FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
+                                  f"WHERE {COUNTABLE} AND t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') "
+                                  "ORDER BY t.posted_date DESC,t.id DESC").fetchall():
+                answer = answers.get((payee_key(row["description_raw"]), row["currency"]))
+                name = row["merchant"] or payee_key(row["description_raw"])
+                if answer and not any(bill_matches(bill, f"{row['description_raw']} {name}", row["currency"]) for bill in known):
+                    propose(row["merchant_id"] or self.ledger.merchant(db, name), row["account_id"], -row["amount_minor"], row["currency"],
+                            answer["recurrence"], row["transaction_date"] or row["posted_date"], answer["category"], "statement_model")
+        return created
+
+    def propose_terms(self, terms, source):
+        """Recurring payment terms read from a contract, lease or policy (documents/extraction.py), each a proposal.
+        A payee that already has a bill, including one the user rejected, gets none. Returns the new ids."""
+        created = []
+        with self.store.connection() as db:
+            known = self.bills(db)
+            for term in terms:
+                if any(bill_matches(bill, term["payee"], term["currency"]) for bill in known):
+                    continue
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,"
+                    "next_due_date,status,confidence_source,category,source_document_id,evidence,created_at,updated_at) "
+                    "VALUES(?,NULL,'bill',?,?,?,?,'proposed','contract_terms',?,?,?,?,?)",
+                    (self.ledger.merchant(db, term["payee"]), term["amount_minor"], term["currency"], term["frequency"], term["next_due_date"],
+                     term["category"], source["document_id"], term["evidence"], now(), now()))
+                if cursor.rowcount:
+                    created.append(cursor.lastrowid)
+                    known.append(dict(db.execute("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
+                                                 "WHERE o.id=?", (cursor.lastrowid,)).fetchone()))
+        return created
+
+    def track_bills(self, db):
+        """Bring every open bill up to date with its latest matched payment."""
+        for bill in self.bills(db):
+            if bill["status"] not in ("proposed", "verified"):
+                continue
+            paid = bill_payments(db, bill)
+            if not paid:
+                continue
+            latest = paid[-1]["day"]
+            recent = [payment["amount"] for payment in paid[-3:]]
+            expected = int((Decimal(sum(recent)) / len(recent)).to_integral_value(ROUND_HALF_EVEN))
+            update = (expected, latest, due_after(latest, bill["frequency"]))
+            if update != (bill["expected_amount_minor"], bill["last_paid_date"], bill["next_due_date"]):
+                db.execute("UPDATE recurring_obligations SET expected_amount_minor=?,last_paid_date=?,next_due_date=?,updated_at=? WHERE id=?",
+                           (*update, now(), bill["id"]))
 
     # User decisions -------------------------------------------------------------------
 
@@ -310,14 +493,25 @@ class Reconciler:
                 self.ledger.apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
 
-    def review_obligation(self, obligation_id, status, note=""):
-        """Confirm, reject or end a detected recurring payment. Rejected and ended ones are never re-proposed."""
+    def review_obligation(self, obligation_id, status, note="", frequency=None):
+        """Confirm, reject or end a detected recurring payment, optionally correcting how often it recurs.
+        Rejected and ended ones are never re-proposed."""
         if status not in OBLIGATION_DECISIONS:
             raise ValueError("Choose confirm, not recurring, or ended.")
+        if frequency is not None and frequency not in FREQUENCIES:
+            raise ValueError("Choose weekly, monthly, quarterly, every six months or yearly.")
         with self.store.connection() as db:
-            row = db.execute("SELECT status FROM recurring_obligations WHERE id=?", (obligation_id,)).fetchone()
+            row = db.execute("SELECT * FROM recurring_obligations WHERE id=?", (obligation_id,)).fetchone()
             if row is None:
                 raise ValueError("Recurring payment not found.")
+            if frequency and frequency != row["frequency"]:
+                if db.execute("SELECT 1 FROM recurring_obligations WHERE merchant_id=? AND account_id IS ? AND currency=? AND frequency=? AND id<>?",
+                              (row["merchant_id"], row["account_id"], row["currency"], frequency, obligation_id)).fetchone():
+                    raise ValueError("This payee already has a recurring payment with that frequency.")
+                paid = row["last_paid_date"]
+                db.execute("UPDATE recurring_obligations SET frequency=?,next_due_date=coalesce(?,next_due_date) WHERE id=?",
+                           (frequency, due_after(paid, frequency) if paid else None, obligation_id))
+                note = f"How often: {frequency}. {note}".strip()
             db.execute("UPDATE recurring_obligations SET status=?,updated_at=? WHERE id=?", (status, now(), obligation_id))
             db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('recurring_obligation',?,?,?,?,?)",
                        (obligation_id, row["status"], status, note[:1000], now()))

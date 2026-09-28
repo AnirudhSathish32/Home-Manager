@@ -11,7 +11,7 @@ import threading
 import unicodedata
 import uuid
 
-from ..core.folders import FOLDERS, LIBRARY_FOLDERS, validate_folder
+from ..core.folders import FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, RETIRED_FOLDERS, validate_folder
 from ..core.formats import SUPPORTED, extension as file_extension
 from ..core.paths import PathError, path_key, safe_path, signature, source_reader
 from .storage import digest_file, now
@@ -19,10 +19,19 @@ from .storage import digest_file, now
 # Category folders file into YYYY/MM subfolders by the document's own date. Inbox (awaiting
 # classification) and Unfiled (not confidently identified) stay flat.
 DATED_FOLDERS = frozenset(LIBRARY_FOLDERS) - {"Inbox", "Unfiled"}
+# Retired folders are only ever a source: their files are read while being moved out.
+READABLE_FOLDERS = frozenset(LIBRARY_FOLDERS) | frozenset(RETIRED_FOLDERS)
 TYPE_FOLDERS = {"receipt": "Receipts", "bank_statement": "Bank_Statements",
-                "credit_card_statement": "Credit_Card_Statements", "bill": "Bills",
-                "income": "Income", "investment_statement": "Investments", "loan_document": "Loans",
+                "credit_card_statement": "Credit_Card_Statements",
+                "paystub": "Jobs", "employment_document": "Jobs", "investment_statement": "Investments", "loan_document": "Loans",
                 "insurance_document": "Insurance", "housing_document": "Housing", "tax_document": "Taxes"}
+# Jobs types and the section of the employer's folder they file into.
+JOB_TYPES = {"paystub": "Paystubs", "employment_document": "Documents"}
+# Legal-form words left off an employer's folder name: "Google LLC" files under Google.
+LEGAL_SUFFIXES = {"LLC", "L.L.C.", "INC", "INC.", "INCORPORATED", "CORP", "CORP.", "CORPORATION", "CO", "CO.", "COMPANY", "LTD", "LTD.",
+                  "LIMITED", "LP", "LLP", "PLC", "GMBH", "PBC"}
+# Recognized types that are deliberately not filed or tracked, with why.
+UNTRACKED_TYPES = {"bill": "Bills aren't tracked. Move it to a folder if you want to keep it, or delete it."}
 
 
 def locked(method):
@@ -43,14 +52,37 @@ def iso_date(value):
         return None
 
 
-def directory(folder, document_date=None):
-    """Where a folder's files live: Receipts/2026/09 for a dated category document, else the folder itself."""
+def clean_label(text):
+    """Letters, '-' and '_' only, spaces as '_', at most 36 characters. Digits are deliberately excluded:
+    account numbers cannot leak through a label."""
+    label = "".join(char if char.isalpha() or char in " -_" else " " for char in unicodedata.normalize("NFKC", text or ""))
+    return "_".join(label.split()).strip("_-")[:36]
+
+
+def is_label(text):
+    return bool(text) and len(text) <= 36 and text[0].isalpha() and all(char.isalpha() or char in "-_" for char in text)
+
+
+def employer_folder(name):
+    """An employer's folder name: its name without a trailing legal form, as a label. "Google LLC" -> Google."""
+    words = (name or "").replace(",", " ").split()
+    while len(words) > 1 and words[-1].upper() in LEGAL_SUFFIXES:
+        words.pop()
+    return clean_label(" ".join(words))
+
+
+def directory(folder, document_date=None, employer=None, section=None):
+    """Where a folder's files live: Receipts/2026/09 for a dated category document, Jobs/Google/Paystubs/2026/09 for a
+    job document with a known employer, else the folder itself."""
     day = iso_date(document_date)
-    return f"{folder}/{day[:4]}/{day[5:7]}" if folder in DATED_FOLDERS and day else folder
+    if folder == "Jobs" and employer and section:
+        folder = f"Jobs/{employer}/{section}"
+    return f"{folder}/{day[:4]}/{day[5:7]}" if folder.split("/")[0] in DATED_FOLDERS and day else folder
 
 
-def filename(document_id, digest, extension, folder, merchant=None, document_date=None, full_hash=False):
-    """Conservative convenience labels; never include original names or account numbers."""
+def filename(document_id, digest, extension, folder, merchant=None, document_date=None, full_hash=False, label=None):
+    """Conservative convenience labels; never include original names or account numbers. With a label
+    (Paystub, Offer_Letter) it stands in for the folder name: 2026-09-15__Paystub__Google__<hash>__d<id>.pdf."""
     validate_folder(folder)
     if not isinstance(document_id, int) or document_id < 1 or not re.fullmatch(r"[a-f0-9]{64}", digest):
         raise ValueError("Invalid document identity for managed filename.")
@@ -62,14 +94,14 @@ def filename(document_id, digest, extension, folder, merchant=None, document_dat
         if iso_date(document_date) is None:
             raise ValueError("Managed filenames require an unambiguous ISO date.")
         components.append(document_date)
-    if merchant:
-        # Digits are deliberately excluded: account numbers cannot leak through a label.
-        label = "".join(char if char.isalpha() or char in " -_" else " " for char in unicodedata.normalize("NFKC", merchant))
-        label = "_".join(label.split()).strip("_-")[:36]
-        if label:
-            components.append(label)
-    components.extend(["Document" if folder == "Unfiled" else folder,
-                       digest if full_hash else digest[:16], f"d{document_id}"])
+    label = clean_label(label) if label else None
+    if label:
+        components.append(label)
+    if merchant and clean_label(merchant):
+        components.append(clean_label(merchant))
+    if not label:
+        components.append("Document" if folder == "Unfiled" else folder)
+    components.extend([digest if full_hash else digest[:16], f"d{document_id}"])
     name = "__".join(components) + extension
     if len(name) > 180 or ".." in name or any(char in name for char in '/\\:'):
         raise ValueError("Managed filename exceeds safe limits.")
@@ -87,12 +119,16 @@ class ManagedLibrary:
         self.inbox = self.root / "Inbox"
 
     def path(self, relative):
-        """Folder/name, or Category/YYYY/MM/name. Nothing else is a library path."""
+        """Folder/name, Category/YYYY/MM/name, or Jobs/Employer/Section/YYYY/MM/name. Nothing else is a library path."""
         parts = PurePosixPath(relative).parts
-        dated = (len(parts) == 4 and parts[0] in DATED_FOLDERS and re.fullmatch(r"(19|20)\d{2}", parts[1])
-                 and re.fullmatch(r"0[1-9]|1[0-2]", parts[2]))
-        if (not relative or "\\" in relative or ":" in relative or not (len(parts) == 2 or dated)
-                or parts[0] not in LIBRARY_FOLDERS or any(part in (".", "..") for part in parts)
+
+        def month(year, number):
+            return re.fullmatch(r"(19|20)\d{2}", year) and re.fullmatch(r"0[1-9]|1[0-2]", number)
+
+        dated = len(parts) == 4 and parts[0] in DATED_FOLDERS | set(RETIRED_FOLDERS) and month(parts[1], parts[2])
+        job = len(parts) == 6 and parts[0] == "Jobs" and is_label(parts[1]) and parts[2] in JOB_SECTIONS and month(parts[3], parts[4])
+        if (not relative or "\\" in relative or ":" in relative or not (len(parts) == 2 or dated or job)
+                or parts[0] not in READABLE_FOLDERS or any(part in (".", "..") for part in parts)
                 or PurePosixPath(relative).is_absolute() or "/".join(parts) != relative):
             raise PathError("Invalid managed library path.")
         target = safe_path(self.root.joinpath(*parts))
@@ -149,9 +185,46 @@ class ManagedLibrary:
         folder = manual["folder"] if manual else historical["folder"] if historical and historical["folder"] != "Inbox" else "Unfiled"
         self.organize(document_id, digest, folder, "Migrated folder assignment." if folder != "Unfiled" or manual else "Awaiting supported classification and identifying metadata.")
 
+    def employers(self):
+        with self.store.connection() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM employers ORDER BY name COLLATE NOCASE")]
+
     @locked
-    def organize(self, document_id, digest, folder, reason, *, action="capture", merchant=None, document_date=None, source_override=None, keep_name=False):
+    def employer(self, name):
+        """The employer whose folder this name maps to, created with its Paystubs and Documents folders if new; None
+        when the name has no usable letters."""
+        folder = employer_folder(name)
+        if not is_label(folder):
+            return None
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM employers WHERE folder_name=?", (folder,)).fetchone()
+            if row is None:
+                words = (name or "").replace(",", " ").split()
+                while len(words) > 1 and words[-1].upper() in LEGAL_SUFFIXES:
+                    words.pop()
+                db.execute("INSERT INTO employers(name,folder_name,created_at) VALUES(?,?,?)", (" ".join(words)[:100], folder, now()))
+                row = db.execute("SELECT * FROM employers WHERE folder_name=?", (folder,)).fetchone()
+        for section in JOB_SECTIONS:
+            self.make_directory(safe_path(self.root / "Jobs" / row["folder_name"] / section))
+        return dict(row)
+
+    def job_filing(self, document_id, digest):
+        with self.store.connection() as db:
+            row = db.execute("SELECT f.section,f.label,f.title,e.* FROM job_filings f JOIN employers e ON e.id=f.employer_id "
+                             "WHERE f.document_id=? AND f.blob_hash=?", (document_id, digest)).fetchone()
+        return dict(row) if row else None
+
+    @locked
+    def organize(self, document_id, digest, folder, reason, *, action="capture", merchant=None, document_date=None, source_override=None, keep_name=False,
+                 employer=None, section=None, label=None, title=None):
+        """employer (an employers row), section and label place a Jobs document: Jobs/<Employer>/<Section>/YYYY/MM,
+        named <date>__<label>__<Employer>; title is its printed name for the library. Without them a Jobs document
+        keeps its current employer folder, if any."""
         validate_folder(folder)
+        if folder == "Jobs" and employer is None and (filed := self.job_filing(document_id, digest)):
+            employer, section, label, title = filed, filed["section"], filed["label"], filed["title"]
+        if folder != "Jobs" or section not in JOB_SECTIONS:
+            employer = section = label = title = None
         doc, _ = self.store.document_version(document_id, digest)
         if doc["current_hash"] != digest and action not in ("archive", "layout"):  # Older versions may be archived or re-foldered.
             raise RuntimeError("Document version changed. Refresh before organizing.")
@@ -166,12 +239,22 @@ class ManagedLibrary:
         extension = file_extension(doc["relative_path"])
         # A move keeps the document's known date, so its name and its YYYY/MM folder always agree.
         document_date = document_date or (self.filing_date(document_id, digest) if folder in DATED_FOLDERS else None)
-        name = PurePosixPath(existing["relative_path"]).name if keep_name and existing else filename(document_id, digest, extension, folder, merchant, document_date)
-        place = directory(folder, document_date)
+        if employer:
+            merchant = employer["name"]
+        name = (PurePosixPath(existing["relative_path"]).name if keep_name and existing
+                else filename(document_id, digest, extension, folder, merchant, document_date, label=label))
+        place = directory(folder, document_date, employer and employer["folder_name"], section)
         target = existing["relative_path"] if source_override and existing else place + "/" + name
         # Deterministic fallback for the short-hash collision case; never overwrite.
         if self.path(target).exists() and target != source and digest_file(self.path(target)) != digest:
-            target = place + "/" + filename(document_id, digest, extension, folder, merchant, document_date, full_hash=True)
+            target = place + "/" + filename(document_id, digest, extension, folder, merchant, document_date, full_hash=True, label=label)
+        with self.store.connection() as db:  # Where in Jobs the document belongs; cleared when it leaves Jobs.
+            if employer:
+                db.execute("INSERT INTO job_filings VALUES(?,?,?,?,?,?) ON CONFLICT(document_id,blob_hash) DO UPDATE SET "
+                           "employer_id=excluded.employer_id,section=excluded.section,label=excluded.label,title=excluded.title",
+                           (document_id, digest, employer["id"], section, label, title))
+            else:
+                db.execute("DELETE FROM job_filings WHERE document_id=? AND blob_hash=?", (document_id, digest))
         with self.store.connection() as db:
             pending = db.execute("SELECT id,target_path FROM managed_organization_intents WHERE document_id=? AND blob_hash=? AND status IN ('pending','blocked')", (document_id, digest)).fetchone()
             if pending:
@@ -277,7 +360,8 @@ class ManagedLibrary:
         """Tidy a month, then a year, folder that a move left empty. Category folders themselves stay."""
         for level in (folder, folder.parent):
             relative = level.relative_to(self.root).parts if self.root in level.parents else ()
-            if len(relative) not in (2, 3) or relative[0] not in DATED_FOLDERS or not relative[-1].isdigit():
+            depths = (2, 3, 4, 5) if relative[:1] == ("Jobs",) else (2, 3)  # Jobs/<Employer>/<Section>/YYYY/MM; employer folders stay.
+            if len(relative) not in depths or relative[0] not in DATED_FOLDERS | set(RETIRED_FOLDERS) or not relative[-1].isdigit():
                 return
             try:
                 safe_path(level).rmdir()  # Fails harmlessly unless empty, so nothing of the user's is removed.
@@ -307,7 +391,9 @@ class ManagedLibrary:
         for row in rows:
             if row["folder"] not in DATED_FOLDERS:
                 continue
-            place = directory(row["folder"], self.filing_date(row["document_id"], row["blob_hash"]))
+            job = self.job_filing(row["document_id"], row["blob_hash"]) if row["folder"] == "Jobs" else None
+            place = directory(row["folder"], self.filing_date(row["document_id"], row["blob_hash"]),
+                              job and job["folder_name"], job and job["section"])
             if str(PurePosixPath(row["relative_path"]).parent) == place:
                 continue
             try:
@@ -318,22 +404,31 @@ class ManagedLibrary:
         return moved
 
     @locked
-    def file_classified(self, document_id, digest, document_type, merchant, dated, reason):
+    def file_classified(self, document_id, digest, document_type, merchant, dated, reason, document_name=None):
         """The one filing rule: a supported, evidence-cited type plus unambiguous merchant/issuer and
         ISO date files the copy; anything else goes to Unfiled. A manual choice always wins, and an
-        inconclusive later result never undoes an earlier evidence-backed filing."""
+        inconclusive later result never undoes an earlier evidence-backed filing. For a job document the
+        merchant is the employer: its folder under Jobs is created when new, and the document files into
+        its Paystubs or Documents section, named Paystub or by its printed document name (Offer Letter)."""
         with self.store.connection() as db:
             manual = db.execute("SELECT 1 FROM document_folders WHERE document_id=? AND blob_hash=?", (document_id, digest)).fetchone()
         if manual:
             self.relayout(document_id)  # The user's folder stands; a newly known date still picks its month.
             return None
         dated = iso_date(dated)
+        employer = self.employer(merchant) if document_type in JOB_TYPES and merchant else None
+        if document_type in JOB_TYPES and not employer:
+            merchant = None  # A name with no letters can't name an employer folder.
         if document_type in TYPE_FOLDERS and merchant and dated:
             return self.organize(document_id, digest, TYPE_FOLDERS[document_type], reason, action="classification",
-                                 merchant=merchant, document_date=dated)
+                                 merchant=merchant, document_date=dated, employer=employer, section=JOB_TYPES.get(document_type),
+                                 label=("Paystub" if document_type == "paystub" else clean_label(document_name) or "Document") if employer else None,
+                                 title=" ".join((document_name or "").split())[:60] or None if document_type == "employment_document" else None)
         existing = self.current_file(document_id, digest)
         if existing and existing["folder"] in FOLDERS:
             return None
+        if document_type in UNTRACKED_TYPES:
+            return self.organize(document_id, digest, "Unfiled", UNTRACKED_TYPES[document_type], action="classification")
         missing = [text for text, known in (("the document type is not confirmed", document_type in TYPE_FOLDERS),
                                             ("the merchant or issuer is not confirmed", bool(merchant)), ("the date is not confirmed", bool(dated))) if not known]
         return self.organize(document_id, digest, "Unfiled", f"Not filed automatically: {'; '.join(missing)}. Choose a folder manually.",
@@ -385,4 +480,27 @@ class ManagedLibrary:
                 self.ensure_document(doc["id"], doc["current_hash"])
             except (ValueError, OSError, RuntimeError):
                 pass
+        self.retire_folders()
         self.relayout()  # Also moves files filed before the YYYY/MM layout existed.
+
+    @locked
+    def retire_folders(self):
+        """Move every file out of a retired folder into its replacement: Bills into Unfiled, keeping the name;
+        Income into Jobs, a pay stub into its employer's Paystubs folder with a new name."""
+        marks = ",".join("?" * len(RETIRED_FOLDERS))
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(
+                f"SELECT m.*,(SELECT mm.canonical_name FROM income_records i JOIN merchants mm ON mm.id=i.payer_merchant_id "
+                f"WHERE i.blob_hash=m.blob_hash AND i.review_status<>'rejected') AS payer FROM managed_files m JOIN occurrences o ON o.id=m.document_id "
+                f"WHERE m.folder IN ({marks}) AND o.deleted_at IS NULL "
+                "AND NOT EXISTS(SELECT 1 FROM managed_organization_intents i WHERE i.document_id=m.document_id AND i.blob_hash=m.blob_hash "
+                "AND i.status IN ('pending','blocked'))", list(RETIRED_FOLDERS))]
+        for row in rows:
+            destination = RETIRED_FOLDERS[row["folder"]]
+            employer = self.employer(row["payer"]) if destination == "Jobs" and row["payer"] else None
+            reason = "The Bills folder was retired; bills aren't tracked." if row["folder"] == "Bills" else f"The {row['folder']} folder became {destination}."
+            try:
+                self.organize(row["document_id"], row["blob_hash"], destination, reason, action="layout", keep_name=employer is None,
+                              employer=employer, section="Paystubs" if employer else None, label="Paystub" if employer else None)
+            except (ValueError, OSError, RuntimeError):
+                pass  # The blocked intent stays visible; the file is left where it is.

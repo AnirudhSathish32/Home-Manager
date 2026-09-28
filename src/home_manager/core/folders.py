@@ -10,13 +10,20 @@ LEGACY_HIERARCHY = {
     "05_Investments": ["Brokerage", "Retirement"],
     "06_Obligations": ["Housing", "Loans", "Insurance"],
 }
-FOLDERS = ["Bank_Statements", "Credit_Card_Statements", "Receipts", "Income", "Bills", "Taxes",
-           "Investments", "Loans", "Insurance", "Housing"]
+# Two stores over one library. Money: proof of what was spent, which the ledger counts and reconciles.
+# Documents: papers kept because they matter (leases, policies, pay stubs, tax forms).
+MONEY_FOLDERS = ["Receipts", "Bank_Statements", "Credit_Card_Statements"]
+DOCUMENT_FOLDERS = ["Housing", "Insurance", "Investments", "Jobs", "Loans", "Taxes"]
+FOLDERS = [*MONEY_FOLDERS, *DOCUMENT_FOLDERS]
 FILING_FOLDERS = ["Unfiled", *FOLDERS]
 LIBRARY_FOLDERS = ["Inbox", *FILING_FOLDERS]
+# Folders no longer filed into, and where startup moves their files. They stay readable until then.
+RETIRED_FOLDERS = {"Bills": "Unfiled", "Income": "Jobs"}
+# Jobs holds one folder per employer, each with these sections (docs/jobs-and-paystubs.md).
+JOB_SECTIONS = ("Paystubs", "Documents")
 DocumentFolder = Enum("DocumentFolder", {f"folder_{i}": value for i, value in enumerate(FILING_FOLDERS)}, type=str)
 HistoricalFolder = Enum("HistoricalFolder", {f"folder_{i}": value for i, value in enumerate(
-    [*FILING_FOLDERS, *[f"{parent}/{child}" for parent, children in LEGACY_HIERARCHY.items() for child in children]])}, type=str)
+    [*FILING_FOLDERS, *RETIRED_FOLDERS, *[f"{parent}/{child}" for parent, children in LEGACY_HIERARCHY.items() for child in children]])}, type=str)
 
 
 def validate_folder(value):

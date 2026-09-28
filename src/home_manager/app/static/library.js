@@ -1,5 +1,13 @@
 "use strict";
 let activeFolder = "all", activeStatus = "all", searchQuery = "", activeFrom = "", activeTo = "", activeSort = "date";
+let activeCategory = null;  // A Receipts subfolder: one receipt category. Applies only while Receipts is the folder.
+let receiptsOpen = false;   // Whether the Receipts group in the folder tree is expanded.
+const receiptCategory = () => activeFolder === "Receipts" ? activeCategory : null;
+let activeJob = null;  // Within Jobs: {employer, name, section}; section null for all of an employer's documents.
+let jobsOpen = false;  // Whether the Jobs group is expanded.
+const openEmployers = new Set();  // Employer folders expanded inside Jobs.
+const jobFilter = () => activeFolder === "Jobs" ? activeJob : null;
+const sameJob = (a, b) => (a && b) ? a.employer === b.employer && a.section === b.section : a === b;
 let libraryCatalog = null, pendingLibraryAction = null;
 let renderedDocuments = "", renderedFolders = "";  // Last rendered data, to skip identical re-renders.
 const selection = new Map();  // Selected documents on the current page: id -> document.
@@ -10,8 +18,27 @@ const PENDING = ["queued", "running"];
 const isTable = doc => /\.(csv|xlsx)$/i.test(doc.relative_path);  // Tables are imported, never transcribed.
 const isReadable = doc => /\.(png|jpe?g|pdf)$/i.test(doc.relative_path);
 
+// One library, two stores: Documents (papers you keep, plus the shared Inbox) and Money (receipts and statements).
+const LIBRARY_SCOPES = {
+  documents: {title: "Documents", all: "All documents", route: "#/documents",
+              subtitle: "Your important papers: leases, policies, pay stubs, tax forms and more. New files arrive in the Inbox."},
+  money: {title: "Receipts & statements", all: "All receipts & statements", route: "#/receipts",
+          subtitle: "Proof of what you spent: receipts and your bank and card statements. They count in your spending and are reconciled."},
+};
+let libraryScope = "documents";
+function showLibrary(scope, route) {
+  if (scope !== libraryScope) {
+    libraryScope = scope; activeFolder = "all"; activeCategory = activeJob = null; activeStatus = "all"; docOffset = 0; selection.clear();
+  }
+  const view = LIBRARY_SCOPES[scope];
+  $("library-title").textContent = view.title; $("library-subtitle").textContent = view.subtitle;
+  $("close-receipt").lastChild.textContent = view.title; $("close-receipt").href = view.route;
+  if (route.params.get("status")) { activeStatus = route.params.get("status"); activeFolder = "all"; docOffset = 0; selection.clear(); }
+  if (route.params.has("q")) { searchQuery = $("document-search").value = route.params.get("q"); activeFolder = "all"; activeStatus = "all"; docOffset = 0; selection.clear(); }
+  return configured ? loadDocuments() : null;
+}
 function folderLabel(folder) {
-  return folder === "all" ? "All documents" : folder === "trash" ? "Trash" : folder.replaceAll("_", " ");
+  return folder === "all" ? LIBRARY_SCOPES[libraryScope].all : folder === "trash" ? "Trash" : folder.replaceAll("_", " ");
 }
 function fileName(doc) { return doc.relative_path.split(/[\\/]/).pop(); }
 function documentName(doc) { return doc.title || fileName(doc); }
@@ -40,15 +67,73 @@ function documentStateBadge(doc) {
   return badge;
 }
 function reload() { docOffset = 0; selection.clear(); loadDocuments().catch(error => notice(error, true)); }
-function folderButton(folder, count) {
-  const button = element("button", "", "folder-link"); button.type = "button";
-  button.dataset.folder = folder;
-  button.classList.toggle("empty", !count && folder !== activeFolder);
-  button.append(element("span", folderLabel(folder)), element("span", count, "folder-count"));
-  if (folder === activeFolder) button.setAttribute("aria-current", "page");
+function folderButton(folder, count, category = null, label = null) {
+  const button = element("button", "", label || category ? "folder-link subfolder" : "folder-link"); button.type = "button";
+  if (category) button.dataset.category = category; else button.dataset.folder = folder;
+  const current = folder === activeFolder && category === receiptCategory() && !jobFilter();
+  button.classList.toggle("empty", !count && !current);
+  button.append(element("span", label || (category ? categoryLabel(category === "uncategorized" ? null : category) : folderLabel(folder))), element("span", count, "folder-count"));
+  if (current) button.setAttribute("aria-current", "page");
   else button.removeAttribute("aria-current");
-  button.addEventListener("click", () => { activeFolder = folder; reload(); });
+  button.addEventListener("click", () => { activeFolder = folder; activeCategory = category; activeJob = null; reload(); });
   return button;
+}
+function jobButton(job, count, label, className) {
+  const button = element("button", "", `folder-link subfolder ${className}`); button.type = "button";
+  button.dataset.employer = job.employer; if (job.section) button.dataset.section = job.section;
+  const current = sameJob(jobFilter(), job);
+  button.classList.toggle("empty", !count && !current);
+  button.append(element("span", label), element("span", count, "folder-count"));
+  if (current) button.setAttribute("aria-current", "page");
+  button.addEventListener("click", () => { activeFolder = "Jobs"; activeCategory = null; activeJob = job; reload(); });
+  return button;
+}
+function groupToggle(key, label, count, open, onToggle, className = "") {
+  const toggle = element("button", "", `folder-link folder-group ${className}`); toggle.type = "button";
+  toggle.dataset.folderGroup = key;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.append(icon("chevron-right", "icon folder-chevron"), element("span", label), element("span", count, "folder-count"));
+  toggle.classList.toggle("empty", !count);
+  toggle.addEventListener("click", () => {
+    onToggle(); renderFolders(libraryCatalog);
+    $("folder-tree").querySelector(`[data-folder-group="${CSS.escape(key)}"]`).focus();  // The tree was rebuilt; keep keyboard focus.
+  });
+  return toggle;
+}
+function jobsGroup(catalog) {
+  // Jobs: one folder per employer, each with Paystubs and Documents, as on disk (Library/Jobs/<Employer>/<Section>).
+  const toggle = groupToggle("Jobs", folderLabel("Jobs"), catalog.counts.Jobs, jobsOpen, () => { jobsOpen = !jobsOpen; });
+  if (!jobsOpen) return [toggle];
+  const rows = [toggle, folderButton("Jobs", catalog.counts.Jobs, null, "All job documents")];
+  for (const employer of catalog.jobs || []) {
+    const total = employer.sections.Paystubs + employer.sections.Documents, open = openEmployers.has(employer.id);
+    rows.push(groupToggle(`employer-${employer.id}`, employer.name, total, open,
+                          () => { if (open) openEmployers.delete(employer.id); else openEmployers.add(employer.id); }, "subfolder"));
+    if (open) {
+      rows.push(jobButton({employer: employer.id, name: employer.name, section: null}, total, `All ${employer.name}`, "deep"));
+      for (const section of ["Paystubs", "Documents"]) rows.push(jobButton({employer: employer.id, name: employer.name, section}, employer.sections[section], section, "deep"));
+    }
+  }
+  return rows;
+}
+function receiptsGroup(catalog) {
+  // Receipts opens and closes like a folder in a file manager. Inside: every receipt, then one subfolder per category.
+  const toggle = element("button", "", "folder-link folder-group"); toggle.type = "button";
+  toggle.dataset.folderGroup = "Receipts";
+  toggle.setAttribute("aria-expanded", String(receiptsOpen));
+  toggle.append(icon("chevron-right", "icon folder-chevron"), element("span", folderLabel("Receipts")), element("span", catalog.counts.Receipts, "folder-count"));
+  toggle.classList.toggle("empty", !catalog.counts.Receipts);
+  toggle.addEventListener("click", () => {
+    receiptsOpen = !receiptsOpen; renderFolders(catalog);
+    $("folder-tree").querySelector('[data-folder-group="Receipts"]').focus();  // The tree was rebuilt; keep keyboard focus.
+  });
+  if (!receiptsOpen) return [toggle];
+  return [toggle, folderButton("Receipts", catalog.counts.Receipts, null, "All receipts"),
+          ...(catalog.receipt_categories || []).map(row => folderButton("Receipts", row.count, row.category))];
+}
+function folderButtons(catalog) {
+  return ["all", ...catalog.folders, "trash"].flatMap(folder => folder === "Receipts" ? receiptsGroup(catalog)
+    : folder === "Jobs" ? jobsGroup(catalog) : [folderButton(folder, catalog.counts[folder])]);
 }
 function setNavCount(target, count, label) {
   target.textContent = count ? String(count) : ""; target.hidden = !count;
@@ -61,7 +146,8 @@ async function renderNavCounts(catalog) {
   await loadNavCounts();
 }
 function showFolder(folder) {
-  activeFolder = folder; activeStatus = "all";
+  // Inbox and Unfiled belong to Documents; switching store first keeps the chosen folder.
+  libraryScope = "documents"; activeFolder = folder; activeCategory = activeJob = null; activeStatus = "all";
   if (location.hash !== "#/documents") location.hash = "#/documents";
   reload();
 }
@@ -69,10 +155,10 @@ for (const id of ["nav-inbox", "nav-unfiled"]) $(id).addEventListener("click", (
 function renderFolders(catalog) {
   libraryCatalog = catalog;
   renderNavCounts(catalog).catch(() => {});
-  const key = JSON.stringify([catalog, activeFolder, activeStatus]);
+  const key = JSON.stringify([catalog, libraryScope, activeFolder, receiptCategory(), jobFilter(), activeStatus, receiptsOpen, jobsOpen, [...openEmployers]]);
   if (key === renderedFolders) return;
   renderedFolders = key;
-  $("folder-tree").replaceChildren(...["all", ...catalog.folders, "trash"].map(folder => folderButton(folder, catalog.counts[folder])));
+  $("folder-tree").replaceChildren(...folderButtons(catalog));
   $("work-filters").replaceChildren(...WORK_FILTERS.map(([key, label]) => {
     const count = key === "all" ? catalog.counts.all : catalog.work[key];
     const chip = element("button", "", "filter-chip"); chip.type = "button"; chip.dataset.filter = key;
@@ -81,10 +167,14 @@ function renderFolders(catalog) {
     chip.addEventListener("click", () => { activeStatus = key; reload(); });
     return chip;
   }));
-  $("folder-breadcrumb").textContent = folderLabel(activeFolder);
-  $("empty-trash").hidden = activeFolder !== "trash";
+  const job = jobFilter();
+  $("folder-breadcrumb").textContent = folderLabel(activeFolder) + (receiptCategory() ? ` › ${categoryLabel(receiptCategory() === "uncategorized" ? null : receiptCategory())}` : "")
+    + (job ? ` › ${job.name}${job.section ? ` › ${job.section}` : ""}` : "");
+  // Emptying Trash deletes both stores' trashed files, so it is offered from Documents only.
+  $("empty-trash").hidden = activeFolder !== "trash" || libraryScope !== "documents";
   $("empty-trash").disabled = false;
-  $("folder-description").textContent = activeFolder === "trash" ? "Restore documents or empty Trash to permanently delete them."
+  $("folder-description").textContent = activeFolder === "trash" && libraryScope === "money" ? "Restore receipts and statements here. Empty Trash from Documents."
+    : activeFolder === "trash" ? "Restore documents or empty Trash to permanently delete them. Emptying also removes trashed receipts and statements."
     : activeFolder === "Inbox" ? "Newly dropped files waiting to be read and filed." : activeFolder === "Unfiled" ? "Documents whose type, merchant or date could not be confirmed. Extract them to the ledger or use Move." : "";
 }
 function actionButton(label, callback, className = "") {
@@ -145,6 +235,7 @@ function clearFilters() {
 function emptyMessage() {
   if (searchQuery || activeStatus !== "all" || activeFrom || activeTo) return emptyState("No documents match these filters.", actionButton("Clear filters", clearFilters));
   if (activeFolder === "trash") return emptyState("Trash is empty.");
+  if (receiptCategory()) return emptyState(`No ${receiptCategory() === "uncategorized" ? "uncategorized" : categoryLabel(receiptCategory()).toLowerCase()} receipts yet.`);
   if (activeFolder !== "all") return emptyState(`No documents in ${folderLabel(activeFolder)}.`);
   const box = emptyState("Your library is empty. Drop files into your Inbox folder.");
   if (inboxDirectory) box.append(element("code", inboxDirectory), copyButton(inboxDirectory, "Copy Inbox path"));
@@ -285,7 +376,11 @@ function openLibraryAction(docs, action) {
   $("library-action-description").textContent = action === "trash" ? "This removes the document from the active library and puts it in Trash. You can restore it. Preserved copies are not deleted from disk, and scanning Inbox again will not restore it automatically." : "Move the Library file to this folder. Its preserved copy stays unchanged. Edited Library files will not be overwritten.";
   $("move-folder-label").hidden = action !== "move";
   $("move-folder").replaceChildren(new Option("Unfiled", "Unfiled"));
-  for (const folder of libraryCatalog.folders.filter(folder => !["Unfiled", "Inbox"].includes(folder))) $("move-folder").add(new Option(folder.replaceAll("_", " "), folder));
+  for (const [store, folders] of Object.entries(libraryCatalog.stores)) {
+    const group = document.createElement("optgroup"); group.label = LIBRARY_SCOPES[store].title;
+    for (const folder of folders) group.append(new Option(folder.replaceAll("_", " "), folder));
+    $("move-folder").append(group);
+  }
   $("move-folder").value = docs[0].folder === "Inbox" ? "Unfiled" : docs[0].folder;
   $("confirm-library-action").textContent = action === "trash" ? "Delete to Trash" : count === 1 ? "Move document" : `Move ${plural}`;
   $("confirm-library-action").className = action === "trash" ? "danger" : "primary";

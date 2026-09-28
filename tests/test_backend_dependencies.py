@@ -9,7 +9,7 @@ import pytest
 from home_manager.app.api import create_app
 from home_manager.finance.assistant import AssistantService
 from home_manager.library.backup import BackupService, restore_backup, verify_backup
-from home_manager.finance.tools import AsOfInput, CompareInput, FinanceTools, PeriodInput, SeriesInput, TransactionsInput, call_tool
+from home_manager.finance.tools import CompareInput, FinanceTools, PeriodInput, SeriesInput, TransactionsInput, call_tool
 from home_manager.core.jobs import Work
 from home_manager.models.model_client import check_connection
 from home_manager.core.paths import PathError, separate_folder
@@ -107,23 +107,18 @@ def test_monthly_series_and_category_comparison_are_exact(reconciled):  # B4, B5
     assert new["first"]["minor"] == 0 and new["percent_change"] is None
 
 
-def test_user_bill_payment_state_wins_and_is_audited(books):  # B6
+def test_user_bill_payment_state_is_validated_and_audited(books):  # B6
     store, ledger, docs = books
     checking = ledger.create_account("First Local Bank", "checking", "USD")
     [autopay] = add(store, ledger, checking, docs["export.csv"], [("2026-09-28", "CITY POWER AUTOPAY", -12000)])
     bill = ledger.publish_bill({"provider": "City Power", "issue_date": "2026-09-10", "due_date": "2026-09-20", "period_start": None, "period_end": None,
                                 "amount_due_minor": 12000, "currency": "USD", "issues": [], "locator": {}}, source_of(docs["bill.png"], "extraction:bill"), "proposed")["id"]
-    tools = FinanceTools(store)
-    assert tools.get_upcoming_bills(AsOfInput(as_of="2026-09-24"))["bills"][0]["payment_state"] == "past_due_no_payment_found"
     with pytest.raises(ValueError, match="not found"):
         ledger.set_bill_payment(bill, "paid", transaction_id=999)
     with pytest.raises(ValueError, match="Only a paid bill"):
         ledger.set_bill_payment(bill, "unpaid", transaction_id=autopay)
     ledger.set_bill_payment(bill, "paid", transaction_id=autopay)
-    assert tools.get_upcoming_bills(AsOfInput(as_of="2026-09-24"))["bills"] == []  # Paid and past due: nothing to show.
     ledger.set_bill_payment(bill, "unpaid")
-    [shown] = tools.get_upcoming_bills(AsOfInput(as_of="2026-09-24"))["bills"]
-    assert (shown["payment_state"], shown["payment_source"]) == ("past_due_unpaid", "user")
     assert [(event["previous_status"], event["new_status"]) for event in ledger.review_history("bill_payment", bill)] == [("unknown", "paid"), ("paid", "unpaid")]
     with store.connection() as db:
         assert db.execute("SELECT reconciliation_status FROM (" + store.library_query() + "SELECT * FROM library) WHERE id=?",

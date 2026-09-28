@@ -46,9 +46,30 @@ def test_manual_moves_keep_evidence_and_never_overwrite_edited_copies(library):
     store.library.path(moved["managed_path"]).write_bytes(b"user edited")
     assert blob.read_bytes() == content
     with pytest.raises(ValueError, match="edited"):
-        store.library_action(doc["id"], doc["current_hash"], "move", "Bills")
+        store.library_action(doc["id"], doc["current_hash"], "move", "Housing")
     assert store.library.path(moved["managed_path"]).read_bytes() == b"user edited"
     assert store.documents()["items"][0]["managed_status"] == "blocked"
+
+
+def test_files_in_the_retired_bills_folder_move_to_unfiled(library):
+    store, inbox = library
+    (inbox / "power.png").write_bytes(b"power bill bytes")
+    scan(store)
+    doc = store.documents()["items"][0]
+    store.library_action(doc["id"], doc["current_hash"], "move", "Housing")
+    # A library from before the change: the file lives in Library/Bills/YYYY/MM and the Bills folder is recorded.
+    filed = store.documents()["items"][0]["managed_path"]
+    legacy = "Bills/2026/08/" + filed.split("/")[-1]
+    (store.library.root / "Bills" / "2026" / "08").mkdir(parents=True)
+    store.library.path(filed).rename(store.library.root / legacy)
+    with store.connection() as db:
+        db.execute("UPDATE managed_files SET folder='Bills',relative_path=? WHERE document_id=?", (legacy, doc["id"]))
+        db.execute("UPDATE document_folders SET folder='Unfiled' WHERE document_id=?", (doc["id"],))
+    store.library.recover()
+    moved = store.documents()["items"][0]
+    assert (moved["folder"], moved["managed_path"]) == ("Unfiled", "Unfiled/" + legacy.split("/")[-1])
+    assert store.library.path(moved["managed_path"]).read_bytes() == b"power bill bytes"
+    assert not (store.library.root / "Bills" / "2026").exists()  # Emptied month and year folders are tidied.
 
 
 def test_inbox_capture_before_move_and_recovery_after_move(library, monkeypatch):
@@ -156,7 +177,7 @@ def test_corrupt_blob_blocks_organization(library):
     doc = store.documents()["items"][0]
     store.blob_path(doc["current_hash"]).write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="integrity"):
-        store.library_action(doc["id"], doc["current_hash"], "move", "Bills")
+        store.library_action(doc["id"], doc["current_hash"], "move", "Housing")
     assert original.read_bytes() == store.library.path(doc["managed_path"]).read_bytes() == b"known capture"
 
 
@@ -168,10 +189,10 @@ def test_library_rejects_reparse_component(library, monkeypatch):
     scan(store)
     doc = store.documents()["items"][0]
     check = paths.is_link
-    target = store.library.root / "Bills"
+    target = store.library.root / "Housing"
     monkeypatch.setattr(paths, "is_link", lambda path: path == target or check(path))
     with pytest.raises(ValueError, match="reparse"):
-        store.library_action(doc["id"], doc["current_hash"], "move", "Bills")
+        store.library_action(doc["id"], doc["current_hash"], "move", "Housing")
     assert store.library.path(doc["managed_path"]).read_bytes() == original.read_bytes()
 
 
@@ -289,9 +310,9 @@ def test_inbox_analysis_files_supported_receipt_and_preserves_manual_override(tm
         manager.start_reasoning(doc["id"], parse_id, True); manager.future.result(timeout=15)
         uncertain = manager.store.documents()["items"][0]
         assert uncertain["folder"] == "Receipts"
-        manager.library_action(doc["id"], doc["current_hash"], "move", "Bills")
+        manager.library_action(doc["id"], doc["current_hash"], "move", "Housing")
         manager.start_reasoning(doc["id"], parse_id, True); manager.future.result(timeout=15)
-        assert manager.store.documents()["items"][0]["folder"] == "Bills"
+        assert manager.store.documents()["items"][0]["folder"] == "Housing"
     finally:
         manager.close()
 
@@ -343,8 +364,8 @@ def test_category_files_live_in_year_month_folders_and_existing_files_move_there
         # Unconfirmed documents stay flat in Unfiled; a manual move without a known date stays at the category's top.
         store.library.file_classified(mystery["id"], mystery["current_hash"], "unknown", None, None, "Not cited.")
         assert store.document(mystery["id"])["managed_path"].count("/") == 1
-        store.library_action(power["id"], power["current_hash"], "move", "Bills")
-        assert store.document(power["id"])["managed_path"].startswith("Bills/Bills__")
+        store.library_action(power["id"], power["current_hash"], "move", "Housing")
+        assert store.document(power["id"])["managed_path"].startswith("Housing/Housing__")
         # Moving the dated receipt elsewhere tidies the month and year folders it leaves empty.
         store.library_action(lunch["id"], lunch["current_hash"], "move", "Housing")
         assert not (store.library.root / "Receipts" / "2026").exists() and (store.library.root / "Receipts").is_dir()
@@ -366,11 +387,11 @@ def test_category_files_live_in_year_month_folders_and_existing_files_move_there
         store.close()
     store = Store(root)
     try:
-        assert store.document(power["id"])["managed_path"] == f"Bills/2026/08/{name}"  # Same name, new folder.
+        assert store.document(power["id"])["managed_path"] == f"Housing/2026/08/{name}"  # Same name, new folder.
         assert store.library.current_file(lunch["id"], lunch["current_hash"])["relative_path"] == moved
         assert store.library.path(moved).read_bytes() == b"receipt bytes"
-        assert store.library.path(f"Bills/2026/08/{name}").read_bytes() == b"bill bytes"
-        assert store.document(power["id"])["folder"] == "Bills"
+        assert store.library.path(f"Housing/2026/08/{name}").read_bytes() == b"bill bytes"
+        assert store.document(power["id"])["folder"] == "Housing"
         for unsafe in ("Inbox/2026/09/x.png", "Unfiled/2026/09/x.png", "Receipts/2026/13/x.png", "Receipts/abcd/09/x.png",
                        "Receipts/2026/x.png", "Receipts/2026/09/extra/x.png"):
             with pytest.raises(ValueError):

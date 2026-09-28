@@ -7,6 +7,7 @@ A deterministic projection of income, spending, cash, assets, loans and net wort
 - **Cash:** each account's latest statement balance (credit-card balances count as owed). Accounts without a statement balance start at zero and are listed in the notes.
 - **Income:** average monthly counted income (deposits, interest) over the last *N* full months (default 6).
 - **Spending:** average monthly counted spending per category over the same months; refunds appear as a negative line. Transfers and card payments are excluded, as everywhere else.
+- **Recurring bills:** each confirmed recurring bill is projected at its expected amount in its due months, counting on from its next due date (weekly bills are spread evenly, 52/12 a month), grown with inflation and changed by its category's spending change. Past payments to it are taken out of the category averages. See [receipts-and-statements.md](receipts-and-statements.md).
 - **Assets and loans:** the `assets` table. Values you type in (car, house) count at once. Values read from investment, retirement, bond or loan statements are proposed until reviewed and are listed in the notes until then.
 - One currency per forecast; amounts in other currencies are left out and named in the notes.
 

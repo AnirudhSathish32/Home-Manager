@@ -138,6 +138,8 @@ legend { font-size: var(--text-sm); font-weight: 600; padding: 0 var(--space-1);
 main { padding: var(--space-6) var(--space-7) var(--space-8); max-width: var(--content-max); width: 100%; }
 main:focus { outline: none; }
 #app-alert:not(:empty) { margin-bottom: var(--space-5); }
+#reconcile-prompt:not(:empty) { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-5); }
+.reconcile-question { font-weight: 600; }
 .page { display: flex; flex-direction: column; gap: var(--space-5); }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); flex-wrap: wrap; }
 .page-subtitle { margin: var(--space-1) 0 0; font-size: var(--text-sm); color: var(--text-secondary); }
@@ -243,6 +245,20 @@ dialog code { display: block; overflow-wrap: anywhere; margin: var(--space-1) 0;
 .folder-link:hover { background: var(--surface-sunken); }
 .folder-link[aria-current="page"] { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
 .folder-link.empty { color: var(--text-muted); }
+.folder-link.subfolder { padding-left: var(--space-6); font-size: var(--text-sm); }
+.folder-link.subfolder.deep { padding-left: calc(var(--space-6) * 1.75); }
+/* Pay stubs: gross to net, grouped, with subtotals; then the tax buckets. */
+.paystub-breakdown, .paystub-taxes { margin-top: var(--space-6); }
+.paystub-table th.paystub-group { padding-top: var(--space-4); font-weight: 600; text-align: left; }
+.paystub-table tr.paystub-subtotal th, .paystub-table tr.paystub-subtotal td { color: var(--text-secondary); font-style: italic; }
+.paystub-table tr.paystub-total th, .paystub-table tr.paystub-total td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+.tax-jurisdiction { margin-top: var(--space-4); }
+.tax-chart { margin: var(--space-3) 0; }
+.tax-chart svg { width: 100%; height: auto; max-width: 520px; display: block; }
+.folder-group { gap: var(--space-1); }
+.folder-chevron { width: 14px; height: 14px; flex: none; margin-top: 2px; transition: transform .15s ease; }
+.folder-group[aria-expanded="true"] .folder-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .folder-chevron { transition: none; } }
 .folder-count { flex: none; min-width: 3ch; margin-left: auto; text-align: right; font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .file-pane { padding: var(--space-4) var(--space-5); min-width: 0; }
 .file-toolbar { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }

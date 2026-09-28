@@ -126,7 +126,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#extract-ledger")).to_be_visible()  # Ledger extraction is the primary action.
             assert page.locator("#analyze-finances").count() == 0 and page.locator("#audit-tab").count() == 0  # No audit step remains.
             from test_extraction import classification, identity, receipt_items, receipt_summary
-            local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "coffee & lunch"}]
+            local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "coffee & lunch", "category": None, "recurrence": None}]
             page.locator("#extract-ledger").click()
             playwright.expect(page.locator("#extraction-state")).to_have_text("Done", timeout=15000)
             playwright.expect(page.locator("#extraction-result")).to_contain_text("25.00 USD")
@@ -153,6 +153,9 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#source-text-tab")).to_have_attribute("aria-selected", "true")
             assert page.locator("#receipt-text").evaluate("el => el.value.slice(0, el.selectionStart).split('\\n').length") == 10
             page.locator("#close-receipt").click()
+            # Recording filed it into Receipts, which lives on the Receipts & statements page, not in Documents.
+            playwright.expect(page.locator("#documents")).not_to_contain_text("receipt.png")
+            page.locator("#nav-receipts").click()
             open_document(page, "receipt.png")
             playwright.expect(page.locator("#receipt-title")).to_have_text("Local Test Cafe - Downtown - Coffee & lunch")  # Merchant - Location - Description.
             playwright.expect(page.locator("#receipt-subtitle")).to_contain_text("Receipts · Sep 23, 2026 · receipt.png")
@@ -185,6 +188,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             row_action(page, "Move", "receipt.png")
             page.locator("#move-folder").select_option("Receipts")
             page.get_by_role("button", name="Move document", exact=True).click()
+            page.locator('[data-folder-group="Receipts"]').click()  # Receipts opens; "All receipts" lists every receipt.
             page.locator('.folder-link[data-folder="Receipts"]').click()
             playwright.expect(page.locator("#document-count")).to_have_text("1 document")
             row_action(page, "Delete")
@@ -199,10 +203,11 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#empty-folder")).to_be_visible()
             page.locator('.folder-link[data-folder="Receipts"]').click()
             row_action(page, "Move")
-            page.locator("#move-folder").select_option("Bills")
+            page.locator("#move-folder").select_option("Housing")
             page.get_by_role("button", name="Move document", exact=True).click()
             playwright.expect(page.locator("#empty-folder")).to_be_visible()
-            page.locator('.folder-link[data-folder="Bills"]').click()
+            page.locator("#nav-documents").click()  # Housing is a Documents folder.
+            page.locator('.folder-link[data-folder="Housing"]').click()
             playwright.expect(page.locator("#documents")).to_contain_text("receipt.png")
             # Model history shows measured telemetry; running model work can be cancelled.
             page.locator("#nav-processing").click()
@@ -257,6 +262,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.get_by_role("button", name="Move document", exact=True).click()
             playwright.expect(page.locator("#documents")).not_to_contain_text("inbox-statement.csv")
             assert not inbox_file.exists()
+            page.locator("#nav-receipts").click()  # Bank statements live with receipts on the money side.
             page.locator('.folder-link[data-folder="Bank_Statements"]').click()
             playwright.expect(page.locator("#documents")).to_contain_text("Library/Bank_Statements/")
             page.get_by_role("button", name="Import transactions", exact=True).click()
@@ -282,7 +288,8 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.locator("#nav-spending").click()
             page.locator("#spend-month").fill("2026-09")
             page.locator("#spend-month").dispatch_event("change")
-            playwright.expect(page.locator("#spend-figures")).to_contain_text("No counted spending")
+            # The recorded cafe receipt has no matching charge, so it counts on its own and is labelled as such.
+            playwright.expect(page.locator("#spend-figures")).to_contain_text("From receipts only25.00 USD · 1 receipt")
             page.locator("#budget-category").fill("groceries")
             page.locator("#budget-amount").fill("450.00")
             page.get_by_role("button", name="Save budget").click()

@@ -144,7 +144,7 @@ def test_receipts_are_identified_automatically_after_recording(tmp_path, local_m
         manager.configure_household(HouseholdConfig(auto_identify_items=True))
         # Extraction's five calls, then one agent step per unidentified line; each finishes without a proposal.
         finish = {"action": "finish", "tool": None, "arguments_json": None, "note": "Unclear abbreviation."}
-        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch"}, finish, finish, finish]
+        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None}, finish, finish, finish]
         run = extract(manager, doc, parse_id)
         assert run["publication"]["record_type"] == "receipt"
         with manager.store.connection() as db:
@@ -154,7 +154,7 @@ def test_receipts_are_identified_automatically_after_recording(tmp_path, local_m
         assert {"ledger_extraction", "item_identification", "reconciliation"} <= kinds
         # Turned off, a new extraction records the receipt and identifies nothing.
         manager.configure_household(HouseholdConfig(auto_identify_items=False))
-        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch"}]
+        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None}]
         extract(manager, doc, parse_id, force=True)
         with manager.store.connection() as db:
             assert db.execute("SELECT count(*) FROM item_resolution_runs").fetchone()[0] == 1

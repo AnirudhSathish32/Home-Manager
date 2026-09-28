@@ -27,6 +27,7 @@ const ICONS = {
   folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
   transfer: ["M8 3 4 7l4 4", "M4 7h16", "m16 21 4-4-4-4", "M20 17H4"],
   "arrow-left": ["m12 19-7-7 7-7", "M19 12H5"],
+  "chevron-right": ["m9 18 6-6-6-6"],
   message: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
   search: ["M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0", "m21 21-4.3-4.3"],
   "list-checks": ["m3 17 2 2 4-4", "m3 7 2 2 4-4", "M13 6h8", "M13 12h8", "M13 18h8"],
@@ -64,7 +65,7 @@ const STATUS = {
   interrupted: ["Interrupted", "warning", "pause"], cancelled: ["Cancelled", "neutral", "slash"],
   cancel_requested: ["Cancelling", "neutral", "loader"], imported: ["Imported", "positive", "check"],
   not_imported: ["Not imported", "neutral", null], not_extracted: ["Not extracted", "neutral", null],
-  payment_found: ["Payment found", "positive", "check"], due: ["Due", "neutral", "clock"],
+  payment_found: ["Payment found", "positive", "check"], due: ["Due", "neutral", "clock"], overdue: ["Overdue · no payment found", "danger", "alert"],
   past_due_no_payment_found: ["Past due · no payment found", "danger", "alert"],
   posted_credit_found: ["Credit posted", "positive", "check"], evidence_only_not_settled: ["Refund not yet posted", "warning", "clock"],
   // Document summary states (docs/ui-design-plan.md §3.7).
@@ -76,6 +77,12 @@ const STATUS = {
   in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
   ready_to_import: ["Ready to import", "neutral", null], in_trash: ["In Trash", "neutral", null], process_failed: ["Couldn't process", "danger", "octagon"],
 };
+// How often a recurring bill is paid, as shown to people.
+const FREQUENCY_LABELS = {weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", semiannual: "Every 6 months", annual: "Yearly"};
+// Receipt categories are stored in lower case ("dining"); shown capitalized.
+function categoryLabel(category) {
+  return category ? category.replace(/^./, character => character.toUpperCase()) : "Uncategorized";
+}
 function statusLabel(status) {
   return STATUS[status]?.[0] || String(status || "").replaceAll("_", " ").replace(/^./, character => character.toUpperCase());
 }

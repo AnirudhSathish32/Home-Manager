@@ -17,12 +17,19 @@ function receiptControls() {
   // Buttons in the record pane stand in for the step buttons and share their state.
   for (const button of document.querySelectorAll("#record-empty [data-proxy]")) button.disabled = $(button.dataset.proxy).disabled;
 }
+function showPdf(url) {
+  // Navigating an iframe already in the page adds a browser history entry, so "Back" would first rewind
+  // the PDF frame. A fresh iframe given its source before it is inserted adds none.
+  const old = $("receipt-pdf"), frame = document.createElement("iframe");
+  frame.id = old.id; frame.title = old.title; frame.hidden = !url;
+  if (url) frame.src = url;
+  old.replaceWith(frame);
+}
 function closeReceipt() {
   receipt = null;
   if (receiptImageURL) { URL.revokeObjectURL(receiptImageURL); receiptImageURL = null; }
   $("receipt-image").removeAttribute("src");
-  $("receipt-pdf").removeAttribute("src");
-  $("receipt-pdf").hidden = true;
+  showPdf(null);
   $("receipt-image-frame").parentElement.hidden = false;
 }
 async function imageForReceipt(path, expected) {
@@ -33,9 +40,9 @@ async function imageForReceipt(path, expected) {
   if (receiptImageURL) URL.revokeObjectURL(receiptImageURL);
   receiptImageURL = URL.createObjectURL(blob);
   const pdf = blob.type === "application/pdf";
-  $("receipt-pdf").hidden = !pdf;
+  showPdf(pdf ? receiptImageURL : null);
   $("receipt-image-frame").parentElement.hidden = pdf;
-  $(pdf ? "receipt-pdf" : "receipt-image").src = receiptImageURL;
+  if (!pdf) $("receipt-image").src = receiptImageURL;
 }
 async function openDocument(id, version = null) {
   // Route entry point (#/documents/ID). Re-showing the same document keeps its state.
@@ -314,14 +321,16 @@ $("copy-receipt-text").addEventListener("click", async () => {
 });
 
 const RECORD_FIELDS = {
-  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
+  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Category", "category"], ["Billed", "recurrence"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
   statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
   bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Amount due", "amount_due_minor"]],
-  income_record: [["Payer", "merchant"], ["Pay date", "pay_date"], ["Gross pay", "gross_pay_minor"], ["Net pay", "net_pay_minor"]],
+  income_record: [["Employer", "merchant"], ["Pay date", "pay_date"], ["Pay period", "period_start", "period_end"], ["Paid", "pay_frequency"],
+                  ["Gross pay", "gross_pay_minor"], ["Net pay", "net_pay_minor"]],
 };
+const PAY_FREQUENCIES = {52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"};
 // Fields the user may correct, by the key shown above -> the correction field the server accepts.
-const CORRECTABLE = {receipt: {merchant: "merchant", location: "location", purchase_date: "purchase_date"},
+const CORRECTABLE = {receipt: {merchant: "merchant", location: "location", purchase_date: "purchase_date", category: "category"},
                      bill: {merchant: "provider", issue_date: "issue_date", due_date: "due_date"},
                      income_record: {merchant: "payer", pay_date: "pay_date"}};
 const isDateField = field => field.endsWith("_date");
@@ -365,7 +374,9 @@ async function loadExtraction(state, parseId) {
 }
 const RECORD_LABELS = {receipt: "receipt", statement: "statement", bill: "bill", income_record: "pay stub"};
 function ledgerTitle(type, record) {
-  // Same naming rule as documents: Merchant - Location - Description; dates and amounts are fields below.
+  // Same naming rule as documents: Merchant - Location - Description; dates and amounts are fields below. A pay stub is named by its date.
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(record.pay_date || "");
+  if (type === "income_record" && date) return `Paystub ${date[2]}/${date[3]}/${date[1]}`;
   const parts = [record.merchant || record.institution, record.location, record.description].filter(Boolean);
   return parts.length ? parts.join(" - ") : RECORD_LABELS[type].replace(/^./, character => character.toUpperCase());
 }
@@ -381,9 +392,14 @@ function ledgerRows(record) {
   if (!rows.length) return null;
   const wrap = element("div", "", "table-wrap");
   const table = element("table", "", "ledger-rows");
+  // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
+  const codes = Boolean(record.items?.some(row => row.product_code));
   const columns = record.items ? ["Item", "Code", "Amount", ""] : ["Posted", "Description", "Amount", ""];
   const head = document.createElement("tr");
-  columns.forEach((title, index) => { const th = head.appendChild(element("th", title, index === 2 ? "numeric" : "")); th.scope = "col"; });
+  columns.forEach((title, index) => {
+    if (record.items && index === 1 && !codes) return;
+    const th = head.appendChild(element("th", title, index === 2 ? "numeric" : "")); th.scope = "col";
+  });
   table.appendChild(document.createElement("thead")).appendChild(head);
   const body = table.appendChild(document.createElement("tbody"));
   for (const row of rows.slice(0, 200)) {
@@ -391,6 +407,7 @@ function ledgerRows(record) {
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
     const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—"] : [row.posted_date, row.description_raw, row.display.amount_minor];
     values.forEach((value, index) => {
+      if (record.items && index === 1 && !codes) return;
       const td = tr.appendChild(element("td", index === 2 ? "" : value, index === 2 ? "numeric" : ""));
       if (index === 2) td.appendChild(amount(value, {signed: !record.items}));  // Statement rows carry a direction; item prices don't.
     });
@@ -454,8 +471,10 @@ async function renderLedgerRecord(target, type, id, kept) {
     const fixable = correctable && field in correctable;
     if (shown == null && !fixable) continue;
     const value = element("strong");
-    if (shown == null) value.appendChild(element("span", isDateField(field) ? "Not printed" : "Not found", "muted"));
-    else value.appendChild(record.display[field] ? amount(shown, {signed: false}) : document.createTextNode(isDateField(field) ? dateText(shown) : shown));
+    if (shown == null) value.appendChild(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
+    else value.appendChild(record.display[field] ? amount(shown, {signed: false})
+      : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown)
+        : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
     const metric = document.createElement("div"); metric.append(element("small", label), value);
     if (fixable && entered.has(correctable[field])) metric.appendChild(element("small", "Entered by you", "muted"));
     else if (fixable && shown == null) metric.appendChild(actionButton(`Add ${label.toLowerCase()}`, () => editRecord(target, type, record), "small"));
@@ -464,14 +483,141 @@ async function renderLedgerRecord(target, type, id, kept) {
   target.appendChild(summary);
   const rows = ledgerRows(record);
   if (rows) target.appendChild(rows);
+  if (type === "income_record") target.append(...paystubBreakdown(record), ...withholdingSection(record));
 }
-function editRecord(target, type, record) {
+
+// Pay stubs (docs/jobs-and-paystubs.md): gross to net, then how the taxes were figured. Every amount is the server's text.
+function paystubRow(body, cells, className = "", lineIds = null) {
+  const tr = body.insertRow(); if (className) tr.className = className;
+  cells.forEach((value, index) => {
+    const td = tr.appendChild(element(index ? "td" : "th", index ? "" : value, index ? "numeric" : ""));
+    if (!index) td.scope = "row"; else td.appendChild(amount(value || "—", {signed: false}));
+  });
+  const source = tr.insertCell(); if (lineIds?.length) source.appendChild(sourceButton(lineIds));
+  if (lineIds?.length) tr.dataset.lines = lineIds.join(" ");
+}
+function paystubBreakdown(record) {
+  const {groups, checks} = record.breakdown;
+  if (!record.lines.length) return [element("p", "The stub's individual lines weren't read, so only its totals are shown.", "muted")];
+  const section = element("section", "", "paystub-breakdown");
+  section.appendChild(element("h3", "From gross pay to net pay"));
+  const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows paystub-table");
+  const head = table.createTHead().insertRow();
+  for (const [title, numeric] of [["", false], ["This period", true], ["Year to date", true], ["", false]]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
+  const byGroup = Object.fromEntries(groups.map(group => [group.group, group]));
+  const total = (group, label) => byGroup[group] && paystubRow(body, [label, byGroup[group].display?.current_minor, byGroup[group].display?.ytd_minor], "paystub-subtotal");
+  let body;
+  for (const group of groups) {
+    body = table.appendChild(document.createElement("tbody"));
+    const title = body.insertRow().appendChild(element("th", group.title, "paystub-group")); title.colSpan = 4; title.scope = "rowgroup";
+    for (const line of group.lines) paystubRow(body, [line.description, line.display.current_minor, line.display.ytd_minor], "", line.line_ids);
+    if (group.group === "earnings") paystubRow(body, ["Gross pay", record.display.gross_pay_minor, record.display.gross_pay_ytd_minor], "paystub-total");
+    if (group.group === "pre_tax") total("pre_tax", "Total pre-tax deductions");
+    if (group.group === "tax") {
+      if (group.fica) paystubRow(body, ["FICA (Social Security + Medicare)", group.fica.display?.current_minor, group.fica.display?.ytd_minor], "paystub-subtotal");
+      total("tax", "Total taxes");
+    }
+    if (group.group === "post_tax") total("post_tax", "Total post-tax deductions");
+    if (group.group === (byGroup.post_tax ? "post_tax" : byGroup.tax ? "tax" : byGroup.pre_tax ? "pre_tax" : "earnings"))
+      paystubRow(body, ["Net pay", record.display.net_pay_minor, record.display.net_pay_ytd_minor], "paystub-total");
+    if (group.group === "employer_paid") total("employer_paid", "Total paid by your employer");
+  }
+  wrap.appendChild(table); section.appendChild(wrap);
+  for (const check of checks) {
+    section.appendChild(check.matches
+      ? element("p", `${check.label}: gross pay ${check.display.gross_minor} less ${check.display.taken_minor} of deductions and taxes is the printed net pay, ${check.display.net_minor}.`, "muted small")
+      : element("p", `${check.label}: gross pay less deductions and taxes is ${check.display.computed_net_minor}, but the stub prints ${check.display.net_minor} (a difference of ${check.display.difference_minor}). A line may be missing or misread.`, "item-warning"));
+  }
+  return [section];
+}
+function withholdingSection(record) {
+  const plan = record.withholding;
+  const section = element("section", "", "paystub-taxes");
+  section.appendChild(element("h3", "How your taxes were figured"));
+  if (!plan.year || !record.lines.length) { section.append(...plan.notes.map(note => element("p", note, "muted"))); return [section]; }
+  const settings = element("p", `Tax year ${plan.year} · filing ${plan.filing_status_name} · ${plan.paychecks ? `${plan.paychecks} paychecks a year` : "pay frequency unknown"}. `, "muted small");
+  settings.appendChild(homeLink("Change filing status", "#/settings"));
+  section.appendChild(settings);
+  if (plan.display?.income_tax_wages_minor)
+    section.appendChild(element("p", `Taxable wages this paycheck: ${plan.display.income_tax_wages_minor} for income tax (gross pay less pre-tax deductions such as 401(k) and health), `
+      + `${plan.display.fica_wages_minor} for Social Security and Medicare (a 401(k) doesn't lower these).`));
+  for (const part of plan.jurisdictions) {
+    const block = element("div", "", "tax-jurisdiction");
+    block.appendChild(element("h4", `${part.name} income tax`));
+    if (part.status !== "verified") {
+      block.appendChild(element("p", part.message, "muted"));
+      if (part.status === "missing") block.appendChild(actionButton(`Look up the ${plan.year} ${part.name} table`, () =>
+        api("/api/tax-tables/lookup", {method: "POST", body: JSON.stringify({jurisdiction: part.jurisdiction, year: plan.year})})
+          .then(() => notice("Looking it up. The table will wait for you in Review."))));
+      if (part.status === "proposed") block.appendChild(homeLink("Review the table", "#/review"));
+      if (part.display?.actual_minor) block.appendChild(element("p", `Withheld this paycheck: ${part.display.actual_minor}.`, "muted small"));
+      section.appendChild(block); continue;
+    }
+    const d = part.display;
+    block.appendChild(element("p", `Over ${plan.paychecks} paychecks, ${d.period_wages_minor} a paycheck is ${d.annual_wages_minor} a year. The first `
+      + `${d.standard_deduction_minor} (the standard deduction, ${d.standard_deduction_per_paycheck_minor} of each paycheck) isn't taxed; each bucket above it is taxed only at its own rate.`));
+    if (part.chart_svg) { const figure = element("figure", "", "tax-chart"); figure.appendChild(forecastSvg(part.chart_svg)); block.appendChild(figure); }
+    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
+    const head = table.createTHead().insertRow();
+    for (const [title, numeric] of [["Bucket", false], ["Wages a year", true], ["Tax a year", true], ["Tax a paycheck", true]]) {
+      const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col";
+    }
+    const body = table.createTBody();
+    for (const bucket of part.buckets) {
+      const tr = body.insertRow();
+      const range = bucket.display.to_minor ? `${bucket.display.from_minor} to ${bucket.display.to_minor}` : `over ${bucket.display.from_minor}`;
+      const th = tr.appendChild(element("th", bucket.label)); th.scope = "row";
+      th.appendChild(element("small", `wages ${range}`, "muted"));
+      for (const key of ["income_minor", "tax_minor", "per_paycheck_tax_minor"]) tr.appendChild(element("td", "", "numeric")).appendChild(amount(bucket.display[key], {signed: false}));
+    }
+    wrap.appendChild(table); block.appendChild(wrap);
+    const rate = (points => `${(points / 100).toFixed(2).replace(/\.?0+$/, "")}%`);
+    block.appendChild(element("p", `A year's tax: ${d.annual_tax_minor} (${rate(part.effective_rate_bp)} of wages; your top bucket is ${rate(part.top_rate_bp)}). `
+      + `Spread over ${plan.paychecks} paychecks: about ${d.estimate_minor}. Withheld: ${d.actual_minor || "not on this stub"}`
+      + (d.difference_minor ? `, ${part.difference_minor > 0 ? "more" : "less"} than the estimate by ${d.difference_minor.replace("-", "")}.` : ".")));
+    const sources = element("p", "Table: ", "muted small");
+    part.sources.forEach((source, index) => { const link = element("a", source.title || source.url); link.href = source.url; link.target = "_blank"; link.rel = "noreferrer"; sources.append(index ? ", " : "", link); });
+    if (part.sources.length) block.appendChild(sources);
+    section.appendChild(block);
+  }
+  if (plan.fica.length) {
+    const block = element("div", "", "tax-jurisdiction");
+    block.appendChild(element("h4", "Social Security and Medicare (FICA)"));
+    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
+    const head = table.createTHead().insertRow();
+    for (const [title, numeric] of [["", false], ["Wages", true], ["Estimated", true], ["Withheld", true], ["Difference", true]]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
+    const body = table.createTBody();
+    for (const row of plan.fica) {
+      const tr = body.insertRow(); const th = tr.appendChild(element("th", row.name)); th.scope = "row";
+      th.appendChild(element("small", `${row.rate_bp / 100}%${row.additional_wages_minor ? ` + ${row.additional_rate_bp / 100}%` : ""} of wages`, "muted"));
+      for (const key of ["wages_minor", "estimate_minor", "actual_minor", "difference_minor"]) tr.appendChild(element("td", "", "numeric")).appendChild(amount(row.display[key] || "—", {signed: key === "difference_minor"}));
+    }
+    wrap.appendChild(table); block.appendChild(wrap);
+    const capped = plan.fica.find(row => row.name === "Social Security" && row.display.limit_minor);
+    if (capped) block.appendChild(element("p", `Social Security stops once the year's wages reach ${capped.display.limit_minor}.`, "muted small"));
+    section.appendChild(block);
+  }
+  for (const note of plan.notes) section.appendChild(element("p", note, "muted small"));
+  return [section];
+}
+async function editRecord(target, type, record) {
   // Inline correction form for what the document did not print or the model misread.
   const form = element("form", "", "record-edit"), inputs = {};
+  // The category list is the server's, the same one the Receipts subfolders use.
+  const categories = type === "receipt" ? (await api("/api/folders")).receipt_categories.map(row => row.category).filter(name => name !== "uncategorized") : [];
   form.appendChild(element("p", "Correct what the document did not print or was misread. Your values are kept if the document is extracted again.", "muted small"));
   for (const [label, field] of RECORD_FIELDS[type].filter(([, field]) => field in CORRECTABLE[type])) {
-    const input = document.createElement("input"); input.id = `correct-${field}`;
-    input.type = isDateField(field) ? "date" : "text"; input.value = record[field] || ""; input.maxLength = field === "location" ? 60 : 120;
+    let input;
+    if (field === "category") {
+      input = document.createElement("select");
+      input.add(new Option("Not set", ""));
+      for (const name of categories) input.add(new Option(categoryLabel(name), name));
+      input.value = record[field] || "";
+    } else {
+      input = document.createElement("input");
+      input.type = isDateField(field) ? "date" : "text"; input.value = record[field] || ""; input.maxLength = field === "location" ? 60 : 120;
+    }
+    input.id = `correct-${field}`;
     if (field === "location") input.placeholder = "City, or Online";
     const box = element("div", "", "field"); const caption = element("label", label); caption.htmlFor = input.id;
     box.append(caption, input); form.appendChild(box); inputs[field] = input;

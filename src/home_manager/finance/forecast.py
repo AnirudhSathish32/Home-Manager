@@ -20,9 +20,11 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..core.categories import FREQUENCY_MONTHS
 from ..core.money import currency_code, money, to_minor
 from ..library.storage import now
 from .ledger import COUNTABLE
+from .reconcile import Reconciler, bill_payments
 from .tools import AccountInput, FinanceTools, PeriodInput, scope_of
 
 ASSET_KINDS = ("investment", "retirement", "bond", "real_estate", "vehicle", "other_asset", "loan")
@@ -210,9 +212,24 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
         balances.append({"account": account["display_name"], "type": account["account_type"], "amount": money(signed, chosen), "as_of": balance["as_of"]})
     categories = {category: total for (code, category), (total, _) in tools._category_totals(period.start, period.end, None).items() if code == chosen}
     scope, params = scope_of(period.start, period.end, None)
-    refunds = sum(bucket["refunds"] for (_, code), bucket in tools._totals(scope, params).items() if code == chosen)
+    refunds = sum(bucket["refunds"] for (_, code), bucket in tools._totals(period.start, period.end, None).items() if code == chosen)
     if refunds:
         categories["refunds"] = -refunds
+    # Confirmed recurring bills are projected on their own schedule, so their past payments leave the category averages.
+    bills = []
+    with tools.connection() as db:
+        for bill in Reconciler.bills(db):
+            if bill["status"] != "verified" or bill["currency"] != chosen:
+                continue
+            for payment in bill_payments(db, bill, period.start, period.end):
+                if payment["category"] in categories:
+                    categories[payment["category"]] -= payment["amount"]
+            bills.append({"name": bill["merchant"], "category": bill["category"] or "bills", "amount_minor": bill["expected_amount_minor"],
+                          "frequency": bill["frequency"], "next_due": bill["next_due_date"]})
+    categories = {category: total for category, total in categories.items() if total}
+    if bills:
+        notes.append(f"{len(bills)} confirmed recurring {'bill is' if len(bills) == 1 else 'bills are'} placed on {'its' if len(bills) == 1 else 'their'} "
+                     "due months; past payments to them are left out of the spending averages.")
     income = flow.get(chosen, {}).get("inflow", {}).get("minor", 0)
     months_seen = tools.query(f"SELECT count(DISTINCT substr(t.posted_date,1,7)) AS months FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.currency=?",
                               (*params, chosen))[0]["months"]
@@ -230,7 +247,20 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
             "cash": cash, "balances": balances,
             "monthly_income": Decimal(income) / history_months,
             "monthly_spending": {category: Decimal(total) / history_months for category, total in sorted(categories.items())},
-            "assets": [asset for asset in held if asset["currency"] == chosen], "notes": notes}
+            "bills": bills, "assets": [asset for asset in held if asset["currency"] == chosen], "notes": notes}
+
+
+def bill_amount(bill, month, start):
+    """What a recurring bill costs in one projected month, before inflation: weekly bills spread evenly; others fall
+    in their due months, counted on from the next due date (a date already past moves forward to the first projected month)."""
+    if bill["frequency"] == "weekly":
+        return Decimal(bill["amount_minor"]) * 52 / 12
+    every = FREQUENCY_MONTHS[bill["frequency"]]
+    due = (bill["next_due"] or start + "-01")[:7]
+    while due < start:
+        due = month_add(due, every)
+    steps = (int(month[:4]) - int(due[:4])) * 12 + int(month[5:7]) - int(due[5:7])
+    return Decimal(bill["amount_minor"]) if steps >= 0 and steps % every == 0 else Decimal(0)
 
 
 def project(base, value: ForecastInput, today=None):
@@ -245,7 +275,7 @@ def project(base, value: ForecastInput, today=None):
         inflation = (one + Decimal(value.inflation_percent) / 100) ** (one / 12)
         income_growth = (one + Decimal(value.income_growth_percent) / 100) ** (one / 12)
         changes = {change.category: one + Decimal(change.percent) / 100 for change in value.spending_changes}
-        unknown = sorted(set(changes) - set(base["monthly_spending"]))
+        unknown = sorted(set(changes) - set(base["monthly_spending"]) - {bill["category"] for bill in base.get("bills", [])})
         spending = {category: amount * changes.get(category, one) for category, amount in base["monthly_spending"].items()}
         income_steps = sorted((change.month, Decimal(to_minor(change.monthly_amount, currency))) for change in value.income_changes)
         one_offs = {}
@@ -265,6 +295,10 @@ def project(base, value: ForecastInput, today=None):
             base_income = base["monthly_income"] + sum(amount for since, amount in income_steps if since <= month)
             income = minor(base_income * pay_level)
             spent = {category: minor(amount * price) for category, amount in spending.items()}
+            for bill in base.get("bills", []):
+                due = bill_amount(bill, month, start) * changes.get(bill["category"], one)
+                if due:
+                    spent[bill["category"]] = spent.get(bill["category"], 0) + minor(due * price)
             outgoing = sum(spent.values())
             extra = sum(amount for amount, _ in one_offs.get(month, []))
             loan_paid = 0
@@ -310,6 +344,9 @@ def project(base, value: ForecastInput, today=None):
                                "monthly_income": money(minor(base["monthly_income"]), currency),
                                "monthly_spending": [{"category": category, "amount": money(minor(amount), currency)}
                                                     for category, amount in base["monthly_spending"].items()],
+                               "recurring_bills": [{"name": bill["name"], "category": bill["category"], "frequency": bill["frequency"],
+                                                    "next_due": bill["next_due"], "amount": money(bill["amount_minor"], currency)}
+                                                   for bill in base.get("bills", [])],
                                "assets": [{"name": asset["name"], "kind": asset["kind"], "value": asset["value"], "annual_rate_percent": asset["annual_rate_percent"],
                                            "monthly_payment": asset["monthly_payment"]} for asset in base["assets"]]}}
 

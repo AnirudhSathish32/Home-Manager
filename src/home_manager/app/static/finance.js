@@ -305,13 +305,15 @@ async function loadSpending() {
     const group = element("div", "", "figure-group");
     const main = element("div", "", "figure-main"); main.append(element("span", "Net spending", "figure-label"), homeLink(row.net_spending.display, txHref({start: period.start, end: period.end, currency: row.currency, metric: "spending"}), "figure-value"));
     group.append(main);
-    for (const [label, value] of [["Spent", row.spending.display], ["Refunded", row.refunds.display], ["Transactions", String(row.transactions)]]) {
+    // Spent includes receipts no card or bank charge has replaced yet, shown separately so the source is clear.
+    for (const [label, value] of [["Spent", row.spending.display], ["Refunded", row.refunds.display], ["Transactions", String(row.transactions)],
+                                  ...(row.receipts ? [["From receipts only", `${row.from_receipts.display} · ${row.receipts} ${row.receipts === 1 ? "receipt" : "receipts"}`]] : [])]) {
       const item = element("div", "", "figure-item"); item.append(element("span", label, "figure-label"), element("span", value, "figure-small")); group.append(item);
     }
     figures.push(group);
   }
   if (!figures.length) figures.push(emptyState("No counted spending in this month."));
-  for (const pending of spending.pending_review) figures.push(element("p", `${pending.amount.display} across ${pending.transactions} extracted transactions awaits review and isn't counted.`, "item-warning"));
+  for (const pending of spending.pending_review) figures.push(element("p", `${pending.amount.display} across ${pending.transactions} statement or extracted transactions awaits review or reconciliation and isn't counted.`, "item-warning"));
   $("spend-figures").replaceChildren(...figures);
   $("spend-coverage").textContent = `${spending.excluded_transfers_and_card_payments} transfers and card payments excluded. Covers: ` +
     (spending.coverage.map(item => `${item.display_name} ${item.transactions ? `${dateText(item.first)} – ${dateText(item.last)}` : "(no data this month)"}`).join("; ") || "no accounts yet") + ". " + spending.notes.join(" ");
@@ -329,7 +331,9 @@ async function loadSpending() {
       if (!await confirmAction({title: "Remove this budget?", message: `The ${row.category} budget of ${row.budget.display} a month will be removed. Transactions are not affected.`, confirmLabel: "Remove budget"})) return;
       await api(`/api/finance/budgets/${row.id}`, {method: "DELETE"}); notice("Budget removed."); await loadSpending();
     }, "small quiet"));
-    item.append(head, meter(row), element("p", text, "small"), actions);
+    item.append(head, meter(row), element("p", text, "small"));
+    if (row.recurring_due.minor) item.append(element("p", `${row.recurring_due.display} still due from ${row.recurring_payees.join(", ")} · about ${row.projected.display} by month end`, "muted small"));
+    item.append(actions);
     return item;
   });
   const pace = budgets.elapsed_days && budgets.elapsed_days < budgets.days ? `Day ${budgets.elapsed_days} of ${budgets.days}. ` : "";
@@ -396,44 +400,34 @@ $("rule-form").addEventListener("submit", async event => {
 async function loadBills() {
   if (!configured) return;
   const today = todayIso(), [year, month, day] = today.split("-").map(Number);
-  const earlier = isoDay(new Date(year, month - 1, day - 90)), week = isoDay(new Date(year, month - 1, day + 7));
-  const [ahead, recent, recurring] = await Promise.all([tool("get_upcoming_bills", {as_of: today, days: 120}), tool("get_upcoming_bills", {as_of: earlier, days: 90}),
-                                                        tool("get_recurring_obligations")]);
-  const settled = bill => ["paid", "payment_found"].includes(bill.payment_state);
-  const groups = [["Past due, no payment found", ahead.bills.filter(bill => bill.due_date < today && !settled(bill))],
-                  ["Due in the next 7 days", ahead.bills.filter(bill => bill.due_date >= today && bill.due_date <= week && !settled(bill))],
-                  ["Later", ahead.bills.filter(bill => bill.due_date > week && !settled(bill))],
-                  ["Paid", [...recent.bills.filter(bill => bill.due_date < today && settled(bill)), ...ahead.bills.filter(bill => bill.due_date >= today && settled(bill))]]];
+  const week = isoDay(new Date(year, month - 1, day + 7));
+  const [upcoming, recurring] = await Promise.all([tool("get_upcoming_bills", {as_of: today, days: 120}), tool("get_recurring_obligations")]);
+  const groups = [["Overdue, no payment found yet", upcoming.bills.filter(bill => bill.due_date < today)],
+                  ["Due in the next 7 days", upcoming.bills.filter(bill => bill.due_date >= today && bill.due_date <= week)],
+                  ["Later", upcoming.bills.filter(bill => bill.due_date > week)]];
   const sections = [];
   for (const [title, bills] of groups) {
     if (!bills.length) continue;
-    const wrap = title === "Paid" ? element("details", "", "bill-group") : element("div", "", "bill-group");
-    wrap.append(title === "Paid" ? element("summary", `${title} (${bills.length}, last 90 days and ahead)`) : element("h3", title));
+    const wrap = element("div", "", "bill-group");
+    wrap.append(element("h3", title));
     const list = element("ul", "", "finance-list");
     for (const bill of bills) {
       const li = element("li", "", "bill-row");
       const main = element("div", "", "bill-main");
-      main.append(homeLink(bill.provider || "Bill", `#/documents/${bill.document_id}`), element("span", ` due ${dateText(bill.due_date)}`, "muted"));
-      const value = bill.amount_due ? amount(bill.amount_due, {signed: false}) : element("span", "amount unresolved", "muted");
-      const actions = element("div", "", "bill-actions");
-      const pay = status => api(`/api/finance/bills/${bill.id}/payment`, {method: "POST", body: JSON.stringify({status})}).then(() => { notice("Payment state saved."); return loadBills(); });
-      if (bill.payment_state !== "paid") actions.append(asyncButton("Mark paid", () => pay("paid")));
-      if (bill.payment_source === "user") actions.append(asyncButton("Reset", () => pay("unknown"), "small quiet"));
-      else if (!settled(bill)) actions.append(asyncButton("Mark unpaid", () => pay("unpaid"), "small quiet"));
-      li.append(main, value, statusBadge(bill.payment_state), actions);
-      if (bill.payment_source === "matched") li.append(element("small", "A matching payment was found in your transactions.", "muted block"));
-      if (bill.review_status !== "verified") li.append(element("small", `Bill details: ${statusLabel(bill.review_status)}`, "muted block"));
+      main.append(element("strong", bill.provider), element("span", ` due ${dateText(bill.due_date)} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`, "muted"));
+      li.append(main, amount(bill.amount_due, {signed: false}), statusBadge(bill.payment_state));
+      if (bill.last_paid_date) li.append(element("small", `Last paid ${dateText(bill.last_paid_date)}`, "muted block"));
       list.append(li);
     }
     wrap.append(list); sections.push(wrap);
   }
-  $("bill-groups").replaceChildren(...(sections.length ? sections : [emptyState("No bills yet. Bills appear here after a bill document is recorded.")]));
+  $("bill-groups").replaceChildren(...(sections.length ? sections : [emptyState("No confirmed recurring bills due soon. Confirm proposed ones below or in Review.")]));
   const decide = (row, status) => api(`/api/finance/recurring/${row.id}/review`, {method: "POST", body: JSON.stringify({status})})
     .then(() => { notice("Saved."); refreshReviewCount(); return loadBills(); });
   const rows = recurring.obligations.map(row => {
     const tr = document.createElement("tr");
     cell(tr, row.merchant); cell(tr, "").append(amount(row.expected_amount, {signed: false})); tr.lastChild.className = "numeric";
-    cell(tr, {weekly: "week", monthly: "month", quarterly: "quarter", annual: "year"}[row.frequency] || row.frequency); cell(tr, row.next_due_date ? dateText(row.next_due_date) : "—");
+    cell(tr, {weekly: "week", monthly: "month", quarterly: "quarter", semiannual: "6 months", annual: "year"}[row.frequency] || row.frequency); cell(tr, row.next_due_date ? dateText(row.next_due_date) : "—");
     cell(tr, "").append(statusBadge(row.status));
     const actions = cell(tr, "");
     if (row.status === "proposed") actions.append(asyncButton("Confirm", () => decide(row, "verified"), "small primary"), asyncButton("Not recurring", () => decide(row, "rejected")));
@@ -442,6 +436,9 @@ async function loadBills() {
   });
   if (rows.length) $("recurring-rows").replaceChildren(...rows); else tableMessage($("recurring-rows"), 6, "No recurring payments detected yet.");
 }
+$("recurring-scan").addEventListener("click", () => api("/api/finance/recurring/scan", {method: "POST"})
+  .then(() => notice("Looking for recurring bills. Any found wait in Review; Processing shows the progress."))
+  .catch(error => notice(error, true)));
 
 // Accounts -----------------------------------------------------------------------------------------------
 
@@ -473,4 +470,53 @@ async function loadAccounts() {
     panel.append(list); groups.push(panel);
   }
   $("account-groups").replaceChildren(...(groups.length ? groups : [emptyState("No accounts yet. Import a CSV or XLSX export from your bank, or record a statement.")]));
+}
+
+// Statement reconciliation prompt ---------------------------------------------------------------------------
+// A newly recorded bank or card statement asks before its charges replace the receipts already counted.
+// Until the user says yes, its charges are not counted, so no purchase is counted twice.
+
+const STATEMENT_KINDS = {bank: "Bank statement", credit_card: "Credit card statement"};
+const declinedStatements = new Set();  // "No" for this visit: the prompt becomes a reminder.
+let reconcileResults = [];
+function statementName(row) {
+  const period = row.period_start ? `${dateText(row.period_start)} – ${dateText(row.period_end)}` : `ending ${dateText(row.period_end)}`;
+  return `${row.account || row.institution}, ${period}`;
+}
+async function reconcileStatement(row) {
+  const result = await api(`/api/finance/statements/${row.id}/reconcile`, {method: "POST"});
+  declinedStatements.delete(row.id);
+  const parts = [`${result.matched_receipts} of ${result.charges} charges matched to your receipts`];
+  if (result.questions) parts.push(`${result.questions} ${result.questions === 1 ? "needs" : "need"} you to pick the right charge`);
+  reconcileResults = [{row, message: `Reconciled ${STATEMENT_KINDS[row.statement_type].toLowerCase()} (${statementName(row)}): ${parts.join("; ")}. `
+                       + "Matched receipts are now counted through their charge; the rest still count on their own.", review: result.questions > 0}];
+  refreshReviewCount();
+  await loadReconcilePrompt();
+  // The page on screen shows totals from before the statement's charges counted.
+  if (currentRoute) Promise.resolve().then(() => ROUTES[currentRoute.name].show(currentRoute)).catch(error => notice(error, true));
+}
+function reconcilePromptBox(row) {
+  const kind = STATEMENT_KINDS[row.statement_type];
+  const actions = element("div", "", "button-row");
+  if (declinedStatements.has(row.id)) {
+    actions.append(asyncButton("Reconcile now", () => reconcileStatement(row)));
+    return alertBox(`${kind} (${statementName(row)}) is waiting to be reconciled. Its ${row.lines} charges aren't counted until you do.`, {action: actions});
+  }
+  const question = element("p", "Begin reconciling receipts?", "reconcile-question");
+  actions.append(asyncButton("Yes", () => reconcileStatement(row), "primary"),
+                 asyncButton("No", async () => { declinedStatements.add(row.id); await loadReconcilePrompt(); }));
+  const detail = element("div");
+  detail.append(question, element("p", `${row.lines} charges on this statement; ${row.receipts} receipts from the period have no matching charge yet.`, "muted small"), actions);
+  return alertBox(`${kind} recorded: ${statementName(row)}.`, {action: detail});
+}
+async function loadReconcilePrompt() {
+  if (!configured) { $("reconcile-prompt").replaceChildren(); return; }
+  const waiting = await api("/api/finance/statements/awaiting-reconciliation");
+  const results = reconcileResults.map(({message, review}) => {
+    const actions = element("div", "", "button-row");
+    if (review) actions.append(homeLink("Open Review", "#/review"));
+    actions.append(asyncButton("Dismiss", async () => { reconcileResults = []; await loadReconcilePrompt(); }, "small quiet"));
+    return alertBox(message, {action: actions});
+  });
+  $("reconcile-prompt").replaceChildren(...results, ...waiting.map(reconcilePromptBox));
 }

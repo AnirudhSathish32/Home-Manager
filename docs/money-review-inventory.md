@@ -18,7 +18,7 @@ else to Transactions with the same filters.
 |---|---|---|
 | `#/transactions` | Toolbar: search, from/to, account, category, type, status, receipt evidence, sort. Table with paging (200 per page, server offset). A row opens a drawer: amount, status with Count/Reject, category with "always use for this merchant", evidence and links, history. | `get_transactions` (server filters, B2), `GET /api/finance/records/transaction/{id}` (links, B3) |
 | `#/spending` | Month and comparison (previous month, same month last year). Figure row, by-category table with change and budget, top merchants, refunds, coverage notes. Budgets and category rules are managed here. | `get_spending`, `compare_categories`, `get_spending_by_category`, `get_refunds`, `get_budgets`, rules API |
-| `#/bills` | Bills grouped past due, next 7 days, later, paid; Mark paid / Mark unpaid. Recurring payments with Confirm / Not recurring / Ended. | `get_upcoming_bills`, bill payment and recurring review endpoints (B6) |
+| `#/bills` | Confirmed recurring bills grouped overdue, next 7 days, later. Recurring payments with Confirm / Not recurring / Ended. | `get_upcoming_bills`, recurring review endpoint (B6) |
 | `#/accounts` | Accounts grouped by type, statement balance with "as of", coverage, stale marker (over 35 days), link to Transactions for the account. No cross-account total (decision §10.4). | `get_accounts` |
 
 ## 2. Category rules and budgets (migration 023)

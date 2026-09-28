@@ -20,7 +20,7 @@ from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 
 CHECKIN_VERSION = "checkin-text-v1"
-MAX_OUTPUT_TOKENS = 1500
+MAX_OUTPUT_TOKENS = 5000
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 INSTRUCTIONS = """The user is answering a weekly household check-in about items that may have run out.

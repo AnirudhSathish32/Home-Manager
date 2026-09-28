@@ -6,7 +6,7 @@ import pytest
 
 from home_manager.app.api import create_app
 from home_manager.finance.ledger import Ledger
-from home_manager.finance.tools import AsOfInput, FinanceTools, TransactionsInput, call_tool
+from home_manager.finance.tools import FinanceTools, TransactionsInput, call_tool
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import Scanner, ScanLimits
 from home_manager.library.storage import Store
@@ -125,6 +125,9 @@ def test_spending_tools_are_exact_exclude_transfers_and_pending_model_rows(books
     august = call_tool(tools, "get_spending", {"start": "2026-08-01", "end": "2026-08-31"})
     assert august["by_currency"][0]["net_spending"]["decimal"] == "100.10" and august["excluded_transfers_and_card_payments"] == 2
     ledger.review("statement", statement["id"], "verified")
+    # Verified, but its lines count only once the user reconciles receipts against the statement.
+    assert call_tool(tools, "get_spending", {"start": "2026-09-01", "end": "2026-09-30"})["by_currency"][0]["spending"]["decimal"] == "153.45"
+    Reconciler(store).reconcile_statement(statement["id"])
     comparison = call_tool(tools, "compare_periods", {"first": {"start": "2026-08-01", "end": "2026-08-31"},
                                                      "second": {"start": "2026-09-01", "end": "2026-09-30"}})
     [change] = comparison["by_currency"]
@@ -143,7 +146,7 @@ def test_spending_tools_are_exact_exclude_transfers_and_pending_model_rows(books
         call_tool(tools, "get_spending", {"start": "2026-09-30", "end": "2026-09-01"})
 
 
-def test_bills_payment_state_and_tool_api(tmp_path, books):
+def test_bills_wait_in_review(tmp_path, books):
     store, ledger, docs = books
     checking = ledger.create_account("First Local Bank", "checking", "USD")
     add(store, ledger, checking, docs["export.csv"], [("2026-09-28", "CITY POWER UTILITY AUTOPAY", -12000)])
@@ -153,8 +156,6 @@ def test_bills_payment_state_and_tool_api(tmp_path, books):
     other = source_of(docs["receipt.png"], "extraction:water")
     ledger.publish_bill({"provider": "Water District", "issue_date": "2026-08-01", "due_date": "2026-09-01", "period_start": None, "period_end": None,
                          "amount_due_minor": 4500, "currency": "USD", "issues": [], "locator": {"line_ids": ["line-1"]}}, other, "proposed")
-    bills = FinanceTools(store).get_upcoming_bills(AsOfInput(as_of="2026-09-24"))["bills"]
-    assert [(bill["provider"], bill["payment_state"]) for bill in bills] == [("Water District", "past_due_no_payment_found"), ("City Power", "payment_found")]
     queue = FinanceTools(store).review_queue()
     assert [(item["record_type"], item["review_status"]) for item in queue["records"]] == [("bill", "proposed"), ("bill", "proposed")]
 

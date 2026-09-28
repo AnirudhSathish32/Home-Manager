@@ -24,9 +24,13 @@ from ..documents.reviewer import ReviewerConfig, review
 from ..finance.assistant import AssistantService
 from ..finance.checkin import CheckinService
 from ..finance.ledger import HouseholdConfig
+from ..finance import paystub
+from ..finance.charts import tax_buckets_svg
 from ..finance.reconcile import Reconciler
+from ..finance.recurring_scan import RecurringScan
 from ..finance.tools import FinanceTools
 from ..household.resolver import ItemResolver
+from ..household.tax_tables import TaxTableService
 from ..household.warranty import WarrantyService
 from ..library.backup import BackupService, restore_backup
 from ..library.organization import OrganizationService
@@ -71,6 +75,7 @@ class Manager:
         self.future = None  # Completion of the most recently started operation, including follow-ups.
         self.store = self.receipts = self.batches = self.reasoning = self.organization = None
         self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
+        self.tax_tables = None
         self.restores = {}  # Restore outcomes for this process; a restore may run with no library open.
         self.shares = {}  # Share exports for this process.
         # A shared library opened for this process only: never saved to settings, deleted when it ends.
@@ -233,7 +238,9 @@ class Manager:
             self.backups, self.assistant = BackupService(store), AssistantService(store, self.tools)
             self.organization, self.items, self.checkins = OrganizationService(store), ItemResolver(store), CheckinService(store)
             self.warranties = WarrantyService(store, self.items.web)
-            for service in (self.organization, self.reconciler, self.backups, self.assistant, self.items, self.checkins, self.warranties):
+            self.tax_tables = TaxTableService(store, self.items.web)
+            for service in (self.organization, self.reconciler, self.backups, self.assistant, self.items, self.checkins, self.warranties,
+                            self.tax_tables):
                 service.recover()
             if previous and previous is not store:
                 previous.close()
@@ -401,12 +408,72 @@ class Manager:
 
     def extract_and_file(self, document_id, run_id, work):
         self.extractions.run(run_id, work)
-        publication = self.extractions.get(run_id)["publication"] or {}
-        if publication.get("status") == "published":
+        run = self.extractions.get(run_id)
+        publication = run["publication"] or {}
+        if publication.get("status") == "published" or ((run["result"] or {}).get("payment_terms") or {}).get("proposed"):
             self.reconciler.run("extraction")
         self.file_extraction(document_id, run_id, work)
         if publication.get("record_type") == "receipt" and publication.get("status") == "published":
             self.identify_items(publication["id"], work)
+        if publication.get("record_type") == "statement" and publication.get("status") == "published":
+            self.scan_payees(work)
+        if publication.get("record_type") == "income_record" and publication.get("status") == "published":
+            self.look_up_tax_tables(publication["id"], work)
+
+    def look_up_tax_tables(self, income_id, work):
+        """After a pay stub is recorded: look up the federal and state tables for its tax year when there are none yet.
+        Runs in the same model job; each table waits for the user in Review. Never fails the extraction."""
+        record = self.ledger.record("income_record", income_id)
+        if not record.get("pay_date"):
+            return
+        for jurisdiction in self.tax_tables.tables.needed(int(record["pay_date"][:4]), record.get("work_state"), self.household.filing_status):
+            try:
+                run_id = self.tax_tables.enqueue(jurisdiction, int(record["pay_date"][:4]), self.household.filing_status, self.reasoning_config)
+            except ValueError:
+                return  # No web search key or model: the pay stub page says the table is missing.
+            work.check()
+            self.tax_tables.run(run_id, self.reasoning_config, work)
+
+    def start_tax_table_lookup(self, jurisdiction, year):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before looking up a tax table.")
+            run_id = self.tax_tables.enqueue(jurisdiction, year, self.household.filing_status, self.reasoning_config)
+            self.future = self.submit("inference", "tax_table_lookup", "Looking up a tax table", self.tax_tables.run, run_id, self.reasoning_config)
+            return {"run_id": run_id}
+
+    def paystub(self, income_id):
+        """A pay stub record with how its taxes were figured (finance/paystub.py) and a bucket chart per jurisdiction."""
+        record = self.ledger.record("income_record", income_id)
+        year = int(record["pay_date"][:4]) if record.get("pay_date") else None
+        state = record.get("work_state")
+        tables = self.tax_tables.tables.for_year(year, ["US", *([state] if state else [])], self.household.filing_status) if year else {}
+        record["withholding"] = paystub.explain(record, record["lines"], tables, self.household.filing_status)
+        for part in record["withholding"]["jurisdictions"]:
+            if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
+                part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {year}", part["buckets"], record["currency"],
+                                                    record["withholding"]["paychecks"])
+        return record
+
+    def scan_payees(self, work):
+        """After a statement is recorded: ask the model which new payees are recurring bills (finance/recurring_scan.py).
+        Runs in the same model job; every result is a proposal in Review. Never fails the extraction."""
+        try:
+            if RecurringScan(self.store).run(self.reasoning_config, work)["recurring"]:
+                self.reconciler.run("extraction")
+        except ValueError:
+            pass  # The model could not be reached; the next statement or the Bills page button asks again.
+
+    def start_recurring_scan(self):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before looking for recurring bills.")
+            if not self.reasoning_config.model:
+                raise ValueError("Configure a local reasoning model in Settings first.")
+            self.future = self.submit("inference", "recurring_scan", "Looking for recurring bills", self.run_recurring_scan)
+            return {"started": True}
+
+    def run_recurring_scan(self, work):
+        if RecurringScan(self.store).run(self.reasoning_config, work)["recurring"]:
+            self.reconciler.run("manual")
 
     def identify_items(self, receipt_id, work):
         """Automatic item identification after a receipt is recorded (docs/warranties-assistant-processing.md §2).
@@ -424,10 +491,10 @@ class Manager:
         run = self.extractions.get(run_id)
         if run["status"] != "succeeded":
             return
-        kind, merchant, dated = self.extractions.filing_identity(run)
+        kind, merchant, dated, name = self.extractions.filing_identity(run)
         try:
             self.store.library.file_classified(document_id, self.receipts.get(run["parse_run_id"])["blob_hash"], kind, merchant, dated,
-                                               "Filed from cited classification and extraction.")
+                                               "Filed from cited classification and extraction.", name)
         except (ValueError, OSError, RuntimeError):
             pass  # Filing intents retain their error; the extraction remains available.
 
