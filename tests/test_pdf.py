@@ -5,13 +5,13 @@ import json
 
 import pytest
 
-from home_manager.jobs import Work
-from home_manager.manager import Manager
-from home_manager.reasoning import ReasoningConfig
-from home_manager.receipt_service import ReceiptService
-from home_manager.scanner import Scanner, ScanLimits
-from home_manager.storage import Store
-from home_manager.vision import VisionConfig
+from home_manager.core.jobs import Work
+from home_manager.app.manager import Manager
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.documents.receipt_service import ReceiptService
+from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.storage import Store
+from home_manager.models.vision import VisionConfig
 
 
 def make_pdf(path, pages):

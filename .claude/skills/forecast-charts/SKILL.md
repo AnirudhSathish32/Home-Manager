@@ -1,6 +1,6 @@
 ---
 name: forecast-charts
-description: Charts and data visualization for Home Manager — the forecast's server-drawn SVG charts (src/home_manager/charts.py), the Home dashboard charts, and any new chart, graph, plot, stat tile or chart color choice in this app. Use before writing or changing chart code or chart colors. Carries the app's validated palette and chart rules plus the general procedure (form, color, validation, marks, interaction, accessibility).
+description: Charts and data visualization for Home Manager — the forecast's server-drawn SVG charts (src/home_manager/finance/charts.py), the Home dashboard charts, and any new chart, graph, plot, stat tile or chart color choice in this app. Use before writing or changing chart code or chart colors. Carries the app's validated palette and chart rules plus the general procedure (form, color, validation, marks, interaction, accessibility).
 ---
 
 # Charts in Home Manager
@@ -10,7 +10,7 @@ how this app applies it. Read "This app" first; use the procedure for anything n
 
 ## This app
 
-- **Forecast charts are drawn in Python** by `src/home_manager/charts.py` as deterministic SVG:
+- **Forecast charts are drawn in Python** by `src/home_manager/finance/charts.py` as deterministic SVG:
   same data in, byte-identical SVG out. The browser only parses and inserts them
   (`static/forecast.js`, `DOMParser` as `image/svg+xml`); it never formats money or computes values.
 - **Validated palette** (light surface `#FFFFFF`), in fixed order, never cycled:

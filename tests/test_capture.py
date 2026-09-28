@@ -6,8 +6,8 @@ import uuid
 import pytest
 
 from conftest import inbox_scan
-from home_manager.paths import DirectoryLock, PathError, source_reader, validate_managed
-from home_manager.storage import Store
+from home_manager.core.paths import DirectoryLock, PathError, source_reader, validate_managed
+from home_manager.library.storage import Store
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def test_ignored_unsupported_subfolders_empty_and_limits(store):
 
 def test_changed_during_stability_is_deferred(store, monkeypatch):
     path = write(store)
-    monkeypatch.setattr("home_manager.scanner.time.sleep", lambda _: path.write_bytes(b"changed"))
+    monkeypatch.setattr("home_manager.library.scanner.time.sleep", lambda _: path.write_bytes(b"changed"))
     job = scan(store)
     assert store.job(job)["counts"] == {"deferred": 1}
     assert store.documents()["total"] == 0
@@ -106,7 +106,7 @@ def test_failed_enumeration_does_not_mark_missing(store, monkeypatch):
         if Path(path).name == "Inbox":
             raise PermissionError("denied")
         return original(path)
-    monkeypatch.setattr("home_manager.scanner.os.scandir", denied)
+    monkeypatch.setattr("home_manager.library.scanner.os.scandir", denied)
     job = scan(store)
     assert store.job(job)["status"] == "partial"
     assert store.documents()["items"][0]["source_status"] == "present"
@@ -246,7 +246,7 @@ def test_locked_file_is_deferred_and_can_be_retried(store):
 
 def test_reparse_flag_rejected_without_link_privileges(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from home_manager.paths import is_link
+    from home_manager.core.paths import is_link
     monkeypatch.setattr(Path, "lstat", lambda _: SimpleNamespace(st_mode=0, st_file_attributes=0x400))
     assert is_link(tmp_path / "junction")
 

@@ -8,9 +8,9 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import zxingcpp
 
-from home_manager.receipt_service import ReceiptService
-from home_manager.scanner import Scanner, ScanLimits
-from home_manager.storage import MIGRATIONS, Store
+from home_manager.documents.receipt_service import ReceiptService
+from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.storage import MIGRATIONS, Store
 
 
 def make_receipt(path, texts=None):
@@ -63,7 +63,7 @@ def test_vision_and_real_qr_persist_exact_evidence(receipt_store, local_model):
     assert result["fields"] is None
     assert result["title"] is None and result["folder"] is None
     assert result["model_hashes"] == {}
-    from home_manager.receipt_schema import ReceiptResult
+    from home_manager.documents.receipt_schema import ReceiptResult
     from pydantic import ValidationError
     omitted = dict(result, extracted_text=result["model_text"])
     with pytest.raises(ValidationError, match="retain every"):
@@ -110,7 +110,7 @@ def test_existing_v1_database_migrates_with_backup(tmp_path):
     managed = tmp_path / "managed"
     managed.mkdir()
     (managed / ".home-manager-store").write_text("home-manager-store-v1\n")
-    migration = Path(__file__).parents[1] / "src" / "home_manager" / "migrations" / "001_inventory.sql"
+    migration = Path(__file__).parents[1] / "src" / "home_manager" / "library" / "migrations" / "001_inventory.sql"
     with sqlite3.connect(managed / "inventory.sqlite3") as db:
         db.executescript(migration.read_text())
         db.execute("INSERT INTO blobs VALUES (?,123,'original timestamp')", ("a"*64,))
@@ -165,7 +165,7 @@ def test_failed_reprocessing_preserves_completed_evidence(receipt_store, local_m
 
 
 def test_historical_ocr_fields_remain_readable():
-    from home_manager.receipt_schema import ReceiptResult
+    from home_manager.documents.receipt_schema import ReceiptResult
     candidate = lambda name: {"name": name, "status": "missing"}
     historical = {
         "input_hash": "a" * 64, "image_format": "PNG",

@@ -6,12 +6,12 @@ from decimal import Decimal
 
 import pytest
 
-from home_manager.assistant import route
-from home_manager.finance import Ledger
-from home_manager.finance_tools import FINANCE_ROUTE, ITEM_ROUTE, FinanceTools, call_tool
-from home_manager.item_analysis import parse_size, quantity_of
-from home_manager.items import ItemLedger, ResolutionFields
-from home_manager.storage import Store
+from home_manager.finance.assistant import route
+from home_manager.finance.ledger import Ledger
+from home_manager.finance.tools import FINANCE_ROUTE, ITEM_ROUTE, FinanceTools, call_tool
+from home_manager.household.analysis import parse_size, quantity_of
+from home_manager.household.items import ItemLedger, ResolutionFields
+from home_manager.library.storage import Store
 
 TODAY = date(2026, 9, 25)
 

@@ -1,6 +1,6 @@
 # Money pages, category rules and budgets, Review, Inventory and check-ins
 
-Status: implemented 2026-09-25 (migration 023, `checkin.py`, `static/finance.js`, `review.js`, `inventory.js`).
+Status: implemented 2026-09-25 (migration 023, `finance/checkin.py`, `app/static/finance.js`, `review.js`, `inventory.js`).
 
 Plan and record for four upgrades (2026-09-25): UI Phase C and Phase D from
 [ui-design-plan.md](ui-design-plan.md), category rules and monthly budgets, and the household

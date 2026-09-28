@@ -18,5 +18,5 @@ Never access it directly, even read-only.
 - Temporary scripts and scratch files may use Claude's session scratchpad, which is cleaned up.
 
 ## Skills in this project
-- `forecast-charts` — chart and chart-color rules; read before changing `src/home_manager/charts.py`,
+- `forecast-charts` — chart and chart-color rules; read before changing `src/home_manager/finance/charts.py`,
   the Home dashboard charts or any new chart.

@@ -3,9 +3,9 @@
 from fastapi.testclient import TestClient
 import pytest
 
-from home_manager.api import create_app
-from home_manager.forecast import AssetInput, Assets
-from home_manager.scanner import ScanLimits
+from home_manager.app.api import create_app
+from home_manager.finance.forecast import AssetInput, Assets
+from home_manager.library.scanner import ScanLimits
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe, value
 
 INVESTMENT = ["FIDELITY INVESTMENTS", "Roth IRA account X12345678", "Statement date 2026-08-31", "Currency USD", "Ending account value $52,340.18"]

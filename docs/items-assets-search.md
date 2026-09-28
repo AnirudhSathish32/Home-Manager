@@ -1,6 +1,6 @@
 # Item analysis, returns, statement assets and search
 
-Status: implemented 2026-09-25 (migration 024, `item_analysis.py`, `static/search.js`).
+Status: implemented 2026-09-25 (migration 024, `household/analysis.py`, `app/static/search.js`).
 
 Plan and record (2026-09-25) for: category rules after reconciliation, global search, B9 in the
 Documents list, H4 item analysis tools with assistant routing, opened/unopened tracking with
@@ -29,7 +29,7 @@ Unfiled document, why it is unfiled.
 
 ## 4. H4: item analysis tools
 
-Read-only tools over approved inventory lots (`item_analysis.py`); the model restates figures and
+Read-only tools over approved inventory lots (`household/analysis.py`); the model restates figures and
 never computes them. Exact Decimal arithmetic, rounded half-even to the minor unit for display.
 
 | Tool | Answers |

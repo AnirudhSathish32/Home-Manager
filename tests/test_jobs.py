@@ -5,9 +5,9 @@ import time
 
 from fastapi.testclient import TestClient
 
-from home_manager.api import create_app
-from home_manager.manager import Manager
-from home_manager.scanner import ScanLimits
+from home_manager.app.api import create_app
+from home_manager.app.manager import Manager
+from home_manager.library.scanner import ScanLimits
 from test_reasoning import prepared, proposal  # noqa: F401 (fixture)
 from test_receipts import make_receipt
 

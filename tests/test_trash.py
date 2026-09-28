@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from home_manager.api import create_app
-from home_manager.finance import Ledger
-from home_manager.scanner import ScanLimits
-from home_manager.storage import now
-from home_manager.trash import empty, cleanup
+from home_manager.app.api import create_app
+from home_manager.finance.ledger import Ledger
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import now
+from home_manager.library.trash import empty, cleanup
 from test_managed_library import library, scan
 
 

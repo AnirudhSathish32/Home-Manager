@@ -1,6 +1,6 @@
 # Forecast
 
-A deterministic projection of income, spending, cash, assets, loans and net worth, month by month, for 1 to 100 years. Implemented 2026-09-25: `forecast.py` (calculation), `charts.py` (SVG charts), `static/forecast.js` (page), migration 022 (`assets`). No model is involved; the same records and assumptions always give the same numbers and byte-identical charts.
+A deterministic projection of income, spending, cash, assets, loans and net worth, month by month, for 1 to 100 years. Implemented 2026-09-25: `finance/forecast.py` (calculation), `finance/charts.py` (SVG charts), `static/forecast.js` (page), migration 022 (`assets`). No model is involved; the same records and assumptions always give the same numbers and byte-identical charts.
 
 ## Starting point
 

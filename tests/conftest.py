@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from home_manager.scanner import Scanner, ScanLimits
-from home_manager.vision import VisionConfig
+from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.models.vision import VisionConfig
 
 
 def inbox_scan(store, files=None, **limits):

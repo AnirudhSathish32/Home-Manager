@@ -2,9 +2,9 @@ from fastapi.testclient import TestClient
 import pytest
 from pydantic import ValidationError
 
-from home_manager.api import create_app
-from home_manager.scanner import ScanLimits
-from home_manager.vision import VisionText
+from home_manager.app.api import create_app
+from home_manager.library.scanner import ScanLimits
+from home_manager.models.vision import VisionText
 from test_receipts import make_receipt
 
 
@@ -87,7 +87,7 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
 
 
 def test_bad_classification_keeps_capture_unfiled(tmp_path, local_model):
-    from home_manager.manager import Manager
+    from home_manager.app.manager import Manager
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     try:
         manager.configure(str(tmp_path / "managed"))

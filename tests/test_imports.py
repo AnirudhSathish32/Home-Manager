@@ -7,11 +7,11 @@ import zipfile
 from fastapi.testclient import TestClient
 import pytest
 
-from home_manager.api import create_app
-from home_manager.scanner import Scanner, ScanLimits
-from home_manager.storage import Store
-from home_manager.finance import Ledger
-from home_manager.tabular import ImportMapping, MappingError, TableError, parse_transactions
+from home_manager.app.api import create_app
+from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.storage import Store
+from home_manager.finance.ledger import Ledger
+from home_manager.finance.tabular import ImportMapping, MappingError, TableError, parse_transactions
 
 EXPORT = """Account: FIRST LOCAL BANK CHECKING ****4821
 Export date: 09/24/2026

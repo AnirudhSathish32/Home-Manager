@@ -4,10 +4,10 @@ import pytest
 from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
-from home_manager.api import create_app
-from home_manager.manager import Manager
-from home_manager.scanner import ScanLimits
-from home_manager.vision import VisionConfig, transcribe
+from home_manager.app.api import create_app
+from home_manager.app.manager import Manager
+from home_manager.library.scanner import ScanLimits
+from home_manager.models.vision import VisionConfig, transcribe
 from test_receipts import make_receipt
 
 

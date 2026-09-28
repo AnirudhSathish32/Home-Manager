@@ -5,12 +5,12 @@ from conftest import inbox_scan
 from fastapi.testclient import TestClient
 import pytest
 
-from home_manager.api import create_app
-from home_manager.finance import Ledger
-from home_manager.finance_tools import FinanceTools, call_tool
-from home_manager.reconcile import Reconciler
-from home_manager.scanner import ScanLimits
-from home_manager.storage import Store
+from home_manager.app.api import create_app
+from home_manager.finance.ledger import Ledger
+from home_manager.finance.tools import FinanceTools, call_tool
+from home_manager.finance.reconcile import Reconciler
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
 
 
 @pytest.fixture

@@ -4,12 +4,12 @@ import sqlite3
 
 import pytest
 
-from home_manager.manager import Manager
-from home_manager.managed_library import LIBRARY_FOLDERS, filename
+from home_manager.app.manager import Manager
+from home_manager.library.managed_library import LIBRARY_FOLDERS, filename
 from conftest import inbox_scan
-from home_manager.scanner import ScanLimits
-from home_manager.storage import MIGRATIONS, Store
-from home_manager.reasoning import ReasoningConfig
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import MIGRATIONS, Store
+from home_manager.documents.reasoning import ReasoningConfig
 from test_receipts import make_receipt
 from test_reasoning import proposal
 
@@ -161,7 +161,7 @@ def test_corrupt_blob_blocks_organization(library):
 
 
 def test_library_rejects_reparse_component(library, monkeypatch):
-    from home_manager import paths
+    from home_manager.core import paths
     store, source = library
     original = source / "a.csv"
     original.write_bytes(b"known capture")
@@ -232,7 +232,7 @@ def test_v6_migration_preserves_events_and_originals(tmp_path):
     blob = root / "originals" / digest[:2] / (digest + ".blob")
     blob.parent.mkdir(parents=True)
     blob.write_bytes(payload)
-    migrations = Path(__file__).parents[1] / "src/home_manager/migrations"
+    migrations = Path(__file__).parents[1] / "src/home_manager/library/migrations"
     with sqlite3.connect(root / "inventory.sqlite3") as db:
         for path in sorted(migrations.glob("*.sql"))[:6]:
             db.executescript(path.read_text())

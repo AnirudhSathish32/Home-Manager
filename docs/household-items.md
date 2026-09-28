@@ -1,6 +1,6 @@
 # Household items: resolution, inventory and consumption
 
-Design spec (drafted 2026-09-25). H1 and H2 are implemented (see Status); H3 and H4 are open. Builds on the canonical finance store (`receipt_items`, migration 011), the review states (`proposed`, `needs_review`, `verified`, `rejected`) and the Phase 9 assistant loop in `assistant.py`. The local model is gpt-oss-20b served by LM Studio on loopback.
+Design spec (drafted 2026-09-25). H1 and H2 are implemented (see Status); H3 and H4 are open. Builds on the canonical finance store (`receipt_items`, migration 011), the review states (`proposed`, `needs_review`, `verified`, `rejected`) and the Phase 9 assistant loop in `finance/assistant.py`. The local model is gpt-oss-20b served by LM Studio on loopback.
 
 ## Goals
 
@@ -81,7 +81,7 @@ Used only when the user answers a check-in in free text. Structured taps bypass 
 
 ### Finance assistant additions
 
-These are added to `finance_tools.py`. As with the existing tools, the model restates figures and never computes them.
+These are added to `finance/tools.py`. As with the existing tools, the model restates figures and never computes them.
 
 | Tool | Answers |
 |---|---|
@@ -130,7 +130,7 @@ A fixed list so analysis is stable. The model must choose from it: produce, dair
 
 ## Status (2026-09-25)
 
-Built: migration 021, `items.py` (proposals, approval, products, aliases, lots, run-out schedule, manual updates and one-level undo), `web_lookup.py` (Brave search, Open Food Facts, guarded page fetch), `item_tools.py` (the seven resolver tools), `item_resolver.py` (alias → product code → barcode → one short agent loop per line), API routes under `/api/receipts/{id}/item-resolution-runs`, `/api/items/resolutions` and `/api/inventory`, and `get_inventory` in the finance assistant. Tests: `tests/test_items.py`.
+Built: migration 021, `household/items.py` (proposals, approval, products, aliases, lots, run-out schedule, manual updates and one-level undo), `models/web_lookup.py` (Brave search, Open Food Facts, guarded page fetch), `household/resolver_tools.py` (the seven resolver tools), `household/resolver.py` (alias → product code → barcode → one short agent loop per line), API routes under `/api/receipts/{id}/item-resolution-runs`, `/api/items/resolutions` and `/api/inventory`, and `get_inventory` in the finance assistant. Tests: `tests/test_items.py`.
 
 Differences from the design above: the Brave key is read from the `HOME_MANAGER_BRAVE_API_KEY` environment variable until Windows credential storage is added. The first "still have it" answer sets a 7-day gap, then 14, 28 … 182. A lot's cost is the printed line total; how line discounts are printed varies, so they are not subtracted. There is no UI yet, and resolution runs only when requested, not automatically after extraction.
 

@@ -7,13 +7,13 @@ from fastapi.testclient import TestClient
 import pytest
 
 from conftest import documents_by_name, inbox_scan
-from home_manager.api import create_app
-from home_manager.charts import compact, forecast_charts, line_chart, nice_ticks
-from home_manager.finance import Ledger
-from home_manager.finance_tools import FinanceTools
-from home_manager.forecast import AssetInput, Assets, ForecastInput, baseline, forecast, project
-from home_manager.scanner import ScanLimits
-from home_manager.storage import Store
+from home_manager.app.api import create_app
+from home_manager.finance.charts import compact, forecast_charts, line_chart, nice_ticks
+from home_manager.finance.ledger import Ledger
+from home_manager.finance.tools import FinanceTools
+from home_manager.finance.forecast import AssetInput, Assets, ForecastInput, baseline, forecast, project
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
 
 TODAY = date(2026, 9, 25)
 

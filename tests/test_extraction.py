@@ -7,10 +7,10 @@ import time
 
 import pytest
 
-from home_manager.finance import HouseholdConfig
-from home_manager.manager import Manager
-from home_manager.reasoning import ReasoningConfig
-from home_manager.scanner import ScanLimits
+from home_manager.finance.ledger import HouseholdConfig
+from home_manager.app.manager import Manager
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.library.scanner import ScanLimits
 from test_receipts import make_receipt
 
 RECEIPT = ["LOCAL TEST CAFE", "2026-09-22", "USD", "Subtotal 20.00", "Tax 2.00", "Tip 3.00", "Total 25.00",
@@ -368,7 +368,7 @@ def test_an_inferred_seller_is_used_and_flagged_and_online_needs_delivery_eviden
 
 
 def test_descriptions_are_short_plain_labels_and_the_users_own_wins(receipt, local_model):
-    from home_manager.extraction import clean_description
+    from home_manager.documents.extraction import clean_description
     assert [clean_description(text, "Local Test Cafe") for text in ("Snacks & toiletries.", "bed frame", "Take-out")] == ["Snacks & toiletries", "Bed frame", "Take-out"]
     # Amounts, dates, the merchant, the document type and long phrases are never titles.
     assert [clean_description(text, "Local Test Cafe") for text in ("$30 snacks", "09/21 run", "Local Test Cafe lunch", "Grocery receipt",
@@ -430,7 +430,7 @@ def test_counting_a_flagged_record_anyway_records_the_warnings_and_undo_restores
 
 
 def test_descriptions_never_repeat_the_merchant_or_location_already_in_the_title(receipt, local_model):
-    from home_manager.extraction import clean_description
+    from home_manager.documents.extraction import clean_description
     assert [clean_description(text, "The Home Depot", "Online") for text in ("Home Depot", "Online order", "Bed frame", "Home goods")] == [
         None, None, "Bed frame", "Home goods"]
     assert [clean_description(text, "Target", "Milton") for text in ("Target run", "Milton", "Snacks/Office")] == [None, None, "Snacks/Office"]

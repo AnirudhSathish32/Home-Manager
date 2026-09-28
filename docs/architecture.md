@@ -215,51 +215,35 @@ Local hosting protects data location; it does not protect a compromised host, un
 
 Future meaningful actions need a distinct command service: produce a concrete proposal, show target/effect to an authenticated human, bind a short-lived single-use approval to exact arguments and current state, revalidate before execution, use idempotency keys, and audit outcome. A model-produced 'yes' cannot approve anything. V1 permits only the bounded local report creation described above alongside user-initiated ingestion/review; omit money movement, email sending, document deletion, and cancellation capabilities entirely.
 
-## Proposed repository structure
+## Repository structure
 
-This is a target layout, not a request to scaffold all files now.
+`src/home_manager/` is grouped by responsibility. Package `__init__.py` files are empty; modules import each other directly (`from ..core.money import format_minor`).
 
 ```text
-docs/
-  architecture.md
-  milestones.md
-  document-reading.md
-  document-parsing.md
-  decisions/                 # ADRs only as decisions are accepted
-pyproject.toml               # future package/dependency/test configuration
 src/home_manager/
-  domain/                    # money, periods, financial policies, entities
-  services/                  # calculations, search, matching, review commands
-  persistence/               # repositories, ORM mappings, unit of work
-  documents/                 # local blob storage and search interface
-  reports/                   # report specs, snapshots, XLSX writer, manifests
-  ingestion/                 # jobs, parsing, staging, validation
-    vision.py                # local text-only vision transcription
-  connectors/                # CSV, local files, later read-only email
-    exchange_rates/          # read-only ECB downloads and validated local rate imports
-  tools/                     # schemas, registry, policy, service wrappers
-  agent/                     # bounded loop, context, grounded answer schema
-  models/                    # local chat and optional classifier adapters
-  api/                       # FastAPI routes, identity, dependency wiring
-  security/                  # access policy, secrets integration, redaction
-  observability/             # local run events and timing
-  config.py
-  worker.py
-migrations/
-tests/
-  unit/
-  integration/
-  contracts/
-  security/
-  fixtures/                  # synthetic only
-evals/
-  datasets/                  # synthetic labeled cases and versioned schema
-  scoring/
-  reports/                   # generated reports excluded from Git
-frontend/                    # later minimal UI
+  __main__.py                # launcher: `home-manager`
+  core/                      # foundations with no domain knowledge
+    money.py formats.py folders.py paths.py jobs.py worker_limits.py
+  library/                   # the document store and its lifecycle
+    storage.py migrations/ managed_library.py trash.py scanner.py
+    organization.py backup.py share.py
+  models/                    # local model transport, Laya, vision, web lookups
+    model_client.py model_stream.py laya_runtime.py vision.py web_lookup.py
+  documents/                 # reading documents into evidence and records
+    pdf_reader.py receipt_schema.py receipt_service.py receipt_worker.py
+    receipt_batch.py reasoning.py extraction.py reviewer.py
+  finance/                   # canonical ledger, deterministic tools and views
+    ledger.py tools.py reconcile.py tabular.py forecast.py charts.py
+    dashboard.py assistant.py checkin.py
+  household/                 # items, inventory and warranties
+    items.py analysis.py resolver.py resolver_tools.py warranty.py
+  app/                       # wiring: work queues, loopback API and UI
+    manager.py api.py static/
+tests/                       # flat pytest modules; synthetic data only
+docs/
 ```
 
-Runtime database, originals, extracted text, indexes, secrets, private fixtures, and backups live in a configured private data directory outside the repository. Do not commit empty scaffolding merely to match this tree. Add modules as milestones need them.
+Runtime database, originals, extracted text, indexes, secrets, private fixtures, and backups live in a configured private data directory outside the repository.
 
 ## Requirements to simplify or clarify
 

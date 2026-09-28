@@ -4,7 +4,7 @@ import secrets
 
 import uvicorn
 
-from .api import create_app
+from .app.api import create_app
 
 
 def main():
@@ -14,8 +14,8 @@ def main():
     parser.add_argument("--install-laya", action="store_true", help="Download the pinned Laya checkpoint once (about 850 MB), then exit.")
     args = parser.parse_args()
     if args.install_laya:
-        from .laya_runtime import install
-        from .manager import default_control_dir
+        from .models.laya_runtime import install
+        from .app.manager import default_control_dir
         print("Laya installed at", install((args.control_dir or default_control_dir()) / "models" / "laya"))
         return
     if not 1024 <= args.port <= 65535:

@@ -28,7 +28,8 @@ home-manager = "home_manager.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-home_manager = ["static/*", "migrations/*.sql"]
+"home_manager.app" = ["static/*"]
+"home_manager.library" = ["migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

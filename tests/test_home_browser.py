@@ -10,8 +10,8 @@ import time
 import pytest
 import uvicorn
 
-from home_manager.api import create_app
-from home_manager.scanner import Scanner, ScanLimits
+from home_manager.app.api import create_app
+from home_manager.library.scanner import Scanner, ScanLimits
 from test_reconcile_tools import add
 
 

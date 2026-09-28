@@ -9,8 +9,8 @@ import time
 import pytest
 import uvicorn
 
-from home_manager.api import create_app
-from home_manager.scanner import ScanLimits
+from home_manager.app.api import create_app
+from home_manager.library.scanner import ScanLimits
 
 
 def row_action(page, name, row_text=None):

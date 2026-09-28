@@ -8,9 +8,9 @@ import types
 
 import pytest
 
-from home_manager.jobs import Work
-from home_manager.laya_runtime import OFFLINE, LayaRuntime, LayaUnavailable
-from home_manager.reviewer import ReviewerConfig
+from home_manager.core.jobs import Work
+from home_manager.models.laya_runtime import OFFLINE, LayaRuntime, LayaUnavailable
+from home_manager.documents.reviewer import ReviewerConfig
 from test_extraction import classification, extract, identity, receipt, receipt_items, receipt_summary  # noqa: F401 (fixture)
 
 
@@ -101,7 +101,7 @@ def test_laya_can_only_flag_a_failure_never_blocks_and_absent_weights_skip_it(re
 
 
 def test_laya_audit_review_is_advisory_and_never_blocks_filing(receipt):
-    from home_manager.reviewer import laya_review
+    from home_manager.documents.reviewer import laya_review
     from test_reasoning import proposal
     manager, doc, parse_id = receipt
     analysis = proposal()

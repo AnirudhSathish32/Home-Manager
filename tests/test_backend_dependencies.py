@@ -6,17 +6,17 @@ import socket
 from fastapi.testclient import TestClient
 import pytest
 
-from home_manager.api import create_app
-from home_manager.assistant import AssistantService
-from home_manager.backup import BackupService, restore_backup, verify_backup
-from home_manager.finance_tools import AsOfInput, CompareInput, FinanceTools, PeriodInput, SeriesInput, TransactionsInput, call_tool
-from home_manager.jobs import Work
-from home_manager.model_client import check_connection
-from home_manager.paths import PathError, separate_folder
-from home_manager.reasoning import ReasoningConfig
-from home_manager.reconcile import Reconciler
-from home_manager.scanner import ScanLimits
-from home_manager.storage import Store
+from home_manager.app.api import create_app
+from home_manager.finance.assistant import AssistantService
+from home_manager.library.backup import BackupService, restore_backup, verify_backup
+from home_manager.finance.tools import AsOfInput, CompareInput, FinanceTools, PeriodInput, SeriesInput, TransactionsInput, call_tool
+from home_manager.core.jobs import Work
+from home_manager.models.model_client import check_connection
+from home_manager.core.paths import PathError, separate_folder
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.finance.reconcile import Reconciler
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
 from test_reconcile_tools import add, books, receipt, source_of  # noqa: F401  (books is a fixture)
 
 

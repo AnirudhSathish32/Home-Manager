@@ -2,7 +2,7 @@
 
 Status: **reviewed 2026-09-24** (decisions in §10). Implementation proceeds by phase (§9). It replaces `homepage-proposal.md`, which only covered the document list.
 
-Inputs: `Home_Manager_Architecture_Implementation_Spec.docx`, `v2-phases.md`, and the current frontend (`static/index.html`, `style.css`, `app.js`, `library.js`, `receipt.js`, `finance.js`), plus the API it calls (`api.py`, `finance_tools.py`, `storage.py`).
+Inputs: `Home_Manager_Architecture_Implementation_Spec.docx`, `v2-phases.md`, and the current frontend (`app/static/index.html`, `style.css`, `app.js`, `library.js`, `receipt.js`, `finance.js`), plus the API it calls (`app/api.py`, `finance/tools.py`, `library/storage.py`).
 
 ---
 
@@ -65,7 +65,7 @@ A redesign has to keep every one of these working.
 - **Capture and inference run on separate queues**, and model work can be cancelled from anywhere.
 - **Destructive actions require confirmation.** Trash is reversible, and the dialog is explicit that nothing is deleted from disk.
 - **Existing accessibility work:** ARIA tabs with arrow keys, native `<dialog>`, live regions, and `prefers-reduced-motion`.
-- **The security envelope.** The strict CSP (`script-src 'self'; style-src 'self'`), the bearer token in the URL fragment, and no third-party assets. The redesign adds **no CDN fonts, scripts, or chart libraries**. Icons and any font are vendored under `static/`.
+- **The security envelope.** The strict CSP (`script-src 'self'; style-src 'self'`), the bearer token in the URL fragment, and no third-party assets. The redesign adds **no CDN fonts, scripts, or chart libraries**. Icons and any font are vendored under `app/static/`.
 
 ---
 
@@ -494,7 +494,7 @@ All components are vanilla JS factory functions in a `ui.js` module. They return
 | **Toast** | transient confirmation with an optional Undo, `aria-live="polite"` | replaces the global `#notice` line |
 | **EmptyState** | message + optional action, sized to the region | |
 | **Skeleton** | row and figure placeholders at their final size | |
-| **Icon** | an SVG sprite vendored at `static/icons.svg` (a Lucide subset, ISC license) | no emoji |
+| **Icon** | an SVG sprite vendored at `app/static/icons.svg` (a Lucide subset, ISC license) | no emoji |
 
 ### 4.4 Status vocabulary (one map, used everywhere)
 
@@ -552,7 +552,7 @@ The rule stays: **the browser does no money arithmetic.** It never sums, subtrac
 
 Presentation, though, needs more than the current `display` string (`-1,234.56 USD`). Two options:
 
-- **A, backend (not chosen):** the `money()` helper and `format_minor` add a `parts` object: `{sign: "-", magnitude: "1,234.56", currency: "USD", symbol: "$"}`. The UI composes `−$1,234.56` or `−1,234.56 USD` without parsing. This is a tiny, additive, deterministic change in `money.py` (B14).
+- **A, backend (not chosen):** the `money()` helper and `format_minor` add a `parts` object: `{sign: "-", magnitude: "1,234.56", currency: "USD", symbol: "$"}`. The UI composes `−$1,234.56` or `−1,234.56 USD` without parsing. This is a tiny, additive, deterministic change in `core/money.py` (B14).
 - **B, UI-only (chosen):** AmountDisplay derives the sign from the leading `-` of `decimal` and shows `display` without the sign. That's lexical, not arithmetic, and needs no backend change, but the currency code stays trailing.
 
 **Display rules:**
@@ -628,7 +628,7 @@ Each phase ships a working app. At every phase the opt-in browser test (`RUN_BRO
 
 ### Phase A: foundation and shell (no behavior change) — done 2026-09-24
 
-Implemented as `static/ui.js` (primitives), `static/shell.js` (hash router, sidebar) and a token-based `style.css`. Pages mount at `#/documents` (default until Overview exists), `#/finances`, `#/processing` and `#/settings`. Beyond the list below: identical poll results no longer re-render the document table (open menus and focus survive), overflow menus are fixed-positioned so scrolling tables can't clip them, the sidebar collapses to an icon rail below 1280px, and changing the managed library folder asks for confirmation.
+Implemented as `app/static/ui.js` (primitives), `app/static/shell.js` (hash router, sidebar) and a token-based `style.css`. Pages mount at `#/documents` (default until Overview exists), `#/finances`, `#/processing` and `#/settings`. Beyond the list below: identical poll results no longer re-render the document table (open menus and focus survive), overflow menus are fixed-positioned so scrolling tables can't clip them, the sidebar collapses to an icon rail below 1280px, and changing the managed library folder asks for confirmation.
 
 - `tokens.css` + a rewritten `style.css` on the tokens. This removes the two-generation override layering.
 - `ui.js` primitives: Button variants, StatusBadge + the status map, AmountDisplay (option B), DateDisplay, Panel, EmptyState, Skeleton, Alert, Toast, Menu, Dialog/ConfirmDialog, Icon sprite.

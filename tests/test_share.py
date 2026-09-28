@@ -8,13 +8,13 @@ from fastapi.testclient import TestClient
 import pytest
 
 from conftest import inbox_scan
-from home_manager import share
-from home_manager.api import create_app
-from home_manager.manager import Manager
-from home_manager.paths import PathError
-from home_manager.scanner import ScanLimits
-from home_manager.share import DecryptingReader, EncryptingWriter, ShareError, export_share, open_share
-from home_manager.storage import Store
+from home_manager.library import share
+from home_manager.app.api import create_app
+from home_manager.app.manager import Manager
+from home_manager.core.paths import PathError
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.share import DecryptingReader, EncryptingWriter, ShareError, export_share, open_share
+from home_manager.library.storage import Store
 
 PASSPHRASE = "correct horse battery staple"
 

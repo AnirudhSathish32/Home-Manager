@@ -2,10 +2,10 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 
-from home_manager.api import create_app
-from home_manager.dashboard import dashboard
-from home_manager.finance_tools import FinanceTools, TransactionsInput
-from home_manager.scanner import ScanLimits
+from home_manager.app.api import create_app
+from home_manager.finance.dashboard import dashboard
+from home_manager.finance.tools import FinanceTools, TransactionsInput
+from home_manager.library.scanner import ScanLimits
 from test_reconcile_tools import books, add, receipt
 
 

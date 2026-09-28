@@ -1,6 +1,6 @@
 # Warranties, automatic item identification, UI Phases E and F
 
-Plan and record (2026-09-25). Migration 025. Status: implemented (`warranty.py`, `static/processing.js`, `static/assistant.js`).
+Plan and record (2026-09-25). Migration 025. Status: implemented (`household/warranty.py`, `app/static/processing.js`, `app/static/assistant.js`).
 
 ## 1. Warranties
 

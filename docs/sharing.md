@@ -1,6 +1,6 @@
 # Sharing a library
 
-One person exports an encrypted `.hmshare` file; another opens it as a temporary, separate library. Implemented 2026-09-25 (`share.py`, `Manager.start_share_export` / `start_session` / `end_session`).
+One person exports an encrypted `.hmshare` file; another opens it as a temporary, separate library. Implemented 2026-09-25 (`library/share.py`, `Manager.start_share_export` / `start_session` / `end_session`).
 
 ## Use
 

@@ -7,15 +7,15 @@ import json
 from fastapi.testclient import TestClient
 import pytest
 
-from home_manager.api import create_app
-from home_manager.finance import HouseholdConfig, Ledger
-from home_manager.items import ItemLedger, ResolutionFields
-from home_manager.jobs import Work
-from home_manager.reasoning import ReasoningConfig
-from home_manager.scanner import ScanLimits
-from home_manager.storage import Store
-from home_manager.warranty import Warranties, WarrantyService, WarrantyTools, stated_months
-from home_manager.web_lookup import BRAVE_SEARCH, WebLookup
+from home_manager.app.api import create_app
+from home_manager.finance.ledger import HouseholdConfig, Ledger
+from home_manager.household.items import ItemLedger, ResolutionFields
+from home_manager.core.jobs import Work
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
+from home_manager.household.warranty import Warranties, WarrantyService, WarrantyTools, stated_months
+from home_manager.models.web_lookup import BRAVE_SEARCH, WebLookup
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
 
 TODAY = date(2026, 9, 25)
@@ -95,7 +95,7 @@ def test_lookup_proposals_must_quote_the_page_and_state_the_length(home):
     fetch = FakeWeb()
     tools = WarrantyTools(Warranties(store), WebLookup(store, fetch, key="k"), laptop["id"], "run1")
     assert tools.get_item()["brand"] == "Acme"
-    from home_manager.warranty import OpenInput, ProposeInput, SearchInput
+    from home_manager.household.warranty import OpenInput, ProposeInput, SearchInput
     with pytest.raises(ValueError, match="prices"):
         tools.web_search(SearchInput(query="Acme Book 899.00 warranty"))
     with pytest.raises(ValueError, match="location"):
@@ -163,8 +163,8 @@ def test_receipts_are_identified_automatically_after_recording(tmp_path, local_m
 
 
 def test_the_assistant_receives_the_page_as_labelled_context(home, local_model):
-    from home_manager.assistant import AssistantService
-    from home_manager.finance_tools import FinanceTools
+    from home_manager.finance.assistant import AssistantService
+    from home_manager.finance.tools import FinanceTools
     store, docs, buy = home
     config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
     service = AssistantService(store, FinanceTools(store))
