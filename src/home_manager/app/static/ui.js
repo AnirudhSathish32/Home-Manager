@@ -75,6 +75,8 @@ const STATUS = {
   within: ["Within budget", "positive", "check"], not_started: ["Not started", "neutral", "clock"],
   past_due_unpaid: ["Past due · marked unpaid", "danger", "alert"], paid: ["Paid", "positive", "check"],
   in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
+  // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.
+  reconciled: ["Reconciled", "positive", "check-circle"], receipt: ["Receipt only", "info", "file"], statement: ["Statement only", "neutral", null],
   ready_to_import: ["Ready to import", "neutral", null], in_trash: ["In Trash", "neutral", null], process_failed: ["Couldn't process", "danger", "octagon"],
 };
 // How often a recurring bill is paid, as shown to people.

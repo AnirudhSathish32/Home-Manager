@@ -148,26 +148,31 @@
 
     <section id="transactions-panel" class="page" data-page="transactions" aria-labelledby="transactions-title" hidden>
       <header class="page-header"><div><h1 id="transactions-title" tabindex="-1">Transactions</h1>
-        <p class="page-subtitle">Every imported or extracted transaction, with its evidence. Filters run on the server; nothing here is estimated.</p></div></header>
+        <p class="page-subtitle">Everything you spent, item by item, with its category and whether a statement and a receipt agree. Filters run on the server; nothing here is estimated.</p></div></header>
       <div class="toolbar money-toolbar">
-        <input id="tx-search" type="search" placeholder="Search description or merchant" aria-label="Search transactions" autocomplete="off">
+        <label class="inline-field">Show <select id="tx-view"><option value="">Items</option><option value="charges">Charges</option></select></label>
+        <input id="tx-search" type="search" placeholder="Search description, merchant or item" aria-label="Search transactions" autocomplete="off">
         <label class="inline-field">Period <select id="tx-period"><option value="custom">Custom</option><option value="this_month">This month</option><option value="last_month">Last month</option>
           <option value="last_90">Last 90 days</option><option value="year">Year to date</option><option value="all">All dates</option></select></label>
         <label class="inline-field">From <input id="tx-from" type="date"></label>
         <label class="inline-field">To <input id="tx-to" type="date"></label>
         <label class="inline-field">Account <select id="tx-account"><option value="">All accounts</option></select></label>
         <label class="inline-field">Category <select id="tx-category"><option value="">All categories</option></select></label>
-        <label class="inline-field">Type <select id="tx-type"><option value="">All types</option><option value="purchase,withdrawal">Purchases</option><option value="refund">Refunds</option>
+        <label class="inline-field charges-only">Type <select id="tx-type"><option value="">All types</option><option value="purchase,withdrawal">Purchases</option><option value="refund">Refunds</option>
           <option value="transfer,payment">Transfers &amp; payments</option><option value="deposit">Income</option><option value="fee,interest">Fees &amp; interest</option></select></label>
-        <label class="inline-field">Status <select id="tx-status"><option value="">Counted and awaiting review</option><option value="counted">Counted</option>
+        <label class="inline-field charges-only">Status <select id="tx-status"><option value="">Counted and awaiting review</option><option value="counted">Counted</option>
           <option value="pending">Awaiting review</option><option value="rejected">Rejected</option></select></label>
-        <label class="inline-field">Receipt <select id="tx-receipt"><option value="">Any</option><option value="true">Has receipt</option><option value="false">No receipt</option></select></label>
-        <label class="inline-field">Sort <select id="tx-sort"><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option>
+        <label class="inline-field charges-only">Receipt <select id="tx-receipt"><option value="">Any</option><option value="true">Has receipt</option><option value="false">No receipt</option></select></label>
+        <label class="inline-field charges-only">Sort <select id="tx-sort"><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option>
           <option value="amount_asc">Largest spending first</option><option value="amount_desc">Largest money in first</option><option value="description">Description</option></select></label>
         <button id="tx-clear" type="button" class="quiet">Clear filters</button>
       </div>
       <p id="tx-summary" class="muted small" aria-live="polite"></p>
-      <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Description</th><th scope="col">Account</th>
+      <p id="item-backfill" class="callout" hidden></p>
+      <div id="item-table" class="table-wrap"><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Item</th><th scope="col">Account</th>
+        <th scope="col">Category</th><th scope="col">Status</th><th scope="col" class="numeric">Paid</th></tr></thead>
+        <tbody id="item-rows"></tbody></table></div>
+      <div id="charge-table" class="table-wrap" hidden><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Description</th><th scope="col">Account</th>
         <th scope="col">Category</th><th scope="col"><span class="visually-hidden">Receipt</span></th><th scope="col">Status</th><th scope="col" class="numeric">Amount</th></tr></thead>
         <tbody id="tx-rows"></tbody></table></div>
       <div class="pager"><button id="tx-prev" type="button">Previous</button><span id="tx-page"></span><button id="tx-next" type="button">Next</button></div>

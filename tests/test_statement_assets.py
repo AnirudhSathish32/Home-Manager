@@ -86,7 +86,7 @@ def test_one_asset_per_account_newer_statements_update_it(tmp_path, local_model)
 def test_a_printed_return_policy_is_stored_with_the_receipt(tmp_path, local_model):
     manager, doc, parse_id = transcribe(tmp_path, local_model, RECEIPT)
     try:
-        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None}]
+        local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
         run = extract(manager, doc, parse_id)
         with manager.store.connection() as db:
             row = db.execute("SELECT return_days_printed,return_policy_quote FROM receipts WHERE id=?", (run["publication"]["id"],)).fetchone()

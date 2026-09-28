@@ -485,6 +485,9 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .receipt-summary > div { min-width: 0; overflow-wrap: anywhere; }
 .receipt-summary small { margin-bottom: 2px; }
 .receipt-summary strong { font-size: var(--text-lg); font-weight: 600; }
+/* A receipt spanning several categories shows each one, largest share first. */
+.receipt-summary strong:has(.category-tag) { display: flex; flex-wrap: wrap; gap: var(--space-1); font-size: var(--text-sm); }
+.category-tag { padding: 1px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-sunken); font-weight: 500; }
 .history-section { padding: var(--space-2) 0 var(--space-4); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
 .history-section label { width: 100%; }
 .history-section select { margin-top: var(--space-1); }

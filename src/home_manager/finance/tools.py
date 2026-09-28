@@ -19,7 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
-from .ledger import COUNTABLE, PENDING, SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, name_tokens, normalize_name
+from .ledger import (COUNTABLE, PENDING, RECEIPT_SPLIT_CATEGORY, RECEIPT_SPLIT_SPENT, RECEIPT_SPLITS, SPENDING, SPLIT_CATEGORY, SPLIT_SPENT,
+                     STANDALONE_RECEIPT, TRANSACTION_SPLITS, Ledger, in_categories, name_tokens, normalize_name)
 from .reconcile import RECEIPT_POSTING_DAYS, shift
 
 SPENDING_TYPES = ",".join(f"'{kind}'" for kind in SPENDING)
@@ -33,6 +34,8 @@ HAS_RECEIPT = "EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.transact
 # A receipt with no link to a charge that the user has not rejected.
 UNLINKED_RECEIPT = "r.review_status<>'rejected' AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status<>'rejected')"
 MAX_SERIES_MONTHS = 36
+# A spending-items row: one receipt item, a tip or other amount no item carries, or a whole charge or receipt.
+ROW_KIND = "CASE WHEN s.id IS NULL THEN 'charge' WHEN s.receipt_item_id IS NULL THEN 'extra' ELSE 'item' END"
 RECEIPT_NOTE = ("Spending counts card and bank lines plus approved receipts that no line has replaced yet (from_receipts, receipts). "
                 "When a statement line matches a receipt, the line counts instead, never both.")
 PENDING_NOTE = "pending_review holds extracted lines awaiting review and statement lines waiting for you to reconcile their statement; they are not counted yet."
@@ -118,6 +121,17 @@ class TransactionsInput(ToolInput):
     metric: Literal["spending", "inflow", "cashflow", "categories"] | None = None
     has_receipt: bool | None = None
     sort: Literal[*TRANSACTION_SORTS] = "date_desc"
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    limit: int = Field(default=200, ge=1, le=1000)
+
+
+class SpendingItemsInput(ToolInput):
+    start: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    account_id: int | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=60, description="A category name, or 'uncategorized'.")
+    categories: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    query: str | None = Field(default=None, max_length=200, description="Words in the merchant, charge description or item name.")
     offset: int = Field(default=0, ge=0, le=1_000_000)
     limit: int = Field(default=200, ge=1, le=1000)
 
@@ -222,14 +236,14 @@ class FinanceTools(ItemAnalysisTools):
                 clauses.append(f"{column}{operator}?")
                 params.append(item)
         if value.category:
-            clauses.append(f"{TRANSACTION_CATEGORY}=?")
-            params.append(" ".join(value.category.split()).lower())
+            clauses.append(in_categories(1))
+            params += [" ".join(value.category.split()).lower()] * 2
         if value.currency:
             clauses.append("t.currency=?")
             params.append(currency_code(value.currency))
         if value.categories:
-            clauses.append(f"{TRANSACTION_CATEGORY} IN ({','.join('?' * len(value.categories))})")
-            params += value.categories
+            clauses.append(in_categories(len(value.categories)))
+            params += value.categories * 2
         if value.metric:
             spending = f"t.transaction_type IN ({SPENDING_TYPES},'refund')"
             inflow = "(t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other'))"
@@ -328,14 +342,15 @@ class FinanceTools(ItemAnalysisTools):
 
     def _category_totals(self, start, end, account_id):
         """(currency, category) -> (spending, count), with receipts no line has replaced unless one account is asked for.
-        A transaction without its own category takes its matched receipt's."""
+        A charge or receipt with categorised items is divided by item category (finance/splits.py); count is the
+        number of charges and receipts with spending in the category."""
         scope, params = scope_of(start, end, account_id)
         totals = defaultdict(lambda: [0, 0])
-        rows = self.query(f"SELECT t.currency,{TRANSACTION_CATEGORY} AS category,-sum(t.amount_minor) AS total,count(*) AS count "
-                          f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)
+        rows = self.query(f"SELECT t.currency,{SPLIT_CATEGORY} AS category,sum({SPLIT_SPENT}) AS total,count(DISTINCT t.id) AS count "
+                          f"FROM transactions t {TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)
         if account_id is None:
-            rows += self.query(f"SELECT r.currency,coalesce(r.category,'uncategorized') AS category,sum(r.total_minor) AS total,count(*) AS count "
-                               f"FROM receipts r WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end))
+            rows += self.query(f"SELECT r.currency,{RECEIPT_SPLIT_CATEGORY} AS category,sum({RECEIPT_SPLIT_SPENT}) AS total,count(DISTINCT r.id) AS count "
+                               f"FROM receipts r {RECEIPT_SPLITS} WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end))
         for row in rows:
             totals[(row["currency"], row["category"])][0] += row["total"]
             totals[(row["currency"], row["category"])][1] += row["count"]
@@ -360,6 +375,60 @@ class FinanceTools(ItemAnalysisTools):
                                for (currency, category), (total, count) in categories],
                 "top_merchants": [{"currency": currency, "merchant": name, "spending": money(total, currency), "transactions": count}
                                   for (currency, name), (total, count) in top]}
+
+    def get_spending_items(self, value):
+        """Counted spending one item per row, like a statement that lists what was bought: each charge's or receipt's
+        items with their share of what was paid, or the charge itself when no itemised receipt is matched to it.
+        status: reconciled (a statement line and a receipt agree), statement (a line with no receipt) or receipt
+        (a receipt no line has replaced yet)."""
+        dated, params = [], []
+        for bound, operator in ((value.start, ">="), (value.end, "<=")):
+            if bound is not None:
+                dated.append(operator)
+                params.append(bound)
+        charge_scope = "".join(f" AND t.posted_date{operator}?" for operator in dated)
+        receipt_scope = "".join(f" AND r.purchase_date{operator}?" for operator in dated)
+        if value.account_id is not None:
+            charge_scope += " AND t.account_id=?"
+        linked = "(SELECT l.receipt_id FROM transaction_receipt_links l WHERE l.transaction_id=t.id AND l.review_status<>'rejected' ORDER BY l.id LIMIT 1)"
+        rows = (f"SELECT 'transaction' AS source,t.id AS transaction_id,{linked} AS receipt_id,t.posted_date AS date,"
+                f"coalesce(m.canonical_name,t.description_raw) AS merchant,t.description_raw AS description,{ROW_KIND} AS kind,i.position,i.description AS item,"
+                f"i.line_total_minor,i.discount_minor,i.category_source AS item_category_source,{SPLIT_CATEGORY} AS category,{SPLIT_SPENT} AS amount_minor,"
+                f"t.currency,a.display_name AS account,t.category_source,CASE WHEN {linked} IS NOT NULL THEN 'reconciled' ELSE 'statement' END AS status,"
+                f"(SELECT document_id FROM receipts WHERE id={linked}) AS receipt_document_id "
+                f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id {TRANSACTION_SPLITS} "
+                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES}){charge_scope}")
+        params = [*params, *([value.account_id] if value.account_id is not None else [])]
+        if value.account_id is None:
+            rows += (f" UNION ALL SELECT 'receipt',NULL,r.id,r.purchase_date,coalesce(m.canonical_name,'Unknown merchant'),r.description,{ROW_KIND},i.position,i.description,"
+                     f"i.line_total_minor,i.discount_minor,i.category_source,{RECEIPT_SPLIT_CATEGORY},{RECEIPT_SPLIT_SPENT},r.currency,NULL,NULL,'receipt',r.document_id "
+                     f"FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id {RECEIPT_SPLITS} LEFT JOIN receipt_items i ON i.id=s.receipt_item_id "
+                     f"WHERE {STANDALONE_RECEIPT}{receipt_scope}")
+            params += params[:len(dated)]
+        clauses, filters = [], []
+        if value.category:
+            clauses.append("category=?")
+            filters.append(" ".join(value.category.split()).lower())
+        if value.categories:
+            clauses.append(f"category IN ({','.join('?' * len(value.categories))})")
+            filters += value.categories
+        for token in normalize_name(value.query).split() if value.query else []:
+            clauses.append("instr(' '||normalized_name(merchant||' '||coalesce(description,'')||' '||coalesce(item,''))||' ',?)>0")
+            filters.append(f" {token} ")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connection() as db:
+            total = db.execute(f"SELECT count(*) FROM ({rows}){where}", [*params, *filters]).fetchone()[0]
+            found = [dict(row) for row in db.execute(
+                f"SELECT * FROM ({rows}){where} ORDER BY date DESC,source,transaction_id DESC,receipt_id DESC,position IS NULL,position "
+                "LIMIT ? OFFSET ?", [*params, *filters, value.limit, value.offset])]
+        for row in found:
+            row["amount"] = money(row["amount_minor"], row["currency"])
+            row["line_total"] = money(row["line_total_minor"], row["currency"]) if row["line_total_minor"] is not None else None
+        return {"items": found, "total_matching": total, "offset": value.offset, "limit": value.limit,
+                "notes": ["amount is the item's share of what was paid, including its part of tax and receipt-wide discounts; "
+                          "rows for one charge or receipt add up to it exactly.",
+                          "kind: item (one receipt item), extra (a tip or an amount no item carries) or charge (a whole charge or receipt without items).",
+                          RECEIPT_NOTE]}
 
     def compare_periods(self, value):
         first, second = (self._net_by_currency(period.start, period.end, period.account_id) for period in (value.first, value.second))
@@ -431,9 +500,10 @@ class FinanceTools(ItemAnalysisTools):
                           "Extracted transactions awaiting review are not counted until verified."]}
 
     def get_categories(self, _=None):
-        """Every category in use by transactions, budgets or rules, with its transaction count."""
+        """Every category in use by transactions, receipt items, budgets or rules, with its transaction count."""
         rows = self.query("SELECT category,sum(n) AS transactions FROM (SELECT t.category,count(*) AS n FROM transactions t WHERE t.category IS NOT NULL "
-                          "GROUP BY 1 UNION ALL SELECT category,0 FROM budgets UNION ALL SELECT category,0 FROM category_rules) GROUP BY 1 ORDER BY 1")
+                          "GROUP BY 1 UNION ALL SELECT category,0 FROM category_splits WHERE category<>'uncategorized' UNION ALL SELECT category,0 FROM budgets "
+                          "UNION ALL SELECT category,0 FROM category_rules) GROUP BY 1 ORDER BY 1")
         return {"categories": rows}
 
     def calculate_cashflow(self, value):
@@ -587,7 +657,8 @@ class FinanceTools(ItemAnalysisTools):
 TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (AccountInput, "get_account_balance"),
          "get_transactions": (TransactionsInput, "get_transactions"), "get_spending": (PeriodInput, "get_spending"),
          "spending_series": (SeriesInput, "spending_series"),
-         "get_spending_by_category": (PeriodInput, "get_spending_by_category"), "compare_periods": (CompareInput, "compare_periods"),
+         "get_spending_by_category": (PeriodInput, "get_spending_by_category"), "get_spending_items": (SpendingItemsInput, "get_spending_items"),
+         "compare_periods": (CompareInput, "compare_periods"),
          "compare_categories": (CompareInput, "compare_categories"),
          "calculate_cashflow": (PeriodInput, "calculate_cashflow"), "get_recurring_obligations": (EmptyInput, "get_recurring_obligations"),
          "get_upcoming_bills": (AsOfInput, "get_upcoming_bills"), "find_receipt": (ReceiptSearchInput, "find_receipt"),

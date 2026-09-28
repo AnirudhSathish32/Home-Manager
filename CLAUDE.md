@@ -20,3 +20,7 @@ Never access it directly, even read-only.
 ## Skills in this project
 - `forecast-charts` — chart and chart-color rules; read before changing `src/home_manager/finance/charts.py`,
   the Home dashboard charts or any new chart.
+- `app-ux` — this app's screen rules (decision in view, source beside the record, tokens, status, money);
+  read before changing any page, layout, dialog or flow in `src/home_manager/app/static/`.
+- `frontend-design` — Anthropic's visual-design skill (Apache 2.0, copied from anthropics/claude-code); use for
+  visual direction within the `app-ux` tokens, never to replace them.

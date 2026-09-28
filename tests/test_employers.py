@@ -14,7 +14,7 @@ from home_manager.app.api import create_app
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.household.tax_tables import TaxTables
-from home_manager.library.managed_library import employer_folder
+from home_manager.library.managed_library import clean_label, employer_folder, spelled
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.trash import empty
 from test_extraction import MISSING, cite, extract, transcribe, value
@@ -128,6 +128,29 @@ def test_an_offer_letter_files_in_the_employers_documents(tmp_path, local_model)
         assert filed["managed_path"].startswith("Jobs/Google/Documents/2026/08/2026-08-01__Offer_Letter__Google__")
     finally:
         manager.close()
+
+
+W2 = ["GOOGLE", "W-2 Wage and Tax Statement", "Date: 2027-01-31", "Wages, tips, other compensation 94,770.00"]
+
+
+def test_a_w2_files_in_the_employers_documents_with_its_number_spelled(tmp_path, local_model):
+    manager, doc, parse_id = transcribe(tmp_path, local_model, W2)
+    try:
+        local_model["outputs"] = [stub_classification(W2, "employment_document", date_line=3, date="2027-01-31"),
+                                  {"employer": value("Google", 1, "GOOGLE"), "document_name": value("W-2", 2, "W-2"),
+                                   "document_date": value("2027-01-31", 3, "2027-01-31")}]
+        extract(manager, doc, parse_id)
+        filed = library_file(manager, doc)
+        assert (filed["job_section"], filed["title"]) == ("Documents", "W-2")
+        assert filed["managed_path"].startswith("Jobs/Google/Documents/2027/01/2027-01-31__W-Two__Google__")
+    finally:
+        manager.close()
+
+
+def test_short_numbers_in_document_names_are_spelled_out():
+    assert clean_label(spelled("W-2")) == "W-Two"
+    assert clean_label(spelled("Form 1099-NEC")) == "Form_-NEC"  # A longer number is still left out.
+    assert clean_label(spelled("Section 42 notice")) == "Section_FortyTwo_notice"
 
 
 def test_employer_folder_names():

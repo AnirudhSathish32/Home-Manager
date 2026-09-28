@@ -5,7 +5,7 @@ const JOB_KINDS = {inbox_capture: "Inbox capture", text_batch: "Reading document
                    audit_analysis: "Audit analysis", checkin_text: "Check-in answer", warranty_lookup: "Warranty lookup", tax_table_lookup: "Tax table lookup"};
 // Lane -> [live work kinds, history kinds].
 const LANES = [["Capture", ["capture"], ["inbox_capture"]], ["Reading", ["transcription"], ["text_batch", "text_reading"]],
-               ["Recording", ["extraction"], ["ledger_extraction"]], ["Item identification", ["item_resolution"], ["item_identification"]],
+               ["Recording", ["extraction", "item_categories"], ["ledger_extraction"]], ["Item identification", ["item_resolution"], ["item_identification"]],
                ["Reconciliation", ["recurring_scan"], ["reconciliation"]]];
 let processingLoad = 0, lastActivity = [];
 

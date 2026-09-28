@@ -20,7 +20,7 @@ from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
-from . import paystub
+from . import paystub, splits
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
@@ -46,6 +46,26 @@ STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor>0 AND r.purc
 # A transaction's category: its own (set by the user or a rule), else its matched receipt's.
 TRANSACTION_CATEGORY = ("coalesce(t.category,(SELECT r.category FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id "
                         "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' AND r.category IS NOT NULL ORDER BY l.id LIMIT 1),'uncategorized')")
+# Item categories (finance/splits.py). A charge with a matched, itemised receipt is divided by that receipt's item
+# categories, unless the user chose the charge's category themselves; that choice covers the whole charge.
+CHARGE_SPLITS = ("s.transaction_id=t.id AND coalesce(t.category_source,'')<>'user' AND s.receipt_id=(SELECT l.receipt_id FROM "
+                 "transaction_receipt_links l WHERE l.transaction_id=t.id AND l.review_status<>'rejected' ORDER BY l.id LIMIT 1)")
+HAS_SPLITS = f"EXISTS(SELECT 1 FROM category_splits s WHERE {CHARGE_SPLITS})"
+# Joined to transactions t: one row per item-category share, or the charge itself when it has none.
+TRANSACTION_SPLITS = f"LEFT JOIN category_splits s ON {CHARGE_SPLITS}"
+SPLIT_CATEGORY = f"coalesce(s.category,{TRANSACTION_CATEGORY})"
+SPLIT_SPENT = "coalesce(s.amount_minor,-t.amount_minor)"
+# Joined to receipts r: one row per item-category share, or the whole receipt under its own category.
+RECEIPT_SPLITS = "LEFT JOIN category_splits s ON s.receipt_id=r.id AND s.transaction_id IS NULL"
+RECEIPT_SPLIT_CATEGORY = "coalesce(s.category,r.category,'uncategorized')"
+RECEIPT_SPLIT_SPENT = "coalesce(s.amount_minor,r.total_minor)"
+
+
+def in_categories(count):
+    """SQL, taking the category list twice, true for a transaction with spending in any of count categories."""
+    marks = ",".join("?" * count)
+    return (f"(CASE WHEN {HAS_SPLITS} THEN EXISTS(SELECT 1 FROM category_splits s WHERE {CHARGE_SPLITS} AND s.category IN ({marks})) "
+            f"ELSE {TRANSACTION_CATEGORY} IN ({marks}) END)")
 # Summary columns per record type: one compact "what, when, how much, where from" shape.
 # Each query selects id, date, name, amount_minor, currency, review_status, account, document_id.
 SUMMARY_QUERIES = {
@@ -277,12 +297,70 @@ class Ledger:
                 db.execute("DELETE FROM receipt_items WHERE receipt_id=?", (receipt_id,))
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
                 self.apply_corrections(db, "receipt", receipt_id)
+                remembered = self.remembered_categories(db, record["merchant"])
                 for position, item in enumerate(record["items"], 1):
-                    item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,review_status) "
-                                         "VALUES(?,?,?,?,?,?,?,?,?)", (receipt_id, position, item["description"], item["product_code"], item["quantity"],
-                                                                         item["unit_price_minor"], item["line_total_minor"], item["discount_minor"], status)).lastrowid
+                    category, category_source = remembered.get(normalize_name(item["description"])), "memory"
+                    if category is None:
+                        category, category_source = receipt_category(item.get("category")), "model"
+                    taxed = item.get("taxed")
+                    item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
+                                         "taxed,category,category_source,review_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                         (receipt_id, position, item["description"], item["product_code"], item["quantity"], item["unit_price_minor"],
+                                          item["line_total_minor"], item["discount_minor"], None if taxed is None else int(taxed), category,
+                                          category_source if category else None, status)).lastrowid
                     self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
+                db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
+                db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json) VALUES(?,?,?,?,?,?,?,?)",
+                               [(receipt_id, position, reward["kind"], reward["description"], reward["amount"], reward["expires"], reward["link"],
+                                 json.dumps(reward["locator"])) for position, reward in enumerate(record.get("rewards", []), 1)])
+                self.refresh_splits(db, receipt_id)
         return self._published("receipt", receipt_id, written, items=len(record["items"]))
+
+    # Item categories --------------------------------------------------------------
+    # Each receipt item has its own spending category; category_splits divides the money (finance/splits.py).
+
+    @staticmethod
+    def remembered_categories(db, merchant):
+        """{item key: category} the user chose before for items from this seller."""
+        return dict(db.execute("SELECT item_key,category FROM item_category_memory WHERE merchant_key=?", (normalize_name(merchant),)).fetchall())
+
+    def refresh_splits(self, db, receipt_id=None):
+        """Rebuild the category shares of one receipt (or every receipt) and of each charge linked to it."""
+        if receipt_id is None:
+            db.execute("DELETE FROM category_splits")
+            for (receipt,) in db.execute("SELECT DISTINCT receipt_id FROM receipt_items").fetchall():
+                self.refresh_splits(db, receipt)
+            return
+        db.execute("DELETE FROM category_splits WHERE receipt_id=?", (receipt_id,))
+        receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        items = [dict(row) for row in db.execute("SELECT id,line_total_minor,discount_minor,taxed,category FROM receipt_items "
+                                                 "WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (receipt_id,))]
+        if receipt is None or receipt["total_minor"] is None or not items:
+            return
+        charges = [(None, receipt["total_minor"])] + [(row["id"], -row["amount_minor"]) for row in db.execute(
+            "SELECT t.id,t.amount_minor FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
+            "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
+        for transaction_id, target in charges:
+            shares = splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"], target, receipt["category"])
+            db.executemany("INSERT INTO category_splits(receipt_id,transaction_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?,?)",
+                           [(receipt_id, transaction_id, None if index is None else items[index]["id"], category, amount) for index, category, amount in shares])
+
+    def set_item_category(self, receipt_id, position, category):
+        """The user's category for one receipt item, remembered for the same item from the same seller."""
+        category = receipt_category(category)
+        if category is None:
+            raise ValueError("Choose a category from the list.")
+        with self.store.connection() as db:
+            item = db.execute("SELECT i.*,m.canonical_name AS merchant FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id "
+                              "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.receipt_id=? AND i.position=?", (receipt_id, position)).fetchone()
+            if item is None:
+                raise ValueError("Receipt item not found.")
+            db.execute("UPDATE receipt_items SET category=?,category_source='user' WHERE id=?", (category, item["id"]))
+            db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,?,?) "
+                       "ON CONFLICT(merchant_key,item_key) DO UPDATE SET category=excluded.category,updated_at=excluded.updated_at",
+                       (normalize_name(item["merchant"]), normalize_name(item["description"]), category, now()))
+            self.refresh_splits(db, receipt_id)
+        return {"receipt_id": receipt_id, "position": position, "category": category, "category_source": "user"}
 
     def publish_asset(self, record, source):
         """An investment or loan statement's value as the forecast asset for its account (docs/items-assets-search.md §6).
@@ -454,6 +532,25 @@ class Ledger:
                 value["issues"] = json.loads(value.pop("validation_json"))
             if record_type == "receipt":
                 value["items"] = [dict(item) for item in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (record_id,))]
+                # Each item's share of what was paid (its price with its part of tax and discounts), and the totals by category.
+                shares = dict(db.execute("SELECT receipt_item_id,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
+                                         "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
+                for item in value["items"]:
+                    item["share_minor"] = shares.get(item["id"])
+                value["splits"] = [dict(split) for split in db.execute(
+                    "SELECT category,sum(amount_minor) AS amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
+                    "GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
+                value["rewards"] = []
+                for reward in db.execute("SELECT * FROM receipt_rewards WHERE receipt_id=? ORDER BY position", (record_id,)):
+                    reward = dict(reward)
+                    reward["line_ids"] = json.loads(reward.pop("locator_json")).get("line_ids", [])
+                    value["rewards"].append(reward)
+                value["reconciled"] = db.execute("SELECT 1 FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
+                                                 "AND l.review_status<>'rejected' AND t.review_status<>'rejected'", (record_id,)).fetchone() is not None
+            if record_type == "transaction":
+                value["splits"] = [dict(split) for split in db.execute(
+                    f"SELECT s.category,sum(s.amount_minor) AS amount_minor FROM transactions t JOIN category_splits s ON {CHARGE_SPLITS} "
+                    "WHERE t.id=? GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
             if record_type == "statement":
                 value["transactions"] = [dict(item) for item in db.execute("SELECT * FROM transactions WHERE statement_id=? ORDER BY posted_date,id", (record_id,))]
             if record_type == "income_record":
@@ -476,7 +573,7 @@ class Ledger:
             for row in value.get(key, [])[:500]:
                 row["line_ids"] = [line for evidence in self.evidence(kind, row["id"]) for line in evidence["locator"].get("line_ids", [])]
         # Exact display strings: the browser never does money arithmetic.
-        for row in [value, *value.get("items", []), *value.get("transactions", []), *value.get("lines", [])]:
+        for row in [value, *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()
                               if key.endswith("_minor") and isinstance(amount, int)}
         if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).
@@ -667,8 +764,9 @@ class Ledger:
 
     # User corrections ---------------------------------------------------------
 
-    def _correction_value(self, db, kind, field, text):
-        """Validate one entered value; returns (column value, stored text)."""
+    def _correction_value(self, db, kind, field, text, stored=False):
+        """Validate one entered value; returns (column value, stored text). stored re-applies a saved correction,
+        which may name a category retired since (LEGACY_CATEGORIES) until the re-sort replaces it."""
         if text is None:
             return None, None
         text = " ".join(str(text).split())
@@ -681,7 +779,7 @@ class Ledger:
                 raise ValueError(f"Enter the {field.replace('_', ' ')} as a full date (YYYY-MM-DD).") from None
             return text, text
         if kind == "category":
-            value = receipt_category(text)
+            value = receipt_category(text, legacy=stored)
             return value, value
         if kind == "text":
             if len(text) > 60:
@@ -719,6 +817,12 @@ class Ledger:
                 correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,created_at) VALUES(?,?,?,?,?,?,?)",
                                         (record_type, record_id, field, stored, previous, json.dumps(resolved), now())).lastrowid
             db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
+            if record_type == "receipt" and receipt_category(changes.get("category")):
+                # The whole receipt's category is a shortcut for every item the user has not categorised one by one.
+                db.execute("UPDATE receipt_items SET category=?,category_source='receipt' WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
+                           (receipt_category(changes["category"]), record_id))
+            if record_type == "receipt":
+                self.refresh_splits(db, record_id)
             if not issues and row["review_status"] == "needs_review" and row["review_source"] != "user":
                 db.execute(f"UPDATE {table} SET review_status='verified',review_source='automatic' WHERE id=?", (record_id,))
                 db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES(?,?,'needs_review','verified',?,?)",
@@ -738,7 +842,7 @@ class Ledger:
         issues = json.loads(db.execute(f"SELECT validation_json FROM {table} WHERE id=?", (record_id,)).fetchone()[0])
         for field, text in latest:
             column, kind, label = fields[field]
-            value, _ = self._correction_value(db, kind, field, text)
+            value, _ = self._correction_value(db, kind, field, text, stored=True)
             db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (value, record_id))
             issues = [issue for issue in issues if not issue.startswith(label)]
         db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))

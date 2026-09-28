@@ -12,6 +12,7 @@ import pytest
 import uvicorn
 
 from home_manager.app.api import create_app
+from home_manager.core.categories import RECEIPT_CATEGORIES
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools, PeriodInput, TransactionsInput
@@ -107,18 +108,20 @@ def test_a_larger_same_merchant_charge_is_asked_about_not_linked_or_double_count
 
 def test_receipt_category_is_a_correction_kept_through_re_extraction(books):
     store, ledger, docs = books
-    receipt_id = receipt(ledger, docs["cafe.png"], "Cafe One", "2026-09-10", 1200, "shopping")
-    for unlisted in ("coffee", "utilities"):  # Utilities and rent are bills, paid by card or bank; not a receipt category.
+    receipt_id = receipt(ledger, docs["cafe.png"], "Cafe One", "2026-09-10", 1200, "clothing")
+    # Utilities and rent are bills, paid by card or bank; not a receipt category. Shopping was retired for finer categories.
+    for unlisted in ("coffee", "utilities", "shopping"):
         with pytest.raises(ValueError, match="listed categories"):
             ledger.correct("receipt", receipt_id, {"category": unlisted})
     assert ledger.correct("receipt", receipt_id, {"category": "Dining"})["category"] == "dining"
-    receipt(ledger, docs["cafe.png"], "Cafe One", "2026-09-10", 1200, "shopping")  # Extracted again with the model's suggestion.
+    receipt(ledger, docs["cafe.png"], "Cafe One", "2026-09-10", 1200, "clothing")  # Extracted again with the model's suggestion.
     assert ledger.record("receipt", receipt_id)["category"] == "dining"
     receipt(ledger, docs["grocer.png"], "Green Grocer", "2026-09-12", 5000)
     for name in ("cafe.png", "grocer.png"):  # The Receipts folder's subfolders count the documents filed there.
         store.library_action(docs[name]["id"], docs[name]["current_hash"], "move", "Receipts")
     folders = store.folders()["receipt_categories"]
-    assert [row["category"] for row in folders][-1] == "uncategorized"
+    assert [row["category"] for row in folders] == [*RECEIPT_CATEGORIES, "uncategorized"] and len(RECEIPT_CATEGORIES) == 19
+    assert {"furniture & decor", "household supplies", "home improvement", "pets", "kids & baby", "gifts & donations"} <= set(RECEIPT_CATEGORIES)
     assert {row["category"]: row["count"] for row in folders if row["count"]} == {"dining": 1, "uncategorized": 1}
     assert [doc["id"] for doc in store.documents(folder="Receipts", category="dining")["items"]] == [docs["cafe.png"]["id"]]
     with pytest.raises(ValueError, match="Unknown receipt category"):
@@ -140,7 +143,7 @@ def test_statement_prompt_endpoints(tmp_path):
         assert client.get("/api/finance/statements/awaiting-reconciliation").json() == []
         assert client.post("/api/finance/statements/9999/reconcile").status_code == 400
         assert client.get("/api/documents", params={"category": "coffee"}).status_code == 400
-        assert [row["category"] for row in client.get("/api/folders").json()["receipt_categories"]][:2] == ["dining", "groceries"]
+        assert [row["category"] for row in client.get("/api/folders").json()["receipt_categories"]][:2] == ["groceries", "dining"]
 
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")

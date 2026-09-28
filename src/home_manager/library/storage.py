@@ -1,5 +1,6 @@
 """SQLite inventory and crash-recoverable immutable capture publication."""
 
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -10,7 +11,7 @@ import re
 import sqlite3
 import uuid
 
-from ..core.categories import RECEIPT_CATEGORIES
+from ..core.categories import LEGACY_CATEGORIES, RECEIPT_CATEGORIES
 from ..core.folders import DOCUMENT_FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, MONEY_FOLDERS, validate_folder
 from ..core.money import format_minor
 from ..core.paths import DirectoryLock, PathError, path_key, safe_path
@@ -372,8 +373,11 @@ class Store:
                 # The document's own date from its ledger record, for display, filtering and sorting.
                 "coalesce((SELECT purchase_date FROM receipts WHERE blob_hash=o.current_hash),(SELECT period_end FROM statements WHERE blob_hash=o.current_hash),"
                 "(SELECT coalesce(due_date,issue_date) FROM bills WHERE blob_hash=o.current_hash),(SELECT pay_date FROM income_records WHERE blob_hash=o.current_hash)) AS document_date,"
-                # The spending category of the receipt recorded from this version: the Receipts folder's subfolders.
-                "(SELECT coalesce(r.category,'uncategorized') FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_category,"
+                # The spending categories of the receipt recorded from this version, as ',dining,groceries,': the Receipts folder's
+                # subfolders. A receipt with categorised items is in each of its items' categories, else in the receipt's own.
+                "(SELECT ','||coalesce((SELECT group_concat(category) FROM (SELECT DISTINCT s.category FROM category_splits s WHERE s.receipt_id=r.id "
+                "AND s.transaction_id IS NULL AND s.amount_minor<>0)),coalesce(r.category,'uncategorized'))||',' FROM receipts r "
+                "WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_categories,"
                 # Reconciliation of the record published from this version: a receipt's match to a
                 # transaction, or a bill's payment state. NULL where reconciliation does not apply.
                 "coalesce((SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "
@@ -429,10 +433,10 @@ class Store:
         scoped, scope_params = self.scope_clause(scope)
         clause, params = clause + scoped, params + scope_params
         if category is not None:
-            if category not in (*RECEIPT_CATEGORIES, "uncategorized"):
+            if category not in (*RECEIPT_CATEGORIES, *LEGACY_CATEGORIES, "uncategorized"):
                 raise ValueError("Unknown receipt category.")
-            clause += " AND receipt_category=?"
-            params.append(category)
+            clause += " AND instr(receipt_categories,?)>0"
+            params.append(f",{category},")
         if employer is not None:
             clause += " AND employer_id=?"
             params.append(int(employer))
@@ -490,8 +494,9 @@ class Store:
             work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {condition}{scoped}",
                                      scope_params).fetchone()[0]
                     for name, condition in WORK_FILTERS.items() if name != "all"}
-            categories = dict(db.execute(self.library_query() + "SELECT receipt_category,count(*) FROM library WHERE deleted_at IS NULL "
-                                         "AND folder='Receipts' AND receipt_category IS NOT NULL GROUP BY 1").fetchall())
+            categories = Counter(name for (names,) in db.execute(self.library_query() + "SELECT receipt_categories FROM library WHERE deleted_at IS NULL "
+                                                                 "AND folder='Receipts' AND receipt_categories IS NOT NULL")
+                                 for name in names.strip(",").split(","))
             filed = {(row[0], row[1]): row[2] for row in db.execute(self.library_query() + "SELECT employer_id,job_section,count(*) FROM library "
                                                                      "WHERE deleted_at IS NULL AND folder='Jobs' AND employer_id IS NOT NULL GROUP BY 1,2")}
             # Every employer is listed, a new one with nothing filed yet too, each with both sections.
@@ -508,6 +513,8 @@ class Store:
                 counts[row["folder"]] += row["count"]
         # Every category is listed, empty ones too, so the subfolders stay in a fixed order.
         receipt_categories = [{"category": name, "count": categories.get(name, 0)} for name in (*RECEIPT_CATEGORIES, "uncategorized")]
+        # A retired category is listed only while receipts still await re-sorting into the current list; never offered as a choice.
+        receipt_categories += [{"category": name, "count": categories[name], "legacy": True} for name in LEGACY_CATEGORIES if categories.get(name)]
         # Every folder a document can be moved to, by store: moving between stores is allowed.
         stores = {"documents": DOCUMENT_FOLDERS, "money": MONEY_FOLDERS}
         return {"folders": list(listed), "counts": counts, "work": work, "receipt_categories": receipt_categories, "stores": stores, "jobs": jobs}

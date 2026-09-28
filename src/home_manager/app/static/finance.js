@@ -44,8 +44,10 @@ function openFinanceRoute(params) {
 // Transactions -----------------------------------------------------------------------------------------------
 
 const TX_PAGE = 200;
-const TX_FIELDS = {q: "tx-search", start: "tx-from", end: "tx-to", account: "tx-account", category: "tx-category", types: "tx-type",
+const TX_FIELDS = {view: "tx-view", q: "tx-search", start: "tx-from", end: "tx-to", account: "tx-account", category: "tx-category", types: "tx-type",
                    status: "tx-status", receipt: "tx-receipt", sort: "tx-sort"};
+// Items (the default) lists spending item by item; Charges lists each card or bank line once.
+const itemView = () => $("tx-view").value !== "charges";
 let txParams = new URLSearchParams(), txLoad = 0;
 async function loadTransactionOptions() {
   const [{accounts}, categories] = await Promise.all([tool("get_accounts"), loadCategoryOptions()]);
@@ -116,6 +118,11 @@ function describeFilters(args) {
 }
 async function loadTransactions() {
   if (!configured) return;
+  const items = itemView();
+  $("item-table").hidden = !items; $("charge-table").hidden = items;
+  for (const field of document.querySelectorAll("#transactions-panel .charges-only")) field.hidden = items;
+  if (!items) $("item-backfill").hidden = true;
+  if (items) return loadItems();
   const load = ++txLoad, args = transactionQuery();
   let result;
   try { result = await tool("get_transactions", args); }
@@ -150,6 +157,93 @@ function transactionRow(row) {
   if (["transfer", "payment"].includes(row.transaction_type)) value.classList.add("muted");
   tr.addEventListener("click", event => { if (!event.target.closest("a, button")) openTransaction(row.id); });
   return tr;
+}
+// Items: every counted charge and receipt, one row per item with its share of what was paid (docs/receipts-and-statements.md).
+function itemQuery() {
+  const args = {limit: TX_PAGE, offset: Number(txParams.get("offset") || 0)};
+  if ($("tx-from").value) args.start = $("tx-from").value;
+  if ($("tx-to").value) args.end = $("tx-to").value;
+  if ($("tx-search").value.trim()) args.query = $("tx-search").value.trim();
+  if ($("tx-account").value) args.account_id = Number($("tx-account").value);
+  if ($("tx-category").value) args.category = $("tx-category").value;
+  const categories = transactionQuery().categories;  // A drill-down from Home's category chart.
+  if (categories) args.categories = categories;
+  return args;
+}
+async function loadItems() {
+  const load = ++txLoad, args = itemQuery();
+  let result, categories;
+  try { [result, categories] = await Promise.all([tool("get_spending_items", args), receiptCategories()]); }
+  catch (error) { if (load === txLoad) tableMessage($("item-rows"), 6, `Couldn't load spending. ${error.message}`); throw error; }
+  if (load !== txLoad) return;
+  showItemBackfill().catch(() => {});
+  const rows = result.items, first = result.total_matching ? args.offset + 1 : 0;
+  $("tx-summary").replaceChildren(document.createTextNode(`${result.total_matching.toLocaleString()} items · ${describeFilters(args)}. `));
+  if ([...txParams].some(([key]) => !["period", "view"].includes(key))) $("tx-summary").append(homeLink("Clear filters", "#/transactions"));
+  $("tx-page").textContent = result.total_matching ? `${first}–${args.offset + rows.length} of ${result.total_matching}` : "";
+  $("tx-prev").disabled = !args.offset;
+  $("tx-next").disabled = args.offset + rows.length >= result.total_matching;
+  if (!rows.length) { tableMessage($("item-rows"), 6, [...txParams].length > 1 ? "No spending matches these filters." : "No spending yet. Add receipts, import a bank or card export, or extract a statement."); return; }
+  $("item-rows").replaceChildren(...rows.map(row => itemRow(row, categories)));
+}
+async function showItemBackfill() {
+  // Receipts recorded before items had categories, or with items under a retired category: offer the model's sort once.
+  const {receipts} = await api("/api/finance/item-categories"), target = $("item-backfill");
+  target.hidden = !receipts || !itemView();
+  if (target.hidden) return;
+  target.replaceChildren(document.createTextNode(`${receipts} receipt${receipts === 1 ? " has" : "s have"} items to sort into the current categories. `),
+                         asyncButton("Categorise their items", async () => {
+                           const started = await api("/api/finance/item-categories/backfill", {method: "POST"});
+                           notice(started.started ? `Categorising items on ${started.receipts} receipts. Follow it in Processing.` : "Nothing left to categorise.");
+                           target.hidden = true;
+                         }));
+}
+function itemRow(row, categories) {
+  const tr = document.createElement("tr");
+  cell(tr, "").appendChild(dateDisplay(row.date));
+  const described = cell(tr, "");
+  const name = row.kind === "item" ? row.item : row.kind === "extra" ? (row.category === "dining" ? "Tip" : "Other charges") : row.merchant;
+  if (row.source === "transaction") {
+    const open = element("button", name, "link-button"); open.type = "button"; open.addEventListener("click", () => openTransaction(row.transaction_id));
+    described.append(open);
+  } else described.append(row.receipt_document_id ? homeLink(name, `#/documents/${row.receipt_document_id}`) : document.createTextNode(name));
+  const detail = [row.kind === "charge" ? (row.merchant !== row.description ? row.description : "") : row.merchant,
+                  row.line_total && row.line_total.display !== row.amount.display ? `price ${row.line_total.display}` : ""].filter(Boolean).join(" · ");
+  if (detail) described.append(element("small", detail, "muted block"));
+  cell(tr, row.account || "Receipt");
+  const category = cell(tr, "");
+  if (row.kind === "item") {
+    category.append(itemCategorySelect(row.receipt_id, {item: row.item, position: row.position, category: row.category, category_source: row.item_category_source},
+                                       categories, () => loadTransactions()));
+  } else if (row.source === "transaction") {
+    category.append(chargeCategorySelect(row));
+  } else {
+    category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category);
+    if (row.kind === "extra") category.title = "Tax, tip or amounts the receipt doesn't list by item";
+  }
+  cell(tr, "").append(statusBadge(row.status));
+  const value = cell(tr, ""); value.className = "numeric"; value.appendChild(amount(row.amount, {signed: false}));
+  return tr;
+}
+function chargeCategorySelect(row) {
+  // A charge with no itemised receipt has one category for all of it: the same choice as in the transaction drawer.
+  const select = document.createElement("select"); select.setAttribute("aria-label", `Category of ${row.merchant}`);
+  const names = [...new Set([...(categoryCache || []), ...(receiptCategoryCache || []), ...(row.category !== "uncategorized" ? [row.category] : [])])].sort();
+  select.add(new Option("Uncategorized", ""));
+  for (const name of names) select.add(new Option(categoryLabel(name), name));
+  select.add(new Option("New category…", "__new"));
+  select.value = row.category === "uncategorized" ? "" : row.category;
+  select.title = row.category_source === "rule" ? "Set by a category rule" : row.category_source === "user" ? "Set by you" : "";
+  select.addEventListener("change", async () => {
+    if (select.value === "__new") { select.value = row.category === "uncategorized" ? "" : row.category; openTransaction(row.transaction_id); return; }
+    select.disabled = true;
+    try {
+      await api(`/api/finance/transactions/${row.transaction_id}/category`, {method: "PUT", body: JSON.stringify({category: select.value || null})});
+      notice(select.value ? `${row.merchant} is now ${categoryLabel(select.value)}.` : `Category cleared; any matching rule applies again.`);
+      await loadTransactions();
+    } catch (error) { notice(error, true); } finally { select.disabled = false; }
+  });
+  return select;
 }
 function receiptLink(row) {
   // Opens the receipt matched to this transaction; a proposed match says so until it is confirmed.
@@ -249,7 +343,18 @@ async function openTransaction(id) {
   const details = element("details", "", "technical-detail");
   details.append(element("summary", "Details"), element("p", `Type: ${statusLabel(record.transaction_type)} · Origin: ${record.origin} · Currency: ${record.currency}`, "small"),
                  element("p", `Fingerprint: ${record.source_fingerprint}`, "small mono"));
-  body.replaceChildren(head, state, drawerSection("Category", form), drawerSection("Evidence", evidence), drawerSection("History", history), details);
+  // A charge with an itemised receipt counts by its items' categories; the category above then covers none of it unless set by you.
+  const sections = [head, state];
+  if (record.splits?.length) {
+    const split = element("ul", "", "finance-list");
+    for (const row of record.splits) {
+      const li = document.createElement("li"); li.append(element("span", categoryLabel(row.category)), document.createTextNode(" "), amount(row.display.amount_minor, {signed: false}));
+      split.append(li);
+    }
+    sections.push(drawerSection("Split by the receipt's items", split,
+                                element("small", "Change an item's category in the Items view or on the receipt. Saving a category below puts the whole charge in it instead.", "muted block")));
+  }
+  body.replaceChildren(...sections, drawerSection("Category", form), drawerSection("Evidence", evidence), drawerSection("History", history), details);
   if (!$("tx-drawer").open) $("tx-drawer").showModal();
 }
 $("close-tx-drawer").addEventListener("click", () => $("tx-drawer").close());

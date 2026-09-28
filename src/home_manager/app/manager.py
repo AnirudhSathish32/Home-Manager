@@ -26,6 +26,7 @@ from ..finance.checkin import CheckinService
 from ..finance.ledger import HouseholdConfig
 from ..finance import paystub
 from ..finance.charts import tax_buckets_svg
+from ..finance.item_categories import ItemCategorizer
 from ..finance.reconcile import Reconciler
 from ..finance.recurring_scan import RecurringScan
 from ..finance.tools import FinanceTools
@@ -474,6 +475,18 @@ class Manager:
     def run_recurring_scan(self, work):
         if RecurringScan(self.store).run(self.reasoning_config, work)["recurring"]:
             self.reconciler.run("manual")
+
+    def start_item_categories(self):
+        """Categorise the items of receipts recorded before items had categories (finance/item_categories.py)."""
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before categorising receipt items.")
+            if not self.reasoning_config.model:
+                raise ValueError("Configure a local reasoning model in Settings first.")
+            pending = len(ItemCategorizer(self.store).pending())
+            if pending:
+                self.future = self.submit("inference", "item_categories", "Categorising receipt items",
+                                          lambda work: ItemCategorizer(self.store).run(self.reasoning_config, work))
+            return {"started": bool(pending), "receipts": pending}
 
     def identify_items(self, receipt_id, work):
         """Automatic item identification after a receipt is recorded (docs/warranties-assistant-processing.md §2).

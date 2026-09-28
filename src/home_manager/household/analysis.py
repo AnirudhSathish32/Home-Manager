@@ -272,11 +272,12 @@ class ItemAnalysisTools:
         periods = [(start - timedelta(days=length * n), end - timedelta(days=length * n)) for n in range(4)]
 
         def spent(first, last):
-            by = defaultdict(int)
-            for row in self.query(f"SELECT t.currency,coalesce(t.category,'uncategorized') AS category,coalesce(m.canonical_name,t.description_raw) AS merchant,"
+            # Categories as every other total counts them: by item category, with receipts no line has replaced.
+            by = defaultdict(int, {("category", currency, category): total for (currency, category), (total, _)
+                                   in self._category_totals(first.isoformat(), last.isoformat(), None).items()})
+            for row in self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS merchant,"
                                   f"t.amount_minor FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} "
                                   f"AND t.transaction_type IN ({SPENDING_TYPES}) AND t.posted_date BETWEEN ? AND ?", (first.isoformat(), last.isoformat())):
-                by[("category", row["currency"], row["category"])] -= row["amount_minor"]
                 by[("merchant", row["currency"], " ".join(normalize_name(row["merchant"]).split()[:3]) or "UNKNOWN")] -= row["amount_minor"]
             return by
 

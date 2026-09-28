@@ -16,6 +16,7 @@ from ..core.formats import IMAGES, extension
 from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
+from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
 from ..finance.reconcile import OBLIGATION_DECISIONS
 from ..finance.tabular import ImportMapping
@@ -476,6 +477,21 @@ def create_app(control: Path | None = None, token: str | None = None,
     def categorize(transaction_id: int, value: CategoryInput):
         store()
         return manager().ledger.set_category(transaction_id, value.category)
+
+    @app.put("/api/receipts/{receipt_id}/items/{position}/category")
+    def categorize_item(receipt_id: int, position: int, value: CategoryInput):
+        store()
+        return manager().ledger.set_item_category(receipt_id, position, value.category)
+
+    @app.get("/api/finance/item-categories")
+    def item_categories_pending():
+        store()
+        return {"receipts": len(ItemCategorizer(store()).pending())}
+
+    @app.post("/api/finance/item-categories/backfill", status_code=202)
+    def item_categories_backfill():
+        store()
+        return manager().start_item_categories()
 
     @app.post("/api/finance/tools/{name}")
     def finance_tool(name: ToolName, arguments: dict | None = None):

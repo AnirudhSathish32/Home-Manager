@@ -56,8 +56,9 @@ def test_home_charts_drilldown_and_mobile(tmp_path):
             page.get_by_role("button", name="12 months", exact=True).click()
             playwright.expect(page.get_by_role("button", name="12 months", exact=True)).to_have_attribute("aria-pressed", "true")
             page.locator(".home-legend").get_by_role("link", name="groceries", exact=True).click()
-            playwright.expect(page.locator("#tx-rows tr")).to_have_count(1)
-            playwright.expect(page.locator("#tx-rows")).to_contain_text("Groceries")
+            # The Items view is the default; a charge with no receipt is one row.
+            playwright.expect(page.locator("#item-rows tr")).to_have_count(1)
+            playwright.expect(page.locator("#item-rows")).to_contain_text("Groceries")
             playwright.expect(page.locator("#tx-summary")).to_contain_text("groceries")
             page.locator("#nav-home").click()
             playwright.expect(page.locator(".home-donut")).to_be_visible()

@@ -3,6 +3,7 @@
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import socket
 import threading
 
@@ -10,6 +11,16 @@ import pytest
 
 from home_manager.library.scanner import Scanner, ScanLimits
 from home_manager.models.vision import VisionConfig
+
+
+def pytest_addoption(parser):
+    parser.addoption("--browser", action="store_true", help="Also run the opt-in local browser tests (same as RUN_BROWSER_TESTS=1).")
+
+
+def pytest_configure(config):
+    # Set before collection: the browser tests' skip conditions read the variable when their modules are imported.
+    if config.getoption("--browser"):
+        os.environ["RUN_BROWSER_TESTS"] = "1"
 
 
 def inbox_scan(store, files=None, **limits):

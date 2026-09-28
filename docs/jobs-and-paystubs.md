@@ -23,6 +23,8 @@ Library/Jobs/Google/Documents/2026/08/2026-08-01__Offer_Letter__Google__<hash>__
   be filed and never reach the ledger. Tax returns and other tax forms stay in Taxes.
 - **Titles.** A pay stub is titled "Paystub MM/DD/YYYY" from its pay date; an employment document by its printed name
   ("Offer Letter", "W-2"). Your own description, if you add one, follows the title.
+- **File names** never contain digits, so no account number can reach one; a one- or two-digit number in a document's
+  name is spelled out instead (`2027-01-31__W-Two__Google__…`), and longer numbers are left out.
 - **Sidebar.** Documents › Jobs › employer › All / Paystubs / Documents (`/api/documents?employer=&section=`).
 - **Older libraries.** Files in `Library/Income` move into Jobs on startup: a pay stub into its payer's Paystubs folder
   with the new name, anything else into `Jobs/YYYY/MM`. A document moved into Jobs by hand has no employer and stays

@@ -4,11 +4,14 @@ from decimal import Decimal
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.app.manager import Manager
+from home_manager.core.jobs import Work
+from home_manager.documents.extraction import ExtractionService
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.library.scanner import ScanLimits
 from test_receipts import make_receipt
@@ -49,7 +52,7 @@ def identity(seller=None, basis="printed", location=None):
 
 def receipt_items():
     return {"items": [{"description": name, "product_code": None, "quantity": "1", "unit_price": price, "line_total": price,
-                       "discount": None, "evidence": cite(number, RECEIPT[number - 1])}
+                       "discount": None, "taxed": None, "evidence": cite(number, RECEIPT[number - 1])}
                       for number, name, price in [(9, "LATTE", "5.00"), (10, "LATTE", "5.00"), (11, "SANDWICH", "10.00")]]}
 
 
@@ -88,7 +91,9 @@ def receipt(tmp_path, local_model):
 
 def test_receipt_extraction_publishes_exact_evidence_linked_records_and_files(receipt, local_model):
     manager, doc, parse_id = receipt
-    local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "coffee & lunch", "category": "dining", "recurrence": None}]
+    local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(),
+                              {"description": "coffee & lunch", "category": "dining", "recurrence": None, "item_categories": ["dining", "dining", None]},
+                              {"rewards": []}]
     run = extract(manager, doc, parse_id)
     assert run["status"] == "succeeded", run["error"]
     assert run["result"]["category"] == "dining"
@@ -98,15 +103,19 @@ def test_receipt_extraction_publishes_exact_evidence_linked_records_and_files(re
     assert (record["subtotal_minor"], record["tax_minor"], record["tip_minor"], record["total_minor"]) == (2000, 200, 300, 2500)
     assert record["currency"] == "USD" and record["merchant"] == "Local Test Cafe" and record["issues"] == [] and record["category"] == "dining"
     assert [(item["description"], item["line_total_minor"]) for item in record["items"]] == [("LATTE", 500), ("LATTE", 500), ("SANDWICH", 1000)]
+    # Each item has its own category (an unclear one falls back to the receipt's); tax and tip are shared into them.
+    assert [(item["category"], item["share_minor"]) for item in record["items"]] == [("dining", 550), ("dining", 550), (None, 1100)]
+    assert [(row["category"], row["amount_minor"]) for row in record["splits"]] == [("dining", 2500)]
     assert record["evidence"][0]["parse_run_id"] == parse_id and "line-7" in record["evidence"][0]["locator"]["line_ids"]
     # Smallest schemas, separate bounded calls; no image ever reaches the text model.
     requests = local_model["requests"][1:]
-    assert [request["response_format"]["json_schema"]["name"] for request in requests] == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription"]
-    assert [request["max_tokens"] for request in requests] == [1024, 2048, 1024, 8192, 512]
+    assert [request["response_format"]["json_schema"]["name"] for request in requests] == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items",
+                                                                                           "PurchaseDescription", "Rewards"]
+    assert [request["max_tokens"] for request in requests] == [1024, 2048, 1024, 8192, 3072, 2048]
     assert "image_url" not in json.dumps(requests)
-    assert [row["task"] for row in manager.store.model_runs(run["id"])] == ["extraction"] * 5
+    assert [row["task"] for row in manager.store.model_runs(run["id"])] == ["extraction"] * 6
     filed = manager.store.documents()["items"][0]
-    assert filed["folder"] == "Receipts" and "2026-09-22__Local_Test_Cafe__Receipts" in filed["managed_path"] and filed["receipt_category"] == "dining"
+    assert filed["folder"] == "Receipts" and "2026-09-22__Local_Test_Cafe__Receipts" in filed["managed_path"] and filed["receipt_categories"] == ",dining,"
     # The title is Merchant - Location - Description; date, amount and type have their own columns.
     assert (filed["title"], filed["description_source"], filed["merchant"], filed["document_date"]) == ("Local Test Cafe - Coffee & lunch", "model", "Local Test Cafe", "2026-09-22")
     assert filed["ledger_amount"] == "25.00 USD" and filed["ledger_status"] == "verified"
@@ -165,7 +174,7 @@ def test_receipt_defaults_to_usd_without_currency_but_respects_foreign_evidence(
     lines[2] = currency_text or "Thank you"
     manager, doc, parse_id = transcribe(tmp_path, local_model, lines)
     try:
-        local_model["outputs"] = [classification(), receipt_summary(currency=MISSING), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None}]
+        local_model["outputs"] = [classification(), receipt_summary(currency=MISSING), identity(), receipt_items(), {"description": "Lunch", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
         run = extract(manager, doc, parse_id)
         assert run["status"] == "succeeded", run["error"]
         if expected:
@@ -210,19 +219,19 @@ def test_real_model_quirks_quotes_split_taxes_brand_footer_and_home_currency(tmp
         summary = {"merchant": quoted("Target", 12, "informtarget.com"), "purchase_date": quoted("2026-09-19", 2, lines[1]),
                    "currency": MISSING, "subtotal": quoted("12.88", 7, lines[6]), "tip": MISSING, "total": quoted("13.52", 10, lines[9]),
                    "tax": {"value": "0.64", "status": "proposed", "evidence": cite(8, lines[7]) + cite(9, lines[8])}}  # Exact sum of two lines.
-        items = {"items": [{"description": name, "product_code": code, "quantity": None, "unit_price": None, "line_total": price, "discount": None,
+        items = {"items": [{"description": name, "product_code": code, "quantity": None, "unit_price": None, "line_total": price, "discount": None, "taxed": None,
                             "evidence": cite(first, lines[first - 1]) + cite(first + 1, lines[first])}
                            for first, name, code, price in [(3, "Bitchin'", "211010107", "8.99"), (5, "Command", "085035655", "3.89")]]}
         target = {"document_type": "receipt", "evidence": cite(11, lines[10]), "issuer": quoted("Target", 11, lines[10]),
                   "document_date": quoted("2026-09-19", 2, lines[1])}
         # The seller is printed only in the footer; the city in the header is the store's location, not the merchant.
         where = {"seller": quoted("Target", 12, "informtarget.com"), "seller_basis": "printed", "location": quoted("Milton", 1, lines[0])}
-        local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office", "category": None, "recurrence": None}]
+        local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
         defaulted = extract(manager, doc, parse_id)
         assert defaulted["status"] == "succeeded", defaulted["error"]
         assert defaulted["publication"]["status"] == "published"
         manager.configure_household(manager.household.model_copy(update={"home_currency": "USD"}))
-        local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office", "category": None, "recurrence": None}]
+        local_model["outputs"] = [target, summary, where, items, {"description": "Snacks/Office", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
         run = extract(manager, doc, parse_id)
         assert run["id"] != defaulted["id"]  # The home currency is part of the reuse key.
         record = manager.ledger.record("receipt", run["publication"]["id"])
@@ -288,7 +297,8 @@ def test_long_statement_is_chunked_reconciled_and_only_failed_chunks_retry(tmp_p
         assert run["status"] == "succeeded", run["error"]
         requests = local_model["requests"][1:]
         sent = [len(json.loads(request["messages"][1]["content"])["lines"]) for request in requests]
-        assert sent == [80, 66, 80, 26, 26]  # Summary: first/last lines; rows: two chunks; only chunk 2 retried.
+        # Classification and summary see the whole statement (it fits one call); rows: two chunks; only chunk 2 retried.
+        assert sent == [106, 106, 80, 26, 26]
         publication = run["publication"]
         assert publication["status"] == "published" and publication["review_status"] == "verified"  # Balances reconcile.
         assert (publication["inserted"], publication["duplicates"]) == (100, 0)
@@ -318,7 +328,7 @@ def test_receipt_street_location_reaches_document_title(tmp_path, local_model, a
     try:
         local_model["outputs"] = [classification(), receipt_summary(),
                                   identity(location=value(street, 12, address) if street else MISSING),
-                                  receipt_items(), {"description": "Lunch", "category": None, "recurrence": None}]
+                                  receipt_items(), {"description": "Lunch", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
         run = extract(manager, doc, parse_id)
         assert run["status"] == "succeeded", run["error"]
         record = manager.ledger.record("receipt", run["publication"]["id"])
@@ -336,21 +346,72 @@ def test_the_seller_and_location_question_names_the_store_and_online_orders(rece
     manager, doc, parse_id = receipt
     # A printed seller replaces a header that took a place for the merchant.
     local_model["outputs"] = [classification(), receipt_summary(merchant=value("Returns within 14 days", 8)),
-                              identity(location=value("Test Cafe", 1, "LOCAL TEST CAFE")), receipt_items(), {"description": "Snacks/Office", "category": None, "recurrence": None}]
+                              identity(location=value("Test Cafe", 1, "LOCAL TEST CAFE")), receipt_items(), {"description": "Snacks/Office", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id)
     record = manager.ledger.record("receipt", run["publication"]["id"])
     assert (record["merchant"], record["location"], record["review_status"]) == ("Local Test Cafe", "Test Cafe", "verified")
     assert manager.store.document(doc["id"])["title"] == "Local Test Cafe - Test Cafe - Snacks/Office"
     names = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][1:]]
-    assert names == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription"]
+    assert names == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription", "Rewards"]
     assert "never the store's location" in local_model["requests"][3]["messages"][0]["content"]
+
+
+# A long supercenter receipt: the payment and rewards lines come after more than 80 lines of item codes.
+LONG_RECEIPT = ["WALMART", "2026-09-27", *[f"SKU LINE {number}" for number in range(1, 86)], "GV MILK 3.48 N", "SUBTOTAL 3.48", "TAX 0.00",
+                "TOTAL 3.48", "VISA TEND 3.48", "WALMART CASH EARNED $0.25", "Scan for survey"]
+
+
+def test_a_long_receipt_is_read_whole_and_its_rewards_are_recorded(tmp_path, local_model):
+    manager, doc, parse_id = transcribe(tmp_path, local_model, LONG_RECEIPT)
+    try:
+        line = {text: number for number, text in enumerate(LONG_RECEIPT, 1)}
+
+        def printed(text, amount=None):
+            return value(amount or text, line[text], text)
+        local_model["outputs"] = [
+            {"document_type": "receipt", "evidence": cite(line["TOTAL 3.48"], "TOTAL 3.48"), "issuer": printed("WALMART"), "document_date": printed("2026-09-27")},
+            {"merchant": printed("WALMART"), "purchase_date": printed("2026-09-27"), "currency": MISSING, "subtotal": printed("SUBTOTAL 3.48", "3.48"),
+             "tax": printed("TAX 0.00", "0.00"), "tip": MISSING, "total": printed("TOTAL 3.48", "3.48")},
+            identity(seller=printed("WALMART")), {"items": []},  # The first 80 lines hold no priced item.
+            {"items": [{"description": "GV MILK", "product_code": None, "quantity": None, "unit_price": None, "line_total": "3.48", "discount": None,
+                        "taxed": False, "evidence": cite(line["GV MILK 3.48 N"], "GV MILK 3.48 N")}]},
+            {"description": "Milk", "category": "groceries", "recurrence": None, "item_categories": ["groceries"]},
+            {"rewards": [{"kind": "earned", "description": "Walmart Cash earned", "amount": "$0.25", "expires": None, "link": None,
+                          "evidence": cite(line["WALMART CASH EARNED $0.25"], "WALMART CASH EARNED $0.25")},
+                         # Not printed where it is cited: left out.
+                         {"kind": "offer", "description": "Five dollars off", "amount": "$5.00", "expires": None, "link": None,
+                          "evidence": cite(line["Scan for survey"], "Scan for survey")}]}]
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        requests = {request["response_format"]["json_schema"]["name"]: request["messages"][-1]["content"] for request in local_model["requests"][1:]}
+        # Classification, the summary and the rewards question see the whole receipt, its middle and its end included.
+        for name in ("Classification", "ReceiptSummary", "Rewards"):
+            assert "SKU LINE 40" in requests[name] and "VISA TEND 3.48" in requests[name], name
+        assert "WALMART CASH EARNED" in requests["PurchaseDescription"]
+        record = manager.ledger.record("receipt", run["publication"]["id"])
+        assert [(row["kind"], row["description"], row["amount_text"], row["line_ids"]) for row in record["rewards"]] == [
+            ("earned", "Walmart Cash earned", "$0.25", [f"line-{line['WALMART CASH EARNED $0.25']}"])]
+        assert manager.store.documents()["items"][0]["folder"] == "Receipts"
+    finally:
+        manager.close()
+
+
+def test_rewards_can_cite_a_decoded_qr_code(local_model):
+    lines = [SimpleNamespace(id="line-1", text="Tell us about your visit"), SimpleNamespace(id="code-1", text="https://survey.example.com/?s=42")]
+    local_model["outputs"] = [{"rewards": [{"kind": "survey", "description": "Store survey", "amount": None, "expires": "2026-10-31",
+                                            "link": "https://survey.example.com/?s=42", "evidence": cite(1, "Tell us about your visit")
+                                            + [{"line_id": "code-1", "quote": "https://survey.example.com/?s=42"}]}]}]
+    config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
+    [reward] = ExtractionService.rewards(config, Work.detached(), lines)
+    assert (reward["kind"], reward["link"], reward["expires"], reward["locator"]["line_ids"]) == ("survey", "https://survey.example.com/?s=42", "2026-10-31",
+                                                                                                  ["line-1", "code-1"])
 
 
 def test_an_inferred_seller_is_used_and_flagged_and_online_needs_delivery_evidence(receipt, local_model):
     manager, doc, parse_id = receipt
     # Online must cite a delivery or order line; "Tip 3.00" is neither, so the location is dropped without failing anything.
     local_model["outputs"] = [classification(), receipt_summary(), identity(seller=value("The Home Depot", 8, "Returns within 14 days"), basis="inferred",
-                                                                           location=value("Online", 6, "Tip 3.00")), receipt_items(), {"description": "Bed frame", "category": None, "recurrence": None}]
+                                                                           location=value("Online", 6, "Tip 3.00")), receipt_items(), {"description": "Bed frame", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id)
     receipt_id = run["publication"]["id"]
     record = manager.ledger.record("receipt", receipt_id)
@@ -363,7 +424,7 @@ def test_an_inferred_seller_is_used_and_flagged_and_online_needs_delivery_eviden
     assert manager.store.document(doc["id"])["title"] == "The Home Depot - Online - Bed frame"
     # An inferred seller that does not look like a business name is never used.
     local_model["outputs"] = [classification(), receipt_summary(), identity(seller=value(r"..\Windows", 8, "Returns within 14 days"), basis="inferred",
-                                                                           location=value("Online", 8, "Returns within 14 days")), receipt_items(), {"description": "Bed frame", "category": None, "recurrence": None}]
+                                                                           location=value("Online", 8, "Returns within 14 days")), receipt_items(), {"description": "Bed frame", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id, force=True)
     assert run["result"]["identity"] == {"location": None, "seller_inferred_from": None}
 
@@ -375,7 +436,7 @@ def test_descriptions_are_short_plain_labels_and_the_users_own_wins(receipt, loc
     assert [clean_description(text, "Local Test Cafe") for text in ("$30 snacks", "09/21 run", "Local Test Cafe lunch", "Grocery receipt",
                                                                      "Snacks, toiletries, office supplies", "")] == [None] * 6
     manager, doc, parse_id = receipt
-    local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Receipt from Local Test Cafe 2026", "category": None, "recurrence": None}]
+    local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "Receipt from Local Test Cafe 2026", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id)
     assert run["result"]["description"] is None
     store = manager.store
@@ -393,7 +454,7 @@ def test_descriptions_are_short_plain_labels_and_the_users_own_wins(receipt, loc
 def test_user_corrections_fill_unprinted_dates_survive_re_extraction_and_are_audited(receipt, local_model):
     manager, doc, parse_id = receipt
     unclear_date = {"value": None, "status": "ambiguous", "evidence": []}
-    local_model["outputs"] = [classification(), receipt_summary(purchase_date=unclear_date), identity(), receipt_items(), {"description": "Coffee", "category": None, "recurrence": None}]
+    local_model["outputs"] = [classification(), receipt_summary(purchase_date=unclear_date), identity(), receipt_items(), {"description": "Coffee", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id)
     receipt_id = run["publication"]["id"]
     assert manager.ledger.record("receipt", receipt_id)["issues"] == ["Purchase date is ambiguous in the document."]
@@ -410,7 +471,7 @@ def test_user_corrections_fill_unprinted_dates_survive_re_extraction_and_are_aud
     assert manager.reconciler.history()[0]["trigger"] == "correction"
     assert manager.store.document(doc["id"])["document_date"] == "2026-09-24"
     # A later extraction rewrites the model's values; the user's corrections are applied again on top.
-    local_model["outputs"] = [classification(), receipt_summary(purchase_date=unclear_date), identity(), receipt_items(), {"description": "Coffee", "category": None, "recurrence": None}]
+    local_model["outputs"] = [classification(), receipt_summary(purchase_date=unclear_date), identity(), receipt_items(), {"description": "Coffee", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     again = extract(manager, doc, parse_id, force=True)
     assert again["publication"]["status"] == "published"
     record = manager.ledger.record("receipt", receipt_id)
@@ -437,11 +498,11 @@ def test_descriptions_never_repeat_the_merchant_or_location_already_in_the_title
     assert [clean_description(text, "Target", "Milton") for text in ("Target run", "Milton", "Snacks/Office")] == [None, None, "Snacks/Office"]
     manager, doc, parse_id = receipt
     local_model["outputs"] = [classification(), receipt_summary(), identity(location=value("Test Cafe", 1, "LOCAL TEST CAFE")), receipt_items(),
-                              {"description": "Local Test Cafe", "category": None, "recurrence": None}]
+                              {"description": "Local Test Cafe", "category": None, "recurrence": None, "item_categories": []}, {"rewards": []}]
     run = extract(manager, doc, parse_id)
     assert run["result"]["description"] is None
     # The model is told the seller and location so it does not echo them.
-    asked = json.loads(local_model["requests"][-1]["messages"][1]["content"])
+    asked = json.loads(local_model["requests"][-2]["messages"][1]["content"])  # The last request is the rewards question.
     assert (asked["seller"], asked["location"]) == ("Local Test Cafe", "Test Cafe")
     store = manager.store
     assert store.document(doc["id"])["title"] == "Local Test Cafe - Test Cafe"

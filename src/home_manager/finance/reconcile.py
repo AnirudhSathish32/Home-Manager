@@ -25,7 +25,7 @@ NEAR_PERCENT = 130
 TRANSFERISH = ("transfer", "payment")
 CADENCES = {"weekly": (6, 8), "monthly": (26, 35), "quarterly": (85, 95), "annual": (360, 370)}
 # Charges in these categories propose a recurring bill after a single payment.
-BILL_CATEGORIES = ("housing", "insurance")
+BILL_CATEGORIES = ("housing", "insurance", "subscriptions")
 # A later payment pays a bill when it is 50% to 150% of the usual amount: utility bills vary month to month.
 BILL_RANGE = (50, 150)
 TRIGGERS = ("manual", "import", "extraction", "resolution", "correction")
@@ -135,6 +135,8 @@ class Reconciler:
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
                 # Matched receipts can give transactions a merchant name, which category rules also match.
                 self.ledger.apply_rules(db)
+                # Every charge's item-category shares follow its current receipt link (restored or rejected ones included).
+                self.ledger.refresh_splits(db)
         except Exception as exc:
             with self.store.connection() as db:  # Only the error class: messages could echo document text.
                 db.execute("UPDATE reconciliation_runs SET status='failed',error=?,finished_at=? WHERE id=?", (type(exc).__name__, now(), run_id))
@@ -220,6 +222,7 @@ class Reconciler:
         if receipt["merchant_id"]:
             db.execute("UPDATE transactions SET merchant_id=coalesce(merchant_id,?),updated_at=? WHERE id=?", (receipt["merchant_id"], now(), transaction["id"]))
         self.resolve(db, "ambiguous_receipt_match", "receipt", receipt["id"])
+        self.ledger.refresh_splits(db, receipt["id"])
 
     def link_transfer(self, db, outflow, inflow, points, method, status="proposed"):
         db.execute("INSERT INTO transaction_links(link_type,from_transaction_id,to_transaction_id,match_score,match_method,review_status,created_at,updated_at) "
@@ -483,6 +486,8 @@ class Reconciler:
             if status == "rejected" and kind == "receipt":
                 db.execute("UPDATE transactions SET merchant_id=NULL,updated_at=? WHERE id=? AND merchant_id=(SELECT merchant_id FROM receipts WHERE id=?)",
                            (now(), link["transaction_id"], link["receipt_id"]))
+            if kind == "receipt":
+                self.ledger.refresh_splits(db, link["receipt_id"])
             if status == "rejected" and kind == "transfer":
                 for transaction in (link["from_transaction_id"], link["to_transaction_id"]):
                     row = self.transaction(db, transaction)

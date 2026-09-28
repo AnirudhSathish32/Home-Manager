@@ -59,6 +59,20 @@ def clean_label(text):
     return "_".join(label.split()).strip("_-")[:36]
 
 
+ONES = ("Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen",
+        "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen")
+TENS = ("", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety")
+
+
+def spelled(text):
+    """A document name for a file name with its short numbers in words: W-2 -> W-Two. Only one- and two-digit
+    numbers are spelled; longer ones (which could be account numbers) are still left out by clean_label."""
+    def word(match):
+        number = int(match.group(0))
+        return ONES[number] if number < 20 else TENS[number // 10] + (ONES[number % 10] if number % 10 else "")
+    return re.sub(r"(?<!\d)\d{1,2}(?!\d)", word, text or "")
+
+
 def is_label(text):
     return bool(text) and len(text) <= 36 and text[0].isalpha() and all(char.isalpha() or char in "-_" for char in text)
 
@@ -422,7 +436,7 @@ class ManagedLibrary:
         if document_type in TYPE_FOLDERS and merchant and dated:
             return self.organize(document_id, digest, TYPE_FOLDERS[document_type], reason, action="classification",
                                  merchant=merchant, document_date=dated, employer=employer, section=JOB_TYPES.get(document_type),
-                                 label=("Paystub" if document_type == "paystub" else clean_label(document_name) or "Document") if employer else None,
+                                 label=("Paystub" if document_type == "paystub" else clean_label(spelled(document_name)) or "Document") if employer else None,
                                  title=" ".join((document_name or "").split())[:60] or None if document_type == "employment_document" else None)
         existing = self.current_file(document_id, digest)
         if existing and existing["folder"] in FOLDERS:

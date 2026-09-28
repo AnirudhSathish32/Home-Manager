@@ -161,7 +161,7 @@ Record the rate ID with the derived analysis result and propagate it into approv
 
 Conversion of an unreviewed interpreted candidate can be shown as a provisional analysis, but it cannot promote that candidate into financial records. Unknown currency or date must be resolved before requesting a rate. A failed lookup stops that conversion and is surfaced to the user, not repaired by a rate guessed by the model.
 
-Receipt review and transaction matching precede authoritative expense recognition. A reviewed receipt can establish a standalone expense when no bank posting is represented, but any later match must replace/link that representation without double-counting. Transcription or conversion alone never establishes that money moved.
+Receipt review and transaction matching precede authoritative expense recognition. A reviewed receipt can establish a standalone expense when no bank posting is represented, but any later match must replace/link that representation without double-counting. Transcription or conversion alone never establishes that money moved. Spending categories belong to receipt items, not whole receipts: a receipt's amount, or its matched charge's, is divided across its items' categories exactly (`category_splits`). Reconciliation stays per charge, because a statement lists charges, not items. See [receipts-and-statements.md](receipts-and-statements.md#item-categories).
 
 ## Model adapters and Laya
 

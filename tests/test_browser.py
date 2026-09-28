@@ -126,12 +126,24 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#extract-ledger")).to_be_visible()  # Ledger extraction is the primary action.
             assert page.locator("#analyze-finances").count() == 0 and page.locator("#audit-tab").count() == 0  # No audit step remains.
             from test_extraction import classification, identity, receipt_items, receipt_summary
-            local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "coffee & lunch", "category": None, "recurrence": None}]
+            local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(), {"description": "coffee & lunch", "category": None, "recurrence": None, "item_categories": ["dining", "dining", "groceries"]},
+                                      {"rewards": [{"kind": "offer", "description": "Free returns within 14 days", "amount": "14 days", "expires": "2026-10-06",
+                                                    "link": None, "evidence": [{"line_id": "line-8", "quote": "Returns within 14 days"}]}]}]
             page.locator("#extract-ledger").click()
             playwright.expect(page.locator("#extraction-state")).to_have_text("Done", timeout=15000)
             playwright.expect(page.locator("#extraction-result")).to_contain_text("25.00 USD")
             # Every automatic check passes, so the record counts with nothing to click; only a rejection remains available.
-            playwright.expect(page.locator("#extraction-result .status-badge")).to_have_text("Checked automatically")
+            playwright.expect(page.locator("#extraction-result .ledger-record-heading .status-badge")).to_have_text("Checked automatically")
+            # Items carry their own categories; the receipt counts on its own until a statement line matches it.
+            playwright.expect(page.locator("#extraction-result .receipt-splits")).to_contain_text("Receipt only")
+            # A receipt spanning several categories shows every one in its summary, largest share first.
+            playwright.expect(page.locator("#extraction-result .receipt-summary .category-tag")).to_have_text(["Dining", "Groceries"])
+            page.locator("#extraction-result").get_by_role("button", name="Edit details").click()
+            playwright.expect(page.get_by_label("Category for all items")).to_be_visible()
+            page.locator("#extraction-result").get_by_role("button", name="Cancel").click()
+            # Rewards and offers printed on the receipt are listed with the line they came from.
+            playwright.expect(page.locator("#extraction-result .receipt-rewards")).to_contain_text("Free returns within 14 days")
+            playwright.expect(page.locator("#extraction-result .receipt-rewards")).to_contain_text("14 days")
             playwright.expect(page.locator("#extraction-result").get_by_role("button", name="Count it anyway")).to_have_count(0)
             playwright.expect(page.locator("#extraction-result").get_by_role("button", name="Not right? Reject")).to_be_visible()
             playwright.expect(page.locator("#receipt-title")).to_have_text("receipt.png")  # Set once on open; loading never renames it.
@@ -241,7 +253,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             calls = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"]]
             # Every model call is accounted for. The cancelled batch's reading may be stopped before it reaches the server.
             assert [call for call in calls if call != "document_transcription"] == [
-                "Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription",
+                "Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription", "Rewards",
                 "item_step",  # Automatic item identification; this model can't answer it, so that run stops without proposals.
                 "Classification", "Classification"]  # The bill's attempt and its one correction request.
             assert calls.count("document_transcription") in (2, 3)
@@ -277,6 +289,13 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#account-groups")).to_contain_text("First Local Bank")
             page.locator("#nav-transactions").click()
             page.locator("#tx-period").select_option("all")
+            # Items is the default view: the cafe receipt item by item, with tax shared in and the tip as dining.
+            playwright.expect(page.locator("#item-rows tr")).to_have_count(4)
+            playwright.expect(page.locator("#item-rows")).to_contain_text("SANDWICH")
+            playwright.expect(page.locator("#item-rows")).to_contain_text("11.00 USD")
+            playwright.expect(page.locator("#item-rows")).to_contain_text("Receipt only")
+            # Charges lists each card or bank line once, money in included.
+            page.locator("#tx-view").select_option("charges")
             playwright.expect(page.locator("#tx-rows")).to_contain_text("10.00 USD")
             page.locator("#tx-rows .link-button").first.click()
             playwright.expect(page.locator("#tx-drawer")).to_be_visible()
@@ -293,7 +312,8 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.locator("#budget-category").fill("groceries")
             page.locator("#budget-amount").fill("450.00")
             page.get_by_role("button", name="Save budget").click()
-            playwright.expect(page.locator("#budget-rows")).to_contain_text("0.00 USD of 450.00 USD")
+            # Budgets count by item category: the sandwich (10.00 plus its 1.00 share of tax) is groceries, the lattes and tip dining.
+            playwright.expect(page.locator("#budget-rows")).to_contain_text("11.00 USD of 450.00 USD")
             page.locator("#nav-review").click()
             playwright.expect(page.locator("#review-detail")).to_contain_text("Nothing needs your review")
             # The receipt has no matching card or bank charge: listed as unmatched, not counted in spending.

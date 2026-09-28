@@ -321,7 +321,7 @@ $("copy-receipt-text").addEventListener("click", async () => {
 });
 
 const RECORD_FIELDS = {
-  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Category", "category"], ["Billed", "recurrence"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
+  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
   statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
   bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Amount due", "amount_due_minor"]],
@@ -386,36 +386,94 @@ function sourceButton(lineIds) {
   button.addEventListener("click", () => highlightEvidence(lineIds));
   return button;
 }
-function ledgerRows(record) {
-  // Items or transactions exactly as recorded, each linked to its source line.
+const REWARD_KINDS = {earned: "Earned", redeemed: "Redeemed", balance: "Balance", offer: "Offer", survey: "Survey", membership: "Member savings"};
+function rewardsList(rewards) {
+  // Rewards, perks and offers printed on the receipt or in its QR codes. Links are shown as text, never opened:
+  // they come from a document, not from Home Manager.
+  const section = element("section", "", "receipt-rewards");
+  const list = element("ul", "", "finance-list");
+  for (const reward of rewards) {
+    const li = document.createElement("li");
+    li.append(element("strong", REWARD_KINDS[reward.kind] || reward.kind), document.createTextNode(` ${reward.description}`));
+    if (reward.amount_text) li.append(document.createTextNode(` · ${reward.amount_text}`));
+    if (reward.expires_on) li.append(element("small", ` · ${reward.expires_on < todayIso() ? "expired" : "expires"} ${dateText(reward.expires_on)}`, "muted"));
+    if (reward.link) li.append(element("small", reward.link, "muted block mono"));
+    if (reward.line_ids?.length) li.append(sourceButton(reward.line_ids));
+    list.append(li);
+  }
+  section.append(element("h3", "Rewards & offers"), list);
+  return section;
+}
+let receiptCategoryCache = null;
+async function receiptCategories() {
+  // The server's fixed list, the same one the Receipts subfolders use.
+  // Retired categories (legacy) are listed as folders until re-sorted, never offered as a choice.
+  receiptCategoryCache ??= (await api("/api/folders")).receipt_categories.filter(row => !row.legacy && row.category !== "uncategorized").map(row => row.category);
+  return receiptCategoryCache;
+}
+function itemCategorySelect(receiptId, row, categories, onSaved) {
+  // Each item has its own spending category; the choice is remembered for this item from this seller.
+  const select = document.createElement("select"), current = row.category === "uncategorized" ? null : row.category;
+  select.setAttribute("aria-label", `Category of ${row.description || row.item || "this item"}`);
+  if (!current) select.add(new Option("Choose…", ""));
+  for (const name of categories) select.add(new Option(categoryLabel(name), name));
+  select.value = current || "";
+  select.title = {user: "Chosen by you", memory: "Your earlier choice for this item", receipt: "From the receipt's category", model: "Suggested by the model"}[row.category_source] || "";
+  select.addEventListener("change", async () => {
+    select.disabled = true;
+    try {
+      await api(`/api/receipts/${receiptId}/items/${row.position}/category`, {method: "PUT", body: JSON.stringify({category: select.value})});
+      notice(`${row.description || row.item} is now ${categoryLabel(select.value)}.`);
+      await onSaved?.();
+    } catch (error) { notice(error, true); select.value = current || ""; }
+    finally { select.disabled = false; }
+  });
+  return select;
+}
+function ledgerRows(record, categories = [], onSaved = null) {
+  // Items or transactions exactly as recorded, each linked to its source line. Receipt items carry their own category
+  // and their share of what was paid (the price with its part of tax and receipt-wide discounts).
   const rows = record.items || record.transactions || [];
   if (!rows.length) return null;
   const wrap = element("div", "", "table-wrap");
   const table = element("table", "", "ledger-rows");
   // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
   const codes = Boolean(record.items?.some(row => row.product_code));
-  const columns = record.items ? ["Item", "Code", "Amount", ""] : ["Posted", "Description", "Amount", ""];
+  const shares = Boolean(record.items?.some(row => row.display.share_minor));
+  const columns = record.items ? ["Item", "Code", "Price", "Category", "Paid", ""] : ["Posted", "Description", "Amount", ""];
+  const shown = index => !record.items || !((index === 1 && !codes) || (index === 4 && !shares));
   const head = document.createElement("tr");
   columns.forEach((title, index) => {
-    if (record.items && index === 1 && !codes) return;
-    const th = head.appendChild(element("th", title, index === 2 ? "numeric" : "")); th.scope = "col";
+    if (!shown(index)) return;
+    const th = head.appendChild(element("th", title, index === 2 || index === 4 ? "numeric" : "")); th.scope = "col";
   });
   table.appendChild(document.createElement("thead")).appendChild(head);
   const body = table.appendChild(document.createElement("tbody"));
   for (const row of rows.slice(0, 200)) {
     const tr = document.createElement("tr");
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
-    const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—"] : [row.posted_date, row.description_raw, row.display.amount_minor];
+    const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—", "", row.display.share_minor || "—"]
+      : [row.posted_date, row.description_raw, row.display.amount_minor];
     values.forEach((value, index) => {
-      if (record.items && index === 1 && !codes) return;
-      const td = tr.appendChild(element("td", index === 2 ? "" : value, index === 2 ? "numeric" : ""));
-      if (index === 2) td.appendChild(amount(value, {signed: !record.items}));  // Statement rows carry a direction; item prices don't.
+      if (!shown(index)) return;
+      const money = index === 2 || index === 4;
+      const td = tr.appendChild(element("td", money || index === 3 ? "" : value, money ? "numeric" : ""));
+      if (money) td.appendChild(amount(value, {signed: !record.items}));  // Statement rows carry a direction; item prices don't.
+      if (index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
+                                                        : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     });
     const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids)); tr.appendChild(source);
     body.appendChild(tr);
   }
   wrap.appendChild(table);
   if (rows.length > 200) wrap.appendChild(element("p", `Showing 200 of ${rows.length} rows.`, "muted"));
+  if (record.splits?.length) {
+    // What this receipt counts as, by category, and whether a statement line confirms it.
+    const split = element("p", "", "receipt-splits small");
+    split.append(element("strong", "By category: "), document.createTextNode(record.splits.map(row => `${categoryLabel(row.category)} ${row.display.amount_minor}`).join(" · ")),
+                 document.createTextNode(" "), statusBadge(record.reconciled ? "reconciled" : "receipt"));
+    wrap.appendChild(split);
+  }
   return wrap;
 }
 async function renderAssetRecord(target, publication) {
@@ -471,7 +529,10 @@ async function renderLedgerRecord(target, type, id, kept) {
     const fixable = correctable && field in correctable;
     if (shown == null && !fixable) continue;
     const value = element("strong");
-    if (shown == null) value.appendChild(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
+    // A receipt belongs to every category its items fall in, largest share first; its own category only when it has no items.
+    const spread = type === "receipt" && field === "category" ? (record.splits || []).filter(row => row.amount_minor).map(row => row.category) : [];
+    if (spread.length) value.append(...spread.map(name => element("span", categoryLabel(name === "uncategorized" ? null : name), "category-tag")));
+    else if (shown == null) value.appendChild(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
     else value.appendChild(record.display[field] ? amount(shown, {signed: false})
       : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown)
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
@@ -481,8 +542,10 @@ async function renderLedgerRecord(target, type, id, kept) {
     summary.appendChild(metric);
   }
   target.appendChild(summary);
-  const rows = ledgerRows(record);
+  const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
+  const rows = ledgerRows(record, categories, () => renderLedgerRecord(target, type, id, false));
   if (rows) target.appendChild(rows);
+  if (record.rewards?.length) target.appendChild(rewardsList(record.rewards));
   if (type === "income_record") target.append(...paystubBreakdown(record), ...withholdingSection(record));
 }
 
@@ -604,7 +667,7 @@ async function editRecord(target, type, record) {
   // Inline correction form for what the document did not print or the model misread.
   const form = element("form", "", "record-edit"), inputs = {};
   // The category list is the server's, the same one the Receipts subfolders use.
-  const categories = type === "receipt" ? (await api("/api/folders")).receipt_categories.map(row => row.category).filter(name => name !== "uncategorized") : [];
+  const categories = type === "receipt" ? await receiptCategories() : [];
   form.appendChild(element("p", "Correct what the document did not print or was misread. Your values are kept if the document is extracted again.", "muted small"));
   for (const [label, field] of RECORD_FIELDS[type].filter(([, field]) => field in CORRECTABLE[type])) {
     let input;
@@ -613,14 +676,18 @@ async function editRecord(target, type, record) {
       input.add(new Option("Not set", ""));
       for (const name of categories) input.add(new Option(categoryLabel(name), name));
       input.value = record[field] || "";
+      input.setAttribute("aria-describedby", "correct-category-hint");
     } else {
       input = document.createElement("input");
       input.type = isDateField(field) ? "date" : "text"; input.value = record[field] || ""; input.maxLength = field === "location" ? 60 : 120;
     }
     input.id = `correct-${field}`;
     if (field === "location") input.placeholder = "City, or Online";
-    const box = element("div", "", "field"); const caption = element("label", label); caption.htmlFor = input.id;
+    // A receipt's own category is a shortcut for its items, which carry the categories that count.
+    const allItems = type === "receipt" && field === "category";
+    const box = element("div", "", "field"); const caption = element("label", allItems ? "Category for all items" : label); caption.htmlFor = input.id;
     box.append(caption, input); form.appendChild(box); inputs[field] = input;
+    if (allItems) box.appendChild(element("small", "Sets every item you haven't chosen yourself; change single items in the table.", "muted block")).id = "correct-category-hint";
   }
   const error = element("p", "", "error-text"); error.setAttribute("role", "alert");
   const actions = element("div", "", "button-row");
