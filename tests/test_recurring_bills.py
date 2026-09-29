@@ -7,10 +7,10 @@ import socket
 import threading
 import time
 
-from conftest import documents_by_name, inbox_scan
 import pytest
 import uvicorn
 
+from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.dashboard import dashboard

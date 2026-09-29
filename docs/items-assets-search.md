@@ -72,17 +72,19 @@ Inventory list shows "Returnable until …" or "Opened". Home shows windows clos
 ## 6. Investment and loan statements as assets
 
 The classifier already recognizes `investment_statement` and `loan_document`; they now get field
-schemas and publish to `assets` with `source='statement'`:
+schemas. Loan statements publish to `assets` with `source='statement'`. Since migration 036,
+investment statements publish to the investment tables instead ([investments.md](investments.md)).
 
 - **Investment:** institution, account name, account reference, statement date, ending value,
-  currency. Retirement is recognized from the cited account name (401(k), 403(b), IRA, Roth,
-  pension, TSP), and bond accounts from "bond" or "treasury".
+  currency. The kind (401(k), Roth IRA, HSA, CD, Treasuries, …) comes only from printed words in the
+  account name or institution (`finance/investments.py` `printed_kind`); anything else is a
+  brokerage account, and the user can change it. Each statement date adds a value; nothing is overwritten.
 - **Loan:** lender, account reference, statement date, principal balance, interest rate, regular
   monthly payment, currency. The rate must be printed as a percentage in its citation.
 
-One asset row per account (institution + last four digits + kind). A newer statement updates the
+For loans: one asset row per account (institution + last four digits + kind). A newer statement updates the
 value and date and returns the row to *proposed*; an older one is ignored. Every statement value
-waits for review (the user's choice), in Review under "Statement values to confirm", and counts in
+waits for review (the user's choice), in Review under "Investment and loan documents to confirm", and counts in
 the forecast once confirmed. The document inspector shows the proposed asset with a link to Forecast.
 
 ## Verification

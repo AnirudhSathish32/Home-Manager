@@ -15,8 +15,7 @@ import json
 
 from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS
 from ..library.storage import now
-from .ledger import (COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction,
-                     name_tokens, normalize_name)
+from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction, name_tokens, normalize_name
 
 RECEIPT_POSTING_DAYS, TRANSFER_DAYS, REFUND_DAYS = 5, 5, 120
 # A charge up to 30% above a receipt's total (a tip added after printing, a currency conversion)
@@ -31,7 +30,8 @@ BILL_RANGE = (50, 150)
 TRIGGERS = ("manual", "import", "extraction", "resolution", "correction")
 OBLIGATION_DECISIONS = ("verified", "rejected", "ended")
 # Issue type -> (table of the record the issue is about, how a chosen candidate is linked).
-ISSUE_KINDS = {"ambiguous_receipt_match": "receipt", "ambiguous_transfer": "transfer", "ambiguous_refund": "refund"}
+ISSUE_KINDS = {"ambiguous_receipt_match": "receipt", "ambiguous_transfer": "transfer", "ambiguous_refund": "refund",
+               "ambiguous_investment_transfer": "investment"}
 
 
 def shift(value, days):
@@ -130,7 +130,7 @@ class Reconciler:
         try:
             with self.store.connection() as db:
                 summary = {"receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
-                           "recurring": self.recurring(db) + self.propose_bills(db)}
+                           "investment_transfers": self.investment_transfers(db), "recurring": self.recurring(db) + self.propose_bills(db)}
                 self.track_bills(db)
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
                 # Matched receipts can give transactions a merchant name, which category rules also match.
@@ -142,8 +142,10 @@ class Reconciler:
                 db.execute("UPDATE reconciliation_runs SET status='failed',error=?,finished_at=? WHERE id=?", (type(exc).__name__, now(), run_id))
             raise
         with self.store.connection() as db:
+            # Payments into investments are recorded as transfers in the run's history.
             db.execute("UPDATE reconciliation_runs SET status='succeeded',finished_at=?,receipt_links=?,transfers=?,refunds=?,recurring=?,open_issues=? WHERE id=?",
-                       (now(), *summary.values(), run_id))
+                       (now(), summary["receipt_links"], summary["transfers"] + summary["investment_transfers"], summary["refunds"], summary["recurring"],
+                        summary["open_issues"], run_id))
         return summary
 
     def history(self, limit=20):
@@ -197,6 +199,11 @@ class Reconciler:
             points, method = receipt_match(receipt, chosen)
             self.link_receipt(db, receipt, chosen, points, method + "+user_choice", "verified")
             return
+        if kind == "investment":
+            if db.execute("SELECT 1 FROM investment_events WHERE transaction_id=? AND id<>?", (chosen["id"], record_id)).fetchone():
+                raise ValueError("That transaction already paid into another investment.")
+            self.link_investment(db, record_id, chosen, "user")
+            return
         record = self.transaction(db, record_id)
         if kind == "transfer":
             points, method = transfer_match(record, chosen)
@@ -233,6 +240,55 @@ class Reconciler:
             if row["transaction_type"] not in NON_SPENDING:
                 db.execute("UPDATE transactions SET transaction_type=?,updated_at=? WHERE id=? AND review_status<>'verified'", (kind, now(), row["id"]))
         self.resolve(db, "ambiguous_transfer", "transaction", outflow["id"])
+
+    def link_investment(self, db, event_id, transaction, how="auto"):
+        """A bank or card line that paid into an investment account kept outside the ledger: the money moved, it wasn't spent.
+        The line's type before the match is kept, so undoing it restores the line."""
+        db.execute("UPDATE investment_events SET transaction_id=?,transaction_previous_type=?,transaction_link=? WHERE id=?",
+                   (transaction["id"], transaction["transaction_type"], how, event_id))
+        if transaction["transaction_type"] not in NON_SPENDING:
+            db.execute("UPDATE transactions SET transaction_type='transfer',updated_at=? WHERE id=? AND review_status<>'verified'", (now(), transaction["id"]))
+        self.resolve(db, "ambiguous_investment_transfer", "investment_event", event_id)
+
+    def unlink_investment(self, event_id):
+        """The user's "not this payment": the line goes back to what it was (unless they verified it), the pair is never proposed
+        again, and if other lines could have paid it Review asks which one; otherwise the contribution is left unmatched."""
+        with self.store.connection() as db:
+            event = db.execute("SELECT e.*,a.institution,a.currency FROM investment_events e JOIN investment_accounts a ON a.id=e.account_id WHERE e.id=?",
+                               (event_id,)).fetchone()
+            if event is None:
+                raise ValueError("Investment activity not found.")
+            if event["transaction_id"] is None:
+                raise ValueError("No bank or card payment is matched to this.")
+            db.execute("UPDATE transactions SET transaction_type=?,updated_at=? WHERE id=? AND transaction_type='transfer' AND review_status<>'verified' "
+                       "AND ? IS NOT NULL", (event["transaction_previous_type"], now(), event["transaction_id"], event["transaction_previous_type"]))
+            db.execute("INSERT OR IGNORE INTO investment_payment_rejections(event_id,transaction_id,created_at) VALUES(?,?,?)",
+                       (event_id, event["transaction_id"], now()))
+            db.execute("UPDATE investment_events SET transaction_id=NULL,transaction_previous_type=NULL,transaction_link=NULL WHERE id=?", (event_id,))
+            candidates = [row["id"] for row in self.investment_candidates(db, event)]
+            if candidates:  # After an undo the user chooses, even between one.
+                self.issue(db, "ambiguous_investment_transfer", "investment_event", event_id, candidates)
+            else:
+                db.execute("INSERT INTO reconciliation_issues(issue_type,record_type,record_id,detail_json,status,resolution,created_at,updated_at) "
+                           "VALUES('ambiguous_investment_transfer','investment_event',?,?,'resolved','left_unmatched',?,?) ON CONFLICT(issue_type,record_type,record_id) "
+                           "DO UPDATE SET status='resolved',resolution='left_unmatched',updated_at=excluded.updated_at",
+                           (event_id, json.dumps({"candidate_transaction_ids": []}), now(), now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('investment_payment_link',?,'linked','unlinked',?,?)",
+                       (event_id, f"Transaction {event['transaction_id']} is not this payment.", now()))
+        return {"event_id": event_id, "question": bool(candidates), "candidates": len(candidates)}
+
+    @staticmethod
+    def investment_candidates(db, event):
+        """Bank or card outflows that could have paid an investment event: exactly its amount within a few days, not paying another,
+        not in a ledger transfer, and never a pair the user rejected. A purchase line counts only when it names the institution."""
+        rows = db.execute(
+            "SELECT t.*,a.account_type FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE t.currency=? AND t.amount_minor=? "
+            f"AND {MATCHABLE} AND t.posted_date BETWEEN ? AND ? AND t.transaction_type IN ('transfer','withdrawal','payment','purchase','other') "
+            "AND NOT EXISTS(SELECT 1 FROM investment_events o WHERE o.transaction_id=t.id) AND NOT EXISTS(SELECT 1 FROM transaction_links l "
+            "WHERE l.link_type='transfer' AND (l.from_transaction_id=t.id OR l.to_transaction_id=t.id) AND l.review_status<>'rejected') "
+            "AND NOT EXISTS(SELECT 1 FROM investment_payment_rejections r WHERE r.event_id=? AND r.transaction_id=t.id)",
+            (event["currency"], -event["amount_minor"], shift(event["event_date"], -TRANSFER_DAYS), shift(event["event_date"], TRANSFER_DAYS), event["id"])).fetchall()
+        return [row for row in rows if row["transaction_type"] != "purchase" or name_tokens(event["institution"]) & name_tokens(row["description_raw"])]
 
     def link_refund(self, db, purchase, credit, points, method, status="proposed"):
         db.execute("INSERT INTO transaction_links(link_type,from_transaction_id,to_transaction_id,match_score,match_method,review_status,created_at,updated_at) "
@@ -326,6 +382,28 @@ class Reconciler:
                 created += 1
             elif len(plausible) > 1 and outflow["transaction_type"] in TRANSFERISH:
                 self.issue(db, "ambiguous_transfer", "transaction", outflow["id"], [row["id"] for row in plausible])
+        return created
+
+    def investment_transfers(self, db):
+        """Money paid into an investment account kept outside the ledger (a brokerage, an IRA, TreasuryDirect, a bank CD): a bank or
+        card outflow of exactly a contribution or deposit you made, or of a CD or Treasury bought, within a few days of it. A
+        purchase line counts only when it names the institution, so a same-sized store charge is never taken for one. Money paid
+        between an account and its linked savings account is already a ledger transfer."""
+        created = 0
+        events = db.execute("SELECT e.*,a.institution,a.currency FROM investment_events e JOIN investment_accounts a ON a.id=e.account_id "
+                            "JOIN investment_kinds k ON k.key=a.kind WHERE e.transaction_id IS NULL AND e.review_status<>'rejected' "
+                            "AND a.ledger_account_id IS NULL AND a.archived_at IS NULL AND ((e.event_type='contribution' AND e.contribution_source='personal') "
+                            "OR e.event_type='transfer_in' OR (e.event_type='buy' AND e.confirmation_id IS NOT NULL AND k.value_model='accrual')) "
+                            # Left unmatched by the user, or a question they are being asked (after an undo it asks even about one line).
+                            "AND NOT EXISTS(SELECT 1 FROM reconciliation_issues i WHERE i.issue_type='ambiguous_investment_transfer' "
+                            "AND i.record_type='investment_event' AND i.record_id=e.id AND (i.resolution='left_unmatched' OR i.status='open'))").fetchall()
+        for event in events:
+            plausible = self.investment_candidates(db, event)
+            if len(plausible) == 1:
+                self.link_investment(db, event["id"], plausible[0])
+                created += 1
+            elif len(plausible) > 1:
+                self.issue(db, "ambiguous_investment_transfer", "investment_event", event["id"], [row["id"] for row in plausible])
         return created
 
     def refunds(self, db):

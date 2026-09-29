@@ -77,7 +77,7 @@ shown.
   do (`BILL_CATEGORIES`).
 
 Investments are deliberately not a category: buying shares or contributing moves money into something you still own,
-so it is not spending. They are planned as their own document type and Investments section.
+so it is not spending. They have their own document type and Investments section ([investments.md](investments.md)).
 
 - The Documents **Receipts** folder collapses and expands. Inside: **All receipts**, then one subfolder per
   category, plus Uncategorized. A receipt appears in the subfolder of every category its items fall in.

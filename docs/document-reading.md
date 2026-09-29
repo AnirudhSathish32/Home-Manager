@@ -1,6 +1,8 @@
 # Directory-based document reading
 
-Implementation update: a separate, configurable [financial reasoning stage](financial-reasoning.md) now analyzes saved vision transcriptions with field-level citations and durable history. Below, proposed review, posting, automatic filing and multi-document analysis remain future work.
+Status, 2026-09-28: the design below is built. Review, posting to the ledger, automatic filing, the CSV/XLSX and PDF readers, and the reasoning stage are all in place ([V2 phases](v2-phases.md), [financial reasoning](financial-reasoning.md)). Still open: scheduled rescans or a folder watcher, linking duplicates across sources, and evaluating the models on real documents (section 4a). Sections marked "future" keep their original wording as design history.
+
+Implementation update: a separate, configurable [financial reasoning stage](financial-reasoning.md) now analyzes saved vision transcriptions with field-level citations and durable history.
 
 Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
 
@@ -97,17 +99,17 @@ File format and document type are independent. An XLSX may contain a bank statem
 | XLSX | Sheets, cells, values, formulas as inert evidence, stored values, cell coordinates | Preserve identifiers/leading zeros and date conventions; no macro, external-link, or formula execution; financial formula results require review |
 | Scanned image | Local vision transcription, line references and model/version; no invented text coordinates | Preserve original image; preprocessing is a derivative; do not treat confidence as proof of amount/date/currency correctness |
 
-V1 begins with CSV, XLSX, PNG, and JPEG; any additional extension needs a tested reader. Bills and statements describe semantic document types, not an implicit requirement to parse PDFs. If PDF sources are later added, provide native-text reading and local vision transcription of scanned pages as a separate reader milestone. Encrypted, unsupported, corrupt, or resource-exceeding files remain visible with a clear status.
+V1 began with CSV, XLSX, PNG, and JPEG; any additional extension needs a tested reader. PDF was added later as its own reader: native text, with local vision transcription for scanned pages (`documents/pdf_reader.py`). Encrypted, unsupported, corrupt, or resource-exceeding files remain visible with a clear status.
 
 Apply byte, expanded-size, sheet/row/cell, pixel, runtime, and output limits. Process one extraction job at a time initially on the Windows host, scheduling vision and reasoning requests to avoid model memory contention. A plain subprocess is not automatically a security sandbox: implement restricted permissions and network isolation explicitly before using untrusted parsers with private real data.
 
-### 4. Separate interpretation (future)
+### 4. Separate interpretation (built)
 
-The vision model transcribes visible text only. It does not choose titles, folders, dates, currencies or totals. No preliminary OCR pass or OCR fallback remains. CSV/XLSX readers will preserve structured evidence directly when implemented.
+The vision model transcribes visible text only. It does not choose titles, folders, dates, currencies or totals. No preliminary OCR pass or OCR fallback remains. CSV/XLSX readers preserve structured evidence directly, with no model involved (`finance/tabular.py`).
 
-A separate local reasoning model will consume saved text and evidence IDs and propose typed fields, titles and classification. Persist interpretation independently with its source run and model version. Do not rewrite source evidence to fit candidates. Missing/ambiguous facts stay unresolved; validation and review precede financial publication.
+A separate local reasoning model consumes saved text and evidence IDs and propose typed fields, titles and classification. Persist interpretation independently with its source run and model version. Do not rewrite source evidence to fit candidates. Missing/ambiguous facts stay unresolved; validation and review precede financial publication.
 
-### 4a. Quality assessment (future)
+### 4a. Quality assessment (still open: no evaluation on real documents yet)
 
 Evaluate transcription on local labeled documents spanning languages, faded text, decimal/sign errors, clipping and unfamiliar layouts. A text reasoning model cannot verify pixels it never saw. Missing/unreadable evidence requires inspection or a better scan; agreement between models is not proof of correctness. Optional judge evaluation can be revisited after the transcription/reasoning separation works.
 

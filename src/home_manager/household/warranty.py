@@ -7,6 +7,7 @@ quote. The model restates what the page says; it never estimates a warranty.
 
 from datetime import date, timedelta
 import json
+import logging
 import re
 from typing import Literal
 import uuid
@@ -14,6 +15,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..core.money import EXPONENTS
 from ..documents.receipt_schema import StrictModel
 from ..finance.reconcile import add_months
@@ -22,6 +24,8 @@ from ..models.model_client import request_completion, resolve_identity
 from ..models.web_lookup import LookupFailed, WebLookup
 from .items import normalize_text
 from .resolver_tools import DATE, LONG_NUMBER, PRICE
+
+log = logging.getLogger(__name__)
 
 WARRANTY_VERSION = "warranty-lookup-v1"
 KINDS = ("manufacturer", "store", "extended")
@@ -367,6 +371,7 @@ class WarrantyService:
         except (ValueError, OSError) as exc:
             self.state(run_id, "failed", error=str(exc))
         except Exception as exc:
+            log_failure(log, "warranty lookup", exc, run=run_id)
             self.state(run_id, "failed", error=f"Unexpected {type(exc).__name__}.")
 
     def agent(self, lot_id, config, work, run_id):

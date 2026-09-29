@@ -38,20 +38,36 @@ $("add-one-off").addEventListener("click", () => forecastRow("forecast-one-offs"
   [["month", "Month", {type: "month", required: ""}], ["amount", "Amount", {inputmode: "decimal", required: "", placeholder: "-3000.00"}], ["label", "What it is", {maxlength: "80"}]]));
 
 function forecastRequest() {
-  return {years: Number($("forecast-years").value), inflation_percent: $("forecast-inflation").value.trim(),
-          income_growth_percent: $("forecast-income-growth").value.trim(), history_months: Number($("forecast-history").value),
-          spending_changes: forecastItems("forecast-spending-changes"), income_changes: forecastItems("forecast-income-changes"),
-          one_offs: forecastItems("forecast-one-offs").map(item => ({...item, label: item.label || ""}))};
+  const request = {years: Number($("forecast-years").value), inflation_percent: $("forecast-inflation").value.trim(),
+                   income_growth_percent: $("forecast-income-growth").value.trim(), history_months: Number($("forecast-history").value),
+                   spending_changes: forecastItems("forecast-spending-changes"), income_changes: forecastItems("forecast-income-changes"),
+                   one_offs: forecastItems("forecast-one-offs").map(item => ({...item, label: item.label || ""}))};
+  // A retirement plan is one self-contained input, so a scenario can change it without touching the rest.
+  if ($("retire-plan").checked) {
+    const fixed = $("retire-mode").value === "fixed";
+    request.retirement = {start_month: $("retire-month").value, mode: $("retire-mode").value, tax_percent: $("retire-tax").value.trim() || "0",
+                          ...(fixed ? {monthly_amount: $("retire-amount").value.trim()} : {cash_floor: $("retire-floor").value.trim() || "0"})};
+  }
+  return request;
 }
+function showRetirementFields() {
+  const on = $("retire-plan").checked, fixed = $("retire-mode").value === "fixed";
+  $("retire-fields").hidden = !on;
+  $("retire-month").required = on;
+  $("retire-amount-field").hidden = !fixed; $("retire-amount").required = on && fixed;
+  $("retire-floor-field").hidden = fixed;
+}
+$("retire-plan").addEventListener("change", showRetirementFields);
+$("retire-mode").addEventListener("change", showRetirementFields);
 
-const ASSET_KINDS = {vehicle: "Vehicle", real_estate: "Home or property", investment: "Investment", retirement: "Retirement account",
-                     bond: "Bond", other_asset: "Other asset", loan: "Loan"};
+// Investment accounts have their own page (investments.js) and join the forecast from there.
+const ASSET_KINDS = {vehicle: "Vehicle", real_estate: "Home or property", other_asset: "Other asset", loan: "Loan"};
 async function loadAssets() {
   const assets = await api("/api/assets"), body = $("asset-rows");
   body.replaceChildren();
   if (!assets.length) {
     const row = body.insertRow(), td = row.insertCell(); td.colSpan = 8;
-    td.append(element("span", "No assets or loans yet. Add a car or home below; investment and loan statements add theirs after review.", "muted"));
+    td.append(element("span", "No assets or loans yet. Add a car or home below; loan statements add theirs after review.", "muted"));
   }
   for (const asset of assets) {
     const row = body.insertRow();
@@ -104,6 +120,18 @@ function forecastTable(result, columns) {
   }
   wrap.append(table); return wrap;
 }
+function retirementFacts(result) {
+  // What the retirement plan and required distributions assume, as the server received them.
+  const plan = result.assumptions.retirement, rmd = result.assumptions.rmd_start, facts = [];
+  if (plan) {
+    const pay = result.starting_point.monthly_pay;
+    facts.push(["Retirement", `From ${plan.start_month}: ${pay.minor ? `take-home pay of ${pay.display} a month stops; ` : ""}`
+      + (plan.mode === "fixed" ? `withdraw ${plan.monthly_amount} a month in today's dollars` : `withdraw enough to keep ${plan.cash_floor} in cash, in today's dollars`)
+      + `; ${plan.tax_percent}% tax on tax-deferred withdrawals`]);
+  }
+  if (rmd) facts.push(["Required distributions", `From ${rmd.year} (age ${rmd.age}), each December`]);
+  return facts;
+}
 function renderForecast(result) {
   const alerts = $("forecast-alerts"); alerts.replaceChildren();
   if (result.first_month_cash_below_zero) alerts.append(alertBox(`Cash is projected to fall below zero in ${result.first_month_cash_below_zero}.`, {tone: "warning"}));
@@ -115,7 +143,7 @@ function renderForecast(result) {
   const history = result.assumptions.history;
   for (const [label, value] of [["Cash in accounts", start.cash.display], ["Monthly income", start.monthly_income.display],
       ["Averaged over", `${history.start} to ${history.end}`], ["Inflation", `${result.assumptions.inflation_percent}% a year`],
-      ["Income growth", `${result.assumptions.income_growth_percent}% a year`]]) facts.append(element("dt", label), element("dd", value));
+      ["Income growth", `${result.assumptions.income_growth_percent}% a year`], ...retirementFacts(result)]) facts.append(element("dt", label), element("dd", value));
   const spending = element("ul", "", "forecast-notes");
   for (const row of start.monthly_spending) spending.append(element("li", `${row.category}: ${row.amount.display} a month`));
   // Confirmed recurring bills are projected on their due dates rather than averaged.
@@ -123,9 +151,19 @@ function renderForecast(result) {
   for (const bill of start.recurring_bills || []) {
     bills.append(element("li", `${bill.name} (${bill.category}): ${bill.amount.display} ${FREQUENCY_LABELS[bill.frequency].toLowerCase()}${bill.next_due ? `, next ${dateText(bill.next_due)}` : ""}`));
   }
+  const invested = start.assets.filter(asset => asset.investment), investments = element("ul", "", "finance-list");
+  for (const asset of invested) {
+    // Contributions each month (from pay, and from your cash), and CDs or Treasuries paid out at maturity.
+    const adds = [asset.monthly_from_pay ? `${asset.monthly_from_pay.display} a month from pay` : "", asset.monthly_from_you ? `${asset.monthly_from_you.display} a month from your cash` : ""].filter(Boolean);
+    const li = element("li", `${asset.name} (${asset.kind_label}): ${asset.value.display}, growing ${asset.annual_rate_percent}% a year${adds.length ? `, plus ${adds.join(" and ")}` : ""}`);
+    for (const due of asset.maturing) li.append(element("small", `${due.name} ${due.to_cash ? "pays" : "renews at"} ${due.amount.display} in ${due.month}${due.to_cash ? " to cash" : ""}`, "muted block"));
+    investments.append(li);
+  }
   $("forecast-start").replaceChildren(facts, element("h3", "Monthly spending by category"),
     start.monthly_spending.length ? spending : element("p", "No recent counted spending.", "muted"),
-    ...((start.recurring_bills || []).length ? [element("h3", "Recurring bills"), bills] : []));
+    ...((start.recurring_bills || []).length ? [element("h3", "Recurring bills"), bills] : []),
+    element("h3", "Investments"), invested.length ? investments : element("p", "No confirmed investment values.", "muted"),
+    homeLink("Open Investments to add accounts or change growth rates", "#/investments"));
   forecastCategories = [...new Set([...start.monthly_spending.map(row => row.category), ...(start.recurring_bills || []).map(bill => bill.category)])];
   const options = document.getElementById("forecast-category-options") || Object.assign(document.createElement("datalist"), {id: "forecast-category-options"});
   options.replaceChildren(...forecastCategories.map(name => Object.assign(document.createElement("option"), {value: name})));
@@ -133,7 +171,9 @@ function renderForecast(result) {
   const money = key => year => year.display[key];  // Exact text from the server; the browser never formats money.
   const charts = [
     ["Net worth", "net_worth", [["Net worth", money("end_net_worth")], ["In today's dollars", money("end_net_worth_today")]]],
-    ["Income and spending", "cash_flow", [["Income", money("income")], ["Spending", money("spending")], ["Loan payments", money("loan_payments")], ["One-off", money("one_offs")]]],
+    ["Income and spending", "cash_flow", [["Income", money("income")], ["Spending", money("spending")], ["Loan payments", money("loan_payments")], ["One-off", money("one_offs")],
+      // Money drawn from investments to cash, after tax, and the part only required distributions took.
+      ...(result.years.some(year => year.withdrawals) ? [["From investments", money("withdrawals")], ["Tax withheld", money("withdrawal_tax")], ["Required (RMD)", money("rmd")]] : [])]],
     ["Cash, assets and loans", "balance_sheet", [["Cash", money("end_cash")], ["Assets", money("end_assets")], ["Loans owed", money("end_loans")]]]];
   $("forecast-charts").replaceChildren(...charts.map(([title, key, columns]) => {
     const card = element("section", "", "panel forecast-chart-card"), details = element("details");

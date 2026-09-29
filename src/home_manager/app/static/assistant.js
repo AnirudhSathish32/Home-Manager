@@ -104,7 +104,7 @@ $("close-assistant").append(icon("x"));
 $("close-assistant").addEventListener("click", () => toggleAssistant(false));
 $("nav-ask").addEventListener("click", () => toggleAssistant());
 document.addEventListener("keydown", event => {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "j") { event.preventDefault(); toggleAssistant(); }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "j") { event.preventDefault(); if (!familyMode) toggleAssistant(); }
   else if (event.key === "Escape" && !$("assistant-panel").hidden && $("assistant-panel").contains(document.activeElement)) { event.preventDefault(); toggleAssistant(false); }
 });
 $("assistant-question").addEventListener("keydown", event => {

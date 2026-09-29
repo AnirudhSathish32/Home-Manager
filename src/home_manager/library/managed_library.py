@@ -12,7 +12,8 @@ import unicodedata
 import uuid
 
 from ..core.folders import FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, RETIRED_FOLDERS, validate_folder
-from ..core.formats import SUPPORTED, extension as file_extension
+from ..core.formats import SUPPORTED
+from ..core.formats import extension as file_extension
 from ..core.paths import PathError, path_key, safe_path, signature, source_reader
 from .storage import digest_file, now
 
@@ -23,7 +24,8 @@ DATED_FOLDERS = frozenset(LIBRARY_FOLDERS) - {"Inbox", "Unfiled"}
 READABLE_FOLDERS = frozenset(LIBRARY_FOLDERS) | frozenset(RETIRED_FOLDERS)
 TYPE_FOLDERS = {"receipt": "Receipts", "bank_statement": "Bank_Statements",
                 "credit_card_statement": "Credit_Card_Statements",
-                "paystub": "Jobs", "employment_document": "Jobs", "investment_statement": "Investments", "loan_document": "Loans",
+                "paystub": "Jobs", "employment_document": "Jobs", "investment_statement": "Investments",
+                "investment_confirmation": "Investments", "investment_tax_form": "Taxes", "loan_document": "Loans",
                 "insurance_document": "Insurance", "housing_document": "Housing", "tax_document": "Taxes"}
 # Jobs types and the section of the employer's folder they file into.
 JOB_TYPES = {"paystub": "Paystubs", "employment_document": "Documents"}

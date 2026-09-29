@@ -1,14 +1,14 @@
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
+import pytest
 
 from home_manager.app.api import create_app
 from home_manager.finance.ledger import Ledger
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import now
-from home_manager.library.trash import empty, cleanup
-from test_managed_library import library, scan
+from home_manager.library.trash import cleanup, empty
+from test_managed_library import library, scan  # noqa: F401 (library is a fixture)
 
 
 def capture(store, source, name, content=b"date,amount\n2026-09-24,25.00\n"):

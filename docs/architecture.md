@@ -2,7 +2,9 @@
 
 Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
 
-Status: architecture proposal, updated 2026-09-22 with confirmed deployment and reporting requirements. The user subsequently authorized D1–D2 document capture implementation; those slices are now available. Later components remain proposed. See [manual testing](manual-testing.md).
+Status, 2026-09-28: most of this proposal is built. Capture, the reasoning model, the CSV/XLSX/PDF readers, automatic filing, review, reconciliation, the finance tools, the assistant, forecasts, investments and profiles are all in place; [the V2 phases](v2-phases.md) record what was built and what remains (email ingestion and the Laya benchmark, Phase 10; currency conversion). Read the sections below as the original design and its reasoning. Where they say "proposed" or "future" for those parts, the linked design documents describe what now exists.
+
+Original status: architecture proposal, updated 2026-09-22 with confirmed deployment and reporting requirements. The user subsequently authorized D1–D2 document capture implementation. See [manual testing](manual-testing.md).
 
 Confirmed: Windows host with 16 GB VRAM and 32 GB RAM; inference on the same machine; one user with same-machine access; Gmail as the first email provider; multiple currencies required; downloaded CSV exports, Excel workbooks, and scanned images stored locally as source evidence; Excel financial report generation exposed as a typed tool. USD is the consolidated reporting currency, including conversion of validated foreign-currency receipt totals. Exchange-rate source selection is delegated to this design.
 
@@ -171,7 +173,7 @@ Both requested models remain candidates. OpenAI describes gpt-oss-20b as an open
 
 Before choosing, run the same contract/evaluation cases on each exact model/runtime configuration: valid tool JSON, invalid arguments, unknown tool, multiple tool calls, no-tool answer, reasoning/content separation, truncation, timeout, structured result grounding, and prompt injection. Record model revision, quantization, runtime/parser version, template, decoding settings, hardware, and context budget. Pin a passing configuration; swapping models reruns the suite. V1 needs one passing configuration, not simultaneous production support for both.
 
-A separate local reasoning adapter will consume saved transcription for field interpretation, titles and classification after model selection. Optional Laya assessment can be revisited later; it cannot read image pixels, approve records or replace source review. The earlier preliminary-OCR routing proposal is superseded. See [the reading design](document-reading.md).
+A separate local reasoning adapter consumes saved transcription for field interpretation, titles and classification (built; see [financial reasoning](financial-reasoning.md)). Laya runs in-process as an advisory check only: it can send a record to review but cannot read image pixels, approve records or replace source review. The earlier preliminary-OCR routing proposal is superseded. See [the reading design](document-reading.md).
 
 ## Ingestion and document lifecycle
 
@@ -179,11 +181,11 @@ A separate local reasoning adapter will consume saved transcription for field in
 
 Pipeline: acquire read-only source data -> capture immutable original -> validate MIME/size -> extract text in an isolated worker -> classify -> extract typed candidates -> deterministic validation -> stage/review -> publish approved records -> index.
 
-Required inputs are CSV exports, Excel workbooks, scanned receipts/bills and PDF statements. The first implemented reader handles PNG/JPEG receipts; the remaining readers follow separately. Preserve full recognized text and decoded QR/barcode payloads without filtering relevance, with financial interpretation deferred to a separate reasoning model. Preserve originals and validate an import preview before committing financial records. CSV/XLSX need explicit column/sheet mappings; PDF needs page-level text extraction with local vision transcription for scanned pages. Legacy `.xls`, encrypted files and macro-enabled workbooks need a later parser decision and must not be silently accepted. See [receipt parsing](receipt-parsing.md) for current scope and limits.
+Required inputs are CSV exports, Excel workbooks, scanned receipts/bills and PDF statements. All four readers are built: PNG/JPEG images, PDFs (embedded text, with vision for scanned pages) and CSV/XLSX transaction imports (`finance/tabular.py`). Preserve full recognized text and decoded QR/barcode payloads without filtering relevance, with financial interpretation deferred to a separate reasoning model. Preserve originals and validate an import preview before committing financial records. CSV/XLSX need explicit column/sheet mappings; PDF needs page-level text extraction with local vision transcription for scanned pages. Legacy `.xls`, encrypted files and macro-enabled workbooks need a later parser decision and must not be silently accepted. See [receipt parsing](receipt-parsing.md) for current scope and limits.
 
 Spreadsheet ingestion reads data without running macros, external links, or formulas. Formula-only financial cells without a trustworthy stored value cannot become authoritative; cached values can be stale and require review/source reconciliation. Preserve cell references, workbook epoch/date interpretation, currencies, and precision. Never overwrite a downloaded workbook. A generated report must be identifiable so it is not automatically imported as independent evidence.
 
-Image ingestion preserves original bytes and prepares bounded oriented previews in a child process. The local vision model transcribes text only; QR/barcodes are decoded independently. Store text, line references and model/run provenance without fabricated coordinates. A separate future reasoning model will consume this evidence to propose fields, titles and classification, followed by deterministic validation and review. No OCR fallback or label-based inference remains.
+Image ingestion preserves original bytes and prepares bounded oriented previews in a child process. The local vision model transcribes text only; QR/barcodes are decoded independently. Store text, line references and model/run provenance without fabricated coordinates. The separate reasoning model consumes this evidence to propose fields, titles and classification, followed by deterministic validation and review. No OCR fallback or label-based inference remains.
 
 User-initiated import/review endpoints may write local records; this is separate from external integration permissions and agent tools. The minimal review UI is part of V1 because scanned financial evidence cannot be safely handled through an invisible background import alone.
 
@@ -200,7 +202,7 @@ Receipt matching starts with deterministic amount/currency/date/merchant feature
 | Prompt injection in email/PDFs | Treat content as untrusted evidence, separate it from instructions, allowlisted typed tools, no arbitrary execution, independent authorization; test exfiltration attempts |
 | Exfiltration through URLs or model settings | Admin-controlled endpoint allowlist, loopback default, no model-provided fetch URLs, connector-only external network access; account for inference-server telemetry |
 | Browser attacks against localhost | Authenticate API access, validate Host/Origin, restricted CORS, CSRF protection for cookie-authenticated mutations, no public bind by default |
-| Unauthorized household access | Server-side object authorization on every retrieval; require an identity/access model before LAN or multi-user rollout |
+| Unauthorized household access | Server-side object authorization on every retrieval; require an identity/access model before LAN or multi-user rollout. Profiles (docs/sharing.md) separate each person's library on one computer but are not access control: anyone at the computer can switch. Families exchange only encrypted database copies through a folder, never a network listener |
 | Malicious attachments and parsers | File size/page/decompression/time limits, unprivileged isolated parsing without network, quarantine, no macros/scripts, MIME verification |
 | Path traversal or unsafe rendering | Opaque IDs, root-confined path resolution including symlinks/reparse points, sanitized text/HTML, no remote images, safe download headers |
 | Credential theft | OS credential store or narrowly accessible secret files, separate connector process access, minimum scopes, no tokens in prompts/logs/Git |
@@ -221,29 +223,51 @@ Future meaningful actions need a distinct command service: produce a concrete pr
 
 ```text
 src/home_manager/
-  __main__.py                # launcher: `home-manager`
+  __main__.py                # launcher: `home-manager`, `home-manager gpu-host`, `home-manager check-ledger`
   core/                      # foundations with no domain knowledge
-    money.py formats.py folders.py paths.py jobs.py worker_limits.py
+    money.py formats.py folders.py categories.py paths.py jobs.py worker_limits.py logs.py
   library/                   # the document store and its lifecycle
     storage.py migrations/ managed_library.py trash.py scanner.py
     organization.py backup.py share.py
-  models/                    # local model transport, Laya, vision, web lookups
-    model_client.py model_stream.py laya_runtime.py vision.py web_lookup.py
+  models/                    # model transport, residency, family GPU relay, Laya, vision, web lookups
+    model_client.py model_stream.py residency.py gpu_host.py
+    laya_runtime.py vision.py web_lookup.py
   documents/                 # reading documents into evidence and records
     pdf_reader.py receipt_schema.py receipt_service.py receipt_worker.py
     receipt_batch.py reasoning.py extraction.py reviewer.py
   finance/                   # canonical ledger, deterministic tools and views
-    ledger.py tools.py reconcile.py tabular.py forecast.py charts.py
-    dashboard.py assistant.py checkin.py
-  household/                 # items, inventory and warranties
-    items.py analysis.py resolver.py resolver_tools.py warranty.py
-  app/                       # wiring: work queues, loopback API and UI
-    manager.py api.py static/
+    ledger.py splits.py item_categories.py tools.py reconcile.py recurring_scan.py tabular.py
+    forecast.py charts.py dashboard.py assistant.py checkin.py paystub.py health.py
+    investments.py tax_lots.py retirement.py family.py family_routing.py
+  household/                 # items, inventory, warranties and tax-table lookups
+    items.py analysis.py resolver.py resolver_tools.py warranty.py tax_tables.py
+  app/                       # wiring: work queues, loopback API and UI, profiles and family sync
+    manager.py api.py profiles.py family_sync.py ledger_check.py static/
 tests/                       # flat pytest modules; synthetic data only
 docs/
 ```
 
 Runtime database, originals, extracted text, indexes, secrets, private fixtures, and backups live in a configured private data directory outside the repository.
+
+## Diagnostics and checks
+
+**Diagnostic log.** `core/logs.py` writes `<control>/logs/home-manager.log` (`%LOCALAPPDATA%\HomeManager\logs` by default). The file rotates at 1 MB and five old files are kept. The launcher prints the log's path. The log records what happened and where: event names, record and run ids, counts, and exception classes with their code tracebacks. It never records what a document says. Exception messages are left out, because they can quote document text. The same goes for amounts, merchant names and file names. This rule covers the web server's own tracebacks too (`PrivateFormatter`). Every failure the app turns into a stored "failed" state also writes a `log_failure` entry, so a failed run found during testing can be traced afterwards.
+
+**Ledger health.** `finance/health.py` checks rules the money data must keep but the schema cannot enforce. It recomputes derived values rather than trusting them:
+- category shares add up to receipt and charge totals
+- a charge is matched to at most one receipt, in the same currency
+- a matched receipt's money is still counted somewhere
+- supported currencies
+- statement balances
+- shared-record totals
+- tax lots against sales and holdings
+
+Each problem names its rule and record id only. Ways to run it:
+- `home-manager check-ledger` prints the report for every profile, reading each database read-only, so it works while the app is open.
+- `GET /api/finance/health` returns the same list.
+- Tests call `conftest.assert_ledger_healthy(store)` after ledger-changing scenarios.
+
+**Code checks.** Install the tools with `pip install -e .[dev]`. The commands are `ruff check src tests` (likely bugs and import order), `mypy` (types in `core`, `finance` and `library`), and `pytest --cov` (coverage, on request).
 
 ## Requirements to simplify or clarify
 

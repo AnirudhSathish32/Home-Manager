@@ -54,11 +54,25 @@ HAS_SPLITS = f"EXISTS(SELECT 1 FROM category_splits s WHERE {CHARGE_SPLITS})"
 # Joined to transactions t: one row per item-category share, or the charge itself when it has none.
 TRANSACTION_SPLITS = f"LEFT JOIN category_splits s ON {CHARGE_SPLITS}"
 SPLIT_CATEGORY = f"coalesce(s.category,{TRANSACTION_CATEGORY})"
-SPLIT_SPENT = "coalesce(s.amount_minor,-t.amount_minor)"
+# A receipt shared by a family (record_shares, written by a family delivery) counts only this person's part of it,
+# and so does the card charge matched to it: the same fraction of what the card was charged (charge_share below).
+RECEIPT_SHARE = "(SELECT x.share_minor FROM record_shares x WHERE x.record_type='receipt' AND x.record_id=r.id)"
+RECEIPT_SPENT = f"coalesce({RECEIPT_SHARE},r.total_minor)"
+CHARGE_SHARE = ("(SELECT CASE WHEN -t.amount_minor=x.total_minor THEN x.share_minor ELSE (-t.amount_minor*x.share_minor+x.total_minor/2)/x.total_minor END "
+                "FROM transaction_receipt_links l JOIN record_shares x ON x.record_type='receipt' AND x.record_id=l.receipt_id "
+                "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' ORDER BY l.id LIMIT 1)")
+TRANSACTION_SPENT = f"coalesce({CHARGE_SHARE},-t.amount_minor)"
+SPLIT_SPENT = f"coalesce(s.amount_minor,{TRANSACTION_SPENT})"
 # Joined to receipts r: one row per item-category share, or the whole receipt under its own category.
 RECEIPT_SPLITS = "LEFT JOIN category_splits s ON s.receipt_id=r.id AND s.transaction_id IS NULL"
 RECEIPT_SPLIT_CATEGORY = "coalesce(s.category,r.category,'uncategorized')"
-RECEIPT_SPLIT_SPENT = "coalesce(s.amount_minor,r.total_minor)"
+RECEIPT_SPLIT_SPENT = f"coalesce(s.amount_minor,{RECEIPT_SPENT})"
+
+
+def charge_share(charged, share, total):
+    """The part of a charge a person carries for a shared receipt: all of their share when the charge is the receipt's
+    total, otherwise the same fraction of the charge, rounded half up. The same rule as CHARGE_SHARE."""
+    return share if charged == total else (charged * share + total // 2) // total
 
 
 def in_categories(count):
@@ -157,11 +171,19 @@ class HouseholdConfig(StrictModel):
     checkin_weekday: int = Field(default=6, ge=0, le=6)
     auto_identify_items: bool = True  # Run item identification on each newly recorded receipt.
     filing_status: Literal["single", "married_joint", "head_of_household"] = "single"  # For the pay stub tax estimate.
+    birth_year: int | None = Field(default=None, ge=1900, le=2100)  # For required minimum distributions and retirement in the forecast.
 
     @field_validator("home_currency")
     @classmethod
     def known(cls, value):
         return currency_code(value) if value else None
+
+    @field_validator("birth_year")
+    @classmethod
+    def born(cls, value):
+        if value is not None and value > date.today().year:
+            raise ValueError("Enter the year you were born.")
+        return value
 
 
 class Ledger:
@@ -288,7 +310,7 @@ class Ledger:
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
                 "description": record.get("description"), "location": record.get("location"), "category": record.get("category"),
-                "recurrence": record.get("recurrence"),
+                "recurrence": record.get("recurrence"), "payment_last_four": record.get("payment_last_four"),
                 "review_status": status, "validation_json": json.dumps(record["issues"]),
                 "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote")})
             if written:
@@ -340,8 +362,11 @@ class Ledger:
         charges = [(None, receipt["total_minor"])] + [(row["id"], -row["amount_minor"]) for row in db.execute(
             "SELECT t.id,t.amount_minor FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
             "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
+        shared = db.execute("SELECT share_minor,total_minor FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,)).fetchone()
         for transaction_id, target in charges:
             shares = splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"], target, receipt["category"])
+            if shared:  # Each category keeps its proportion of this person's part.
+                shares = splits.scale(shares, charge_share(target, shared["share_minor"], shared["total_minor"]))
             db.executemany("INSERT INTO category_splits(receipt_id,transaction_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?,?)",
                            [(receipt_id, transaction_id, None if index is None else items[index]["id"], category, amount) for index, category, amount in shares])
 
@@ -363,10 +388,11 @@ class Ledger:
         return {"receipt_id": receipt_id, "position": position, "category": category, "category_source": "user"}
 
     def publish_asset(self, record, source):
-        """An investment or loan statement's value as the forecast asset for its account (docs/items-assets-search.md §6).
-        One row per account: a newer statement updates it and returns it to proposed; an older one changes nothing."""
+        """A loan statement's balance as the forecast loan for its account (docs/items-assets-search.md §6); investment
+        statements go to finance/investments.py. One row per account: a newer statement updates it and returns it to
+        proposed; an older one changes nothing."""
         kind, institution = record["asset_kind"], " ".join(record["institution"].split())
-        label = record.get("account_name") or ("Loan" if kind == "loan" else "Retirement account" if kind == "retirement" else "Investment account")
+        label = record.get("account_name") or "Loan"
         identity = record.get("last_four") or normalize_name(record.get("account_name")) or "-"
         key = f"{kind}|{normalize_name(institution)}|{identity}|{record['currency']}"
         name = f"{institution} {label}{' ' + record['last_four'] if record.get('last_four') else ''}"[:80]

@@ -9,7 +9,8 @@ import threading
 
 import pytest
 
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.scanner import ScanLimits, Scanner
+from home_manager.models import residency
 from home_manager.models.vision import VisionConfig
 
 
@@ -34,6 +35,14 @@ def inbox_scan(store, files=None, **limits):
 
 def documents_by_name(store):
     return {doc["relative_path"]: doc for doc in store.documents()["items"]}
+
+
+def assert_ledger_healthy(store):
+    """No ledger rule at error level is broken (finance/health.py). Warnings and info may be expected mid-scenario."""
+    from home_manager.finance.health import check_ledger
+    with store.connection() as db:
+        errors = [item for item in check_ledger(db) if item.severity == "error"]
+    assert errors == []
 
 
 @pytest.fixture
@@ -65,6 +74,14 @@ def local_model():
                 pass  # The client cancelled and closed the connection.
 
         def do_GET(self):
+            native = state.get("native")  # Opt-in LM Studio native API: {"loaded": set, "types": {id: type}, "calls": list}
+            if self.path == "/api/v1/models" and native is not None:
+                models = [*state["models"], *[key for key in native["types"] if key not in state["models"]]]
+                self.respond(200, json.dumps({"models": [
+                    {"type": native["types"].get(key, "llm"), "key": key, "display_name": key,
+                     "loaded_instances": [{"id": key, "config": {}}] if key in native["loaded"] else []}
+                    for key in models]}).encode(), "application/json")
+                return
             if self.path != "/v1/models" or state.get("models") is None:
                 self.respond(404, b"", "application/json")
                 return
@@ -73,8 +90,24 @@ def local_model():
                 for model in state["models"]]}).encode(), "application/json")
 
         def do_POST(self):
-            state["requests"].append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            native = state.get("native")
+            if native is not None and self.path in ("/api/v1/models/load", "/api/v1/models/unload"):
+                if self.path.endswith("/load"):
+                    native["calls"].append(("load", body["model"]))
+                    native["loaded"].add(body["model"])
+                    reply = {"type": "llm", "instance_id": body["model"], "status": "loaded"}
+                else:
+                    native["calls"].append(("unload", body["instance_id"]))
+                    native["loaded"].discard(body["instance_id"])
+                    reply = {"instance_id": body["instance_id"]}
+                self.respond(200, json.dumps(reply).encode(), "application/json")
+                return
+            if native is not None:
+                native["calls"].append(("chat", body.get("model")))
+            state["requests"].append(body)
             state["path"] = self.path
+            state["headers"] = dict(self.headers)
             if state.get("response_gate"):
                 state["response_gate"].wait(timeout=15)  # Like prompt processing: nothing sent yet.
             if "error_body" in state:
@@ -90,6 +123,9 @@ def local_model():
                                                            "completion_tokens": state["timings"]["predicted_n"]}}) + "\n\n"
             self.respond(state["status"], (stream + "data: [DONE]\n\n").encode(), "text/event-stream")
 
+    # Residency state is process-wide; a reused port must not inherit an earlier "no native API" verdict.
+    residency._unsupported.clear()
+    residency.configure(True)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

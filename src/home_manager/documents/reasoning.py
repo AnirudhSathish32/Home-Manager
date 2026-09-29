@@ -1,17 +1,21 @@
 """Local, evidence-linked financial interpretation of immutable transcriptions."""
 
 import json
-import uuid
+import logging
 from typing import Literal
+import uuid
 
 from pydantic import Field, ValidationError, model_validator
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 from ..models.vision import VisionConfig
 from .pdf_reader import read_result
 from .receipt_schema import StrictModel
+
+log = logging.getLogger(__name__)
 
 REASONING_VERSION = "financial-interpretation-v5"
 
@@ -312,6 +316,7 @@ class ReasoningService:
             with self.store.connection() as db:
                 db.execute("UPDATE reasoning_runs SET status='cancelled',error=?,updated_at=? WHERE id=?", (str(exc), now(), run_id))
         except Exception as exc:
+            log_failure(log, "receipt reasoning", exc, run=run_id)
             message = "Reasoning output failed validation; no analysis was published."
             if isinstance(exc, ValueError) and not isinstance(exc, ValidationError):
                 message = str(exc)

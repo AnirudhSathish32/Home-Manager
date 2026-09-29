@@ -8,16 +8,20 @@ confirmed updates go through the same lot events as one-tap answers.
 
 from datetime import date, timedelta
 import json
+import logging
 from typing import Literal
 import uuid
 
 from pydantic import Field, ValidationError
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..documents.receipt_schema import StrictModel
 from ..household.items import ItemLedger
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
+
+log = logging.getLogger(__name__)
 
 CHECKIN_VERSION = "checkin-text-v1"
 MAX_OUTPUT_TOKENS = 5000
@@ -38,7 +42,7 @@ Items in this check-in (lot ID: product, bought date):
 class Update(StrictModel):
     lot_id: int
     answer: Literal["still_have", "finished", "thrown_out"]
-    when: Literal["today", "yesterday", "this_week", "on_date", *WEEKDAYS]
+    when: Literal["today", "yesterday", "this_week", "on_date", *WEEKDAYS]  # type: ignore[valid-type]
     date: str | None = Field(description="YYYY-MM-DD when 'when' is on_date, otherwise null.")
 
 
@@ -117,6 +121,7 @@ class CheckinService:
         except (ValueError, OSError) as exc:
             self.state(run_id, "failed", error=str(exc))
         except Exception as exc:
+            log_failure(log, "check-in reading", exc, run=run_id)
             self.state(run_id, "failed", error=f"Unexpected {type(exc).__name__}.")
 
     @staticmethod

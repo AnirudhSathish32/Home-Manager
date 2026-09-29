@@ -13,6 +13,7 @@ one in Settings.
 import hashlib
 from importlib import metadata
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -22,6 +23,8 @@ import uuid
 from ..core.jobs import Work
 from ..core.paths import PathError, path_key, safe_path, write_atomic
 from .storage import MIGRATIONS, now
+
+log = logging.getLogger(__name__)
 
 FORMAT = "home-manager-backup-v1"
 MANIFEST = "manifest.json"
@@ -39,7 +42,7 @@ def app_version():
         return "unknown"
 
 
-def copy_verified(source: Path, target: Path, expected=None):
+def copy_verified(source: Path, target: Path, expected=None) -> tuple[int, str]:
     """Stream a file, hashing as it goes; fsync the copy. Returns (size, sha256) or raises on mismatch."""
     digest, size = hashlib.sha256(), 0
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +58,7 @@ def copy_verified(source: Path, target: Path, expected=None):
     return size, digest.hexdigest()
 
 
-def file_digest(path: Path):
+def file_digest(path: Path) -> tuple[int, str]:
     with open(safe_path(path), "rb") as stream:
         return path.stat().st_size, hashlib.file_digest(stream, "sha256").hexdigest()
 
@@ -101,6 +104,7 @@ class BackupService:
             os.replace(staging, final)
             self.finish(backup_id, "succeeded", files=len(manifest["files"]), total=sum(item["size"] for item in manifest["files"]),
                         manifest=hashlib.sha256(data).hexdigest(), destination=final)
+            log.info("backup succeeded backup=%s files=%d issues=%d", backup_id, len(manifest["files"]), len(manifest.get("issues", [])))
         except BaseException as exc:
             # Only the staging folder this run created is removed; nothing else in the destination is touched.
             if staging.exists() and staging.parent == destination and staging.name.endswith(".partial"):
@@ -218,5 +222,6 @@ def restore_backup(folder: Path, target: Path, work=None):
     db.close()
     # The store marker comes last: an interrupted restore leaves a folder Home Manager refuses to open.
     write_atomic(target / ".home-manager-store", STORE_MARKER)
+    log.info("restore succeeded files=%d schema=%s", len(manifest["files"]), manifest["schema_version"])
     return {"restored_to": str(target), "files": len(manifest["files"]), "schema_version": manifest["schema_version"],
             "backup_created_at": manifest["created_at"], "issues": manifest.get("issues", [])}

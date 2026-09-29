@@ -369,6 +369,9 @@ async function loadExtraction(state, parseId) {
   const publication = run.publication;
   if (run.status !== "succeeded" || !publication || publication.status === "blocked") return;
   if (publication.record_type === "asset") { await renderAssetRecord(target, publication); return; }
+  if (publication.record_type === "investment_valuation") { await renderInvestmentRecord(target, publication, `/api/investments/valuations/${publication.id}`); return; }
+  if (publication.record_type === "investment_confirmation") { await renderConfirmationRecord(target, publication); return; }
+  if (publication.record_type === "tax_form") { await renderTaxFormRecord(target, publication); return; }
   await renderLedgerRecord(target, publication.record_type, publication.id, publication.status === "kept_reviewed");
   if (run.result.laya) target.appendChild(layaPanel(run.result.laya, run.document_type));
 }
@@ -479,7 +482,8 @@ function ledgerRows(record, categories = [], onSaved = null) {
 async function renderAssetRecord(target, publication) {
   // Investment and loan statements feed the forecast's assets; their values wait for review (docs/items-assets-search.md §6).
   const asset = (await api("/api/assets?include_archived=true")).find(row => row.id === publication.id);
-  if (!asset) { target.replaceChildren(element("p", "The asset recorded from this statement was removed.", "muted")); return; }
+  // Investment values recorded before they had their own page moved there, keeping the old asset's number.
+  if (!asset) { await renderInvestmentRecord(target, publication, `/api/investments/valuations/by-asset/${publication.id}`); return; }
   const heading = element("div", "", "ledger-record-heading");
   heading.append(element("strong", asset.name), statusBadge(asset.review_status));
   const facts = element("dl", "", "detail-list");
@@ -493,6 +497,59 @@ async function renderAssetRecord(target, publication) {
   for (const issue of asset.issues) notes.push(element("p", issue, "item-warning"));
   const next = asset.review_status === "proposed" ? homeLink("Confirm it in Review", "#/review") : homeLink("See it in Forecast", "#/forecast");
   target.replaceChildren(heading, facts, ...notes, element("p", "Statement values count in your forecast once you confirm them.", "muted small"), next);
+}
+async function renderInvestmentRecord(target, publication, path) {
+  // An investment statement's value for its account (docs/investments.md); it waits for review like other statement values.
+  let valuation;
+  try { valuation = await api(path); } catch { target.replaceChildren(element("p", "The value recorded from this statement was removed.", "muted")); return; }
+  const heading = element("div", "", "ledger-record-heading");
+  heading.append(element("strong", valuation.account.name), statusBadge(valuation.review_status));
+  const facts = element("dl", "", "detail-list");
+  for (const [label, value] of [["Kind", valuation.account.kind_label], ["Value", valuation.value.display], ["As of", dateText(valuation.as_of)],
+                                ...(valuation.holding_count ? [["Holdings", String(valuation.holding_count)]] : []),
+                                ...(valuation.activity_count ? [["Activity entries", String(valuation.activity_count)]] : [])]) {
+    facts.append(element("dt", label), element("dd", value));
+  }
+  const notes = [];
+  if (publication.status === "history") notes.push(element("p", "A newer statement for this account is already recorded, so this one is kept as history.", "muted"));
+  if (publication.status === "kept_newer") notes.push(element("p", "A newer statement for this account is already recorded, so this one didn't change it.", "muted"));
+  if (publication.status === "kept_reviewed") notes.push(element("p", "You already reviewed this value, so the new extraction did not change it.", "muted"));
+  for (const issue of valuation.issues) notes.push(element("p", issue, "item-warning"));
+  const next = valuation.review_status === "proposed" ? homeLink("Confirm it in Review", "#/review") : homeLink("See it in Investments", `#/investments?account=${valuation.account.id}`);
+  target.replaceChildren(heading, facts, ...notes, element("p", "Statement values count once you confirm them.", "muted small"), next);
+}
+async function renderConfirmationRecord(target, publication) {
+  // A trade, CD or Treasury purchase confirmation (docs/investments.md, phase 3); it waits for review like statement values.
+  let confirmation;
+  try { confirmation = await api(`/api/investments/confirmations/${publication.id}`); } catch { target.replaceChildren(element("p", "The purchase recorded from this confirmation was removed.", "muted")); return; }
+  const heading = element("div", "", "ledger-record-heading");
+  heading.append(element("strong", confirmation.account.name), statusBadge(confirmation.review_status));
+  const facts = element("dl", "", "detail-list");
+  facts.append(element("dt", "Kind"), element("dd", confirmation.account.kind_label), element("dt", "Traded"), element("dd", dateText(confirmation.trade_date)));
+  for (const trade of confirmation.trades) {
+    const terms = [trade.amount.display, trade.rate_percent != null ? `${trade.rate_percent}%` : "", trade.maturity_date ? `matures ${dateText(trade.maturity_date)}` : ""].filter(Boolean);
+    facts.append(element("dt", `${trade.type_label} ${trade.name}`), element("dd", terms.join(" · ")));
+  }
+  const notes = [];
+  if (publication.status === "kept_reviewed") notes.push(element("p", "You already reviewed this confirmation, so the new extraction did not change it.", "muted"));
+  for (const issue of confirmation.issues) notes.push(element("p", issue, "item-warning"));
+  const next = confirmation.review_status === "proposed" ? homeLink("Confirm it in Review", "#/review") : homeLink("See it in Investments", `#/investments?account=${confirmation.account.id}`);
+  target.replaceChildren(heading, facts, ...notes, element("p", "Purchases count once you confirm them.", "muted small"), next);
+}
+async function renderTaxFormRecord(target, publication) {
+  // A 1099 or 5498 (docs/investments.md, phase 5): its boxes, checked against the account's records in Investments → Taxes.
+  let form;
+  try { form = await api(`/api/investments/tax-forms/${publication.id}`); } catch { target.replaceChildren(element("p", "The tax form recorded from this document was removed.", "muted")); return; }
+  const heading = element("div", "", "ledger-record-heading");
+  heading.append(element("strong", form.name), statusBadge(form.review_status));
+  const facts = element("dl", "", "detail-list");
+  facts.append(element("dt", "Account"), element("dd", form.account_name || "No account here matches it"));
+  for (const box of form.boxes) facts.append(element("dt", `${box.form} box ${box.box}: ${box.label}`), element("dd", box.amount.display));
+  const notes = [];
+  if (publication.status === "kept_reviewed") notes.push(element("p", "You already reviewed this form, so the new extraction did not change it.", "muted"));
+  for (const issue of form.issues) notes.push(element("p", issue, "item-warning"));
+  const next = form.review_status === "proposed" ? homeLink("Confirm it in Review", "#/review") : homeLink("Compare it in Investments", `#/investments?year=${form.tax_year}`);
+  target.replaceChildren(heading, facts, ...notes, next);
 }
 async function renderLedgerRecord(target, type, id, kept) {
   const record = await api(`/api/finance/records/${type}/${id}`);

@@ -7,7 +7,8 @@ if (fragment.has("token")) {
 }
 const token = sessionStorage.getItem("home-manager-token") || "";
 // Capture and model inference are independent queues; library actions wait for neither.
-let savedManaged = "", inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
+// familyMode: a family profile is open. It has no library of its own; only Home and Settings apply.
+let savedManaged = "", inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
 const pageSize = 100;
 function element(tag, text = "", className = "") {
   const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
@@ -164,10 +165,14 @@ async function sessionChanged() {
 }
 async function loadSettings() {
   const settings = await api("/api/settings");
-  configured = settings.configured; setBusy(settings); renderActivity(settings.activity); renderSession(settings);
+  configured = settings.configured; familyMode = Boolean(settings.family);
+  document.body.classList.toggle("family-mode", familyMode);
+  setBusy(settings); renderActivity(settings.activity); renderSession(settings); renderProfiles(settings);
   $("managed").value = settings.managed_directory;
   inboxDirectory = settings.inbox_directory || "";
-  modelsConfigured = {vision: Boolean(settings.vision.model), reasoning: Boolean(settings.reasoning.model)};
+  const familyGpu = settings.model_computer.provider === "family_gpu";
+  modelsConfigured = familyGpu ? {vision: true, reasoning: true} : {vision: Boolean(settings.vision.model), reasoning: Boolean(settings.reasoning.model)};
+  renderModelComputer(settings.model_computer);
   $("inbox-location").textContent = settings.inbox_directory ? `Drop files into ${settings.inbox_directory}` : "Choose a library folder to create your Inbox.";
   $("vision-url").value = settings.vision.base_url;
   $("vision-model").value = settings.vision.model;
@@ -181,12 +186,13 @@ async function loadSettings() {
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
   $("auto-identify").checked = settings.household.auto_identify_items !== false;
   $("filing-status").value = settings.household.filing_status || "single";
+  $("birth-year").value = settings.household.birth_year ?? "";
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
   const setup = element("a", "Open Settings", "button primary"); setup.href = "#/settings";
   $("app-alert").replaceChildren(...(settings.startup_error ? [alertBox(settings.startup_error, {tone: "error"})]
-    : !configured ? [alertBox("Choose where Home Manager keeps its library to get started.", {action: setup})] : []));
+    : !configured && !familyMode ? [alertBox("Choose where Home Manager keeps its library to get started.", {action: setup})] : []));
   controls();
 }
 async function loadJobs() {
@@ -282,6 +288,9 @@ async function poll() {
       const settings = await api("/api/settings");
       const wasBusy = anyBusy(); setBusy(settings); controls();
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
+      // Member status in a family view; a finished family share or delivery updates the status lines.
+      if (familyMode || (wasBusy && !anyBusy())) renderProfiles(settings);
+      if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await loadFamilyRouting();
       if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
       if (anyBusy() || wasBusy) {
         await refresh();
@@ -320,6 +329,38 @@ function saveSettingsForm(form, path, body, message) {
 saveSettingsForm("vision-form", "/api/vision-settings",
   () => ({base_url:$("vision-url").value.trim(), model:$("vision-model").value.trim(), organize_after_scan:$("auto-organize").checked}),
   "Local model settings saved. Start the model server before parsing; saving does not test the connection.");
+// Model computer: this PC's server, or a family member's GPU computer over Tailscale (models/gpu_host.py).
+function showModelProvider(provider) {
+  const family = provider === "family_gpu";
+  $("family-gpu-fields").hidden = $("test-model-computer").hidden = !family;
+  $("manage-loading-field").hidden = $("manage-loading-note").hidden = family;
+  for (const id of ["vision-form", "reasoning-form", "local-models-note"]) $(id).hidden = family;
+}
+function renderModelComputer(computer) {
+  $("model-provider").value = computer.provider;
+  $("gpu-host-url").value = computer.gpu_host_url;
+  $("gpu-token").value = "";
+  $("gpu-token").placeholder = computer.token_set ? "Saved. Paste a new token to replace it." : "";
+  $("manage-loading").checked = computer.manage_model_loading;
+  $("loading-hint").replaceChildren(...(computer.loading_hint ? [alertBox(computer.loading_hint, {tone: "warning"})] : []));
+  showModelProvider(computer.provider);
+}
+$("model-provider").addEventListener("change", () => showModelProvider($("model-provider").value));
+saveSettingsForm("model-computer-form", "/api/model-computer",
+  () => ({provider: $("model-provider").value, gpu_host_url: $("gpu-host-url").value.trim(),
+          manage_model_loading: $("manage-loading").checked, ...($("gpu-token").value.trim() ? {token: $("gpu-token").value.trim()} : {})}),
+  "Model computer saved. Saving does not test the connection.");
+$("test-model-computer").addEventListener("click", async () => {
+  const button = $("test-model-computer"), target = $("test-model-computer-result");
+  button.disabled = true; target.replaceChildren(element("p", "Asking the GPU computer which models it shares…", "muted small"));
+  try {
+    const result = await api("/api/model-computer-tests", {method: "POST"});
+    const problems = [result.vision, result.reasoning].filter(check => !(check.reachable && check.model_listed)).map(check => check.problem);
+    target.replaceChildren(problems.length ? alertBox([...new Set(problems)].join(" "), {tone: "warning"})
+      : alertBox(`Connected in ${result.reasoning.latency_ms} ms. The GPU computer shares a vision and a reasoning model.`, {tone: "info"}));
+  } catch (error) { target.replaceChildren(alertBox(error.message, {tone: "error"})); }
+  finally { button.disabled = false; }
+});
 saveSettingsForm("reasoning-form", "/api/reasoning-settings",
   () => ({base_url:$("reasoning-url").value.trim(), model:$("reasoning-model").value.trim()}),
   "Reasoning settings saved. Open a read document and select Extract to ledger.");
@@ -346,7 +387,7 @@ $("session-form").addEventListener("submit", async event => {
   } catch (error) { notice(error, true); }
 });
 saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked,
-                                                             filing_status: $("filing-status").value}),
+                                                             filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

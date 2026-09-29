@@ -377,9 +377,9 @@ A full page with a left sub-navigation (not a modal). Each section is a narrow 7
 |---|---|---|
 | **Library** | Managed library folder, Inbox path (copyable), capture limits | Exists |
 | **Financial preferences** | Home currency, date display format (UI-only preference), default period | Currency exists; the others are UI-only |
-| **Local models** | Vision model, reasoning model: URL, model ID, a "Test connection" button (Backend B12), auto-read new files | Exists except the connection test |
+| **Local models** | Vision model, reasoning model: URL, model ID, a "Test connection" button (Backend B12), auto-read new files | Exists, including the connection test (Phase E) |
 | **Independent checks** | Laya / chat checker, installed state | Exists |
-| **Backup & restore** | Planned; shows what will be covered and that it's not yet available | Backend B13 (spec §19) |
+| **Backup & restore** | Back up to a folder, verify, restore into a new library | Built (Backend B13, Phase E) |
 | **Privacy & security** | A read-only statement of guarantees: loopback-only, no telemetry, read-only sources, where data lives | Static content, derived from the architecture |
 | **Advanced** | Raw endpoint URLs, model identity, schema/app version, database location | Mostly exists in `/api/settings` |
 
@@ -649,7 +649,7 @@ Implemented notes:
 - **Reverse lookup:** selecting a region on the image highlights the recorded rows that cite it. Summary fields (merchant, total) carry no per-field citations yet, so only item and transaction rows are highlighted.
 - **Decisions are undoable:** a verified or rejected record offers "Undo verification/rejection", which returns it to Needs review.
 - **Robustness:** table updates wait while a row menu is open, and menus follow their trigger when a container scrolls.
-- **Still open:** B9 (per-document reconciliation state and an Unfiled reason) is not in the library query yet.
+- ~~**Still open:** B9 (per-document reconciliation state and an Unfiled reason).~~ Built later; see [items-assets-search.md](items-assets-search.md).
 
 ### Phase C: Money screens — done 2026-09-25
 
@@ -681,7 +681,7 @@ The assistant panel (**Ask**, <kbd>Ctrl</kbd>+<kbd>J</kbd>); see [warranties-ass
 
 - The Assistant panel, built on the EvidenceReference, AmountDisplay, and Drawer primitives.
 
-**Out of scope for all phases:** dark mode (the tokens make it cheap later), a mobile layout beyond "usable at narrow widths", and charts beyond bars and bar lists.
+**Out of scope for all phases:** dark mode (the tokens make it cheap later), a mobile layout beyond "usable at narrow widths", and charts beyond bars and bar lists. (The newer [UI/UX redesign](new_ui_ux_design.md) plans a dark theme that follows Windows; it supersedes this for dark mode.)
 
 ---
 

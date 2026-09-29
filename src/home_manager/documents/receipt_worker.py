@@ -9,7 +9,6 @@ from pathlib import Path
 import sys
 import warnings
 
-
 MAX_PIXELS = 24_000_000
 TILE = 1600
 OVERLAP = 160
@@ -114,7 +113,7 @@ def main():
         # No raw receipt text or exception paths in logs/results.
         message = str(exc) if isinstance(exc, ValueError) else "Local image preparation failed. Verify the image and installed image dependencies."
         (output / "error.json").write_text(json.dumps({"error": message[:1000]}), encoding="utf-8")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

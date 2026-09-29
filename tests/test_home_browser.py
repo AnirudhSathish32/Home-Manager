@@ -1,5 +1,4 @@
 """Dashboard behavior and responsive charts, using synthetic household data only."""
-from conftest import inbox_scan
 from datetime import date
 import os
 from pathlib import Path
@@ -10,8 +9,9 @@ import time
 import pytest
 import uvicorn
 
+from conftest import inbox_scan
 from home_manager.app.api import create_app
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.scanner import ScanLimits
 from test_reconcile_tools import add
 
 

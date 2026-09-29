@@ -18,6 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
 browser-test = ["playwright==1.63.0"]
+# Checks: `ruff check src tests`, `mypy`, `pytest --cov`.
+dev = ["pytest-cov==7.1.0", "ruff==0.16.9", "mypy==2.3.1"]
 # In-process advisory checks. Weights: `home-manager --install-laya` (pinned revision, one download).
 laya = ["laya==0.3.20"]
 
@@ -35,3 +37,38 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
+
+[tool.coverage.run]
+source = ["home_manager"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Likely bugs (pyflakes, bugbear, syntax errors), current-Python idioms and import order. No formatter.
+select = ["E9", "F", "B", "W6", "UP", "I"]
+# timezone.utc is the house spelling; zip(strict=True) would turn uneven inputs into errors (a behavior change).
+ignore = ["UP017", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI declares parameters with Query(...) defaults.
+"src/home_manager/app/api.py" = ["B008"]
+# Fixtures imported from other test modules are "redefined" by each test that requests them.
+"tests/*" = ["F811"]
+
+[tool.ruff.lint.isort]
+# Imports are ordered by module name, `import x` and `from x import y` together.
+force-sort-within-sections = true
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src/home_manager/core", "src/home_manager/finance", "src/home_manager/library"]
+ignore_missing_imports = true
+check_untyped_defs = false

@@ -4,14 +4,14 @@ import sqlite3
 
 import pytest
 
-from home_manager.app.manager import Manager
-from home_manager.library.managed_library import LIBRARY_FOLDERS, filename
 from conftest import inbox_scan
+from home_manager.app.manager import Manager
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.library.managed_library import LIBRARY_FOLDERS, filename
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import MIGRATIONS, Store
-from home_manager.documents.reasoning import ReasoningConfig
-from test_receipts import make_receipt
 from test_reasoning import proposal
+from test_receipts import make_receipt
 
 
 def scan(store, *_):

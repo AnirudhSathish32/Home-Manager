@@ -1,16 +1,39 @@
-"""Bounded, loopback-only vision adapter. Documents never select endpoints or tools."""
+"""Bounded vision adapter. Documents never select endpoints or tools.
+
+Model endpoints are a loopback server on this computer or, when "Model computer" is
+set to a family GPU, that computer on the tailnet. Nothing else is ever accepted.
+"""
 
 import base64
+from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ..core.paths import write_atomic
-from ..documents.receipt_schema import StrictModel, ReceiptResult, TextLine, Issue, code_transcript
-from .model_client import request_completion
-
+from ..documents.receipt_schema import Issue, ReceiptResult, StrictModel, TextLine, code_transcript
+from .model_client import is_tailnet_host, request_completion
 
 VISION_VERSION = "receipt-vision-v5-text"
+# Family members ask the GPU computer for a role; its owner maps each role to a model ID.
+ROLE_ALIASES = {"vision": "home-manager/vision", "reasoning_config": "home-manager/reasoning",
+                "reviewer_config": "home-manager/reviewer"}
+
+
+def endpoint_url(value, tailnet=False):
+    """http://127.0.0.1:PORT/v1, or with tailnet=True http://<Tailscale host>:PORT/v1."""
+    value = value.strip().rstrip("/")
+    url = urlsplit(value)
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    host_ok = is_tailnet_host(url.hostname) if tailnet else url.hostname == "127.0.0.1"
+    if (url.scheme != "http" or not host_ok or not port
+            or url.username or url.password or url.query or url.fragment or url.path != "/v1"):
+        raise ValueError("Use http://<Tailscale IP or name.ts.net>:PORT/v1 for the family GPU computer." if tailnet else
+                         "Use http://127.0.0.1:PORT/v1 for a local model server.")
+    return value
 
 
 class VisionConfig(StrictModel):
@@ -22,12 +45,13 @@ class VisionConfig(StrictModel):
     @field_validator("base_url")
     @classmethod
     def local_only(cls, value):
-        value = value.rstrip("/")
-        url = urlsplit(value)
-        if (url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port
-                or url.username or url.password or url.query or url.fragment or url.path != "/v1"):
-            raise ValueError("Use http://127.0.0.1:PORT/v1 for a local model server.")
-        return value
+        # Run options saved while using a family GPU carry its tailnet URL; settings forms accept loopback only.
+        try:
+            return endpoint_url(value)
+        except ValueError:
+            if is_tailnet_host(urlsplit(value.strip()).hostname):
+                return endpoint_url(value, tailnet=True)
+            raise
 
     @field_validator("model")
     @classmethod
@@ -36,6 +60,24 @@ class VisionConfig(StrictModel):
         if any(ord(char) < 32 for char in value):
             raise ValueError("Model ID cannot contain control characters.")
         return value
+
+
+class ModelComputer(StrictModel):
+    """Where model calls run: this PC's local server, or a family member's GPU computer over Tailscale.
+
+    Only rendered page images and text prompts leave this computer; documents and
+    databases stay here. The GPU token is kept in its own file, never in this setting.
+    """
+    provider: Literal["local", "family_gpu"] = "local"
+    gpu_host_url: str = Field(default="", max_length=300)
+    # Local server only: eject other models before loading the next one (models/residency.py).
+    manage_model_loading: bool = True
+
+    @model_validator(mode="after")
+    def tailnet_only(self):
+        if self.gpu_host_url or self.provider == "family_gpu":
+            self.gpu_host_url = endpoint_url(self.gpu_host_url, tailnet=True)
+        return self
 
 
 class VisionText(StrictModel):

@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from ..core.jobs import Work
 from ..core.paths import PathError, safe_path
-from .backup import BackupService, DATABASE, MANIFEST, manifest_path, restore_backup
+from .backup import DATABASE, MANIFEST, BackupService, manifest_path, restore_backup
 from .storage import now
 
 MAGIC, VERSION = b"HMSHARE1", 1
@@ -67,17 +67,25 @@ def nonce(prefix, counter, last):
     return prefix + struct.pack(">IB", counter, 1 if last else 0)
 
 
+def check_key(key):
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise ShareError("The family key is invalid.")
+    return key
+
+
 class EncryptingWriter(io.RawIOBase):
     """File-like sink: plaintext in, authenticated chunks out. finish() seals the final chunk.
 
     Sealing is explicit, never done by close() or garbage collection, so a failed export cannot end
-    in a validly sealed but incomplete file.
+    in a validly sealed but incomplete file. With key= (a random 32-byte key, as family snapshots
+    use) scrypt is skipped and the header records cost 0; magic= tells the file kinds apart.
     """
 
-    def __init__(self, target, passphrase):
+    def __init__(self, target, passphrase=None, *, key=None, magic=MAGIC):
         salt, self.prefix = secrets.token_bytes(16), secrets.token_bytes(7)
-        self.header = HEADER.pack(MAGIC, VERSION, SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, salt, self.prefix)
-        self.aead = AESGCM(derive_key(passphrase, salt, SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P))
+        cost = (0, 0, 0) if key is not None else (SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P)
+        self.header = HEADER.pack(magic, VERSION, *cost, salt, self.prefix)
+        self.aead = AESGCM(check_key(key) if key is not None else derive_key(passphrase, salt, *cost))
         self.target, self.buffer, self.counter = target, bytearray(), 0
         target.write(self.header)
 
@@ -104,17 +112,18 @@ class EncryptingWriter(io.RawIOBase):
 class DecryptingReader(io.RawIOBase):
     """File-like source over an encrypted share; raises ShareError on any authentication failure."""
 
-    def __init__(self, source, passphrase):
+    def __init__(self, source, passphrase=None, *, key=None, magic=MAGIC, noun="share"):
         header = source.read(HEADER.size)
+        self.noun = noun
         if len(header) != HEADER.size:
-            raise ShareError("This is not a Home Manager share file.")
-        magic, version, log_n, r, p, salt, self.prefix = HEADER.unpack(header)
-        if magic != MAGIC:
-            raise ShareError("This is not a Home Manager share file.")
+            raise ShareError(f"This is not a Home Manager {noun} file.")
+        expected, version, log_n, r, p, salt, self.prefix = HEADER.unpack(header)
+        if expected != magic or (key is not None) != (log_n == 0):
+            raise ShareError(f"This is not a Home Manager {noun} file.")
         if version != VERSION:
-            raise ShareError("This share was made by a newer Home Manager version.")
+            raise ShareError(f"This {noun} was made by a newer Home Manager version.")
         self.header, self.source = header, source
-        self.aead = AESGCM(derive_key(passphrase, salt, log_n, r, p))
+        self.aead = AESGCM(check_key(key) if key is not None else derive_key(passphrase, salt, log_n, r, p))
         self.counter, self.buffer, self.done = 0, b"", False
         self.pending = source.read(CHUNK + TAG)
 
@@ -127,8 +136,9 @@ class DecryptingReader(io.RawIOBase):
         try:
             plain = self.aead.decrypt(nonce(self.prefix, self.counter, last), self.pending, self.header)
         except InvalidTag as exc:
-            raise ShareError("Wrong passphrase, or the share file is damaged or incomplete." if self.counter == 0
-                             else "The share file is damaged or incomplete.") from exc
+            secret = "family key" if self.noun == "family" else "passphrase"
+            raise ShareError(f"Wrong {secret}, or the {self.noun} file is damaged or incomplete." if self.counter == 0
+                             else f"The {self.noun} file is damaged or incomplete.") from exc
         self.counter += 1
         self.pending, self.done = following, last
         return plain
@@ -204,7 +214,7 @@ def open_share(share_file: Path, passphrase, target: Path, work=None):
                     manifest_path(entry.name)  # Refuses absolute paths, drives, '..' and anything outside the backup layout.
                 path = safe_path(unpacked.joinpath(*entry.name.split("/")))
                 path.parent.mkdir(parents=True, exist_ok=True)
-                with archive.extractfile(entry) as reader, open(path, "xb") as writer:
+                with archive.extractfile(entry) as reader, open(path, "xb") as writer:  # type: ignore[union-attr]  # A plain file always has a reader.
                     shutil.copyfileobj(reader, writer, CHUNK)
                 if entry.name == SHARE_INFO:
                     info = json.loads(path.read_text(encoding="utf-8"))

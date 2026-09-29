@@ -35,6 +35,21 @@ Startup retries pending/blocked intents and fills gaps after a capture committed
 
 Migration 007 explicitly maps legacy folders to flat folders and appends migration events. Existing folder events and parsing/organization JSON remain historical evidence. Migration 008 adds managed paths/intents/events and marks Inbox occurrences separately from external roots. Inbox folder-period values are 0 (no source folder period), never an inferred financial date.
 
+## Schema upgrades and recovering from a failed one
+
+Each schema script in `library/migrations/` runs in its own transaction and must record its number in `PRAGMA user_version`. Before upgrading, the app does two things:
+1. It runs `PRAGMA quick_check`. A database that fails it is never upgraded.
+2. It saves a complete copy, `inventory.before-v<latest>.sqlite3`, beside the database. An existing copy is kept, because it may predate an earlier upgrade that was interrupted. It is replaced only if it is unreadable.
+
+After a successful upgrade, the two newest copies are kept.
+
+If a step fails, the app still starts. The alert names the step that stopped and the pre-upgrade copy (`storage.MigrationError`), and the Home Manager log (`logs/home-manager.log` in the settings folder) records the step and the error class. Every earlier step stays applied, the failed step is rolled back, and the next start tries again from there. To recover:
+1. Close the app.
+2. Keep the library folder and its `inventory.before-v…` copy unchanged.
+3. Either update Home Manager to a version with the fix and start it again, or restore a backup into a new folder (**Settings → Backup & restore**).
+
+Don't delete the pre-upgrade copy until the library opens normally.
+
 ## Next phases
 
-Phases 2–8 (telemetry and cancellation, PDF reading, canonical finance, typed extraction, CSV/XLSX import, reconciliation and deterministic tools) are described in [v2-phases.md](v2-phases.md). The agent and email ingestion remain later phases. The earlier read-only `YYYY/MM` source folder was removed (2026-09-25); Inbox is the only import route. Documents captured from a source folder by older versions stay in the library. No private live database was migrated during development tests.
+Phases 2–8 (telemetry and cancellation, PDF reading, canonical finance, typed extraction, CSV/XLSX import, reconciliation and deterministic tools) are described in [v2-phases.md](v2-phases.md), and the assistant is built. Email ingestion remains a later phase. The earlier read-only `YYYY/MM` source folder was removed (2026-09-25); Inbox is the only import route. Documents captured from a source folder by older versions stay in the library. No private live database was migrated during development tests.

@@ -1,8 +1,11 @@
 """Loopback-only API and minimal manual-testing UI."""
 
 from contextlib import asynccontextmanager
+from datetime import date
+import logging
 from pathlib import Path
 import secrets
+import sqlite3
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -13,29 +16,99 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.categories import FREQUENCIES
 from ..core.folders import DocumentFolder
 from ..core.formats import IMAGES, extension
+from ..core.logs import attach_server, log_failure
 from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
+from ..finance.health import check_ledger, summary
+from ..finance.investments import AccountInput as InvestmentAccountInput
+from ..finance.investments import AccountUpdate, HoldingInput, Investments, LotInput, MaturedInput, PayrollChoice, ValueInput
 from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
-from ..finance.reconcile import OBLIGATION_DECISIONS
+from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
 from ..finance.tabular import ImportMapping
 from ..finance.tools import ToolName, call_tool
 from ..household.items import CHECKIN_ANSWERS, LOT_EVENTS, ResolutionFields
 from ..household.warranty import Warranties
 from ..library.scanner import ScanLimits
 from ..library.storage import digest_file
-from ..models.vision import VisionConfig
-from .manager import Manager, default_control_dir
+from ..models.vision import ModelComputer, VisionConfig
+from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 
+log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "style.css": "text/css"}
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "investments.js": "text/javascript", "profiles.js": "text/javascript", "style.css": "text/css"}
 
 
 class SettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     managed_directory: str = Field(min_length=1, max_length=4096)
+
+
+class ModelComputerInput(ModelComputer):
+    # Write-only: a new token replaces the saved one; omitted keeps it. Never returned.
+    token: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{20,200}$")
+
+
+class ProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=60)
+    folder: str = Field(min_length=1, max_length=4096)
+
+
+class RenameInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=60)
+
+
+class ActiveProfileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(min_length=1, max_length=40)
+
+
+class FamilyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=60)
+    folder: str = Field(min_length=1, max_length=4096)
+    sync_folder: str = Field(min_length=1, max_length=4096)
+    members: list[str] = Field(default_factory=list, max_length=20)
+    my_profile: str | None = Field(default=None, max_length=40)
+
+
+class MemberInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=60)
+
+
+class LocalMemberInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    profile_id: str | None = Field(default=None, max_length=40)
+    folder: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class InviteInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    destination: str = Field(min_length=1, max_length=4096)
+    passphrase: str = Field(min_length=1, max_length=1024)
+
+
+class JoinInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    invite_file: str = Field(min_length=1, max_length=4096)
+    passphrase: str = Field(min_length=1, max_length=1024)
+    sync_folder: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class PublishingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    publishing: bool
+
+
+class AssignmentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    mode: Literal["member", "shared"]
+    members: list[str] = Field(min_length=1, max_length=20)
 
 
 class ReceiptInput(BaseModel):
@@ -273,6 +346,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @asynccontextmanager
     async def lifespan(app):
+        attach_server()  # Uvicorn has reset its loggers by now; its errors join the app log (if configured).
         app.state.manager = Manager(control or default_control_dir(), limits)
         try:
             yield
@@ -331,6 +405,11 @@ def create_app(control: Path | None = None, token: str | None = None,
     async def storage_error(request, exc):
         return JSONResponse({"detail": "Could not access local storage. Check folder permissions, locks and free disk space."}, status_code=400)
 
+    @app.exception_handler(sqlite3.Error)
+    async def database_error(request, exc):
+        log_failure(log, "request", exc, path=request.url.path)
+        return JSONResponse({"detail": "The library database could not complete this request. Details are in the Home Manager log."}, status_code=500)
+
     static = Path(__file__).parent / "static"
     for name, media_type in STATIC.items():
         app.add_api_route("/" if name == "index.html" else "/" + name,
@@ -342,12 +421,89 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     def store():
         if not manager().store:
-            raise HTTPException(409, "Configure directories first.")
+            raise HTTPException(409, FAMILY_READ_ONLY if manager().family else "Configure directories first.")
         return manager().store
 
     @app.get("/api/settings")
     def settings():
         return manager().settings()
+
+    # Profiles and families -------------------------------------------------------
+
+    @app.get("/api/profiles")
+    def profiles():
+        view = manager().settings()
+        return {"active": view["profile"], "profiles": view["profiles"], "family": view["family"]}
+
+    @app.post("/api/profiles", status_code=201)
+    def create_profile(value: ProfileInput):
+        return manager().create_profile(value.name, value.folder)
+
+    @app.put("/api/profiles/active")
+    def switch_profile(value: ActiveProfileInput):
+        return manager().switch_profile(value.id)
+
+    @app.patch("/api/profiles/{profile_id}")
+    def rename_profile(profile_id: str, value: RenameInput):
+        return manager().rename_profile(profile_id, value.name)
+
+    @app.delete("/api/profiles/{profile_id}")
+    def remove_profile(profile_id: str):
+        return manager().remove_profile(profile_id)
+
+    @app.post("/api/families", status_code=201)
+    def create_family(value: FamilyInput):
+        return manager().create_family(value.name, value.folder, value.sync_folder, value.members, value.my_profile)
+
+    @app.post("/api/families/{profile_id}/members", status_code=201)
+    def add_member(profile_id: str, value: MemberInput):
+        return manager().add_family_member(profile_id, value.name)
+
+    @app.delete("/api/families/{profile_id}/members/{member_id}")
+    def remove_member(profile_id: str, member_id: str):
+        return manager().remove_family_member(profile_id, member_id)
+
+    @app.post("/api/families/{profile_id}/members/{member_id}/local")
+    def local_member(profile_id: str, member_id: str, value: LocalMemberInput):
+        return manager().set_up_local_member(profile_id, member_id, value.profile_id, value.folder)
+
+    @app.post("/api/families/{profile_id}/members/{member_id}/invites", status_code=201)
+    def invite_member(profile_id: str, member_id: str, value: InviteInput):
+        return manager().invite_member(profile_id, member_id, value.destination, value.passphrase)
+
+    @app.post("/api/family-refreshes", status_code=202)
+    def refresh_family():
+        return manager().start_family_refresh()
+
+    @app.get("/api/family/net-worth")
+    def family_net_worth(currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
+        if not manager().family:
+            raise HTTPException(409, "Open a family profile first.")
+        return manager().family_net_worth(currency)
+
+    @app.get("/api/family/routing")
+    def family_routing(include_delivered: bool = False):
+        return manager().family_routing(include_delivered)
+
+    @app.put("/api/family/routing/{record_type}/{record_id}")
+    def assign_family_record(record_type: Literal["receipt", "bill", "statement", "income_record"], record_id: int, value: AssignmentInput):
+        return manager().assign_family_record(record_type, record_id, value.mode, value.members)
+
+    @app.post("/api/family-membership", status_code=201)
+    def join_family(value: JoinInput):
+        return manager().join_family(value.invite_file, value.passphrase, value.sync_folder)
+
+    @app.put("/api/family-membership")
+    def family_publishing(value: PublishingInput):
+        return manager().set_publishing(value.publishing)
+
+    @app.delete("/api/family-membership")
+    def leave_family():
+        return manager().leave_joined_family()
+
+    @app.post("/api/family-publishes", status_code=202)
+    def publish_family():
+        return manager().start_family_publish()
 
     @app.put("/api/settings")
     def configure(value: SettingsInput):
@@ -378,6 +534,8 @@ def create_app(control: Path | None = None, token: str | None = None,
                        currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
         from ..finance.dashboard import dashboard
         owner = manager()
+        if owner.family:
+            return owner.family_dashboard(month, months, currency)
         with owner.mutex:
             return dashboard(owner.require(False), month, months, currency, owner.household.home_currency)
 
@@ -407,6 +565,13 @@ def create_app(control: Path | None = None, token: str | None = None,
     def accounts():
         store()
         return manager().ledger.accounts()
+
+    @app.get("/api/finance/health")
+    def ledger_health():
+        """Every ledger rule the data breaks, by record id (finance/health.py). Read-only."""
+        with store().connection() as db:
+            problems = check_ledger(db)
+        return {"summary": summary(problems), "problems": [item._asdict() for item in problems]}
 
     @app.post("/api/finance/accounts", status_code=201)
     def create_account(value: AccountInput):
@@ -559,6 +724,14 @@ def create_app(control: Path | None = None, token: str | None = None,
     def model_connection(value: ReasoningConfig):
         return manager().test_model_connection(value)
 
+    @app.put("/api/model-computer")
+    def model_computer(value: ModelComputerInput):
+        return manager().configure_model_computer(ModelComputer(**value.model_dump(exclude={"token"})), value.token)
+
+    @app.post("/api/model-computer-tests")
+    def model_computer_test():
+        return manager().test_model_computer()
+
     @app.get("/api/jobs")
     def job_history(limit: int = Query(50, ge=1, le=500), kind: list[str] | None = Query(None)):
         return store().job_history(limit, kind)
@@ -596,10 +769,114 @@ def create_app(control: Path | None = None, token: str | None = None,
     def archive_asset(asset_id: int):
         return Assets(store()).archive(asset_id)
 
+    # Investments (docs/investments.md): accounts, their values over time, and statement values to confirm.
+    @app.get("/api/investment-kinds")
+    def investment_kinds():
+        return Investments(store()).kinds()
+
+    @app.get("/api/investments")
+    def investments(include_archived: bool = False):
+        return Investments(store()).summary(include_archived)
+
+    @app.post("/api/investments", status_code=201)
+    def add_investment(value: InvestmentAccountInput):
+        return Investments(store()).add(value)
+
+    @app.get("/api/investments/review")
+    def investment_values_to_review():
+        return Investments(store()).pending()
+
+    @app.get("/api/investments/valuations/{valuation_id}")
+    def investment_valuation(valuation_id: int):
+        return Investments(store()).valuation(valuation_id)
+
+    @app.get("/api/investments/valuations/by-asset/{asset_id}")
+    def investment_valuation_by_asset(asset_id: int):
+        return Investments(store()).valuation(legacy_asset_id=asset_id)
+
+    @app.post("/api/investments/valuations/{valuation_id}/review")
+    def review_investment_valuation(valuation_id: int, value: AssetReviewInput):
+        return Investments(store()).review(valuation_id, value.status)
+
+    @app.get("/api/investments/confirmations/{confirmation_id}")
+    def investment_confirmation(confirmation_id: int):
+        return Investments(store()).confirmation(confirmation_id)
+
+    @app.post("/api/investments/confirmations/{confirmation_id}/review")
+    def review_investment_confirmation(confirmation_id: int, value: AssetReviewInput):
+        return Investments(store()).review_confirmation(confirmation_id, value.status)
+
+    @app.get("/api/investments/rmd")
+    def investment_rmd(year: int | None = None):
+        """This year's (or a chosen year's) required minimum distributions, from the profile's birth year."""
+        return Investments(store()).required_distributions(year or date.today().year, manager().household.birth_year)
+
+    @app.get("/api/investments/tax-forms/{form_id}")
+    def investment_tax_form(form_id: int):
+        return Investments(store()).tax_form(form_id)
+
+    @app.post("/api/investments/tax-forms/{form_id}/review")
+    def review_investment_tax_form(form_id: int, value: AssetReviewInput):
+        return Investments(store()).review_tax_form(form_id, value.status)
+
+    @app.get("/api/investments/tax-years/{year}")
+    def investment_tax_year(year: int):
+        if not 1990 <= year <= 2100:
+            raise ValueError("Choose a tax year between 1990 and 2100.")
+        return Investments(store()).tax_year(year)
+
+    @app.post("/api/investments/events/{event_id}/unlink")
+    def unlink_investment_payment(event_id: int):
+        return Reconciler(store()).unlink_investment(event_id)
+
+    @app.post("/api/investments/holdings/{holding_id}/lots", status_code=201)
+    def add_investment_lot(holding_id: int, value: LotInput):
+        return Investments(store()).add_lot(holding_id, value)
+
+    @app.delete("/api/investments/lots/{lot_id}")
+    def delete_investment_lot(lot_id: int):
+        return Investments(store()).delete_lot(lot_id)
+
+    @app.put("/api/investments/holdings/{holding_id}")
+    def update_investment_holding(holding_id: int, value: HoldingInput):
+        return Investments(store()).update_holding(holding_id, value)
+
+    @app.delete("/api/investments/holdings/{holding_id}")
+    def archive_investment_holding(holding_id: int):
+        return Investments(store()).archive_holding(holding_id)
+
+    @app.post("/api/investments/holdings/{holding_id}/matured")
+    def investment_holding_matured(holding_id: int, value: MaturedInput):
+        return Investments(store()).mark_matured(holding_id, value)
+
+    @app.get("/api/investments/{account_id}")
+    def investment(account_id: int):
+        return Investments(store()).get(account_id)
+
+    @app.put("/api/investments/{account_id}")
+    def update_investment(account_id: int, value: AccountUpdate):
+        return Investments(store()).update(account_id, value)
+
+    @app.delete("/api/investments/{account_id}")
+    def archive_investment(account_id: int):
+        return Investments(store()).archive(account_id)
+
+    @app.post("/api/investments/{account_id}/values")
+    def record_investment_value(account_id: int, value: ValueInput):
+        return Investments(store()).record_value(account_id, value)
+
+    @app.post("/api/investments/{account_id}/holdings", status_code=201)
+    def add_investment_holding(account_id: int, value: HoldingInput):
+        return Investments(store()).add_holding(account_id, value)
+
+    @app.post("/api/investments/{account_id}/payroll")
+    def choose_investment_payroll(account_id: int, value: PayrollChoice):
+        return Investments(store()).choose_payroll_account(account_id, value.employer_id)
+
     @app.post("/api/forecast")
     def run_forecast(value: ForecastInput):
         from ..finance.charts import forecast_charts
-        result = forecast(store(), value)
+        result = forecast(store(), value, birth_year=manager().household.birth_year)
         return {**result, "charts": forecast_charts(result)}
 
     @app.post("/api/shares", status_code=202)

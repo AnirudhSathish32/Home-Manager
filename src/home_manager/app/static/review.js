@@ -3,38 +3,45 @@
 // Left: groups with counts. Right: what the item is, why it needs you, the evidence and the decision.
 // Keys: J/K move, V confirms, R rejects; a decision advances to the next item.
 const ISSUE_KINDS = {ambiguous_receipt_match: "Which charge is this receipt?", ambiguous_transfer: "Which account received this transfer?",
-                     ambiguous_refund: "Which purchase was refunded?"};
+                     ambiguous_refund: "Which purchase was refunded?", ambiguous_investment_transfer: "Which payment went into this investment?"};
 const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "Is this a transfer between your accounts?", refund: "Is this a refund of that purchase?"};
 const ITEM_CATEGORIES = ["produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages", "household cleaning",
                          "paper & disposables", "personal care", "health", "baby", "pet", "home maintenance", "other"];
-const REVIEW_GROUPS = [["issue", "Questions"], ["link", "Proposed matches"], ["record", "Records to verify"], ["asset", "Statement values to confirm"], ["warranty", "Warranties to confirm"],
+const REVIEW_GROUPS = [["issue", "Questions"], ["link", "Proposed matches"], ["record", "Records to verify"], ["asset", "Investment and loan documents to confirm"], ["warranty", "Warranties to confirm"],
                        ["tax_table", "Tax tables to confirm"], ["recurring", "Recurring payments"], ["item", "Receipt items to identify"]];
-const STATEMENT_ASSET_LABELS = {investment: "Investment account", retirement: "Retirement account", bond: "Bonds", loan: "Loan"};
+const STATEMENT_ASSET_LABELS = {loan: "Loan"};
 let reviewItems = [], reviewIndex = 0, reviewLoad = 0, reviewThumb = null;
 
-const proposedAssets = assets => assets.filter(asset => asset.source === "statement" && asset.review_status === "proposed");
-function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = []) {
+// Loan balances (assets) and investment values (investments.js) read from statements share one review group.
+const proposedAssets = (assets, investments = []) => [
+  ...assets.filter(asset => asset.source === "statement" && asset.review_status === "proposed").map(value => ({kind: "asset", id: value.id, value})),
+  // Investment statement values and purchase confirmations; the server names each one's review path.
+  ...investments.map(value => ({kind: "asset", id: `${value.record_type}-${value.id}`, value}))];
+function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = [], investments = []) {
   return queue.records.length + queue.links.length + queue.issues.length + recurring.obligations.filter(row => row.status === "proposed").length
-    + items.length + proposedAssets(assets).length + warranties.length + taxTables.length;
+    + items.length + proposedAssets(assets, investments).length + warranties.length + taxTables.length;
 }
 async function loadNavCounts() {
-  const [queue, recurring, items, assets, checkin, warranties, taxTables] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
+  const [queue, recurring, items, assets, checkin, warranties, taxTables, investments] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
     api("/api/items/resolutions?status=proposed&limit=1000"), api("/api/assets"), api("/api/inventory/checkin").catch(() => null), api("/api/warranties?status=proposed"),
-    api("/api/tax-tables?status=proposed")]);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables), "need review");
+    api("/api/tax-tables?status=proposed"), api("/api/investments/review")]);
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables, investments), "need review");
   if (checkin) setNavCount($("nav-checkin-count"), checkin.lots.length + checkin.waiting, "to check in");
 }
 
 function reviewKey(item) { return `${item.kind}:${item.id}`; }
 async function loadReview(keep = true) {
   if (!configured) { $("review-detail").replaceChildren(emptyState("Set up your library to review records.")); return; }
+  // The family's inbox is sent to people, not reconciled against cards: unmatched receipts belong to each person's Review.
+  $("family-routing-panel").hidden = !familyMode; $("review-unmatched-panel").hidden = familyMode;
+  if (familyMode) loadFamilyRouting().catch(error => notice(error, true));  // Loads on its own beside the review queue.
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
-  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables;
+  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments;
   try {
-    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
+    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
       api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
-      api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed")]);
+      api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed"), api("/api/investments/review")]);
   } catch (error) {
     if (load === reviewLoad) { $("review-status").textContent = ""; $("review-detail").replaceChildren(alertBox(`Couldn't load the review queue. ${error.message}`, {tone: "error", action: asyncButton("Retry", () => loadReview())})); }
     return;
@@ -42,7 +49,7 @@ async function loadReview(keep = true) {
   if (load !== reviewLoad) return;
   reviewItems = [...queue.issues.map(value => ({kind: "issue", id: value.id, value})), ...queue.links.map(value => ({kind: "link", id: `${value.kind}-${value.id}`, value})),
                  ...queue.records.map(value => ({kind: "record", id: `${value.record_type}-${value.id}`, value})),
-                 ...proposedAssets(assets).map(value => ({kind: "asset", id: value.id, value})),
+                 ...proposedAssets(assets, investments),
                  ...warranties.map(value => ({kind: "warranty", id: value.id, value})),
                  ...taxTables.map(value => ({kind: "tax_table", id: value.id, value})),
                  ...recurring.obligations.filter(row => row.status === "proposed").map(value => ({kind: "recurring", id: value.id, value})),
@@ -53,7 +60,7 @@ async function loadReview(keep = true) {
   renderReviewQueue(catalog);
   renderReviewDetail();
   renderUnmatched(unmatched);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables), "need review");
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables, investments), "need review");
 }
 function reviewTitle(item) {
   const value = item.value;
@@ -201,15 +208,64 @@ function reviewParts(item) {
             confirm: decide(path, {status: "verified"}, "Tax table confirmed."), confirmLabel: "Confirm table",
             reject: decide(path, {status: "rejected"}, "Rejected; it can be looked up again from the pay stub."), rejectLabel: "Reject"};
   }
+  if (item.kind === "asset" && value.record_type === "tax_form") {
+    // A 1099 or 5498: its boxes, which Investments → Taxes compares with what is recorded for the account.
+    const path = value.review_path, undo = () => api(path, {method: "POST", body: JSON.stringify({status: "proposed"})});
+    const box = element("div", "", "review-side");
+    box.append(element("span", `Tax form · ${value.tax_year}`, "figure-label"), element("strong", value.name, "block"),
+               element("span", value.account_name ? `For ${value.account_name}` : "No investment account here matches it; it is kept on its own.", "muted small block"));
+    const boxes = element("ul", "", "finance-list");
+    for (const row of value.boxes) {
+      const li = document.createElement("li");
+      li.append(element("span", `${row.form} box ${row.box}: ${row.label} `), amount(row.amount, {signed: false}));
+      boxes.append(li);
+    }
+    box.append(boxes);
+    const issues = element("ul", "", "review-issues");
+    for (const issue of value.issues) issues.append(element("li", issue, "item-warning"));
+    return {why: "Read from a tax form. Once you confirm it, Investments compares its boxes with the interest, dividends, sales and contributions recorded for the account.",
+            evidence: [issues, box], document: value.document_id,
+            confirm: decide(path, {status: "verified"}, "Confirmed; compare it under Investments → Taxes.", undo), confirmLabel: "Confirm form",
+            reject: decide(path, {status: "rejected"}, "Rejected; it is left out.", undo), rejectLabel: "Reject"};
+  }
+  if (item.kind === "asset" && value.record_type === "investment_confirmation") {
+    // A trade, CD or Treasury purchase: what was bought or sold, with the terms its value will be estimated from.
+    const path = value.review_path, undo = () => api(path, {method: "POST", body: JSON.stringify({status: "proposed"})});
+    const box = element("div", "", "review-side");
+    box.append(element("span", `${value.kind_label} · purchase confirmation`, "figure-label"), element("strong", value.name, "block"),
+               element("span", `Traded ${dateText(value.trade_date)}`, "muted small block"));
+    const trades = element("ul", "", "finance-list");
+    for (const trade of value.trades) {
+      const terms = [trade.rate_percent != null ? `${trade.rate_percent}%` : "", trade.face ? `face ${trade.face.display}` : "",
+                     trade.maturity_date ? `matures ${dateText(trade.maturity_date)}` : "", trade.quantity ? `${trade.quantity} shares` : ""].filter(Boolean).join(" · ");
+      const li = document.createElement("li");
+      li.append(element("strong", `${trade.type_label} ${trade.name}`), document.createTextNode(" "), amount(trade.amount, {signed: false}));
+      if (terms) li.append(element("small", terms, "muted block"));
+      trades.append(li);
+    }
+    box.append(trades, homeLink("Wrong kind of account? Change it in Investments", `#/investments?account=${value.account_id}`));
+    const issues = element("ul", "", "review-issues");
+    for (const issue of value.issues) issues.append(element("li", issue, "item-warning"));
+    return {why: "Read from a purchase confirmation. Its trades are recorded, and CDs and Treasuries count at their estimated value, only after you confirm it.",
+            evidence: [issues, box], document: value.document_id,
+            confirm: decide(path, {status: "verified"}, "Confirmed; its holdings now count.", undo), confirmLabel: "Confirm purchase",
+            reject: decide(path, {status: "rejected"}, "Rejected; nothing from it counts.", undo), rejectLabel: "Reject"};
+  }
   if (item.kind === "asset") {
-    const path = `/api/assets/${value.id}/review`;
+    const path = value.review_path || `/api/assets/${value.id}/review`;
     const undo = () => api(path, {method: "POST", body: JSON.stringify({status: "proposed"})});
     const box = element("div", "", "review-side");
-    box.append(element("span", STATEMENT_ASSET_LABELS[value.kind] || statusLabel(value.kind), "figure-label"), element("strong", value.name, "block"),
+    box.append(element("span", value.kind_label || STATEMENT_ASSET_LABELS[value.kind] || statusLabel(value.kind), "figure-label"), element("strong", value.name, "block"),
                amount(value.value, {signed: false}), element("span", `${value.kind === "loan" ? "Owed" : "Value"} as of ${dateText(value.as_of)}`, "muted small block"));
     if (value.kind === "loan") box.append(element("span", `Rate ${value.annual_rate_percent}% a year${value.monthly_payment ? ` · payment ${value.monthly_payment.display} a month` : ""}`, "muted small block"));
     const issues = element("ul", "", "review-issues");
     for (const issue of value.issues) issues.append(element("li", issue, "item-warning"));
+    if (value.holding_count || value.activity_count) {
+      const listed = [value.holding_count ? `${value.holding_count} holding${value.holding_count === 1 ? "" : "s"}` : "",
+                      value.activity_count ? `${value.activity_count} activity entr${value.activity_count === 1 ? "y" : "ies"}` : ""].filter(Boolean).join(" and ");
+      box.append(element("span", `The statement also lists ${listed}; your decision applies to them too.`, "muted small block"));
+    }
+    if (value.review_path) box.append(homeLink("Wrong kind of account? Change it in Investments", `#/investments?account=${value.account_id}`));
     return {why: "Read from a statement. Statement values count in your forecast only after you confirm them.",
             evidence: [issues, box], document: value.document_id,
             confirm: decide(path, {status: "verified"}, "Confirmed; it now counts in your forecast.", undo), confirmLabel: "Confirm value",

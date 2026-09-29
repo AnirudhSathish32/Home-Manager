@@ -112,6 +112,14 @@ legend { font-size: var(--text-sm); font-weight: 600; padding: 0 var(--space-1);
 .brand { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2) var(--space-2); }
 .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--accent); color: #fff; font-weight: 700; font-size: 11px; letter-spacing: .04em; flex: none; }
 .brand-name { font-weight: 600; font-size: var(--text-md); }
+.profile-switch { display: flex; flex-direction: column; }
+.profile-picker { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-2); }
+.profile-picker label { margin: 0; font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+.profile-picker select { width: 100%; }
+#nav-profile { display: none; }
+/* A family profile's own library is only its inbox: Home, Review, the documents it received, Processing and Settings apply. */
+.family-mode .nav-link:not([data-route="home"]):not([data-route="settings"]):not([data-route="review"]):not([data-route="receipts"]):not([data-route="documents"]):not([data-route="processing"]):not(#nav-profile),
+.family-mode .nav-group, .family-mode .global-search { display: none; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-group { margin: var(--space-3) 0 var(--space-1); padding: 0 var(--space-2); font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
 .nav-link, .nav-sublink {
@@ -180,7 +188,8 @@ main:focus { outline: none; }
 .amount[data-direction="in"] { color: var(--positive); }
 
 /* ---- Tables ------------------------------------------------------------------ */
-.table-wrap { overflow-x: auto; }
+/* Positioned so screen-reader-only text (absolute) in a cell stays inside the scroll area instead of widening the page. */
+.table-wrap { overflow-x: auto; position: relative; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 th, td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); vertical-align: top; }
 th { position: sticky; top: 0; background: var(--surface-sunken); color: var(--text-secondary); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
@@ -214,6 +223,23 @@ dialog code { display: block; overflow-wrap: anywhere; margin: var(--space-1) 0;
 #library-action-document { overflow-wrap: anywhere; font-weight: 600; }
 #library-action-error, .error-text { color: var(--danger); font-size: var(--text-sm); }
 .error-text:empty { display: none; }
+.row-actions { display: flex; gap: var(--space-2); justify-content: flex-end; align-items: center; }
+.data-table td.nowrap, .data-table td.profile-name > span { white-space: nowrap; overflow-wrap: normal; }
+.data-table td.profile-name { min-width: 120px; }
+#profile-form, #family-section > h2, #family-section > .form { margin-top: var(--space-6); }
+/* Family inbox: each upload beside its decision (app-ux rule 1: what, why and the button together). */
+.family-routing { margin-bottom: var(--space-4); }
+.routing-list { margin: 0; padding: 0; list-style: none; }
+.routing-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.routing-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.routing-decision { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
+.routing-decision .field { min-width: 180px; }
+.routing-people { margin: 0; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+@media (max-width: 800px) { .routing-row { grid-template-columns: 1fr; } }
+#family-section > .button-row { margin-top: var(--space-3); }
+.inline-edit { display: flex; gap: var(--space-2); align-items: center; }
+.inline-edit input { flex: 1; min-width: 0; }
+td > .error-text { display: block; margin-top: var(--space-1); }
 #description-dialog { width: 480px; }
 #description-form { display: flex; flex-direction: column; gap: var(--space-3); }
 #description-form h2 { margin: 0; }
@@ -546,7 +572,8 @@ button.nav-link.nav-button { width: 100%; border: 0; background: transparent; ju
 @media (max-width: 1279px) {
   :root { --sidebar-width: 64px; }
   .sidebar { padding-inline: var(--space-2); align-items: center; }
-  .brand-name, .nav-group, .nav-sub, .activity-stage, .activity-label, .global-search { display: none; }
+  .brand-name, .nav-group, .nav-sub, .activity-stage, .activity-label, .global-search, .profile-picker { display: none; }
+  #nav-profile { display: flex; }
   .nav-link.nav-search-link { display: flex; }
   /* Icon-only links keep their text for assistive technology. */
   .nav-link .nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -575,12 +602,31 @@ button.nav-link.nav-button { width: 100%; border: 0; background: transparent; ju
 .record-edit { display: flex; flex-direction: column; gap: var(--space-3); max-width: 420px; margin-top: var(--space-3); }
 .receipt-summary > div > button.small { margin-top: var(--space-1); }
 
+/* Investments */
+.investment-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); margin-top: var(--space-3); }
+.investment-total .figure-group { margin-bottom: var(--space-2); }
+.investment-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+.investment-detail h3 { margin-top: var(--space-5); }
+.investment-detail .ledger-record-heading { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
+.investment-add-holding { margin-top: var(--space-4); }
+.investment-add-holding summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.investment-add-holding .inline-form { margin-top: var(--space-3); }
+.investment-lots { margin-top: var(--space-4); }
+.investment-lots h4 { margin: 0 0 var(--space-2); }
+#investments-taxes .ledger-record-heading { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
+#investments-taxes .figure-group { flex-wrap: wrap; }
+#investments-taxes .ledger-record-heading select { width: auto; }
+.investment-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+#investments-rmd:not(:empty) { margin-top: var(--space-4); }
+
 /* Forecast */
 .forecast-form h3 { margin-top: var(--space-4); }
+.forecast-retirement { border: 0; padding: 0; margin: var(--space-3) 0 0; min-width: 0; }
 .forecast-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--space-3); align-items: end; }
 .forecast-item { margin-bottom: var(--space-2); }
 .forecast-list:empty { display: none; }
-.forecast-charts { display: grid; gap: var(--space-4); }
+/* minmax(0, 1fr): a chart card never grows past the page to fit its year table, which scrolls inside .table-wrap instead. */
+.forecast-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
 .forecast-chart-card svg { width: 100%; height: auto; display: block; margin: var(--space-3) 0; }
 .forecast-chart-card .hover-target:hover { fill: rgba(43, 90, 138, .06); }
 .forecast-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0; }

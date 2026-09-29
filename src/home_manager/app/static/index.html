@@ -17,6 +17,8 @@
   <script src="/assistant.js" defer></script>
   <script src="/home.js" defer></script>
   <script src="/forecast.js" defer></script>
+  <script src="/investments.js" defer></script>
+  <script src="/profiles.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -24,6 +26,11 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
+    <div id="profile-switch" class="profile-switch" hidden>
+      <div class="profile-picker"><label for="profile-select">Profile</label><select id="profile-select"></select></div>
+      <!-- The collapsed sidebar has no room for the menu: an icon opens Settings → Profiles & family instead. -->
+      <a id="nav-profile" class="nav-link" href="#/settings" data-icon="users"><span class="nav-label">Profiles</span></a>
+    </div>
     <form id="global-search-form" class="global-search" role="search">
       <input id="global-search" type="search" placeholder="Search everything" aria-label="Search documents, transactions, items and accounts" aria-keyshortcuts="Control+K" autocomplete="off">
       <kbd aria-hidden="true">Ctrl K</kbd>
@@ -38,6 +45,7 @@
       <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">Spending &amp; budgets</span></a>
       <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; recurring</span></a>
       <a id="nav-accounts" class="nav-link" href="#/accounts" data-route="accounts" data-icon="bank"><span class="nav-label">Accounts</span></a>
+      <a id="nav-investments" class="nav-link" href="#/investments" data-route="investments" data-icon="chart-line"><span class="nav-label">Investments</span></a>
       <a id="nav-forecast" class="nav-link" href="#/forecast" data-route="forecast" data-icon="trend"><span class="nav-label">Forecast</span></a>
       <p class="nav-group">Household</p>
       <a id="nav-inventory" class="nav-link" href="#/inventory" data-route="inventory" data-icon="package"><span class="nav-label">Inventory</span><span id="nav-checkin-count" class="nav-count" hidden></span></a>
@@ -63,7 +71,7 @@
     <div id="reconcile-prompt" aria-live="polite"></div>
 
     <section id="home-panel" class="page" data-page="home" aria-labelledby="home-title" hidden>
-      <header class="page-header"><div><h1 id="home-title" tabindex="-1">Home</h1><p class="page-subtitle">Your household, at a glance.</p></div>
+      <header class="page-header"><div><h1 id="home-title" tabindex="-1">Home</h1><p id="home-subtitle" class="page-subtitle">Your household, at a glance.</p></div>
         <div class="page-actions"><label class="inline-field">Month <input id="home-month" type="month"></label>
           <label class="inline-field">Currency <select id="home-currency-select" aria-label="Dashboard currency"></select></label>
           <button id="home-refresh" type="button">Refresh</button></div></header>
@@ -93,19 +101,33 @@
           <h3>One-off amounts</h3><p class="muted small">Money in is positive; an expense such as a vacation is negative.</p>
           <div id="forecast-one-offs" class="forecast-list"></div>
           <button id="add-one-off" type="button" class="quiet">Add one-off amount</button>
+          <h3>Retirement</h3><p class="muted small">From the month you retire, take-home pay and contributions from pay stop, and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last. Required minimum distributions use the birth year in Settings.</p>
+          <label class="check-field"><input id="retire-plan" type="checkbox"> Plan withdrawals from investments</label>
+          <fieldset id="retire-fields" class="forecast-retirement" hidden>
+            <legend class="visually-hidden">Retirement withdrawals</legend>
+            <div class="forecast-row">
+              <div class="field"><label for="retire-month">Retire in</label><input id="retire-month" type="month"></div>
+              <div class="field"><label for="retire-mode">Withdraw</label>
+                <select id="retire-mode"><option value="shortfall">Enough to cover the shortfall</option><option value="fixed">A fixed monthly amount</option></select></div>
+              <div class="field" id="retire-amount-field" hidden><label for="retire-amount">Monthly amount, today's dollars</label><input id="retire-amount" inputmode="decimal" placeholder="4000.00"></div>
+              <div class="field" id="retire-floor-field"><label for="retire-floor">Keep at least this cash, today's dollars</label><input id="retire-floor" inputmode="decimal" value="0"></div>
+              <div class="field"><label for="retire-tax">Tax on tax-deferred withdrawals (%)</label><input id="retire-tax" inputmode="decimal" value="0"></div>
+            </div>
+          </fieldset>
           <div class="button-row"><button id="run-forecast" class="primary" type="submit">Update forecast</button></div>
         </form>
       </section>
       <section class="panel"><h2>Assets and loans</h2>
-        <p class="muted small">Values you enter count immediately. Values read from statements count after you review them. Yearly rate: growth for an asset, interest for a loan.</p>
+        <p class="muted small">Values you enter count immediately. Values read from statements count after you review them. Yearly rate: growth for an asset, interest for a loan.
+          Retirement, HSA, savings, CD, Treasury and brokerage accounts are on <a href="#/investments">Investments</a>.</p>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col" class="numeric">Value or owed</th><th scope="col">As of</th><th scope="col" class="numeric">Yearly rate</th><th scope="col" class="numeric">Monthly payment</th><th scope="col">Source</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
           <tbody id="asset-rows"></tbody></table></div>
         <form id="asset-form" class="form forecast-form">
           <div class="forecast-row">
             <div class="field"><label for="asset-name">Name</label><input id="asset-name" required maxlength="80" placeholder="Honda Civic"></div>
             <div class="field"><label for="asset-kind">Kind</label><select id="asset-kind">
-              <option value="vehicle">Vehicle</option><option value="real_estate">Home or property</option><option value="investment">Investment</option>
-              <option value="retirement">Retirement account</option><option value="bond">Bond</option><option value="other_asset">Other asset</option><option value="loan">Loan</option></select></div>
+              <option value="vehicle">Vehicle</option><option value="real_estate">Home or property</option>
+              <option value="other_asset">Other asset</option><option value="loan">Loan</option></select></div>
             <div class="field"><label for="asset-value">Value, or amount owed</label><input id="asset-value" required inputmode="decimal" placeholder="18000.00"></div>
             <div class="field"><label for="asset-currency">Currency</label><input id="asset-currency" required maxlength="3" value="USD"></div>
           </div>
@@ -119,6 +141,35 @@
       </section>
       <section class="panel"><h2>Starting point</h2><div id="forecast-start"></div></section>
       <div id="forecast-charts" class="forecast-charts"></div>
+    </section>
+
+    <section id="investments-panel" class="page" data-page="investments" aria-labelledby="investments-title" hidden>
+      <header class="page-header"><div><h1 id="investments-title" tabindex="-1">Investments</h1>
+        <p class="page-subtitle">Retirement, health savings, savings, CDs, Treasuries and brokerage accounts. Values come from your statements, purchase confirmations and what you enter; there are no live prices.</p></div>
+        <div class="page-actions"><label class="compact-check"><input id="investments-archived" type="checkbox"> Show removed accounts</label></div></header>
+      <p id="investments-status" class="muted small" role="status"></p>
+      <div id="investments-summary" class="investment-summary"></div>
+      <div id="investments-rmd"></div>
+      <div id="investment-detail"></div>
+      <div id="investments-groups" class="investment-groups"></div>
+      <div id="investments-taxes"></div>
+      <section class="panel"><h2>Add an account</h2>
+        <p class="muted small">For an account with no statement here yet. Values you enter count at once; statements you add later record their values for you to confirm.</p>
+        <form id="investment-form" class="form forecast-form">
+          <div class="forecast-row">
+            <div class="field"><label for="investment-name">Name</label><input id="investment-name" required maxlength="80" placeholder="Work 401(k)"></div>
+            <div class="field"><label for="investment-kind">Kind</label><select id="investment-kind" required></select></div>
+            <div class="field"><label for="investment-institution">Institution</label><input id="investment-institution" maxlength="80" placeholder="Fidelity"></div>
+            <div class="field"><label for="investment-currency">Currency</label><input id="investment-currency" required maxlength="3" value="USD"></div>
+          </div>
+          <div class="forecast-row">
+            <div class="field"><label for="investment-value">Value</label><input id="investment-value" required inputmode="decimal" placeholder="25000.00"></div>
+            <div class="field"><label for="investment-as-of">Value as of</label><input id="investment-as-of" type="date" required></div>
+            <div class="field"><label for="investment-rate">Yearly growth or interest (%)</label><input id="investment-rate" inputmode="decimal" placeholder="Kind's default if blank"></div>
+          </div>
+          <div class="button-row"><button id="add-investment" type="submit">Add account</button></div>
+        </form>
+      </section>
     </section>
 
     <section id="search-panel" class="page" data-page="search" aria-labelledby="search-title" hidden>
@@ -137,6 +188,11 @@
         <p class="page-subtitle">What Home Manager needs you to decide. Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>V</kbd> confirm, <kbd>R</kbd> reject.</p></div>
         <div class="page-actions"><button id="reconcile" type="button">Reconcile now</button><button id="review-refresh" type="button">Refresh</button></div></header>
       <p id="review-status" class="muted small" role="status"></p>
+      <section id="family-routing-panel" class="panel family-routing" aria-labelledby="family-routing-title" hidden>
+        <h2 id="family-routing-title">Who is it for?</h2>
+        <p class="muted small">Documents uploaded to the family count for nobody until you send them to a person or share them. A shared cost is divided equally among the people you tick: each person's profile gets the document and their part.</p>
+        <ul id="family-routing" class="routing-list"></ul>
+      </section>
       <div class="review-layout">
         <nav id="review-queue" class="review-queue panel" aria-label="Items to review"></nav>
         <section id="review-detail" class="panel review-detail" tabindex="-1" aria-live="polite"></section>
@@ -410,6 +466,7 @@
       <div class="settings-layout">
         <div class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
           <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Library folder</button>
+          <button id="profiles-tab" type="button" role="tab" aria-selected="false" aria-controls="profiles-panel" tabindex="-1">Profiles &amp; family</button>
           <button id="preferences-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences-panel" tabindex="-1">Financial preferences</button>
           <button id="model-tab" type="button" role="tab" aria-selected="false" aria-controls="model-panel" tabindex="-1">Local models</button>
           <button id="checks-tab" type="button" role="tab" aria-selected="false" aria-controls="checks-panel" tabindex="-1">Independent checks</button>
@@ -427,6 +484,31 @@
             </form>
             <p id="limits" class="muted small"></p>
           </div>
+          <div id="profiles-panel" role="tabpanel" aria-labelledby="profiles-tab" hidden>
+            <h2>Profiles on this computer</h2>
+            <p class="muted small">Each person has their own profile, with its own library folder, Inbox and database. Switching closes one library and opens another; nothing is merged or moved.</p>
+            <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Folder</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="profile-rows"></tbody></table></div>
+            <form id="profile-form" class="form"><h3>Add a person</h3>
+              <div class="field"><label for="profile-name">Name</label><input id="profile-name" required maxlength="60" autocomplete="off" placeholder="Sam"></div>
+              <div class="field"><label for="profile-folder">Library folder</label><input id="profile-folder" required placeholder="C:\Household\Sam" autocomplete="off" spellcheck="false">
+                <small>A new, empty local folder. This person's documents and records are kept there, apart from everyone else's.</small></div>
+              <div class="button-row"><button id="profile-add" class="primary" type="submit">Add profile</button></div>
+            </form>
+            <div id="family-section"></div>
+            <form id="family-form" class="form"><h3>Create a family</h3>
+              <p class="muted small">A family profile adds up its members' spending, cash flow, bills and net worth. It keeps no records of its own: each person's records stay in their own profile, on their own computer.</p>
+              <div class="field"><label for="family-name">Family name</label><input id="family-name" required maxlength="60" autocomplete="off" placeholder="The Smiths"></div>
+              <div class="field"><label for="family-folder">Family folder</label><input id="family-folder" required placeholder="C:\Household\Family" autocomplete="off" spellcheck="false">
+                <small>A new, empty local folder on this computer for the family's copies of each member's totals.</small></div>
+              <div class="field"><label for="family-sync">Sync folder</label><input id="family-sync" required placeholder="C:\Users\you\OneDrive\Home Manager family" autocomplete="off" spellcheck="false">
+                <small>An existing folder every member's computer can see, such as a shared OneDrive or Google Drive folder. Only encrypted files are written there.</small></div>
+              <div class="field"><label for="family-members-input">Members</label><textarea id="family-members-input" rows="3" maxlength="1200" placeholder="One name per line"></textarea>
+                <small>People who use Home Manager on their own computer. You can add more later.</small></div>
+              <label class="check-field"><input id="family-include-me" type="checkbox" checked> <span id="family-include-me-label">Include this profile</span></label>
+              <div class="button-row"><button id="family-create" class="primary" type="submit">Create family</button></div>
+            </form>
+          </div>
           <div id="preferences-panel" role="tabpanel" aria-labelledby="preferences-tab" hidden>
             <h2>Financial preferences</h2>
             <form id="household-form" class="form">
@@ -440,6 +522,9 @@
               <div class="field"><label for="filing-status">Tax filing status</label>
                 <select id="filing-status"><option value="single">Single</option><option value="married_joint">Married filing jointly</option><option value="head_of_household">Head of household</option></select>
                 <small>Used to explain the income tax on your pay stubs: which standard deduction and brackets apply.</small></div>
+              <div class="field"><label for="birth-year">Year you were born</label>
+                <input id="birth-year" type="number" min="1900" max="2100" inputmode="numeric" placeholder="1975">
+                <small>For required minimum distributions from retirement accounts, on Investments and in the forecast. Stays in this profile.</small></div>
               <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
               <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
               <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>
@@ -447,7 +532,24 @@
           </div>
           <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
             <h2>Local models</h2>
-            <p class="muted small">Models run in a local server on this computer, such as LM Studio. Only loopback addresses are accepted. Saving does not load a model or test the connection.</p>
+            <form id="model-computer-form" class="form"><h3>Model computer</h3>
+              <div class="field"><label for="model-provider">Where models run</label>
+                <select id="model-provider"><option value="local">This PC</option><option value="family_gpu">Family GPU (Tailscale)</option></select>
+                <small>A family GPU computer runs the models for you. Only page images and text prompts are sent to it; your documents and records stay on this computer.</small></div>
+              <div id="family-gpu-fields" hidden>
+                <div class="field"><label for="gpu-host-url">GPU computer address</label><input id="gpu-host-url" placeholder="http://100.101.102.103:8766/v1" autocomplete="off" spellcheck="false">
+                  <small>Its Tailscale address, which its owner sees when they start the GPU host.</small></div>
+                <div class="field"><label for="gpu-token">Token</label><input id="gpu-token" type="password" autocomplete="off" spellcheck="false">
+                  <small id="gpu-token-note">The token the GPU computer's owner gave you.</small></div>
+              </div>
+              <label class="check-field" id="manage-loading-field"><input id="manage-loading" type="checkbox" checked> Keep one model loaded at a time</label>
+              <small class="field-note" id="manage-loading-note">Before each request, other models are unloaded from LM Studio so two models never share the GPU.</small>
+              <div id="loading-hint"></div>
+              <div class="button-row"><button id="save-model-computer" class="primary" type="submit">Save model computer</button>
+                <button id="test-model-computer" type="button" hidden>Test connection</button></div>
+              <div id="test-model-computer-result" class="connection-result" role="status"></div>
+            </form>
+            <p class="muted small" id="local-models-note">Models run in a local server on this computer, such as LM Studio. Only loopback addresses are accepted. Saving does not load a model or test the connection.</p>
             <form id="vision-form" class="form"><h3>Vision model</h3>
               <div class="field"><label for="vision-url">Local API base URL</label><input id="vision-url" required value="http://127.0.0.1:1234/v1"></div>
               <div class="field"><label for="vision-model">Loaded vision model ID</label><input id="vision-model" placeholder="Copy the model ID from your local server">
@@ -474,7 +576,7 @@
           <div id="privacy-panel" role="tabpanel" aria-labelledby="privacy-tab" hidden>
             <h2>Privacy &amp; security</h2>
             <ul class="guarantees">
-              <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry.</li>
+              <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry. If you choose a family GPU computer, only page images and text prompts go to it over Tailscale.</li>
               <li><strong>Evidence is immutable.</strong> Every captured file is preserved under its SHA-256 hash; a changed file becomes a new version.</li>
               <li><strong>Models propose, you decide.</strong> Model output stays proposed until you verify it, and totals come from exact arithmetic, never from a model.</li>
               <li><strong>The session is locked to its launch link.</strong> Other programs on this computer can't use the interface without it.</li>
@@ -538,6 +640,29 @@
 <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
   <h2 id="confirm-title"></h2><p id="confirm-message"></p>
   <div class="dialog-actions"><button id="confirm-cancel" type="button">Cancel</button><button id="confirm-accept" type="button"></button></div>
+</dialog>
+<dialog id="invite-dialog" aria-labelledby="invite-title">
+  <form id="invite-form">
+    <h2 id="invite-title">Invite</h2>
+    <p class="muted small">Creates one encrypted invite file for this person's own computer. It contains the family key, so give the passphrase another way, such as a phone call.</p>
+    <div class="field"><label for="invite-destination">Save the invite in this folder</label><input id="invite-destination" required placeholder="C:\Users\you\Desktop" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label for="invite-passphrase">Passphrase</label><input id="invite-passphrase" type="password" required minlength="12" autocomplete="new-password">
+      <small>At least 12 characters. Four unrelated words are easy to say and hard to guess.</small></div>
+    <div class="field"><label for="invite-passphrase-again">Passphrase again</label><input id="invite-passphrase-again" type="password" required minlength="12" autocomplete="new-password"></div>
+    <p id="invite-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button id="cancel-invite" type="button">Cancel</button><button class="primary" type="submit">Create invite</button></div>
+  </form>
+</dialog>
+<dialog id="local-member-dialog" aria-labelledby="local-member-title">
+  <form id="local-member-form">
+    <h2 id="local-member-title">Set up on this computer</h2>
+    <p class="muted small">The family reads this person's profile directly on this computer. Nothing is written to the sync folder.</p>
+    <div class="field"><label for="local-member-profile">Profile</label><select id="local-member-profile"></select></div>
+    <div id="local-member-folder-field" class="field"><label for="local-member-folder">Library folder for the new profile</label>
+      <input id="local-member-folder" placeholder="C:\Household\Sam" autocomplete="off" spellcheck="false"></div>
+    <p id="local-member-error" class="error-text" role="alert"></p>
+    <div class="dialog-actions"><button id="cancel-local-member" type="button">Cancel</button><button class="primary" type="submit">Set up</button></div>
+  </form>
 </dialog>
 <dialog id="description-dialog" aria-labelledby="description-title">
   <form id="description-form">

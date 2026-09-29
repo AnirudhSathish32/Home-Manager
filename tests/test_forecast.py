@@ -9,9 +9,10 @@ import pytest
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.finance.charts import compact, forecast_charts, line_chart, nice_ticks
+from home_manager.finance.forecast import AssetInput, Assets, ForecastInput, baseline, forecast, project
+from home_manager.finance.investments import AccountUpdate, Investments
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.tools import FinanceTools
-from home_manager.finance.forecast import AssetInput, Assets, ForecastInput, baseline, forecast, project
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 
@@ -115,19 +116,24 @@ def test_baseline_reads_balances_income_categories_and_reviewed_assets(books):
     assets.add(AssetInput(name="House", kind="real_estate", value="350000", currency="USD", as_of="2026-09-01", annual_rate_percent="3"))
     with pytest.raises(ValueError, match="Only loans"):
         AssetInput(name="x", kind="vehicle", value="1", currency="USD", as_of="2026-09-01", monthly_payment="5")
-    with store.connection() as db:
-        db.execute("INSERT INTO assets(name,kind,value_minor,currency,as_of,source,review_status,created_at,updated_at) "
-                   "VALUES('401k from statement','retirement',9000000,'USD','2026-08-31','statement','proposed','t','t')")
+    investments = Investments(store)
+    statement = investments.publish_statement({"investment_kind": "401k", "institution": "Fidelity", "account_name": "401(k)", "last_four": "1234",
+                                               "value_minor": 9000000, "period_end": "2026-08-31", "currency": "USD", "issues": []},
+                                              {"document_id": docs["statement.png"]["id"], "blob_hash": docs["statement.png"]["current_hash"], "run_id": "r"})
     start = baseline(FinanceTools(store), assets, 6, today=TODAY)
     assert start["currency"] == "USD" and start["cash"] == 523456 - 12345  # A card balance is owed.
     assert start["monthly_income"] == 600000
     assert start["monthly_spending"] == {"groceries": Decimal(30000)}
     assert sorted(item["name"] for item in start["assets"]) == ["Honda", "House"]
-    assert any("Empty Savings" in note for note in start["notes"]) and any("401k" in note for note in start["notes"])
+    assert any("Empty Savings" in note for note in start["notes"]) and any("Fidelity 401(k)" in note for note in start["notes"])
+    # A confirmed investment value joins the forecast at its account's rate.
+    investments.review(statement["id"], "verified")
+    investments.update(statement["account_id"], AccountUpdate(name="Work 401(k)", kind="401k", annual_rate_percent="6"))
     result = forecast(store, ForecastInput(years=3), TODAY)
     assert result["starting_point"]["monthly_income"]["display"] == "6,000.00 USD"
+    assert [(row["name"], row["investment"], row["annual_rate_percent"]) for row in result["starting_point"]["assets"] if row["investment"]] == [("Work 401(k)", True, "6")]
     assets.archive(car["id"])
-    assert [item["name"] for item in assets.list()] == ["401k from statement", "House"]
+    assert [item["name"] for item in assets.list()] == ["House"]
 
 
 def test_charts_are_deterministic_escaped_and_include_zero():
@@ -151,6 +157,8 @@ def test_forecast_and_asset_endpoints(tmp_path):
         added = client.post("/api/assets", json={"name": "Car", "kind": "vehicle", "value": "20000", "currency": "USD", "as_of": "2026-09-01"})
         assert added.status_code == 201
         assert client.post("/api/assets", json={"name": "x", "kind": "spaceship", "value": "1", "currency": "USD", "as_of": "2026-09-01"}).status_code == 422
+        # Investment accounts are added on Investments, not as forecast assets.
+        assert client.post("/api/assets", json={"name": "x", "kind": "retirement", "value": "1", "currency": "USD", "as_of": "2026-09-01"}).status_code == 422
         loan = client.post("/api/assets", json={"name": "Mortgage", "kind": "loan", "value": "200000", "currency": "USD", "as_of": "2026-09-01",
                                                  "annual_rate_percent": "6.5", "monthly_payment": "1500"}).json()
         assert loan["annual_rate_percent"] == "6.5" and loan["monthly_payment"]["display"] == "1,500.00 USD"
@@ -168,6 +176,7 @@ def test_browser_forecast_page(tmp_path):
     import socket
     import threading
     import time
+
     import uvicorn
     playwright = pytest.importorskip("playwright.sync_api")
     with socket.socket() as sock:
@@ -211,8 +220,29 @@ def test_browser_forecast_page(tmp_path):
             page.locator("#forecast-charts details summary").first.click()
             playwright.expect(page.locator("#forecast-charts table").first).to_contain_text("USD")
             playwright.expect(page.locator("#forecast-alerts")).to_contain_text("About these numbers")
+            # Retirement: an IRA to draw on, a birth year for required distributions, and withdrawals covering the shortfall.
+            from home_manager.finance.investments import AccountInput as InvestmentAccount
+            from home_manager.finance.investments import Investments
+            from home_manager.finance.ledger import HouseholdConfig
+            Investments(app.state.manager.store).add(InvestmentAccount(name="Rollover IRA", kind="ira", currency="USD", value="100000", as_of="2025-12-31"))
+            app.state.manager.configure_household(HouseholdConfig(birth_year=1955))
+            assert page.locator("#retire-fields").is_hidden()
+            page.locator("#retire-plan").check()
+            page.locator("#retire-month").fill("2027-01")
+            page.locator("#retire-tax").fill("15")
+            assert page.locator("#retire-amount-field").is_hidden() and page.locator("#retire-floor").is_visible()
+            page.locator("#run-forecast").click()
+            playwright.expect(page.locator("#forecast-start")).to_contain_text("withdraw enough to keep 0 in cash")
+            playwright.expect(page.locator("#forecast-start")).to_contain_text("Required distributions")
+            page.locator("#forecast-charts details summary").nth(1).click()
+            playwright.expect(page.locator("#forecast-charts table").nth(1)).to_contain_text("From investments")
+            page.locator("#retire-mode").select_option("fixed")
+            assert page.locator("#retire-amount").is_visible()
             if os.environ.get("FORECAST_SCREENSHOT"):
                 page.screenshot(path=os.environ["FORECAST_SCREENSHOT"], full_page=True)
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 1000})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
             assert not failures, failures
             browser.close()
     finally:

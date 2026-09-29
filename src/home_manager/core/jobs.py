@@ -1,10 +1,14 @@
 """Explicit work records: progress, cooperative cancellation and model-run attribution."""
 
 from contextlib import contextmanager
+import logging
 import threading
 import uuid
 
 from ..library.storage import now
+from .logs import log_failure
+
+log = logging.getLogger(__name__)
 
 QUEUES = ("capture", "inference")
 
@@ -49,8 +53,8 @@ class Work:
         for abort in aborts:
             try:
                 abort()
-            except Exception:
-                pass  # Abort hooks are best effort; cooperative checks still stop the work.
+            except Exception as exc:  # Abort hooks are best effort; cooperative checks still stop the work.
+                log_failure(log, "abort hook", exc, work=self.id)
 
     @contextmanager
     def on_cancel(self, abort):

@@ -1,12 +1,16 @@
 """Persistent batches over a snapshot of all current preserved image versions."""
 
+import logging
 import uuid
 
 from ..core.formats import TEXT_READERS, extension
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..core.paths import path_key
 from ..library.storage import now
 from ..models.model_client import resolve_identity
+
+log = logging.getLogger(__name__)
 
 
 class ReceiptBatches:
@@ -72,7 +76,8 @@ class ReceiptBatches:
                 db.execute("UPDATE parse_runs SET status='cancelled',error=?,updated_at=? WHERE status='queued' AND id IN "
                            "(SELECT run_id FROM receipt_batch_items WHERE batch_id=?)", (str(exc), now(), batch))
             self.state(batch, "cancelled")
-        except Exception:
+        except Exception as exc:
+            log_failure(log, "text batch", exc, batch=batch)
             self.receipts.recover()
             self.state(batch, "interrupted")
 

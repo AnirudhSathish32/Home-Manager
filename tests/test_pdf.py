@@ -1,15 +1,15 @@
 """Phase 3: page-aware PDF ingestion with embedded text and per-page vision fallback."""
 
-from conftest import inbox_scan
 import json
 
 import pytest
 
-from home_manager.core.jobs import Work
+from conftest import inbox_scan
 from home_manager.app.manager import Manager
+from home_manager.core.jobs import Work
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from home_manager.models.vision import VisionConfig
 

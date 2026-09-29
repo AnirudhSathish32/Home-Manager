@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from home_manager.app.api import create_app
 from home_manager.library.scanner import ScanLimits
 
-
 URL = "http://127.0.0.1:8765"
 AUTH = {"Authorization": "Bearer test-session-token"}
 
@@ -81,6 +80,7 @@ def test_config_scan_history_and_restart(tmp_path):
 
 def test_configuration_cannot_change_during_scan(tmp_path, monkeypatch):
     import threading
+
     from home_manager.library.scanner import Scanner
     entered, release = threading.Event(), threading.Event()
     def blocked(self, job):

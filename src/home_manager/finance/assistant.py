@@ -10,6 +10,7 @@ found there are reported as unverified rather than presented as fact.
 from datetime import date
 from decimal import Decimal
 import json
+import logging
 import re
 from typing import Literal
 import uuid
@@ -17,10 +18,13 @@ import uuid
 from pydantic import Field, ValidationError, model_validator
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 from .tools import FINANCE_ROUTE, ITEM_ROUTE, TOOLS, call_tool
+
+log = logging.getLogger(__name__)
 
 ASSISTANT_VERSION = "financial-assistant-v1"
 MAX_TOOL_CALLS = 6
@@ -59,7 +63,7 @@ def figures(text):
 
 class Step(StrictModel):
     action: Literal["call_tool", "answer"]
-    tool: Literal[*TOOLS] | None = Field(description="Tool name when action is call_tool, otherwise null.")
+    tool: Literal[*TOOLS] | None = Field(description="Tool name when action is call_tool, otherwise null.")  # type: ignore[valid-type]
     arguments_json: str | None = Field(max_length=2000, description="Tool arguments as a JSON object in text, otherwise null.")
     answer: str | None = Field(max_length=4000, description="Final answer when action is answer, otherwise null.")
     cited_calls: list[int] = Field(max_length=MAX_TOOL_CALLS, description="1-based numbers of the tool calls the answer relies on.")
@@ -133,6 +137,7 @@ class AssistantService:
         except (ValueError, OSError) as exc:
             self.state(run_id, "failed", error=str(exc))
         except Exception as exc:
+            log_failure(log, "assistant", exc, run=run_id)
             self.state(run_id, "failed", error=f"Unexpected {type(exc).__name__}.")
 
     def answer(self, question, config, work, context=None):

@@ -1,6 +1,10 @@
 # Plan: Profiles, each with its own local database, plus a Family view
 
-Status: planned 2026-09-28, not built. Companion plan: `docs/shared-gpu-plan.md`.
+Status: built 2026-09-28; how it works now is in `docs/sharing.md` → Profiles and families. Companion plan: `docs/shared-gpu-plan.md`.
+Changes from the plan while building it:
+- Per-profile preferences live in `<settings folder>\profiles\<id>\household.json`, not in the library folder.
+- The family is added up from each member's own dashboard, category and bill results; it does not merge raw databases.
+- Joint accounts and transfers between members are handled on the family's adjusted copies (`view\`).
 
 Decisions already made:
 - Each family member runs the app **on their own PC**.

@@ -12,6 +12,7 @@ const ROUTES = {
   // Old links (#/finances?section=…) forward to the page that now holds that section.
   finances: {title: "Finances", nav: "transactions", show: route => openFinanceRoute(route.params)},
   forecast: {title: "Forecast", show: () => configured ? loadForecast() : null},
+  investments: {title: "Investments", show: route => loadInvestments(route.params)},
   documents: {title: "Documents", show: route => showLibrary("documents", route)},
   // Receipts and statements: the money store, on the same library page with its own folders.
   receipts: {title: "Receipts & statements", page: "documents", show: route => showLibrary("money", route)},
@@ -28,7 +29,7 @@ for (const link of document.querySelectorAll(".nav-link[data-icon]")) {
   link.title = link.querySelector(".nav-label").textContent;  // Tooltip when the sidebar collapses to icons.
 }
 $("close-receipt").prepend(icon("arrow-left"));
-wireTabs(["directories-tab", "preferences-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
+wireTabs(["directories-tab", "profiles-tab", "preferences-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
 
 function parseRoute() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
@@ -36,8 +37,12 @@ function parseRoute() {
   if (name === "documents" && /^\d+$/.test(id || "")) return {name: "document", id: Number(id), params: new URLSearchParams(query)};
   return {name: name in ROUTES ? name : DEFAULT_ROUTE, params: new URLSearchParams(query)};
 }
+// A family profile's own library is only its inbox: uploads are read, reviewed and routed to people from these pages.
+// Everything else (transactions, budgets, bills, inventory) belongs to each person's profile.
+const FAMILY_ROUTES = ["home", "settings", "review", "receipts", "documents", "document", "processing"];
 function showRoute(moveFocus) {
   const route = parseRoute(), previous = currentRoute?.name;
+  if (familyMode && !FAMILY_ROUTES.includes(route.name)) { location.replace("#/home"); return; }
   const lists = ["documents", "receipts"], page = ROUTES[route.name].page || route.name;
   if (lists.includes(previous) && !lists.includes(route.name)) listScroll = window.scrollY;
   if (previous === "document" && route.name !== "document") closeReceipt();

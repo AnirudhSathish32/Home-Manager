@@ -1,15 +1,13 @@
 """Phase 4: canonical finance storage with exact money, evidence links and review states."""
 
-from conftest import inbox_scan
+from decimal import Decimal
 import sqlite3
 
 import pytest
 
-from home_manager.finance.ledger import Ledger, classify_transaction, normalize_name
-from decimal import Decimal
-
+from conftest import inbox_scan
 from home_manager.core.money import MoneyError, as_decimal_text, decimals_in, format_minor, printed_decimal, to_minor
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.finance.ledger import Ledger, classify_transaction, normalize_name
 from home_manager.library.storage import Store
 
 

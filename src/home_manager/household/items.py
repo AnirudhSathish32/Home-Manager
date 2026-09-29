@@ -9,9 +9,8 @@ from datetime import date, timedelta
 import json
 import re
 from statistics import median
-import unicodedata
-
 from typing import Literal
+import unicodedata
 
 from pydantic import Field, field_validator
 

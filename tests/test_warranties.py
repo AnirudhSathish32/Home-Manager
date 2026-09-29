@@ -1,20 +1,20 @@
 """Warranties, automatic item identification and job history (docs/warranties-assistant-processing.md). Synthetic data only."""
 
-from conftest import documents_by_name, inbox_scan
 from datetime import date
 import json
 
 from fastapi.testclient import TestClient
 import pytest
 
+from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
-from home_manager.finance.ledger import HouseholdConfig, Ledger
-from home_manager.household.items import ItemLedger, ResolutionFields
 from home_manager.core.jobs import Work
 from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.finance.ledger import HouseholdConfig, Ledger
+from home_manager.household.items import ItemLedger, ResolutionFields
+from home_manager.household.warranty import Warranties, WarrantyService, WarrantyTools, stated_months
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
-from home_manager.household.warranty import Warranties, WarrantyService, WarrantyTools, stated_months
 from home_manager.models.web_lookup import BRAVE_SEARCH, WebLookup
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
 

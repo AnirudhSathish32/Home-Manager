@@ -1,14 +1,13 @@
 """Category rules and monthly budgets (docs/money-review-inventory.md §2), with synthetic data only."""
 
-from conftest import inbox_scan
-
 from fastapi.testclient import TestClient
 import pytest
 
+from conftest import inbox_scan
 from home_manager.app.api import create_app
 from home_manager.finance.ledger import Ledger
-from home_manager.finance.tools import FinanceTools, call_tool
 from home_manager.finance.reconcile import Reconciler
+from home_manager.finance.tools import FinanceTools, call_tool
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 

@@ -8,12 +8,14 @@ what the page says; it never estimates a rate.
 
 from decimal import Decimal, InvalidOperation
 import json
+import logging
 from typing import Literal
 import uuid
 
 from pydantic import Field, ValidationError, model_validator
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..core.money import MoneyError, decimals_in, format_minor, printed_decimal, to_minor
 from ..documents.receipt_schema import StrictModel
 from ..finance.paystub import NO_WAGE_TAX, jurisdiction_name
@@ -21,6 +23,8 @@ from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 from ..models.web_lookup import LookupFailed, WebLookup
 from .warranty import FindInput, OpenInput, SearchInput, ToolInput, squashed
+
+log = logging.getLogger(__name__)
 
 TAX_TABLE_VERSION = "tax-table-lookup-v1"
 STATUSES = ("single", "married_joint", "head_of_household")
@@ -316,6 +320,7 @@ class TaxTableService:
         except (ValueError, OSError) as exc:
             self.state(run_id, "failed", error=str(exc))
         except Exception as exc:
+            log_failure(log, "tax table lookup", exc, run=run_id)
             self.state(run_id, "failed", error=f"Unexpected {type(exc).__name__}.")
 
     def agent(self, jurisdiction, year, filing_status, config, work, run_id):

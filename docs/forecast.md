@@ -4,11 +4,12 @@ A deterministic projection of income, spending, cash, assets, loans and net wort
 
 ## Starting point
 
-- **Cash:** each account's latest statement balance (credit-card balances count as owed). Accounts without a statement balance start at zero and are listed in the notes.
+- **Cash:** each account's latest statement balance (credit-card balances count as owed). Accounts without a statement balance start at zero and are listed in the notes. A savings account linked to an investment account (a HYSA) is counted there instead, not as cash.
 - **Income:** average monthly counted income (deposits, interest) over the last *N* full months (default 6).
 - **Spending:** average monthly counted spending per category over the same months; refunds appear as a negative line. Transfers and card payments are excluded, as everywhere else.
 - **Recurring bills:** each confirmed recurring bill is projected at its expected amount in its due months, counting on from its next due date (weekly bills are spread evenly, 52/12 a month), grown with inflation and changed by its category's spending change. Past payments to it are taken out of the category averages. See [receipts-and-statements.md](receipts-and-statements.md).
-- **Assets and loans:** the `assets` table. Values you type in (car, house) count at once. Values read from investment, retirement, bond or loan statements are proposed until reviewed and are listed in the notes until then.
+- **Assets and loans:** the `assets` table (homes, cars, other assets, loans). Values you type in count at once. Values read from loan statements are proposed until reviewed and are listed in the notes until then.
+- **Investments:** each investment account's newest confirmed value ([investments.md](investments.md)), growing at the account's yearly rate or its kind's default, plus its monthly contributions: from pay (the linked employer's confirmed pay stub 401(k), HSA and match lines, averaged over the history window; cash is untouched) and from you (the amount set on the account, else your recent payments in from the ledger; taken from cash). A CD or Treasury grows at its own terms to its maturity value and is paid to cash in its maturity month unless it renews. Accounts with a statement value waiting for review are named in the notes.
 - One currency per forecast; amounts in other currencies are left out and named in the notes.
 
 ## Assumptions
@@ -23,7 +24,30 @@ A deterministic projection of income, spending, cash, assets, loans and net wort
 | Income changes | none | Added to monthly income from a month on |
 | One-off amounts | none | Added to cash in their month (expenses negative) |
 
-Cash each month = previous cash + income − spending − loan payments + one-offs. Net worth = cash + assets − loans. All arithmetic is exact decimal; each monthly amount is rounded half-even to the cent.
+Cash each month = previous cash + income − spending − loan payments − contributions from you + maturities paid out + withdrawals from investments + one-offs.
+
+## Retirement and required distributions
+
+`ForecastInput.retirement` (`RetirementPlan`) is one self-contained input, never stored, so a later What If feature can
+run several side by side.
+
+**From the start month:**
+- Take-home pay stops: the average net pay of confirmed pay stubs in the history window, grown with income. Income
+  after that never goes below zero.
+- Contributions from pay stop, and so do your own contributions.
+
+**Withdrawals** come from taxable accounts first, then tax-deferred, then tax-free, then HSAs, and each takes from the
+account's balance before its CDs:
+- **Fixed:** a monthly amount in today's dollars, grown with inflation.
+- **Cover the shortfall:** whatever keeps cash at a floor, also in today's dollars.
+- **Tax:** a withdrawal from a tax-deferred account is grossed up at the flat tax rate you set, so the planned amount
+  reaches cash. The tax is shown per year.
+- **Running out:** when the accounts can't meet a withdrawal, a note says when investments run out.
+
+**RMDs:** with a birth year in Settings, every December from the start year each tax-deferred account pays out at least
+its end-of-last-year balance over the Uniform Lifetime divisor ([investments.md](investments.md)), after tax, into cash.
+This happens with or without a retirement plan. The year table shows "From investments", "Tax withheld" and
+"Required (RMD)", which is the part taken only because it was required. Net worth = cash + assets − loans. All arithmetic is exact decimal; each monthly amount is rounded half-even to the cent.
 
 ## Output
 
@@ -34,4 +58,5 @@ Charts use the validated categorical order blue `#2a78d6`, orange `#eb6834`, aqu
 ## Not yet
 
 - ~~Reading investment, retirement, bond and loan statements into `assets` rows~~: done 2026-09-25, see [items-assets-search.md](items-assets-search.md) §6.
-- Taxes, contributions to retirement accounts and investment income are not modelled separately; set an asset's growth rate to include them.
+- Taxes other than the flat rate on tax-deferred withdrawals, and investment income, are not modelled separately; set an investment account's yearly rate to include them.
+- What If: several forecasts with different assumptions side by side (planned).

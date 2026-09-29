@@ -153,6 +153,8 @@ function transactionRow(row) {
   const status = cell(tr, "");
   if (!row.counted) status.append(statusBadge(row.review_status));
   if (["transfer", "payment"].includes(row.transaction_type)) status.append(element("small", "Not spending", "muted block"));
+  // A charge for a cost the family shared: the bank shows all of it, this profile counts its own part.
+  if (row.shared_part) status.append(element("small", `Shared expense · your part ${row.shared_part.display} counted`, "muted block"));
   const value = cell(tr, ""); value.className = "numeric"; value.appendChild(amount(row.amount));
   if (["transfer", "payment"].includes(row.transaction_type)) value.classList.add("muted");
   tr.addEventListener("click", event => { if (!event.target.closest("a, button")) openTransaction(row.id); });

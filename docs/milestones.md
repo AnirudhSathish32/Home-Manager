@@ -1,10 +1,23 @@
 # Development milestones and evaluation plan
 
-Implementation update: [financial reasoning](financial-reasoning.md) now provides a separately configured local model, text-only interpretation, validated source citations, durable analysis runs and an inspector workflow. Synthetic HTTP and browser coverage is implemented; real-model accuracy, review approval and financial publication remain pending.
+Status, 2026-09-28 (checked against the code):
+
+| Milestones | State |
+| --- | --- |
+| M0–M2b, M3, M3b, M4, M5, M6 | Built: deterministic core, persistence with CSV/XLSX import, evidence storage, vision transcription, typed tools and API, the local model adapter and the bounded assistant. Review and financial publication are built too. |
+| M3c | Partly built. Laya runs as a veto only, sending records to review; it has no routing role until it is benchmarked on real documents. |
+| M2c, M4a | Not built: USD conversion and the exchange-rate tools (there is no ECB or rate code). |
+| M4b | Not built: the Excel report tool. |
+| M7 | Not done: acceptance on real documents. Model accuracy has only been tested on synthetic data so far. |
+| M8–M10 | Deferred (Gmail, broader document automation, broader classifier use). |
+
+The rest of this document is the original plan.
+
+Implementation update: [financial reasoning](financial-reasoning.md) now provides a separately configured local model, text-only interpretation, validated source citations, durable analysis runs and an inspector workflow.
 
 Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
 
-Status: roadmap. Companion: [architecture](architecture.md). D1–D2 and an initial PNG/JPEG receipt reader are implemented with text-only vision transcription, QR decoding and an evidence viewer. See [receipt parsing](receipt-parsing.md) for the implemented subset; model assessment, review and other readers remain planned. CSV, Excel, scanned bills and PDF statements are required subsequent inputs. See [manual testing](manual-testing.md).
+Original status: roadmap. Companion: [architecture](architecture.md). See [manual testing](manual-testing.md).
 
 The [document-reading design](document-reading.md) refines the ingestion milestones into D1-D6: year/month discovery, immutable capture/versioning, structured readers, vision transcription, separate reasoning, review, and financial integration. D1-D4 can establish basic reading before the agent is available; Separate reasoning comes next; optional judge evaluation follows only after that boundary is implemented.
 

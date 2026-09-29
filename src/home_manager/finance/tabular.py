@@ -11,9 +11,9 @@ from datetime import date, timedelta
 from decimal import Decimal
 import io
 import re
-import zipfile
 from typing import Literal
 from xml.etree import ElementTree
+import zipfile
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -44,7 +44,7 @@ class ImportMapping(BaseModel):
     debit: str | None = Field(default=None, max_length=200)
     credit: str | None = Field(default=None, max_length=200)
     currency: str | None = Field(default=None, max_length=200)
-    date_format: Literal["auto", *DATE_FORMATS] = "auto"
+    date_format: Literal["auto", *DATE_FORMATS] = "auto"  # type: ignore[valid-type]
     sign: Literal["negative_is_outflow", "positive_is_outflow"] = "negative_is_outflow"
 
     @model_validator(mode="after")
@@ -271,7 +271,7 @@ def parse_transactions(data, suffix, currency, mapping=None, sheet=None):
     if not columns["amount"] and not (columns["debit"] or columns["credit"]):
         raise needs("Choose an amount column or debit/credit columns.")
     index = {name: position for position, name in enumerate(header)}
-    for key, name in columns.items():
+    for name in columns.values():
         if name and name not in index:
             raise needs(f"Column {name!r} is not in this file.")
 

@@ -102,6 +102,7 @@ def install(model_dir: Path):
     """One-time download of the pinned checkpoint. TLS is verified against the operating
     system's certificate store (which includes antivirus TLS-inspection roots), never disabled."""
     import ssl
+
     import httpx
     import huggingface_hub
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"

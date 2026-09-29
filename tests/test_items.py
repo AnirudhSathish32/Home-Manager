@@ -1,22 +1,22 @@
 """Household items: resolution proposals, approval, inventory lots, run-out schedule and agent tools."""
 
-from conftest import documents_by_name, inbox_scan
 from datetime import date
 import json
 
 from fastapi.testclient import TestClient
 import pytest
 
+from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
+from home_manager.core.jobs import Work
+from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.checkin import CheckinService
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.tools import FinanceTools, call_tool
+from home_manager.household.items import ItemLedger, ResolutionFields, normalize_text, printed_return_days, valid_gtin
 from home_manager.household.resolver import ItemResolver
 from home_manager.household.resolver_tools import ItemTools, call_item_tool
-from home_manager.household.items import ItemLedger, ResolutionFields, normalize_text, printed_return_days, valid_gtin
-from home_manager.core.jobs import Work
-from home_manager.documents.reasoning import ReasoningConfig
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from home_manager.models.web_lookup import BRAVE_SEARCH, LookupFailed, WebLookup, https_get, page_text, public_address
 

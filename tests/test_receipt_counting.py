@@ -6,11 +6,11 @@ import socket
 import threading
 import time
 
-from conftest import documents_by_name, inbox_scan
 from fastapi.testclient import TestClient
 import pytest
 import uvicorn
 
+from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.core.categories import RECEIPT_CATEGORIES
 from home_manager.finance.ledger import Ledger
@@ -86,6 +86,7 @@ def test_receipts_count_until_a_reconciled_statement_line_replaces_them(books):
     categories = {row["category"]: row["spending"]["minor"] for row in tools.get_spending_by_category(SEPTEMBER)["categories"]}
     assert categories == {"dining": 1200, "groceries": 5000, "uncategorized": 800}
     assert [row["description_raw"] for row in tools.get_transactions(TransactionsInput(category="dining"))["transactions"]] == ["CAFE ONE"]
+    assert_ledger_healthy(store)
 
 
 def test_a_larger_same_merchant_charge_is_asked_about_not_linked_or_double_counted(books):
@@ -104,6 +105,7 @@ def test_a_larger_same_merchant_charge_is_asked_about_not_linked_or_double_count
     assert (link["review_status"], link["match_signals"]) == ("verified", ["near_amount", "date", "merchant", "user_choice"])
     # Linked: only the charge with the tip counts.
     assert FinanceTools(store).get_spending(SEPTEMBER)["by_currency"][0]["spending"]["minor"] == 3600 + 3500
+    assert_ledger_healthy(store)
 
 
 def test_receipt_category_is_a_correction_kept_through_re_extraction(books):

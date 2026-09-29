@@ -106,8 +106,8 @@ def signature(info: os.stat_result) -> tuple[int, int, int, int, int]:
 def source_reader(path: Path):
     safe_path(path)
     if os.name == "nt":
-        import msvcrt
         from ctypes import wintypes
+        import msvcrt
 
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         create = kernel.CreateFileW
@@ -151,7 +151,7 @@ class DirectoryLock:
                 msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(self.stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(self.stream, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]  # Checked on Windows, where fcntl is absent.
         except OSError as exc:
             self.stream.close()
             raise PathError("This directory is already in use by another Home Manager process.") from exc

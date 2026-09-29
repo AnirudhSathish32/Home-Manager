@@ -38,7 +38,7 @@ These are virtual folders in Home Manager. Manual filing selects a fixed folder 
 
 Configure a local vision model and leave **Read newly scanned images automatically** enabled. Scanning transcribes new/changed PNG/JPEG captures, one request per distinct image. **Processing → Read all documents** processes existing image and PDF captures across folders and months; **Read selected** in Documents reads only the chosen ones.
 
-Vision returns text only. New files keep their source filenames and remain Unfiled until manually moved. Automatic titles and classification await a separate reasoning model. Missing model settings do not prevent capture, but extraction requires a configured model. CSV/XLSX readers and PDF capture remain future work.
+Vision returns text only. The separate reasoning model then titles, classifies and extracts each document, and the app files it from those cited results; documents it cannot file stay Unfiled. Missing model settings do not prevent capture, but extraction requires a configured model. PDFs are read like images (embedded text, vision for scanned pages); CSV/XLSX files import transactions without a model.
 
 Historical results remain available. Scan history reports capture and extraction separately; API/database fields retain their older organization names for compatibility.
 

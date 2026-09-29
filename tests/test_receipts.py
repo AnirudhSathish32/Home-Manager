@@ -1,15 +1,14 @@
-from conftest import inbox_scan
 import base64
 from pathlib import Path
 import sqlite3
 
-import pytest
-from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import pytest
 import zxingcpp
 
+from conftest import inbox_scan
 from home_manager.documents.receipt_service import ReceiptService
-from home_manager.library.scanner import Scanner, ScanLimits
 from home_manager.library.storage import MIGRATIONS, Store
 
 
@@ -63,8 +62,9 @@ def test_vision_and_real_qr_persist_exact_evidence(receipt_store, local_model):
     assert result["fields"] is None
     assert result["title"] is None and result["folder"] is None
     assert result["model_hashes"] == {}
-    from home_manager.documents.receipt_schema import ReceiptResult
     from pydantic import ValidationError
+
+    from home_manager.documents.receipt_schema import ReceiptResult
     omitted = dict(result, extracted_text=result["model_text"])
     with pytest.raises(ValidationError, match="retain every"):
         ReceiptResult.model_validate(omitted)

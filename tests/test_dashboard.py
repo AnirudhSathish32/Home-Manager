@@ -6,7 +6,7 @@ from home_manager.app.api import create_app
 from home_manager.finance.dashboard import dashboard
 from home_manager.finance.tools import FinanceTools, TransactionsInput
 from home_manager.library.scanner import ScanLimits
-from test_reconcile_tools import books, add, receipt
+from test_reconcile_tools import add, books, receipt  # noqa: F401 (books is a fixture)
 
 
 def test_dashboard_totals_categories_series_and_drilldowns(books):

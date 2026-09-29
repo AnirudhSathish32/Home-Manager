@@ -1,14 +1,14 @@
 """Phases 7-8: deterministic reconciliation and financial tools over the canonical ledger."""
 
-from conftest import documents_by_name, inbox_scan
 from fastapi.testclient import TestClient
 import pytest
 
+from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.finance.ledger import Ledger
-from home_manager.finance.tools import FinanceTools, TransactionsInput, call_tool
 from home_manager.finance.reconcile import Reconciler
-from home_manager.library.scanner import Scanner, ScanLimits
+from home_manager.finance.tools import FinanceTools, TransactionsInput, call_tool
+from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 
 
@@ -59,7 +59,7 @@ def test_reconciliation_links_receipts_transfers_refunds_and_detects_recurring(b
     ambiguous = receipt(ledger, docs["bill.png"], "Corner Market", "2026-09-18", 1200)
     target_return = receipt(ledger, docs["return.png"], "Target", "2026-09-19", -2599)
     summary = Reconciler(store).run()
-    assert summary == {"receipt_links": 2, "transfers": 2, "refunds": 1, "recurring": 1, "open_issues": 1}
+    assert summary == {"receipt_links": 2, "transfers": 2, "refunds": 1, "investment_transfers": 0, "recurring": 1, "open_issues": 1}
     with store.connection() as db:
         links = [dict(row) for row in db.execute("SELECT * FROM transaction_receipt_links ORDER BY receipt_id")]
         transfer_links = {(row[0], row[1]) for row in db.execute("SELECT from_transaction_id,to_transaction_id FROM transaction_links WHERE link_type='transfer'")}
@@ -91,6 +91,7 @@ def test_reconciliation_links_receipts_transfers_refunds_and_detects_recurring(b
     with store.connection() as db:
         assert db.execute("SELECT merchant_id FROM transactions WHERE id=?", (card_ids[0],)).fetchone()[0] is None
         assert db.execute("SELECT transaction_type FROM transactions WHERE id=?", (card_ids[2],)).fetchone()[0] == "refund"
+    assert_ledger_healthy(store)
 
 
 def test_refund_evidence_without_posted_credit_is_not_settled(books):
@@ -142,6 +143,7 @@ def test_spending_tools_are_exact_exclude_transfers_and_pending_model_rows(books
     ledger.set_category(tools.get_transactions(TransactionsInput(query="grocery"))["transactions"][0]["id"], "Groceries")
     categories = call_tool(tools, "get_spending_by_category", {"start": "2026-09-01", "end": "2026-09-30"})["categories"]
     assert {(row["category"], row["spending"]["decimal"]) for row in categories} == {("groceries", "120.12"), ("uncategorized", "77.77")}
+    assert_ledger_healthy(store)
     with pytest.raises(ValueError):
         call_tool(tools, "get_spending", {"start": "2026-09-30", "end": "2026-09-01"})
 

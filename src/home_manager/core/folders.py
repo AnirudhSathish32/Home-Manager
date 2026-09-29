@@ -21,8 +21,8 @@ LIBRARY_FOLDERS = ["Inbox", *FILING_FOLDERS]
 RETIRED_FOLDERS = {"Bills": "Unfiled", "Income": "Jobs"}
 # Jobs holds one folder per employer, each with these sections (docs/jobs-and-paystubs.md).
 JOB_SECTIONS = ("Paystubs", "Documents")
-DocumentFolder = Enum("DocumentFolder", {f"folder_{i}": value for i, value in enumerate(FILING_FOLDERS)}, type=str)
-HistoricalFolder = Enum("HistoricalFolder", {f"folder_{i}": value for i, value in enumerate(
+DocumentFolder = Enum("DocumentFolder", {f"folder_{i}": value for i, value in enumerate(FILING_FOLDERS)}, type=str)  # type: ignore[misc]
+HistoricalFolder = Enum("HistoricalFolder", {f"folder_{i}": value for i, value in enumerate(  # type: ignore[misc]
     [*FILING_FOLDERS, *RETIRED_FOLDERS, *[f"{parent}/{child}" for parent, children in LEGACY_HIERARCHY.items() for child in children]])}, type=str)
 
 

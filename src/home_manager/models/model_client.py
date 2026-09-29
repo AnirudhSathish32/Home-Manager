@@ -1,13 +1,16 @@
-"""Loopback model transport: cancellation, inference telemetry and model identity.
+"""Model transport: cancellation, inference telemetry and model identity.
 
 http.client never consults proxy settings and never follows redirects, so neither
-can be inherited or triggered by a document. Endpoints are validated loopback URLs.
+can be inherited or triggered by a document. Endpoints are validated URLs: a loopback
+server on this computer, or a family GPU computer on the tailnet (models/gpu_host.py).
 """
 
 import hashlib
 import http.client
+import ipaddress
 import json
 import queue
+import re
 import socket
 import threading
 import time
@@ -19,6 +22,39 @@ from .model_stream import IDLE_SECONDS, read_completion
 
 # Listing fields that change without the model bytes changing.
 VOLATILE_METADATA = {"created", "object", "state", "loaded_context_length"}
+TAILNET = ipaddress.ip_network("100.64.0.0/10")
+TS_NET_HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$")
+REMOTE_OFFLINE = "The family GPU computer is offline or not on Tailscale. Check that Tailscale is connected on both computers and the GPU host is running."
+# host:port -> bearer token for a family GPU computer. Set by the app from its control
+# directory; never part of a model config, so it never reaches run options or the database.
+_tokens = {}
+
+
+def is_tailnet_host(host):
+    """A Tailscale address (100.64.0.0/10) or MagicDNS name (*.ts.net)."""
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host) in TAILNET
+    except ValueError:
+        return bool(TS_NET_HOST.match(host.lower()))
+
+
+def is_remote(config):
+    return urlsplit(config.base_url).hostname != "127.0.0.1"
+
+
+def set_token(base_url, token):
+    netloc = urlsplit(base_url).netloc
+    if token:
+        _tokens[netloc] = token
+    else:
+        _tokens.pop(netloc, None)
+
+
+def _headers(config, headers):
+    token = is_remote(config) and _tokens.get(urlsplit(config.base_url).netloc)
+    return {**headers, "Authorization": f"Bearer {token}"} if token else headers
 
 
 class ModelHTTPError(ValueError):
@@ -27,12 +63,14 @@ class ModelHTTPError(ValueError):
         self.status = status
 
 
-def server_error(status, body: bytes):
+def server_error(status, body: bytes, remote=False):
     # Inspect only for known diagnostic categories. Server bodies can echo receipt
     # contents, paths or prompts, so never persist or display the raw error body.
     body = body.decode("utf-8", errors="replace").lower()
-    prefix = f"Local model server returned HTTP {status}. "
+    prefix = f"{'Family GPU computer' if remote else 'Local model server'} returned HTTP {status}. "
     if status in (401, 403):
+        if remote:
+            return prefix + "Your family GPU token was rejected. Ask the person who runs the GPU computer for a new one."
         return prefix + "The server requires authorization. This adapter currently supports a loopback server without API-token authentication."
     if any(value in body for value in ("out of memory", "cuda out", "failed to allocate", "insufficient memory")):
         return prefix + "The server reported insufficient memory. Unload other models, reduce GPU offload/context, or use a smaller model."
@@ -46,23 +84,23 @@ def server_error(status, body: bytes):
 
 
 def _connection(config, timeout):
-    url = urlsplit(config.base_url)  # Already validated as http://127.0.0.1:PORT/v1.
+    url = urlsplit(config.base_url)  # Already validated as http://127.0.0.1:PORT/v1 or a tailnet host.
     return http.client.HTTPConnection(url.hostname, url.port, timeout=timeout), url.path
 
 
-def _check_status(response):
+def _check_status(response, remote=False):
     if 300 <= response.status < 400:
         raise ModelHTTPError(response.status, "Model server redirects are not permitted.")
     if response.status != 200:
-        raise ModelHTTPError(response.status, server_error(response.status, response.read(65536)))
+        raise ModelHTTPError(response.status, server_error(response.status, response.read(65536), remote))
 
 
 def get_json(config, path, timeout=5, limit=1024**2):
     connection, _ = _connection(config, timeout)
     try:
-        connection.request("GET", path, headers={"Accept": "application/json"})
+        connection.request("GET", path, headers=_headers(config, {"Accept": "application/json"}))
         response = connection.getresponse()
-        _check_status(response)
+        _check_status(response, is_remote(config))
         raw = response.read(limit + 1)
         if len(raw) > limit:
             raise ValueError("Model server response exceeds the size limit.")
@@ -72,11 +110,12 @@ def get_json(config, path, timeout=5, limit=1024**2):
 
 
 def post_json(config, path, payload, timeout=60, limit=65536):
-    connection, prefix = _connection(config, timeout)
+    """POST to an absolute path, like get_json (LM Studio's native API is off the /v1 prefix)."""
+    connection, _ = _connection(config, timeout)
     try:
-        connection.request("POST", prefix + path, json.dumps(payload).encode(), {"Content-Type": "application/json"})
+        connection.request("POST", path, json.dumps(payload).encode(), _headers(config, {"Content-Type": "application/json"}))
         response = connection.getresponse()
-        _check_status(response)
+        _check_status(response, is_remote(config))
         raw = response.read(limit + 1)
         if len(raw) > limit:
             raise ValueError("Model server response exceeds the size limit.")
@@ -158,7 +197,12 @@ def request_completion(config, payload, work=None):
     interrupt a receive already blocked during prompt processing, but it does abort
     the connection when the next token arrives, which also stops server generation.
     """
+    from .residency import ensure_loaded  # Imports this module.
+
     work = work or Work.detached()
+    remote = is_remote(config)
+    # The single choke point for every model task: eject other models, then load this one.
+    ensure_loaded(config, work)
     payload.update(model=config.model, stream=True, temperature=0.1, stream_options={"include_usage": True})
     body = json.dumps(payload).encode()
     connection, prefix = _connection(config, IDLE_SECONDS)
@@ -183,9 +227,9 @@ def request_completion(config, payload, work=None):
                     raise Cancelled()
                 state["sock"] = connection.sock  # getresponse() may detach it from the connection.
             connection.request("POST", prefix + "/chat/completions", body,
-                               {"Content-Type": "application/json", "Accept": "text/event-stream"})
+                               _headers(config, {"Content-Type": "application/json", "Accept": "text/event-stream"}))
             response = connection.getresponse()
-            _check_status(response)
+            _check_status(response, remote)
             text, stats = read_completion(response, work)
             outcome.put((text, stats, None))
         except BaseException as exc:
@@ -220,7 +264,8 @@ def request_completion(config, payload, work=None):
         mapped = ValueError("Local model returned an invalid completion stream.")
     elif isinstance(error, (OSError, http.client.HTTPException)):
         status, category = "failed", "connection"
-        mapped = ValueError("Local model connection failed or disconnected. Check the server log and loaded model; no partial result was saved.")
+        mapped = ValueError(REMOTE_OFFLINE + " No partial result was saved." if remote and stats is None else
+                            "Local model connection failed or disconnected. Check the server log and loaded model; no partial result was saved.")
     elif error is not None:
         status, category = "failed", "invalid_or_truncated_output"
     work.record(telemetry(config, len(body), started_at, t0, time.monotonic(), stats, status, category))
@@ -230,7 +275,7 @@ def request_completion(config, payload, work=None):
 
 
 def check_connection(config, limit=50):
-    """Ask the loopback server which models it serves. Sends no document content and loads nothing."""
+    """Ask the model server which models it serves. Sends no document content and loads nothing."""
     t0 = time.monotonic()
     try:
         listing = get_json(config, "/v1/models")
@@ -238,7 +283,8 @@ def check_connection(config, limit=50):
         return {"reachable": True, "model_listed": False, "available_models": [], "latency_ms": None, "problem": str(exc)}
     except (OSError, ValueError, http.client.HTTPException):
         return {"reachable": False, "model_listed": False, "available_models": [], "latency_ms": None,
-                "problem": f"No local model server answered at {config.base_url}. Start the server and load a model, then test again."}
+                "problem": REMOTE_OFFLINE if is_remote(config) else
+                f"No local model server answered at {config.base_url}. Start the server and load a model, then test again."}
     latency = round((time.monotonic() - t0) * 1000)
     entries = listing.get("data", []) if isinstance(listing, dict) else []
     ids = sorted({item["id"] for item in entries if isinstance(item, dict) and isinstance(item.get("id"), str)})

@@ -81,6 +81,24 @@ def allocate(items, subtotal, tax, tip, target, fallback):
     return rows
 
 
+def scale(rows, target):
+    """allocate()'s rows resized to sum exactly to target, each keeping its proportion (a person's part of a shared receipt)."""
+    total = sum(amount for _, _, amount in rows)
+    if not total:
+        return rows
+    whole = rounded([Fraction(amount) * target / total for _, _, amount in rows], target)
+    return [(index, category, amount) for (index, category, _), amount in zip(rows, whole)]
+
+
+def equal_shares(total, count):
+    """total divided into count whole parts that add up exactly: the first parts get the extra units (50.00 / 3 = 16.67, 16.67, 16.66)."""
+    if count < 1:
+        raise ValueError("Choose at least one person to share it.")
+    base, extra = divmod(abs(total), count)
+    sign = -1 if total < 0 else 1
+    return [sign * (base + (1 if index < extra else 0)) for index in range(count)]
+
+
 def by_category(rows):
     """{category: minor units} from allocate()'s rows."""
     totals = {}

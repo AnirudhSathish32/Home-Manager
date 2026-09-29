@@ -19,8 +19,25 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
-from .ledger import (COUNTABLE, PENDING, RECEIPT_SPLIT_CATEGORY, RECEIPT_SPLIT_SPENT, RECEIPT_SPLITS, SPENDING, SPLIT_CATEGORY, SPLIT_SPENT,
-                     STANDALONE_RECEIPT, TRANSACTION_SPLITS, Ledger, in_categories, name_tokens, normalize_name)
+from .ledger import (
+    CHARGE_SHARE,
+    COUNTABLE,
+    PENDING,
+    RECEIPT_SPENT,
+    RECEIPT_SPLIT_CATEGORY,
+    RECEIPT_SPLIT_SPENT,
+    RECEIPT_SPLITS,
+    SPENDING,
+    SPLIT_CATEGORY,
+    SPLIT_SPENT,
+    STANDALONE_RECEIPT,
+    TRANSACTION_SPENT,
+    TRANSACTION_SPLITS,
+    Ledger,
+    in_categories,
+    name_tokens,
+    normalize_name,
+)
 from .reconcile import RECEIPT_POSTING_DAYS, shift
 
 SPENDING_TYPES = ",".join(f"'{kind}'" for kind in SPENDING)
@@ -112,15 +129,15 @@ class TransactionsInput(ToolInput):
     account_id: int | None = None
     query: str | None = Field(default=None, max_length=200)
     category: str | None = Field(default=None, min_length=1, max_length=60, description="A category name, or 'uncategorized'.")
-    transaction_types: list[Literal[*TRANSACTION_TYPES]] | None = Field(default=None, min_length=1, max_length=len(TRANSACTION_TYPES))
-    statuses: list[Literal[*STATUS_FILTERS]] | None = Field(default=None, min_length=1, max_length=len(STATUS_FILTERS),
+    transaction_types: list[Literal[*TRANSACTION_TYPES]] | None = Field(default=None, min_length=1, max_length=len(TRANSACTION_TYPES))  # type: ignore[valid-type]
+    statuses: list[Literal[*STATUS_FILTERS]] | None = Field(default=None, min_length=1, max_length=len(STATUS_FILTERS),  # type: ignore[valid-type]
                                                            description="Defaults to counted rows, plus pending ones when include_pending is true.")
     include_pending: bool = False
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     categories: list[str] | None = Field(default=None, min_length=1, max_length=500)
     metric: Literal["spending", "inflow", "cashflow", "categories"] | None = None
     has_receipt: bool | None = None
-    sort: Literal[*TRANSACTION_SORTS] = "date_desc"
+    sort: Literal[*TRANSACTION_SORTS] = "date_desc"  # type: ignore[valid-type]
     offset: int = Field(default=0, ge=0, le=1_000_000)
     limit: int = Field(default=200, ge=1, le=1000)
 
@@ -267,9 +284,11 @@ class FinanceTools(ItemAnalysisTools):
             total = db.execute("SELECT count(*) " + tables + where, params).fetchone()[0]
             rows = [dict(row) for row in db.execute(
                 "SELECT t.*,a.display_name AS account,m.canonical_name AS merchant,l.receipt_id,l.review_status AS receipt_link_status,"
-                "r.document_id AS receipt_document_id " + tables + receipt + where
+                f"r.document_id AS receipt_document_id,{CHARGE_SHARE} AS shared_part_minor " + tables + receipt + where
                 + f" ORDER BY {TRANSACTION_SORTS[value.sort]} LIMIT ? OFFSET ?", [*params, value.limit, value.offset])]
+        # shared_part: a charge matched to a receipt the family shared counts only this person's part of it.
         return {"transactions": [{**row, "amount": money(row["amount_minor"], row["currency"]),
+                                  "shared_part": money(row["shared_part_minor"], row["currency"]) if row["shared_part_minor"] is not None else None,
                                   "counted": row["review_status"] != "rejected" and (row["origin"] != "extraction" or row["review_status"] == "verified")}
                                  for row in rows],
                 "total_matching": total, "offset": value.offset, "limit": value.limit}
@@ -282,7 +301,9 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         month = "substr(t.posted_date,1,7)" if by_month else "NULL"
         totals = defaultdict(lambda: {"spending": 0, "refunds": 0, "transactions": 0, "from_receipts": 0, "receipts": 0})
-        for row in self.query(f"SELECT {month} AS month,t.currency,t.transaction_type='refund' AS refund,sum(t.amount_minor) AS total,count(*) AS count "
+        # A charge matched to a shared receipt counts this person's part of it (TRANSACTION_SPENT); refunds count as posted.
+        charged = f"CASE WHEN t.transaction_type='refund' THEN t.amount_minor ELSE -{TRANSACTION_SPENT} END"
+        for row in self.query(f"SELECT {month} AS month,t.currency,t.transaction_type='refund' AS refund,sum({charged}) AS total,count(*) AS count "
                               f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') GROUP BY 1,2,3", params):
             bucket = totals[(row["month"], row["currency"])]
             if row["refund"]:
@@ -292,7 +313,7 @@ class FinanceTools(ItemAnalysisTools):
             bucket["transactions"] += row["count"]
         if account_id is None:
             month = "substr(r.purchase_date,1,7)" if by_month else "NULL"
-            for row in self.query(f"SELECT {month} AS month,r.currency,sum(r.total_minor) AS total,count(*) AS count FROM receipts r "
+            for row in self.query(f"SELECT {month} AS month,r.currency,sum({RECEIPT_SPENT}) AS total,count(*) AS count FROM receipts r "
                                   f"WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end)):
                 bucket = totals[(row["month"], row["currency"])]
                 bucket["spending"] += row["total"]
@@ -360,10 +381,10 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(value.start, value.end, value.account_id)
         categories = sorted(self._category_totals(value.start, value.end, value.account_id).items(), key=lambda item: (item[0][0], -item[1][0]))
         merchants = defaultdict(lambda: [0, 0])
-        rows = self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS name,t.amount_minor FROM transactions t "
+        rows = self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS name,-{TRANSACTION_SPENT} AS amount_minor FROM transactions t "
                           f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES})", params)
         if value.account_id is None:
-            rows += self.query(f"SELECT r.currency,coalesce(m.canonical_name,'UNKNOWN') AS name,-r.total_minor AS amount_minor FROM receipts r "
+            rows += self.query(f"SELECT r.currency,coalesce(m.canonical_name,'UNKNOWN') AS name,-{RECEIPT_SPENT} AS amount_minor FROM receipts r "
                                f"LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ?", (value.start, value.end))
         for row in rows:
             key = (row["currency"], " ".join(normalize_name(row["name"]).split()[:3]) or "UNKNOWN")
@@ -571,8 +592,8 @@ class FinanceTools(ItemAnalysisTools):
         links = self.query("SELECT * FROM transaction_receipt_links WHERE receipt_id=?", (value.record_id,))
         candidates = []
         if receipt["total_minor"] is not None and receipt["purchase_date"]:
-            candidates = self.query(f"SELECT t.* FROM transactions t WHERE t.review_status<>'rejected' AND t.currency=? AND t.amount_minor=? "
-                                    f"AND coalesce(t.transaction_date,t.posted_date) BETWEEN ? AND ?",
+            candidates = self.query("SELECT t.* FROM transactions t WHERE t.review_status<>'rejected' AND t.currency=? AND t.amount_minor=? "
+                                    "AND coalesce(t.transaction_date,t.posted_date) BETWEEN ? AND ?",
                                     (receipt["currency"], -receipt["total_minor"], receipt["purchase_date"], shift(receipt["purchase_date"], RECEIPT_POSTING_DAYS)))
         return {"receipt_id": value.record_id, "links": links,
                 "candidates": [{**row, "amount": money(row["amount_minor"], row["currency"]),
@@ -642,6 +663,15 @@ class FinanceTools(ItemAnalysisTools):
                       "receipt": [link["to_id"] for link in links if link["kind"] == "receipt"]
                       + [issue["record_id"] for issue in issues if issue["record_type"] == "receipt"]}
             summaries = {kind: self.ledger.summaries(db, kind, ids) for kind, ids in wanted.items()}
+            # A contribution or purchase paid into an investment account, when several bank lines could have paid it.
+            summaries["investment_event"] = {}
+            for issue in issues:
+                row = db.execute("SELECT e.id,e.event_date,e.amount_minor,e.document_id,a.name,a.currency FROM investment_events e "
+                                 "JOIN investment_accounts a ON a.id=e.account_id WHERE e.id=?", (issue["record_id"],)).fetchone() \
+                    if issue["record_type"] == "investment_event" else None
+                if row:
+                    summaries["investment_event"][row["id"]] = {"record_type": "investment_event", "name": f"Paid into {row['name']}", "date": row["event_date"],
+                                                                "amount": money(row["amount_minor"], row["currency"]), "document_id": row["document_id"]}
         for link in links:
             link["match_signals"] = link["match_method"].split("+")
             link["from"] = summaries["transaction"].get(link["from_id"])
@@ -667,7 +697,7 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "match_receipt_to_transaction": (RecordInput, "match_receipt_to_transaction"), "get_refunds": (EmptyInput, "get_refunds"),
          "review_queue": (EmptyInput, "review_queue"), "get_inventory": (InventoryInput, "get_inventory"),
          "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"), **ITEM_TOOLS, **ANOMALY_TOOLS}
-ToolName = Literal[*TOOLS]
+ToolName = Literal[*TOOLS]  # type: ignore[valid-type]
 # Assistant routing (docs/items-assets-search.md §4): item questions see the item tools and spending basics;
 # every other question sees the finance tools. A smaller list keeps a small model's prompt short.
 ITEM_ROUTE = frozenset({*ITEM_TOOLS, "get_inventory", "get_spending", "get_spending_by_category", "get_transactions", "find_receipt"})

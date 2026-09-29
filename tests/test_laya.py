@@ -9,8 +9,8 @@ import types
 import pytest
 
 from home_manager.core.jobs import Work
-from home_manager.models.laya_runtime import OFFLINE, LayaRuntime, LayaUnavailable
 from home_manager.documents.reviewer import ReviewerConfig
+from home_manager.models.laya_runtime import OFFLINE, LayaRuntime, LayaUnavailable
 from test_extraction import classification, extract, identity, receipt, receipt_items, receipt_summary  # noqa: F401 (fixture)
 
 

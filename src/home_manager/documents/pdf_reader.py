@@ -2,9 +2,11 @@
 import json
 from pathlib import Path
 from typing import Literal
+
 from pydantic import Field, model_validator
+
 from ..core.paths import write_atomic
-from .receipt_schema import StrictModel, TextLine, Issue, ReceiptResult
+from .receipt_schema import Issue, ReceiptResult, StrictModel, TextLine
 
 PDF_VERSION = "pdf-pages-v1"
 
@@ -109,4 +111,4 @@ if __name__ == "__main__":
         worker(sys.argv[1], Path(sys.argv[2]))
     except Exception:
         (Path(sys.argv[2]) / "error.json").write_text(json.dumps({"error": "PDF could not be read within the page, text, or resource limits. Check encryption or file damage."}), encoding="utf-8")
-        raise SystemExit(1)
+        raise SystemExit(1) from None

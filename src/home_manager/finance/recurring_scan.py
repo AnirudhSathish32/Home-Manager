@@ -35,8 +35,8 @@ INSTRUCTIONS = ("Each entry is a payee from the user's bank and card statements,
 
 class PayeeAnswer(StrictModel):
     payee_id: int
-    recurrence: Literal[*FREQUENCIES] | None
-    category: Literal[*RECEIPT_CATEGORIES] | None
+    recurrence: Literal[*FREQUENCIES] | None  # type: ignore[valid-type]
+    category: Literal[*RECEIPT_CATEGORIES] | None  # type: ignore[valid-type]
 
 
 class PayeeAnswers(StrictModel):

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import hashlib
+import logging
 import os
 from pathlib import Path
 import stat
@@ -9,8 +10,11 @@ import time
 import uuid
 
 from ..core.formats import SUPPORTED, extension
+from ..core.logs import log_failure
 from ..core.paths import PathError, is_link, safe_path, signature, source_reader
 from .storage import Store
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,8 +37,9 @@ class Scanner:
             self._run(job, self.store.library.inbox)
         except (PathError, RuntimeError) as exc:
             self.store.job_state(job, "failed", str(exc))
-        except Exception:
-            # Do not log document contents or platform error paths to console.
+        except Exception as exc:
+            # Do not log document contents or platform error paths to console (log_failure keeps only the class and code frames).
+            log_failure(log, "inbox scan", exc, job=job)
             self.store.job_state(job, "failed", "Scan stopped unexpectedly. Completed captures are retained; check access/storage and rescan.")
 
     def _run(self, job: str, inbox: Path):

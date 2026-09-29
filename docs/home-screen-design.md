@@ -125,4 +125,4 @@ Every chart has a heading, a short textual summary and a **View data table** con
 
 Accept the first version when every displayed total reconciles to its corresponding server result; chart drill-downs reproduce the same scope; unmatched receipts and transfers are not double-counted; currencies never mix; missing months remain distinguishable from zero; and rapid filter changes cannot display values from an earlier selection. Verify keyboard use and layouts at 390, 768 and 1440 pixels.
 
-Deferred: budgets, spending forecasts, net worth, live balances, automatic exchange-rate conversion and customization of dashboard panels.
+Deferred at the time: budgets, spending forecasts, net worth, live balances, automatic exchange-rate conversion and customization of dashboard panels. Since built: budgets ([money-review-inventory.md](money-review-inventory.md)), forecasts and net worth ([forecast.md](forecast.md), [investments.md](investments.md)). Still deferred: live balances, exchange-rate conversion, customizable panels, a month-end projection and a daily or weekly view.

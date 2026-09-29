@@ -7,18 +7,22 @@ Every outcome is a proposal for the user to review; nothing is approved here.
 """
 
 import json
+import logging
 from typing import Literal
 import uuid
 
 from pydantic import Field, ValidationError, model_validator
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 from ..models.web_lookup import LookupFailed, WebLookup
 from .items import ItemLedger, ResolutionFields, valid_gtin
 from .resolver_tools import CATEGORY_LIST, TOOLS, ItemTools, call_item_tool
+
+log = logging.getLogger(__name__)
 
 RESOLVER_VERSION = "item-resolver-v1"
 MAX_CALLS_PER_LINE = 8
@@ -122,6 +126,7 @@ class ItemResolver:
         except (ValueError, OSError) as exc:
             self.state(run_id, "failed", {"lines": lines}, error=str(exc))
         except Exception as exc:
+            log_failure(log, "item identification", exc, run=run_id)
             self.state(run_id, "failed", {"lines": lines}, error=f"Unexpected {type(exc).__name__}.")
 
     def resolve(self, line, config, work, run_id):

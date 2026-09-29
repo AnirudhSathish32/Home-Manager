@@ -6,27 +6,33 @@ for model generation; organization is serialized by the managed library itself.
 """
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
+import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import threading
 import uuid
 
 from ..core.formats import SUPPORTED, extension
 from ..core.jobs import QUEUES, Cancelled, Work
+from ..core.logs import log_failure
+from ..core.money import money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
 from ..documents.extraction import ExtractionService
 from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
 from ..documents.reviewer import ReviewerConfig, review
-from ..finance.assistant import AssistantService
-from ..finance.checkin import CheckinService
-from ..finance.ledger import HouseholdConfig
 from ..finance import paystub
+from ..finance.assistant import AssistantService
 from ..finance.charts import tax_buckets_svg
+from ..finance.checkin import CheckinService
 from ..finance.item_categories import ItemCategorizer
+from ..finance.ledger import HouseholdConfig
 from ..finance.reconcile import Reconciler
 from ..finance.recurring_scan import RecurringScan
 from ..finance.tools import FinanceTools
@@ -35,19 +41,30 @@ from ..household.tax_tables import TaxTableService
 from ..household.warranty import WarrantyService
 from ..library.backup import BackupService, restore_backup
 from ..library.organization import OrganizationService
-from ..library.scanner import Scanner, ScanLimits
+from ..library.scanner import ScanLimits, Scanner
 from ..library.share import export_share, open_share
-from ..library.storage import Store, now
+from ..library.storage import MigrationError, Store, now
+from ..models import residency
 from ..models.laya_runtime import LayaRuntime
-from ..models.model_client import check_connection
-from ..models.vision import VisionConfig
+from ..models.model_client import check_connection, is_remote, set_token
+from ..models.vision import ROLE_ALIASES, ModelComputer, VisionConfig
+from .family_sync import FAMILY_MARKER, FamilyFolder, changed_since, publish, read_deliveries, read_invite, sync_folder, write_delivery, write_invite
+from .profiles import Profiles, public
 
 # Settings attribute -> (file name, model). Invalid saved settings fall back to
 # defaults, which disable that model; no unvalidated endpoint is ever used.
 # Capture-queue work that the user may cancel; scans themselves are not interruptible.
 CANCELLABLE_CAPTURE = ("backup", "restore")
 MODEL_SETTINGS = {"vision": ("vision.json", VisionConfig), "reasoning_config": ("reasoning.json", ReasoningConfig),
-                  "reviewer_config": ("reviewer.json", ReviewerConfig), "household": ("household.json", HouseholdConfig)}
+                  "reviewer_config": ("reviewer.json", ReviewerConfig)}
+# This PC's server or a family GPU computer. The token has its own file and is never returned by the API.
+MODEL_COMPUTER, GPU_TOKEN = "model_computer.json", "gpu_token.txt"
+log = logging.getLogger(__name__)
+# Before profiles, financial preferences were one file for the computer; the first profile inherits it.
+LEGACY_HOUSEHOLD = "household.json"
+FAMILY_READ_ONLY = "The family view is read-only. Switch to a member's profile to change records."
+PUBLISH_EVERY_SECONDS = 600  # A member's changed library is published to the family at most this often.
+FAMILY_TICKS = 20  # Inbox-monitor ticks (3 s each) between family checks.
 
 
 def default_control_dir() -> Path:
@@ -84,22 +101,33 @@ class Manager:
         self.sessions = safe_path(self.control / "sessions")
         if self.sessions.exists():
             shutil.rmtree(self.sessions)  # Temporary copies left by a session the app did not end.
-        for attribute, (name, model) in MODEL_SETTINGS.items():
-            path = safe_path(self.control / name)
-            try:
-                setattr(self, attribute, model.model_validate_json(path.read_bytes()) if path.exists() else model())
-            except (ValueError, OSError):
-                setattr(self, attribute, model())
+        # Model settings as saved; self.vision, self.reasoning_config and self.reviewer_config are what runs
+        # (the same, or pointed at the family GPU computer by apply_model_computer).
+        self.model_settings = {attribute: self.load_setting(name, model) for attribute, (name, model) in MODEL_SETTINGS.items()}
+        self.model_computer = self.load_setting(MODEL_COMPUTER, ModelComputer)
+        self.apply_model_computer()
+        # Profiles: each person's own library, or a family view over its members (app/profiles.py).
+        self.profiles = Profiles(self.control)
+        self.profile = None  # The active profile record.
+        self.family = None  # The open FamilyFolder while a family profile is active.
+        self.family_ticks = 0
+        self.household = HouseholdConfig()
         self.startup_error = None
         self.limits = limits or ScanLimits()
         self.stop_monitor = threading.Event()
         self.inbox_seen = self.inbox_candidate = None
-        if self.settings_file.exists():
-            try:
-                config = json.loads(self.settings_file.read_text(encoding="utf-8"))
-                self.configure(config["managed_directory"], persist=False)  # Older files also name a source folder; it is ignored.
-            except (ValueError, KeyError, OSError):
-                self.startup_error = "Saved directories could not be opened. Check their availability or select valid directories."
+        try:
+            active = self.profiles.active() or self.migrate_settings()
+            if active:
+                self.activate(active, persist=False)
+        except MigrationError as exc:
+            self.startup_error = str(exc)  # Written for the user: which step stopped, and where the pre-upgrade copy is.
+        except sqlite3.Error as exc:
+            log_failure(log, "open library", exc)
+            self.startup_error = "The library database could not be opened. Keep the library folder unchanged; details are in the Home Manager log."
+        except (ValueError, KeyError, OSError) as exc:
+            log_failure(log, "open saved directories", exc)
+            self.startup_error = "Saved directories could not be opened. Check their availability or select valid directories."
         self.monitor = threading.Thread(target=self.watch_inbox, name="inbox-monitor", daemon=True)
         self.monitor.start()
 
@@ -111,11 +139,17 @@ class Manager:
 
         def run():
             work.status, work.started_at = "running", now()
+            log.info("work started kind=%s queue=%s work=%s", kind, queue, work.id)
             try:
                 fn(*args, work)
                 work.status = "cancelled" if work.cancelled else "finished"
-            except BaseException:
+                log.info("work %s kind=%s work=%s", work.status, kind, work.id)
+            except BaseException as exc:
                 work.status = "failed"
+                if isinstance(exc, Cancelled):
+                    log.info("work cancelled kind=%s work=%s", kind, work.id)
+                else:
+                    log_failure(log, "work", exc, kind=kind, work=work.id)
                 raise
             finally:
                 work.progress = None
@@ -147,6 +181,8 @@ class Manager:
     def require(self, queue=None, message=""):
         """Called under self.mutex before starting work or changing shared state."""
         if self.store is None:
+            if self.family:
+                raise RuntimeError(FAMILY_READ_ONLY)
             raise PathError("Choose a library folder first.")
         if queue is not False and self.busy(queue):
             raise RuntimeError(message)
@@ -157,6 +193,13 @@ class Manager:
     def watch_inbox(self):
         while not self.stop_monitor.wait(3):
             self.check_inbox()
+            self.family_ticks += 1
+            if self.family_ticks >= FAMILY_TICKS:
+                self.family_ticks = 0
+                try:
+                    self.check_family()
+                except (ValueError, OSError, RuntimeError):
+                    pass  # Reported on the member's status line; the next check tries again.
 
     def check_inbox(self):
         with self.mutex:
@@ -186,28 +229,457 @@ class Manager:
     def settings(self):
         activity = self.activity() if self.store else []
         progress = next((item["progress"] for item in activity if item["queue"] == "inference" and item["progress"]), None)
-        return {"managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
+        return {"profile": public(self.profile) if self.profile else None, "profiles": [public(item) for item in self.profiles.all()],
+                "family": self.family.summary() if self.family else None,
+                "managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
                 "session": {key: value for key, value in self.session.items() if key != "home"} if self.session else None,
                 "session_opening": self.session_opening,
                 "inbox_directory": str(self.store.library.inbox) if self.store else "",
                 "configured": self.store is not None, "busy": self.busy(),
                 "capture_busy": self.busy("capture"), "inference_busy": self.busy("inference"),
                 "activity": activity, "startup_error": self.startup_error, "model_progress": progress,
-                "vision": self.vision.model_dump(),
-                "reasoning": self.reasoning_config.model_dump(),
-                "reviewer": self.reviewer_config.model_dump(),
+                "vision": self.model_settings["vision"].model_dump(),
+                "reasoning": self.model_settings["reasoning_config"].model_dump(),
+                "reviewer": self.model_settings["reviewer_config"].model_dump(),
+                "model_computer": self.model_computer_state(),
                 "household": self.household.model_dump(), "laya": self.laya.status(),
                 "receipt_batch": self.batches.latest() if self.batches else None,
                 "max_file_mib": self.limits.max_file_bytes // (1024 * 1024),
                 "max_store_gib": self.limits.max_store_bytes // (1024 ** 3)}
 
     def configure(self, managed_value, persist=True):
+        """Choose the active individual profile's library folder. A folder another profile uses switches to that profile;
+        with no individual profile active, a new one is made for the folder."""
         with self.mutex:
             if self.session:
                 raise RuntimeError("End the shared-library session before changing the library folder.")
             if self.busy():
                 raise RuntimeError("Wait for active scans and model work before changing the library folder.")
-            return self.open_library(validate_managed(managed_value, self.control), persist)
+            managed = validate_managed(managed_value, self.control)
+            self.open_library(managed, persist)
+            if not persist:
+                return self.settings()
+            profile = self.profiles.by_folder(managed)
+            if profile is None and self.profile and self.profile["kind"] == "individual" and not self.family:
+                profile = self.profiles.update(self.profile["id"], folder=str(managed))
+            elif profile is None:
+                profile = self.profiles.add("My profile", "individual", managed)
+            self.leave_family()
+            self.use_profile(profile, persist=True)
+            return self.settings()
+
+    # Profiles -----------------------------------------------------------------
+
+    def migrate_settings(self):
+        """First start with profiles: the library in settings.json becomes the first profile, with the computer's preferences."""
+        if not self.settings_file.exists():
+            return None
+        config = json.loads(self.settings_file.read_text(encoding="utf-8"))  # Older files also name a source folder; it is ignored.
+        managed = validate_managed(config["managed_directory"], self.control)
+        profile = self.profiles.by_folder(managed) or self.profiles.add("My profile", "individual", managed)
+        legacy = safe_path(self.control / LEGACY_HOUSEHOLD)
+        if legacy.exists():
+            try:
+                self.profiles.save_household(profile["id"], HouseholdConfig.model_validate_json(legacy.read_bytes()))
+            except (ValueError, OSError):
+                pass
+        self.profiles.set_active(profile["id"])
+        return profile
+
+    def use_profile(self, profile, persist):
+        self.profile = profile
+        self.household = self.profiles.household(profile["id"])
+        if persist:
+            self.profiles.set_active(profile["id"])
+
+    def activate(self, profile, persist):
+        """Open a profile: its library, or its family folder. Called under self.mutex with no work running."""
+        log.info("activating profile kind=%s", profile["kind"])
+        with self.mutex:
+            if profile["kind"] == "family":
+                # The family's own library is its inbox: documents uploaded to the family, each then routed to a person or
+                # shared (finance/family_routing.py). Family totals still come only from members' copies.
+                family = FamilyFolder(Path(profile["folder"]))
+                try:
+                    self.open_library(validate_managed(str(family.root / "library"), self.control), persist=False)
+                except BaseException:
+                    family.close()
+                    raise
+                self.leave_family()
+                self.family = family
+            else:
+                self.open_library(validate_managed(profile["folder"], self.control), persist)
+                self.leave_family()
+            self.use_profile(profile, persist)
+            if self.family:
+                self.start_family_refresh()
+            return self.settings()
+
+    def switch_profile(self, profile_id):
+        with self.mutex:
+            if self.session:
+                raise RuntimeError("End the shared-library session before switching profiles.")
+            if self.busy():
+                raise RuntimeError("Wait for active scans and model work before switching profiles.")
+            return self.activate(self.profiles.get(profile_id), persist=True)
+
+    def create_profile(self, name, folder_value):
+        """A new individual profile with its own library folder. The library is created when the profile is first opened."""
+        with self.mutex:
+            folder = validate_managed(folder_value, self.control)
+            if (folder / FAMILY_MARKER).is_file():  # A family folder removed from this computer's list comes back as the family.
+                family = FamilyFolder(folder)
+                try:
+                    return public(self.profiles.add(family.data["name"], "family", folder))
+                finally:
+                    family.close()
+            if folder.exists() and any(folder.iterdir()) and not (folder / ".home-manager-store").exists():
+                raise PathError("Choose an empty folder or an existing Home Manager library for the new profile.")
+            return public(self.profiles.add(name, "individual", folder))
+
+    def rename_profile(self, profile_id, name):
+        with self.mutex:
+            from .profiles import clean_name
+            profile = self.profiles.update(profile_id, name=clean_name(name))
+            if self.profile and self.profile["id"] == profile_id:
+                self.profile = profile
+            return public(profile)
+
+    def remove_profile(self, profile_id):
+        """Forget a profile on this computer. Its folder, library and records stay on disk."""
+        with self.mutex:
+            return public(self.profiles.remove(profile_id))
+
+    def close_library(self):
+        """Close the open library, leaving no store (a family profile holds none). Called under self.mutex with no work running."""
+        with self.mutex:
+            if self.store:
+                self.store.close()
+            self.store = self.receipts = self.batches = self.reasoning = self.organization = None
+            self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
+            self.tax_tables = None
+            self.inbox_seen = self.inbox_candidate = None
+
+    def leave_family(self):
+        with self.mutex:
+            if self.family:
+                self.family.close()
+                self.family = None
+
+    # Families -----------------------------------------------------------------
+
+    def family_for(self, profile_id):
+        """The family folder of a family profile: the open one, or opened for this call (the caller closes it)."""
+        profile = self.profiles.get(profile_id)
+        if profile["kind"] != "family":
+            raise ValueError("That profile is not a family.")
+        if self.family and self.profile and self.profile["id"] == profile_id:
+            return self.family, False
+        return FamilyFolder(Path(profile["folder"])), True
+
+    def create_family(self, name, folder_value, sync_value, members=(), my_profile=None):
+        """A family profile with its members. Nothing switches; open the family from the profile menu."""
+        with self.mutex:
+            folder = validate_managed(folder_value, self.control)
+            if self.profiles.by_folder(folder):
+                raise PathError("Another profile already uses that folder.")
+            sync = sync_folder(sync_value)
+            family = FamilyFolder.create(folder, name, sync)
+            try:
+                for member in members:
+                    family.add_member(member, "remote")
+                profile = self.profiles.add(family.data["name"], "family", folder)
+                if my_profile:
+                    self.link_local(family, family.add_member(self.profiles.get(my_profile)["name"], "local", my_profile)["member_id"], my_profile)
+            finally:
+                family.close()
+            return public(profile)
+
+    def add_family_member(self, family_id, name):
+        with self.mutex:
+            family, temporary = self.family_for(family_id)
+            try:
+                return family.add_member(name, "remote")
+            finally:
+                if temporary:
+                    family.close()
+
+    def remove_family_member(self, family_id, member_id):
+        with self.mutex:
+            if self.busy("capture"):
+                raise RuntimeError("Wait for the family to finish updating.")
+            family, temporary = self.family_for(family_id)
+            try:
+                member = family.remove_member(member_id)
+                if member.get("profile_id"):
+                    try:
+                        self.profiles.update(member["profile_id"], family=None)
+                    except ValueError:
+                        pass
+                return family.summary()
+            finally:
+                if temporary:
+                    family.close()
+
+    def link_local(self, family, member_id, profile_id):
+        """A member whose profile is on this computer: the family copies their library directly, nothing is published."""
+        profile = self.profiles.get(profile_id)
+        if profile["kind"] != "individual":
+            raise ValueError("Only a person's own profile can be a family member.")
+        if profile.get("family") and profile["family"]["family_id"] != family.data["family_id"]:
+            raise ValueError(f"{profile['name']} already belongs to another family.")
+        member = family.member(member_id)
+        member.update(source="local", profile_id=profile_id, signature=None)
+        family.save()
+        # The key and sync folder let this profile import what the family sends it when the family can't open its library.
+        self.profiles.update(profile_id, family={"family_id": family.data["family_id"], "family_name": family.data["name"],
+                                                 "member_id": member_id, "local": True, "key": family.data["key"], "sync": family.data["sync"]})
+        if self.profile and self.profile["id"] == profile_id:
+            self.profile = self.profiles.get(profile_id)
+
+    def set_up_local_member(self, family_id, member_id, profile_id=None, folder_value=None, name=None):
+        """Put a member on this computer: link an existing profile, or create one with its own library folder."""
+        with self.mutex:
+            family, temporary = self.family_for(family_id)
+            try:
+                if not profile_id:
+                    if not folder_value:
+                        raise ValueError("Choose the member's existing profile or a folder for a new one.")
+                    profile_id = self.create_profile(name or family.member(member_id)["name"], folder_value)["id"]
+                if any(item.get("profile_id") == profile_id and item["member_id"] != member_id for item in family.data["members"]):
+                    raise ValueError("That profile is already a member of this family.")
+                self.link_local(family, member_id, profile_id)
+                return family.summary()
+            finally:
+                if temporary:
+                    family.close()
+
+    def invite_member(self, family_id, member_id, destination_value, passphrase):
+        """An encrypted invite for a member's own computer. It carries the family key; the passphrase travels separately."""
+        with self.mutex:
+            destination = separate_folder(destination_value, self.control, (self.store.root,) if self.store else ())
+            family, temporary = self.family_for(family_id)
+            try:
+                member = family.member(member_id)
+                path = write_invite(family.data, member, destination, passphrase)
+                if member["source"] != "remote":
+                    member.update(source="remote", profile_id=None, signature=None)
+                    family.save()
+                return {"path": str(path)}
+            finally:
+                if temporary:
+                    family.close()
+
+    def join_family(self, invite_value, passphrase, sync_value=None):
+        """Link the active individual profile to a family from its invite, then publish a first copy."""
+        with self.mutex:
+            if self.session:
+                raise RuntimeError("End the shared-library session before joining a family.")
+            if not self.store or not self.profile or self.profile["kind"] != "individual":
+                raise ValueError("Open your own profile before joining a family.")
+            from ..core.paths import local_absolute
+            invite = read_invite(local_absolute(invite_value), passphrase)
+            sync = sync_folder(sync_value or invite.get("sync_hint"))
+            link = {"family_id": invite["family_id"], "family_name": str(invite.get("family_name") or "Family")[:60], "member_id": invite["member_id"],
+                    "key": invite["key"], "sync": str(sync), "publishing": True, "published_at": None, "publish_error": None, "local": False}
+            self.profile = self.profiles.update(self.profile["id"], family=link)
+            self.start_family_publish()
+            return public(self.profile)
+
+    def leave_joined_family(self):
+        with self.mutex:
+            if not self.profile or not self.profile.get("family"):
+                raise ValueError("This profile is not in a family.")
+            self.profile = self.profiles.update(self.profile["id"], family=None)
+            return public(self.profile)
+
+    def set_publishing(self, enabled):
+        with self.mutex:
+            link = (self.profile or {}).get("family")
+            if not link or link.get("local"):
+                raise ValueError("This profile does not publish to a family.")
+            self.profile = self.profiles.update(self.profile["id"], family={**link, "publishing": bool(enabled)})
+            return public(self.profile)
+
+    def start_family_publish(self):
+        with self.mutex:
+            link = (self.profile or {}).get("family")
+            if self.session or not self.store or not link or link.get("local"):
+                raise ValueError("This profile does not publish to a family.")
+            profile_id, store, name = self.profile["id"], self.store, self.profile["name"]
+
+            def run(work):
+                try:
+                    published = publish(store, link, name)
+                    update = {"published_at": published, "publish_error": None}
+                except (ValueError, OSError) as exc:
+                    update = {"publish_error": str(exc) if isinstance(exc, ValueError) else "The sync folder could not be written."}
+                with self.mutex:
+                    current = self.profiles.get(profile_id)
+                    if current.get("family"):
+                        profile = self.profiles.update(profile_id, family={**current["family"], **update})
+                        if self.profile and self.profile["id"] == profile_id:
+                            self.profile = profile
+
+            self.future = self.submit("capture", "family_publish", "Sharing your totals with your family", run)
+            return {"started": True}
+
+    def start_family_refresh(self):
+        with self.mutex:
+            if not self.family:
+                raise ValueError("Open a family profile first.")
+            family = self.family
+            folders = {item["id"]: item["folder"] for item in self.profiles.all() if item["kind"] == "individual"}
+            self.future = self.submit("capture", "family_refresh", "Updating the family view", lambda work: family.refresh(folders, work))
+            return {"started": True}
+
+    def check_family(self):
+        """Every minute: a family view picks up new member copies; a member imports what the family sent them, and publishes a
+        changed library at most every ten minutes."""
+        with self.mutex:
+            if self.session or self.busy("capture"):
+                return
+            if self.family:
+                self.start_family_refresh()
+                return
+            link = (self.profile or {}).get("family")
+            if self.store and link and link.get("key") and link.get("sync") and read_deliveries(link):
+                self.start_family_import()
+                return
+            if not self.store or not link or link.get("local") or not link.get("publishing", True):
+                return
+            last = link.get("published_at")
+            if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() < PUBLISH_EVERY_SECONDS:
+                return
+            if changed_since(self.store, last):
+                self.start_family_publish()
+
+    # Family inbox: routing and delivery (finance/family_routing.py) ------------------------------
+
+    def family_people(self):
+        return [{"member_id": member["member_id"], "name": member["name"]} for member in self.family.data["members"]]
+
+    def family_routing(self, include_delivered=False):
+        """Records in the family's own library with who each is for: suggestions for new ones, the rest as confirmed."""
+        from ..finance.family_routing import FamilyRouting, member_facts
+        with self.mutex:
+            if not self.family or not self.store:
+                raise ValueError("Open a family profile first.")
+            store = self.store
+            with self.family.mutex:
+                facts = member_facts(self.family_members())
+            routing = FamilyRouting(store)
+            routing.refresh(facts)
+            return {"people": self.family_people(), "records": routing.list(include_delivered)}
+
+    def assign_family_record(self, record_type, record_id, mode, members):
+        """Confirm who a record is for, then deliver it to each person."""
+        from ..finance.family_routing import FamilyRouting
+        with self.mutex:
+            if not self.family or not self.store:
+                raise ValueError("Open a family profile first.")
+            routing = FamilyRouting(self.store)
+            assignment = routing.assign(record_type, record_id, mode, members, [person["member_id"] for person in self.family_people()])
+            _, plan = routing.deliveries(record_type, record_id)
+            currency = routing.payload(record_type, record_id)[0]["currency"]
+            names = {person["member_id"]: person["name"] for person in self.family_people()}
+            shares = [{"member_id": member, "name": names[member], "share": money(share, currency) if share is not None else None}
+                      for member, action, share in plan if action == "record"]
+            self.start_family_delivery()
+            return {**assignment, "shares": shares}
+
+    def start_family_delivery(self):
+        """Deliver every confirmed assignment: straight into the library of a person on this computer, otherwise as an
+        encrypted file in their folder in the sync folder. Then refresh the family view."""
+        with self.mutex:
+            family, store = self.family, self.store
+            folders = {item["id"]: item["folder"] for item in self.profiles.all() if item["kind"] == "individual"}
+            self.future = self.submit("capture", "family_delivery", "Sending records to the family", lambda work: self.deliver(family, store, folders, work))
+            return {"started": True}
+
+    def deliver(self, family, store, folders, work):
+        from ..finance.family_routing import FamilyRouting, apply_delivery
+        from ..finance.reconcile import Reconciler
+        routing, names = FamilyRouting(store), {member["member_id"]: member for member in family.data["members"]}
+        for record_type, record_id in routing.pending():
+            work.check()
+            assignment, plan = routing.deliveries(record_type, record_id)
+            record, document_name, document = routing.payload(record_type, record_id)
+            people = [names[member]["name"] for member, action, _ in plan if action == "record" and member in names]
+            results = {}
+            for member_id, action, share in plan:
+                member = names.get(member_id)
+                if member is None:
+                    continue
+                delivery = {"key": assignment["family_record_key"], "action": action, "record_type": record_type, "name": document_name,
+                            "blob_hash": hashlib.sha256(document).hexdigest(), "share": share, "people": people,
+                            "record": record if action == "record" else None}
+                applied = False
+                folder = folders.get(member.get("profile_id")) if member["source"] == "local" else None
+                if folder:
+                    try:  # A person on this computer: their library is closed while the family is open, so apply it now.
+                        target = Store(Path(folder))
+                        try:
+                            apply_delivery(target, delivery, document if action == "record" else None)
+                            Reconciler(target).run("import")  # Records arriving from outside, like an import.
+                        finally:
+                            target.close()
+                        applied = True
+                    except (ValueError, OSError):
+                        applied = False  # Locked or unavailable: it waits in the sync folder for their profile instead.
+                if not applied:
+                    write_delivery(family.data["family_id"], family.data["key"], family.data["sync"], member_id, delivery,
+                                   document if action == "record" else None)
+                results[member_id] = "delivered" if action == "record" else "retracted"
+            routing.mark_delivered(record_type, record_id, results)
+        folders_now = {item["id"]: item["folder"] for item in self.profiles.all() if item["kind"] == "individual"}
+        family.refresh(folders_now, work)
+
+    def start_family_import(self):
+        """Import what the family sent this profile: records it routed here or shared with this person."""
+        from ..finance.family_routing import apply_delivery
+        from ..finance.reconcile import Reconciler
+        with self.mutex:
+            link, store = self.profile["family"], self.store
+
+            def run(work):
+                imported = 0
+                for path, delivery, document in read_deliveries(link):
+                    work.check()
+                    try:
+                        apply_delivery(store, delivery, document)
+                        imported += 1
+                    except (ValueError, OSError):
+                        continue  # Left in place; the next check tries again.
+                    path.unlink(missing_ok=True)
+                if imported:
+                    Reconciler(store).run("import")
+
+            self.future = self.submit("capture", "family_import", "Adding records from your family", run)
+            return {"started": True}
+
+    def family_members(self):
+        """(member, read-only store) for each member with data, in family order. Call with self.family.mutex held."""
+        from ..finance.family import MemberStore
+        return [(member, MemberStore(path)) for member, path in self.family.views()]
+
+    def family_dashboard(self, month, months, currency):
+        from ..finance.family import family_dashboard
+        family = self.family
+        waiting = len(self.family_routing()["records"]) if self.store else 0  # Uploads to the family not yet sent to anyone.
+        with family.mutex:
+            members = self.family_members()
+            if not members:
+                return {"family_empty": True, "family": family.summary(), "routing_waiting": waiting}
+            return {**family_dashboard(members, month, months, currency, self.household.home_currency), "family": family.summary(),
+                    "routing_waiting": waiting}
+
+    def family_net_worth(self, currency=None):
+        from ..finance.family import family_net_worth
+        family = self.family
+        with family.mutex:
+            members = self.family_members()
+            return family_net_worth(members, currency or self.household.home_currency) if members else None
 
     def open_library(self, managed, persist):
         """Switch to an already validated library folder. Called under self.mutex with no work running."""
@@ -232,6 +704,7 @@ class Manager:
                     store.close()
                 raise
             self.store, self.startup_error = store, None
+            log.info("library opened")
             self.inbox_seen = self.inbox_candidate = None
             self.receipts, self.reasoning, self.batches = receipts, reasoning, batches
             self.extractions, self.ledger = extractions, extractions.ledger
@@ -247,13 +720,69 @@ class Manager:
                 previous.close()
             return self.settings()
 
+    def load_setting(self, name, model):
+        # Invalid saved settings fall back to defaults; no unvalidated endpoint is ever used.
+        path = safe_path(self.control / name)
+        try:
+            return model.model_validate_json(path.read_bytes()) if path.exists() else model()
+        except (ValueError, OSError):
+            return model()
+
+    def gpu_token(self):
+        path = safe_path(self.control / GPU_TOKEN)
+        try:
+            return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        except OSError:
+            return ""
+
+    def apply_model_computer(self):
+        """Point every model task at this PC's server, or at the family GPU computer under role names
+        (the GPU computer's owner chooses the actual models)."""
+        computer = self.model_computer
+        family = computer.provider == "family_gpu"
+        residency.configure(computer.manage_model_loading)
+        if computer.gpu_host_url:
+            set_token(computer.gpu_host_url, self.gpu_token() if family else None)
+        for attribute, saved in self.model_settings.items():
+            if family and getattr(saved, "provider", "chat") == "chat":
+                saved = saved.model_copy(update={"base_url": computer.gpu_host_url, "model": ROLE_ALIASES[attribute]})
+            setattr(self, attribute, saved)
+
     def configure_model(self, attribute, config):
+        if is_remote(config):
+            raise ValueError("Enter this computer's model server here (http://127.0.0.1:PORT/v1). "
+                             "To use a family member's GPU, choose it under Model computer.")
         with self.mutex:
             if self.busy("inference"):
                 raise RuntimeError("Wait for model work to finish, or cancel it, before changing model settings.")
             write_atomic(safe_path(self.control / MODEL_SETTINGS[attribute][0]), config.model_dump_json())
-            setattr(self, attribute, config)
+            self.model_settings[attribute] = config
+            self.apply_model_computer()
             return config.model_dump()
+
+    def configure_model_computer(self, computer, token=None):
+        """Save where model calls run. A new token replaces the saved one; None keeps it."""
+        with self.mutex:
+            if self.busy("inference"):
+                raise RuntimeError("Wait for model work to finish, or cancel it, before changing model settings.")
+            if token:
+                write_atomic(safe_path(self.control / GPU_TOKEN), token)
+            if computer.provider == "family_gpu" and not self.gpu_token():
+                raise ValueError("Paste the token the GPU computer's owner gave you.")
+            if self.model_computer.gpu_host_url and self.model_computer.gpu_host_url != computer.gpu_host_url:
+                set_token(self.model_computer.gpu_host_url, None)
+            write_atomic(safe_path(self.control / MODEL_COMPUTER), computer.model_dump_json())
+            self.model_computer = computer
+            self.apply_model_computer()
+            return self.model_computer_state()
+
+    def model_computer_state(self):
+        return {**self.model_computer.model_dump(), "token_set": bool(self.gpu_token()),
+                "loading_hint": residency.hint() if self.model_computer.provider == "local" else None}
+
+    def test_model_computer(self):
+        """Read-only check that the family GPU computer answers and serves this app's roles."""
+        return {"vision": check_connection(self.vision), "reasoning": check_connection(self.reasoning_config)}
 
     def configure_vision(self, config):
         return self.configure_model("vision", config)
@@ -265,8 +794,10 @@ class Manager:
         return self.configure_model("reviewer_config", config)
 
     def configure_household(self, config):
-        with self.mutex:  # Not a model setting: never waits for model work.
-            write_atomic(safe_path(self.control / MODEL_SETTINGS["household"][0]), config.model_dump_json())
+        with self.mutex:  # Not a model setting: never waits for model work. Each profile keeps its own.
+            if not self.profile:
+                raise PathError("Choose a library folder first.")
+            self.profiles.save_household(self.profile["id"], config)
             self.household = config
             return config.model_dump()
 
@@ -343,7 +874,8 @@ class Manager:
             self.store.organization_state(job, state, "Processing finished. Cited classification and extraction determine filing; unresolved documents remain available for review.", batch)
         except Cancelled:
             self.store.organization_state(job, "cancelled", "Model processing was cancelled. Captures and completed results are safe; use Extract text from all images to resume.")
-        except Exception:
+        except Exception as exc:
+            log_failure(log, "inbox processing", exc, job=job)
             self.store.organization_state(job, "failed", "Automatic text extraction failed. Captures are safe; use Extract text from all images to retry.")
 
     # Library and model operations ----------------------------------------------
@@ -524,8 +1056,8 @@ class Manager:
                 status, error = "succeeded", None
             except Cancelled as exc:
                 status, error = "cancelled", str(exc)
-            except Exception:
-                pass
+            except Exception as exc:  # Recorded as a failed review; the analysis stays unreviewed.
+                log_failure(log, "independent review", exc, run=run_id)
             with self.store.connection() as db:
                 db.execute("UPDATE analysis_reviews SET status=?,result_json=?,error=? WHERE reasoning_run_id=?", (status, result, error, run_id))
         self.file_saved_analysis(document_id, run_id, work)
@@ -711,6 +1243,7 @@ class Manager:
             self.executors[queue].shutdown(wait=True, cancel_futures=False)
         if self.store:
             self.store.close()
+        self.leave_family()
         if self.session:
             shutil.rmtree(self.sessions / self.session["id"], ignore_errors=True)
         self.lock.close()

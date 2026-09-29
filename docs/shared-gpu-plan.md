@@ -1,6 +1,23 @@
 # Plan: Family members use my GPU, and LM Studio ejects the old model before loading a new one
 
-Status: planned 2026-09-28, not built. Companion plan: `docs/profiles-and-family-plan.md`.
+Status: built 2026-09-28 (Parts A–C). Companion plan: `docs/profiles-and-family-plan.md`.
+
+## As built
+- **Residency** (`models/residency.py`) parses `GET /api/v1/models` as `{"models": [{"key", "type", "loaded_instances": [{"id"}]}]}`,
+  tolerating `id`/`instance_id` variants. Unload is `POST /api/v1/models/unload {instance_id}`, load is `POST /api/v1/models/load {model}`.
+  **Not yet confirmed against the installed LM Studio**; LM Studio was not running when this was built. There is no `/api/v0` fallback,
+  because v0 cannot unload. A 404 means JIT loading plus a Settings hint about "JIT models auto-evict".
+- **Setting** "Keep one model loaded at a time" lives on the new *Model computer* setting (`model_computer.json`), not on each
+  model config. Model configs are copied into run options, so adding fields there would change every saved run's options.
+- **Client:** `ModelComputer` (`provider`, `gpu_host_url`, `manage_model_loading`) is in `models/vision.py`. The token is in
+  `gpu_token.txt` in the control dir and is registered with `model_client.set_token`; it is never part of a config, run option or API response.
+  In family-GPU mode the manager points vision/reasoning/reviewer(chat) at the host under role aliases. This PC's own settings stay saved.
+  The vision/reasoning settings forms still accept loopback only. `VisionConfig` also accepts a tailnet URL, so saved run options can be re-read.
+- **Relay** (`models/gpu_host.py`) is stdlib `ThreadingHTTPServer`, with two listeners on one port: the Tailscale IP (token required) and
+  127.0.0.1 (no token, any model). Roles are read from the host's own `vision.json`/`reasoning.json`/`reviewer.json` on each request.
+  The relay answers `GET /api/v1/models` with a `managed_by` marker, so an app pointed at it skips its own residency calls.
+  Loopback-only `GET /status` shows who is running and queued.
+- **Commands:** `home-manager gpu-host [serve --bind 100.x.y.z]`, `gpu-host add-member NAME`, `gpu-host remove-member NAME`, `gpu-host members`.
 
 Decisions already made:
 - Each family member runs the app on their own PC.

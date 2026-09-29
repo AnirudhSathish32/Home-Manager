@@ -5,6 +5,7 @@
 const ICONS = {
   home: ["m3 10 9-7 9 7", "M5 9v12h14V9", "M9 21v-8h6v8"],
   trend: ["m3 17 6-6 4 4 8-8", "M15 7h6v6"],
+  "chart-line": ["M3 3v16a2 2 0 0 0 2 2h16", "m19 9-5 5-4-4-3 3"],
   check: ["M20 6 9 17l-5-5"],
   "check-circle": ["circle", "m9 12 2 2 4-4"],
   alert: ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],
@@ -35,6 +36,7 @@ const ICONS = {
   calendar: ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
   bank: ["M3 22h18", "M6 18v-7", "M10 18v-7", "M14 18v-7", "M18 18v-7", "m12 2 8 5H4z"],
   package: ["M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z", "M12 22V12", "m3.3 7 8.7 5 8.7-5"],
+  users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0", "M22 21v-2a4 4 0 0 0-3-3.87", "M16 3.13a4 4 0 0 1 0 7.75"],
   paperclip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -53,6 +55,9 @@ function icon(name, className = "icon") {
   }
   return svg;
 }
+
+// How a CD's or Treasury's date reads (Investments and Home).
+const MATURITY_STATES = {matures: "matures", redeemable: "can be cashed from", matured: "matured"};
 
 // One status vocabulary for the whole application: internal value -> [label, tone, icon].
 const STATUS = {
@@ -77,6 +82,14 @@ const STATUS = {
   in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
   // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.
   reconciled: ["Reconciled", "positive", "check-circle"], receipt: ["Receipt only", "info", "file"], statement: ["Statement only", "neutral", null],
+  // Investment accounts: a statement value waiting for the user, or an account left out of totals.
+  value_to_confirm: ["New value to confirm", "info", "dashed"], removed: ["Removed", "neutral", "slash"],
+  // A value worked out from a CD's or Treasury's terms, and one that has matured and waits for an answer.
+  estimated: ["Estimated", "neutral", "clock"], matured: ["Matured", "warning", "alert"], due: ["Coming due", "info", "clock"],
+  // A tax form's box compared with what is recorded for its account.
+  rmd_taken: ["Taken", "positive", "check-circle"], tax_match: ["Matches", "positive", "check-circle"], tax_differs: ["Differs", "warning", "alert"], tax_unlinked: ["No account", "neutral", null],
+  // Family members' copies (Settings → Profiles & family).
+  current: ["Up to date", "positive", "check"], waiting: ["Waiting for their data", "neutral", "clock"],
   ready_to_import: ["Ready to import", "neutral", null], in_trash: ["In Trash", "neutral", null], process_failed: ["Couldn't process", "danger", "octagon"],
 };
 // How often a recurring bill is paid, as shown to people.

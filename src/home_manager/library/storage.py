@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -13,8 +14,11 @@ import uuid
 
 from ..core.categories import LEGACY_CATEGORIES, RECEIPT_CATEGORIES
 from ..core.folders import DOCUMENT_FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, MONEY_FOLDERS, validate_folder
+from ..core.logs import log_failure
 from ..core.money import format_minor
 from ..core.paths import DirectoryLock, PathError, path_key, safe_path
+
+log = logging.getLogger(__name__)
 
 TABLE_FILE = "(lower(relative_path) LIKE '%.csv' OR lower(relative_path) LIKE '%.xlsx')"
 # Work filters over the library view: what each document needs next.
@@ -73,6 +77,38 @@ def readable_database(path: Path) -> bool:
             db.close()
     except sqlite3.Error:
         return False
+
+
+class MigrationError(RuntimeError):
+    """A schema upgrade that could not finish. Every script before `number` is kept; the database is at `version`."""
+
+    def __init__(self, message, number=None, version=None, snapshot=None):
+        super().__init__(message)
+        self.number, self.version, self.snapshot = number, version, snapshot
+
+
+def apply_migrations(db, version, snapshot=None):
+    """Run each schema script newer than version on an open connection (autocommit), in order.
+
+    Each script is its own transaction, so a failure keeps the scripts before it and the next start resumes.
+    """
+    for number, script in MIGRATIONS:
+        if version < number:
+            log.info("schema upgrade step=%03d", number)
+            try:
+                db.executescript("BEGIN IMMEDIATE;\n" + script.read_text() + "\nCOMMIT;")
+                reached = db.execute("PRAGMA user_version").fetchone()[0]
+                if reached != number:
+                    raise sqlite3.DatabaseError(f"Upgrade step {number:03d} did not record its version.")
+            except sqlite3.Error as exc:
+                if db.in_transaction:
+                    db.rollback()
+                log_failure(log, "schema upgrade", exc, step=f"{number:03d}", version=version)
+                keep = f" The copy taken before upgrading is {snapshot.name}; keep it." if snapshot else ""
+                raise MigrationError(f"The library upgrade stopped at step {number:03d}. Earlier steps were kept (the library is at version {version}), "
+                                     f"and the next start tries again.{keep} Details are in the Home Manager log.",
+                                     number, version, snapshot) from exc
+            version = number
 
 
 def prune_migration_copies(root: Path, current_version: int, keep=KEEP_MIGRATION_COPIES) -> list[str]:
@@ -139,18 +175,32 @@ class Store:
                 latest = MIGRATIONS[-1][0]
                 if version not in range(latest + 1):
                     raise PathError("Unsupported inventory schema version.")
+                backup = None
                 if 0 < version < latest:
+                    # A damaged database is never upgraded: the upgrade would build on it and hide the damage.
+                    try:
+                        healthy = db.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+                    except sqlite3.DatabaseError:  # Damage bad enough that the check itself cannot run.
+                        healthy = False
+                    if not healthy:
+                        log.error("schema upgrade refused: integrity check failed version=%s", version)
+                        raise MigrationError("The library database failed its integrity check, so it was not upgraded. "
+                                             "Restore a backup, or keep this folder unchanged and report the problem.", None, version)
                     # SQLite backup includes WAL content; never copy the live DB file.
+                    # An existing copy is kept (it may predate an earlier, interrupted upgrade) unless it is unreadable.
                     backup = safe_path(root / f"inventory.before-v{latest}.sqlite3")
+                    if backup.exists() and not readable_database(backup):
+                        log.warning("replacing unreadable pre-upgrade copy version=%s", latest)
+                        backup.unlink()
                     if not backup.exists():
                         target = sqlite3.connect(backup)
                         try:
                             db.backup(target)
                         finally:
                             target.close()
-                for number, script in MIGRATIONS:
-                    if version < number:
-                        db.executescript("BEGIN IMMEDIATE;\n" + script.read_text() + "\nCOMMIT;")
+                apply_migrations(db, version, backup)
+                if version < latest:
+                    log.info("schema upgraded from=%s to=%s", version, latest)
             self.recover()
             prune_migration_copies(self.root, MIGRATIONS[-1][0])
             from .managed_library import ManagedLibrary
@@ -271,6 +321,30 @@ class Store:
         # A crash here leaves only an expendable internal temporary hard link.
         temp.unlink(missing_ok=True)
         return status
+
+    def import_document(self, name: str, data: bytes) -> tuple[int, str]:
+        """Preserve a document that arrives with its record already confirmed (a family delivery): the same capture intent,
+        publication and filing as an Inbox scan, from bytes instead of an Inbox file, with no model work queued.
+        Returns (document id, content hash)."""
+        digest = hashlib.sha256(data).hexdigest()
+        job, capture_id = self.create_job(), uuid.uuid4().hex
+        temp = safe_path(self.work / (capture_id + ".part"))
+        with open(temp, "xb") as writer:
+            writer.write(data)
+            writer.flush()
+            os.fsync(writer.fileno())
+        self.prepare(capture_id, job, name, digest, len(data), 0)
+        self.publish(capture_id)
+        self.job_state(job, "completed")
+        self.organization_state(job, "not_needed", "Arrived from the family with its record; nothing to read.")
+        with self.connection() as db:
+            document_id = db.execute("SELECT id FROM occurrences WHERE source_root=? AND path_key=?",
+                                     (path_key(self.library.inbox), path_key(name))).fetchone()[0]
+        try:
+            self.library.ensure_capture(name, digest)
+        except (ValueError, OSError, RuntimeError):
+            pass  # The preserved copy is safe; the library shows it in Unfiled until it is filed.
+        return document_id, digest
 
     def recover(self):
         with self.connection() as db:

@@ -1,6 +1,6 @@
 # Image transcription with a local vision model
 
-PNG/JPEG extraction uses the configured local vision model for every new run. It returns only `full_text`: visible wording in reading order, including line items and footers. RapidOCR, its runtime dependencies and label-based financial extraction have been removed. The separate [financial reasoning stage](financial-reasoning.md) now proposes titles, document types, financial facts and observations over saved text. Automatic filing and financial publication remain future work.
+PNG/JPEG extraction uses the configured local vision model for every new run. It returns only `full_text`: visible wording in reading order, including line items and footers. RapidOCR, its runtime dependencies and label-based financial extraction have been removed. The separate [financial reasoning stage](financial-reasoning.md) proposes titles, document types, financial facts and observations over saved text. The app then files each document automatically from its cited classification, and publishes its records to the ledger, where review is by exception ([receipts and statements](receipts-and-statements.md)).
 
 ## Operation
 
@@ -8,13 +8,13 @@ PNG/JPEG extraction uses the configured local vision model for every new run. It
 2. Drop documents into Inbox. With automatic extraction enabled, newly captured PNG/JPEG images are transcribed sequentially. Without a model, capture still works; extraction requires configuration and never falls back to OCR.
 3. Use **Processing → Read all documents** (or **Read selected** in Documents) for existing captures. Matching results are reused unless reprocessing is selected. The new prompt version causes older OCR/title/field runs to be transcribed anew. Identical bytes share one run.
 4. Open the document page (select its name in Documents) to compare the complete returned transcription with the preserved image. Rotate and create a new reading under **History** when needed. Independently decoded QR/barcode payloads are appended as inert text; links are never followed.
-5. Use **Move** for manual filing. New documents remain Unfiled until moved.
+5. Documents are filed automatically once classification and extraction cite what they need; the rest stay Unfiled. Use **Move** to file by hand; a manual choice wins over automatic filing.
 
 ## Evidence and compatibility
 
 Results retain source hash, dimensions, rotation, preview, full model text, line IDs, endpoint, model ID and prompt version. No text coordinates or confidence scores are invented. QR/barcodes retain exact bytes and polygons. New results have null `fields`, `title` and `folder` values. The inspector explains that interpretation is pending.
 
-The reasoning stage consumes saved text and evidence IDs and persists an independent interpretation with the source run and model ID. It does not rewrite transcription. Citation and schema validation are implemented; approval, conversion and financial posting remain separate future stages.
+The reasoning stage consumes saved text and evidence IDs and persists an independent interpretation with the source run and model ID. It does not rewrite transcription. Citation and schema validation, review, conversion to ledger records and financial posting are all implemented as separate stages after it.
 
 Historical OCR and field suggestions remain readable through saved-run history. Compatibility schema fields do not enable OCR execution. Manual folder choices remain effective for their exact source version. Historical titles and automatic folders may remain visible until a newer successful transcription supersedes them. Originals never change.
 

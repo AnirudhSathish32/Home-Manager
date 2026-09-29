@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from home_manager.finance.ledger import HouseholdConfig
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.documents.extraction import ExtractionService
 from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
 from test_receipts import make_receipt
 

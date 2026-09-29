@@ -1,22 +1,27 @@
 """Trusted coordinator for durable receipt runs and a bounded image preparation child."""
 
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import uuid
+
 from pydantic import ValidationError
 
 from ..core.formats import TEXT_READERS, extension
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..core.paths import safe_path
 from ..core.worker_limits import WorkerJob
 from ..library.storage import Store, digest_file, now
 from ..models.model_client import resolve_identity
-from ..models.vision import VisionConfig, VISION_VERSION, transcribe_preview
+from ..models.vision import VISION_VERSION, VisionConfig, transcribe_preview
 from .pdf_reader import PDF_VERSION, PDFResult, complete_pdf
 from .receipt_schema import ReceiptResult
+
+log = logging.getLogger(__name__)
 
 UNRESOLVED = object()
 
@@ -172,6 +177,7 @@ class ReceiptService:
         except subprocess.TimeoutExpired:
             self.state(run_id, "failed", "Receipt parsing exceeded 180 seconds. Try an individual receipt or a smaller scan.")
         except Exception as exc:
+            log_failure(log, "text reading", exc, run=run_id)
             message = ("Parser/model output failed validation. No result was published." if isinstance(exc, ValidationError)
                        else str(exc) if isinstance(exc, ValueError)
                        else "Local receipt parsing failed. Check image integrity, available memory and disk access.")
@@ -190,7 +196,8 @@ class ReceiptService:
             try:
                 # The completed worker result is the durable commit intent.
                 self.publish(run_id)
-            except Exception:
+            except Exception as exc:
+                log_failure(log, "text reading recovery", exc, run=run_id)
                 self.state(run_id, "interrupted", "Parsing was interrupted. Previous completed runs remain available; select Parse receipt to retry.")
 
     def preview(self, run_id):

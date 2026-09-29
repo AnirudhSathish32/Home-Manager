@@ -246,6 +246,7 @@ def test_locked_file_is_deferred_and_can_be_retried(store):
 
 def test_reparse_flag_rejected_without_link_privileges(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from home_manager.core.paths import is_link
     monkeypatch.setattr(Path, "lstat", lambda _: SimpleNamespace(st_mode=0, st_file_attributes=0x400))
     assert is_link(tmp_path / "junction")

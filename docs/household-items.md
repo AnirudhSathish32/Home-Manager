@@ -1,6 +1,6 @@
 # Household items: resolution, inventory and consumption
 
-Design spec (drafted 2026-09-25). H1 and H2 are implemented (see Status); H3 and H4 are open. Builds on the canonical finance store (`receipt_items`, migration 011), the review states (`proposed`, `needs_review`, `verified`, `rejected`) and the Phase 9 assistant loop in `finance/assistant.py`. The local model is gpt-oss-20b served by LM Studio on loopback.
+Design spec (drafted 2026-09-25). H1–H4 are all implemented (see Status). Builds on the canonical finance store (`receipt_items`, migration 011), the review states (`proposed`, `needs_review`, `verified`, `rejected`) and the Phase 9 assistant loop in `finance/assistant.py`. The local model is gpt-oss-20b served by LM Studio on loopback.
 
 ## Goals
 
@@ -132,7 +132,7 @@ A fixed list so analysis is stable. The model must choose from it: produce, dair
 
 Built: migration 021, `household/items.py` (proposals, approval, products, aliases, lots, run-out schedule, manual updates and one-level undo), `models/web_lookup.py` (Brave search, Open Food Facts, guarded page fetch), `household/resolver_tools.py` (the seven resolver tools), `household/resolver.py` (alias → product code → barcode → one short agent loop per line), API routes under `/api/receipts/{id}/item-resolution-runs`, `/api/items/resolutions` and `/api/inventory`, and `get_inventory` in the finance assistant. Tests: `tests/test_items.py`.
 
-Differences from the design above: the Brave key is read from the `HOME_MANAGER_BRAVE_API_KEY` environment variable until Windows credential storage is added. The first "still have it" answer sets a 7-day gap, then 14, 28 … 182. A lot's cost is the printed line total; how line discounts are printed varies, so they are not subtracted. There is no UI yet, and resolution runs only when requested, not automatically after extraction.
+Differences from the design above: the Brave key is read from the `HOME_MANAGER_BRAVE_API_KEY` environment variable until Windows credential storage is added. The first "still have it" answer sets a 7-day gap, then 14, 28 … 182. A lot's cost is the printed line total; how line discounts are printed varies, so they are not subtracted. (Later the same day, the UI was added, and identification now runs automatically after each recorded receipt; the `auto_identify_items` household setting, on by default, turns this off. See the update below.)
 
 Update (2026-09-25): the inventory screen, resolution review (in Review) and H3 check-ins are built; see [money-review-inventory.md](money-review-inventory.md) §4. The free-text check-in is one structured model call instead of a tool loop. H4 analysis tools, assistant routing, opened/unopened tracking (non-food only) and return windows followed the same day; see [items-assets-search.md](items-assets-search.md).
 
@@ -145,6 +145,6 @@ Update (2026-09-25): the inventory screen, resolution review (in Review) and H3 
 
 ## Open questions
 
-- Track opened vs. unopened? Useful for stockpiles, costs an extra tap. Deferred.
-- Warranty and return-window lookup, and recall checks (CPSC/FDA): undecided.
-- Brave free-tier limits should be confirmed before H2.
+- ~~Track opened vs. unopened?~~ Built for non-food items ([items-assets-search.md](items-assets-search.md)).
+- ~~Warranty and return-window lookup~~: built ([warranties-assistant-processing.md](warranties-assistant-processing.md), [items-assets-search.md](items-assets-search.md)). Recall checks (CPSC/FDA) remain undecided.
+- Brave free-tier limits are still unconfirmed.

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
-import pytest
 from pydantic import ValidationError
+import pytest
 
 from home_manager.app.api import create_app
 from home_manager.library.scanner import ScanLimits

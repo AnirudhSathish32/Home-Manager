@@ -1,7 +1,9 @@
 """Transcription evidence, with compatibility for historical OCR and field results."""
 
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from ..core.folders import HistoricalFolder
 
 # Legacy defaults allow historical results to remain readable. New published runs

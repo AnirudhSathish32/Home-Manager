@@ -1,8 +1,8 @@
 """Spending categories belong to receipt items: one Costco receipt can be dining, furniture & decor and groceries at once."""
 
-from conftest import documents_by_name, inbox_scan
 import pytest
 
+from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.item_categories import ItemCategorizer
 from home_manager.finance.ledger import Ledger
@@ -123,6 +123,7 @@ def test_a_receipt_counts_by_item_category_and_its_charge_takes_over_the_split(b
     link = ledger.record("receipt", receipt_id)["links"][0]
     reconciler.review_link("receipt", link["id"], "rejected")
     assert categories(tools) == {"groceries": 62161 + 8000, "dining": 162, "housing": 53999, "uncategorized": 800}
+    assert_ledger_healthy(store)
 
 
 def test_receipts_recorded_before_item_categories_are_categorised_once(books, local_model):
@@ -178,6 +179,7 @@ def test_items_under_a_retired_category_are_re_sorted_once(books, local_model):
 
 def test_migration_marks_items_under_the_retired_category_as_legacy():
     import sqlite3
+
     from home_manager.library.storage import MIGRATIONS
     db = sqlite3.connect(":memory:")
     for number, script in MIGRATIONS:

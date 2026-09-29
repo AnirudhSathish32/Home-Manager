@@ -5,7 +5,6 @@ from pathlib import PurePosixPath
 from ..core.paths import safe_path
 from .storage import digest_file
 
-
 RECORDS = {"statements": "statement", "transactions": "transaction", "receipts": "receipt",
            "receipt_items": "receipt_item", "bills": "bill", "income_records": "income_record",
            "transaction_receipt_links": "receipt_link", "transaction_links": "transaction_link",

@@ -1,10 +1,12 @@
-"""Investment and loan statements become proposed forecast assets (docs/items-assets-search.md §6). Synthetic data only."""
+"""Loan statements become proposed forecast loans and investment statements proposed investment values
+(docs/items-assets-search.md §6, docs/investments.md). Synthetic data only."""
 
 from fastapi.testclient import TestClient
 import pytest
 
 from home_manager.app.api import create_app
 from home_manager.finance.forecast import AssetInput, Assets
+from home_manager.finance.investments import Investments
 from home_manager.library.scanner import ScanLimits
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe, value
 
@@ -19,26 +21,28 @@ def classified(kind, lines):
             "document_date": value(lines[2].split()[-1], 3, lines[2])}
 
 
-def test_an_investment_statement_publishes_a_proposed_retirement_asset(tmp_path, local_model):
+def test_an_investment_statement_publishes_a_proposed_investment_value(tmp_path, local_model):
     manager, doc, parse_id = transcribe(tmp_path, local_model, INVESTMENT)
     try:
         summary = {"institution": value("Fidelity Investments", 1, INVESTMENT[0]), "account_name": value("Roth IRA", 2, INVESTMENT[1]),
                    "account_reference": value("X12345678", 2, INVESTMENT[1]), "period_end": value("2026-08-31", 3, INVESTMENT[2]),
                    "ending_value": value("52,340.18", 5, INVESTMENT[4]), "currency": value("USD", 4, INVESTMENT[3])}
-        local_model["outputs"] = [classified("investment_statement", INVESTMENT), summary]
+        local_model["outputs"] = [classified("investment_statement", INVESTMENT), summary, {"entries": []}]
         run = extract(manager, doc, parse_id)
         assert run["status"] == "succeeded", run["error"]
-        assert (run["publication"]["record_type"], run["publication"]["status"], run["publication"]["review_status"]) == ("asset", "published", "proposed")
-        asset = Assets(manager.store).get(run["publication"]["id"])
-        assert (asset["name"], asset["kind"], asset["value_minor"], asset["as_of"], asset["source"], asset["review_status"]) == (
-            "Fidelity Investments Roth IRA 5678", "retirement", 5234018, "2026-08-31", "statement", "proposed")
-        assert asset["document_id"] == doc["id"] and asset["issues"] == []
+        publication = run["publication"]
+        assert (publication["record_type"], publication["status"], publication["review_status"]) == ("investment_valuation", "published", "proposed")
+        investments = Investments(manager.store)
+        valuation = investments.valuation(publication["id"])
+        assert (valuation["account"]["name"], valuation["account"]["kind"], valuation["value_minor"], valuation["as_of"], valuation["source"], valuation["review_status"]) == (
+            "Fidelity Investments Roth IRA 5678", "roth_ira", 5234018, "2026-08-31", "statement", "proposed")
+        assert valuation["document_id"] == doc["id"] and valuation["issues"] == []
         assert manager.store.documents()["items"][0]["folder"] == "Investments"
         # A re-extraction of the same statement after review keeps the user's decision.
-        Assets(manager.store).review(asset["id"], "verified")
-        local_model["outputs"] = [classified("investment_statement", INVESTMENT), summary]
+        investments.review(valuation["id"], "verified")
+        local_model["outputs"] = [classified("investment_statement", INVESTMENT), summary, {"entries": []}]
         again = extract(manager, doc, parse_id, force=True)
-        assert again["publication"]["status"] == "kept_reviewed" and Assets(manager.store).get(asset["id"])["review_status"] == "verified"
+        assert again["publication"]["status"] == "kept_reviewed" and investments.valuation(valuation["id"])["review_status"] == "verified"
     finally:
         manager.close()
 
@@ -61,11 +65,11 @@ def test_a_loan_statement_publishes_balance_rate_and_payment(tmp_path, local_mod
         manager.close()
 
 
-def test_one_asset_per_account_newer_statements_update_it(tmp_path, local_model):
-    manager, doc, parse_id = transcribe(tmp_path, local_model, INVESTMENT)
+def test_one_loan_per_account_newer_statements_update_it(tmp_path, local_model):
+    manager, doc, parse_id = transcribe(tmp_path, local_model, LOAN)
     try:
         ledger, assets = manager.ledger, Assets(manager.store)
-        record = {"asset_kind": "investment", "institution": "Vanguard", "account_name": "Brokerage", "last_four": "1111", "value_minor": 100000,
+        record = {"asset_kind": "loan", "institution": "Sunrise Mortgage", "account_name": None, "last_four": "1111", "value_minor": 100000,
                   "period_end": "2026-08-31", "currency": "USD", "issues": []}
         source = {"document_id": doc["id"], "blob_hash": doc["current_hash"], "run_id": "a"}
         first = ledger.publish_asset(record, source)
@@ -97,7 +101,7 @@ def test_a_printed_return_policy_is_stored_with_the_receipt(tmp_path, local_mode
 
 def test_asset_review_and_search_endpoints(tmp_path, local_model):
     manager, doc, parse_id = transcribe(tmp_path, local_model, INVESTMENT)
-    record = {"asset_kind": "investment", "institution": "Vanguard", "account_name": "Brokerage", "last_four": "1111", "value_minor": 100000,
+    record = {"asset_kind": "loan", "institution": "Vanguard", "account_name": "Brokerage", "last_four": "1111", "value_minor": 100000,
               "period_end": "2026-08-31", "currency": "USD", "issues": []}
     asset_id = manager.ledger.publish_asset(record, {"document_id": doc["id"], "blob_hash": doc["current_hash"], "run_id": "a"})["id"]
     managed = manager.store.root

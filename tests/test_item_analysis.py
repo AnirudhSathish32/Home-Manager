@@ -1,11 +1,11 @@
 """H4 item analysis tools and assistant routing (docs/items-assets-search.md §4), with synthetic data only."""
 
-from conftest import documents_by_name, inbox_scan
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
+from conftest import documents_by_name, inbox_scan
 from home_manager.finance.assistant import route
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.tools import FINANCE_ROUTE, ITEM_ROUTE, FinanceTools, call_tool

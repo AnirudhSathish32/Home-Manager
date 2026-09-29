@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 from conftest import inbox_scan
-from home_manager.library import share
 from home_manager.app.api import create_app
 from home_manager.app.manager import Manager
 from home_manager.core.paths import PathError
+from home_manager.library import share
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.share import DecryptingReader, EncryptingWriter, ShareError, export_share, open_share
 from home_manager.library.storage import Store
@@ -200,6 +200,7 @@ def test_browser_shares_opens_and_ends_a_session(tmp_path):
     import socket
     import threading
     import time
+
     import uvicorn
     playwright = pytest.importorskip("playwright.sync_api")
     mom = make_library(tmp_path / "mom", {"mom-only.png": b"mom's receipt"})
