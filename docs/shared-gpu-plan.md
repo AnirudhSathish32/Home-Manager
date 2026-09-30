@@ -5,7 +5,7 @@ Status: built 2026-09-28 (Parts A–C). Companion plan: `docs/profiles-and-famil
 ## As built
 - **Residency** (`models/residency.py`) parses `GET /api/v1/models` as `{"models": [{"key", "type", "loaded_instances": [{"id"}]}]}`,
   tolerating `id`/`instance_id` variants. Unload is `POST /api/v1/models/unload {instance_id}`, load is `POST /api/v1/models/load {model}`.
-  **Not yet confirmed against the installed LM Studio**; LM Studio was not running when this was built. There is no `/api/v0` fallback,
+  **Not yet confirmed against the installed LM Studio** (still open 2026-09-30; tracked in [milestones](milestones.md#open-work)); LM Studio was not running when this was built. There is no `/api/v0` fallback,
   because v0 cannot unload. A 404 means JIT loading plus a Settings hint about "JIT models auto-evict".
 - **Setting** "Keep one model loaded at a time" lives on the new *Model computer* setting (`model_computer.json`), not on each
   model config. Model configs are copied into run options, so adding fields there would change every saved run's options.
@@ -27,7 +27,7 @@ Decisions already made:
 ## Context
 - `models/model_client.py` is the only LM Studio transport.
   - It sends `model=<id>` to `/v1/chat/completions` and relies on LM Studio's JIT loading.
-  - It never checks what is loaded and never unloads anything. `docs/financial-reasoning.md:21` says this was deliberate.
+  - It never checks what is loaded and never unloads anything. `docs/financial-reasoning.md` said then that this was deliberate (that paragraph now describes the residency built by this plan).
 - **Why two models end up loaded:** every inbox scan runs vision (`self.vision.model`), then reasoning (`reasoning_config.model`) (`manager.py:315-347`). The reviewer can be a third model. LM Studio therefore loads the second model while the first is still resident, which overflows VRAM.
 - **Remote access is blocked today:** `VisionConfig` (`models/vision.py:27-29`) accepts only `http://127.0.0.1:PORT/v1`, enforced by `tests/test_vision_batch.py:16`.
 - **Family members have no GPU.** They should be able to send their model calls to my PC over Tailscale while their documents and database stay on their machine.

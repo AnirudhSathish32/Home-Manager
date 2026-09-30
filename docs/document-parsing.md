@@ -1,4 +1,6 @@
-# Document parsing: decisions for the next slices
+# Document parsing: decisions (historical record)
+
+> Status update, 2026-09-30: the slices this page planned are built. The CSV/XLSX readers are in `finance/tabular.py` (XLSX is read with the standard library's `zipfile` and XML parser, not openpyxl), the PDF reader is `documents/pdf_reader.py`, and interpretation is typed extraction on the reasoning model ([V2 phases](v2-phases.md)). Two items are still open: OS-level confinement of the reader worker (identity, ACL, network), and grouping several images into one document. The rest of this page is the original decision record.
 
 Decision update, 2026-09-24: image reading uses a local vision model strictly for text extraction. OCR execution and label-based field inference are removed. A separate reasoning model, to be selected by the user, will consume saved text for fields, titles and classification. Earlier OCR-first and judge-cascade proposals below are superseded by this separation. See [current extraction behavior](receipt-parsing.md).
 
@@ -22,7 +24,7 @@ Do not add financial extraction directly to `Scanner.capture`. After a successfu
 | CSV reader | Python standard-library `csv`, explicit string-preserving dialect/encoding handling | Ready |
 | XLSX reader | openpyxl with hardened package inspection and preservation of raw numerical evidence | Ready, exact dependency pin at implementation |
 | Image text reader | Local vision returns only full text; no OCR fallback or financial inference | Implemented |
-| Interpretation | Separate local reasoning model consumes saved evidence; optional judge assessment follows later | Awaiting model selection and integration |
+| Interpretation | Separate local reasoning model consumes saved evidence; optional judge assessment follows later | Implemented (typed extraction; Laya/independent checks advisory) |
 | Persistence | Add versioned SQLite extraction tables and artifact manifests; retain existing inventory tables | Ready |
 | Trigger | UI option to parse newly captured supported files, plus Parse/Reprocess on existing captured versions | Ready; default off until parser setup passes |
 | Review | Source alongside proposed fields, editable corrections with provenance; no model approval rights | Ready |

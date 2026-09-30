@@ -1,5 +1,7 @@
 # V2 Phase 1: managed library implementation
 
+> **Archived 2026-09-30.** Delivered; superseded by [managed library](../managed-library.md), which describes current behavior. Kept as the record of the Phase 1 change plan.
+
 Source of requirements: `Home_Manager_Architecture_Implementation_Spec.docx`, sections 1–3, 16–18, 21–23 and 26.
 
 ## Concrete change plan
@@ -14,6 +16,6 @@ Source of requirements: `Home_Manager_Architecture_Implementation_Spec.docx`, se
 
 ## Phase boundary
 
-Implementation delivered in the working tree: migrations 007–008, managed organization service, Inbox scan API/UI, validated-analysis filing adapter, and regression/acceptance tests. Operating details and current limitations are in [managed-library.md](managed-library.md).
+Implementation delivered in the working tree: migrations 007–008, managed organization service, Inbox scan API/UI, validated-analysis filing adapter, and regression/acceptance tests. Operating details and current limitations are in [managed-library.md](../managed-library.md).
 
-Phase 1 retained the serialized worker; later phases are described in [v2-phases.md](v2-phases.md). No model confidence threshold is invented. Unknown or missing identifying metadata remains Inbox/Unfiled. Model-derived filing is convenience organization, not financial approval.
+Phase 1 retained the serialized worker; later phases are described in [v2-phases.md](../v2-phases.md). No model confidence threshold is invented. Unknown or missing identifying metadata remains Inbox/Unfiled. Model-derived filing is convenience organization, not financial approval.

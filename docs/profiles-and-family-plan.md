@@ -15,7 +15,7 @@ Today the app is single-household.
 - `Manager` holds one `self.store`, one library folder and one `inventory.sqlite3` (`app/manager.py:204-248`).
 - `settings.json` stores a single `managed_directory`.
 - `household.json` (`HouseholdConfig`, `finance/ledger.py:153`: filing_status, home_currency, …) is global.
-- No schema table has an owner or person column. `docs/architecture.md:203` flags multi-user support as future work.
+- No schema table has an owner or person column. `docs/architecture.md` (security table, "Unauthorized household access" row) flags multi-user support as future work.
 
 The goal:
 - Every person gets their own profile with its own library and database.

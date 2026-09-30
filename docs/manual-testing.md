@@ -1,6 +1,6 @@
-# Run and manually test D1–D2
+# Run and manually test Home Manager
 
-Implemented: configurable local directories, immutable capture/history, and PNG/JPEG text-only vision transcription, batch extraction and QR decoding. Interpretation, titles and classification await a separate reasoning model. See [receipt manual testing](receipt-parsing.md) for model setup and the batch button. No financial posting, Gmail or Excel report generation yet.
+Updated 2026-09-30. This page covers starting the app, the capture checks (the original D1–D2 slice) and a manual check list for each built feature. Commands, settings files and troubleshooting are in [operations](operations.md). Automated tests are in [development](development.md). Not built yet: Gmail/email ingestion, the Excel report and currency conversion ([milestones](milestones.md)).
 
 ## Start on Windows
 
@@ -43,6 +43,26 @@ Use copies of your documents when deliberately testing edits, rename or deletion
 | Keep an Inbox file open for writing while scanning | File may be `deferred` due to Windows sharing; close the writer and rescan |
 | Restart the app | Settings, inventory, versions and scan history persist |
 
+## Feature checks
+
+Use synthetic or copied documents and a scratch library folder (`--control-dir` with a scratch settings folder keeps your real profiles untouched). Each feature doc describes the expected behavior in detail.
+
+| Area | Check | Doc |
+| --- | --- | --- |
+| Reading and extraction | With vision and reasoning models set, drop a receipt image. It is read automatically; **Extract to ledger** on the document page proposes a receipt with cited values that waits in **Review**. | [V2 phases](v2-phases.md), [receipt parsing](receipt-parsing.md) |
+| Statements and reconcile | Import a CSV/XLSX export with **Import transactions**, or drop a statement PDF. Its lines wait uncounted until you **Reconcile** receipts against them; matched receipts are then replaced by their card line. | [receipts and statements](receipts-and-statements.md) |
+| Budgets, rules, recurring bills | Set a budget, categorize a line with a rule, confirm a proposed recurring bill; Home shows it under upcoming bills. | [money, review and inventory](money-review-inventory.md) |
+| Items, returns, warranties | Approve an itemized receipt; its lines appear in Inventory, with a return window and (after a lookup) a warranty. Lookups need `HOME_MANAGER_BRAVE_API_KEY`. | [household items](household-items.md), [items, assets and search](items-assets-search.md), [warranties](warranties-assistant-processing.md) |
+| Search and Ask | Search for a word printed in a document; ask the assistant a spending question and a "what does my lease say…" question. Figures in answers come from cited tools. | [document search](document-search.md), [assistant](assistant.md) |
+| Jobs and paystubs | Drop a pay stub; it files under `Jobs/<Employer>/Paystubs`, and its tax breakdown shows once the year's tax table is confirmed. | [jobs and paystubs](jobs-and-paystubs.md) |
+| Investments | Drop a brokerage statement and a trade confirmation; check holdings, lots, and **Not this payment** undo on a matched contribution. | [investments](investments.md) |
+| Forecast and What If | Add an asset and a loan; open the forecast. Save a scenario, adopt it, and check plan-vs-actual next month. | [forecast](forecast.md), [What If](what-if.md) |
+| Taxes | Tag a business expense and an itemized deduction; open the year's estimate and Tax Zen's W-4 advice. | [taxes](taxes.md) |
+| Profiles, family, sharing | Add a second profile with its own library; make a family and check the family view and inbox; export a `.hmshare` and open it with **Open shared**. | [sharing](sharing.md) |
+| Shared GPU | Run `home-manager gpu-host serve` on one computer, `add-member`, and point another profile's **Local models** at it. | [shared GPU](shared-gpu-plan.md) |
+| Backup and restore | **Back up** to another folder, then **Restore** into a new empty folder and switch to it; documents and ledger match. | [operations](operations.md#backup-and-restore) |
+| Ledger health | `home-manager check-ledger` while the app runs; it should report 0 errors. | [architecture](architecture.md#diagnostics-and-checks) |
+
 Use **View versions** to inspect each content hash or open a historical receipt image. The `originals/<first-two-hash-characters>/<sha256>.blob` file contains exactly the captured bytes; its extension is intentionally neutral. The receipt viewer supports PNG/JPEG only. You can verify a preserved file's hash using PowerShell `Get-FileHash -Algorithm SHA256 -LiteralPath '...'`.
 
 ## Status and limits
@@ -68,16 +88,15 @@ The app assumes a trusted local Windows user account. It does not install encryp
 
 Tests use synthetic documents in temporary directories. They cover copy/edit/rename/delete, repeated scans, scopes, crashes between capture publication and database commit, Windows sharing semantics, path validation, quotas, auth, and persistence. The symlink integration test skips when Windows does not permit symlink creation; other path checks still run. Actual source documents are never used by the test suite.
 
-An optional real-browser smoke test uses installed Microsoft Edge in headless mode:
+Opt-in browser tests use the installed Microsoft Edge in headless mode:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[test,browser-test]"
-$env:RUN_BROWSER_TESTS = '1'
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q --browser
 ```
 
-This verifies directory setup, scans, edited-file versions and browser authentication with synthetic files. Without the environment flag, the browser test is skipped. Current upstream test-client dependencies emit deprecation warnings; these do not affect the capture tests.
+`--browser` is the same as setting `RUN_BROWSER_TESTS=1`. About a dozen test files have browser cases (Home, Review, family, search, taxes, What If, investments and others); see [development](development.md#tests). Without the flag they are skipped.
 
 ## Implementation note
 
-D1–D2 use the Python SQLite driver behind `Store`; schema 2 adds receipt parsing runs and backs up schema 1 before upgrading. The earlier SQLAlchemy/Alembic recommendation remains a future persistence decision. Image preparation and barcode decoding use a separate process with Windows resource limits; OS access confinement is not implemented. See [receipt parsing](receipt-parsing.md) for the precise security boundary.
+The library uses the Python SQLite driver behind `Store`; the schema is upgraded by numbered scripts (047 as of 2026-09-30) with a copy taken before each upgrade ([schema map](schema.md), [managed library](managed-library.md)). Image preparation and barcode decoding use a separate process with Windows resource limits; OS access confinement is not implemented. See [receipt parsing](receipt-parsing.md) for the precise security boundary.

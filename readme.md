@@ -1,24 +1,39 @@
-## readme
+# Home Manager
 
-Documents enter through the app-owned **Library/Inbox** and are filed into flat Library folders with recoverable moves. See [managed-library setup and behavior](docs/managed-library.md).
+Home Manager is a local-first household document and money assistant. It runs on your own computer, and its models run on a local server (LM Studio) or on a family member's GPU computer. Nothing is sent to a cloud model.
 
-Financial reasoning is available as a separate stage over saved vision text. Configure its model in **Settings → Local models**, then open a transcribed document and select **Analyze financial details**. Findings cite source lines and remain unreviewed. See [financial reasoning](docs/financial-reasoning.md).
+Drop documents into the app-owned **Library/Inbox**: receipts, bank and card statements, CSV/XLSX exports, pay stubs, tax forms, policies, leases. Home Manager keeps every original byte for byte. A local vision model reads each document, and the app files it into Library folders. Typed extraction proposes ledger records with citations to the source text. Nothing counts until you approve it in **Review**.
 
-Home Manager is a local-first household document and financial assistant in development.
+What is built:
+- **Money:** receipts and statements reconciled against each other, transfers and refunds, budgets and categories, recurring bills, a ledger health check. See [receipts and statements](docs/receipts-and-statements.md) and [money, review and inventory](docs/money-review-inventory.md).
+- **Home, forecast and What If:** a dashboard, a long-range forecast with assets and loans, and saved scenarios with plan-vs-actual. See [forecast](docs/forecast.md) and [What If](docs/what-if.md).
+- **Jobs, investments and taxes:** pay stubs with a tax breakdown; investment accounts, lots, RMDs and withdrawals; tax tags; the year's return estimate; Tax Zen. See [jobs and paystubs](docs/jobs-and-paystubs.md), [investments](docs/investments.md) and [taxes](docs/taxes.md).
+- **Household items:** inventory from receipt lines, returns, warranties. See [household items](docs/household-items.md).
+- **Search and Ask:** full-text search of document text, and an assistant that answers from read-only tools. See [document search](docs/document-search.md) and [assistant](docs/assistant.md).
+- **Profiles, family and sharing:** a library per person, a family view and inbox, encrypted `.hmshare` exports, and a shared family GPU. See [sharing](docs/sharing.md).
 
-D1–D2 and PNG/JPEG reading are implemented: preserve documents dropped into Inbox, then transcribe images with a configured local vision model. The inspector shows full returned text and decoded QR/barcodes. OCR and label-based fields have been removed. A separately configured reasoning model proposes financial facts, titles, document types and observations with source citations. Financial posting and CSV/Excel/PDF readers follow separately.
-
-From PowerShell:
+## Quick start (PowerShell)
 
 ```powershell
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 .\.venv\Scripts\python.exe -m home_manager
 ```
 
-Open the private loopback link printed in the terminal. Use **Settings → Library & sources** in the sidebar to choose your source and managed folders, then scan from **Processing**. See [manual testing and operation](docs/manual-testing.md) for setup and recovery behavior.
+1. Open the private session link printed in the terminal. It is a new link each start, and the terminal also shows the log's path.
+2. In **Settings → Library folder**, choose an empty folder for your library.
+3. Start LM Studio's server (default `http://127.0.0.1:1234/v1`). In **Settings → Local models**, save the vision and reasoning model IDs.
+4. Drop files into `Library/Inbox`. They are captured and read automatically. Approve what the models propose in **Review**.
 
-Run tests with `.\.venv\Scripts\python.exe -m pytest -q`.
+Options: `--port 8766`, and `--control-dir DIR` for a different settings folder. Other commands are `home-manager check-ledger`, `home-manager index-documents --rebuild` and `home-manager gpu-host`. For all commands, extras, environment variables, where files live, backups and troubleshooting, see **[operations](docs/operations.md)**.
 
-In **Settings → Local models**, save the running local server's URL and model ID. New scanned images are automatically transcribed when automatic extraction is enabled. Use **Processing → Read all documents** (or **Read selected** in Documents) for existing files, **Import transactions** for CSV/XLSX exports, **Extract to ledger** on the document page (see [V2 phases](docs/v2-phases.md)), and **Move** for manual filing. Delete sends documents to restorable Trash after confirmation. Source files stay unchanged. See [the folder browser](docs/library-browser.md) and [image transcription](docs/receipt-parsing.md). The app does not download/load model weights.
+## Development
 
-Planning: [architecture](docs/architecture.md), [document reading](docs/document-reading.md), [milestones](docs/milestones.md).
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[test,dev]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy
+```
+
+For tests (including the opt-in browser tests), checks and adding a migration, see [development](docs/development.md). Every doc is listed in the [docs index](docs/README.md).

@@ -121,7 +121,7 @@ A fixed list so analysis is stable. The model must choose from it: produce, dair
 
 ## Search connector
 
-- **Provider**: Brave Search API web search. The key is stored in Windows credential storage, never in settings files, prompts or logs.
+- **Provider**: Brave Search API web search. The key is read from the `HOME_MANAGER_BRAVE_API_KEY` environment variable (Windows credential storage is planned; see below), never from settings files, prompts or logs.
 - **Query rules**: the model supplies query text; the connector validates it before sending. Maximum 120 characters. Rejected if it contains any amount, date, card digits, address or store-location text from the receipt. Merchant name, item text and product code are allowed.
 - **Result pages**: `open_result` accepts only result IDs from this run. HTTPS only, public addresses only (loopback and private ranges are refused after DNS resolution and on each redirect), 5 redirects, 10 s timeout, 1 MB response cap, HTML converted to text with scripts and styles dropped.
 - **Caching and pacing**: search responses are cached by normalized query for 30 days; at most one request per second.

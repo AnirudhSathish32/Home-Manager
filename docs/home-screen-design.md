@@ -1,6 +1,6 @@
 # Home screen design
 
-Status: Implemented September 25, 2026. Home is the default landing page, with monthly totals, spending bars, a category donut, attention links, bills, currency selection and accessible data tables. It extends the existing visual system in [UI design plan](ui-design-plan.md). The older [homepage proposal](homepage-proposal.md) concerned the document workspace.
+Status: Implemented September 25, 2026. Home is the default landing page, with monthly totals, spending bars, a category donut, attention links, bills, currency selection and accessible data tables. It extends the existing visual system in [UI design plan](ui-design-plan.md). The older [homepage proposal](archive/homepage-proposal.md) concerned the document workspace.
 
 Implementation uses `GET /api/dashboard` to read all panels from one SQLite snapshot. A failed snapshot shows a dashboard-level Retry rather than mixing partially refreshed figures. Finances supports dated, currency-specific category and metric links with transaction pagination. Browser checks cover the default route, category drill-down, six/twelve-month controls, retry and layouts at 390, 768 and 1440 pixels. Spending charts require counted bank/card transactions; unmatched receipts remain separate.
 

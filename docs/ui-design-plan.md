@@ -1,6 +1,6 @@
 # Home Manager UI design plan
 
-Status: **reviewed 2026-09-24** (decisions in §10). Implementation proceeds by phase (§9). It replaces `homepage-proposal.md`, which only covered the document list.
+Status: **built**. Reviewed 2026-09-24 (decisions in §10); Phases A–F were all done by 2026-09-25 (§9). §1 describes the app *before* this plan (the old three-tab shell), and sections still marked "reserved" or "Phase 9" were built in Phase F (the assistant is the sidebar's **Ask** panel; see [assistant](assistant.md)). The tokens planned for `tokens.css` live at the top of `style.css`; the `app-ux` skill is the current rulebook. A later, unbuilt restyle is planned in [new UI/UX design](new_ui_ux_design.md). This plan replaced the [homepage proposal](archive/homepage-proposal.md), which only covered the document list.
 
 Inputs: `Home_Manager_Architecture_Implementation_Spec.docx`, `v2-phases.md`, and the current frontend (`app/static/index.html`, `style.css`, `app.js`, `library.js`, `receipt.js`, `finance.js`), plus the API it calls (`app/api.py`, `finance/tools.py`, `library/storage.py`).
 
@@ -386,7 +386,7 @@ A full page with a left sub-navigation (not a modal). Each section is a narrow 7
 - Changing the managed directory is **consequential** (it switches libraries). It gets a confirmation dialog that explains the effect.
 - Saving model settings while the model queue is busy is disabled, with an explanation. This is the existing behavior, made visible.
 
-### 3.11 Assistant (reserved, Phase 9)
+### 3.11 Assistant (built in Phase F as the Ask panel)
 
 Not in navigation until the spec's Phase 9 backend exists. Designed now so the building blocks are shared:
 
@@ -406,7 +406,7 @@ Not in navigation until the spec's Phase 9 backend exists. Designed now so the b
 - **One primary button per view region.**
 - **A calm default:** healthy states are quiet (no "Succeeded" badges everywhere), and exceptions stand out.
 
-### 4.2 Tokens (CSS custom properties in `tokens.css`)
+### 4.2 Tokens (CSS custom properties; planned as `tokens.css`, built at the top of `style.css`)
 
 **Color: neutrals (cool grey):**
 

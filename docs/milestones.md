@@ -1,6 +1,6 @@
 # Development milestones and evaluation plan
 
-Status, 2026-09-28 (checked against the code):
+Status, 2026-09-28 (checked against the code; open work list updated 2026-09-30):
 
 | Milestones | State |
 | --- | --- |
@@ -10,6 +10,30 @@ Status, 2026-09-28 (checked against the code):
 | M4b | Not built: the Excel report tool. |
 | M7 | Not done: acceptance on real documents. Model accuracy has only been tested on synthetic data so far. |
 | M8–M10 | Deferred (Gmail, broader document automation, broader classifier use). |
+
+## Open work
+
+Every known open item, gathered from the feature docs on 2026-09-30. Each links to where it is described. When one is built, strike it through here and in its doc.
+
+| Area | Open item | Where |
+| --- | --- | --- |
+| Ingestion | Email ingestion (Gmail first). Bill notices from email aren't tracked. | [V2 phases](v2-phases.md) (Phase 10), [receipts and statements](receipts-and-statements.md), [managed library](managed-library.md) |
+| Ingestion | Scheduled rescans or a folder watcher outside Inbox; linking duplicates found under different sources. | [document reading](document-reading.md) |
+| Ingestion | Grouping several images into one document (multi-page receipts). | [document parsing](document-parsing.md) |
+| Models | Benchmark Laya on real documents before it gets any routing role (M3c). | [V2 phases](v2-phases.md#laya-in-process-advisory) |
+| Models | Evaluate the chosen vision and reasoning models on real documents (M7). | [document reading](document-reading.md) §4a |
+| Models | Confirm LM Studio's `/api/v1` load/unload calls against the installed LM Studio. | [shared GPU](shared-gpu-plan.md) |
+| Money | USD conversion and exchange-rate lookups (M2c, M4a). | above |
+| Money | The Excel report tool (M4b). | above |
+| Forecast | Taxes other than a flat rate on tax-deferred withdrawals; investment income modelled separately. | [forecast](forecast.md) |
+| Taxes | Not modelled: AMT, the QBI deduction above its threshold, IRA deductibility limits, charity and mortgage-interest limits, 28% and unrecaptured §1250 gains, unlisted credits. | [taxes](taxes.md) |
+| Investments | 529 plans, crypto, pensions, I bonds. | [investments](investments.md) |
+| Household | Product recall checks (CPSC/FDA): undecided. Brave free-tier limits unconfirmed. | [household items](household-items.md) |
+| Security | Brave API key in Windows credential storage (today it is an environment variable). | [household items](household-items.md) |
+| Security | OS-level confinement (identity, ACL, network) for the document reader worker; today it has resource limits only. | [document parsing](document-parsing.md), [receipt parsing](receipt-parsing.md) |
+| UI | The "Household ledger" restyle (dark theme, fonts, welcome screen, help, skeletons): planned, not built. | [new UI/UX design](new_ui_ux_design.md) |
+| UI | Home: live balances, customizable panels, month-end projection, daily/weekly views. | [home screen design](home-screen-design.md) |
+| UI | A native folder picker for choosing the library folder. | [manual testing](manual-testing.md) |
 
 The rest of this document is the original plan.
 

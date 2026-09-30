@@ -1,5 +1,7 @@
 # UI/UX review and round-one redesign: "Household ledger"
 
+Status: **planned, not built** (checked 2026-09-30). There is no `app/static/fonts/`, and `style.css` has no dark theme yet. Line counts quoted below are from when the plan was written. The built design is the [UI design plan](ui-design-plan.md) with the `app-ux` skill; follow those until this plan is implemented.
+
 ## Context
 The user asked for a thorough UI/UX review of the whole app (colours and spacing included), using the frontend-design
 skill rather than the current `app-ux` token limits. Two read-only audits covered every screen and the full style

@@ -33,9 +33,9 @@ Runs after each import and extraction (or **Reconcile now**): receipt ↔ transa
 
 `POST /api/finance/tools/{name}` with typed arguments: accounts, statement balances (dated, never a guessed live balance), transactions, spending, spending by category, period comparison, cash flow, recurring obligations, upcoming bills, receipts, purchases, statements, receipt match candidates, refunds (a refund document is not settled until a posted credit is linked) and the review queue. Totals are per currency with explicit coverage; model-extracted rows count only after verification and are otherwise reported as pending. The **Finances** tab presents these results.
 
-## Not implemented (updated 2026-09-24)
+## Not implemented (updated 2026-09-30)
 
-Phase 10 (email ingestion, Laya evaluation) is deferred until the classifier has been benchmarked on real documents. Currency conversion remains open.
+Phase 10 (email ingestion, Laya evaluation) is deferred until the classifier has been benchmarked on real documents. Currency conversion and the Excel report tool (milestone M4b) remain open. The full list of open work is in [milestones](milestones.md#open-work); the assistant's current tool list is in [assistant](assistant.md).
 
 Since added (see `ui-design-plan.md` §7): backup to a separate destination and verified restore into a new library (section 19), and a first Phase 9 assistant that answers only through the read-only tools, with figure checks against the cited results. The spec's caution still applies: judge the assistant against real records before relying on it.
 

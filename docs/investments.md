@@ -15,7 +15,7 @@ row in `investment_kinds`, not new code or a schema change.
 |---|---|---|
 | **Kind** (`investment_kinds` row) | `401k` `403b` `457b` `ira` `roth_ira` `pension` `retirement` `hsa` `hysa` `money_market` `cd` `treasury` `i_bond` `bonds` `brokerage` `crypto` `education_529` `other` | Label, defaults |
 | **Section** | Retirement · Health savings · Cash and savings · CDs, bonds and Treasuries · Stocks and funds · Education · Other | Page groups, the share of each |
-| **Tax treatment** | taxable · tax-deferred · tax-free · HSA | Share by tax treatment; later, withdrawal planning. Each account can override its kind's |
+| **Tax treatment** | taxable · tax-deferred · tax-free · HSA | Share by tax treatment; withdrawal order in the forecast's retirement plan. Each account can override its kind's |
 | **Value model** | `market`: the last reported value. `accrual`: principal plus a rate to maturity (CD, Treasury bill or note, I bond). `cash`: a balance earning a yearly rate (HYSA, money market) | How the value is projected. In phase 1 every model grows at the yearly rate |
 
 A statement whose kind isn't recognized becomes `other`; the user renames or reclassifies it on the page.
@@ -260,5 +260,5 @@ It also shows realized short- and long-term gains in taxable accounts.
    as transfers; the forecast's monthly contributions and maturities paid to cash. Migration 039.
 5. **Done 2026-09-28** (tax lots, realized gains, 1099/5498 import and comparison; migration 040). Required minimum
    distributions, retirement withdrawals in the forecast, and undoing payment matches followed the same day (migration 041).
-   Next: a What If forecast that runs several sets of assumptions side by side. Forecast inputs, including the
-   retirement plan, are kept pure and stateless for it.
+   The What If forecast that followed (scenarios run side by side with "Now") is built; see [What If](what-if.md).
+   Forecast inputs, including the retirement plan, are kept pure and stateless for it.

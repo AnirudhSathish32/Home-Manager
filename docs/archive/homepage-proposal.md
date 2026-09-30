@@ -1,5 +1,7 @@
 # Homepage proposal
 
+> **Archived 2026-09-30.** Superseded by the [UI design plan](../ui-design-plan.md) and the [home screen design](../home-screen-design.md). Its muted-green palette was not adopted (the UI uses ink blue; see the `app-ux` skill).
+
 Proposal only; the current change implements the receipt inspector, not this homepage redesign.
 
 ## Start with the work that needs attention

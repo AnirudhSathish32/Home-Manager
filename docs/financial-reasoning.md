@@ -9,8 +9,10 @@ The reasoning stage consumes an exact saved vision transcription. It produces a 
 1. Restart Home Manager after updating the application.
 2. In **Settings → Local models**, save the reasoning server URL and its exact model ID under **Reasoning model**. This selection is independent of the vision model. The endpoint must support streaming chat completions and JSON-schema output on loopback; no cloud fallback exists.
 3. Request an analysis through the API (`POST /api/documents/{id}/reasoning-runs`); the interface no longer shows this step.
-4. Select **Analyze financial details**. Use **Create a new analysis** to retry with the same configuration without reusing a successful result. Saved analyses remain selectable for that transcription.
-5. Review the item table, totals and insights. Expand **View source**, then **Find in transcription** to open the extracted-text view at the cited line. Compare it with the original image as well.
+4. Pass `force` to create a new analysis with the same configuration instead of reusing a successful result. Saved analyses remain available for that transcription through the API.
+5. If **Independent checks** is on, the reviewer runs after a successful analysis ([assistant](assistant.md#the-independent-reviewer-independent-checks)).
+
+(Steps 4–5 previously described the removed **Analyze financial details** screen.)
 
 Version 2 requires a separate row for every printed purchased item, including repeated products. Each row retains description, product code, quantity/weight, printed unit price, discount and printed line total where present. Missing values stay null. The model must account for every nonblank transcription line as item evidence or grouped non-item text; omitted lines and contradictory coverage statuses fail validation. This verifies line coverage, not semantic completeness: a model can still misclassify a line or misread a value. Uncertain itemization is marked partial.
 
