@@ -280,6 +280,8 @@ class Ledger:
                     db.execute("UPDATE transactions SET statement_id=coalesce(statement_id,?),updated_at=? WHERE id=?", (statement_id, now(), record))
             self.add_evidence(db, "transaction", record, source, row["locator"])
         self.apply_rules(db, inserted)
+        from .tax_tags import TaxTags  # Tax rules and suggestions for the new lines (finance/tax_tags.py imports this module).
+        TaxTags(self.store).refresh(db, inserted)
         return inserted, duplicates
 
     # Publication of validated extraction ----------------------------------------

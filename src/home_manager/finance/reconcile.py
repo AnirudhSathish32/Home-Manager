@@ -133,8 +133,10 @@ class Reconciler:
                            "investment_transfers": self.investment_transfers(db), "recurring": self.recurring(db) + self.propose_bills(db)}
                 self.track_bills(db)
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
-                # Matched receipts can give transactions a merchant name, which category rules also match.
+                # Matched receipts can give transactions a merchant name, which category and tax rules also match.
                 self.ledger.apply_rules(db)
+                from .tax_tags import TaxTags  # tax_tags imports this module.
+                TaxTags(self.ledger.store).refresh(db)
                 # Every charge's item-category shares follow its current receipt link (restored or rejected ones included).
                 self.ledger.refresh_splits(db)
         except Exception as exc:
@@ -574,6 +576,8 @@ class Reconciler:
                                    (classify_transaction(row["description_raw"], row["amount_minor"], row["account_type"]), now(), transaction))
             if status == "rejected" and kind == "receipt":  # The merchant name came from the receipt; rules decide again without it.
                 self.ledger.apply_rules(db, [link["transaction_id"]])
+                from .tax_tags import TaxTags  # tax_tags imports this module.
+                TaxTags(self.ledger.store).apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
 
     def review_obligation(self, obligation_id, status, note="", frequency=None):

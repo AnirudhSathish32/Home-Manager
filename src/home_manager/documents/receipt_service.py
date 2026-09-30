@@ -16,6 +16,7 @@ from ..core.logs import log_failure
 from ..core.paths import safe_path
 from ..core.worker_limits import WorkerJob
 from ..library.storage import Store, digest_file, now
+from ..library.text_index import index_quietly
 from ..models.model_client import resolve_identity
 from ..models.vision import VISION_VERSION, VisionConfig, transcribe_preview
 from .pdf_reader import PDF_VERSION, PDFResult, complete_pdf
@@ -107,6 +108,7 @@ class ReceiptService:
             payload["lines"] = [line.model_dump() for line in result.lines]
             with self.store.connection() as db:
                 db.execute("UPDATE parse_runs SET status='succeeded',result_json=?,updated_at=?,error=NULL WHERE id=?", (json.dumps(payload), now(), run_id))
+            index_quietly(self.store, run_id)
             return
         result_path, preview = safe_path(folder / "result.json"), safe_path(folder / "preview.png")
         if result_path.stat().st_size > 4 * 1024**2 or preview.stat().st_size > 64 * 1024**2:
@@ -120,6 +122,7 @@ class ReceiptService:
         with self.store.connection() as db:
             db.execute("UPDATE parse_runs SET status=?,result_json=?,preview_hash=?,updated_at=?,error=NULL WHERE id=?",
                        (status, result.model_dump_json(), digest_file(preview), now(), run_id))
+        index_quietly(self.store, run_id)
 
     def run(self, run_id, work=None, timeout=180):
         work = work or Work.detached()

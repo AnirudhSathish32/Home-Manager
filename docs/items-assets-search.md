@@ -15,7 +15,7 @@ by re-applying rules to rule-managed and uncategorized rows. Hand-set categories
 ## 2. Global search
 
 `GET /api/search?q=` returns the first matches, with totals, across documents (title, merchant, file
-name), transactions (description and merchant words), inventory items (product, brand, category)
+name, and since migration 042 words in the saved text; see [document-search.md](document-search.md)), transactions (description and merchant words), inventory items (product, brand, category)
 and accounts. A search box at the top of the sidebar (<kbd>Ctrl</kbd>+<kbd>K</kbd> or <kbd>/</kbd>)
 opens `#/search?q=`, grouped by kind, each with "View all" into the page's own filtered view
 (`#/documents?q=`, `#/transactions?q=`, `#/inventory?q=`).

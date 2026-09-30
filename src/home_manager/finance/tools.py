@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
+from ..library import text_index
 from .ledger import (
     CHARGE_SHARE,
     COUNTABLE,
@@ -186,6 +187,24 @@ class BudgetInput(ToolInput):
 class InventoryInput(ToolInput):
     query: str | None = Field(default=None, max_length=100, description="Product name, brand or category words; omit for everything in stock.")
     include_closed: bool = Field(default=False, description="Also list items marked finished or thrown out.")
+
+
+# The classifier's document types (documents/extraction.py DOCUMENT_TYPES; a test keeps them equal).
+DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
+                  "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
+
+
+class DocumentSearchInput(ToolInput):
+    query: str = Field(min_length=1, max_length=200, description="Words printed in the document, like 'deductible' or 'early termination'. "
+                                                                 "Every word must appear in a passage; use few, distinctive words.")
+    document_type: Literal[*DOCUMENT_TYPES] | None = Field(default=None, description="Only documents of this type.")  # type: ignore[valid-type]
+    limit: int = Field(default=6, ge=1, le=8, description="How many passages.")
+
+
+class DocumentTextInput(ToolInput):
+    document_id: int
+    around_line: str | None = Field(default=None, max_length=40, description="A line_id from search_documents; omit to read from the start.")
+    lines: int = Field(default=30, ge=5, le=40)
 
 
 def scope_of(start, end, account_id):
@@ -632,6 +651,16 @@ class FinanceTools(ItemAnalysisTools):
                 "notes": ["Approved unmatched receipts count as spending on their own; when a card or bank line matches one, the line counts instead.",
                           "Receipts without a purchase date cannot be placed in a period and are listed separately."]}
 
+    # Document text ----------------------------------------------------------------
+
+    def search_documents(self, value):
+        """Passages of saved document text containing the words, best first (library/text_index.py). Text only, no figures computed."""
+        return text_index.search(self.store, value.query, value.document_type, value.limit)
+
+    def get_document_text(self, value):
+        """Consecutive lines of one document's saved text, to read a clause around a search hit."""
+        return text_index.document_lines(self.store, value.document_id, value.around_line, value.lines)
+
     # Review queue -------------------------------------------------------------------
 
     def get_inventory(self, value):
@@ -696,12 +725,18 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "find_purchase": (TransactionsInput, "find_purchase"), "get_statement": (RecordInput, "get_statement"),
          "match_receipt_to_transaction": (RecordInput, "match_receipt_to_transaction"), "get_refunds": (EmptyInput, "get_refunds"),
          "review_queue": (EmptyInput, "review_queue"), "get_inventory": (InventoryInput, "get_inventory"),
-         "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"), **ITEM_TOOLS, **ANOMALY_TOOLS}
+         "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"),
+         "search_documents": (DocumentSearchInput, "search_documents"), "get_document_text": (DocumentTextInput, "get_document_text"),
+         **ITEM_TOOLS, **ANOMALY_TOOLS}
 ToolName = Literal[*TOOLS]  # type: ignore[valid-type]
-# Assistant routing (docs/items-assets-search.md §4): item questions see the item tools and spending basics;
-# every other question sees the finance tools. A smaller list keeps a small model's prompt short.
-ITEM_ROUTE = frozenset({*ITEM_TOOLS, "get_inventory", "get_spending", "get_spending_by_category", "get_transactions", "find_receipt"})
-FINANCE_ROUTE = frozenset(name for name in TOOLS if name not in ITEM_TOOLS)
+# Assistant routing (docs/items-assets-search.md §4, docs/document-search.md): item questions see the item tools and
+# spending basics; questions about what a document says see the document tools and a few ledger basics; every other
+# question sees the finance tools. A smaller list keeps a small model's prompt short. search_documents is in every route
+# as the fallback for anything the ledger does not hold.
+DOCUMENT_TOOLS = frozenset({"search_documents", "get_document_text"})
+ITEM_ROUTE = frozenset({*ITEM_TOOLS, "get_inventory", "get_spending", "get_spending_by_category", "get_transactions", "find_receipt", "search_documents"})
+DOCUMENT_ROUTE = frozenset({*DOCUMENT_TOOLS, "get_accounts", "get_recurring_obligations", "get_upcoming_bills", "find_receipt"})
+FINANCE_ROUTE = frozenset(name for name in TOOLS if name not in ITEM_TOOLS and name != "get_document_text")
 
 
 def call_tool(tools, name, arguments):

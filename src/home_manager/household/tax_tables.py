@@ -166,14 +166,19 @@ class TaxTables:
 
 
 class TaxTableTools:
+    max_searches, max_opens = MAX_SEARCHES, MAX_OPENS  # The figures lookup (household/tax_figures.py) reads more pages.
+
     def __init__(self, tables: TaxTables, web: WebLookup, jurisdiction, year, filing_status, run_id=None):
         self.tables, self.web, self.run_id = tables, web, run_id
         self.jurisdiction, self.year, self.filing_status = jurisdiction, year, filing_status
-        self.results, self.pages, self.searches, self.proposal = {}, {}, 0, None
+        self.results: dict = {}
+        self.pages: dict = {}
+        self.searches = 0
+        self.proposal: dict | None = None
 
     def web_search(self, value: SearchInput):
-        if self.searches >= MAX_SEARCHES:
-            raise ValueError(f"The search limit ({MAX_SEARCHES}) is reached. Propose from what you have, or finish.")
+        if self.searches >= self.max_searches:
+            raise ValueError(f"The search limit ({self.max_searches}) is reached. Propose from what you have, or finish.")
         self.searches += 1
         results = []
         for item in self.web.search(value.query):
@@ -186,8 +191,8 @@ class TaxTableTools:
         if value.result_id not in self.results:
             raise ValueError("Unknown result ID. Use an ID from a web_search result.")
         if value.result_id not in self.pages:
-            if len(self.pages) >= MAX_OPENS:
-                raise ValueError(f"The page limit ({MAX_OPENS}) is reached.")
+            if len(self.pages) >= self.max_opens:
+                raise ValueError(f"The page limit ({self.max_opens}) is reached.")
             self.pages[value.result_id] = self.web.page(self.results[value.result_id]["url"])
         page = self.pages[value.result_id]
         return {"result_id": value.result_id, "title": page["title"], "text_start": page["text"][:1500], "length": len(page["text"])}
@@ -196,7 +201,8 @@ class TaxTableTools:
         if value.result_id not in self.pages:
             raise ValueError("Open the result with open_result first.")
         text, words = self.pages[value.result_id]["text"], value.pattern.lower().split()
-        lower, matches, start = text.lower(), [], 0
+        lower, start = text.lower(), 0
+        matches: list[str] = []
         while len(matches) < 5:
             index = lower.find(words[0], start)
             if index < 0:
@@ -234,7 +240,7 @@ class TaxTableTools:
                 raise ValueError(f"{what} ({text}) is not a rate printed in your quotes.")
             return points
 
-        brackets = []
+        brackets: list[dict] = []
         for index, bracket in enumerate(value.brackets):
             start = 0 if index == 0 and printed_decimal(bracket.starts_at) == 0 else amount(bracket.starts_at, f"Bracket {index + 1}'s start")
             if index == 0 and start != 0:
@@ -251,8 +257,8 @@ class TaxTableTools:
                                           ("additional_medicare_threshold_minor", value.additional_medicare_threshold, amount,
                                            "The additional Medicare threshold")):
                 values[key] = kind(text, what) if text else None
-        self.proposal = self.tables.propose(self.jurisdiction, self.year, self.filing_status, values, sources, self.run_id)
-        return {"tax_table_id": self.proposal["id"], "status": "sent to the user for review"}
+        proposal = self.proposal = self.tables.propose(self.jurisdiction, self.year, self.filing_status, values, sources, self.run_id)
+        return {"tax_table_id": proposal["id"], "status": "sent to the user for review"}
 
 
 TOOLS = {
@@ -355,9 +361,10 @@ class TaxTableService:
             raise ValueError("The local model returned a step that does not follow the tax-table lookup format.") from exc
 
     @staticmethod
-    def call(tools, tool, arguments_json):
-        """Run one tool; invalid calls and failed lookups go back to the model as errors."""
-        model, method, _ = TOOLS[tool]
+    def call(tools, tool, arguments_json, catalog=None):
+        """Run one tool; invalid calls and failed lookups go back to the model as errors. catalog: the tools to use (the
+        figures lookup has its own)."""
+        model, method, _ = (catalog or TOOLS)[tool]
         try:
             result = getattr(tools, method)(model.model_validate(json.loads(arguments_json)))
         except (ValueError, ValidationError, LookupFailed, InvalidOperation) as exc:

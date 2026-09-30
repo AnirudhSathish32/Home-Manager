@@ -168,7 +168,7 @@ def test_the_assistant_receives_the_page_as_labelled_context(home, local_model):
     store, docs, buy = home
     config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
     service = AssistantService(store, FinanceTools(store))
-    local_model["outputs"] = [{"action": "answer", "tool": None, "arguments_json": None, "answer": "Nothing is recorded yet.", "cited_calls": [], "missing_evidence": []}]
+    local_model["outputs"] = [{"action": "answer", "tool": None, "arguments_json": None, "answer": "Nothing is recorded yet.", "cited_calls": [], "cited_lines": [], "missing_evidence": []}]
     run_id = service.enqueue("What did I spend here?", config, "Transactions · Sep 1, 2026 – Sep 30, 2026")
     service.run(run_id, config, Work("inference", "assistant", "Answering", sink=store.record_model_run))
     assert service.get(run_id)["status"] == "succeeded"

@@ -23,6 +23,8 @@ A deterministic projection of income, spending, cash, assets, loans and net wort
 | Spending changes | none | A category's average times (1 + percent) |
 | Income changes | none | Added to monthly income from a month on |
 | One-off amounts | none | Added to cash in their month (expenses negative) |
+| Planned paychecks (`pay_plans`) | none | What If: take-home pay a month from a month on (to a last month, or until retirement). *Replace* takes the place of confirmed pay stubs' take-home pay and payroll contributions; *add* is another earner. Contributions go to a linked investment account or a new planned one. Yearly bonuses are paid (after withholding) in their calendar month |
+| Set spending (`category_amounts`) | none | What If: a category's monthly amount from a month on, in today's money (grown with inflation); replaces its average and its recurring bills |
 
 Cash each month = previous cash + income − spending − loan payments − contributions from you + maturities paid out + withdrawals from investments + one-offs.
 
@@ -59,4 +61,5 @@ Charts use the validated categorical order blue `#2a78d6`, orange `#eb6834`, aqu
 
 - ~~Reading investment, retirement, bond and loan statements into `assets` rows~~: done 2026-09-25, see [items-assets-search.md](items-assets-search.md) §6.
 - Taxes other than the flat rate on tax-deferred withdrawals, and investment income, are not modelled separately; set an investment account's yearly rate to include them.
-- What If: several forecasts with different assumptions side by side (planned).
+- ~~What If: several forecasts with different assumptions side by side~~: saved plans compared with Now, see
+  [what-if.md](what-if.md).

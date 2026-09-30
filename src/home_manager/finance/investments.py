@@ -1189,7 +1189,8 @@ class Investments:
                         if holding["counts"] and not holding["matured"] and holding["maturity_date"]:
                             terms.append({"name": holding["name"], "value_minor": holding["value_on"](self.today), "maturity_month": holding["maturity_date"][:7],
                                           "maturity_value_minor": holding["value_on"](holding["maturity_date"]), "to_cash": not holding["rollover"]})
-                found.append({"name": account["name"], "kind": account["kind"], "kind_label": account["kind_label"], "value_model": account["value_model"],
+                found.append({"account_id": account["id"], "name": account["name"], "kind": account["kind"], "kind_label": account["kind_label"],
+                              "value_model": account["value_model"],
                               "value_minor": account["current"]["value_minor"], "value": account["current"]["value"], "currency": account["currency"],
                               "as_of": account["current"]["as_of"], "annual_rate_bp": account["rate_bp"], "annual_rate_percent": account["annual_rate_percent"],
                               "monthly_payment_minor": None, "monthly_payment": None, "review_status": "verified", "source": "investment", "terms": terms,

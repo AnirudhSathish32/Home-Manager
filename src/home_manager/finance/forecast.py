@@ -123,9 +123,59 @@ class RetirementPlan(StrictInput):
         return self
 
 
+class YearlyBonus(StrictInput):
+    """A planned paycheck's bonus: paid in this calendar month every year while the paycheck runs, after its withholding."""
+    month_of_year: int = Field(ge=1, le=12)
+    net: str = Field(min_length=1, max_length=30)
+    retirement: str = Field(default="0", max_length=30)
+    hsa: str = Field(default="0", max_length=30)
+
+
+class PayPlan(StrictInput):
+    """A planned paycheck (docs/what-if.md), already worked out by finance/paycheck.py: its take-home pay and its payroll
+    contributions a month. replace_pay: it becomes the pay (confirmed pay stubs' take-home pay and their contributions stop
+    while it runs); add: another earner, on top."""
+    label: str = Field(min_length=1, max_length=60)
+    from_month: str = Field(pattern=MONTH.pattern)
+    to_month: str | None = Field(default=None, pattern=MONTH.pattern, description="The last month it is paid; none: until retirement.")
+    mode: Literal["replace_pay", "add"]
+    monthly_net: str = Field(min_length=1, max_length=30)
+    monthly_retirement: str = Field(default="0", max_length=30, description="Into a retirement account from pay, yours and the employer's.")
+    monthly_hsa: str = Field(default="0", max_length=30)
+    retirement_account_id: int | None = Field(default=None, description="An investment account; none: a new planned account.")
+    hsa_account_id: int | None = None
+    contribution_growth_percent: str = Field(default="0", pattern=PERCENT, description="Yearly growth of a new planned account.")
+    yearly_bonuses: list[YearlyBonus] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def ordered(self):
+        if self.to_month and self.to_month < self.from_month:
+            raise ValueError("A paycheck's last month can't be before its first.")
+        return self
+
+
+class CategoryAmount(StrictInput):
+    """A category's monthly spending set outright from a month on (rent in a new city), in today's money. It replaces the
+    category's recent average and its recurring bills."""
+    category: str = Field(min_length=1, max_length=60)
+    monthly_amount: str = Field(min_length=1, max_length=30)
+    from_month: str = Field(pattern=MONTH.pattern)
+
+    @field_validator("category")
+    @classmethod
+    def compared_name(cls, value):
+        """Categories compare as lower-case words with single spaces, as budgets and spending do (ledger.category_name)."""
+        name = " ".join(value.split()).lower()
+        if not name:
+            raise ValueError("Enter a category.")
+        return name
+
+
 class ForecastInput(StrictInput):
     years: int = Field(default=10, ge=1, le=MAX_YEARS)
     retirement: RetirementPlan | None = None
+    pay_plans: list[PayPlan] = Field(default_factory=list, max_length=10)
+    category_amounts: list[CategoryAmount] = Field(default_factory=list, max_length=50)
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
     inflation_percent: str = Field(default="2", pattern=PERCENT)
     income_growth_percent: str = Field(default="0", pattern=PERCENT)
@@ -345,13 +395,36 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                 pieces.append({"name": term["name"], "balance": worth_now, "target": target, "month": month_add(start, steps), "to_cash": term["to_cash"],
                                "rate": (target / worth_now) ** (one / (steps + 1)) if worth_now > 0 else one, "done": False})
             rest = Decimal(asset["value_minor"]) - sum(piece["balance"] for piece in pieces)
-            holdings.append({"name": asset["name"], "kind": asset["kind"], "balance": max(rest, Decimal(0)), "pieces": pieces,
+            holdings.append({"name": asset["name"], "kind": asset["kind"], "balance": max(rest, Decimal(0)), "pieces": pieces, "account_id": asset.get("account_id"),
                              "rate": (one + Decimal(asset["annual_rate_bp"]) / 10000) ** (one / 12) if asset["kind"] != "loan" else Decimal(asset["annual_rate_bp"]) / 10000 / 12,
                              "payment": Decimal(asset["monthly_payment_minor"] or 0),
                              # Paid in from pay (already outside take-home pay, so cash is untouched) and from you (out of cash).
                              "payroll": Decimal(asset.get("payroll_monthly_minor") or 0), "personal": Decimal(asset.get("personal_monthly_minor") or 0),
                              # Investment accounts can be drawn on in retirement; tax-deferred ones also have required distributions.
                              "investment": asset.get("source") == "investment", "tax": asset.get("tax_treatment"), "withdrawn": Decimal(0)})
+        # Planned paychecks (What If): take-home pay a month, and where their contributions go: a linked investment account, or
+        # a new planned one that starts empty.
+        plans: list[dict] = []
+        for pay_plan in value.pay_plans:
+            targets = []
+            for key, amount, linked, kind, treatment in (("retirement", pay_plan.monthly_retirement, pay_plan.retirement_account_id, "retirement", "tax_deferred"),
+                                                         ("hsa", pay_plan.monthly_hsa, pay_plan.hsa_account_id, "hsa", "hsa")):
+                monthly = Decimal(to_minor(amount, currency))
+                # A bonus's contributions go in its month: {calendar month: amount}.
+                yearly = {bonus.month_of_year: Decimal(to_minor(getattr(bonus, key), currency)) for bonus in pay_plan.yearly_bonuses}
+                if not monthly and not any(yearly.values()):
+                    continue
+                holding = next((holding for holding in holdings if linked is not None and holding["account_id"] == linked), None)
+                if holding is None:
+                    holding = {"name": f"{pay_plan.label}: {'401(k)' if key == 'retirement' else 'HSA'} (planned)", "kind": kind, "balance": Decimal(0),
+                               "pieces": [], "account_id": None, "payment": Decimal(0), "payroll": Decimal(0), "personal": Decimal(0),
+                               "rate": (one + Decimal(pay_plan.contribution_growth_percent) / 100) ** (one / 12), "investment": True, "tax": treatment,
+                               "withdrawn": Decimal(0)}
+                    holdings.append(holding)
+                targets.append((holding, monthly, yearly))
+            plans.append({"plan": pay_plan, "net": Decimal(to_minor(pay_plan.monthly_net, currency)), "targets": targets,
+                          "bonuses": {bonus.month_of_year: Decimal(to_minor(bonus.net, currency)) for bonus in pay_plan.yearly_bonuses}})
+        set_amounts = sorted((item.from_month, item.category, Decimal(to_minor(item.monthly_amount, currency))) for item in value.category_amounts)
         for holding in holdings:
             holding["year_start"] = available(holding)  # Its balance at the end of the year before, for required distributions.
         drawable = sorted((holding for holding in holdings if holding["investment"]), key=lambda holding: WITHDRAWAL_ORDER.get(holding["tax"], len(WITHDRAWAL_ORDER)))
@@ -367,6 +440,16 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
         if plan and pay:
             notes.append(f"Take-home pay of {money(minor(pay), currency)['display']} a month (confirmed pay stubs) stops in {plan.start_month}, "
                          "and so do contributions from pay.")
+        for entry in plans:
+            planned = entry["plan"]
+            span = f"from {planned.from_month}" + (f" to {planned.to_month}" if planned.to_month else "")
+            notes.append(f"{planned.label}: {money(minor(entry['net']), currency)['display']} a month of take-home pay {span}, "
+                         + ("replacing the pay on confirmed pay stubs and their contributions." if planned.mode == "replace_pay" else "added to income."))
+            if planned.mode == "replace_pay" and not pay and base["monthly_income"]:
+                notes.append(f"{planned.label}: there are no confirmed pay stubs to replace, so recorded income keeps any pay it includes.")
+        for since, category, level in set_amounts:
+            notes.append(f"From {since}, {category} is set to {money(minor(level), currency)['display']} a month in today's money, "
+                         "instead of its recent average and bills.")
         first_rmd = birth_year + rmd_start_age(birth_year) if birth_year else None
         if first_rmd and any(holding["tax"] in HAS_RMD for holding in drawable) and first_rmd <= int(month_add(start, months - 1)[:4]):
             notes.append(f"Required minimum distributions from tax-deferred accounts begin in {first_rmd} (age {rmd_start_age(birth_year)}); each December "
@@ -398,9 +481,22 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
             pay_level *= income_growth
             retired = plan is not None and month >= plan.start_month
             base_income = base["monthly_income"] + sum(amount for since, amount in income_steps if since <= month)
-            income = minor(max(base_income - pay, Decimal(0)) * pay_level if retired else base_income * pay_level)
-            spent = {category: minor(amount * price) for category, amount in spending.items()}
+            # Planned paychecks paid this month (none once retired); one that replaces pay takes the place of the stubs' pay.
+            active = [] if retired else [entry for entry in plans if entry["plan"].from_month <= month and (entry["plan"].to_month is None or month <= entry["plan"].to_month)]
+            replaced = any(entry["plan"].mode == "replace_pay" for entry in active)
+            calendar = int(month[5:7])  # A planned bonus is paid in its calendar month each year.
+            planned_pay = sum((entry["net"] + entry["bonuses"].get(calendar, Decimal(0)) for entry in active), Decimal(0)) - (pay if replaced else 0)
+            income = minor(max(base_income - pay, Decimal(0)) * pay_level if retired else (base_income + planned_pay) * pay_level)
+            fixed_now = {category: amount for since, category, amount in set_amounts if since <= month}  # Sorted by month: the latest wins.
+            spent = {category: minor(amount * price) for category, amount in spending.items() if category not in fixed_now}
+            spent.update({category: minor(amount * price) for category, amount in fixed_now.items()})
+            contributions: dict[int, Decimal] = {}
+            for entry in active:
+                for holding, amount, yearly in entry["targets"]:
+                    contributions[id(holding)] = contributions.get(id(holding), Decimal(0)) + amount + yearly.get(calendar, Decimal(0))
             for bill in base.get("bills", []):
+                if bill["category"] in fixed_now:
+                    continue
                 due = bill_amount(bill, month, start) * changes.get(bill["category"], one)
                 if due:
                     spent[bill["category"]] = spent.get(bill["category"], 0) + minor(due * price)
@@ -417,7 +513,9 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                     loan_paid += int(paid)
                     continue
                 # Nothing is paid in once retired: no pay, and money now flows out.
-                paid_in = Decimal(0) if retired else holding["payroll"] + holding["personal"]
+                # A planned paycheck that replaces pay also replaces the stubs' payroll contributions.
+                payroll = (Decimal(0) if replaced else holding["payroll"]) + contributions.get(id(holding), Decimal(0))
+                paid_in = Decimal(0) if retired else payroll + holding["personal"]
                 holding["balance"] = holding["balance"] * holding["rate"] + paid_in
                 contributed += minor(paid_in)
                 saved += 0 if retired else minor(holding["personal"])
@@ -489,6 +587,8 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
             "assumptions": {"inflation_percent": value.inflation_percent, "income_growth_percent": value.income_growth_percent,
                             "history": base["history"], "spending_changes": [change.model_dump() for change in value.spending_changes],
                             "income_changes": [change.model_dump() for change in value.income_changes],
+                            "pay_plans": [item.model_dump() for item in value.pay_plans],
+                            "category_amounts": [item.model_dump() for item in value.category_amounts],
                             "one_offs": [item.model_dump() for item in value.one_offs],
                             "retirement": plan.model_dump() if plan else None, "birth_year": birth_year,
                             "rmd_start": {"year": first_rmd, "age": rmd_start_age(birth_year)} if birth_year else None},

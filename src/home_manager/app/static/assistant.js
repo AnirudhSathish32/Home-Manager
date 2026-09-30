@@ -8,7 +8,9 @@ const TOOL_LABELS = {get_transactions: "transactions", find_purchase: "transacti
   match_receipt_to_transaction: "receipt matching", get_refunds: "refunds", review_queue: "review queue", get_inventory: "inventory",
   get_budgets: "budgets", get_categories: "categories", get_item_spending: "item spending", item_price_history: "price history",
   get_price_changes: "price changes", compare_merchant_prices: "store prices", get_consumption_cost: "consumption", get_waste: "waste",
-  forecast_consumables_spend: "consumables forecast", detect_spending_anomalies: "unusual spending"};
+  forecast_consumables_spend: "consumables forecast", detect_spending_anomalies: "unusual spending",
+  search_documents: "document text", get_document_text: "document text"};
+const DOCUMENT_TOOLS = ["search_documents", "get_document_text"];
 let assistantBusy = false;
 
 function toolPeriod(args) {
@@ -58,15 +60,19 @@ function renderAnswer(run) {
     box.append(element("p", "Not in your records:", "muted small"), missing);
   }
   const chips = element("div", "", "evidence-chips");
+  // A document the answer quotes opens at the quoted lines (docs/document-search.md); its search is not a chip of its own.
+  for (const source of result.sources || [])
+    chips.append(homeLink(`From ${source.title}`, `#/documents/${source.document_id}?${new URLSearchParams({lines: source.line_ids.join(",")})}`, "evidence-chip"));
   for (const number of result.cited_calls) {
     const call = result.tool_calls[number - 1];
+    if (DOCUMENT_TOOLS.includes(call.tool)) continue;
     const period = toolPeriod(call.arguments);
     const chip = homeLink(`From ${TOOL_LABELS[call.tool] || call.tool}${period ? ` · ${period}` : ""}`, toolHref(call.tool, call.arguments), "evidence-chip");
     chips.append(chip);
   }
   if (chips.children.length) box.append(chips);
   const how = element("details", "", "assistant-how");
-  how.append(element("summary", `How I got this (${result.tool_calls.length} lookup${result.tool_calls.length === 1 ? "" : "s"}${result.route === "items" ? ", household item tools" : ""})`));
+  how.append(element("summary", `How I got this (${result.tool_calls.length} lookup${result.tool_calls.length === 1 ? "" : "s"}${result.route === "items" ? ", household item tools" : result.route === "documents" ? ", document text" : ""})`));
   const list = element("ol", "", "assistant-calls");
   for (const call of result.tool_calls) {
     const li = element("li", "");

@@ -12,19 +12,35 @@ function searchGroup(title, total, allHref, rows) {
   panel.append(heading, list);
   return panel;
 }
-function searchHit(link, detail, right = null) {
+function searchHit(link, detail, right = null, extra = null) {
   const li = element("li", "", "search-hit"), main = element("div");
   main.append(link, element("small", detail, "muted"));
+  if (extra) main.append(extra);
   li.append(main);
   if (right) li.append(right);
   return li;
+}
+// Where a document's text matched (docs/document-search.md). The server marks the matched words with \x02…\x03;
+// they become <mark> from text nodes, never HTML, since the words come from the document.
+function matchSnippet(match) {
+  const quote = element("p", "", "search-snippet");
+  match.snippet.split("\x02").forEach((part, index) => {
+    const [marked, rest] = index ? part.split("\x03") : [null, part];
+    if (marked) quote.append(element("mark", marked));
+    if (rest) quote.append(document.createTextNode(rest));
+  });
+  return quote;
+}
+// A document link that opens its text at the matched lines, when the match was in the text.
+function documentHref(doc) {
+  return `#/documents/${doc.id}` + (doc.match ? `?${new URLSearchParams({lines: doc.match.line_ids.join(",")})}` : "");
 }
 async function openSearch(params) {
   const query = (params.get("q") || "").trim();
   $("search-page-input").value = query;
   $("global-search").value = query;
   if (!configured) { $("search-results").replaceChildren(emptyState("Set up your library to search it.")); return; }
-  if (!query) { $("search-status").textContent = ""; $("search-results").replaceChildren(emptyState("Type a merchant, description, product or file name.")); $("search-page-input").focus(); return; }
+  if (!query) { $("search-status").textContent = ""; $("search-results").replaceChildren(emptyState("Type a merchant, product, file name or words in a document.")); $("search-page-input").focus(); return; }
   const load = ++searchLoad;
   $("search-status").textContent = "Searching…";
   let found;
@@ -34,9 +50,9 @@ async function openSearch(params) {
   const groups = [];
   const {documents, transactions, inventory, accounts} = found;
   if (documents.total) groups.push(searchGroup("Documents", documents.total, `#/documents?${new URLSearchParams({q: query})}`, documents.items.map(doc =>
-    searchHit(homeLink(doc.title || doc.relative_path.split(/[\\/]/).pop(), `#/documents/${doc.id}`),
+    searchHit(homeLink(doc.title || doc.relative_path.split(/[\\/]/).pop(), documentHref(doc)),
               [folderLabel(doc.folder), doc.document_date && dateText(doc.document_date)].filter(Boolean).join(" · "),
-              doc.ledger_amount ? amount(doc.ledger_amount, {signed: false}) : null))));
+              doc.ledger_amount ? amount(doc.ledger_amount, {signed: false}) : null, doc.match ? matchSnippet(doc.match) : null))));
   if (transactions.total) groups.push(searchGroup("Transactions", transactions.total, `#/transactions?${new URLSearchParams({q: query, period: "all"})}`, transactions.items.map(row => {
     const link = element("button", row.merchant || row.description_raw, "link-button"); link.type = "button";
     link.addEventListener("click", () => openTransaction(row.id));

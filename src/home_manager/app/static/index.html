@@ -17,6 +17,8 @@
   <script src="/assistant.js" defer></script>
   <script src="/home.js" defer></script>
   <script src="/forecast.js" defer></script>
+  <script src="/whatif.js" defer></script>
+  <script src="/taxes.js" defer></script>
   <script src="/investments.js" defer></script>
   <script src="/profiles.js" defer></script>
   <script src="/shell.js" defer></script>
@@ -46,7 +48,9 @@
       <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; recurring</span></a>
       <a id="nav-accounts" class="nav-link" href="#/accounts" data-route="accounts" data-icon="bank"><span class="nav-label">Accounts</span></a>
       <a id="nav-investments" class="nav-link" href="#/investments" data-route="investments" data-icon="chart-line"><span class="nav-label">Investments</span></a>
+      <a id="nav-taxes" class="nav-link" href="#/taxes" data-route="taxes" data-icon="receipt-tax"><span class="nav-label">Taxes</span></a>
       <a id="nav-forecast" class="nav-link" href="#/forecast" data-route="forecast" data-icon="trend"><span class="nav-label">Forecast</span></a>
+      <a id="nav-whatif" class="nav-link" href="#/whatif" data-route="whatif" data-icon="sliders"><span class="nav-label">What If</span></a>
       <p class="nav-group">Household</p>
       <a id="nav-inventory" class="nav-link" href="#/inventory" data-route="inventory" data-icon="package"><span class="nav-label">Inventory</span><span id="nav-checkin-count" class="nav-count" hidden></span></a>
       <p class="nav-group">Records</p>
@@ -141,6 +145,173 @@
       </section>
       <section class="panel"><h2>Starting point</h2><div id="forecast-start"></div></section>
       <div id="forecast-charts" class="forecast-charts"></div>
+    </section>
+
+    <section id="taxes-panel" class="page" data-page="taxes" aria-labelledby="taxes-title" hidden>
+      <header class="page-header"><div><h1 id="taxes-title" tabindex="-1">Taxes</h1>
+        <p class="page-subtitle">Write-offs, business income and tax paid ahead, tagged on your transactions and receipts. They feed this year's tax estimate.</p></div>
+        <div class="page-actions"><label class="inline-field">Tax year <select id="taxes-year"></select></label></div></header>
+      <section id="taxes-family-panel" class="panel" aria-labelledby="taxes-family-title" hidden><h2 id="taxes-family-title">Returns in this family</h2>
+        <p class="muted small">A married couple filing jointly is one return; everyone else files their own. The family is Tax Zen when every return is.
+          Write-offs and tax rules are kept in each person's own profile.</p>
+        <div id="taxes-family"></div></section>
+      <section id="taxes-return-panel" class="panel" aria-labelledby="taxes-return-title"><h2 id="taxes-return-title">The return, estimated</h2>
+        <div id="taxes-alerts"></div>
+        <section id="taxes-zen" class="taxes-zen" aria-labelledby="taxes-zen-title"></section>
+        <div class="taxes-layout">
+          <div id="taxes-return"></div>
+          <form id="taxes-inputs" class="form taxes-inputs" novalidate></form>
+        </div>
+        <div id="taxes-figures-box"></div></section>
+      <section class="panel taxes-personal" aria-labelledby="taxes-write-offs-title"><h2 id="taxes-write-offs-title">Write-offs and tax payments</h2><div id="taxes-write-offs"></div></section>
+      <section class="panel taxes-personal" aria-labelledby="taxes-rules-title"><h2 id="taxes-rules-title">Tax rules</h2>
+        <p class="muted small">A rule tags every bank line containing its words, now and as new lines arrive. A tag you set by hand always wins.</p>
+        <div id="taxes-rules"></div></section>
+      <section class="panel taxes-personal" aria-labelledby="taxes-businesses-title"><h2 id="taxes-businesses-title">Businesses</h2>
+        <p class="muted small">Each business gets its own Schedule C. Contract (1099) work is a business to the IRS even without a company.</p>
+        <ul id="taxes-businesses" class="finance-list"></ul>
+        <form id="taxes-business-form" class="inline"><div class="field"><label for="taxes-business-name">Add a business</label><input id="taxes-business-name" maxlength="60" placeholder="Contract work"></div>
+          <button type="submit">Add</button></form></section>
+    </section>
+
+    <section id="whatif-panel" class="page" data-page="whatif" aria-labelledby="whatif-title" hidden>
+      <header class="page-header"><div><h1 id="whatif-title" tabindex="-1">What If</h1>
+        <p class="page-subtitle">Try money plans before they're real: a new job, a raise, a move to another city or someone else's salary. Plans run through the forecast beside how things are now.</p></div></header>
+      <section class="panel" aria-labelledby="scenario-title"><h2 id="scenario-title">Plans</h2>
+        <div class="scenario-bar">
+          <div class="field"><label for="scenario-select">Plan</label><select id="scenario-select"></select></div>
+          <div class="button-row"><button id="scenario-duplicate" type="button" class="quiet" disabled>Duplicate</button><button id="scenario-delete" type="button" class="quiet" disabled>Delete</button></div>
+        </div>
+        <form id="scenario-form" class="form forecast-form scenario-form" novalidate>
+          <div class="forecast-row">
+            <div class="field"><label for="scenario-name">Name</label><input id="scenario-name" maxlength="60" placeholder="Tom moves to Denver" required></div>
+            <div class="field"><label for="scenario-basis">Start from</label><select id="scenario-basis"></select></div>
+            <div class="field" id="scenario-cash-field" hidden><label for="scenario-cash">Cash to start with</label><input id="scenario-cash" inputmode="decimal" value="0"></div>
+          </div>
+          <div class="forecast-row">
+            <div class="field"><label for="scenario-years">Years ahead</label><input id="scenario-years" type="number" min="1" max="100" value="10"></div>
+            <div class="field"><label for="scenario-inflation">Inflation per year (%)</label><input id="scenario-inflation" inputmode="decimal" value="2"></div>
+            <div class="field"><label for="scenario-income-growth">Income growth per year (%)</label><input id="scenario-income-growth" inputmode="decimal" value="0"></div>
+          </div>
+          <h3>Paychecks</h3><p class="muted small">Work a paycheck out in the planner below, then add it here. One that replaces pay takes the place of the pay on your confirmed pay stubs while it runs; one that adds is another earner.</p>
+          <div id="scenario-paychecks" class="forecast-list"></div>
+          <h3>Set spending</h3><p class="muted small">A category's monthly amount from a month on, in today's dollars, e.g. rent in the new city. It replaces the category's recent average and its bills.</p>
+          <div id="scenario-amounts" class="forecast-list"></div>
+          <button id="add-scenario-amount" type="button" class="quiet">Add set spending</button>
+          <h3>Spending changes</h3><p class="muted small">Raise or lower a category from its recent average, e.g. dining -20.</p>
+          <div id="scenario-changes" class="forecast-list"></div>
+          <button id="add-scenario-change" type="button" class="quiet">Add spending change</button>
+          <h3>One-off amounts</h3><p class="muted small">Moving costs and deposits are negative; money in is positive.</p>
+          <div id="scenario-one-offs" class="forecast-list"></div>
+          <button id="add-scenario-one-off" type="button" class="quiet">Add one-off amount</button>
+          <h3>Retirement</h3><p class="muted small">From the month you retire, pay and planned paychecks stop and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last.</p>
+          <label class="check-field"><input id="scenario-retire" type="checkbox"> Plan withdrawals from investments</label>
+          <fieldset id="scenario-retire-fields" class="forecast-retirement" hidden>
+            <legend class="visually-hidden">Retirement withdrawals in this plan</legend>
+            <div class="forecast-row">
+              <div class="field"><label for="scenario-retire-month">Retire in</label><input id="scenario-retire-month" type="month"></div>
+              <div class="field"><label for="scenario-retire-mode">Withdraw</label>
+                <select id="scenario-retire-mode"><option value="shortfall">Enough to cover the shortfall</option><option value="fixed">A fixed monthly amount</option></select></div>
+              <div class="field" id="scenario-retire-amount-field" hidden><label for="scenario-retire-amount">Monthly amount, today's dollars</label><input id="scenario-retire-amount" inputmode="decimal" placeholder="4000.00"></div>
+              <div class="field" id="scenario-retire-floor-field"><label for="scenario-retire-floor">Keep at least this cash, today's dollars</label><input id="scenario-retire-floor" inputmode="decimal" value="0"></div>
+              <div class="field"><label for="scenario-retire-tax">Tax on tax-deferred withdrawals (%)</label><input id="scenario-retire-tax" inputmode="decimal" value="0"></div>
+            </div>
+          </fieldset>
+          <div class="button-row"><button id="scenario-save" class="primary" type="submit">Save plan</button><button id="scenario-try" type="button">Compare with now</button></div>
+        </form>
+      </section>
+      <section id="track-panel" class="panel" aria-labelledby="track-title" hidden><h2 id="track-title">Follow this plan</h2>
+        <p id="track-status" class="muted small"></p>
+        <div class="button-row track-actions">
+          <div class="field"><label for="track-month">Budgets from</label><input id="track-month" type="month"></div>
+          <button id="track-preview" type="button">Use as budgets…</button>
+          <button id="track-stop" type="button" class="quiet" hidden>Stop following</button>
+        </div>
+        <div id="track-budgets"></div>
+        <div id="track-actual"></div>
+      </section>
+      <section class="panel" aria-labelledby="compare-title"><h2 id="compare-title">Compare</h2>
+        <fieldset class="compare-choices"><legend>Show, up to three</legend><div id="compare-options" class="button-row"></div></fieldset>
+        <div class="button-row"><div class="field"><label for="compare-years">Years ahead</label><input id="compare-years" type="number" min="1" max="100" value="10"></div>
+          <button id="compare-run" type="button" class="primary">Compare</button></div>
+        <div id="compare-result"></div>
+      </section>
+      <div id="paycheck-error"></div>
+      <div class="whatif-layout">
+        <form id="paycheck-form" class="form whatif-inputs" novalidate>
+          <h2>Paycheck planner</h2>
+          <div class="forecast-row">
+            <div class="field"><label for="plan-year">Tax year</label><input id="plan-year" type="number" min="2000" max="2100" required></div>
+            <div class="field"><label for="plan-status">Filing status</label>
+              <select id="plan-status"><option value="single">Single</option><option value="married_joint">Married filing jointly</option><option value="head_of_household">Head of household</option></select></div>
+            <div class="field"><label for="plan-state">Work state</label><select id="plan-state"></select></div>
+            <div class="field"><label for="plan-frequency">Paid</label>
+              <select id="plan-frequency"><option value="26">Every two weeks (26)</option><option value="24">Twice a month (24)</option><option value="52">Weekly (52)</option><option value="12">Monthly (12)</option></select></div>
+          </div>
+          <div class="forecast-row">
+            <div class="field"><label for="plan-pay-kind">Pay given as</label>
+              <select id="plan-pay-kind"><option value="annual">Yearly salary</option><option value="check">Gross pay per paycheck</option></select></div>
+            <div class="field"><label for="plan-pay">Amount</label><input id="plan-pay" inputmode="decimal" placeholder="85000.00" required></div>
+          </div>
+          <h3>Other earnings</h3><p class="muted small">Overtime, commission or a regular bonus, per paycheck.</p>
+          <div id="plan-earnings" class="forecast-list"></div>
+          <button id="add-plan-earnings" type="button" class="quiet">Add earnings</button>
+          <h3>Bonuses</h3><p class="muted small">Paid once a year with the first paycheck of its month, withheld at the federal supplemental rate (22%).</p>
+          <div id="plan-bonuses" class="forecast-list"></div>
+          <button id="add-plan-bonus" type="button" class="quiet">Add bonus</button>
+          <h3>Pre-tax deductions</h3><p class="muted small">401(k), HSA, FSA and health, dental and vision premiums. A 401(k) lowers income tax only; the others also lower Social Security and Medicare.</p>
+          <div id="plan-pre_tax" class="forecast-list"></div>
+          <button id="add-plan-pre_tax" type="button" class="quiet">Add pre-tax deduction</button>
+          <fieldset><legend>Federal income tax</legend>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-fed-deduction">Standard deduction a year</label><input id="plan-fed-deduction" inputmode="decimal"></div>
+              <div class="field"><label for="plan-fed-extra">Extra withholding per paycheck (W-4 4c)</label><input id="plan-fed-extra" inputmode="decimal" placeholder="0.00"></div>
+            </div>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-fed-credits">Credits a year (W-4 step 3)</label><input id="plan-fed-credits" inputmode="decimal" placeholder="0.00"></div>
+              <div class="field"><label for="plan-fed-other-income">Other income a year (W-4 4a)</label><input id="plan-fed-other-income" inputmode="decimal" placeholder="0.00"></div>
+              <div class="field"><label for="plan-fed-deductions">Other deductions a year (W-4 4b)</label><input id="plan-fed-deductions" inputmode="decimal" placeholder="0.00"></div>
+            </div>
+            <label class="check-field"><input id="plan-fed-step2" type="checkbox"> W-4 Step 2 checked (more than one job, or a spouse who works)</label>
+            <p class="muted small">Leave the standard deduction blank to use the year's confirmed table.</p>
+          </fieldset>
+          <fieldset><legend>State and local tax</legend>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-state-deduction">State deduction or exemption a year</label><input id="plan-state-deduction" inputmode="decimal"></div>
+              <div class="field"><label for="plan-state-rate">Flat state rate (%) instead of the table</label><input id="plan-state-rate" inputmode="decimal"></div>
+              <div class="field"><label for="plan-state-extra">Extra state withholding per paycheck</label><input id="plan-state-extra" inputmode="decimal" placeholder="0.00"></div>
+            </div>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-state-credits">State credits a year</label><input id="plan-state-credits" inputmode="decimal" placeholder="0.00"></div>
+              <div class="field"><label for="plan-state-supplemental">State rate on bonuses (%)</label><input id="plan-state-supplemental" inputmode="decimal"></div>
+            </div>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-sdi">State disability insurance (%)</label><input id="plan-sdi" inputmode="decimal"></div>
+              <div class="field"><label for="plan-sdi-limit">…on wages up to, a year</label><input id="plan-sdi-limit" inputmode="decimal" placeholder="No limit"></div>
+            </div>
+            <div class="forecast-row">
+              <div class="field"><label for="plan-local-kind">Local tax</label>
+                <select id="plan-local-kind"><option value="none">None</option><option value="percent">A percent</option><option value="amount">An amount per paycheck</option></select></div>
+              <div class="field" id="plan-local-value-field" hidden><label for="plan-local-value">Local tax rate (%)</label><input id="plan-local-value" inputmode="decimal"></div>
+              <div class="field" id="plan-local-wages-field" hidden><label for="plan-local-wages">Of</label>
+                <select id="plan-local-wages"><option value="taxable">Income-tax wages</option><option value="gross">Gross pay</option></select></div>
+            </div>
+            <p class="muted small">Leave the state deduction blank to use the state's confirmed table; fill it in where the state gives a personal exemption instead.</p>
+          </fieldset>
+          <h3>Post-tax deductions</h3>
+          <div id="plan-post_tax" class="forecast-list"></div>
+          <button id="add-plan-post_tax" type="button" class="quiet">Add post-tax deduction</button>
+          <h3>Paid by your employer</h3><p class="muted small">Not taken from pay; counted toward your 401(k) and HSA.</p>
+          <div class="forecast-row">
+            <div class="field"><label for="plan-match">401(k) match: % of what you put in</label><input id="plan-match" inputmode="decimal" placeholder="100"></div>
+            <div class="field"><label for="plan-match-limit">…up to % of gross pay</label><input id="plan-match-limit" inputmode="decimal" placeholder="4"></div>
+          </div>
+          <div id="plan-employer" class="forecast-list"></div>
+          <button id="add-plan-employer" type="button" class="quiet">Add employer contribution</button>
+          <div class="button-row"><button id="run-paycheck" class="primary" type="submit">Work it out</button><button id="paycheck-to-plan" type="button">Add to plan</button></div>
+        </form>
+        <section id="paycheck-result" class="panel whatif-result" aria-label="Paycheck from gross to net"></section>
+      </div>
     </section>
 
     <section id="investments-panel" class="page" data-page="investments" aria-labelledby="investments-title" hidden>
@@ -329,7 +500,7 @@
         <p id="library-subtitle" class="page-subtitle">Your important papers: leases, policies, pay stubs, tax forms and more. New files arrive in the Inbox.</p></div>
         <div class="page-actions"><button id="refresh" type="button">Refresh</button></div></header>
       <div class="toolbar">
-        <input id="document-search" type="search" placeholder="Search merchant, title or file name" aria-label="Search documents" autocomplete="off">
+        <input id="document-search" type="search" placeholder="Search names, files or words in documents" aria-label="Search documents" autocomplete="off">
         <div id="work-filters" class="work-filters" role="group" aria-label="Filter by state"></div>
         <div class="toolbar-actions">
           <label class="inline-field">From <input id="date-from" type="date" aria-label="Document date from"></label>

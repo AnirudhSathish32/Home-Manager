@@ -12,12 +12,14 @@ const ROUTES = {
   // Old links (#/finances?section=…) forward to the page that now holds that section.
   finances: {title: "Finances", nav: "transactions", show: route => openFinanceRoute(route.params)},
   forecast: {title: "Forecast", show: () => configured ? loadForecast() : null},
+  whatif: {title: "What If", show: route => configured ? loadWhatIf(route.params) : null},
+  taxes: {title: "Taxes", show: () => configured ? loadTaxes() : null},
   investments: {title: "Investments", show: route => loadInvestments(route.params)},
   documents: {title: "Documents", show: route => showLibrary("documents", route)},
   // Receipts and statements: the money store, on the same library page with its own folders.
   receipts: {title: "Receipts & statements", page: "documents", show: route => showLibrary("money", route)},
-  // #/documents/ID[?version=HASH] opens the inspector over the preserved list state.
-  document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version")) : null},
+  // #/documents/ID[?version=HASH][&lines=ID,ID] opens the inspector over the preserved list state, at those text lines.
+  document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version"), route.params.get("lines")) : null},
   processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory(), loadProcessing()]) : null},
   settings: {title: "Settings", show: () => null},
 };
@@ -39,7 +41,7 @@ function parseRoute() {
 }
 // A family profile's own library is only its inbox: uploads are read, reviewed and routed to people from these pages.
 // Everything else (transactions, budgets, bills, inventory) belongs to each person's profile.
-const FAMILY_ROUTES = ["home", "settings", "review", "receipts", "documents", "document", "processing"];
+const FAMILY_ROUTES = ["home", "settings", "review", "receipts", "documents", "document", "processing", "whatif", "taxes"];
 function showRoute(moveFocus) {
   const route = parseRoute(), previous = currentRoute?.name;
   if (familyMode && !FAMILY_ROUTES.includes(route.name)) { location.replace("#/home"); return; }

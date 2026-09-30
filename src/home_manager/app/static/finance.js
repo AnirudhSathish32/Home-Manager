@@ -275,7 +275,7 @@ function ruleWords(record) {
   return (record.merchant || record.description_raw || "").toUpperCase().replace(/#\s*\d+|\b\d+\b|[^\w\s&]/g, " ").split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
 }
 async function openTransaction(id) {
-  const record = await api(`/api/finance/records/transaction/${id}`);
+  const [record, {tag: taxTag}] = await Promise.all([api(`/api/finance/records/transaction/${id}`), api(`/api/tax-tags/on/transaction/${id}`).catch(() => ({tag: null}))]);
   await loadCategoryOptions().catch(() => {});
   const body = $("tx-drawer-body");
   $("tx-drawer-title").textContent = record.merchant || record.description_raw;
@@ -356,7 +356,12 @@ async function openTransaction(id) {
     sections.push(drawerSection("Split by the receipt's items", split,
                                 element("small", "Change an item's category in the Items view or on the receipt. Saving a category below puts the whole charge in it instead.", "muted block")));
   }
-  body.replaceChildren(...sections, drawerSection("Category", form), drawerSection("Evidence", evidence), drawerSection("History", history), details);
+  // Taxes (taxes.js): a write-off, business income or a tax payment made ahead.
+  const taxes = taxTagEditor({targets: [{type: "transaction", id, label: record.description_raw, inflow: record.amount_minor > 0,
+                                         amount: record.display.amount_minor.replace(/^-/, "")}],
+                              tags: taxTag ? [taxTag] : [], words: ruleWords(record), onDone: () => openTransaction(id)});
+  body.replaceChildren(...sections, drawerSection("Category", form), drawerSection("Taxes", taxes), drawerSection("Evidence", evidence),
+                       drawerSection("History", history), details);
   if (!$("tx-drawer").open) $("tx-drawer").showModal();
 }
 $("close-tx-drawer").addEventListener("click", () => $("tx-drawer").close());

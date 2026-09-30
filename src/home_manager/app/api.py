@@ -25,10 +25,17 @@ from ..finance.investments import AccountInput as InvestmentAccountInput
 from ..finance.investments import AccountUpdate, HoldingInput, Investments, LotInput, MaturedInput, PayrollChoice, ValueInput
 from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
+from ..finance.paycheck import PaycheckInput
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
+from ..finance.scenarios import MAX_COMPARED, ScenarioInput, Scenarios
 from ..finance.tabular import ImportMapping
+from ..finance.tax_family import TaxUnits
+from ..finance.tax_lines import BUSINESS_KINDS, INCOME_KINDS, KINDS, LINES
+from ..finance.tax_tags import TaxTags
+from ..finance.tax_year import TaxYears
 from ..finance.tools import ToolName, call_tool
 from ..household.items import CHECKIN_ANSWERS, LOT_EVENTS, ResolutionFields
+from ..household.tax_figures import TaxFigures
 from ..household.warranty import Warranties
 from ..library.scanner import ScanLimits
 from ..library.storage import digest_file
@@ -38,7 +45,7 @@ from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "investments.js": "text/javascript", "profiles.js": "text/javascript", "style.css": "text/css"}
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "style.css": "text/css"}
 
 
 class SettingsInput(BaseModel):
@@ -308,6 +315,70 @@ class TaxTableLookupInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     jurisdiction: str = Field(pattern=r"^(US|[A-Z]{2})$", description="US for federal, or a state's two-letter code.")
     year: int = Field(ge=2000, le=2100)
+    filing_status: Literal["single", "married_joint", "head_of_household"] | None = Field(
+        default=None, description="The household's status unless the paycheck planner plans for another.")
+
+
+class CompareInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scenarios: list[int] = Field(default_factory=list, max_length=MAX_COMPARED)
+    draft: ScenarioInput | None = Field(default=None, description="A plan being edited, compared before it is saved.")
+    include_now: bool = True
+    years: int = Field(default=10, ge=1, le=100)
+
+
+class TaxTagInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    target_type: Literal["transaction", "receipt", "receipt_item"]
+    target_id: int
+    kind: str = Field(max_length=40)
+    line: str = Field(max_length=40)
+    business_id: int | None = None
+    amount: str | None = Field(default=None, max_length=30, description="The part that counts; the whole item when left out.")
+    note: str = Field(default="", max_length=200)
+
+
+class TaxTagReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["verified", "rejected"]
+    rule_words: str | None = Field(default=None, max_length=120, description="Also tag every bank line with these words.")
+
+
+class TaxRuleInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    pattern: str = Field(min_length=1, max_length=120)
+    kind: str = Field(max_length=40)
+    line: str = Field(max_length=40)
+    business_id: int | None = None
+    account_id: int | None = None
+
+
+class BusinessInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=60)
+
+
+class TaxFiguresInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    filing_status: Literal["single", "married_joint", "head_of_household"] | None = None
+    figures: dict[str, str | None] = Field(description="Figure key: an amount or rate as text, or null to remove your figure.")
+
+
+class TaxUnitInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(default="", max_length=60)
+    members: list[str] = Field(min_length=1, max_length=2)
+    filing_status: Literal["single", "married_joint", "head_of_household"]
+
+
+class TaxFiguresLookupInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    filing_status: Literal["single", "married_joint", "head_of_household"] | None = None
+
+
+class AdoptInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Budgets are the plan's set spending in this month; followed from then.")
 
 
 class TaxTableReviewInput(BaseModel):
@@ -678,7 +749,186 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.post("/api/tax-tables/lookup", status_code=202)
     def tax_table_lookup(value: TaxTableLookupInput):
         store()
-        return manager().start_tax_table_lookup(value.jurisdiction, value.year)
+        return manager().start_tax_table_lookup(value.jurisdiction, value.year, value.filing_status)
+
+    @app.post("/api/paycheck")
+    def plan_paycheck(value: PaycheckInput):
+        store()
+        return manager().paycheck(value)
+
+    @app.get("/api/paycheck/from-stub/{income_id}")
+    def paycheck_from_stub(income_id: int):
+        store()
+        return manager().paycheck_from_stub(income_id)
+
+    # What If scenarios: stored in the open library (the family's own library in the family view).
+    @app.get("/api/scenarios")
+    def list_scenarios():
+        store()
+        return manager().scenarios_view()
+
+    @app.post("/api/scenarios", status_code=201)
+    def create_scenario(value: ScenarioInput):
+        return Scenarios(store()).create(value)
+
+    @app.post("/api/scenarios/compare")
+    def compare_scenarios(value: CompareInput):
+        store()
+        return manager().compare_scenarios(value.scenarios, value.draft, value.include_now, value.years)
+
+    @app.put("/api/scenarios/{scenario_id}")
+    def update_scenario(scenario_id: int, value: ScenarioInput):
+        return Scenarios(store()).update(scenario_id, value)
+
+    @app.post("/api/scenarios/{scenario_id}/duplicate", status_code=201)
+    def duplicate_scenario(scenario_id: int):
+        return Scenarios(store()).duplicate(scenario_id)
+
+    @app.delete("/api/scenarios/{scenario_id}")
+    def delete_scenario(scenario_id: int):
+        return Scenarios(store()).delete(scenario_id)
+
+    # Tax tags: write-offs, business income, credit spending and tax paid ahead (finance/tax_tags.py).
+    @app.get("/api/tax/setup")
+    def tax_setup():
+        return {"kinds": KINDS, "lines": {kind: [{"key": key, "label": label, "form_line": form} for key, label, form in lines] for kind, lines in LINES.items()},
+                "business_kinds": list(BUSINESS_KINDS), "income_kinds": list(INCOME_KINDS), "businesses": TaxTags(store()).businesses()}
+
+    @app.post("/api/tax/businesses", status_code=201)
+    def add_business(value: BusinessInput):
+        return TaxTags(store()).add_business(value.name)
+
+    @app.put("/api/tax/businesses/{business_id}")
+    def rename_business(business_id: int, value: BusinessInput):
+        return TaxTags(store()).rename_business(business_id, value.name)
+
+    @app.delete("/api/tax/businesses/{business_id}")
+    def archive_business(business_id: int):
+        return TaxTags(store()).archive_business(business_id)
+
+    @app.get("/api/tax-tags")
+    def list_tax_tags(status: Literal["proposed", "verified", "rejected"] | None = None, year: int | None = Query(None, ge=1990, le=2100),
+                      kind: str | None = None, receipt_id: int | None = None):
+        return {"tags": TaxTags(store()).list(status, year, kind=kind, receipt_id=receipt_id)}
+
+    @app.get("/api/tax-tags/on/{target_type}/{target_id}")
+    def tax_tag_on(target_type: Literal["transaction", "receipt", "receipt_item"], target_id: int):
+        return {"tag": TaxTags(store()).on(target_type, target_id)}
+
+    @app.post("/api/tax-tags", status_code=201)
+    def tag_item(value: TaxTagInput):
+        return TaxTags(store()).tag(value.target_type, value.target_id, value.kind, value.line, value.business_id, value.amount, value.note)
+
+    @app.post("/api/tax-tags/{tag_id}/not-a-write-off")
+    def not_a_write_off(tag_id: int):
+        return TaxTags(store()).not_a_write_off(tag_id)
+
+    @app.post("/api/tax-tags/{tag_id}/review")
+    def review_tax_tag(tag_id: int, value: TaxTagReviewInput):
+        return TaxTags(store()).review(tag_id, value.status, value.rule_words)
+
+    @app.get("/api/tax/rules")
+    def tax_rules():
+        return {"rules": TaxTags(store()).rules()}
+
+    @app.post("/api/tax/rules", status_code=201)
+    def add_tax_rule(value: TaxRuleInput):
+        return TaxTags(store()).add_rule(value.pattern, value.kind, value.line, value.business_id, value.account_id)
+
+    @app.put("/api/tax/rules/{rule_id}")
+    def update_tax_rule(rule_id: int, value: TaxRuleInput):
+        return TaxTags(store()).update_rule(rule_id, value.pattern, value.kind, value.line, value.business_id, value.account_id)
+
+    @app.delete("/api/tax/rules/{rule_id}")
+    def delete_tax_rule(rule_id: int):
+        return TaxTags(store()).delete_rule(rule_id)
+
+    @app.get("/api/tax/write-offs/{year}")
+    def write_offs(year: int, currency: str = Query("USD", pattern=r"^[A-Z]{3}$")):
+        if not 1990 <= year <= 2100:
+            raise ValueError("Choose a tax year between 1990 and 2100.")
+        return TaxTags(store()).year(year, currency)
+
+    # The year's return, estimated (finance/tax_year.py, finance/tax_return.py) and its figures (household/tax_figures.py).
+    def tax_year_value(year):
+        if not 1990 <= year <= 2100:
+            raise ValueError("Choose a tax year between 1990 and 2100.")
+        return year
+
+    @app.get("/api/tax/year/{year}")
+    def tax_year(year: int):
+        store()
+        return manager().tax_year(tax_year_value(year))
+
+    @app.put("/api/tax/year/{year}")
+    def save_tax_year(year: int, value: dict):
+        store()
+        TaxYears(store()).save(tax_year_value(year), value)
+        return manager().tax_year(year)
+
+    # The family's returns: who files together, and each return's estimate and Tax Zen (finance/tax_family.py).
+    def family_only():
+        if not manager().family:
+            raise ValueError("Open the family profile to see the family's returns.")
+        return store()
+
+    @app.get("/api/tax/family/{year}")
+    def family_tax(year: int):
+        family_only()
+        return manager().family_tax(tax_year_value(year))
+
+    @app.put("/api/tax/family/{year}/{unit_id}")
+    def save_family_tax(year: int, unit_id: int, value: dict):
+        TaxYears(family_only()).save(tax_year_value(year), value, f"unit-{unit_id}")
+        return manager().family_tax(year)
+
+    @app.post("/api/tax/units", status_code=201)
+    def add_tax_unit(value: TaxUnitInput):
+        family_only()
+        return manager().add_tax_unit(value.name, value.members, value.filing_status)
+
+    @app.delete("/api/tax/units/{unit_id}")
+    def delete_tax_unit(unit_id: int):
+        return TaxUnits(family_only()).delete(unit_id)
+
+    @app.put("/api/tax/figures/{year}")
+    def type_tax_figures(year: int, value: TaxFiguresInput):
+        store()
+        return TaxFigures(store()).type_in(tax_year_value(year), value.filing_status or manager().household.filing_status, value.figures)
+
+    @app.post("/api/tax/figures/{year}/lookup", status_code=202)
+    def look_up_tax_figures(year: int, value: TaxFiguresLookupInput):
+        store()
+        return manager().start_tax_figures_lookup(tax_year_value(year), value.filing_status)
+
+    @app.get("/api/tax/figure-sets")
+    def tax_figure_sets(status: Literal["proposed", "verified", "rejected"] | None = None):
+        return {"sets": TaxFigures(store()).list(status)}
+
+    @app.post("/api/tax/figure-sets/{set_id}/review")
+    def review_tax_figures(set_id: int, value: TaxTableReviewInput):
+        return TaxFigures(store()).review(set_id, value.status)
+
+    # A plan put to use: its set spending as budgets, then compared with what happened.
+    @app.get("/api/scenarios/{scenario_id}/budgets")
+    def plan_budgets(scenario_id: int, month: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
+        store()
+        return manager().plan_budgets(scenario_id, month)
+
+    @app.post("/api/scenarios/{scenario_id}/adopt")
+    def adopt_plan(scenario_id: int, value: AdoptInput):
+        store()
+        return manager().adopt_plan(scenario_id, value.month)
+
+    @app.post("/api/scenarios/{scenario_id}/stop")
+    def stop_plan(scenario_id: int):
+        store()
+        return manager().stop_plan(scenario_id)
+
+    @app.get("/api/scenarios/{scenario_id}/actual")
+    def plan_vs_actual(scenario_id: int):
+        store()
+        return manager().plan_vs_actual(scenario_id)
 
     @app.post("/api/tax-tables/{table_id}/review")
     def review_tax_table(table_id: int, value: TaxTableReviewInput):

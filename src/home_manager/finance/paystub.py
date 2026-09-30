@@ -99,14 +99,20 @@ def taxable_wages(lines):
     return result
 
 
-def income_tax(code, table, wages, paychecks, actual):
-    """One jurisdiction's income tax, bucket by bucket, for a year of paychecks like this one."""
-    annual = wages * paychecks
-    deduction = table["standard_deduction_minor"]
+def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_deductions=0, credits=0):
+    """One jurisdiction's income tax, bucket by bucket, for a year of paychecks like this one. The W-4 adjustments (the
+    paycheck planner, finance/paycheck.py) add other income to the year's wages, add deductions beside the standard
+    deduction as a second 0% bucket, and take credits off the year's tax."""
+    annual = wages * paychecks + other_income
+    standard = table["standard_deduction_minor"]
+    deduction = standard + extra_deductions
     brackets = json.loads(table["brackets_json"])
     taxable = max(0, annual - deduction)
-    buckets = [{"label": "Standard deduction", "rate_bp": 0, "from_minor": 0, "to_minor": deduction,
-                "income_minor": min(annual, deduction), "tax_minor": 0}]
+    buckets = [{"label": "Standard deduction", "rate_bp": 0, "from_minor": 0, "to_minor": standard,
+                "income_minor": min(annual, standard), "tax_minor": 0}]
+    if extra_deductions:
+        buckets.append({"label": "Other deductions", "rate_bp": 0, "from_minor": standard, "to_minor": deduction,
+                        "income_minor": max(0, min(annual, deduction) - standard), "tax_minor": 0})
     exact = Decimal(0)
     for index, bracket in enumerate(brackets):
         start = bracket["from_minor"]
@@ -120,11 +126,15 @@ def income_tax(code, table, wages, paychecks, actual):
     for bucket in buckets:
         bucket["per_paycheck_income_minor"] = rounded(Decimal(bucket["income_minor"]) / paychecks)
         bucket["per_paycheck_tax_minor"] = rounded(Decimal(bucket["tax_minor"]) / paychecks)
+    before_credits = exact
+    exact = max(Decimal(0), exact - credits)
     estimate = rounded(exact / paychecks)
     top = next((bucket for bucket in reversed(buckets) if bucket["income_minor"] > 0), buckets[0])
     return {"jurisdiction": code, "name": jurisdiction_name(code), "status": "verified", "period_wages_minor": wages,
-            "annual_wages_minor": annual, "standard_deduction_minor": deduction,
-            "standard_deduction_per_paycheck_minor": rounded(Decimal(deduction) / paychecks), "taxable_minor": taxable,
+            "annual_wages_minor": annual, "standard_deduction_minor": standard,
+            "standard_deduction_per_paycheck_minor": rounded(Decimal(standard) / paychecks), "taxable_minor": taxable,
+            "other_income_minor": other_income, "extra_deductions_minor": extra_deductions,
+            "tax_before_credits_minor": rounded(before_credits), "credits_minor": min(credits, rounded(before_credits)),
             "buckets": buckets, "annual_tax_minor": rounded(exact), "estimate_minor": estimate, "actual_minor": actual,
             "difference_minor": None if actual is None else actual - estimate, "top_rate_bp": top["rate_bp"],
             "effective_rate_bp": rounded(exact * 10000 / annual) if annual else 0,

@@ -6,6 +6,8 @@ const ICONS = {
   home: ["m3 10 9-7 9 7", "M5 9v12h14V9", "M9 21v-8h6v8"],
   trend: ["m3 17 6-6 4 4 8-8", "M15 7h6v6"],
   "chart-line": ["M3 3v16a2 2 0 0 0 2 2h16", "m19 9-5 5-4-4-3 3"],
+  "receipt-tax": ["M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z", "m9 15 6-6", "M9 9h.01", "M15 15h.01"],
+  sliders: ["M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M2 14h4", "M10 8h4", "M18 16h4"],
   check: ["M20 6 9 17l-5-5"],
   "check-circle": ["circle", "m9 12 2 2 4-4"],
   alert: ["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"],
@@ -78,6 +80,7 @@ const STATUS = {
   // Budgets, bills and inventory.
   on_track: ["On track", "info", "check"], ahead_of_pace: ["Ahead of pace", "warning", "alert"], over: ["Over budget", "danger", "octagon"],
   within: ["Within budget", "positive", "check"], not_started: ["Not started", "neutral", "clock"],
+  over_plan: ["Over plan", "danger", "octagon"], within_plan: ["Within plan", "positive", "check"],
   past_due_unpaid: ["Past due · marked unpaid", "danger", "alert"], paid: ["Paid", "positive", "check"],
   in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
   // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.

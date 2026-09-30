@@ -6,6 +6,7 @@ for model generation; organization is serialized by the managed library itself.
 """
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -20,14 +21,14 @@ import uuid
 from ..core.formats import SUPPORTED, extension
 from ..core.jobs import QUEUES, Cancelled, Work
 from ..core.logs import log_failure
-from ..core.money import money
+from ..core.money import currency_code, money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
 from ..documents.extraction import ExtractionService
 from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
 from ..documents.reviewer import ReviewerConfig, review
-from ..finance import paystub
+from ..finance import paycheck, paystub, plan_tracking, scenarios
 from ..finance.assistant import AssistantService
 from ..finance.charts import tax_buckets_svg
 from ..finance.checkin import CheckinService
@@ -37,8 +38,10 @@ from ..finance.reconcile import Reconciler
 from ..finance.recurring_scan import RecurringScan
 from ..finance.tools import FinanceTools
 from ..household.resolver import ItemResolver
-from ..household.tax_tables import TaxTableService
+from ..household.tax_figures import TaxFigureService
+from ..household.tax_tables import TaxTables, TaxTableService
 from ..household.warranty import WarrantyService
+from ..library import text_index
 from ..library.backup import BackupService, restore_backup
 from ..library.organization import OrganizationService
 from ..library.scanner import ScanLimits, Scanner
@@ -93,7 +96,7 @@ class Manager:
         self.future = None  # Completion of the most recently started operation, including follow-ups.
         self.store = self.receipts = self.batches = self.reasoning = self.organization = None
         self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
-        self.tax_tables = None
+        self.tax_tables = self.tax_figures = None
         self.restores = {}  # Restore outcomes for this process; a restore may run with no library open.
         self.shares = {}  # Share exports for this process.
         # A shared library opened for this process only: never saved to settings, deleted when it ends.
@@ -357,7 +360,7 @@ class Manager:
                 self.store.close()
             self.store = self.receipts = self.batches = self.reasoning = self.organization = None
             self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
-            self.tax_tables = None
+            self.tax_tables = self.tax_figures = None
             self.inbox_seen = self.inbox_candidate = None
 
     def leave_family(self):
@@ -713,11 +716,16 @@ class Manager:
             self.organization, self.items, self.checkins = OrganizationService(store), ItemResolver(store), CheckinService(store)
             self.warranties = WarrantyService(store, self.items.web)
             self.tax_tables = TaxTableService(store, self.items.web)
+            self.tax_figures = TaxFigureService(store, self.items.web)  # Its runs share tax_table_runs, recovered with the tables'.
             for service in (self.organization, self.reconciler, self.backups, self.assistant, self.items, self.checkins, self.warranties,
                             self.tax_tables):
                 service.recover()
             if previous and previous is not store:
                 previous.close()
+            with store.connection() as db:
+                unindexed = bool(text_index.pending(db))
+            if unindexed:  # Readings saved before the text index existed, or under older passage rules.
+                self.submit("capture", "text_index", "Indexing document text for search", lambda work: text_index.backfill(store, work))
             return self.settings()
 
     def load_setting(self, name, model):
@@ -967,10 +975,11 @@ class Manager:
             work.check()
             self.tax_tables.run(run_id, self.reasoning_config, work)
 
-    def start_tax_table_lookup(self, jurisdiction, year):
+    def start_tax_table_lookup(self, jurisdiction, year, filing_status=None):
+        """filing_status: the paycheck planner can plan for another status than the household's."""
         with self.mutex:
             self.require("inference", "Model work is running. Wait for it or cancel it before looking up a tax table.")
-            run_id = self.tax_tables.enqueue(jurisdiction, year, self.household.filing_status, self.reasoning_config)
+            run_id = self.tax_tables.enqueue(jurisdiction, year, filing_status or self.household.filing_status, self.reasoning_config)
             self.future = self.submit("inference", "tax_table_lookup", "Looking up a tax table", self.tax_tables.run, run_id, self.reasoning_config)
             return {"run_id": run_id}
 
@@ -986,6 +995,214 @@ class Manager:
                 part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {year}", part["buckets"], record["currency"],
                                                     record["withholding"]["paychecks"])
         return record
+
+    def start_tax_figures_lookup(self, year, filing_status=None):
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before looking up tax figures.")
+            run_id = self.tax_figures.enqueue_figures(year, filing_status or self.household.filing_status, self.reasoning_config)
+            self.future = self.submit("inference", "tax_figure_lookup", "Looking up tax figures", self.tax_figures.run, run_id, self.reasoning_config)
+            return {"run_id": run_id}
+
+    def tax_year(self, year):
+        """This profile's return for a year (finance/tax_year.py, finance/tax_return.py): what the records give, what you typed,
+        the figures and tables it needs, and the estimate."""
+        from ..finance import tax_year
+        status = self.household.filing_status
+        gathered = tax_year.gather(self.store, year, self.household)
+        inputs = tax_year.TaxYears(self.store).inputs(year)
+        tables_for = lambda codes: self.tax_tables.tables.for_year(year, codes, status)
+        return self.tax_view(year, status, self.household, gathered, inputs, tables_for, self.tax_figures.figures.effective(year, status))
+
+    def family_tax(self, year):
+        """Every return in the family (finance/tax_family.py): each one's records gathered from its members' shared copies,
+        estimated, with its Tax Zen. People on no return yet are listed so a return can be made for them."""
+        from ..finance import tax_family, tax_year
+        from ..finance.ledger import HouseholdConfig
+        from ..household.tax_figures import TaxFigures
+        units = tax_family.TaxUnits(self.store).list()
+        with self.family.mutex:
+            members = self.family_members()
+            names = {member["member_id"]: member["name"] for member, _ in members}
+            stores = {member["member_id"]: store for member, store in members}
+            tables_any = self.scenario_tables(members)
+            returns = []
+            for unit in units:
+                status = unit["filing_status"]
+                household = HouseholdConfig(filing_status=status)
+                parts = [(names.get(member, "Member"), tax_year.gather(stores[member], year, household)) for member in unit["members"] if member in stores]
+                gathered = tax_family.combine(parts)
+                inputs = tax_year.TaxYears(self.store).inputs(year, f"unit-{unit['id']}")
+                figures = TaxFigures(self.store).effective(year, status)
+                for store in stores.values():  # Figures a member confirmed or typed count when the family has none of its own.
+                    member_figures = TaxFigures(store).effective(year, status)
+                    for key, value in member_figures["values"].items():
+                        if key not in figures["values"]:
+                            figures["values"][key], figures["sources"][key] = value, member_figures["sources"][key]
+                            figures["display"][key] = member_figures["display"][key]
+                figures["missing"] = [key for key in figures["labels"] if key not in figures["values"]]
+                view = self.tax_view(year, status, household, gathered, inputs, lambda codes, status=status: tables_any(year, codes, status), figures)
+                returns.append({**unit, "member_names": [names.get(member, "Member") for member in unit["members"]], "view": view})
+        placed = {member for unit in units for member in unit["members"]}
+        return {"year": year, "returns": returns, "members": [{"member_id": key, "name": name, "on_a_return": key in placed} for key, name in names.items()],
+                "zen": bool(returns) and all(item["view"]["zen"].get("zen") for item in returns)}
+
+    def add_tax_unit(self, name, members, filing_status):
+        from ..finance.tax_family import TaxUnits
+        with self.family.mutex:
+            known = {member["member_id"]: member["name"] for member, _ in self.family_members()}
+        return TaxUnits(self.store).add(name, members, filing_status, known)
+
+    def tax_view(self, year, status, household, gathered, inputs, tables_for, figures):
+        """One return's page: gathered records, typed values, the merged input, its tables and figures, the estimate and Tax Zen."""
+        from ..core.money import format_minor
+        from ..finance import tax_return, tax_year, tax_zen
+        merged = tax_year.merge(year, status, household, gathered, inputs)
+        codes = ["US", *([merged.state] if merged.state else [])]
+        tables = tables_for(codes)
+        estimate = tax_return.estimate(merged, tables.get("US"), figures["values"], tables.get(merged.state) if merged.state else None)
+        # Tax Zen (finance/tax_zen.py): the W-4 entries, or advance tax, that bring it to $0.
+        federal = tables.get("US") if tables.get("US", {}).get("status") == "verified" else None
+        zen = tax_zen.advise(estimate, gathered["jobs"], federal, tax_year.w4s(inputs), gathered["estimated_payments"]["federal_estimated"], year,
+                             choose=inputs.get("zen_job"), prior=tax_year.prior_year(inputs))
+        money_view = lambda values: {key: format_minor(amount, "USD") for key, amount in values.items() if isinstance(amount, int) and not isinstance(amount, bool)}
+        gathered["display"] = money_view(gathered["values"])
+        for job in gathered["jobs"]:
+            job["display"] = money_view(job["values"])
+            job["per_check_display"] = money_view(job["per_check"])
+        for business in gathered["businesses"]:
+            business["display"] = money_view(business)
+        return {"year": year, "filing_status": status, "filing_status_name": paystub.STATUS_NAMES[status], "gathered": gathered, "inputs": inputs,
+                "input": merged.model_dump(), "figures": figures, "return": estimate, "zen": zen,
+                "tables": {code: (tables[code]["status"] if code in tables else "missing") for code in codes}}
+
+    def paycheck(self, value):
+        """A planned paycheck, gross to net (finance/paycheck.py), with a bucket chart per income tax."""
+        from ..finance import tax_zen
+        from ..finance.ledger import HouseholdConfig
+        tables = self.tax_tables.tables.for_year(value.year, ["US", *([value.work_state] if value.work_state else [])], value.filing_status)
+        result = paycheck.calculate(value, tables)
+        # At tax time: this paycheck alone for a full year, and the W-4 entry that brings its return to $0 (finance/tax_zen.py).
+        empty = {"values": {}, "sources": {}, "jobs": [], "businesses": [], "state": None, "notes": [], "estimated_payments": {"federal_estimated": [], "state_estimated": []}}
+        result["tax_time"] = tax_zen.plan_tax_zen([("This paycheck", result, value, True)], empty, HouseholdConfig(filing_status=value.filing_status),
+                                                  value.filing_status, value.year, lambda codes: tables, self.tax_figures.figures.effective(value.year, value.filing_status)["values"])
+        for part in result["jurisdictions"]:
+            if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
+                part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {value.year}", part["buckets"], result["currency"],
+                                                    result["paychecks"])
+        return result
+
+    # What If scenarios (finance/scenarios.py) ----------------------------------------
+
+    def scenarios_view(self):
+        """Saved scenarios, the bases this profile can plan from, and the investment accounts a paycheck can pay into."""
+        from ..finance.investments import Investments
+        accounts = [] if self.family else [{"id": asset["account_id"], "name": asset["name"], "kind_label": asset["kind_label"], "tax_treatment": asset["tax_treatment"]}
+                                           for asset in Investments(self.store).forecast_assets()]
+        return {"scenarios": scenarios.Scenarios(self.store).list(), "family": bool(self.family), "accounts": accounts,
+                "bases": ["family", "blank"] if self.family else ["profile", "blank"]}
+
+    def scenario_tables(self, members=None):
+        """tables_for(year, jurisdictions, status): this library's tax tables, and in the family view also each member's; a
+        confirmed table wins over a proposed one. Call with the family's mutex held."""
+        stores = [self.store] + ([store for _, store in (members or self.family_members())] if self.family else [])
+
+        def tables_for(year, jurisdictions, filing_status):
+            found = {}
+            for store in stores:
+                for code, row in TaxTables(store).for_year(year, jurisdictions, filing_status).items():
+                    if code not in found or (found[code]["status"] != "verified" and row["status"] == "verified"):
+                        found[code] = row
+            return found
+        return tables_for
+
+    def scenario_base(self, value):
+        from ..finance.forecast import Assets, baseline
+        history, currency = value.forecast.history_months, value.forecast.currency
+        if value.basis == "blank":
+            chosen = currency_code(currency or self.household.home_currency or "USD")
+            return scenarios.empty_baseline(chosen, history, scenarios.starting_cash(value, chosen))
+        if value.basis == "family":
+            if not self.family:
+                raise ValueError("Open the family profile to plan from the family's records.")
+            return scenarios.family_baseline(self.family_members(), history, currency or self.household.home_currency)
+        if self.family:
+            raise ValueError("In the family view, plan from the family's records or a blank slate.")
+        return baseline(FinanceTools(self.store), Assets(self.store), history, currency)
+
+    def compare_scenarios(self, ids, draft, include_now, years):
+        """Now (this profile's or the family's forecast with the Forecast page's defaults) and each chosen plan, all over the
+        same years."""
+        from ..finance.forecast import ForecastInput
+        saved = scenarios.Scenarios(self.store)
+        with (self.family.mutex if self.family else contextlib.nullcontext()):
+            tables_for = self.scenario_tables()
+            chosen = ([scenarios.ScenarioInput(name="Now", basis="family" if self.family else "profile", forecast=ForecastInput(years=years))]
+                      if include_now else [])
+            chosen += [saved.input(scenario_id) for scenario_id in ids] + ([draft] if draft else [])
+            runs = []
+            for value in chosen:
+                value = value.model_copy(update={"forecast": value.forecast.model_copy(update={"years": years})})
+                result = scenarios.run(value, self.scenario_base(value), tables_for, birth_year=self.household.birth_year)
+                result["tax_zen"] = self.plan_tax_zen(value, tables_for)
+                runs.append((value.name, result))
+        return scenarios.compare(runs)
+
+    def plan_tax_zen(self, value, tables_for):
+        """Tax Zen in this year for a plan (finance/tax_zen.py): a full year at the pay it ends with. "Now" is this year's return."""
+        from ..finance import tax_year, tax_zen
+        from ..household.tax_figures import TaxFigures
+        if self.family or value.basis == "family":
+            return {"ready": False, "note": "Tax Zen for the family is on the Taxes page, one return at a time."}
+        year, status = datetime.now().year, self.household.filing_status
+        if not value.paychecks:
+            if value.name != "Now" or value.basis != "profile":
+                return {"ready": False, "note": "No planned paychecks."}
+            view = self.tax_year(year)
+            zen = view["zen"]
+            return {"ready": zen.get("ready", False), "year": year, "zen": zen.get("zen"), "result_minor": zen.get("result_minor"),
+                    "display": zen.get("display", {}), "job": zen.get("job", {}).get("name"), "w4": zen.get("job", {}).get("rest"),
+                    "notes": ["This year's return from your records, with the paychecks left."], "note": zen.get("note")}
+        # The pay the plan ends with: its paychecks with no last month (or the latest ones).
+        final = [plan for plan in value.paychecks if plan.to_month is None] or [max(value.paychecks, key=lambda plan: plan.to_month or "")]
+        paychecks = [(plan.label, paycheck.calculate(plan.paycheck, tables_for(plan.paycheck.year, ["US", *([plan.paycheck.work_state] if plan.paycheck.work_state else [])],
+                                                                                 plan.paycheck.filing_status)), plan.paycheck, plan.mode == "replace_pay")
+                     for plan in final if plan.mode == "replace_pay" or status == "married_joint"]
+        gathered = tax_year.gather(self.store, year, self.household) if value.basis == "profile" else {
+            "values": {}, "sources": {}, "jobs": [], "businesses": [], "state": None, "notes": [], "estimated_payments": {"federal_estimated": [], "state_estimated": []}}
+        figures = TaxFigures(self.store).effective(year, status)["values"]
+        return tax_zen.plan_tax_zen(paychecks, gathered, self.household, status, year, lambda codes: tables_for(year, codes, status), figures)
+
+    def plan_currency(self, value):
+        return currency_code(value.forecast.currency or self.household.home_currency or "USD")
+
+    def personal_plan(self, scenario_id):
+        """Budgets and pay stubs belong to one person's profile, so a plan is put to use there, not in the family view."""
+        if self.family:
+            raise ValueError("Budgets and pay stubs belong to each person's profile. Open a person's profile to follow a plan.")
+        return scenarios.Scenarios(self.store).input(scenario_id)
+
+    def plan_budgets(self, scenario_id, month):
+        value = self.personal_plan(scenario_id)
+        return plan_tracking.budget_changes(value, month, self.plan_currency(value), self.ledger.budgets())
+
+    def adopt_plan(self, scenario_id, month):
+        value = self.personal_plan(scenario_id)
+        return plan_tracking.adopt(self.store, self.ledger, scenario_id, month, self.plan_currency(value))
+
+    def stop_plan(self, scenario_id):
+        self.personal_plan(scenario_id)
+        return plan_tracking.stop_tracking(self.store, scenario_id)
+
+    def plan_vs_actual(self, scenario_id):
+        value = self.personal_plan(scenario_id)
+        return plan_tracking.plan_vs_actual(self.store, FinanceTools(self.store), scenarios.Scenarios(self.store).get(scenario_id),
+                                            self.scenario_tables(), self.plan_currency(value))
+
+    def paycheck_from_stub(self, income_id):
+        """A planner input that starts from a recorded pay stub."""
+        record = self.ledger.record("income_record", income_id)
+        value = paycheck.from_stub(record, record["lines"], self.household.filing_status)
+        return {**value, "year": value["year"] or datetime.now().year}
 
     def scan_payees(self, work):
         """After a statement is recorded: ask the model which new payees are recurring bills (finance/recurring_scan.py).

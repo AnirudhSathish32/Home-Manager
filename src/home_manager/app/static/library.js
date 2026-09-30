@@ -262,7 +262,7 @@ function renderDocuments(data) {
     box.addEventListener("change", () => { if (box.checked) selection.set(doc.id, doc); else selection.delete(doc.id); renderSelection(); });
     pick.appendChild(box);
     const title = cell(row, ""); title.className = "doc-name";
-    if (isReadable(doc)) { const link = element("a", name, "doc-link"); link.href = `#/documents/${doc.id}`; title.appendChild(link); }
+    if (isReadable(doc)) { const link = element("a", name, "doc-link"); link.href = documentHref(doc); title.appendChild(link); }
     else title.appendChild(element("span", name, "doc-link"));
     // Beneath the description: the business and the file, which the description does not repeat.
     if (doc.title) title.appendChild(element("small", fileName(doc), "source-path"));
@@ -270,6 +270,7 @@ function renderDocuments(data) {
     if (doc.source_status !== "present" && doc.source_status !== "organized") title.appendChild(element("small", SOURCE_STATES[doc.source_status] || `Source ${doc.source_status}`, "item-warning"));
     if (doc.managed_error) title.appendChild(element("small", doc.managed_error, "item-warning"));
     if (doc.folder === "Unfiled" && doc.unfiled_reason && !doc.deleted_at) title.appendChild(element("small", `Unfiled: ${doc.unfiled_reason}`, "muted unfiled-reason"));
+    if (doc.match) title.appendChild(matchSnippet(doc.match));  // A search matched words in the document's text.
     cell(row, folderLabel(doc.folder)).className = "secondary-cell";
     cell(row, "").appendChild(doc.document_date ? dateDisplay(doc.document_date) : element("span", "—", "muted"));
     const value = cell(row, ""); value.className = "numeric";

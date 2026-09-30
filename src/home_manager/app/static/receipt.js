@@ -44,13 +44,18 @@ async function imageForReceipt(path, expected) {
   $("receipt-image-frame").parentElement.hidden = pdf;
   if (!pdf) $("receipt-image").src = receiptImageURL;
 }
-async function openDocument(id, version = null) {
-  // Route entry point (#/documents/ID). Re-showing the same document keeps its state.
+async function openDocument(id, version = null, lines = null) {
+  // Route entry point (#/documents/ID[?lines=ID,ID]). Re-showing the same document keeps its state.
+  // lines (from a search hit or an assistant source) opens the text at those lines.
+  const wanted = (lines || "").split(",").filter(Boolean);
   if (receipt && receipt.doc.id === id && receipt.digest === (version || receipt.doc.current_hash)) {
-    document.title = `${documentName(receipt.doc)} · Home Manager`; return;
+    document.title = `${documentName(receipt.doc)} · Home Manager`;
+    if (wanted.length) highlightEvidence(wanted);
+    return;
   }
   const doc = await api(`/api/documents/${id}`);
   await openReceipt(doc, version || doc.current_hash);
+  if (wanted.length && receipt?.doc.id === id) highlightEvidence(wanted);
 }
 function proxyButton(label, target, primary = false) {
   const button = element("button", label, primary ? "primary" : ""); button.type = "button"; button.dataset.proxy = target;
@@ -604,6 +609,8 @@ async function renderLedgerRecord(target, type, id, kept) {
   if (rows) target.appendChild(rows);
   if (record.rewards?.length) target.appendChild(rewardsList(record.rewards));
   if (type === "income_record") target.append(...paystubBreakdown(record), ...withholdingSection(record));
+  // Taxes (taxes.js): the receipt, or one of its lines, as a write-off or credit spending.
+  if (type === "receipt" && record.review_status !== "rejected") target.append(taxReceiptSection(record));
 }
 
 // Pay stubs (docs/jobs-and-paystubs.md): gross to net, then how the taxes were figured. Every amount is the server's text.
@@ -657,6 +664,8 @@ function withholdingSection(record) {
   if (!plan.year || !record.lines.length) { section.append(...plan.notes.map(note => element("p", note, "muted"))); return [section]; }
   const settings = element("p", `Tax year ${plan.year} · filing ${plan.filing_status_name} · ${plan.paychecks ? `${plan.paychecks} paychecks a year` : "pay frequency unknown"}. `, "muted small");
   settings.appendChild(homeLink("Change filing status", "#/settings"));
+  // What If: start a planned paycheck from this one, e.g. to drop a new job's one-time onboarding lines.
+  settings.append(" · ", homeLink("Plan a paycheck from this stub", `#/whatif?stub=${record.id}`));
   section.appendChild(settings);
   if (plan.display?.income_tax_wages_minor)
     section.appendChild(element("p", `Taxable wages this paycheck: ${plan.display.income_tax_wages_minor} for income tax (gross pay less pre-tax deductions such as 401(k) and health), `

@@ -58,6 +58,8 @@ The page explains the stub's withholding (`finance/paystub.py`), as an estimate 
 - **Filing status** is a household setting (Settings › Household), Single by default.
 - The state is the one whose income tax line is on the stub (`work_state`); states without a wage income tax need no
   table.
+- **Plan a paycheck from this stub** opens the What If paycheck planner with the stub's lines filled in
+  ([what-if.md](what-if.md)), e.g. to drop a new job's one-time onboarding lines and see the steady paycheck.
 
 ## Tax tables
 
@@ -65,7 +67,8 @@ A table is one jurisdiction's (federal or a state's) standard deduction and brac
 plus, for federal, the Social Security and Medicare rates, wage base and threshold (`tax_tables`).
 
 - When a pay stub from a year without tables is recorded, the local model looks them up on the web (Brave Search key
-  needed), in the same model job. The pay stub page also has a "Look up" button.
+  needed), in the same model job. The pay stub page and the paycheck planner also have a "Look up" button; the planner's
+  looks up the table for the filing status being planned, which can differ from the household's.
 - Every number must be printed in a passage the model quotes from a page it opened; the brackets must start at 0 and
   rise. Anything else is refused and sent back to the model.
 - A table is a proposal until you confirm it in Review (with its quoted sources). Until then the page says it is

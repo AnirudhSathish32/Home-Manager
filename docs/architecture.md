@@ -25,7 +25,7 @@ Build a modular Python monolith: FastAPI serves requests, a small bounded agent 
 | Persistence tooling | SQLAlchemy repositories and Alembic migrations | An implementation spike demonstrates unnecessary complexity |
 | Agent | Explicit state machine with bounded sequential tool calls | Measured workflows need durable agent resumptions or parallel calls |
 | Model protocol | Small Chat Completions function-calling subset behind an adapter | A required server lacks tested support |
-| Documents | Immutable local originals, relational metadata, rebuildable full-text index | Measured lexical retrieval misses justify local embeddings |
+| Documents | Immutable local originals, relational metadata, rebuildable full-text index (SQLite FTS5, built; see [document search](document-search.md)) | Measured lexical retrieval misses justify local embeddings |
 | Ingestion scheduling | Durable database jobs and one worker; manual trigger first | Throughput measurements justify a queue service |
 | Financial authority | Immutable downloaded originals are primary evidence; validated database records are the operational representation; Python computes results | Never delegate this authority to a model or generated workbook |
 | UI | API first, then a minimal local review/search/chat UI | Household deployment changes identity requirements |
@@ -116,8 +116,8 @@ All tools have versioned names, strict Pydantic arguments (unknown fields reject
 | `get_balances` | Account IDs, optional as-of time | Snapshot/derived values, currency, as-of, derivation and completeness |
 | `calculate_spending` | Dates, accounts, categories, inclusion policy | USD reporting total, original-currency subtotals, applied FX policy/rate references, coverage and evidence |
 | `compare_spending_periods` | Two explicit intervals and common filters | Totals, delta, defined/undefined percentages, comparable coverage |
-| `search_documents` | Bounded text query, type/date filters, cursor | Ranked snippets with document and page/segment IDs |
-| `get_document` | Opaque document ID, bounded page/segment selection | Text/metadata and source refs; bytes via an authorized API endpoint |
+| `search_documents` | Bounded text query, type filter, limit (built) | Ranked passages with document and line IDs |
+| `get_document` | Opaque document ID, bounded page/segment selection | Text/metadata and source refs; bytes via an authorized API endpoint (built as `get_document_text`: lines around a line ID) |
 | `match_receipts_to_transactions` | Receipt ID and bounded candidate filters | Ranked candidates, rule features, ambiguity; no committed link |
 | `search_email` | Bounded query/date/mailbox filters | Locally ingested message metadata/snippets and sync coverage |
 | `get_email_attachments` | Message ID and attachment IDs | Ingested attachment handles and status, not arbitrary URLs or paths |
@@ -223,12 +223,12 @@ Future meaningful actions need a distinct command service: produce a concrete pr
 
 ```text
 src/home_manager/
-  __main__.py                # launcher: `home-manager`, `home-manager gpu-host`, `home-manager check-ledger`
+  __main__.py                # launcher: `home-manager`, `gpu-host`, `check-ledger`, `index-documents`
   core/                      # foundations with no domain knowledge
     money.py formats.py folders.py categories.py paths.py jobs.py worker_limits.py logs.py
   library/                   # the document store and its lifecycle
     storage.py migrations/ managed_library.py trash.py scanner.py
-    organization.py backup.py share.py
+    organization.py backup.py share.py text_index.py
   models/                    # model transport, residency, family GPU relay, Laya, vision, web lookups
     model_client.py model_stream.py residency.py gpu_host.py
     laya_runtime.py vision.py web_lookup.py
@@ -237,12 +237,12 @@ src/home_manager/
     receipt_batch.py reasoning.py extraction.py reviewer.py
   finance/                   # canonical ledger, deterministic tools and views
     ledger.py splits.py item_categories.py tools.py reconcile.py recurring_scan.py tabular.py
-    forecast.py charts.py dashboard.py assistant.py checkin.py paystub.py health.py
+    forecast.py charts.py dashboard.py assistant.py checkin.py paystub.py paycheck.py scenarios.py plan_tracking.py tax_lines.py tax_tags.py tax_year.py tax_return.py tax_zen.py tax_family.py health.py
     investments.py tax_lots.py retirement.py family.py family_routing.py
   household/                 # items, inventory, warranties and tax-table lookups
-    items.py analysis.py resolver.py resolver_tools.py warranty.py tax_tables.py
+    items.py analysis.py resolver.py resolver_tools.py warranty.py tax_tables.py tax_figures.py
   app/                       # wiring: work queues, loopback API and UI, profiles and family sync
-    manager.py api.py profiles.py family_sync.py ledger_check.py static/
+    manager.py api.py profiles.py family_sync.py ledger_check.py index_documents.py static/
 tests/                       # flat pytest modules; synthetic data only
 docs/
 ```

@@ -61,7 +61,8 @@ def empty(store):
         ids = {row["id"] for row in docs}
         if not ids:
             return {"deleted": 0, "cleanup_pending": 0}
-        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        # Ordinary tables only: the full-text index (a virtual table and its shadow tables) follows document_passages by trigger.
+        tables = [row[0] for row in db.execute("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%'")]
         rows = {table: {row["_rowid"]: dict(row) for row in db.execute(f'SELECT rowid AS _rowid,* FROM "{table}"')} for table in tables}
         doomed = {table: set() for table in tables}
         doomed["occurrences"] = ids

@@ -259,7 +259,7 @@ def test_assistant_answers_from_tool_results_and_flags_unsupported_figures(recon
     store, *_ = reconciled
     service = AssistantService(store, FinanceTools(store))
     config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
-    step = lambda **fields: {"action": "call_tool", "tool": None, "arguments_json": None, "answer": None, "cited_calls": [], "missing_evidence": [], **fields}  # noqa: E731
+    step = lambda **fields: {"action": "call_tool", "tool": None, "arguments_json": None, "answer": None, "cited_calls": [], "cited_lines": [], "missing_evidence": [], **fields}  # noqa: E731
     local_model["outputs"] = [
         step(tool="get_spending", arguments_json=json.dumps({"start": "2026-09-01", "end": "2026-09-30"})),
         step(tool="get_spending", arguments_json="{\"start\": \"not a date\"}"),
@@ -295,7 +295,7 @@ def test_new_endpoints_are_typed_and_wired(tmp_path, local_model):
         assert client.post("/api/finance/tools/spending_series", json={"start_month": "2026-01", "end_month": "2026-03"}).status_code == 200
         assert client.post("/api/assistant-runs", json={"question": "Spending?"}).status_code == 400  # No reasoning model configured.
         client.put("/api/reasoning-settings", json={"base_url": local_model["config"].base_url, "model": "synthetic-reasoning"})
-        local_model["output"] = {"action": "answer", "tool": None, "arguments_json": None, "answer": "No data yet.", "cited_calls": [], "missing_evidence": ["transactions"]}
+        local_model["output"] = {"action": "answer", "tool": None, "arguments_json": None, "answer": "No data yet.", "cited_calls": [], "cited_lines": [], "missing_evidence": ["transactions"]}
         run_id = client.post("/api/assistant-runs", json={"question": "Spending?"}).json()["run_id"]
         app.state.manager.future.result(timeout=30)
         assert client.get(f"/api/assistant-runs/{run_id}").json()["result"]["verified"] is True

@@ -17,6 +17,7 @@ from ..core.folders import DOCUMENT_FOLDERS, JOB_SECTIONS, LIBRARY_FOLDERS, MONE
 from ..core.logs import log_failure
 from ..core.money import format_minor
 from ..core.paths import DirectoryLock, PathError, path_key, safe_path
+from .text_index import best_matches, match_expression, matching_runs
 
 log = logging.getLogger(__name__)
 
@@ -523,10 +524,14 @@ class Store:
             raise ValueError("Unknown document filter.")
         if status != "all":
             clause += " AND " + WORK_FILTERS[status]
+        expression = match_expression(query) if query else None
         if query:
-            clause += " AND (lower(coalesce(title,'')) LIKE ? ESCAPE '\\' OR lower(coalesce(merchant,'')) LIKE ? ESCAPE '\\' OR lower(relative_path) LIKE ? ESCAPE '\\')"
+            # The name, merchant or file name, or words anywhere in the document's text (docs/document-search.md).
+            words, word_params = matching_runs(expression) if expression else ("SELECT NULL WHERE 0", [])
+            clause += (" AND (lower(coalesce(title,'')) LIKE ? ESCAPE '\\' OR lower(coalesce(merchant,'')) LIKE ? ESCAPE '\\' "
+                       f"OR lower(relative_path) LIKE ? ESCAPE '\\' OR text_run_id IN ({words}))")
             pattern = "%" + query.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            params += [pattern, pattern, pattern]
+            params += [pattern, pattern, pattern, *word_params]
         for bound, operator in ((date_from, ">="), (date_to, "<=")):
             if bound:
                 clause += f" AND document_date{operator}?"
@@ -535,6 +540,10 @@ class Store:
             total = db.execute(self.library_query() + "SELECT count(*) FROM library WHERE " + clause, params).fetchone()[0]
             rows = [dict(row) for row in db.execute(self.library_query() + "SELECT * FROM library WHERE " + clause + f" ORDER BY {DOCUMENT_SORTS[sort]} LIMIT ? OFFSET ?",
                                                     [*params, limit, offset])]
+            # Where the words are in the text: the best passage, to show and to open the transcription at.
+            found = best_matches(db, expression, [row["text_run_id"] for row in rows]) if expression else {}
+        for row in rows:
+            row["match"] = found.get(row["text_run_id"])
         return {"total": total, "items": [self.display_amount(row) for row in rows]}
 
     def document(self, document_id: int):

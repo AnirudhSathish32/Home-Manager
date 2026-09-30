@@ -17,9 +17,13 @@ def main():
     if sys.argv[1:2] == ["check-ledger"]:  # Read-only ledger health report (app/ledger_check.py).
         from .app.ledger_check import main as check_ledger
         sys.exit(check_ledger(sys.argv[2:]))
+    if sys.argv[1:2] == ["index-documents"]:  # Rebuild the full-text index of document text (app/index_documents.py).
+        from .app.index_documents import main as index_documents
+        sys.exit(index_documents(sys.argv[2:]))
     parser = argparse.ArgumentParser(description="Run the local Home Manager document capture UI. "
                                                  "Run `home-manager gpu-host --help` to share this computer's GPU with family members, "
-                                                 "or `home-manager check-ledger` to check each profile's ledger for broken money rules.")
+                                                 "`home-manager check-ledger` to check each profile's ledger for broken money rules, "
+                                                 "or `home-manager index-documents --rebuild` to rebuild the search index of document text.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--control-dir", type=Path, help="Settings location; default is %%LOCALAPPDATA%%/HomeManager on Windows.")
     parser.add_argument("--install-laya", action="store_true", help="Download the pinned Laya checkpoint once (about 850 MB), then exit.")

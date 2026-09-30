@@ -118,7 +118,7 @@ legend { font-size: var(--text-sm); font-weight: 600; padding: 0 var(--space-1);
 .profile-picker select { width: 100%; }
 #nav-profile { display: none; }
 /* A family profile's own library is only its inbox: Home, Review, the documents it received, Processing and Settings apply. */
-.family-mode .nav-link:not([data-route="home"]):not([data-route="settings"]):not([data-route="review"]):not([data-route="receipts"]):not([data-route="documents"]):not([data-route="processing"]):not(#nav-profile),
+.family-mode .nav-link:not([data-route="home"]):not([data-route="settings"]):not([data-route="review"]):not([data-route="receipts"]):not([data-route="documents"]):not([data-route="processing"]):not([data-route="whatif"]):not([data-route="taxes"]):not(#nav-profile),
 .family-mode .nav-group, .family-mode .global-search { display: none; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-group { margin: var(--space-3) 0 var(--space-1); padding: 0 var(--space-2); font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
@@ -281,6 +281,55 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 .tax-jurisdiction { margin-top: var(--space-4); }
 .tax-chart { margin: var(--space-3) 0; }
 .tax-chart svg { width: 100%; height: auto; max-width: 520px; display: block; }
+/* What If: the paycheck's inputs beside its gross-to-net breakdown; the breakdown stays in view and scrolls on its own. */
+.whatif-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--space-6); align-items: start; }
+.whatif-inputs { max-width: none; margin-bottom: 0; }
+.whatif-inputs .plan-line { grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) minmax(0, 1.25fr) minmax(0, .8fr) auto; gap: var(--space-2); }
+.whatif-inputs > button.quiet, .scenario-form > button.quiet { align-self: flex-start; }
+@media (max-width: 600px) { .whatif-inputs .plan-line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.whatif-inputs fieldset { min-width: 0; }
+.whatif-result { position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-7)); overflow-y: auto; }
+.whatif-result .paystub-taxes { margin-top: var(--space-5); }
+.whatif-result tbody th { white-space: normal; position: static; }
+.plan-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-2); }
+.plan-headline dt { grid-row: 1; font-size: var(--text-xs); color: var(--text-secondary); }
+.plan-headline dd { grid-row: 2; margin: 0; align-self: end; font-weight: 600; }
+.plan-headline .plan-figure { font-size: var(--figure-lg); line-height: 36px; }
+/* Taxes: a tag on an item, and the form that sets it (taxes.js). */
+.tax-tag-editor { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+.tax-tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.tax-tag-row .tax-tag-summary { margin: 0; }
+.tax-tag-row small.block { flex-basis: 100%; }
+.tax-tag-form { max-width: none; gap: var(--space-3); margin: 0; align-self: stretch; }
+.tax-items { margin-top: var(--space-3); }
+.taxes-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.taxes-inputs { max-width: none; margin: 0; gap: var(--space-3); }
+.taxes-inputs fieldset { min-width: 0; margin: 0; }
+.taxes-inputs > button.quiet { align-self: flex-start; }
+.taxes-figures { margin-top: var(--space-3); }
+.taxes-zen { margin-bottom: var(--space-5); padding-bottom: var(--space-4); border-bottom: 1px solid var(--border); }
+.taxes-zen:empty { display: none; }
+.taxes-zen-headline { font-size: var(--text-lg); margin-bottom: var(--space-2); }
+.taxes-return-card { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.taxes-return-card > p { flex-basis: 100%; margin: 0; }
+.taxes-unit-form { align-items: flex-end; }
+#taxes-return tbody th { white-space: normal; position: static; }
+#taxes-alerts:not(:empty) { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
+@media (max-width: 1100px) { .taxes-layout { grid-template-columns: minmax(0, 1fr); } }
+.scenario-bar { display: flex; gap: var(--space-3); align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--space-4); }
+.scenario-bar .field { min-width: min(280px, 100%); }
+.scenario-form { max-width: none; margin-bottom: 0; }
+.scenario-paycheck { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.scenario-paycheck > p { margin: var(--space-2) 0; }
+.compare-choices { margin-top: 0; }
+.compare-chart { margin: var(--space-4) 0 var(--space-3); }
+.compare-chart svg { width: 100%; height: auto; max-width: 760px; display: block; }
+.compare-run { margin-top: var(--space-3); }
+.track-actions { align-items: flex-end; }
+#track-budgets:not(:empty), #track-actual:not(:empty) { margin-top: var(--space-4); }
+#track-actual h4 { margin-top: var(--space-4); }
+@media (max-width: 1100px) { .whatif-layout { grid-template-columns: minmax(0, 1fr); } .whatif-result { position: static; max-height: none; overflow: visible; } }
+@media (max-width: 600px) { .plan-headline { grid-template-columns: 1fr; } .plan-headline dt, .plan-headline dd { grid-row: auto; } }
 .folder-group { gap: var(--space-1); }
 .folder-chevron { width: 14px; height: 14px; flex: none; margin-top: 2px; transition: transform .15s ease; }
 .folder-group[aria-expanded="true"] .folder-chevron { transform: rotate(90deg); }
@@ -535,6 +584,9 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .search-results .panel h2 { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
 .search-results .panel h2 a { font-size: var(--text-sm); font-weight: 500; }
 .search-hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; }
+/* Words matched inside a document's text, quoted under its name (docs/document-search.md). */
+.search-snippet { margin: 2px 0 0; font-size: var(--text-sm); color: var(--text-secondary); overflow-wrap: anywhere; }
+.search-snippet mark { background: var(--accent-subtle); color: var(--text); border-radius: var(--radius-sm); padding: 0 1px; }
 .match-state { margin-top: 2px; }
 .return-note { margin-top: 2px; }
 
