@@ -25,13 +25,16 @@ from .tax_return import Job, ReturnInput
 from .tax_tags import TaxTags
 
 CURRENCY = "USD"
-MONEY_FIELDS = ("interest", "tax_exempt_interest", "ordinary_dividends", "qualified_dividends", "short_term_gain", "long_term_gain",
+MONEY_FIELDS = ("interest", "us_obligation_interest", "tax_exempt_interest", "ordinary_dividends", "qualified_dividends", "short_term_gain", "long_term_gain",
                 "capital_loss_carryover", "retirement_distributions", "early_distributions", "hsa_nonqualified", "social_security_benefits",
                 "unemployment", "other_income", "educator_expenses", "hsa_contributions", "se_health_insurance", "ira_deduction",
                 "student_loan_interest", "other_adjustments", "medical", "state_local_tax", "property_tax", "mortgage_interest", "charity",
                 "other_itemized", "other_deductions", "dependent_care_expenses", "energy_home_expenses", "other_credits",
                 "other_refundable_credits", "other_federal_withholding", "federal_estimated_paid", "state_deduction", "state_credits",
                 "state_estimated_paid")
+# Accounts whose interest is US savings bond or Treasury interest: federal-taxable, state-exempt (the Education Savings Bond
+# exclusion for I bonds cashed for tuition isn't worked out; enter it typed over the records).
+US_OBLIGATION_KINDS = ("i_bond", "treasury")
 COUNT_FIELDS = ("qualifying_children", "other_dependents", "dependent_care_people")
 JOB_FIELDS = ("wages", "ss_wages", "medicare_wages", "federal_withheld", "state_withheld", "medicare_withheld")
 # Tax tag lines -> return fields.
@@ -133,6 +136,9 @@ def gather(store, year, household, today=None):
         accounts = investments.rows(db, True)
         taxable = [account["id"] for account in accounts if account["tax_treatment"] == "taxable" and account["currency"] == CURRENCY]
         deferred = [account["id"] for account in accounts if account["tax_treatment"] in ("tax_deferred",) and account["currency"] == CURRENCY]
+        # I bond and Treasury interest is federal-taxable and state-exempt.
+        federal_only = [account["id"] for account in accounts if account["kind"] in US_OBLIGATION_KINDS and account["id"] in taxable]
+        education = investments.education_earnings(db, year)
 
         def events(kind, ids):
             if not ids:
@@ -146,13 +152,24 @@ def gather(store, year, household, today=None):
                               "WHERE f.review_status='verified' AND f.tax_year=? AND f.currency=? GROUP BY b.form,b.box", (year, CURRENCY)):
             forms[(row["form"], row["box"])] = row["total"]
         gains = realized(db, taxable, year) if taxable else {"short_minor": 0, "long_minor": 0}
-    investment_interest, dividends = events("interest", taxable), events("dividend", taxable)
-    if ("1099-INT", "1") in forms:
-        values["interest"] = forms[("1099-INT", "1")] + scaled(bank_interest, pace)
-        sources["interest"] = "1099-INT forms, plus bank interest projected to Dec 31"
+        # Summed while the connection is open (it closes with this block).
+        investment_interest, dividends = events("interest", taxable), events("dividend", taxable)
+        federal_only_interest, deferred_withdrawals = events("interest", federal_only), events("withdrawal", deferred)
+    if ("1099-INT", "1") in forms or ("1099-INT", "3") in forms:
+        # Box 3 (savings bond and Treasury interest) is taxable interest too, reported apart from box 1.
+        values["interest"] = forms.get(("1099-INT", "1"), 0) + forms.get(("1099-INT", "3"), 0) + scaled(bank_interest, pace)
+        sources["interest"] = "1099-INT forms (boxes 1 and 3), plus bank interest projected to Dec 31"
+        values["us_obligation_interest"] = forms.get(("1099-INT", "3"), 0)
+        sources["us_obligation_interest"] = "1099-INT box 3 (I bonds and Treasuries), exempt from state tax"
     else:
         values["interest"] = scaled(bank_interest + investment_interest, pace)
         sources["interest"] = "Interest so far (bank and taxable investment accounts), projected to Dec 31" if pace != 1 else "Interest recorded"
+        values["us_obligation_interest"] = scaled(federal_only_interest, pace)
+        sources["us_obligation_interest"] = "I bond and Treasury interest so far, exempt from state tax" + (", projected to Dec 31" if pace != 1 else "")
+    nonqualified = [entry for entry in education if entry["currency"] == CURRENCY and entry["taxable_earnings_minor"]]
+    if nonqualified:
+        values["other_income"] = sum(entry["taxable_earnings_minor"] for entry in nonqualified)
+        sources["other_income"] = "Earnings on non-qualified 529 withdrawals (1099-Q box 2 share); a 10% additional tax may also apply"
     if ("1099-DIV", "1a") in forms:
         values["ordinary_dividends"], sources["ordinary_dividends"] = forms[("1099-DIV", "1a")], "1099-DIV box 1a"
         values["qualified_dividends"], sources["qualified_dividends"] = forms.get(("1099-DIV", "1b"), 0), "1099-DIV box 1b"
@@ -164,7 +181,7 @@ def gather(store, year, household, today=None):
         values["tax_exempt_interest"], sources["tax_exempt_interest"] = forms[("1099-INT", "8")], "1099-INT box 8"
     values["short_term_gain"], values["long_term_gain"] = gains["short_minor"], gains["long_minor"]
     sources["short_term_gain"] = sources["long_term_gain"] = "Realized in taxable accounts so far (tax lots)"
-    distributions = forms.get(("1099-R", "2a")) if ("1099-R", "2a") in forms else events("withdrawal", deferred)
+    distributions = forms.get(("1099-R", "2a")) if ("1099-R", "2a") in forms else deferred_withdrawals
     values["retirement_distributions"] = distributions
     sources["retirement_distributions"] = "1099-R box 2a" if ("1099-R", "2a") in forms else "Withdrawals from tax-deferred accounts so far"
     if household.birth_year and distributions and year - household.birth_year < 59:

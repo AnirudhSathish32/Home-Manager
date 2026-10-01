@@ -53,6 +53,15 @@ class Candidate(StrictModel):
     note: str = "Unreviewed extraction; not an authoritative financial record."
 
 
+class Region(StrictModel):
+    """One piece of paper in an image that holds several (documents/regions.py), read on its own. bbox is
+    (left, top, right, bottom) in the preview's pixels; its lines run from first_line to last_line (None: no text)."""
+    number: int = Field(ge=1, le=12)
+    bbox: tuple[int, int, int, int]
+    first_line: str | None = None
+    last_line: str | None = None
+
+
 class ReceiptFields(StrictModel):
     date: Candidate
     currency: Candidate
@@ -95,6 +104,8 @@ class ReceiptResult(StrictModel):
     fields: ReceiptFields | None = None
     issues: list[Issue] = Field(max_length=1000)
     coverage: Literal["full_image_attempted_not_verified"] = "full_image_attempted_not_verified"
+    # Several pieces of paper in one image, each transcribed on its own; empty for one piece (the usual case).
+    regions: list[Region] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def evidence_consistent(self):
@@ -121,4 +132,11 @@ class ReceiptResult(StrictModel):
         for evidence in [*self.blocks, *self.codes]:
             if any(x < 0 or y < 0 or x > self.width or y > self.height for x, y in evidence.polygon):
                 raise ValueError("Evidence coordinates exceed image dimensions.")
+        line_ids = {line.id for line in self.lines}
+        for region in self.regions:
+            left, top, right, bottom = region.bbox
+            if not (0 <= left < right <= self.width and 0 <= top < bottom <= self.height):
+                raise ValueError("Region coordinates exceed image dimensions.")
+            if self.lines and any(line is not None and line not in line_ids for line in (region.first_line, region.last_line)):
+                raise ValueError("A region names lines that do not exist.")
         return self

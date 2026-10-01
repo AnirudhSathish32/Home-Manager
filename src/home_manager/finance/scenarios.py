@@ -119,7 +119,7 @@ def empty_baseline(currency, history_months, cash=0, today=None):
     first = month_add(today.isoformat()[:7], -history_months)
     last = month_add(today.isoformat()[:7], -1)
     return {"currency": currency, "history": {"start": first + "-01", "end": month_end(last), "months": history_months, "months_with_data": 0},
-            "cash": cash, "balances": [], "monthly_pay": Decimal(0), "monthly_income": Decimal(0), "monthly_spending": {}, "bills": [], "assets": [],
+            "cash": cash, "balances": [], "monthly_pay": Decimal(0), "monthly_income": Decimal(0), "monthly_spending": {}, "bills": [], "assets": [], "pensions": [],
             "notes": ["A blank slate: no records are used; the plan's paychecks, spending and one-offs are everything."]}
 
 
@@ -146,6 +146,7 @@ def family_baseline(members, history_months, currency=None, today=None):
         combined["balances"] += [{**row, "account": f"{name} · {row['account']}"} for row in base["balances"]]
         combined["bills"] += [{**bill, "name": f"{name} · {bill['name']}"} for bill in base["bills"]]
         combined["assets"] += [{**asset, "name": f"{name} · {asset['name']}", "account_id": None} for asset in base["assets"]]
+        combined["pensions"] += [{**pension, "label": f"{name} · {pension['label']}"} for pension in base.get("pensions", [])]
         combined["notes"] += [f"{name}: {note}" for note in base["notes"]]
     combined["history"] = {**combined["history"], "months_with_data": months_with_data}
     combined["monthly_spending"] = dict(sorted(combined["monthly_spending"].items()))

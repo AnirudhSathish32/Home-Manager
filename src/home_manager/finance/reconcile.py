@@ -253,6 +253,8 @@ class Reconciler:
             db.execute("UPDATE transactions SET merchant_id=coalesce(merchant_id,?),updated_at=? WHERE id=?", (receipt["merchant_id"], now(), transaction["id"]))
         self.resolve(db, "ambiguous_receipt_match", "receipt", receipt["id"])
         self.ledger.refresh_splits(db, receipt["id"])
+        if status == "verified":
+            self.link_documents(db, transaction["id"], receipt["id"], status)
 
     def link_transfer(self, db, outflow, inflow, points, method, status="proposed"):
         db.execute("INSERT INTO transaction_links(link_type,from_transaction_id,to_transaction_id,match_score,match_method,review_status,created_at,updated_at) "
@@ -610,6 +612,7 @@ class Reconciler:
                            (now(), link["transaction_id"], link["receipt_id"]))
             if kind == "receipt":
                 self.ledger.refresh_splits(db, link["receipt_id"])
+                self.link_documents(db, link["transaction_id"], link["receipt_id"], status)
             if status == "rejected" and kind == "transfer":
                 for transaction in (link["from_transaction_id"], link["to_transaction_id"]):
                     row = self.transaction(db, transaction)
@@ -621,6 +624,18 @@ class Reconciler:
                 from .tax_tags import TaxTags  # tax_tags imports this module.
                 TaxTags(self.ledger.store).apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
+
+    def link_documents(self, db, transaction_id, receipt_id, status):
+        """A person matched a receipt to a charge read from another document (a statement or a CSV): the two documents
+        now show each other as the same purchase. Rejecting the match rejects that link. Nothing is merged."""
+        receipt = db.execute("SELECT document_id FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        if receipt is None:
+            return
+        for row in db.execute("SELECT DISTINCT document_id FROM financial_evidence_links WHERE record_type='transaction' AND record_id=? "
+                              "AND document_id IS NOT NULL AND document_id<>?", (transaction_id, receipt["document_id"])).fetchall():
+            first, second = sorted((receipt["document_id"], row["document_id"]))
+            db.execute("INSERT INTO occurrence_links(occurrence_id,other_occurrence_id,reason,status,created_at) VALUES(?,?,'same_record',?,?) "
+                       "ON CONFLICT(occurrence_id,other_occurrence_id,reason) DO UPDATE SET status=excluded.status", (first, second, status, now()))
 
     def review_obligation(self, obligation_id, status, note="", frequency=None, kind=None):
         """Confirm, reject or end a detected recurring payment, optionally correcting how often it recurs and

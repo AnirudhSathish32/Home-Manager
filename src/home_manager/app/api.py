@@ -22,7 +22,19 @@ from ..documents.reviewer import ReviewerConfig
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
 from ..finance.health import check_ledger, summary
 from ..finance.investments import AccountInput as InvestmentAccountInput
-from ..finance.investments import AccountUpdate, HoldingInput, Investments, LotInput, MaturedInput, PayrollChoice, ValueInput
+from ..finance.investments import (
+    AccountUpdate,
+    EventInput,
+    HoldingInput,
+    IbondRateInput,
+    Investments,
+    LotInput,
+    MaturedInput,
+    PayrollChoice,
+    PensionInput,
+    ValueInput,
+    WithdrawalKind,
+)
 from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
 from ..finance.paycheck import PaycheckInput
@@ -51,6 +63,38 @@ STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text
 class SettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     managed_directory: str = Field(min_length=1, max_length=4096)
+
+
+class SourceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    path: str = Field(min_length=1, max_length=4096)
+    label: str = Field(default="", max_length=100)
+    recursive: bool = True
+
+
+class SourceChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    label: str | None = Field(default=None, max_length=100)
+    recursive: bool | None = None
+    enabled: bool | None = None
+
+
+class SplitInput(BaseModel):
+    """Where each receipt of a file starts, as line ids of its reading. One start: the file is one receipt."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    starts: list[str] = Field(min_length=1, max_length=200)
+
+
+class GroupInput(BaseModel):
+    """Images to read as one document, pages in this order."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    document_ids: list[int] = Field(min_length=2, max_length=20)
+
+
+class GroupChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["confirmed", "dismissed"] | None = None
+    document_ids: list[int] | None = Field(default=None, min_length=2, max_length=20)
 
 
 class ModelComputerInput(ModelComputer):
@@ -169,6 +213,14 @@ class ImportInput(BaseModel):
     account_id: int | None = None
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
     mapping: ImportMapping | None = None
+
+
+class CryptoImportInput(BaseModel):
+    """An exchange's transaction history in the library, read into an investment account (finance/tabular.py CRYPTO_PRESETS)."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    document_id: int = Field(ge=1)
+    expected_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    preset: Literal["coinbase"] = "coinbase"
 
 
 class LinkReviewInput(BaseModel):
@@ -594,6 +646,66 @@ def create_app(control: Path | None = None, token: str | None = None,
     def scan_inbox():
         return {"job_id": manager().start_inbox()}
 
+    @app.get("/api/sources")
+    def sources():
+        return manager().sources()
+
+    @app.post("/api/sources", status_code=201)
+    def add_source(value: SourceInput):
+        return manager().add_source(value.path, value.label, value.recursive)
+
+    @app.patch("/api/sources/{source_id}")
+    def change_source(source_id: int, value: SourceChange):
+        return manager().update_source(source_id, **value.model_dump())
+
+    @app.delete("/api/sources/{source_id}")
+    def remove_source(source_id: int):
+        manager().remove_source(source_id)
+        return {"removed": source_id}
+
+    @app.post("/api/sources/{source_id}/scans", status_code=202)
+    def scan_source(source_id: int):
+        return {"job_id": manager().start_source(source_id)}
+
+    @app.get("/api/documents/{document_id}/links")
+    def document_links(document_id: int):
+        return store().linked_documents(document_id)
+
+    @app.get("/api/documents/{document_id}/segments")
+    def document_split(document_id: int):
+        return manager().split(document_id)
+
+    @app.post("/api/documents/{document_id}/segments/confirm")
+    def confirm_split(document_id: int):
+        return manager().confirm_split(document_id)
+
+    @app.put("/api/documents/{document_id}/segments", status_code=202)
+    def set_split(document_id: int, value: SplitInput):
+        return manager().set_split(document_id, value.starts)
+
+    @app.get("/api/document-groups")
+    def suggested_groups():
+        return manager().suggested_groups()
+
+    @app.post("/api/document-groups", status_code=202)
+    def combine_documents(value: GroupInput):
+        return manager().combine_documents(value.document_ids)
+
+    @app.patch("/api/document-groups/{group_id}", status_code=202)
+    def change_group(group_id: int, value: GroupChange):
+        if (value.status is None) == (value.document_ids is None):
+            raise HTTPException(400, "Either confirm or separate the combined document, or give its pages in a new order.")
+        return manager().change_group(group_id, value.status, value.document_ids)
+
+    @app.get("/api/documents/{document_id}/group")
+    def document_group(document_id: int):
+        return manager().document_group(document_id)
+
+    @app.get("/api/receipt-runs/{run_id}/pages/{number}")
+    def receipt_page(run_id: str, number: int):
+        store()
+        return FileResponse(manager().receipts.page_image(run_id, number), media_type="image/png")
+
     @app.post("/api/receipt-batches", status_code=202)
     def receipt_batch(value: ReceiptBatchInput):
         return manager().start_receipt_batch(value.force, value.document_ids)
@@ -921,6 +1033,17 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().refresh_rates()
 
+    # Crypto market prices (finance/prices.py): off unless the household turns them on.
+    @app.get("/api/prices")
+    def price_status():
+        store()
+        return manager().price_status()
+
+    @app.post("/api/prices/refresh")
+    def refresh_prices():
+        store()
+        return manager().refresh_prices()
+
     @app.post("/api/tax/units", status_code=201)
     def add_tax_unit(value: TaxUnitInput):
         family_only()
@@ -1075,6 +1198,18 @@ def create_app(control: Path | None = None, token: str | None = None,
     def investment_values_to_review():
         return Investments(store()).pending()
 
+    @app.get("/api/investments/ibond-rates")
+    def ibond_rates():
+        return Investments(store()).ibond_rate_table()
+
+    @app.put("/api/investments/ibond-rates")
+    def set_ibond_rate(value: IbondRateInput):
+        return Investments(store()).set_ibond_rate(value)
+
+    @app.post("/api/investments/events/{event_id}/qualified")
+    def classify_investment_withdrawal(event_id: int, value: WithdrawalKind):
+        return Investments(store()).classify_withdrawal(event_id, value)
+
     @app.get("/api/investments/valuations/{valuation_id}")
     def investment_valuation(valuation_id: int):
         return Investments(store()).valuation(valuation_id)
@@ -1161,6 +1296,18 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.post("/api/investments/{account_id}/payroll")
     def choose_investment_payroll(account_id: int, value: PayrollChoice):
         return Investments(store()).choose_payroll_account(account_id, value.employer_id)
+
+    @app.put("/api/investments/{account_id}/pension")
+    def set_investment_pension(account_id: int, value: PensionInput):
+        return Investments(store()).set_pension(account_id, value)
+
+    @app.post("/api/investments/{account_id}/events", status_code=201)
+    def add_investment_event(account_id: int, value: EventInput):
+        return Investments(store()).add_event(account_id, value)
+
+    @app.post("/api/investments/{account_id}/crypto-import", status_code=201)
+    def import_crypto(account_id: int, value: CryptoImportInput):
+        return Investments(store()).import_crypto(account_id, value.document_id, value.expected_hash, value.preset)
 
     @app.post("/api/forecast")
     def run_forecast(value: ForecastInput):

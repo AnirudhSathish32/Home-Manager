@@ -70,7 +70,50 @@ Preserve the raw numeric lexical values from worksheet XML alongside decoded val
 
 Verify decoding and enforce pixel/memory limits before preview generation. Send the oriented image to the configured local vision model for text only. Preserve full transcription and line IDs without fabricated geometric anchors or confidence scores. Decode QR/barcodes separately with exact bytes and coordinates.
 
-One image initially forms one evidence unit. Multi-image grouping/page order require future support. Evaluate transcription coverage, decimals, signs, faded text, columns and languages locally. Interpretation belongs in the separate reasoning stage.
+One image forms one evidence unit, unless it holds several pieces of paper, or is a page of a combined document (both below). Evaluate transcription coverage, decimals, signs, faded text, columns and languages locally. Interpretation belongs in the separate reasoning stage.
+
+### Several receipts in one file (built 2026-10-01)
+
+A file can hold several receipts: a feeder or scan-app PDF with one receipt per page, a flatbed scan or photo with several receipts on it, or receipts stacked one under another in one tall image. Each one is recorded as its own receipt. This happens in two steps.
+
+**1. Pieces of paper (reading, no model).** `documents/regions.py` looks for separate pieces of paper on a coarse grid of the image (numpy only), inside the bounded reader child. It splits only where the split is plain:
+- On a contrasting background (scanner lid open, a dark table), each separate bright area big enough to be a receipt is one region.
+- On a background as light as the paper, only side-by-side receipts with a clear full-height gap are separated. A gap inside one receipt is usually a full-width band, so light backgrounds are never cut horizontally.
+
+Each region is cropped (`region-N.png`, or `page-N-region-M.png` for a scanned PDF page) and transcribed on its own. Lines stay numbered across the regions (`line-N`, `page-N-line-I`), and `regions` in the reading records each region's box and line range. An image with one piece of paper reads exactly as before, so parser versions did not change.
+
+**2. Receipts in the text (extraction).** The file is classified once as usual. When it is a receipt, it may hold several if it has more than one page or region, or more than one receipt total line (not a subtotal or total tax). Then one `ReceiptStarts` question, asked chunk by chunk, lists the first line of each receipt; a single receipt costs nothing extra. Code then checks and adjusts the answer:
+- A start within two lines of a page or region break moves to that break.
+- A part without a total, payment or balance line joins its neighbour: a heading joins the receipt after it, and a second page joins the receipt before it.
+- If the answer is unusable, the file is split at its page and region breaks.
+
+Every part is then classified before any is read. If one is not a receipt, the file is read as one document, so statements and other types stay one per file. Otherwise each part is read on its own lines (summary, seller, items, description, and the rewards and codes printed on its own piece of paper) and published as receipt segment N (`receipts.segment`, `UNIQUE(blob_hash, segment)`, migration 054).
+
+**Review the split once.** `document_segments` records each part's first and last line.
+- Until the user confirms the split, each receipt carries the note "split from a file holding several" and waits in Review.
+- **Confirm split** on the document's page drops that note, and each receipt then counts by its own checks.
+- The user can also **Merge with next** or **Split here** at a line of the receipt's own text. That split is saved as the user's (it wins over the model's on later readings), and the file is recorded again.
+
+A receipt whose segment a later reading no longer finds stops counting (rejected automatically, restored if found again). A receipt the user already decided keeps that decision, with a note to check the split.
+
+In the library, a file holding several receipts is titled "First merchant + N more". It shows no single amount, and its date is the earliest receipt's. It is filed under the first receipt's merchant and date. Code: `ExtractionService.segments`, `split`, `confirm_split`, `set_split`; `GET/PUT /api/documents/{id}/segments`, `POST …/segments/confirm`.
+
+### Several images as one document (built 2026-10-01)
+
+A long receipt photographed in parts, or a document scanned one page per image, can be read as one document whose pages are those images (`documents/grouping.py`, migration 055).
+
+- **Suggested, never automatic.** After each capture, images from the same folder suggest a group when their names continue one numbered series (`IMG_0012`, `IMG_0013`; `scan (1)`, `scan (2)`; `receipt_p1`, `receipt_p2`) and their files were saved within two minutes of each other. Suggestions wait in **Review → Images that look like one document**, where you choose **Combine** or **Keep separate**. A dismissed suggestion is never made again.
+- **Combining directly.** In the library, select 2 to 20 PNG or JPEG images and choose **Combine as pages**. Pages go in file-name order.
+- **Reading.** A confirmed group is read under its first page, the lead, with parser version `receipt-images-v1`:
+  - Each page image is prepared by its own bounded worker child and transcribed.
+  - The result has the PDF's page-aware shape: `pages`, with line ids `page-N-line-I`. Each image's own pieces of paper keep their line ranges.
+  - `page_hashes` names each page's preserved bytes. `options_json` holds the page hashes in order, so a reorder is a new reading.
+  - Codes decoded from the pages are not carried into the combined result.
+- **Records.** The lead carries the reading and the records; the later pages are hidden from lists and counts. A later page's own receipt stops counting (rejected automatically). A later page can't be read on its own.
+- **Changing it.** The document's page shows its pages beside the image. You can move a page earlier or later, which reads it again in the new order. **Separate pages** makes each image its own document again, and each is read and recorded on its own.
+- **Limit.** Only receipts of later pages are retired. A later page recorded as another type, such as a bill, keeps its record.
+
+Code: `Groups.suggest`, `create`, `set_status`, `reorder`; `ReceiptService.run` (group branch) with `combine_pages`; `Manager.read_group`. API: `GET/POST /api/document-groups`, `PATCH /api/document-groups/{id}`, `GET /api/documents/{id}/group`, `GET /api/receipt-runs/{id}/pages/{n}`.
 
 ### PDF decision
 

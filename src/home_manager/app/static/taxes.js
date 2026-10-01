@@ -192,7 +192,7 @@ async function downloadCpaPack(pack) {
 
 // The return, estimated (finance/tax_return.py): the result, every line with how it was worked out, and what it is built from.
 const RETURN_FIELDS = [
-  ["Income", [["interest", "Taxable interest"], ["tax_exempt_interest", "Tax-exempt interest"], ["ordinary_dividends", "Ordinary dividends (1099-DIV 1a)"],
+  ["Income", [["interest", "Taxable interest"], ["us_obligation_interest", "Of it, I bond and Treasury interest (state-exempt)"], ["tax_exempt_interest", "Tax-exempt interest"], ["ordinary_dividends", "Ordinary dividends (1099-DIV 1a)"],
               ["qualified_dividends", "Qualified dividends (1099-DIV 1b)"], ["short_term_gain", "Short-term gain or loss"], ["long_term_gain", "Long-term gain or loss"],
               ["capital_loss_carryover", "Capital loss carried from last year"], ["retirement_distributions", "Taxable retirement distributions"],
               ["early_distributions", "…taken early (before 59½)"], ["social_security_benefits", "Social Security benefits"], ["unemployment", "Unemployment"],

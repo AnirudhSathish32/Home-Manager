@@ -94,8 +94,8 @@ label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(
 .field label { margin: 0; }
 .check-field, .compact-check { display: inline-flex; align-items: center; gap: var(--space-2); font-weight: 400; }
 .compact-check { font-size: var(--text-sm); color: var(--text-secondary); }
-.inline-field { display: inline-flex; align-items: center; gap: var(--space-2); font-weight: 500; }
-.inline-field input, .inline-field select { width: auto; }
+.inline-field { display: inline-flex; align-items: center; gap: var(--space-2); font-weight: 500; max-width: 100%; }
+.inline-field input, .inline-field select { width: auto; min-width: 0; max-width: 100%; }
 /* Legacy dialog layouts (import, move): labels wrap their controls. */
 .inline { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3); }
 .inline label { flex: 1; min-width: 170px; }
@@ -558,6 +558,13 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 #extraction-result:empty { display: none; }
 .ledger-record-heading { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .ledger-record-heading strong { font-size: var(--text-lg); margin-right: var(--space-2); }
+/* A file holding several receipts: which one is shown, and the split's actions. */
+.split-panel { display: grid; gap: var(--space-3); padding-bottom: var(--space-4); margin-bottom: var(--space-4); border-bottom: 1px solid var(--border); }
+.split-panel h3 { margin: 0; }
+.split-panel select { min-width: 0; max-width: 100%; }
+/* A combined document's pages beside its image. */
+.group-strip { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
+.group-pages { margin: var(--space-1) 0; padding-left: var(--space-5); }
 .receipt-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-4); margin-top: var(--space-3); }
 .receipt-summary > div { min-width: 0; overflow-wrap: anywhere; }
 .receipt-summary small { margin-bottom: 2px; }

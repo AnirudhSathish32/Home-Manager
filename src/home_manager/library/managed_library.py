@@ -157,10 +157,11 @@ class ManagedLibrary:
             row = db.execute("SELECT * FROM managed_files WHERE document_id=? AND blob_hash=?", (document_id, digest)).fetchone()
         return dict(row) if row else None
 
-    def ensure_capture(self, relative, digest):
+    def ensure_capture(self, relative, digest, root=None):
+        """File a new capture. root is a watched folder's key; its file is copied from the preserved blob, never moved."""
         with self.store.connection() as db:
             row = db.execute("SELECT id FROM occurrences WHERE source_root=? AND path_key=? AND current_hash=?",
-                             (path_key(self.inbox), path_key(relative), digest)).fetchone()
+                             (root or path_key(self.inbox), path_key(relative), digest)).fetchone()
         if row:
             self.ensure_document(row["id"], digest)
 

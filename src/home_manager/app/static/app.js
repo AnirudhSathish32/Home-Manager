@@ -186,6 +186,8 @@ async function loadSettings() {
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
   $("auto-identify").checked = settings.household.auto_identify_items !== false;
   $("fetch-rates").checked = settings.household.fetch_exchange_rates !== false;
+  $("fetch-prices").checked = settings.household.fetch_crypto_prices === true;
+  $("rescan-hours").value = settings.household.rescan_hours ?? 6;
   $("filing-status").value = settings.household.filing_status || "single";
   $("birth-year").value = settings.household.birth_year ?? "";
   showReceiptBatch(settings.receipt_batch);
@@ -389,7 +391,8 @@ $("session-form").addEventListener("submit", async event => {
 });
 saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked,
                                                              filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null,
-                                                             fetch_exchange_rates: $("fetch-rates").checked}),
+                                                             fetch_exchange_rates: $("fetch-rates").checked,
+                                                             fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value)}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {
@@ -402,6 +405,50 @@ for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox cap
     } catch (error) { busy.capture = false; controls(); notice(error, true); }
   });
 }
+// Watched folders: copied into the library, never changed.
+async function loadSources() {
+  const target = $("source-rows");
+  if (!configured || familyMode) { tableMessage(target, 4, "Choose a library folder first."); return; }
+  const sources = await api("/api/sources");
+  if (!sources.length) { tableMessage(target, 4, "No watched folders. Only Inbox is read."); return; }
+  target.replaceChildren(...sources.map(source => {
+    const row = document.createElement("tr"), where = cell(row, "");
+    where.append(element("strong", source.label || source.path.split(/[\\/]/).pop()), element("div", source.path, "path-text"));
+    if (!source.enabled) where.append(element("div", "Paused", "muted small"));
+    cell(row, source.recursive ? "Included" : "Not included");
+    cell(row, source.last_scan_at ? new Date(source.last_scan_at).toLocaleString() : "Not yet");
+    const actions = element("div", "", "button-row");
+    actions.append(
+      asyncButton("Scan now", async () => {
+        const result = await api(`/api/sources/${source.id}/scans`, {method: "POST", body: "{}"});
+        selectedJob = result.job_id; eventOffset = 0;
+        notice("Watched folder scan started. Files are copied; the folder is not changed.");
+        await refresh();
+      }),
+      asyncButton(source.enabled ? "Pause" : "Resume", async () => {
+        await api(`/api/sources/${source.id}`, {method: "PATCH", body: JSON.stringify({enabled: !source.enabled})});
+        await loadSources();
+      }),
+      asyncButton("Stop watching", async () => {
+        if (!await confirmAction({title: "Stop watching this folder?", message: "New files there will no longer be copied in. Documents already copied from it stay in the library, and the folder is not changed.",
+                                  confirmLabel: "Stop watching"})) return;
+        await api(`/api/sources/${source.id}`, {method: "DELETE"});
+        notice("Folder no longer watched. Its documents stay in the library.");
+        await loadSources();
+      }));
+    cell(row, "").append(actions);
+    return row;
+  }));
+}
+$("source-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    await api("/api/sources", {method: "POST", body: JSON.stringify({path: $("source-path").value.trim(), label: $("source-label").value.trim(), recursive: $("source-recursive").checked})});
+    $("source-path").value = ""; $("source-label").value = "";
+    notice("Folder added. It is scanned within a minute, and new files are copied in from then on.");
+    await loadSources();
+  } catch (error) { notice(error, true); }
+});
 $("parse-all-receipts").addEventListener("click", async () => {
   try {
     busy.inference = true; controls();

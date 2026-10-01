@@ -65,6 +65,16 @@ def extract_receipt(source: Path, output: Path, rotation: int):
         os.fsync(stream.fileno())
     if (output / "preview.png").stat().st_size > 64 * 1024 * 1024:
         raise ValueError("Preview exceeds the output size limit; use a smaller scan.")
+    # Several receipts in one scan: each piece of paper is cropped and transcribed on its own.
+    from .receipt_schema import Region
+    from .regions import find_regions
+    regions = []
+    for number, bbox in enumerate(find_regions(image), 1):
+        with open(output / f"region-{number}.png", "wb") as stream:
+            image.crop(bbox).save(stream, format="PNG")
+            stream.flush()
+            os.fsync(stream.fileno())
+        regions.append(Region(number=number, bbox=bbox))
 
     codes, issues = [], []
 
@@ -98,7 +108,7 @@ def extract_receipt(source: Path, output: Path, rotation: int):
                            clockwise_rotation=rotation,
                            engine={name: version(name) for name in ("pillow", "zxing-cpp")},
                            model_hashes={}, blocks=[], lines=[], ocr_text="",
-                           codes=codes, extracted_text=code_transcript(codes), fields=None, issues=issues)
+                           codes=codes, extracted_text=code_transcript(codes), fields=None, issues=issues, regions=regions)
     write_atomic(output / "prepared.json", result.model_dump_json(indent=2), limit=4 * 1024**2)
 
 

@@ -9,6 +9,8 @@ import pytest
 
 from home_manager.app.api import create_app
 from home_manager.finance.forecast import AssetInput, Assets, CategoryAmount, ForecastInput, PayPlan, RetirementPlan, project
+from home_manager.finance.investments import AccountInput as InvestmentAccount
+from home_manager.finance.investments import Investments, PensionInput
 from home_manager.finance.scenarios import ScenarioInput, Scenarios, compare, empty_baseline, family_baseline, paycheck_plans, run
 from home_manager.household.tax_tables import TaxTables
 from home_manager.library.scanner import ScanLimits
@@ -169,6 +171,27 @@ def test_the_family_base_adds_its_members_up(tmp_path):
     assert [asset["name"] for asset in combined["assets"]] == ["Ana · Car", "Tom · Car"]
     assert sum(asset["value_minor"] for asset in combined["assets"]) == 2500000 and combined["cash"] == 0
     assert all(asset["account_id"] is None for asset in combined["assets"])
+
+
+def test_what_if_pensions_run_side_by_side_and_family_pensions_add_up(tmp_path):
+    # The same records with and without a pension a job offer would add: each run stands alone.
+    offer = {"label": "Offer pension", "monthly_amount": "1500", "start_month": "2027-01", "taxed": False}
+    runs = [(name, project(base(), ForecastInput(**FLAT, pensions=pensions), TODAY)) for name, pensions in (("Now", []), ("Offer", [offer]))]
+    now, taken = (result for _, result in runs)
+    assert month(taken, "2027-03")["cash"] - month(now, "2027-03")["cash"] == 3 * 150000
+    assert sum(row["pension"] for row in now["months"]) == 0
+    stores = [Store(tmp_path / name) for name in ("ana", "tom")]
+    try:
+        for store, amount in zip(stores, ("2000", "800")):
+            investments = Investments(store, TODAY)
+            account = investments.add(InvestmentAccount(name="Pension", kind="pension", currency="USD"))
+            investments.set_pension(account["id"], PensionInput(monthly_benefit=amount, start_date="2026-11-01"))
+        combined = family_baseline([({"name": "Ana"}, stores[0]), ({"name": "Tom"}, stores[1])], 6, "USD", TODAY)
+    finally:
+        for store in stores:
+            store.close()
+    assert [pension["label"] for pension in combined["pensions"]] == ["Ana · Pension", "Tom · Pension"]
+    assert month(project(combined, ForecastInput(**FLAT), TODAY), "2026-11")["pension"] == 280000
 
 
 def test_compare_draws_one_line_per_plan():

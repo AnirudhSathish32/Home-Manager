@@ -77,6 +77,10 @@ function detailRow(list, label, ...values) {
   list.append(element("dt", label), value);
 }
 const SOURCE_STATES = {present: "In Inbox, unchanged", missing: "No longer in Inbox", organized: "Moved from Inbox into the library"};
+// A watched folder's file is copied, never moved: its state describes the folder.
+const WATCHED_STATES = {present: "In the watched folder, unchanged", missing: "No longer in the watched folder; the library copy stays", organized: "Copied into the library"};
+const LINK_REASONS = {same_bytes: "Same file", same_record: "Same purchase"};
+function sourcePath(doc) { return doc.source_kind === "inbox" ? doc.relative_path : `${doc.source_root}\\${doc.relative_path.replaceAll("/", "\\")}`; }
 function renameInspector(doc) {
   // Set on open and after the user edits the description; loading results never rename the page.
   if (receipt) receipt.doc = {...receipt.doc, ...doc};
@@ -96,7 +100,13 @@ function renderDocumentDetails(state) {
   const doc = state.doc, list = $("document-details"); list.replaceChildren();
   detailRow(list, "Managed location", element("code", doc.managed_path ? `Library/${doc.managed_path}` : "Managed copy pending"));
   if (doc.managed_error) detailRow(list, "Filing problem", element("span", doc.managed_error, "item-warning"));
-  detailRow(list, "Original source", element("code", doc.relative_path), element("small", SOURCE_STATES[doc.source_status] || statusLabel(doc.source_status)));
+  detailRow(list, "Original source", element("code", sourcePath(doc)),
+            element("small", (doc.source_kind === "inbox" ? SOURCE_STATES : WATCHED_STATES)[doc.source_status] || statusLabel(doc.source_status)));
+  // Every other place this document was found, never just one.
+  for (const link of doc.links || []) {
+    const open = element("a", sourcePath(link)); open.href = `#/documents/${link.document_id}`;
+    detailRow(list, `Also found · ${LINK_REASONS[link.reason] || link.reason}`, open, ...(link.deleted_at ? [element("small", "In Trash")] : []));
+  }
   detailRow(list, "Folder", folderLabel(doc.folder));
   detailRow(list, "Preserved version", element("code", state.digest), element("small", state.digest === doc.current_hash ? "Latest version" : "Earlier version"), copyButton(state.digest, "Copy hash"));
   detailRow(list, "Versions", String(doc.version_count));
@@ -129,6 +139,8 @@ async function openReceipt(doc, digest = doc.current_hash) {
   $("receipt-text").value = ""; $("receipt-telemetry").textContent = "";
   $("receipt-runs").replaceChildren(new Option("Not read yet", ""));
   renderRecordPane(state); receiptControls();
+  $("group-pages").hidden = true; $("group-pages").replaceChildren();
+  loadGroupPages(state).catch(() => {});
   await imageForReceipt(`/api/documents/${doc.id}/preview?blob_hash=${digest}`, state);
   await receiptHistory(state);
   if (receipt !== state) return;
@@ -137,6 +149,60 @@ async function openReceipt(doc, digest = doc.current_hash) {
     $("receipt-status").textContent = "Not read yet. Reading uses the preserved copy locally; the original stays unchanged.";
     state.loaded = true; renderRecordPane(state);
   }
+}
+// Several images as one document (documents/grouping.py): its pages beside the image, in order, and the ways to change them.
+async function changeGroup(state, group, body, message) {
+  await api(`/api/document-groups/${group.id}`, {method: "PATCH", body: JSON.stringify(body)});
+  notice(message);
+  const lead = body.document_ids ? body.document_ids[0] : state.doc.id;
+  if (lead !== state.doc.id) location.hash = `#/documents/${lead}`;
+  else { receipt = null; await openDocument(state.doc.id); }
+}
+async function loadGroupPages(state) {
+  const group = await api(`/api/documents/${state.doc.id}/group`);
+  if (receipt !== state || !group) return;
+  const strip = $("group-pages"), pages = group.pages, index = pages.findIndex(page => page.document_id === state.doc.id);
+  if (group.status === "proposed") {
+    const link = element("a", "Decide in Review"); link.href = "#/review";
+    strip.replaceChildren(alertBox(`This image may be one page of a document photographed in ${pages.length} parts.`, {action: link}));
+    strip.hidden = false; return;
+  }
+  if (index > 0) {
+    const link = element("a", "Open the combined document"); link.href = `#/documents/${pages[0].document_id}`;
+    strip.replaceChildren(alertBox(`This image is page ${index + 1} of ${pages.length} of a combined document; it is read and recorded there.`, {action: link}));
+    strip.hidden = false; return;
+  }
+  const order = pages.map(page => page.document_id), picker = element("div", "", "work-filters");
+  picker.setAttribute("aria-label", "Pages");
+  pages.forEach((page, number) => {
+    const button = element("button", `Page ${number + 1}`, "filter-chip"); button.type = "button";
+    button.setAttribute("aria-pressed", String(number === 0));
+    button.title = page.relative_path;
+    button.addEventListener("click", async () => {
+      for (const other of picker.children) other.setAttribute("aria-pressed", String(other === button));
+      await imageForReceipt(`/api/documents/${page.document_id}/preview`, state);
+      const first = state.result?.lines?.find(line => line.id.startsWith(`page-${number + 1}-`));
+      if (first) highlightEvidence([first.id]);
+      setSourceTab("source-image-tab");
+      state.groupPage = number;
+    });
+    picker.append(button);
+  });
+  const move = offset => {
+    const from = state.groupPage || 0, to = from + offset;
+    if (to < 0 || to >= order.length) return null;
+    const moved = [...order]; [moved[from], moved[to]] = [moved[to], moved[from]];
+    return changeGroup(state, group, {document_ids: moved}, "Pages reordered. The document is read again in the new order.");
+  };
+  const actions = element("div", "", "button-row");
+  actions.append(asyncButton("Move page earlier", () => move(-1)), asyncButton("Move page later", () => move(1)),
+                 asyncButton("Separate pages…", async () => {
+                   if (!await confirmAction({title: "Separate these pages?", message: `The ${pages.length} images become separate documents again, and each is read and recorded on its own. The combined document's record stops counting.`,
+                                             confirmLabel: "Separate pages", danger: true})) return;
+                   await changeGroup(state, group, {status: "dismissed"}, "Separated. Each image is read and recorded on its own.");
+                 }));
+  strip.replaceChildren(element("strong", `Combined document · ${pages.length} pages`), picker, actions);
+  strip.hidden = false;
 }
 async function receiptHistory(state) {
   const history = await api(`/api/documents/${state.doc.id}/receipt-runs?blob_hash=${state.digest}`);
@@ -377,8 +443,66 @@ async function loadExtraction(state, parseId) {
   if (publication.record_type === "investment_valuation") { await renderInvestmentRecord(target, publication, `/api/investments/valuations/${publication.id}`); return; }
   if (publication.record_type === "investment_confirmation") { await renderConfirmationRecord(target, publication); return; }
   if (publication.record_type === "tax_form") { await renderTaxFormRecord(target, publication); return; }
+  if (publication.segments) { await renderSplit(target, state, publication); return; }
   await renderLedgerRecord(target, publication.record_type, publication.id, publication.status === "kept_reviewed");
   if (run.result.laya) target.appendChild(layaPanel(run.result.laya, run.document_type));
+}
+// A file holding several receipts (docs/document-parsing.md): pick one, confirm the split once, or change it.
+function segmentLines(segment) {
+  const lines = (receipt?.result?.lines || []).filter(line => line.text.trim());
+  const first = lines.findIndex(line => line.id === segment.first_line_id), last = lines.findIndex(line => line.id === segment.last_line_id);
+  return first < 0 || last < first ? [] : lines.slice(first, last + 1);
+}
+async function changeSplit(state, starts, message) {
+  await api(`/api/documents/${state.doc.id}/segments`, {method: "PUT", body: JSON.stringify({starts})});
+  notice(message);
+  state.renderedExtractionKey = "";
+  await loadExtraction(state, state.runId);
+}
+async function renderSplit(target, state, publication) {
+  const split = await api(`/api/documents/${state.doc.id}/segments`);
+  if (receipt !== state) return;
+  const segments = split.segments, chosen = Math.min(state.segment || 0, segments.length - 1);
+  const published = publication.segments.find(part => part.ordinal === segments[chosen]?.ordinal) || publication.segments[chosen];
+  const panel = element("section", "", "split-panel");
+  panel.setAttribute("aria-label", "Receipts in this file");
+  panel.append(element("h3", `This file holds ${segments.length} receipts`));
+  if (!split.confirmed) panel.append(alertBox("Each receipt waits in Review until you confirm how the file was split.", {tone: "warning"}));
+  const picker = element("div", "", "work-filters");
+  segments.forEach((segment, index) => {
+    const button = element("button", "", "filter-chip"); button.type = "button";
+    button.setAttribute("aria-pressed", String(index === chosen));
+    button.append(element("span", segment.merchant || `Receipt ${index + 1}`),
+                  element("span", [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)].filter(Boolean).join(" · "), "chip-count"));
+    button.addEventListener("click", () => { state.segment = index; state.renderedExtractionKey = ""; loadExtraction(state, state.runId); });
+    picker.append(button);
+  });
+  panel.append(picker);
+  const starts = segments.map(segment => segment.first_line_id), lines = segmentLines(segments[chosen]);
+  const actions = element("div", "", "button-row");
+  if (!split.confirmed) actions.append(asyncButton("Confirm split", async () => {
+    await api(`/api/documents/${state.doc.id}/segments/confirm`, {method: "POST", body: "{}"});
+    notice("Split confirmed. Each receipt now counts by its own checks."); state.renderedExtractionKey = ""; await loadExtraction(state, state.runId);
+  }, "primary"));
+  if (lines.length) actions.append(sourceButton(lines.map(line => line.id)));
+  if (chosen < segments.length - 1) actions.append(asyncButton("Merge with next", () =>
+    changeSplit(state, starts.filter((_, index) => index !== chosen + 1), "Merging the two receipts. The file is read again with your split.")));
+  panel.append(actions);
+  if (lines.length > 1) {
+    // Split one receipt in two at a line the user picks from its own text.
+    const field = element("div", "", "field"), label = element("label", "Start a new receipt at"), select = document.createElement("select");
+    select.id = "split-at"; label.htmlFor = "split-at";
+    select.append(...lines.slice(1).map(line => new Option(line.text.slice(0, 80), line.id)));
+    const row = element("div", "", "button-row");
+    row.append(select, asyncButton("Split here", () => changeSplit(state, [...starts.slice(0, chosen + 1), select.value, ...starts.slice(chosen + 1)],
+                                                                   "Splitting the receipt. The file is read again with your split.")));
+    field.append(label, row);
+    panel.append(field);
+  }
+  const record = element("div");  // The chosen receipt's record; rendering it replaces only this.
+  target.append(panel, record);
+  if (published?.status === "blocked") { record.append(alertBox(`Can't record this receipt: ${published.reason}`, {tone: "warning"})); return; }
+  if (published?.id) await renderLedgerRecord(record, published.record_type, published.id, published.status === "kept_reviewed");
 }
 const RECORD_LABELS = {receipt: "receipt", statement: "statement", bill: "bill", income_record: "pay stub"};
 function ledgerTitle(type, record) {

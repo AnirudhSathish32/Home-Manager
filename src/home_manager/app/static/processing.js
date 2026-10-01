@@ -22,7 +22,7 @@ async function loadProcessing() {
   const [latest, reconciliations] = await Promise.all([api("/api/jobs?limit=200"), api("/api/finance/reconciliation-runs?limit=1")]);
   if (load !== processingLoad) return;
   renderLanes(latest, reconciliations[0]);
-  await Promise.all([loadJobHistory(), loadModelFacets()]);
+  await Promise.all([loadJobHistory(), loadModelFacets(), loadSources()]);
 }
 function renderLanes(history, reconciliation) {
   const lanes = LANES.map(([title, liveKinds, historyKinds]) => {

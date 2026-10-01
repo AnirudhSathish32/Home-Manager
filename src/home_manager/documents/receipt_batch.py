@@ -23,7 +23,9 @@ class ReceiptBatches:
 
     def enqueue(self, vision, force=False, scan_job=None, document_ids=None):
         with self.store.connection() as db:
-            query = "SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.deleted_at IS NULL"
+            # A later page of a combined document is read with its first page, never on its own.
+            query = ("SELECT o.id,o.current_hash,o.relative_path FROM occurrences o WHERE o.deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM "
+                     "document_group_pages p JOIN document_groups g ON g.id=p.group_id WHERE p.occurrence_id=o.id AND p.page_no>1 AND g.status='confirmed')")
             params = []
             if scan_job:
                 query += " AND EXISTS(SELECT 1 FROM events e WHERE e.job_id=? AND e.relative_path=o.relative_path AND e.hash=o.current_hash AND e.status IN ('captured','duplicate','new_version'))"

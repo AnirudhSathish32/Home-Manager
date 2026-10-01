@@ -1,6 +1,6 @@
 # Directory-based document reading
 
-Status, 2026-09-28: the design below is built. Review, posting to the ledger, automatic filing, the CSV/XLSX and PDF readers, and the reasoning stage are all in place ([V2 phases](v2-phases.md), [financial reasoning](financial-reasoning.md)). Still open: scheduled rescans or a folder watcher, linking duplicates across sources, and evaluating the models on real documents (section 4a). Sections marked "future" keep their original wording as design history.
+Status, 2026-09-28: the design below is built. Review, posting to the ledger, automatic filing, the CSV/XLSX and PDF readers, and the reasoning stage are all in place ([V2 phases](v2-phases.md), [financial reasoning](financial-reasoning.md)). Built 2026-10-01: watched folders with scheduled rescans, and links between duplicate documents (see "Watched folders" under section 1). Still open: evaluating the models on real documents (section 4a). Sections marked "future" keep their original wording as design history.
 
 Implementation update: a separate, configurable [financial reasoning stage](financial-reasoning.md) now analyzes saved vision transcriptions with field-level citations and durable history.
 
@@ -70,6 +70,14 @@ flowchart TD
 Start with a local UI command, **Scan documents**, optionally scoped to a folder month. Run the scan as a durable background job with a returned job ID; never keep a request open while parsing the full directory. Later add a scheduled rescan and optional filesystem watcher. Watch events are hints: a reconciliation scan remains the source of truth for discovery and catches missed events or files added while the application was stopped.
 
 Only configured roots are scanned. Ignore temporary/lock/download files such as `~$...`, `.tmp`, `.part`, and `.crdownload`. Enumerate unsupported files too, recording a reason, so a scan can explain everything found. Use file-size and modification-time stability checks over a configurable interval plus before/after-copy checks. Locked or changing files are deferred, not imported as empty data. Stability is a heuristic; validate the captured format and retry a changed/incomplete file.
+
+**Watched folders (built 2026-10-01).** Besides `Library/Inbox`, the user can register folders outside the library on **Processing → Watched folders** (the `sources` table, migration 053). They differ from Inbox in one way: files are *copied*, never moved, renamed or deleted, so the folder is left exactly as it was. Subfolders are read when the folder's "Include subfolders" is on. Files of other types are listed but don't make the scan partial. A file that disappears from a watched folder is marked missing, and the library copy stays. The `inbox-monitor` thread looks at each enabled folder every 10 ticks (about 30 seconds) with the same two-matching-looks rule as Inbox. It also rescans every folder once after the app starts and every `rescan_hours` (a profile preference, default 6), and that rescan is the source of truth. Code: `Store.create_job(root)`, `Scanner.run(job, root, recursive)`, `Manager.check_sources`.
+
+**Duplicate links (built 2026-10-01).** `occurrence_links` records two documents found to be the same, without merging anything:
+- `same_bytes`: identical bytes at two paths, for example a file in Downloads that was also dropped in Inbox. It is recorded at capture, and both share one blob and one reading.
+- `same_record`: a person verifies a receipt matched to a charge whose transaction came from another document, such as a statement or CSV export. Rejecting the match rejects the link.
+
+The document inspector lists every link under "Also found".
 
 Hash bytes while capturing into managed temporary storage, then publish an immutable snapshot only after copy/consistency checks pass. Parse the snapshot, never the changing source path. Save a durable capture state so a crash between file publication and database commit can be reconciled on restart. Repeated scans use metadata to prioritize work but hashes establish content identity; a force/full verification option catches same-size or preserved-timestamp edits.
 

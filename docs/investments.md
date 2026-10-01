@@ -1,9 +1,9 @@
 # Investments
 
-Retirement accounts (401(k), 403(b), IRAs), HSAs, high-yield savings, CDs, Treasuries, brokerage accounts,
-and later anything else (529s, crypto, pensions, I bonds), on their own page: Money → Investments.
-Values come only from documents and what you type; the app is local and has no live prices.
-Investments are not spending.
+Retirement accounts (401(k), 403(b), IRAs), pensions, HSAs, high-yield savings, CDs, Treasuries, I bonds, brokerage
+accounts, crypto and 529 plans, on their own page: Money → Investments.
+Values come from documents and what you type. The one exception is crypto market prices, fetched only when you turn
+them on in Settings (see [crypto](#crypto)). Investments are not spending.
 
 ## One model for every kind
 
@@ -16,7 +16,7 @@ row in `investment_kinds`, not new code or a schema change.
 | **Kind** (`investment_kinds` row) | `401k` `403b` `457b` `ira` `roth_ira` `pension` `retirement` `hsa` `hysa` `money_market` `cd` `treasury` `i_bond` `bonds` `brokerage` `crypto` `education_529` `other` | Label, defaults |
 | **Section** | Retirement · Health savings · Cash and savings · CDs, bonds and Treasuries · Stocks and funds · Education · Other | Page groups, the share of each |
 | **Tax treatment** | taxable · tax-deferred · tax-free · HSA | Share by tax treatment; withdrawal order in the forecast's retirement plan. Each account can override its kind's |
-| **Value model** | `market`: the last reported value. `accrual`: principal plus a rate to maturity (CD, Treasury bill or note, I bond). `cash`: a balance earning a yearly rate (HYSA, money market) | How the value is projected. In phase 1 every model grows at the yearly rate |
+| **Value model** | `market`: the last reported value. `accrual`: principal plus a rate to maturity (CD, Treasury bill or note, I bond). `cash`: a balance earning a yearly rate (HYSA, money market). `income`: a monthly benefit from a start date (pension), never a balance | How the value is projected. In phase 1 every model grows at the yearly rate |
 
 A statement whose kind isn't recognized becomes `other`; the user renames or reclassifies it on the page.
 
@@ -221,6 +221,78 @@ account's confirmed records for the year:
 
 It also shows realized short- and long-term gains in taxable accounts.
 
+## Kinds made specific
+
+Built 2026-10-01 (migration 056; plan in [investments-next](investments-next.md)). 1099-Q and 1099-DA join the tax forms:
+1099-Q box 1 is compared with the year's withdrawals, and 1099-DA boxes 1f and 1g with sale proceeds and cost, as 1099-B 1d and 1e are.
+
+### I bonds
+
+- An I bond holding (`instrument_class='i_bond'`, with its principal and issue date) is valued by `ibond_value()` in
+  `finance/investments.py` from the published rates in `ibond_rates`. Migration 056 seeds every rate from May 2015 to May 2026.
+  Add each new one (each May 1 and November 1) under "I bond rates" on the account, or with `PUT /api/investments/ibond-rates`.
+- The method follows TreasuryDirect:
+  - The composite rate is fixed + 2 × semiannual inflation + fixed × semiannual inflation, never below zero.
+  - The fixed rate is the one for the issue month. The inflation rate resets every six months from the issue month,
+    to the one in force at the start of each period.
+  - The value is worked out for a $25 bond, rounded to the cent at each six-month step and at the month reached, then
+    scaled to the principal. Interest is added on the first of each month and stops after 30 years.
+  - A period that starts after the newest rate uses that newest rate until you add the next one.
+- The maturity defaults to 30 years. The 12-month lock stays (the "redeemable" date).
+- "If cashed today" is the value three months earlier while the bond is under five years old, and nothing in its first year.
+  No value at maturity is shown, since it depends on rates not yet published.
+- Purchases over $10,000 in a calendar year get a warning on the page and on the account. A profile is one person, and
+  purchases waiting for review count too. Paper bonds bought with a tax refund aren't separated out.
+- Tax: I bond and Treasury interest (accounts of kind `i_bond` or `treasury`, or 1099-INT box 3) is federal-taxable and
+  state-exempt. `tax_year.gather()` reports it as `us_obligation_interest`, and the simplified state return leaves it
+  out. The Education Savings Bond exclusion isn't worked out; type it over the records.
+
+### 529 plans
+
+- The account settings add a **beneficiary** (a profile's name or anyone's) and the **plan state**.
+- Withdrawals are `qualified_withdrawal` (tuition, books, room and board) or `nonqualified_withdrawal`. A statement's
+  plain `withdrawal` is listed as "Not marked" with buttons to mark it. You can also record a withdrawal yourself; it
+  counts at once.
+- The Taxes panel shows each 529's non-qualified withdrawals for the year. Their taxable earnings are the withdrawal times
+  the confirmed 1099-Q's box 2 (earnings) over box 1 (gross distribution). `tax_year.gather()` adds them to other income;
+  the 10% additional tax usually applies too and isn't computed.
+- Forecast: a 529 (section `education`) is never drawn on by retirement withdrawals. Planned **education costs** (a month
+  and an amount, optionally from one 529) are paid from the 529, and from cash once it runs short.
+
+### Pensions
+
+- A pension is an income stream (value model `income`), not a balance. Its account has `pension_terms`: the monthly
+  benefit, start date, yearly raise (COLA, each January), survivor share, and a lump sum offered instead.
+  The lump sum is shown for comparison and never counted.
+- Pensions are left out of totals and shares, required minimum distributions, and the forecast's balances and withdrawals.
+- Forecast: `Investments.forecast_pensions()` feeds `ForecastInput`-shaped `PensionIncome` streams into `project()`.
+  - Each pays from its start month and is raised by its COLA each January after.
+  - A tax-deferred pension is taxed at the retirement plan's flat rate (untaxed when no plan sets one).
+  - A What If can add pensions of its own (`ForecastInput.pensions`). The family forecast adds every member's.
+  - Survivor benefits aren't projected.
+- 1099-R import is unchanged.
+
+### Crypto
+
+- **Prices** (`finance/prices.py`, modelled on `finance/fx.py`) come from CoinGecko's public simple-price endpoint.
+  - They are fetched only when **Settings → Fetch crypto market prices** (`fetch_crypto_prices`, off by default) is on.
+  - Requests go out at most once a day at startup, plus whenever you press **Refresh prices** on the account.
+  - The request names only coin ids and currencies, never amounts.
+  - Prices are cached in `price_quotes` as exact decimal text.
+  - Coins are matched by ticker (`COINGECKO_IDS`: BTC, ETH, SOL…). A coin not listed there isn't priced.
+- A price adds a `quote` value for today (labelled "Market price"):
+  - Each coin's units × price, plus cash carried from the statement.
+  - Units are the newest confirmed statement's quantities, moved by confirmed buys, sells, transfers and rewards since.
+  - An account holding anything without a price (a fund, an unknown coin) gets no quote at all, never a partial one.
+  - Valuations stay append-only, and a document always wins. An account with a statement or typed value dated today
+    or later gets no quote. A statement for the same date later replaces the quote.
+- **Coinbase export**: "Import a Coinbase export" reads the transaction-history CSV (or XLSX) from the library
+  (`parse_crypto_export`, preset `coinbase`).
+  - Buys, sells, sends, receives and rewards become the account's activity; a conversion is a sale and a purchase.
+  - Holdings are created by symbol. Fiat deposits and withdrawals are skipped, and unknown types are reported.
+  - Importing the same file again adds nothing twice. The rows count at once, like a transaction import.
+- Tax: crypto is taxable, so confirmed buys open FIFO lots (`finance/tax_lots.py`) and sales give realized gains.
+
 ## Rules
 
 - A value you type counts at once. If you type a value for a date that already has one, yours replaces it,
@@ -244,7 +316,9 @@ It also shows realized short- and long-term gains in taxable accounts.
 `POST /api/investments/{id}/payroll` (answer the payroll question) · `POST /api/investments/events/{id}/unlink` ·
 `GET /api/investments/rmd?year=` ·
 `POST /api/investments/holdings/{id}/lots`, `DELETE /api/investments/lots/{id}` ·
-`GET /api/investments/tax-forms/{id}`, `POST …/tax-forms/{id}/review`, `GET /api/investments/tax-years/{year}`.
+`GET /api/investments/tax-forms/{id}`, `POST …/tax-forms/{id}/review`, `GET /api/investments/tax-years/{year}` ·
+`PUT /api/investments/{id}/pension` · `POST /api/investments/{id}/events` · `POST /api/investments/events/{id}/qualified` ·
+`GET|PUT /api/investments/ibond-rates` · `POST /api/investments/{id}/crypto-import` · `GET /api/prices`, `POST /api/prices/refresh`.
 
 ## Phases
 
@@ -262,3 +336,5 @@ It also shows realized short- and long-term gains in taxable accounts.
    distributions, retirement withdrawals in the forecast, and undoing payment matches followed the same day (migration 041).
    The What If forecast that followed (scenarios run side by side with "Now") is built; see [What If](what-if.md).
    Forecast inputs, including the retirement plan, are kept pure and stateless for it.
+6. **Done 2026-10-01.** Kinds made specific: I bonds, 529 plans, pensions and crypto (with opt-in prices and the Coinbase
+   import), 1099-Q and 1099-DA. Migration 056. See [Kinds made specific](#kinds-made-specific).

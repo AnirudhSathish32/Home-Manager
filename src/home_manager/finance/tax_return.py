@@ -121,6 +121,7 @@ class ReturnInput(BaseModel):
     people: list[Person] = Field(default_factory=list)
     jobs: list[Job] = Field(default_factory=list)
     interest: int = 0
+    us_obligation_interest: int = 0  # The part of interest from I bonds and Treasuries: federal-taxable, state-exempt.
     tax_exempt_interest: int = 0
     ordinary_dividends: int = 0  # 1099-DIV box 1a, qualified ones included.
     qualified_dividends: int = 0
@@ -425,11 +426,11 @@ def state_return(value: ReturnInput, agi, table):
     if table is None or table.get("status") != "verified":
         return {"state": value.state, "complete": False, "withheld_minor": withheld, "note": "The state's tax table isn't confirmed, so its return isn't estimated."}
     deduction = value.state_deduction if value.state_deduction is not None else table["standard_deduction_minor"]
-    taxable = max(0, agi - deduction)
+    taxable = max(0, agi - min(value.us_obligation_interest, value.interest) - deduction)  # States can't tax US savings bond or Treasury interest.
     tax = max(0, cents(bracket_tax(taxable, json.loads(table["brackets_json"]))) - value.state_credits)
     paid = withheld + value.state_estimated_paid
     return {"state": value.state, "complete": True, "taxable_minor": taxable, "tax_minor": tax, "withheld_minor": withheld, "estimated_minor": value.state_estimated_paid,
             "payments_minor": paid, "result_minor": paid - tax,
             "display": {key: format_minor(amount, CURRENCY) for key, amount in (("taxable_minor", taxable), ("tax_minor", tax), ("payments_minor", paid),
                                                                                   ("result_minor", abs(paid - tax)))},
-            "note": "Simplified: federal AGI less the state's deduction, on the state's brackets, less the credits you entered."}
+            "note": "Simplified: federal AGI less I bond and Treasury interest and the state's deduction, on the state's brackets, less the credits you entered."}

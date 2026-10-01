@@ -171,9 +171,29 @@ class CategoryAmount(StrictInput):
         return name
 
 
+class PensionIncome(StrictInput):
+    """A pension as an income stream: a monthly benefit from its start month, raised by its cost-of-living rate each January after
+    it starts. Recorded pensions (Investments.forecast_pensions) join from the records; a What If can add one of its own."""
+    label: str = Field(min_length=1, max_length=160)
+    monthly_amount: str = Field(min_length=1, max_length=30, description="Before tax, in the month it starts.")
+    start_month: str = Field(pattern=MONTH.pattern)
+    cola_percent: str = Field(default="0", pattern=r"^\d{1,2}(\.\d{1,2})?$")
+    taxed: bool = Field(default=True, description="Taxed as income at the retirement plan's flat rate (a tax-deferred pension).")
+
+
+class EducationWithdrawal(StrictInput):
+    """A planned education cost paid from a 529: an expense that month, taken from the 529 (the rest from cash when it's short)."""
+    month: str = Field(pattern=MONTH.pattern)
+    amount: str = Field(min_length=1, max_length=30, description="In that month's money.")
+    account_id: int | None = Field(default=None, description="The 529 it comes from; none: the education accounts in turn.")
+    label: str = Field(default="", max_length=80)
+
+
 class ForecastInput(StrictInput):
     years: int = Field(default=10, ge=1, le=MAX_YEARS)
     retirement: RetirementPlan | None = None
+    pensions: list[PensionIncome] = Field(default_factory=list, max_length=10, description="Pensions besides the recorded ones (What If).")
+    education_withdrawals: list[EducationWithdrawal] = Field(default_factory=list, max_length=100)
     pay_plans: list[PayPlan] = Field(default_factory=list, max_length=10)
     category_amounts: list[CategoryAmount] = Field(default_factory=list, max_length=50)
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
@@ -330,8 +350,9 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
     with tools.connection() as db:
         pay = db.execute("SELECT coalesce(sum(net_pay_minor),0) FROM income_records WHERE review_status='verified' AND currency=? AND pay_date BETWEEN ? AND ?",
                          (chosen, period.start, period.end)).fetchone()[0]
+    pensions = [{key: value for key, value in pension.items() if key != "currency"} for pension in investments.forecast_pensions() if pension["currency"] == chosen]
     return {"currency": chosen, "history": {"start": period.start, "end": period.end, "months": history_months, "months_with_data": months_seen},
-            "cash": cash, "balances": balances, "monthly_pay": Decimal(pay) / history_months,
+            "cash": cash, "balances": balances, "monthly_pay": Decimal(pay) / history_months, "pensions": pensions,
             "monthly_income": Decimal(income) / history_months,
             "monthly_spending": {category: Decimal(total) / history_months for category, total in sorted(categories.items())},
             "bills": bills, "assets": [asset for asset in held if asset["currency"] == chosen], "notes": notes}
@@ -370,7 +391,8 @@ def take(holding, amount):
 def project(base, value: ForecastInput, today=None, birth_year=None):
     """Month-by-month projection from a baseline. Pure: the same inputs give the same output. With a birth year, tax-deferred
     accounts pay out their required minimum distributions each December (finance/retirement.py); with a retirement plan,
-    pay and payroll contributions stop and withdrawals begin."""
+    pay and payroll contributions stop and withdrawals begin. Pensions are income from their start month (never a balance to
+    draw); 529 accounts pay only the planned education costs and are never drawn on for living costs."""
     today = today or date.today()
     currency = base["currency"]
     start = month_add(today.isoformat()[:7], 1)
@@ -403,7 +425,8 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                              # Paid in from pay (already outside take-home pay, so cash is untouched) and from you (out of cash).
                              "payroll": Decimal(asset.get("payroll_monthly_minor") or 0), "personal": Decimal(asset.get("personal_monthly_minor") or 0),
                              # Investment accounts can be drawn on in retirement; tax-deferred ones also have required distributions.
-                             "investment": asset.get("source") == "investment", "tax": asset.get("tax_treatment"), "withdrawn": Decimal(0)})
+                             "investment": asset.get("source") == "investment", "tax": asset.get("tax_treatment"), "withdrawn": Decimal(0),
+                             "section": asset.get("section")})
         # Planned paychecks (What If): take-home pay a month, and where their contributions go: a linked investment account, or
         # a new planned one that starts empty.
         plans: list[dict] = []
@@ -429,9 +452,19 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
         set_amounts = sorted((item.from_month, item.category, Decimal(to_minor(item.monthly_amount, currency))) for item in value.category_amounts)
         for holding in holdings:
             holding["year_start"] = available(holding)  # Its balance at the end of the year before, for required distributions.
-        drawable = sorted((holding for holding in holdings if holding["investment"]), key=lambda holding: WITHDRAWAL_ORDER.get(holding["tax"], len(WITHDRAWAL_ORDER)))
+        # A 529 is kept for education: never drawn on for living costs, only by planned education withdrawals.
+        drawable = sorted((holding for holding in holdings if holding["investment"] and holding.get("section") != "education"),
+                          key=lambda holding: WITHDRAWAL_ORDER.get(holding["tax"], len(WITHDRAWAL_ORDER)))
+        education = [holding for holding in holdings if holding.get("section") == "education"]
         plan = value.retirement
         tax = Decimal(plan.tax_percent) / 100 if plan else Decimal(0)
+        # Pensions pay an income: the recorded ones (baseline) and any a What If adds, each from its start month.
+        pensions = [PensionIncome(**pension) for pension in base.get("pensions", [])] + list(value.pensions)
+        streams: list[dict] = [{"label": pension.label, "amount": Decimal(to_minor(pension.monthly_amount, currency)), "start": pension.start_month,
+                    "cola": one + Decimal(pension.cola_percent) / 100, "cola_percent": pension.cola_percent, "taxed": pension.taxed} for pension in pensions]
+        schooling: dict[str, list[EducationWithdrawal]] = {}
+        for education_cost in value.education_withdrawals:
+            schooling.setdefault(education_cost.month, []).append(education_cost)
         fixed = Decimal(to_minor(plan.monthly_amount, currency)) if plan and plan.mode == "fixed" else None
         floor = Decimal(to_minor(plan.cash_floor, currency)) if plan and plan.mode == "shortfall" else None
         pay = base.get("monthly_pay", Decimal(0))
@@ -467,6 +500,20 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                          "takes out at least the year's required amount.")
         if not birth_year and any(holding["tax"] in HAS_RMD for holding in drawable):
             notes.append("Add the year you were born in Settings to include required minimum distributions.")
+        for stream in streams:
+            raise_text = f", raised {stream['cola_percent']}% each January" if stream["cola"] != one else ""
+            if not stream["taxed"]:
+                taxed_text = "."
+            elif plan:
+                taxed_text = f", taxed at {plan.tax_percent}%."
+            else:
+                taxed_text = "; it isn't taxed until a retirement plan sets a tax rate."
+            notes.append(f"{stream['label']}: a pension of {money(minor(stream['amount']), currency)['display']} a month from {stream['start']}{raise_text}{taxed_text}")
+        if education:
+            notes.append("529 accounts are kept for education: retirement withdrawals never draw on them.")
+        if value.education_withdrawals and not education:
+            notes.append("There is no 529 account, so planned education costs are paid from cash.")
+        short_529 = None
         ran_out = None
 
         def draw(needed, only=None):
@@ -540,7 +587,30 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                             matured += minor(piece["target"])
                         else:
                             holding["balance"] += piece["target"]
-            cash += income - outgoing - loan_paid - saved + extra + matured
+            # Pensions pay from their start month, raised by their cost-of-living rate each January after; taxed at the plan's rate.
+            pension_paid = pension_tax = 0
+            for stream in streams:
+                if month >= stream["start"]:
+                    gross = minor(stream["amount"] * stream["cola"] ** (int(month[:4]) - int(stream["start"][:4])))
+                    pension_paid += gross
+                    pension_tax += minor(gross * tax) if stream["taxed"] else 0
+            # Planned education costs are paid from the 529 (the named one, else each in turn), the rest from cash.
+            schooled = from_529 = 0
+            for planned_cost in schooling.get(month, []):
+                cost = to_minor(planned_cost.amount, currency)
+                left = Decimal(cost)
+                for holding in education:
+                    if planned_cost.account_id is not None and holding["account_id"] != planned_cost.account_id:
+                        continue
+                    used = min(left, available(holding))
+                    if used > 0:
+                        take(holding, used)
+                        left -= used
+                schooled += cost
+                from_529 += cost - minor(left)
+            if schooled > from_529 and education and short_529 is None:
+                short_529 = month
+            cash += income - outgoing - loan_paid - saved + extra + matured + pension_paid - pension_tax - (schooled - from_529)
             withdrawn = withdrawal_tax = forced = Decimal(0)
             if retired:
                 # A fixed amount grown with prices, or whatever keeps cash at the floor (also grown with prices).
@@ -569,7 +639,9 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
             rows.append({"month": month, "income": income, "spending": outgoing, "loan_payments": loan_paid, "one_offs": extra,
                          "contributions": contributed, "invested_from_cash": saved, "matured": matured,
                          "withdrawals": minor(withdrawn), "withdrawal_tax": minor(withdrawal_tax), "rmd": minor(forced),
-                         "net_cash_flow": income - outgoing - loan_paid - saved + extra + matured + minor(withdrawn), "cash": minor(cash),
+                         "pension": pension_paid, "pension_tax": pension_tax, "education": schooled, "education_from_529": from_529,
+                         "net_cash_flow": income - outgoing - loan_paid - saved + extra + matured + minor(withdrawn) + pension_paid - pension_tax - (schooled - from_529),
+                         "cash": minor(cash),
                          "assets": asset_total, "loans": loan_total, "net_worth": worth,
                          "net_worth_today": minor(Decimal(worth) / price), "price_level": str(price.quantize(Decimal("0.000001")))})
         for holding in holdings:
@@ -577,6 +649,8 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                 notes.append(f"{holding['name']}: the monthly payment does not cover the interest, so this loan never shrinks.")
         if ran_out:
             notes.append(f"Investments run out in {ran_out}: from then on the planned withdrawals can't be met.")
+        if short_529:
+            notes.append(f"The 529 runs short in {short_529}: the rest of that education cost comes from cash.")
         if plan and pay and pay > base["monthly_income"]:
             notes.append("Take-home pay on pay stubs is more than the recorded monthly income, so income after retirement is taken as zero.")
     years = []
@@ -587,7 +661,9 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                       "loan_payments": sum(row["loan_payments"] for row in chunk), "one_offs": sum(row["one_offs"] for row in chunk),
                       "contributions": sum(row["contributions"] for row in chunk), "matured": sum(row["matured"] for row in chunk),
                       "withdrawals": sum(row["withdrawals"] for row in chunk), "withdrawal_tax": sum(row["withdrawal_tax"] for row in chunk),
-                      "rmd": sum(row["rmd"] for row in chunk),
+                      "rmd": sum(row["rmd"] for row in chunk), "pension": sum(row["pension"] for row in chunk),
+                      "pension_tax": sum(row["pension_tax"] for row in chunk), "education": sum(row["education"] for row in chunk),
+                      "education_from_529": sum(row["education_from_529"] for row in chunk),
                       "end_cash": chunk[-1]["cash"], "end_assets": chunk[-1]["assets"], "end_loans": chunk[-1]["loans"],
                       "end_net_worth": chunk[-1]["net_worth"], "end_net_worth_today": chunk[-1]["net_worth_today"]})
     for year in years:
@@ -601,6 +677,8 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                             "pay_plans": [item.model_dump() for item in value.pay_plans],
                             "category_amounts": [item.model_dump() for item in value.category_amounts],
                             "one_offs": [item.model_dump() for item in value.one_offs], "cut_subscriptions_from": cut,
+                            "pensions": [pension.model_dump() for pension in pensions],
+                            "education_withdrawals": [item.model_dump() for item in value.education_withdrawals],
                             "retirement": plan.model_dump() if plan else None, "birth_year": birth_year,
                             "rmd_start": {"year": first_rmd, "age": rmd_start_age(birth_year)} if birth_year else None},
             "starting_point": {"cash": money(base["cash"], currency), "balances": base["balances"],

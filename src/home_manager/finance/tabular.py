@@ -318,6 +318,96 @@ def parse_transactions(data, suffix, currency, mapping=None, sheet=None):
     return rows, used, issues, {**counts, "columns": names}
 
 
+# Exchange exports of crypto activity (finance/investments.py import_crypto): which columns hold what, by preset. Coinbase's
+# "Transaction history" CSV has a few lines of preamble before its header, and has been exported with either price column name.
+CRYPTO_PRESETS = {"coinbase": {"date": ("timestamp",), "type": ("transaction type",), "asset": ("asset",), "quantity": ("quantity transacted",),
+                               "currency": ("price currency", "spot price currency"), "total": ("total (inclusive of fees and/or spread)",),
+                               "subtotal": ("subtotal",), "notes": ("notes",)}}
+# Exchange wording -> activity type. Fiat deposits and withdrawals move cash, not crypto, so they are skipped.
+CRYPTO_TYPES = {"buy": "buy", "advanced trade buy": "buy", "sell": "sell", "advanced trade sell": "sell", "receive": "transfer_in",
+                "send": "transfer_out", "rewards income": "reward", "staking income": "reward", "learning reward": "reward",
+                "inflation reward": "reward", "reward income": "reward", "convert": "convert"}
+CRYPTO_SKIPPED = ("deposit", "withdrawal", "pro deposit", "pro withdrawal", "exchange deposit", "exchange withdrawal")
+CONVERTED = re.compile(r"converted\s+([\d.,]+)\s+([A-Za-z0-9]+)\s+to\s+([\d.,]+)\s+([A-Za-z0-9]+)", re.IGNORECASE)
+UNITS = re.compile(r"-?\d[\d,]*(\.\d+)?|-?\.\d+")
+
+
+def crypto_units(text):
+    """A printed unit count as exact positive decimal text, or None (crypto quantities have up to 18 decimals)."""
+    value = (text or "").replace(",", "").strip()
+    if not UNITS.fullmatch(value) or Decimal(value) == 0:
+        return None
+    return f"{abs(Decimal(value)).normalize():f}"
+
+
+def parse_crypto_export(data, suffix, currency, preset="coinbase"):
+    """Return (rows, issues): one row per crypto movement, {date, type, asset, quantity, amount_minor, note, row}. A conversion
+    becomes a sale of the asset given and a purchase of the asset received, at the same value."""
+    if preset not in CRYPTO_PRESETS:
+        raise TableError(f"Choose one of: {', '.join(CRYPTO_PRESETS)}.")
+    if len(data) > MAX_BYTES:
+        raise TableError("The file exceeds the 32 MiB import limit.")
+    currency = currency_code(currency)
+    columns = CRYPTO_PRESETS[preset]
+    table, issues = read_xlsx(data) if suffix == ".xlsx" else read_csv(data)
+    header_at = next((index for index, row in enumerate(table[:25]) if {"timestamp", "asset"} <= {cell.strip().lower() for cell in row}), None)
+    if header_at is None:
+        raise TableError("No header row with Timestamp and Asset columns was found in the first 25 rows. Check that this is a Coinbase transaction history.")
+    header = [cell.strip().lower() for cell in table[header_at]]
+    index = {key: next((header.index(name) for name in names if name in header), None) for key, names in columns.items()}
+    missing = [key for key in ("date", "type", "asset", "quantity", "total") if index[key] is None]
+    if missing:
+        raise TableError(f"The file has no {', '.join(missing)} column for the {preset} layout.")
+
+    def cell(row, key):
+        position = index[key]
+        return row[position].strip() if position is not None and position < len(row) else ""
+
+    def amount(text):
+        return abs(spreadsheet_amount(text.replace("$", "").strip(), currency))
+
+    rows = []
+    for number, row in enumerate(table[header_at + 1:], header_at + 2):
+        if not any(value.strip() for value in row):
+            continue
+        kind = cell(row, "type").lower()
+        if kind in CRYPTO_SKIPPED:
+            continue
+        mapped = CRYPTO_TYPES.get(kind)
+        day = parse_date(cell(row, "date")[:10], "YYYY-MM-DD")
+        units = crypto_units(cell(row, "quantity"))
+        asset = re.sub(r"[^A-Z0-9]", "", cell(row, "asset").upper())
+        if mapped is None:
+            issues.append(f"Row {number} was not imported: {cell(row, 'type') or 'a blank type'} isn't a kind of activity this import knows.")
+            continue
+        if day is None or units is None or not asset:
+            issues.append(f"Row {number} was not imported: it has no valid date, asset or quantity.")
+            continue
+        if cell(row, "currency") and cell(row, "currency").upper() != currency:
+            issues.append(f"Row {number} was not imported: its prices are in {cell(row, 'currency').upper()}, not {currency}.")
+            continue
+        try:
+            value = amount(cell(row, "total") or cell(row, "subtotal") or "0")
+        except MoneyError as exc:
+            issues.append(f"Row {number} was not imported: {str(exc).rstrip('.')}.")
+            continue
+        note = cell(row, "notes")
+        if mapped != "convert":
+            rows.append({"date": day, "type": mapped, "asset": asset, "quantity": units, "amount_minor": value, "note": note or cell(row, "type"), "row": number})
+            continue
+        converted = CONVERTED.search(note)
+        target_units = crypto_units(converted.group(3)) if converted else None
+        if not converted or target_units is None:
+            issues.append(f"Row {number} was not imported: the conversion's notes don't say what it was converted to.")
+            continue
+        # The value given up is the value received; the subtotal is before the conversion's spread.
+        value = amount(cell(row, "subtotal")) if cell(row, "subtotal") else value
+        target = re.sub(r"[^A-Z0-9]", "", converted.group(4).upper())
+        rows.append({"date": day, "type": "sell", "asset": asset, "quantity": units, "amount_minor": value, "note": note, "row": number})
+        rows.append({"date": day, "type": "buy", "asset": target, "quantity": target_units, "amount_minor": value, "note": note, "row": number})
+    return rows, issues
+
+
 def preview(rows, currency, limit=50):
     outflow = sum(row["amount_minor"] for row in rows if row["amount_minor"] < 0)
     inflow = sum(row["amount_minor"] for row in rows if row["amount_minor"] > 0)

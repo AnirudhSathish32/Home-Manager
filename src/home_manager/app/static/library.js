@@ -17,6 +17,7 @@ const WORK_FILTERS = [["all", "All"], ["needs_text", "Not read yet"], ["ready_fo
 const PENDING = ["queued", "running"];
 const isTable = doc => /\.(csv|xlsx)$/i.test(doc.relative_path);  // Tables are imported, never transcribed.
 const isReadable = doc => /\.(png|jpe?g|pdf)$/i.test(doc.relative_path);
+const isImage = doc => /\.(png|jpe?g)$/i.test(doc.relative_path);
 
 // One library, two stores: Documents (papers you keep, plus the shared Inbox) and Money (receipts and statements).
 const LIBRARY_SCOPES = {
@@ -219,9 +220,10 @@ function renderSelection() {
   const docs = [...selection.values()], trash = activeFolder === "trash";
   $("selection-bar").hidden = !docs.length;
   $("selection-count").textContent = `${docs.length} selected`;
-  for (const id of ["read-selected", "move-selected", "trash-selected"]) $(id).hidden = trash;
+  for (const id of ["read-selected", "combine-selected", "move-selected", "trash-selected"]) $(id).hidden = trash;
   $("restore-selected").hidden = !trash;
   $("read-selected").disabled = busy.inference || !docs.some(isReadable);
+  $("combine-selected").disabled = busy.inference || docs.length < 2 || docs.length > 20 || !docs.every(isImage);
   const boxes = [...document.querySelectorAll("#documents input[data-select]")];
   for (const box of boxes) box.checked = selection.has(Number(box.dataset.select));
   $("select-all").checked = boxes.length > 0 && boxes.every(box => box.checked);
@@ -300,6 +302,17 @@ $("select-all").addEventListener("change", () => {
 });
 $("documents").addEventListener("menuclose", () => { if (deferredDocuments) setTimeout(() => deferredDocuments && renderDocuments(deferredDocuments)); });
 $("clear-selection").addEventListener("click", () => { selection.clear(); renderSelection(); });
+$("combine-selected").addEventListener("click", async () => {
+  // Pages in file-name order (scan (1), scan (2)…); the document's page shows them and can reorder them.
+  const docs = [...selection.values()].sort((a, b) => a.relative_path.localeCompare(b.relative_path, undefined, {numeric: true}));
+  try {
+    busy.inference = true; controls();
+    await api("/api/document-groups", {method: "POST", body: JSON.stringify({document_ids: docs.map(doc => doc.id)})});
+    selection.clear();
+    notice(`Combined ${docs.length} images into one document. They are read as its pages; progress shows in the sidebar.`);
+    await reload();
+  } catch (error) { busy.inference = false; controls(); notice(error, true); }
+});
 $("read-selected").addEventListener("click", async () => {
   const ids = [...selection.values()].filter(isReadable).map(doc => doc.id);
   try {

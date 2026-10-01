@@ -36,12 +36,15 @@ $("add-income-change").addEventListener("click", () => forecastRow("forecast-inc
   [["month", "From month", {type: "month", required: ""}], ["monthly_amount", "Monthly change", {inputmode: "decimal", required: "", placeholder: "500.00"}]]));
 $("add-one-off").addEventListener("click", () => forecastRow("forecast-one-offs",
   [["month", "Month", {type: "month", required: ""}], ["amount", "Amount", {inputmode: "decimal", required: "", placeholder: "-3000.00"}], ["label", "What it is", {maxlength: "80"}]]));
+$("add-education").addEventListener("click", () => forecastRow("forecast-education",
+  [["month", "Month", {type: "month", required: ""}], ["amount", "Cost", {inputmode: "decimal", required: "", placeholder: "12000.00"}], ["label", "What it is", {maxlength: "80"}]]));
 
 function forecastRequest() {
   const request = {years: Number($("forecast-years").value), inflation_percent: $("forecast-inflation").value.trim(),
                    income_growth_percent: $("forecast-income-growth").value.trim(), history_months: Number($("forecast-history").value),
                    spending_changes: forecastItems("forecast-spending-changes"), income_changes: forecastItems("forecast-income-changes"),
-                   one_offs: forecastItems("forecast-one-offs").map(item => ({...item, label: item.label || ""}))};
+                   one_offs: forecastItems("forecast-one-offs").map(item => ({...item, label: item.label || ""})),
+                   education_withdrawals: forecastItems("forecast-education").map(item => ({...item, label: item.label || ""}))};
   // A retirement plan is one self-contained input, so a scenario can change it without touching the rest.
   if ($("retire-plan").checked) {
     const fixed = $("retire-mode").value === "fixed";
@@ -173,7 +176,10 @@ function renderForecast(result) {
     ["Net worth", "net_worth", [["Net worth", money("end_net_worth")], ["In today's dollars", money("end_net_worth_today")]]],
     ["Income and spending", "cash_flow", [["Income", money("income")], ["Spending", money("spending")], ["Loan payments", money("loan_payments")], ["One-off", money("one_offs")],
       // Money drawn from investments to cash, after tax, and the part only required distributions took.
-      ...(result.years.some(year => year.withdrawals) ? [["From investments", money("withdrawals")], ["Tax withheld", money("withdrawal_tax")], ["Required (RMD)", money("rmd")]] : [])]],
+      ...(result.years.some(year => year.withdrawals) ? [["From investments", money("withdrawals")], ["Tax withheld", money("withdrawal_tax")], ["Required (RMD)", money("rmd")]] : []),
+      // Pensions pay an income (before its tax); planned education costs and the part a 529 paid.
+      ...(result.years.some(year => year.pension) ? [["Pension", money("pension")], ["Pension tax", money("pension_tax")]] : []),
+      ...(result.years.some(year => year.education) ? [["Education", money("education")], ["Paid by the 529", money("education_from_529")]] : [])]],
     ["Cash, assets and loans", "balance_sheet", [["Cash", money("end_cash")], ["Assets", money("end_assets")], ["Loans owed", money("end_loans")]]]];
   $("forecast-charts").replaceChildren(...charts.map(([title, key, columns]) => {
     const card = element("section", "", "panel forecast-chart-card"), details = element("details");

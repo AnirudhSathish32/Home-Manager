@@ -175,3 +175,21 @@ def test_tools_endpoint_validates_typed_arguments(tmp_path):
         assert client.post("/api/finance/tools/delete_everything", json={}).status_code == 422
         assert client.post("/api/finance/reconcile").json()["open_issues"] == 0
         assert client.post("/api/finance/links/receipt/1/review", json={"status": "verified"}).status_code == 400
+
+
+def test_verified_receipt_match_links_the_two_documents(books):
+    store, ledger, docs = books
+    card = ledger.create_account("Fidelity", "credit_card", "USD", last_four="7314")
+    [charge] = add(store, ledger, card, docs["export.csv"], [("2026-09-15", "COSTCO WHSE #1234 SEATTLE WA", -16382)])
+    costco = receipt(ledger, docs["receipt.png"], "Costco Wholesale", "2026-09-15", 16382)
+    Reconciler(store).run()
+    with store.connection() as db:
+        link = db.execute("SELECT id,transaction_id FROM transaction_receipt_links WHERE receipt_id=?", (costco,)).fetchone()
+    assert link["transaction_id"] == charge
+    assert store.linked_documents(docs["receipt.png"]["id"]) == []  # Proposed only: nothing is linked yet.
+    reconciler = Reconciler(store)
+    reconciler.review_link("receipt", link["id"], "verified")
+    [linked] = store.linked_documents(docs["receipt.png"]["id"])
+    assert (linked["reason"], linked["document_id"]) == ("same_record", docs["export.csv"]["id"])
+    reconciler.review_link("receipt", link["id"], "rejected")
+    assert store.linked_documents(docs["export.csv"]["id"]) == []

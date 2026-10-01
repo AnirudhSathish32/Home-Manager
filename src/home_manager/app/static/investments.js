@@ -3,7 +3,8 @@
 // and one account's values over time. The server does every sum and share; the page only arranges its text.
 // The open account lives in the URL (#/investments?account=ID) so Back and reload keep it.
 let investmentKinds = [], investmentsLoad = 0;
-const SOURCE_LABELS = {manual: "Entered by you", statement: "Statement", ledger_statement: "Savings statement", estimated: "Estimated from purchase terms"};
+const SOURCE_LABELS = {manual: "Entered by you", statement: "Statement", ledger_statement: "Savings statement", estimated: "Estimated from purchase terms",
+                       quote: "Market price"};
 const TERM_CLASSES = [["cd", "CD"], ["treasury_bill", "Treasury bill"], ["treasury_note", "Treasury note"], ["treasury_bond", "Treasury bond"],
                       ["i_bond", "I bond"], ["bond", "Bond"]];
 
@@ -88,6 +89,16 @@ function renderInvestmentTaxes(data, params) {
                             {tone: "warning", action: homeLink("Open the account", `#/investments?account=${gap.account_id}`)}));
     }
   }
+  for (const plan of data.education) {
+    // A 529's withdrawals that didn't pay for qualified education costs: their earnings part is taxed as income.
+    const link = homeLink("Open the account", `#/investments?account=${plan.account_id}`);
+    if (plan.unmarked) panel.append(alertBox(`${plan.account}: ${plan.unmarked.display} withdrawn isn't marked qualified or not yet.`, {tone: "warning", action: link}));
+    if (plan.nonqualified.minor) {
+      panel.append(element("p", plan.taxable_earnings
+        ? `${plan.account}: ${plan.nonqualified.display} withdrawn for other costs. ${plan.taxable_earnings.display} of it is earnings (${plan.earnings_share_percent}%, from the 1099-Q), taxed as income; a 10% additional tax usually applies too.`
+        : `${plan.account}: ${plan.nonqualified.display} withdrawn for other costs. Its taxable earnings come from the 1099-Q; add it to Receipts & statements.`));
+    }
+  }
   if (!data.checks.length) {
     panel.append(emptyState(`No 1099 or 5498 forms for ${data.year}. Add them to Receipts & statements; each box is then compared with what is recorded here.`));
   } else {
@@ -144,6 +155,7 @@ function renderInvestmentSummary(summary) {
                         {tone: "info", action: homeLink("Open Review", "#/review")}));
   }
   for (const question of summary.payroll_questions) nodes.push(payrollQuestion(question));
+  for (const warning of summary.ibond_warnings) nodes.push(alertBox(warning.message, {tone: "warning"}));
   for (const total of summary.totals) {
     const panel = element("section", "", "panel investment-total");
     const figures = element("div", "", "figure-group"), main = element("div", "", "figure-main");
@@ -244,6 +256,17 @@ function investmentRow(account) {
   if (account.institution) name.append(element("small", account.institution, "muted block"));
   cell(tr, account.kind_label);
   const value = cell(tr, ""); value.className = "numeric";
+  if (account.is_income) {
+    // A pension pays a monthly benefit from its start date; it has no balance to show or add up.
+    if (account.pension) value.append(amount(account.pension.monthly_benefit, {signed: false}), element("small", "a month", "muted block"));
+    else value.append(element("span", "—", "muted"));
+    cell(tr, account.pension ? `From ${dateText(account.pension.start_date)}` : "—");
+    cell(tr, "—").className = "numeric";
+    cell(tr, account.pension && account.pension.cola_bp ? `${account.pension.cola_percent}% raise` : "—").className = "numeric";
+    const state = cell(tr, "");
+    state.append(account.archived_at ? statusBadge("removed") : account.pension ? statusBadge("pension_income") : element("span", "Add its terms", "muted"));
+    return tr;
+  }
   value.append(account.current ? amount(account.current.value, {signed: false}) : element("span", "—", "muted"));
   cell(tr, account.current ? dateText(account.current.as_of) : "—");
   const change = cell(tr, ""); change.className = "numeric";
@@ -251,6 +274,7 @@ function investmentRow(account) {
   cell(tr, `${account.annual_rate_percent}%${account.rate_is_default ? " (default)" : ""}`).className = "numeric";
   const state = cell(tr, "");
   if (account.archived_at) state.append(statusBadge("removed"));
+  else if (account.current && account.current.source === "quote" && !account.awaiting_review.length) state.append(statusBadge("quote"));
   else if (account.awaiting_review.length) state.append(statusBadge("value_to_confirm"));
   else if (account.current) state.append(statusBadge(account.current.source === "estimated" ? "estimated" : "verified"));
   else state.append(element("span", "No confirmed value", "muted"));
@@ -263,14 +287,27 @@ async function renderInvestmentDetail(accountId, renewing = false) {
   const heading = element("div", "", "ledger-record-heading");
   heading.append(element("h2", account.name), homeLink("Close", "#/investments"));
   const facts = element("dl", "", "detail-list");
+  const pension = account.pension;
+  const valueFacts = account.is_income
+    ? [["Monthly benefit", pension ? `${pension.monthly_benefit.display} a month from ${dateText(pension.start_date)}, before tax` : "Add its terms below"],
+       ...(pension ? [["Yearly raise", pension.cola_bp ? `${pension.cola_percent}% each January` : "None"],
+                      ["Survivor benefit", pension.survivor_percent ? `${pension.survivor_percent}% to a surviving spouse` : "None"],
+                      ...(pension.lump_sum ? [["Lump sum offered", `${pension.lump_sum.display} instead; shown for comparison, not counted in totals`]] : [])] : []),
+       ["In the forecast", "Income from its start month; it is never drawn on and has no required distributions"]]
+    : [["Yearly growth or interest", `${account.annual_rate_percent}% a year${account.rate_is_default ? " (its kind's default)" : ""}; the forecast grows the value at this rate`],
+       ["Current value", account.current ? `${account.current.value.display} as of ${dateText(account.current.as_of)}${
+         account.current.source === "estimated" ? ", estimated from its holdings' terms" : account.current.source === "quote" ? ", from the market price that day" : ""}` : "No confirmed value yet"]];
   for (const [label, value] of [["Kind", account.kind_label], ["Institution", account.institution || "—"], ["Section", account.section_label],
       ["Tax treatment", `${account.tax_label}${account.tax_overridden ? "" : " (from its kind)"}`],
-      ["Yearly growth or interest", `${account.annual_rate_percent}% a year${account.rate_is_default ? " (its kind's default)" : ""}; the forecast grows the value at this rate`],
-      ["Current value", account.current ? `${account.current.value.display} as of ${dateText(account.current.as_of)}${account.current.source === "estimated" ? ", estimated from its holdings' terms" : ""}` : "No confirmed value yet"],
+      ...(account.is_education ? [["Beneficiary", account.beneficiary || "—"], ["Plan state", account.plan_state || "—"],
+                                  ["In the forecast", "Kept for education: retirement withdrawals never draw on it"]] : []),
+      ...valueFacts,
       ...(account.ledger_account_id ? [["Values from", `${account.ledger_account_name} statements; they're reviewed with the statement and its balance counts here, not as cash`]] : [])]) {
     facts.append(element("dt", label), element("dd", value));
   }
-  panel.append(heading, facts, investmentSettingsForm(account), investmentValueForm(account));
+  panel.append(heading, ...account.ibond_warnings.map(warning => alertBox(warning.message, {tone: "warning"})), facts, investmentSettingsForm(account),
+               account.is_income ? pensionForm(account) : investmentValueForm(account));
+  if (account.has_crypto || account.kind === "crypto") panel.append(cryptoTools(account));
   if (account.holdings.length) {
     const waiting = account.holdings.some(holding => holding.review_status === "proposed");
     const estimated = account.holdings.some(holding => holding.estimated);
@@ -283,8 +320,12 @@ async function renderInvestmentDetail(accountId, renewing = false) {
     if (account.tax_treatment === "taxable" && traded.length) panel.append(investmentLots(account, traded));
   }
   // A savings balance holds no CDs; any other account can (a bank's CDs, TreasuryDirect, a brokerage or IRA).
-  if (!account.archived_at && account.value_model !== "cash") panel.append(investmentHoldingForm(account, renewing));
-  panel.append(element("h3", "Values over time"), investmentHistory(account));
+  if (!account.archived_at && !["cash", "income"].includes(account.value_model) && account.kind !== "crypto" && !account.is_education) {
+    panel.append(investmentHoldingForm(account, renewing));
+  }
+  if (account.has_ibonds) panel.append(ibondRates());
+  if (!account.is_income || account.history.length) panel.append(element("h3", "Values over time"), investmentHistory(account));
+  if (account.is_education && !account.archived_at) panel.append(educationWithdrawalForm(account));
   if (account.events.length) panel.append(element("h3", "Activity"), investmentActivity(account));
   if (account.confirmations.length) panel.append(element("h3", "Purchase confirmations"), investmentConfirmations(account));
   if (!account.archived_at) {
@@ -325,13 +366,20 @@ function investmentSettingsForm(account) {
   const monthly = document.createElement("input");
   monthly.inputMode = "decimal"; monthly.placeholder = "From recent activity";
   monthly.value = account.monthly_contribution ? account.monthly_contribution.display.replace(/\s[A-Z]{3}$/, "") : "";
+  // A 529's beneficiary (a profile's name or anyone's) and the state whose plan it is.
+  const beneficiary = document.createElement("input"), planState = document.createElement("input");
+  beneficiary.maxLength = 80; beneficiary.value = account.beneficiary || "";
+  planState.maxLength = 2; planState.size = 3; planState.placeholder = "UT"; planState.value = account.plan_state || ""; planState.autocapitalize = "characters";
   const save = element("button", "Save changes"); save.type = "submit";
   form.append(field("Name ", name), field("Kind ", kind), field("Institution ", institution), field("Yearly rate (%) ", rate), field("Tax treatment ", tax),
               field("Bank account ", linked), ...(account.takes_payroll ? [field("Contributions from pay at ", payroll)] : []),
+              ...(account.is_education ? [field("Beneficiary ", beneficiary), field("Plan state ", planState)] : []),
               field(`You add each month (${account.currency}) `, monthly), save);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const body = {name: name.value.trim(), kind: kind.value, institution: institution.value.trim()};
+    if (account.is_education && beneficiary.value.trim()) body.beneficiary = beneficiary.value.trim();
+    if (account.is_education && planState.value.trim()) body.plan_state = planState.value.trim().toUpperCase();
     if (rate.value.trim()) body.annual_rate_percent = rate.value.trim();
     if (tax.value) body.tax_treatment = tax.value;
     if (linked.value) body.ledger_account_id = Number(linked.value);
@@ -366,7 +414,7 @@ function investmentHistory(account) {
     const value = cell(tr, ""); value.className = "numeric"; value.append(amount(row.value, {signed: false}));
     const source = cell(tr, "");
     source.append(row.document_id ? homeLink("Statement", `#/documents/${row.document_id}`) : element("span", SOURCE_LABELS[row.source] || row.source));
-    cell(tr, "").append(statusBadge(row.source === "estimated" ? "estimated" : row.review_status));
+    cell(tr, "").append(statusBadge(row.source === "estimated" ? "estimated" : row.source === "quote" ? "quote" : row.review_status));
   }
   wrap.append(table); return wrap;
 }
@@ -380,10 +428,12 @@ function investmentHoldings(account) {
   const has = test => account.holdings.some(test);
   const market = has(holding => holding.quantity || holding.price || holding.cost_basis);
   const terms = has(holding => holding.rate_percent != null || holding.maturity_date);
-  const states = has(holding => holding.estimated || holding.review_status === "proposed");
+  const states = has(holding => holding.estimated || holding.review_status === "proposed" || holding.value_source === "quote");
+  // An I bond: what it pays if cashed today (nothing in its first year; three months' interest less before five years).
+  const ibonds = has(holding => holding.penalty_until);
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
   const columns = [["Holding"], ["Type"], ...(market ? [["Quantity", true], ["Price", true]] : []), ["Value", true], ...(market ? [["Cost basis", true], ["Gain", true]] : []),
-                   ...(terms ? [["Rate", true], ["Matures"], ["At maturity", true]] : []), ...(states ? [["Status"]] : [])];
+                   ...(terms ? [["Rate", true], ["Matures"], ["At maturity", true]] : []), ...(ibonds ? [["If cashed today", true]] : []), ...(states ? [["Status"]] : [])];
   for (const [title, numeric] of columns) { const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th); }
   const body = table.createTBody();
   for (const holding of account.holdings) {
@@ -400,11 +450,17 @@ function investmentHoldings(account) {
       if (holding.redeemable_date) matures.append(element("small", `Can be cashed from ${dateText(holding.redeemable_date)}`, "muted block"));
       moneyCell(tr, holding.at_maturity);
     }
+    if (ibonds) {
+      const cashOut = moneyCell(tr, holding.cash_out);
+      if (holding.penalty_until && !holding.cash_out) cashOut.append(element("small", "Not yet", "muted block"));
+      else if (holding.penalty_until && holding.penalty_until > todayIso()) cashOut.append(element("small", `3 months' interest less until ${dateText(holding.penalty_until)}`, "muted block"));
+    }
     if (states) {
       const state = cell(tr, "");
       if (holding.matured) state.append(statusBadge("matured"), ...maturedButtons(holding.id, holding.name, account.id));
       else if (holding.review_status === "proposed") state.append(statusBadge("proposed"));
       else if (holding.estimated) state.append(statusBadge("estimated"));
+      else if (holding.value_source === "quote") state.append(statusBadge("quote"));
     }
   }
   wrap.append(table); return wrap;
@@ -513,16 +569,155 @@ function investmentActivity(account) {
       await loadInvestments();
     }, "small quiet"));
     moneyCell(tr, event.amount);
-    cell(tr, "").append(statusBadge(event.review_status));
+    const state = cell(tr, "");
+    if (account.is_education && event.id && ["withdrawal", "qualified_withdrawal", "nonqualified_withdrawal"].includes(event.event_type)) {
+      // A 529 withdrawal's earnings are taxed only when it didn't pay for qualified education costs.
+      if (event.event_type === "withdrawal") state.append(statusBadge("unmarked"));
+      for (const [label, qualified, current] of [["Qualified", true, "qualified_withdrawal"], ["Not qualified", false, "nonqualified_withdrawal"]]) {
+        if (event.event_type === current) continue;
+        state.append(asyncButton(label, async () => {
+          await api(`/api/investments/events/${event.id}/qualified`, {method: "POST", body: JSON.stringify({qualified})});
+          notice(`Marked ${label.toLowerCase()}.`); await loadInvestments();
+        }, "small quiet"));
+      }
+    } else state.append(statusBadge(event.review_status));
   }
   wrap.append(table); return wrap;
+}
+
+function pensionForm(account) {
+  // A pension's terms, from its benefit statement: what it pays a month, from when, its yearly raise and the survivor's share.
+  const pension = account.pension || {}, form = element("form", "", "inline-form");
+  const benefit = document.createElement("input"), start = document.createElement("input"), cola = document.createElement("input");
+  const survivor = document.createElement("input"), lump = document.createElement("input");
+  benefit.required = true; benefit.inputMode = "decimal"; benefit.placeholder = "2400.00"; benefit.value = pension.monthly_benefit ? pension.monthly_benefit.decimal : "";
+  start.type = "date"; start.required = true; start.value = pension.start_date || "";
+  cola.inputMode = "decimal"; cola.placeholder = "0"; cola.value = pension.cola_bp ? pension.cola_percent : "";
+  survivor.type = "number"; survivor.min = "0"; survivor.max = "100"; survivor.step = "1"; survivor.placeholder = "0"; survivor.value = pension.survivor_percent || "";
+  lump.inputMode = "decimal"; lump.placeholder = "If offered"; lump.value = pension.lump_sum ? pension.lump_sum.decimal : "";
+  const save = element("button", "Save terms"); save.type = "submit";
+  form.append(field(`A month (${account.currency}) `, benefit), field("Starts ", start), field("Yearly raise (%) ", cola), field("Survivor (%) ", survivor),
+              field(`Lump sum instead (${account.currency}) `, lump), save);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const body = {monthly_benefit: benefit.value.trim(), start_date: start.value, cola_percent: cola.value.trim() || "0", survivor_percent: Number(survivor.value || 0)};
+    if (lump.value.trim()) body.lump_sum = lump.value.trim();
+    try { await api(`/api/investments/${account.id}/pension`, {method: "PUT", body: JSON.stringify(body)}); notice("Pension terms saved."); await loadInvestments(); }
+    catch (error) { notice(error, true); }
+  });
+  return form;
+}
+
+function educationWithdrawalForm(account) {
+  // A 529 withdrawal the statement doesn't show yet, marked qualified (tuition, books, room and board) or not.
+  const details = element("details", "", "investment-add-holding"), form = element("form", "", "inline-form");
+  details.append(element("summary", "Record a withdrawal"));
+  const day = document.createElement("input"), paid = document.createElement("input"), kind = document.createElement("select"), note = document.createElement("input");
+  day.type = "date"; day.required = true; day.value = todayIso();
+  paid.required = true; paid.inputMode = "decimal"; paid.placeholder = "6000.00";
+  kind.add(new Option("Qualified education costs", "qualified_withdrawal")); kind.add(new Option("Not qualified", "nonqualified_withdrawal"));
+  note.maxLength = 200; note.placeholder = "Fall tuition";
+  const save = element("button", "Record withdrawal"); save.type = "submit";
+  form.append(field("Date ", day), field(`Amount (${account.currency}) `, paid), field("Paid for ", kind), field("Note ", note), save);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      await api(`/api/investments/${account.id}/events`, {method: "POST", body: JSON.stringify({event_type: kind.value, event_date: day.value, amount: paid.value.trim(), note: note.value.trim()})});
+      notice("Withdrawal recorded."); await loadInvestments();
+    } catch (error) { notice(error, true); }
+  });
+  details.append(element("p", "Only the earnings part of a non-qualified withdrawal is taxed; the 1099-Q gives that share.", "muted small"), form);
+  return details;
+}
+
+function ibondRates() {
+  // The published I bond rates the values follow. TreasuryDirect announces new ones each May 1 and November 1.
+  const details = element("details", "", "investment-add-holding");
+  details.append(element("summary", "I bond rates"));
+  const body = element("div");
+  details.addEventListener("toggle", async () => {
+    if (!details.open || body.childElementCount) return;
+    try { body.replaceChildren(ibondRateTable(await api("/api/investments/ibond-rates"))); } catch (error) { body.replaceChildren(alertBox(error.message, {tone: "error"})); }
+  });
+  details.append(element("p", "Values are worked out from these rates as TreasuryDirect does: per $25, compounding every six months. Add each new rate when it's announced.",
+                         "muted small"), body);
+  return details;
+}
+
+function ibondRateTable(rates) {
+  const holder = element("div"), wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
+  for (const [title, numeric] of [["From"], ["Fixed", true], ["Inflation, six months", true], ["Composite for new bonds", true]]) {
+    const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th);
+  }
+  const tbody = table.createTBody();
+  for (const rate of rates.slice(0, 6)) {
+    const tr = tbody.insertRow(); cell(tr, dateText(rate.period_start));
+    for (const value of [rate.fixed_percent, rate.inflation_percent, rate.composite_percent]) cell(tr, `${value}%`).className = "numeric";
+  }
+  wrap.append(table);
+  const form = element("form", "", "inline-form"), from = document.createElement("select"), fixed = document.createElement("input"), inflation = document.createElement("input");
+  const year = new Date().getFullYear();
+  for (const day of [`${year}-11-01`, `${year}-05-01`, `${year + 1}-05-01`]) from.add(new Option(dateText(day), day));
+  fixed.required = true; fixed.inputMode = "decimal"; fixed.placeholder = "0.90";
+  inflation.required = true; inflation.inputMode = "decimal"; inflation.placeholder = "1.67";
+  const save = element("button", "Save rate", "small"); save.type = "submit";
+  form.append(field("From ", from), field("Fixed (%) ", fixed), field("Inflation (%) ", inflation), save);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      await api("/api/investments/ibond-rates", {method: "PUT", body: JSON.stringify({period_start: from.value, fixed_percent: fixed.value.trim(), inflation_percent: inflation.value.trim()})});
+      notice("Rate saved; I bond values follow it."); await loadInvestments();
+    } catch (error) { notice(error, true); }
+  });
+  holder.append(wrap, form);
+  return holder;
+}
+
+function cryptoTools(account) {
+  // Market prices (only when Settings allows them) and an exchange's transaction history read into this account.
+  const box = element("div", "", "investment-crypto"), row = element("div", "", "button-row"), status = element("p", "", "muted small");
+  api("/api/prices").then(state => {
+    status.textContent = !state.enabled ? "Market prices are off. Turn them on in Settings to value coins between statements."
+      : state.fetched_at ? `Prices from ${state.source}, ${dateText(state.as_of)}. They never replace a statement's value for the same day or later.`
+      : "No prices fetched yet.";
+    if (state.unpriced.length) status.textContent += ` No price source here for ${state.unpriced.join(", ")}.`;
+    if (state.enabled) row.prepend(asyncButton("Refresh prices", async () => {
+      const result = await api("/api/prices/refresh", {method: "POST"});
+      notice(result.valued ? `Prices updated for ${result.valued} account${result.valued === 1 ? "" : "s"}.` : result.skipped[0] || "Nothing to price.");
+      await loadInvestments();
+    }, "small"));
+  }).catch(() => { status.textContent = ""; });
+  const details = element("details", "", "investment-add-holding"), form = element("form", "", "inline-form"), file = document.createElement("select");
+  details.append(element("summary", "Import a Coinbase export"));
+  details.addEventListener("toggle", async () => {
+    if (!details.open || file.options.length) return;
+    const found = await Promise.all(["csv", "xlsx"].map(q => api(`/api/documents?limit=200&q=${q}`))).catch(() => []);
+    const documents = found.flatMap(page => page.items || []).filter(doc => /\.(csv|xlsx)$/i.test(doc.relative_path));
+    for (const doc of documents) file.add(new Option(doc.relative_path.split("/").pop(), String(doc.id)));
+    if (!documents.length) form.replaceChildren(element("p", "Add the CSV from Coinbase's transaction history to Receipts & statements first.", "muted small"));
+  });
+  const save = element("button", "Import", "small"); save.type = "submit";
+  form.append(field("File ", file), save);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      const result = await api(`/api/investments/${account.id}/crypto-import`, {method: "POST", body: JSON.stringify({document_id: Number(file.value)})});
+      notice(`${result.added} entr${result.added === 1 ? "y" : "ies"} imported${result.duplicates ? `, ${result.duplicates} already here` : ""}${result.issues.length ? `; ${result.issues.length} skipped` : ""}.`);
+      await loadInvestments();
+    } catch (error) { notice(error, true); }
+  });
+  details.append(element("p", "Buys, sells, sends, receives, conversions and rewards become this account's activity; buys open tax lots.", "muted small"), form);
+  box.append(element("h3", "Prices and imports"), status, row, details);
+  return box;
 }
 
 $("investments-archived").addEventListener("change", () => loadInvestments().catch(error => notice(error, true)));
 $("investment-form").addEventListener("submit", async event => {
   event.preventDefault();
   const body = {name: $("investment-name").value.trim(), kind: $("investment-kind").value, institution: $("investment-institution").value.trim(),
-                currency: $("investment-currency").value.trim().toUpperCase(), value: $("investment-value").value.trim(), as_of: $("investment-as-of").value};
+                currency: $("investment-currency").value.trim().toUpperCase()};
+  // A pension has no balance: it's added without a value and its monthly benefit is entered next.
+  if ($("investment-value").value.trim()) Object.assign(body, {value: $("investment-value").value.trim(), as_of: $("investment-as-of").value});
   if ($("investment-rate").value.trim()) body.annual_rate_percent = $("investment-rate").value.trim();
   try {
     const account = await api("/api/investments", {method: "POST", body: JSON.stringify(body)});

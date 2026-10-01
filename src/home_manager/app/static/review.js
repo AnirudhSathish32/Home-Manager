@@ -31,11 +31,34 @@ async function loadNavCounts() {
 }
 
 function reviewKey(item) { return `${item.kind}:${item.id}`; }
+// Images that look like pages of one document (documents/grouping.py): combined only when the user says so.
+async function loadGroupSuggestions() {
+  const groups = await api("/api/document-groups");
+  $("group-suggestions-panel").hidden = !groups.length;
+  $("group-suggestions").replaceChildren(...groups.map(group => {
+    const item = element("li", "", "routing-item"), pages = element("ol", "", "group-pages");
+    for (const page of group.pages) {
+      const entry = document.createElement("li"), link = element("a", page.relative_path.split("/").pop());
+      link.href = `#/documents/${page.document_id}`;
+      entry.append(link); pages.append(entry);
+    }
+    const decide = async status => {
+      await api(`/api/document-groups/${group.id}`, {method: "PATCH", body: JSON.stringify({status})});
+      notice(status === "confirmed" ? "Combined. The images are read as one document's pages; progress shows in the sidebar." : "Kept as separate documents.");
+      await loadGroupSuggestions();
+    };
+    const actions = element("div", "", "button-row");
+    actions.append(asyncButton(`Combine ${group.pages.length} images`, () => decide("confirmed"), "primary"), asyncButton("Keep separate", () => decide("dismissed")));
+    item.append(element("p", group.reason, "muted small"), pages, actions);
+    return item;
+  }));
+}
 async function loadReview(keep = true) {
   if (!configured) { $("review-detail").replaceChildren(emptyState("Set up your library to review records.")); return; }
   // The family's inbox is sent to people, not reconciled against cards: unmatched receipts belong to each person's Review.
   $("family-routing-panel").hidden = !familyMode; $("review-unmatched-panel").hidden = familyMode;
   if (familyMode) loadFamilyRouting().catch(error => notice(error, true));  // Loads on its own beside the review queue.
+  else loadGroupSuggestions().catch(error => notice(error, true));
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
   let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags, taxFigures;

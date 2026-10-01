@@ -1,4 +1,4 @@
-"""Inbox discovery and capture. No parsing, OCR or model calls; Inbox files are read, never written."""
+"""Inbox and watched-folder discovery and capture. No parsing, OCR or model calls; source files are read, never written."""
 
 from dataclasses import dataclass
 import hashlib
@@ -30,11 +30,12 @@ class Scanner:
         self.store = store
         self.limits = limits or ScanLimits()
 
-    def run(self, job: str):
-        """Capture every supported file placed directly in Library/Inbox."""
+    def run(self, job: str, root: Path | None = None, recursive=False):
+        """Capture every supported file placed directly in Library/Inbox, or in a watched folder (root), whose
+        subfolders are read too when recursive. Source files are read, never written, moved or deleted."""
         self.store.job_state(job, "running")
         try:
-            self._run(job, self.store.library.inbox)
+            self._run(job, root or self.store.library.inbox, recursive and root is not None, root is None)
         except (PathError, RuntimeError) as exc:
             self.store.job_state(job, "failed", str(exc))
         except Exception as exc:
@@ -42,61 +43,71 @@ class Scanner:
             log_failure(log, "inbox scan", exc, job=job)
             self.store.job_state(job, "failed", "Scan stopped unexpectedly. Completed captures are retained; check access/storage and rescan.")
 
-    def _run(self, job: str, inbox: Path):
+    def _run(self, job: str, inbox: Path, recursive=False, is_inbox=True):
+        place = "Library/Inbox" if is_inbox else "The watched folder"
         safe_path(inbox)
         if not inbox.is_dir():
-            self.store.job_state(job, "failed", "Library/Inbox is unavailable. No files marked missing.")
+            self.store.job_state(job, "failed", f"{place} is unavailable. No files marked missing.")
             return
         candidates = []
         complete, issues, count = True, False, 0
-        try:
-            with os.scandir(inbox) as entries:
-                for entry in entries:
-                    count += 1
-                    if count > self.limits.max_entries:
-                        raise RuntimeError("Scan entry limit reached. Move some files out of Inbox and scan again.")
-                    path = Path(entry.path)
-                    relative = path.name
-                    try:
-                        if is_link(path):
-                            self.store.observe(job, relative, "rejected")
-                            self.store.event(job, relative, "rejected", "Links and reparse points are not followed.")
-                            complete, issues = False, True
-                            continue
-                        # Windows DirEntry.stat omits device/inode identity.
-                        # Path.stat matches fstat on our later capture handle.
-                        info = path.stat(follow_symlinks=False)
-                        if stat.S_ISDIR(info.st_mode):
+        folders = [inbox]
+        while folders:
+            folder = folders.pop()
+            try:
+                with os.scandir(folder) as listing:
+                    entries = [Path(entry.path) for entry in listing]
+            except OSError:
+                where = folder.relative_to(inbox).as_posix() if folder != inbox else ""
+                self.store.event(job, where, "unavailable", f"Cannot list {place if folder == inbox else 'this folder'}. No missing-file inference for this scan.")
+                complete, issues = False, True
+                continue
+            for path in entries:
+                count += 1
+                if count > self.limits.max_entries:
+                    raise RuntimeError(f"Scan entry limit reached. Move some files out of {'Inbox' if is_inbox else 'the watched folder'} and scan again.")
+                relative = path.relative_to(inbox).as_posix()
+                try:
+                    if is_link(path):
+                        self.store.observe(job, relative, "rejected")
+                        self.store.event(job, relative, "rejected", "Links and reparse points are not followed.")
+                        complete, issues = False, True
+                        continue
+                    # Windows DirEntry.stat omits device/inode identity.
+                    # Path.stat matches fstat on our later capture handle.
+                    info = path.stat(follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        if recursive:
+                            folders.append(path)
+                        elif is_inbox:
                             self.store.event(job, relative, "invalid_folder", "Place Inbox documents directly in Library/Inbox, not subfolders.")
                             issues = True
-                            continue
-                        # Previously captured bytes remain available but are not
-                        # represented as the verified current file until capture succeeds.
-                        self.store.observe(job, relative, "not_captured")
-                        if not stat.S_ISREG(info.st_mode):
-                            self.store.event(job, relative, "rejected", "Only regular files are supported.")
-                            issues = True
-                            continue
-                        lower = path.name.lower()
-                        if lower.startswith("~$") or lower.endswith((".tmp", ".part", ".crdownload", ".download")):
-                            self.store.event(job, relative, "ignored", "Temporary/download/lock file.")
-                            continue
-                        if extension(path) not in SUPPORTED:
-                            self.store.event(job, relative, "unsupported", "Capture supports " + ", ".join(sorted(SUPPORTED)) + " files. No contents were read.")
-                            issues = True
-                            continue
-                        if not 0 < info.st_size <= self.limits.max_file_bytes:
-                            self.store.event(job, relative, "rejected", "Empty file or file exceeds the capture size limit.")
-                            issues = True
-                            continue
-                        candidates.append((path, relative, info))
-                    except (OSError, PathError):
-                        self.store.observe(job, relative, "unavailable")
-                        self.store.event(job, relative, "unavailable", "Cannot inspect this entry. Check permissions or file locks.")
-                        complete, issues = False, True
-        except OSError:
-            self.store.event(job, "", "unavailable", "Cannot list Library/Inbox. No missing-file inference for this scan.")
-            complete, issues = False, True
+                        continue
+                    # Previously captured bytes remain available but are not
+                    # represented as the verified current file until capture succeeds.
+                    self.store.observe(job, relative, "not_captured")
+                    if not stat.S_ISREG(info.st_mode):
+                        self.store.event(job, relative, "rejected", "Only regular files are supported.")
+                        issues = True
+                        continue
+                    lower = path.name.lower()
+                    if lower.startswith("~$") or (not is_inbox and lower.startswith(".")) or lower.endswith((".tmp", ".part", ".crdownload", ".download")):
+                        self.store.event(job, relative, "ignored", "Temporary/download/lock file.")
+                        continue
+                    if extension(path) not in SUPPORTED:
+                        # A watched folder holds other files too; only the Inbox reports them as needing attention.
+                        self.store.event(job, relative, "unsupported", "Capture supports " + ", ".join(sorted(SUPPORTED)) + " files. No contents were read.")
+                        issues = issues or is_inbox
+                        continue
+                    if not 0 < info.st_size <= self.limits.max_file_bytes:
+                        self.store.event(job, relative, "rejected", "Empty file or file exceeds the capture size limit.")
+                        issues = True
+                        continue
+                    candidates.append((path, relative, info))
+                except (OSError, PathError):
+                    self.store.observe(job, relative, "unavailable")
+                    self.store.event(job, relative, "unavailable", "Cannot inspect this entry. Check permissions or file locks.")
+                    complete, issues = False, True
         # One stability interval for the inventory, not one delay per document.
         if candidates:
             time.sleep(self.limits.stability_seconds)
@@ -142,15 +153,15 @@ class Scanner:
                     raise CaptureError("File contents changed while being captured; rescan.")
                 safe_path(path)
                 if signature(before) != signature(path.stat()):
-                    raise CaptureError("The Inbox file changed while being captured; rescan.")
+                    raise CaptureError("The source file changed while being captured; rescan.")
             digest = hasher.hexdigest()
             if not self.store.blob_path(digest).exists() and self.store.used_bytes() + size > self.limits.max_store_bytes:
-                raise CaptureError("Managed evidence quota reached (5 GiB by default); the Inbox file was left untouched.")
+                raise CaptureError("Managed evidence quota reached (5 GiB by default); the source file was left untouched.")
             self.store.prepare(capture_id, job, relative, digest, size, before.st_mtime_ns)
             prepared = True
             self.store.publish(capture_id)
             try:
-                self.store.library.ensure_capture(relative, digest)
+                self.store.library.ensure_capture(relative, digest, self.store.job_root(job))
             except (ValueError, OSError, RuntimeError):
                 self.store.event(job, relative, "organization_failed", "Captured evidence is safe; library organization needs attention or retry.", digest)
         finally:

@@ -166,6 +166,39 @@ def test_a_damaged_database_is_not_upgraded(tmp_path, next_step):
     assert not (root / f"inventory.before-v{NEXT}.sqlite3").exists()
 
 
+def test_056_makes_pensions_income_and_keeps_values_and_forms():
+    """Investment kinds made specific (docs/investments-next.md): rebuilt tables keep their rows and take the new values."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 56:
+                db.executescript(script.read_text())
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", ("a" * 64,))
+        account = db.execute("INSERT INTO investment_accounts(kind,name,currency,source,created_at,updated_at) VALUES('pension','Pension','USD','manual','t','t')").lastrowid
+        db.execute("INSERT INTO investment_valuations(account_id,as_of,value_minor,source,review_status,created_at,updated_at) VALUES(?,'2026-09-01',5,'manual','verified','t','t')",
+                   (account,))
+        form = db.execute("INSERT INTO tax_forms(institution,tax_year,currency,blob_hash,review_status,created_at,updated_at) VALUES('X',2026,'USD',?,'verified','t','t')",
+                          ("a" * 64,)).lastrowid
+        db.execute("INSERT INTO tax_form_boxes(form_id,form,box,label,amount_minor) VALUES(?,'1099-INT','1','Interest',100)", (form,))
+        db.commit()
+        storage.apply_migrations(db, 55)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert db.execute("SELECT value_model FROM investment_kinds WHERE key='pension'").fetchone()[0] == "income"
+        assert db.execute("SELECT value_minor FROM investment_valuations WHERE account_id=?", (account,)).fetchone()[0] == 5
+        assert db.execute("SELECT yield_bp,reinvest,beneficiary FROM investment_accounts WHERE id=?", (account,)).fetchone() == (0, 1, None)
+        assert db.execute("SELECT count(*) FROM tax_form_boxes WHERE form_id=?", (form,)).fetchone()[0] == 1
+        assert db.execute("SELECT fixed_bp,inflation_semiannual_bp FROM ibond_rates WHERE period_start='2023-11-01'").fetchone() == (130, 197)
+        db.execute("INSERT INTO tax_form_boxes(form_id,form,box,label,amount_minor) VALUES(?,'1099-Q','1','Gross distribution',100)", (form,))
+        db.execute("INSERT INTO investment_valuations(account_id,as_of,value_minor,source,review_status,created_at,updated_at) VALUES(?,'2026-10-01',5,'quote','verified','t','t')",
+                   (account,))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO price_quotes(source,symbol,currency,as_of,price,fetched_at) VALUES('elsewhere','BTC','USD','2026-10-01','1','t')")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO ibond_rates(period_start,fixed_bp,inflation_semiannual_bp) VALUES('2026-11-15',0,0)")
+    finally:
+        db.close()
+
+
 def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
     control, managed = tmp_path / "control", tmp_path / "managed"
     manager = Manager(control, ScanLimits(stability_seconds=0))

@@ -8,7 +8,22 @@ import pytest
 
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
-from home_manager.finance.investments import AccountInput, AccountUpdate, HoldingInput, Investments, ValueInput, printed_kind
+from home_manager.finance.investments import (
+    AccountInput,
+    AccountUpdate,
+    EventInput,
+    HoldingInput,
+    IbondRateInput,
+    Investments,
+    PensionInput,
+    ValueInput,
+    WithdrawalKind,
+    ibond_cash_out,
+    ibond_composite_bp,
+    ibond_months,
+    ibond_value,
+    printed_kind,
+)
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import MIGRATIONS, Store
 from test_extraction import cite, extract, transcribe, value
@@ -280,6 +295,14 @@ def test_browser_investments_page(tmp_path):
                               {"name": "Ally 12-month CD", "instrument_class": "cd", "value_minor": 500000, "rate_bp": 410, "maturity_date": "2027-03-31"}]
         record["activity"] = [{"name": "Contribution", "event_date": "2026-09-15", "event_type": "contribution", "contribution_source": "personal", "amount_minor": 50000}]
         ira = investments.publish_statement(record, source)
+        # Phase 4 kinds: I bonds over the yearly limit, a pension's terms, and a 529 with a withdrawal not yet marked.
+        bonds = investments.add(AccountInput(name="TreasuryDirect", kind="i_bond", currency="USD", value="0", as_of="2024-01-01"))
+        for name, principal, issued in (("I bond Jan 2024", "10000", "2024-01-20"), ("I bond Mar 2024", "500", "2024-03-01")):
+            investments.add_holding(bonds["id"], HoldingInput(name=name, instrument_class="i_bond", principal=principal, issue_date=issued))
+        pension = investments.add(AccountInput(name="State pension", kind="pension", currency="USD"))
+        investments.set_pension(pension["id"], PensionInput(monthly_benefit="2400", start_date="2040-06-01", cola_percent="2", survivor_percent=50, lump_sum="350000"))
+        plan = investments.add(AccountInput(name="Maya 529", kind="education_529", currency="USD", value="40000", as_of="2026-01-01", beneficiary="Maya", plan_state="UT"))
+        investments.add_event(plan["id"], EventInput(event_type="withdrawal", event_date=f"{today.year - 1}-09-10", amount="2000"))
         with playwright.sync_playwright() as driver:
             browser = driver.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page(viewport={"width": 1366, "height": 900})
@@ -340,7 +363,163 @@ def test_browser_investments_page(tmp_path):
             for width in (390, 768):
                 page.set_viewport_size({"width": width, "height": 900})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+            # I bonds: the yearly limit, what each pays if cashed today, and the rates they follow.
+            page.set_viewport_size({"width": 1366, "height": 900})
+            page.goto(f"http://127.0.0.1:{port}/#/investments?account={bonds['id']}")
+            detail = page.locator("#investment-detail")
+            playwright.expect(detail).to_contain_text("more than the 10,000.00 USD")
+            playwright.expect(detail).to_contain_text("If cashed today")
+            detail.locator("summary", has_text="I bond rates").click()
+            playwright.expect(detail).to_contain_text("Composite for new bonds")
+            # The pension: an income from its terms, never a balance; the 529: its beneficiary and a withdrawal to mark.
+            page.goto(f"http://127.0.0.1:{port}/#/investments?account={pension['id']}")
+            playwright.expect(detail).to_contain_text("2,400.00 USD a month from")
+            playwright.expect(detail).to_contain_text("not counted in totals")
+            playwright.expect(page.locator("#investments-groups")).to_contain_text("Pays an income")
+            page.goto(f"http://127.0.0.1:{port}/#/investments?account={plan['id']}&year={today.year - 1}")
+            playwright.expect(detail).to_contain_text("Maya")
+            playwright.expect(page.locator("#investments-taxes")).to_contain_text("isn't marked qualified or not yet")
+            if os.environ.get("INVESTMENTS_SCREENSHOT"):
+                page.screenshot(path=os.environ["INVESTMENTS_SCREENSHOT"].replace(".png", "-529.png"), full_page=True)
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+            page.set_viewport_size({"width": 1366, "height": 900})
+            detail.get_by_role("button", name="Not qualified").click()
+            playwright.expect(detail).to_contain_text("Non-qualified withdrawal")
+            for account_id in (bonds["id"], pension["id"]):
+                page.goto(f"http://127.0.0.1:{port}/#/investments?account={account_id}")
+                playwright.expect(detail).to_contain_text("Kind")
+                for width in (390, 768, 1440):
+                    page.set_viewport_size({"width": width, "height": 900})
+                    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (account_id, width)
+                page.set_viewport_size({"width": 1366, "height": 900})
             assert not failures, failures
             browser.close()
     finally:
         server.should_exit = True
+
+
+# Phase 4 (docs/investments-next.md): I bonds, 529 plans, pensions and the new tax forms ---------------------------------------
+RATES = [{"period_start": "2023-11-01", "fixed_bp": 130, "inflation_semiannual_bp": 197},
+         {"period_start": "2024-05-01", "fixed_bp": 130, "inflation_semiannual_bp": 148},
+         {"period_start": "2024-11-01", "fixed_bp": 120, "inflation_semiannual_bp": 95}]
+
+
+@pytest.mark.parametrize("fixed, inflation, composite", [(130, 197, 527), (130, 148, 428), (120, 95, 311), (0, 481, 962), (40, 324, 689),
+                                                         (90, 167, 426), (0, -80, 0)])
+def test_ibond_composite_rates_match_treasurydirects_published_ones(fixed, inflation, composite):
+    # TreasuryDirect's announced composites: Nov 2023 5.27%, May 2024 4.28%, Nov 2024 3.11%, May 2022 9.62%, Nov 2022 6.89%,
+    # May 2026 4.26%; and May 2015's deflation floors at zero.
+    assert ibond_composite_bp(fixed, inflation) == composite
+
+
+def test_ibond_value_follows_treasurydirects_method():
+    # $10,000 bought in January 2024 at 5.27%: a $25 bond is worth 25 × 1.02635 = $25.66 after six months, so $10,264.00.
+    assert ibond_value(1_000_000, "2024-01-20", "2024-07-01", RATES) == 1_026_400
+    # Interest is added on the first of each month: three months in, $25 × 1.02635^(1/2) = $25.33.
+    assert ibond_value(1_000_000, "2024-01-20", "2024-04-30", RATES) == 1_013_200
+    # The second period earns the fixed 1.30% with May 2024's inflation: 4.28%, so $25.66 × 1.0214 = $26.21.
+    assert ibond_value(1_000_000, "2024-01-20", "2025-01-01", RATES) == 1_048_400
+    assert ibond_value(1_000_000, "2022-01-01", "2024-07-01", RATES) is None  # No rate for its issue month.
+    assert ibond_months("2024-01-20", "2084-01-01") == 360  # Interest stops after 30 years.
+
+
+def test_ibond_cash_out_loses_three_months_before_five_years():
+    assert ibond_cash_out(1_000_000, "2024-01-20", "2024-12-31", RATES) is None  # Locked for 12 months.
+    assert ibond_cash_out(1_000_000, "2024-01-20", "2025-01-01", RATES) == ibond_value(1_000_000, "2024-01-20", "2024-10-01", RATES)
+    before, after = "2028-12-15", "2029-01-02"  # 59 and 60 months.
+    assert ibond_cash_out(1_000_000, "2024-01-20", before, RATES) == ibond_value(1_000_000, "2024-01-20", "2028-09-01", RATES)
+    assert ibond_cash_out(1_000_000, "2024-01-20", after, RATES) == ibond_value(1_000_000, "2024-01-20", after, RATES)
+
+
+def test_an_ibond_holding_is_valued_from_the_published_rates_and_warns_over_10k(tmp_path):
+    store = Store(tmp_path / "managed")
+    try:
+        investments = Investments(store, today=date(2024, 7, 15))
+        account = investments.add(AccountInput(name="TreasuryDirect", kind="i_bond", currency="USD", value="0", as_of="2024-01-01"))
+        added = investments.add_holding(account["id"], HoldingInput(name="I bond Jan 2024", instrument_class="i_bond", principal="10000", issue_date="2024-01-20"))
+        [bond] = added["holdings"]
+        assert bond["value_minor"] == 1_026_400 and bond["maturity_date"] == "2054-01-01" and bond["redeemable_date"] == "2025-01-20"
+        assert bond["rate_percent"] == "4.28" and bond["at_maturity"] is None and bond["cash_out"] is None  # Earning May 2024's rate; still locked.
+        assert added["current"]["value_minor"] == 1_026_400 and added["current"]["source"] == "estimated"
+        assert added["ibond_warnings"] == []
+        more = investments.add_holding(account["id"], HoldingInput(name="I bond Mar 2024", instrument_class="i_bond", principal="500", issue_date="2024-03-01"))
+        [warning] = more["ibond_warnings"]
+        assert warning["year"] == 2024 and warning["total"]["display"] == "10,500.00 USD"
+        assert investments.summary()["ibond_warnings"] == [warning]
+        assert investments.ibond_rate_table()[0]["period_start"] == "2026-05-01"
+        # A rate the user adds moves values at once.
+        before = Investments(store, today=date(2027, 4, 15)).get(account["id"])["current"]["value_minor"]
+        investments.set_ibond_rate(IbondRateInput(period_start="2026-11-01", fixed_percent="1.00", inflation_percent="3.00"))
+        later = Investments(store, today=date(2027, 4, 15)).get(account["id"])
+        assert later["current"]["value_minor"] > before and later["holdings"][0]["cash_out"] is not None
+    finally:
+        store.close()
+
+
+def test_a_pension_is_an_income_stream_not_a_balance(books):
+    store, investments, docs = books
+    pension = investments.add(AccountInput(name="State pension", kind="pension", currency="USD"))
+    assert pension["is_income"] and pension["current"] is None and pension["pension"] is None
+    with pytest.raises(ValueError, match="value and its date"):
+        investments.add(AccountInput(name="Brokerage", kind="brokerage", currency="USD"))
+    termed = investments.set_pension(pension["id"], PensionInput(monthly_benefit="2400", start_date="2040-06-01", cola_percent="2",
+                                                                 survivor_percent=50, lump_sum="350000"))
+    assert termed["pension"]["monthly_benefit"]["display"] == "2,400.00 USD" and termed["pension"]["lump_sum"]["display"] == "350,000.00 USD"
+    investments.record_value(pension["id"], ValueInput(value="350000", as_of="2026-09-01"))  # Even a typed value isn't a balance.
+    investments.add(AccountInput(name="Brokerage", kind="brokerage", currency="USD", value="1000", as_of="2026-09-01"))
+    assert investments.summary()["totals"][0]["total"]["display"] == "1,000.00 USD"
+    assert [asset["name"] for asset in investments.forecast_assets()] == ["Brokerage"]
+    assert investments.forecast_pensions() == [{"label": "State pension", "currency": "USD", "monthly_amount": "2400.00", "start_month": "2040-06",
+                                                "cola_percent": "2", "taxed": True}]
+    assert investments.required_distributions(2040, 1950)["accounts"] == []
+    brokerage = next(account for account in investments.summary()["accounts"] if account["kind"] == "brokerage")
+    with pytest.raises(ValueError, match="Only a pension"):
+        investments.set_pension(brokerage["id"], PensionInput(monthly_benefit="1", start_date="2040-01-01"))
+
+
+def tax_form(investments, docs, name, institution, year, boxes):
+    record = {"institution": institution, "last_four": None, "tax_year": year, "currency": "USD", "issues": [],
+              "boxes": [{"form": form, "box": box, "label": box, "amount_minor": amount, "locator": {}} for form, box, amount in boxes]}
+    form = investments.publish_tax_form(record, {"document_id": docs[name]["id"], "blob_hash": docs[name]["current_hash"], "run_id": name})
+    investments.review_tax_form(form["id"], "verified")
+    return form
+
+
+def test_529_withdrawals_1099q_check_and_taxable_earnings(books):
+    store, investments, docs = books
+    plan = investments.add(AccountInput(name="Maya 529", kind="education_529", institution="my529", currency="USD", value="40000",
+                                        as_of="2026-01-01", beneficiary="Maya", plan_state="ut"))
+    assert (plan["beneficiary"], plan["plan_state"], plan["is_education"]) == ("Maya", "UT", True)
+    investments.add_event(plan["id"], EventInput(event_type="qualified_withdrawal", event_date="2026-08-20", amount="6000", note="Fall tuition"))
+    investments.add_event(plan["id"], EventInput(event_type="withdrawal", event_date="2026-09-10", amount="2000"))
+    unmarked = next(event for event in investments.get(plan["id"])["events"] if event["event_type"] == "withdrawal")
+    assert investments.tax_year(2026)["education"][0]["unmarked"]["display"] == "2,000.00 USD"
+    investments.classify_withdrawal(unmarked["id"], WithdrawalKind(qualified=False))
+    tax_form(investments, docs, "july.png", "my529", 2026, [("1099-Q", "1", 800000), ("1099-Q", "2", 200000), ("1099-Q", "3", 600000)])
+    year = investments.tax_year(2026)
+    [check] = [check for check in year["checks"] if check["forms"] == ["1099-Q"]]
+    assert (check["label"], check["form_amount"]["display"], check["matches"]) == ("Withdrawals", "8,000.00 USD", True)
+    [education] = year["education"]
+    # $2,000 non-qualified × 25% earnings (box 2 $2,000 of box 1 $8,000) = $500 taxed as income.
+    assert education["taxable_earnings"]["display"] == "500.00 USD" and education["earnings_share_percent"] == "25.0" and education["unmarked"] is None
+    brokerage = investments.add(AccountInput(name="Brokerage", kind="brokerage", currency="USD", value="1", as_of="2026-01-01"))
+    with pytest.raises(ValueError, match="Only a 529"):
+        investments.add_event(brokerage["id"], EventInput(event_type="qualified_withdrawal", event_date="2026-08-20", amount="1"))
+
+
+def test_1099da_proceeds_and_cost_are_checked_against_crypto_lots(books):
+    store, investments, docs = books
+    wallet = investments.add(AccountInput(name="Coinbase", kind="crypto", institution="Coinbase", currency="USD", value="1", as_of="2026-01-01"))
+    with store.connection() as db:
+        holding = db.execute("INSERT INTO holdings(account_id,instrument_class,name,identifier,holding_key,source,created_at,updated_at) "
+                             "VALUES(?,'crypto','Bitcoin','BTC','id:BTC','manual','t','t')", (wallet["id"],)).lastrowid
+        for day, kind, amount, units in (("2025-03-01", "buy", 300000, "0.1"), ("2026-05-01", "sell", 450000, "0.1")):
+            db.execute("INSERT INTO investment_events(account_id,holding_id,event_date,event_type,amount_minor,quantity,review_status,created_at) "
+                       "VALUES(?,?,?,?,?,?,'verified','t')", (wallet["id"], holding, day, kind, amount, units))
+    tax_form(investments, docs, "august.png", "Coinbase", 2026, [("1099-DA", "1f", 450000), ("1099-DA", "1g", 300000)])
+    year = investments.tax_year(2026)
+    checks = {check["label"]: check for check in year["checks"]}
+    assert checks["Sale proceeds"]["matches"] and checks["Cost of shares sold"]["matches"]
+    assert year["gains"][0]["long"]["display"] == "1,500.00 USD"

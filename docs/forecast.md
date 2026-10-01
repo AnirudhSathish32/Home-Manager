@@ -49,7 +49,16 @@ account's balance before its CDs:
 **RMDs:** with a birth year in Settings, every December from the start year each tax-deferred account pays out at least
 its end-of-last-year balance over the Uniform Lifetime divisor ([investments.md](investments.md)), after tax, into cash.
 This happens with or without a retirement plan. The year table shows "From investments", "Tax withheld" and
-"Required (RMD)", which is the part taken only because it was required. Net worth = cash + assets − loans. All arithmetic is exact decimal; each monthly amount is rounded half-even to the cent.
+"Required (RMD)", which is the part taken only because it was required.
+
+**Pensions and 529s** ([investments.md](investments.md#kinds-made-specific)):
+- A pension is income, not an asset. It pays its monthly benefit from its start month, raised by its COLA each January,
+  and a tax-deferred one is taxed at the retirement plan's flat rate. A What If can add pensions (`pensions`).
+- A 529 is never drawn on by retirement withdrawals. Planned education costs (`education_withdrawals`: month, amount,
+  optionally a 529's account id) are paid from the 529, and from cash once it runs short.
+- The year table adds "Pension", "Pension tax", "Education" and "Paid by the 529" when there are any.
+
+Net worth = cash + assets − loans. All arithmetic is exact decimal; each monthly amount is rounded half-even to the cent.
 
 ## Output
 

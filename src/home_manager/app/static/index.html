@@ -105,7 +105,10 @@
           <h3>One-off amounts</h3><p class="muted small">Money in is positive; an expense such as a vacation is negative.</p>
           <div id="forecast-one-offs" class="forecast-list"></div>
           <button id="add-one-off" type="button" class="quiet">Add one-off amount</button>
-          <h3>Retirement</h3><p class="muted small">From the month you retire, take-home pay and contributions from pay stop, and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last. Required minimum distributions use the birth year in Settings.</p>
+          <h3>Education costs</h3><p class="muted small">Paid from your 529 accounts in that month; whatever they can't cover comes from cash.</p>
+          <div id="forecast-education" class="forecast-list"></div>
+          <button id="add-education" type="button" class="quiet">Add education cost</button>
+          <h3>Retirement</h3><p class="muted small">From the month you retire, take-home pay and contributions from pay stop, and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last. 529 accounts are kept for education, and pensions pay their benefit from their start month. Required minimum distributions use the birth year in Settings.</p>
           <label class="check-field"><input id="retire-plan" type="checkbox"> Plan withdrawals from investments</label>
           <fieldset id="retire-fields" class="forecast-retirement" hidden>
             <legend class="visually-hidden">Retirement withdrawals</legend>
@@ -326,7 +329,7 @@
 
     <section id="investments-panel" class="page" data-page="investments" aria-labelledby="investments-title" hidden>
       <header class="page-header"><div><h1 id="investments-title" tabindex="-1">Investments</h1>
-        <p class="page-subtitle">Retirement, health savings, savings, CDs, Treasuries and brokerage accounts. Values come from your statements, purchase confirmations and what you enter; there are no live prices.</p></div>
+        <p class="page-subtitle">Retirement, pensions, health savings, savings, CDs, Treasuries, I bonds, brokerage, crypto and 529 accounts. Values come from your statements, purchase confirmations and what you enter; crypto market prices only if you turn them on in Settings.</p></div>
         <div class="page-actions"><label class="compact-check"><input id="investments-archived" type="checkbox"> Show removed accounts</label></div></header>
       <p id="investments-status" class="muted small" role="status"></p>
       <div id="investments-summary" class="investment-summary"></div>
@@ -344,7 +347,8 @@
             <div class="field"><label for="investment-currency">Currency</label><input id="investment-currency" required maxlength="3" value="USD"></div>
           </div>
           <div class="forecast-row">
-            <div class="field"><label for="investment-value">Value</label><input id="investment-value" required inputmode="decimal" placeholder="25000.00"></div>
+            <div class="field"><label for="investment-value">Value</label><input id="investment-value" inputmode="decimal" placeholder="25000.00" aria-describedby="investment-value-note">
+              <small id="investment-value-note">Leave blank for a pension; add its monthly benefit after.</small></div>
             <div class="field"><label for="investment-as-of">Value as of</label><input id="investment-as-of" type="date" required></div>
             <div class="field"><label for="investment-rate">Yearly growth or interest (%)</label><input id="investment-rate" inputmode="decimal" placeholder="Kind's default if blank"></div>
           </div>
@@ -373,6 +377,11 @@
         <h2 id="family-routing-title">Who is it for?</h2>
         <p class="muted small">Documents uploaded to the family count for nobody until you send them to a person or share them. A shared cost is divided equally among the people you tick: each person's profile gets the document and their part.</p>
         <ul id="family-routing" class="routing-list"></ul>
+      </section>
+      <section id="group-suggestions-panel" class="panel" aria-labelledby="group-suggestions-title" hidden>
+        <h2 id="group-suggestions-title">Images that look like one document</h2>
+        <p class="muted small">Numbered in one series and saved together, such as a long receipt photographed in parts. Combined images are read as one document's pages; nothing is combined until you say so.</p>
+        <ul id="group-suggestions" class="routing-list"></ul>
       </section>
       <div class="review-layout">
         <nav id="review-queue" class="review-queue panel" aria-label="Items to review"></nav>
@@ -527,6 +536,7 @@
           <div id="selection-bar" class="selection-bar" role="region" aria-label="Selected documents" hidden>
             <span id="selection-count"></span>
             <button id="read-selected" type="button">Read selected</button>
+            <button id="combine-selected" type="button">Combine as pages</button>
             <button id="move-selected" type="button">Move…</button>
             <button id="trash-selected" class="danger-text" type="button">Delete…</button>
             <button id="restore-selected" type="button">Restore</button>
@@ -559,6 +569,7 @@
             </div>
             <label id="pdf-page-label" class="inline-field" hidden>Page <select id="pdf-page"></select></label>
           </div>
+          <div id="group-pages" class="group-strip" hidden></div>
           <div id="source-image-panel" role="tabpanel" aria-labelledby="source-image-tab">
             <iframe id="receipt-pdf" title="Preserved PDF document" hidden></iframe>
             <div class="image-scroll"><div id="receipt-image-frame"><img id="receipt-image" alt="Preserved document"><svg id="receipt-overlay" aria-label="Recognized text regions"></svg></div></div>
@@ -622,6 +633,17 @@
         <p id="inbox-location" class="path-text"></p>
         <p class="muted small">Drop files into Inbox. While Home Manager is running, new files are captured automatically, read and filed; uncertain ones go to Unfiled.</p>
         <div class="button-row"><button id="scan-inbox" class="primary" type="button" disabled>Scan Inbox</button></div>
+      </section>
+      <section class="panel" aria-labelledby="sources-title"><h2 id="sources-title">Watched folders</h2>
+        <p class="muted small">Folders outside the library, such as Downloads or a scanner folder. New and changed files are copied into the library; the folder itself is never changed, and a file you delete there stays in the library.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Folder</th><th scope="col">Subfolders</th><th scope="col">Last scan</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="source-rows"></tbody></table></div>
+        <form id="source-form" class="form">
+          <div class="field"><label for="source-path">Folder to watch</label><input id="source-path" required maxlength="4096" placeholder="C:\Users\you\Downloads" autocomplete="off" spellcheck="false"></div>
+          <div class="field"><label for="source-label">Name (optional)</label><input id="source-label" maxlength="100" autocomplete="off"></div>
+          <label class="check-field"><input id="source-recursive" type="checkbox" checked> Include subfolders</label>
+          <div class="button-row"><button id="add-source" type="submit">Watch folder</button></div>
+        </form>
       </section>
       <section class="panel"><h2>Read documents</h2>
         <p class="muted small">Reads every preserved image and PDF with the local vision model. To read only some documents, select them in Documents.</p>
@@ -708,7 +730,10 @@
                 <input id="birth-year" type="number" min="1900" max="2100" inputmode="numeric" placeholder="1975">
                 <small>For required minimum distributions from retirement accounts, on Investments and in the forecast. Stays in this profile.</small></div>
               <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
+              <div class="field"><label for="rescan-hours">Rescan watched folders every (hours)</label><input id="rescan-hours" type="number" min="1" max="168" step="1" value="6" required>
+                <small>Changes are picked up within a minute while Home Manager runs; this full rescan catches anything missed, such as files added while it was closed.</small></div>
               <label class="check-field"><input id="fetch-rates" type="checkbox" checked> Download ECB exchange rates for USD totals when you have foreign amounts (the only data sent is the request for the public rate file)</label>
+              <label class="check-field"><input id="fetch-prices" type="checkbox"> Fetch crypto market prices from CoinGecko once a day for coins you hold (the only data sent is the coin names and currencies, never amounts)</label>
               <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
               <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>
             </form>

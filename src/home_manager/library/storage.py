@@ -257,13 +257,78 @@ class Store:
             raise ValueError("Invalid content hash.")
         return safe_path(self.originals / digest[:2] / (digest + ".blob"))
 
-    def create_job(self) -> str:
-        """A capture job for Library/Inbox, the only way documents enter the library."""
+    def create_job(self, root: Path | None = None) -> str:
+        """A capture job for Library/Inbox, or for a watched source folder (root) whose files are copied, never moved."""
         job = uuid.uuid4().hex
         with self.connection() as db:
             db.execute("INSERT INTO jobs(id,source_root,year,month,status,created_at,updated_at,error) VALUES (?, ?, NULL, NULL, 'queued', ?, ?, NULL)",
-                       (job, path_key(self.library.inbox), now(), now()))
+                       (job, path_key(root or self.library.inbox), now(), now()))
         return job
+
+    def job_root(self, job: str) -> str:
+        """The source_root key a job scans; its captures and missing-file checks stay inside it."""
+        with self.connection() as db:
+            return db.execute("SELECT source_root FROM jobs WHERE id=?", (job,)).fetchone()[0]
+
+    # Watched source folders ----------------------------------------------------
+
+    def sources(self):
+        with self.connection() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM sources ORDER BY label COLLATE NOCASE, path COLLATE NOCASE")]
+
+    def source(self, source_id: int):
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+        if row is None:
+            raise ValueError("Watched folder not found.")
+        return dict(row)
+
+    def add_source(self, path: Path, label="", recursive=True):
+        """path is already validated (a local folder outside the library and the app). Adding it again is an error."""
+        with self.connection() as db:
+            if db.execute("SELECT 1 FROM sources WHERE path_key=?", (path_key(path),)).fetchone():
+                raise ValueError("That folder is already watched.")
+            cursor = db.execute("INSERT INTO sources(path_key,path,label,recursive,enabled,created_at) VALUES(?,?,?,?,1,?)",
+                                (path_key(path), str(path), label.strip()[:100], int(bool(recursive)), now()))
+        return self.source(cursor.lastrowid)
+
+    def update_source(self, source_id: int, **changes):
+        allowed = {key: value for key, value in changes.items() if key in ("label", "recursive", "enabled") and value is not None}
+        self.source(source_id)
+        if "label" in allowed:
+            allowed["label"] = str(allowed["label"]).strip()[:100]
+        for key in ("recursive", "enabled"):
+            if key in allowed:
+                allowed[key] = int(bool(allowed[key]))
+        if allowed:
+            with self.connection() as db:
+                db.execute(f"UPDATE sources SET {','.join(f'{key}=?' for key in allowed)} WHERE id=?", (*allowed.values(), source_id))
+        return self.source(source_id)
+
+    def remove_source(self, source_id: int):
+        """Stop watching. Documents already captured from it stay in the library."""
+        self.source(source_id)
+        with self.connection() as db:
+            db.execute("DELETE FROM sources WHERE id=?", (source_id,))
+
+    def source_scanned(self, source_id: int, job: str):
+        with self.connection() as db:
+            db.execute("UPDATE sources SET last_scan_at=?,last_job=? WHERE id=?", (now(), job, source_id))
+
+    def linked_documents(self, document_id: int):
+        """Other documents found to be the same as this one, with where each was found."""
+        with self.connection() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT l.reason,l.status,o.id AS document_id,o.relative_path,o.source_root,o.source_kind,o.deleted_at "
+                "FROM occurrence_links l JOIN occurrences o ON o.id=CASE WHEN l.occurrence_id=? THEN l.other_occurrence_id ELSE l.occurrence_id END "
+                "WHERE (l.occurrence_id=? OR l.other_occurrence_id=?) AND l.status<>'rejected' ORDER BY o.id",
+                (document_id, document_id, document_id))]
+
+    @staticmethod
+    def link_documents(db, first: int, second: int, reason: str, status="verified"):
+        if first != second:
+            db.execute("INSERT OR IGNORE INTO occurrence_links(occurrence_id,other_occurrence_id,reason,status,created_at) VALUES(?,?,?,?,?)",
+                       (min(first, second), max(first, second), reason, status, now()))
 
     def job_state(self, job: str, status: str, error=None):
         with self.connection() as db:
@@ -279,14 +344,14 @@ class Store:
     def observe(self, job: str, relative: str, status="present"):
         with self.connection() as db:
             db.execute("UPDATE occurrences SET last_seen=?,last_job=?,source_status=? "
-                       "WHERE source_root=? AND path_key=?",
-                       (now(), job, status, path_key(self.library.inbox), path_key(relative)))
+                       "WHERE source_root=(SELECT source_root FROM jobs WHERE id=?) AND path_key=?",
+                       (now(), job, status, job, path_key(relative)))
 
     def prepare(self, capture_id: str, job: str, relative: str, digest: str, size: int, mtime_ns: int):
-        # Inbox captures have no folder period (0), never an inferred financial date.
+        # Captures have no folder period (0), never an inferred financial date.
         with self.connection() as db:
-            db.execute("INSERT INTO capture_intents VALUES(?,?,?,?,0,0,?,?,?)",
-                       (capture_id, job, path_key(self.library.inbox), relative, digest, size, mtime_ns))
+            db.execute("INSERT INTO capture_intents SELECT ?,?,source_root,?,0,0,?,?,? FROM jobs WHERE id=?",
+                       (capture_id, job, relative, digest, size, mtime_ns, job))
 
     def publish(self, capture_id: str) -> str:
         with self.connection() as db:
@@ -333,6 +398,9 @@ class Store:
                                     (item["source_root"], path_key(item["relative_path"]), item["relative_path"],
                                      item["folder_year"], item["folder_month"], item["hash"], stamp, stamp, item["job_id"]))
                 occurrence = cursor.lastrowid
+                if duplicate:  # The same bytes at another path: one reading, and a visible link between the two.
+                    for other in db.execute("SELECT id FROM occurrences WHERE current_hash=? AND id<>?", (item["hash"], occurrence)).fetchall():
+                        self.link_documents(db, occurrence, other["id"], "same_bytes")
             db.execute("INSERT OR IGNORE INTO versions(occurrence_id,hash,captured_at,source_mtime_ns) VALUES(?,?,?,?)",
                        (occurrence, item["hash"], stamp, item["source_mtime_ns"]))
             if item["source_root"] == path_key(self.root / "Library" / "Inbox"):
@@ -391,7 +459,8 @@ class Store:
                 safe_path(temp).unlink()
 
     def mark_missing(self, job: str):
-        clauses, params = ["source_root=?", "last_job<>?", "source_status NOT IN ('missing','organized')"], [path_key(self.library.inbox), job]
+        # Only inside the job's own root: a file gone from a watched folder is noted, and its library copy stays.
+        clauses, params = ["source_root=?", "last_job<>?", "source_status NOT IN ('missing','organized')"], [self.job_root(job), job]
         with self.connection() as db:
             rows = list(db.execute("SELECT id,relative_path,current_hash FROM occurrences WHERE " + " AND ".join(clauses), params))
             for row in rows:
@@ -434,15 +503,24 @@ class Store:
                 "(SELECT count(*) FROM versions v WHERE v.occurrence_id=o.id) AS version_count,"
                 # Naming parts, joined in the library view below as "Merchant - Location - Description".
                 "(SELECT d.description FROM document_descriptions d WHERE d.document_id=o.id) AS user_description,"
-                "(SELECT r.location FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS location,"
-                "(SELECT r.description FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS model_description,"
+                "(SELECT r.location FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS location,"
+                "(SELECT r.description FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS model_description,"
+                # A file holding several receipts (docs/document-parsing.md): how many it records.
+                "(SELECT count(*) FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_count,"
+                # Several images as one document (documents/grouping.py): a later page names its first page and is not listed;
+                # the first page counts the document's pages.
+                "(SELECT l.occurrence_id FROM document_group_pages p JOIN document_groups g ON g.id=p.group_id AND g.status='confirmed' "
+                "JOIN document_group_pages l ON l.group_id=g.id AND l.page_no=1 WHERE p.occurrence_id=o.id AND p.page_no>1) AS grouped_under,"
+                "(SELECT count(*) FROM document_group_pages p JOIN document_groups g ON g.id=p.group_id AND g.status='confirmed' "
+                "WHERE g.id=(SELECT f.group_id FROM document_group_pages f JOIN document_groups h ON h.id=f.group_id AND h.status='confirmed' "
+                "WHERE f.occurrence_id=o.id AND f.page_no=1)) AS page_count,"
                 # Jobs: the employer folder and section a document is filed under, its printed name, and a pay stub's date.
                 "(SELECT f.employer_id FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS employer_id,"
                 "(SELECT e.name FROM job_filings f JOIN employers e ON e.id=f.employer_id WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS employer,"
                 "(SELECT f.section FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS job_section,"
                 "(SELECT f.title FROM job_filings f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash) AS job_title,"
                 "(SELECT i.pay_date FROM income_records i WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected') AS pay_date,"
-                "coalesce((SELECT m.canonical_name FROM receipts r JOIN merchants m ON m.id=r.merchant_id WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected'),"
+                "coalesce((SELECT m.canonical_name FROM receipts r JOIN merchants m ON m.id=r.merchant_id WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1),"
                 "(SELECT a.institution FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.blob_hash=o.current_hash AND s.review_status<>'rejected'),"
                 "(SELECT m.canonical_name FROM bills b JOIN merchants m ON m.id=b.provider_merchant_id WHERE b.blob_hash=o.current_hash AND b.review_status<>'rejected'),"
                 "(SELECT m.canonical_name FROM income_records i JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected')) AS merchant,"
@@ -459,29 +537,31 @@ class Store:
                 "ORDER BY r.created_at DESC LIMIT 1) AS analysis_status,"
                 "(SELECT e.status FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=o.id "
                 "AND p.blob_hash=o.current_hash ORDER BY e.created_at DESC LIMIT 1) AS extraction_status,"
-                "coalesce((SELECT total_minor FROM receipts WHERE blob_hash=o.current_hash),(SELECT amount_due_minor FROM bills WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(total_minor) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT amount_due_minor FROM bills WHERE blob_hash=o.current_hash),"
                 "(SELECT net_pay_minor FROM income_records WHERE blob_hash=o.current_hash),"
                 "(SELECT coalesce(closing_balance_minor,statement_balance_minor) FROM statements WHERE blob_hash=o.current_hash)) AS ledger_amount_minor,"
-                "coalesce((SELECT currency FROM receipts WHERE blob_hash=o.current_hash),(SELECT currency FROM bills WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(currency) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT currency FROM bills WHERE blob_hash=o.current_hash),"
                 "(SELECT currency FROM income_records WHERE blob_hash=o.current_hash),(SELECT currency FROM statements WHERE blob_hash=o.current_hash)) AS ledger_currency,"
                 # Review state of the ledger record published from this version, or 'imported' for CSV/XLSX.
-                "coalesce((SELECT review_status FROM receipts WHERE blob_hash=o.current_hash),(SELECT review_status FROM statements WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT review_status FROM receipts WHERE blob_hash=o.current_hash ORDER BY CASE review_status WHEN 'needs_review' THEN 0 "
+                "WHEN 'proposed' THEN 1 WHEN 'verified' THEN 2 ELSE 3 END LIMIT 1),(SELECT review_status FROM statements WHERE blob_hash=o.current_hash),"
                 "(SELECT review_status FROM bills WHERE blob_hash=o.current_hash),(SELECT review_status FROM income_records WHERE blob_hash=o.current_hash),"
                 "(SELECT CASE WHEN count(*)>0 THEN 'imported' END FROM transaction_imports i WHERE i.blob_hash=o.current_hash)) AS ledger_status,"
                 # The document's own date from its ledger record, for display, filtering and sorting.
-                "coalesce((SELECT purchase_date FROM receipts WHERE blob_hash=o.current_hash),(SELECT period_end FROM statements WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT min(purchase_date) FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT period_end FROM statements WHERE blob_hash=o.current_hash),"
                 "(SELECT coalesce(due_date,issue_date) FROM bills WHERE blob_hash=o.current_hash),(SELECT pay_date FROM income_records WHERE blob_hash=o.current_hash)) AS document_date,"
                 # The spending categories of the receipt recorded from this version, as ',dining,groceries,': the Receipts folder's
                 # subfolders. A receipt with categorised items is in each of its items' categories, else in the receipt's own.
-                "(SELECT ','||coalesce((SELECT group_concat(category) FROM (SELECT DISTINCT s.category FROM category_splits s WHERE s.receipt_id=r.id "
-                "AND s.transaction_id IS NULL AND s.amount_minor<>0)),coalesce(r.category,'uncategorized'))||',' FROM receipts r "
-                "WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_categories,"
+                "(SELECT group_concat(categories,'') FROM (SELECT ','||coalesce((SELECT group_concat(category) FROM (SELECT DISTINCT s.category FROM category_splits s "
+                "WHERE s.receipt_id=r.id AND s.transaction_id IS NULL AND s.amount_minor<>0)),coalesce(r.category,'uncategorized'))||',' AS categories FROM receipts r "
+                "WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment)) AS receipt_categories,"
                 # Reconciliation of the record published from this version: a receipt's match to a
                 # transaction, or a bill's payment state. NULL where reconciliation does not apply.
-                "coalesce((SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "
+                "coalesce((SELECT state FROM (SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "
                 "WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='proposed') THEN 'proposed' "
                 "WHEN EXISTS(SELECT 1 FROM reconciliation_issues i WHERE i.record_type='receipt' AND i.record_id=r.id AND i.status='open') THEN 'ambiguous' "
-                "ELSE 'unmatched' END FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected'),"
+                "ELSE 'unmatched' END AS state FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') "
+                "ORDER BY CASE state WHEN 'ambiguous' THEN 0 WHEN 'unmatched' THEN 1 WHEN 'proposed' THEN 2 ELSE 3 END LIMIT 1),"
                 "(SELECT CASE b.payment_status WHEN 'paid' THEN 'matched' WHEN 'unpaid' THEN 'unmatched' END FROM bills b "
                 "WHERE b.blob_hash=o.current_hash AND b.review_status<>'rejected')) AS reconciliation_status "
                 "FROM occurrences o JOIN blobs b ON b.hash=o.current_hash LEFT JOIN managed_files m ON m.document_id=o.id AND m.blob_hash=o.current_hash), "
@@ -497,7 +577,7 @@ class Store:
                 # A pay stub is titled by its date and a job document by its printed name; your own description follows either.
                 "CASE WHEN r.pay_date IS NOT NULL THEN 'Paystub '||strftime('%m/%d/%Y',r.pay_date)||coalesce(' - '||r.user_description,'') "
                 "WHEN r.job_title IS NOT NULL THEN r.job_title||coalesce(' - '||r.user_description,'') "
-                "ELSE nullif(substr(coalesce(' - '||r.merchant,'')||coalesce(' - '||r.location,'')||coalesce(' - '||r.shown_description,''),4),'') END AS title,"
+                "ELSE nullif(substr(coalesce(' - '||r.merchant||CASE WHEN r.receipt_count>1 THEN ' + '||(r.receipt_count-1)||' more' ELSE '' END,'')||coalesce(' - '||r.location,'')||coalesce(' - '||r.shown_description,''),4),'') END AS title,"
                 "CASE WHEN coalesce(a.folder,'Unfiled')='Unfiled' THEN r.organization_reason END AS unfiled_reason "
                 "FROM described r LEFT JOIN folder_aliases a ON a.old_folder=r.stored_folder) ")
 
@@ -520,9 +600,10 @@ class Store:
                   scope=None, employer=None, section=None):
         if sort not in DOCUMENT_SORTS:
             raise ValueError("Unknown document sort order.")
-        clause, params = "deleted_at IS NULL", []
+        # A later page of a combined document is shown through its first page, never as a document of its own.
+        clause, params = "deleted_at IS NULL AND grouped_under IS NULL", []
         if folder == "trash":
-            clause = "deleted_at IS NOT NULL"
+            clause = "deleted_at IS NOT NULL AND grouped_under IS NULL"
         elif folder in LIBRARY_FOLDERS:
             clause += " AND folder=?"
             params.append(folder)
@@ -575,7 +656,9 @@ class Store:
             row = db.execute(self.library_query() + "SELECT * FROM library WHERE id=?", (document_id,)).fetchone()
         if row is None:
             raise ValueError("Document not found.")
-        return self.display_amount(dict(row))
+        result = self.display_amount(dict(row))
+        result["links"] = self.linked_documents(document_id)
+        return result
 
     def set_description(self, document_id: int, description: str | None):
         """The user's own description (the last part of the title); None or blank returns to the model's."""
@@ -596,8 +679,9 @@ class Store:
         filters cover that store; per-folder counts always cover the whole library."""
         scoped, scope_params = self.scope_clause(scope)
         with self.connection() as db:
-            rows = db.execute(self.library_query() + "SELECT folder,deleted_at IS NOT NULL AS trashed,count(*) AS count FROM library GROUP BY folder,trashed").fetchall()
-            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {condition}{scoped}",
+            rows = db.execute(self.library_query() + "SELECT folder,deleted_at IS NOT NULL AS trashed,count(*) AS count FROM library "
+                              "WHERE grouped_under IS NULL GROUP BY folder,trashed").fetchall()
+            work = {name: db.execute(self.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND grouped_under IS NULL AND {condition}{scoped}",
                                      scope_params).fetchone()[0]
                     for name, condition in WORK_FILTERS.items() if name != "all"}
             categories = Counter(name for (names,) in db.execute(self.library_query() + "SELECT receipt_categories FROM library WHERE deleted_at IS NULL "

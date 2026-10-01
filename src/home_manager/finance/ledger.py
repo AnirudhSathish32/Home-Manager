@@ -173,6 +173,8 @@ class HouseholdConfig(StrictModel):
     filing_status: Literal["single", "married_joint", "head_of_household"] = "single"  # For the pay stub tax estimate.
     birth_year: int | None = Field(default=None, ge=1900, le=2100)  # For required minimum distributions and retirement in the forecast.
     fetch_exchange_rates: bool = True  # Download ECB reference rates for USD totals. Off means no outbound calls for rates.
+    fetch_crypto_prices: bool = False  # Fetch crypto market prices (CoinGecko) for coins held. Off means no outbound calls for prices.
+    rescan_hours: int = Field(default=6, ge=1, le=168)  # Full rescan of each watched folder, catching changes the watcher missed.
 
     @field_validator("home_currency")
     @classmethod
@@ -295,8 +297,11 @@ class Ledger:
     # rejected is never overwritten by a later extraction; unreviewed ones are replaced.
 
     def _upsert(self, db, table, source, columns):
-        """Write an extraction's record unless the user has decided it; automatic acceptance can be redone."""
-        existing = db.execute(f"SELECT id,review_status,review_source FROM {table} WHERE blob_hash=?", (source["blob_hash"],)).fetchone()
+        """Write an extraction's record unless the user has decided it; automatic acceptance can be redone.
+        A file holding several receipts keeps one per segment (source["segment"], 0 for the first)."""
+        segment = source.get("segment", 0) if table == "receipts" else None
+        existing = db.execute(f"SELECT id,review_status,review_source FROM {table} WHERE blob_hash=?" + (" AND segment=?" if segment is not None else ""),
+                              (source["blob_hash"],) + ((segment,) if segment is not None else ())).fetchone()
         if existing and existing["review_status"] in ("verified", "rejected") and existing["review_source"] == "user":
             return existing["id"], False
         columns = {**columns, "review_source": "automatic" if columns["review_status"] == "verified" else None,
@@ -304,7 +309,7 @@ class Ledger:
         if existing:
             db.execute(f"UPDATE {table} SET {','.join(f'{name}=?' for name in columns)} WHERE id=?", (*columns.values(), existing["id"]))
             return existing["id"], True
-        columns.update(blob_hash=source["blob_hash"], created_at=now())
+        columns.update(blob_hash=source["blob_hash"], created_at=now(), **({"segment": segment} if segment is not None else {}))
         cursor = db.execute(f"INSERT INTO {table}({','.join(columns)}) VALUES({','.join('?' * len(columns))})", tuple(columns.values()))
         return cursor.lastrowid, True
 
@@ -336,6 +341,25 @@ class Ledger:
                                  json.dumps(reward["locator"])) for position, reward in enumerate(record.get("rewards", []), 1)])
                 self.refresh_splits(db, receipt_id)
         return self._published("receipt", receipt_id, written, items=len(record["items"]), kept=kept)
+
+    def retire_segments(self, blob_hash, keep, note="The latest reading of this file no longer finds this receipt; check how the file was split."):
+        """Receipts of a file's segments that its latest reading no longer finds (keep: the segments it found; none when
+        the file became a later page of a combined document). One the user never decided stops counting (rejected
+        automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note."""
+        retired = 0
+        with self.store.connection() as db:
+            marks = ",".join("?" * len(keep))
+            for row in db.execute("SELECT id,review_source,validation_json FROM receipts WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
+                                  (blob_hash, *keep)).fetchall():
+                issues = [issue for issue in json.loads(row["validation_json"]) if issue != note] + [note]
+                if row["review_source"] == "user":
+                    db.execute("UPDATE receipts SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
+                else:
+                    db.execute("UPDATE receipts SET review_status='rejected',review_source='automatic',validation_json=?,updated_at=? WHERE id=?",
+                               (json.dumps(issues), now(), row["id"]))
+                    self.refresh_splits(db, row["id"])
+                retired += 1
+        return retired
 
     @staticmethod
     def item_keys(items):

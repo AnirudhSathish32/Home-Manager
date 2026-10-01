@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -19,7 +20,8 @@ from ..library.storage import Store, digest_file, now
 from ..library.text_index import index_quietly
 from ..models.model_client import resolve_identity
 from ..models.vision import VISION_VERSION, VisionConfig, transcribe_preview
-from .pdf_reader import PDF_VERSION, PDFResult, complete_pdf
+from .grouping import Groups
+from .pdf_reader import GROUP_VERSION, PDF_VERSION, PDFResult, combine_pages, complete_pdf
 from .receipt_schema import ReceiptResult
 
 log = logging.getLogger(__name__)
@@ -52,10 +54,14 @@ class ReceiptService:
         vision = vision or VisionConfig()
         if not is_pdf and not vision.model:
             raise ValueError("Configure a local vision model in Settings before extracting text. OCR is no longer supported.")
+        # An image that is a page of a combined document is read with the others, from the first page.
+        pages = None if is_pdf or selected["hash"] != document["current_hash"] else Groups(self.store).pages(document_id)
+        if pages is None and not is_pdf and Groups(self.store).of(document_id, ("confirmed",)):
+            raise ValueError("This image is a page of a combined document. Read it from the combined document's first page.")
         if identity is UNRESOLVED:
             identity = resolve_identity(self.store, vision) if vision.model else None
-        parser = PDF_VERSION if is_pdf else VISION_VERSION
-        options = json.dumps({"clockwise_rotation": rotation, "vision": vision.model_dump()}, sort_keys=True)
+        parser = PDF_VERSION if is_pdf else GROUP_VERSION if pages else VISION_VERSION
+        options = json.dumps({"clockwise_rotation": rotation, "vision": vision.model_dump(), **({"pages": pages} if pages else {})}, sort_keys=True)
         with self.store.connection() as db:
             existing = db.execute("SELECT id,status,model_identity FROM parse_runs WHERE blob_hash=? AND parser_version=? AND options_json=? "
                                   "AND status IN ('queued','running','succeeded','partial') ORDER BY created_at DESC",
@@ -97,13 +103,14 @@ class ReceiptService:
     def publish(self, run_id):
         run = self.get(run_id)
         folder = self.folder(run_id)
-        if run["parser_version"] == PDF_VERSION:
+        if run["parser_version"] in (PDF_VERSION, GROUP_VERSION):
             path = safe_path(folder / "result.json")
             if path.stat().st_size > 4 * 1024**2:
                 raise ValueError("PDF evidence exceeds storage limits.")
             result = PDFResult.model_validate_json(path.read_bytes())
-            if result.input_hash != run["blob_hash"]:
-                raise ValueError("PDF evidence does not match preserved bytes.")
+            if result.input_hash != run["blob_hash"] or result.parser_version != run["parser_version"] \
+                    or (result.page_hashes or None) != run["options"].get("pages"):
+                raise ValueError("Page evidence does not match preserved bytes.")
             payload = result.model_dump()
             payload["lines"] = [line.model_dump() for line in result.lines]
             with self.store.connection() as db:
@@ -126,7 +133,6 @@ class ReceiptService:
 
     def run(self, run_id, work=None, timeout=180):
         work = work or Work.detached()
-        process = job = None
         try:
             work.check()
             run = self.get(run_id)
@@ -153,21 +159,26 @@ class ReceiptService:
                 identity = resolve_identity(self.store, vision)
                 with self.store.connection() as db:
                     db.execute("UPDATE parse_runs SET model_identity=? WHERE id=?", (identity, run_id))
-            process = subprocess.Popen([sys.executable, "-I", "-m", "home_manager.documents.pdf_reader" if is_pdf else "home_manager.documents.receipt_worker", str(source), str(folder), str(run["options"]["clockwise_rotation"])],
-                                       stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       cwd=folder, env=env,
-                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-            job = WorkerJob(process)
-            with work.on_cancel(process.kill):  # Terminates only this run's bounded child.
-                process.communicate(input=b"start\n", timeout=timeout)
-            work.check()
-            if process.returncode:
-                error_file = safe_path(folder / "error.json")
-                if error_file.exists() and error_file.stat().st_size < 8192:
-                    raise ValueError(json.loads(error_file.read_text(encoding="utf-8"))["error"])
-                raise ValueError("Receipt worker stopped before completion. Check dependencies and image size; retry or rotate the receipt.")
-            job.close()
-            job = None
+            rotation = str(run["options"]["clockwise_rotation"])
+            if run["parser_version"] == GROUP_VERSION:
+                # A combined document: each page image is prepared by its own bounded child, then transcribed.
+                readings = []
+                for number, digest in enumerate(run["options"]["pages"], 1):
+                    page_source = self.store.blob_path(digest)
+                    if digest_file(page_source) != digest:
+                        raise ValueError("A page of this combined document failed its integrity check. No parsing was performed.")
+                    page = safe_path(folder / f"page-{number}")
+                    page.mkdir(exist_ok=True)
+                    self.child("home_manager.documents.receipt_worker", page_source, page, rotation, env, work, timeout)
+                    with work.attribute("transcription", run_id, run["parser_version"], identity):
+                        transcribe_preview(page, vision, work)
+                    shutil.copyfile(page / "preview.png", folder / f"page-{number}.png")
+                    readings.append(ReceiptResult.model_validate_json((page / "result.json").read_bytes()))
+                combine_pages(folder, run["options"]["pages"], readings)
+                work.check()
+                self.publish(run_id)
+                return
+            self.child("home_manager.documents.pdf_reader" if is_pdf else "home_manager.documents.receipt_worker", source, folder, rotation, env, work, timeout)
             with work.attribute("transcription", run_id, run["parser_version"], identity):
                 if is_pdf:
                     complete_pdf(folder, vision, run["blob_hash"], work)
@@ -185,6 +196,25 @@ class ReceiptService:
                        else str(exc) if isinstance(exc, ValueError)
                        else "Local receipt parsing failed. Check image integrity, available memory and disk access.")
             self.state(run_id, "failed", message[:1200])
+
+    @staticmethod
+    def child(module, source, folder, rotation, env, work, timeout):
+        """Run one bounded reader child (image preparation or PDF pages) on one preserved file, into folder."""
+        process = job = None
+        try:
+            process = subprocess.Popen([sys.executable, "-I", "-m", module, str(source), str(folder), rotation],
+                                       stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       cwd=folder, env=env,
+                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            job = WorkerJob(process)
+            with work.on_cancel(process.kill):  # Terminates only this run's bounded child.
+                process.communicate(input=b"start\n", timeout=timeout)
+            work.check()
+            if process.returncode:
+                error_file = safe_path(folder / "error.json")
+                if error_file.exists() and error_file.stat().st_size < 8192:
+                    raise ValueError(json.loads(error_file.read_text(encoding="utf-8"))["error"])
+                raise ValueError("Receipt worker stopped before completion. Check dependencies and image size; retry or rotate the receipt.")
         finally:
             if job:
                 job.close()
@@ -202,6 +232,16 @@ class ReceiptService:
             except Exception as exc:
                 log_failure(log, "text reading recovery", exc, run=run_id)
                 self.state(run_id, "interrupted", "Parsing was interrupted. Previous completed runs remain available; select Parse receipt to retry.")
+
+    def page_image(self, run_id, number):
+        """One page's image of a combined document or a scanned PDF page, as read."""
+        run = self.get(run_id)
+        if run["status"] not in ("succeeded", "partial") or not 1 <= number <= len((run["result"] or {}).get("pages", [])):
+            raise ValueError("No such page in this reading.")
+        path = safe_path(self.folder(run_id) / f"page-{number}.png")
+        if not path.is_file():
+            raise ValueError("This page was read from the PDF's own text, so it has no page image.")
+        return path
 
     def preview(self, run_id):
         run = self.get(run_id)

@@ -386,3 +386,168 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
         server.should_exit = True
         thread.join(timeout=10)
         assert not thread.is_alive()
+
+
+@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+def test_real_browser_watches_a_folder(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    (folder / "statement.csv").write_bytes(b"date,total\n2026-09-01,123\n")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_app(tmp_path / "control", "browser-test-token", port, ScanLimits(stability_seconds=0))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        assert server.started
+        app.state.manager.configure(str(tmp_path / "managed"))
+        with playwright.sync_playwright() as driver:
+            browser = driver.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 1000})
+            failures = []
+            page.on("pageerror", lambda error: failures.append(str(error)))
+            page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
+            page.locator("#nav-processing").click()
+            playwright.expect(page.locator("#source-rows")).to_contain_text("No watched folders")
+            page.locator("#source-path").fill(str(folder))
+            page.locator("#source-label").fill("Downloads")
+            page.locator("#add-source").click()
+            playwright.expect(page.locator("#toasts")).to_contain_text("Folder added")
+            row = page.locator("#source-rows tr").filter(has_text="Downloads")
+            row.get_by_role("button", name="Scan now").click()
+            playwright.expect(page.locator("#documents")).to_contain_text("statement.csv", timeout=15000)
+            assert (folder / "statement.csv").exists()  # Copied, never moved.
+            row.get_by_role("button", name="Stop watching").click()
+            playwright.expect(page.locator("#confirm-dialog")).to_be_visible()
+            page.locator("#confirm-accept").click()
+            playwright.expect(page.locator("#source-rows")).to_contain_text("No watched folders")
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                wide = page.evaluate("""() => [...document.querySelectorAll('#scan-panel *')].filter(e => e.getBoundingClientRect().right > window.innerWidth + 1)
+                    .slice(0, 8).map(e => e.tagName + '#' + e.id + '.' + e.className + ' ' + Math.round(e.getBoundingClientRect().right))""")
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), (width, wide)
+            assert failures == []
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+def test_real_browser_shows_and_confirms_a_split_file(tmp_path, local_model):
+    playwright = pytest.importorskip("playwright.sync_api")
+    from home_manager.documents.reasoning import ReasoningConfig
+    from home_manager.finance.ledger import HouseholdConfig
+    from test_receipt_segments import LINES, split_answers
+    from test_receipts import make_receipt
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_app(tmp_path / "control", "browser-test-token", port, ScanLimits(stability_seconds=0))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        assert server.started
+        manager = app.state.manager
+        manager.configure(str(tmp_path / "managed"))
+        make_receipt(manager.store.library.inbox / "pile.png")
+        local_model["output"] = {"full_text": "\n".join(LINES)}
+        manager.configure_vision(local_model["config"])
+        manager.start_inbox()
+        manager.future.result(timeout=30)
+        manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+        manager.configure_household(HouseholdConfig(auto_identify_items=False))
+        doc = manager.store.documents()["items"][0]
+        local_model["outputs"] = split_answers()
+        manager.start_extraction(doc["id"], manager.receipts.history(doc["id"])[0]["id"])
+        manager.future.result(timeout=30)
+        with playwright.sync_playwright() as driver:
+            browser = driver.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1366, "height": 768})
+            failures = []
+            page.on("pageerror", lambda error: failures.append(str(error)))
+            page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
+            page.goto(f"http://127.0.0.1:{port}/#/documents/{doc['id']}")
+            panel = page.locator(".split-panel")
+            playwright.expect(panel).to_contain_text("This file holds 2 receipts", timeout=15000)
+            playwright.expect(panel).to_contain_text("waits in Review")
+            playwright.expect(page.locator(".ledger-record-heading")).to_contain_text("CORNER COFFEE")
+            panel.get_by_role("button", name="TOWN BAKERY").click()
+            playwright.expect(page.locator(".ledger-record-heading")).to_contain_text("TOWN BAKERY")
+            panel.get_by_role("button", name="Confirm split").click()
+            playwright.expect(page.locator("#toasts")).to_contain_text("Split confirmed")
+            playwright.expect(panel).not_to_contain_text("waits in Review")
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+            assert failures == []
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+def test_real_browser_combines_suggested_images(tmp_path, local_model):
+    playwright = pytest.importorskip("playwright.sync_api")
+    from test_receipts import make_receipt
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_app(tmp_path / "control", "browser-test-token", port, ScanLimits(stability_seconds=0))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        assert server.started
+        manager = app.state.manager
+        manager.configure(str(tmp_path / "managed"))
+        for name in ("receipt_p1.png", "receipt_p2.png"):
+            make_receipt(manager.store.library.inbox / name, [name])
+        manager.start_inbox()
+        manager.future.result(timeout=30)
+        manager.configure_vision(local_model["config"])
+        local_model["outputs"] = [{"full_text": "SHOP\nITEM 1.00"}, {"full_text": "Total 1.00"}]
+        with playwright.sync_playwright() as driver:
+            browser = driver.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1366, "height": 768})
+            failures = []
+            page.on("pageerror", lambda error: failures.append(str(error)))
+            page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
+            page.goto(f"http://127.0.0.1:{port}/#/review")
+            panel = page.locator("#group-suggestions-panel")
+            playwright.expect(panel).to_contain_text("receipt_p2.png", timeout=15000)
+            panel.get_by_role("button", name="Combine 2 images").click()
+            playwright.expect(page.locator("#toasts")).to_contain_text("Combined")
+            playwright.expect(panel).to_be_hidden()
+            manager.future.result(timeout=60)
+            lead = manager.store.documents()["items"][0]
+            page.goto(f"http://127.0.0.1:{port}/#/documents/{lead['id']}")
+            strip = page.locator("#group-pages")
+            playwright.expect(strip).to_contain_text("Combined document · 2 pages", timeout=15000)
+            strip.get_by_role("button", name="Page 2").click()
+            playwright.expect(strip.get_by_role("button", name="Page 2")).to_have_attribute("aria-pressed", "true")
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+            assert failures == []
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

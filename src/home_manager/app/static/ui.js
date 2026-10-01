@@ -89,6 +89,10 @@ const STATUS = {
   value_to_confirm: ["New value to confirm", "info", "dashed"], removed: ["Removed", "neutral", "slash"],
   // A value worked out from a CD's or Treasury's terms, and one that has matured and waits for an answer.
   estimated: ["Estimated", "neutral", "clock"], matured: ["Matured", "warning", "alert"], due: ["Coming due", "info", "clock"],
+  // A value from a crypto market price (Settings turns prices on); a pension, which pays an income instead of holding a balance.
+  quote: ["Market price", "neutral", "clock"], pension_income: ["Pays an income", "neutral", null],
+  // A 529 withdrawal not yet marked qualified or not.
+  unmarked: ["Not marked", "warning", "alert"],
   // A tax form's box compared with what is recorded for its account.
   rmd_taken: ["Taken", "positive", "check-circle"], tax_match: ["Matches", "positive", "check-circle"], tax_differs: ["Differs", "warning", "alert"], tax_unlinked: ["No account", "neutral", null],
   // Family members' copies (Settings → Profiles & family).

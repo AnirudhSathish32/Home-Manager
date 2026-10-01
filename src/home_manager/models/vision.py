@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ..core.paths import write_atomic
-from ..documents.receipt_schema import Issue, ReceiptResult, StrictModel, TextLine, code_transcript
+from ..documents.receipt_schema import Issue, ReceiptResult, Region, StrictModel, TextLine, code_transcript
 from .model_client import is_tailnet_host, request_completion
 
 VISION_VERSION = "receipt-vision-v5-text"
@@ -119,22 +119,33 @@ def transcribe(config: VisionConfig, image_path, work=None) -> VisionText:
 
 def transcribe_preview(folder, config: VisionConfig, work=None):
     prepared = ReceiptResult.model_validate_json((folder / "prepared.json").read_bytes())
+    regions = [region.model_copy() for region in prepared.regions]
+    parts: list[Region | None] = list(regions) or [None]
+    texts = []
     try:
-        output = transcribe(config, folder / "preview.png", work)
+        # One request for the image, or one per piece of paper when it holds several; lines are numbered across them.
+        for region in parts:
+            if work and region:
+                work.check()
+            texts.append(transcribe(config, folder / (f"region-{region.number}.png" if region else "preview.png"), work).full_text)
     except ValidationError as exc:
         # Validation errors may quote private model output; never copy them into logs/status.
         raise ValueError("Model output did not match the full-text schema. No result was published.") from exc
-    lines = [TextLine(id=f"line-{index+1}", text=text, block_ids=[])
-             for index, text in enumerate(output.full_text.split("\n"))]
+    full_text, lines = "\n".join(texts), list[TextLine]()
+    for region, text in zip(parts, texts):
+        start = len(lines)
+        lines += [TextLine(id=f"line-{start + number}", text=line, block_ids=[]) for number, line in enumerate(text.split("\n"), 1)]
+        if region:
+            region.first_line, region.last_line = lines[start].id, lines[-1].id
     data = prepared.model_dump()
-    data.update(parser_version=VISION_VERSION, transcription_method="vision_model", title=None, folder=None,
-                model_text=output.full_text, lines=lines, extracted_text=output.full_text + code_transcript(prepared.codes), model_hashes={},
+    data.update(parser_version=VISION_VERSION, transcription_method="vision_model", title=None, folder=None, regions=[region.model_dump() for region in regions],
+                model_text=full_text, lines=lines, extracted_text=full_text + code_transcript(prepared.codes), model_hashes={},
                 engine={"model_id": config.model, "base_url": config.base_url, "prompt_version": VISION_VERSION,
                         "temperature": "0.1", "max_tokens": "8192", "stream": "true"},
                 fields=None,
                 issues=[issue for issue in prepared.issues if issue.code in ("no_code_decoded", "code_decode_error")] + [
                     Issue(code="unverified_vision", message="Model-generated transcription is unverified. Compare all text against the image; the model can omit or invent content. Text-region coordinates are unavailable."),
                     Issue(code="interpretation_pending", message="Field interpretation, title generation and folder classification await a separate reasoning model.")])
-    if any(marker in output.full_text.lower() for marker in ("[unreadable]", "[no visible text]")):
+    if any(marker in full_text.lower() for marker in ("[unreadable]", "[no visible text]")):
         data["issues"].append(Issue(code="unreadable_text", message="The model marked some content unreadable. Inspect the source image."))
     write_atomic(folder / "result.json", ReceiptResult.model_validate(data).model_dump_json(), limit=4 * 1024**2)

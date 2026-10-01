@@ -500,6 +500,8 @@ function compareRun(run) {
   const columns = [["Income", "income"], ["Spending", "spending"], ["One-off", "one_offs"], ["Into investments", "contributions"],
     // Money drawn from investments to cash, after tax, and the part only required distributions took (as on the Forecast page).
     ...(run.years.some(year => year.withdrawals) ? [["From investments", "withdrawals"], ["Tax withheld", "withdrawal_tax"], ["Required (RMD)", "rmd"]] : []),
+    ...(run.years.some(year => year.pension) ? [["Pension", "pension"], ["Pension tax", "pension_tax"]] : []),
+    ...(run.years.some(year => year.education) ? [["Education", "education"], ["Paid by the 529", "education_from_529"]] : []),
     ["Cash at the end", "end_cash"], ["Net worth", "end_net_worth"]];
   for (const [title, numeric] of [["Year", false], ...columns.map(([name]) => [name, true])]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
   const body = table.createTBody();

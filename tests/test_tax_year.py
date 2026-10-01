@@ -104,6 +104,23 @@ def test_the_return_is_gathered_from_stubs_interest_and_tags(store):
         TaxYears(store).save(2026, {"fields": {"nope": "1"}})
 
 
+def test_ibond_interest_is_marked_state_exempt_and_529_earnings_are_income(store):
+    from home_manager.finance.investments import AccountInput, EventInput, Investments
+    from home_manager.finance.tax_return import ReturnInput, state_return
+    investments = Investments(store, TODAY)
+    bonds = investments.add(AccountInput(name="TreasuryDirect", kind="i_bond", currency="USD", value="10000", as_of="2026-01-01"))
+    investments.add_event(bonds["id"], EventInput(event_type="interest", event_date="2026-06-01", amount="300"))
+    plan = investments.add(AccountInput(name="529", kind="education_529", currency="USD", value="10000", as_of="2026-01-01"))
+    investments.add_event(plan["id"], EventInput(event_type="nonqualified_withdrawal", event_date="2026-06-01", amount="1000"))
+    gathered = gather(store, 2025 + 1, HouseholdConfig(), date(2026, 12, 31))
+    assert gathered["values"]["interest"] == gathered["values"]["us_obligation_interest"] == 30000
+    assert "exempt from state tax" in gathered["sources"]["us_obligation_interest"]
+    assert "other_income" not in gathered["values"]  # No 1099-Q yet, so the earnings share is unknown.
+    table = {"status": "verified", "standard_deduction_minor": 0, "brackets_json": '[{"from_minor": 0, "rate_bp": 500}]'}
+    taxed = state_return(ReturnInput(year=2026, filing_status="single", state="GA", interest=30000, us_obligation_interest=30000), 100000, table)
+    assert taxed["taxable_minor"] == 70000  # The state leaves the I bond interest out.
+
+
 def test_tax_year_endpoints(tmp_path):
     app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:

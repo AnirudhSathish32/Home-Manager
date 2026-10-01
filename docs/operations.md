@@ -114,6 +114,7 @@ A restore checks the whole backup first. It then builds a **new** library in an 
 ## Background work
 
 - **Inbox watcher.** The `inbox-monitor` thread (`Manager.watch_inbox`) looks at `Library/Inbox` every 3 seconds. A file has to look the same (name, size, modified time) on two checks in a row before capture starts, and nothing starts while capture work is already running.
+- **Watched folders.** Every 10 watcher ticks (about 30 seconds), each enabled watched folder is checked the same way, and also rescanned once after start and every `rescan_hours` (default 6). Its files are copied into the library; the folder is never changed. See [document reading](document-reading.md#1-discover-and-register).
 - **Family checks.** Every 20 watcher ticks (about a minute), the app checks the family folder for new snapshots and deliveries. A member's changed library is published to the family at most every 10 minutes (`PUBLISH_EVERY_SECONDS`).
 - **Two work queues.** `capture` handles scans, backups, restores and indexing. `inference` handles model work. Each runs one job at a time. Model work, backups and restores can be cancelled; scans can't be interrupted.
 - **At each start**, when a library opens:

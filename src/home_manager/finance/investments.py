@@ -1,8 +1,11 @@
 """Investments (docs/investments.md): accounts, their holdings and activity, and their values over time.
 
 What an investment is lives in the investment_kinds table. The page and the forecast use only a kind's section,
-tax treatment and value model, so a new kind (a 529, crypto, a pension) is a row there, not new code. Values come
-only from documents and what the user types (no live prices). A value read from a statement waits for review; a
+tax treatment and value model, so a new kind is a row there, not new code. A pension (value model 'income') pays a
+monthly benefit from its terms instead of holding a balance; a 529 (section 'education') is never drawn on for living
+costs; I bonds follow the published TreasuryDirect rates. Values come from documents and what the user types, plus,
+only when the household turns it on, crypto market prices (finance/prices.py), which never replace a document's value
+for the same day or later. A value read from a statement waits for review; a
 value the user enters counts at once. Values are never overwritten: each statement date adds one. A statement's
 holdings and activity follow its account value's review. An account linked to a ledger savings account (a HYSA)
 reads its values and interest from that account's statements instead, so they are recorded and reviewed once.
@@ -12,15 +15,18 @@ account valued by accrual (CDs, Treasuries, I bonds) is estimated from those ter
 
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+import hashlib
 import json
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..core.formats import extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..library.storage import now
 from .ledger import name_tokens, normalize_name
 from .retirement import HAS_RMD, divisor, required, rmd_start_age
+from .tabular import parse_crypto_export
 from .tax_lots import account_lots, realized, shares
 from .tax_lots import share_text as lot_shares
 
@@ -34,7 +40,12 @@ INSTRUMENT_CLASSES = {"cash": "Cash or sweep", "money_market": "Money market fun
 # Money in, out and earned. Amounts are stored as printed magnitudes; the type says which way the money went.
 ACTIVITY_TYPES = {"contribution": "Contribution", "withdrawal": "Withdrawal", "dividend": "Dividend", "interest": "Interest", "fee": "Fee",
                   "buy": "Buy", "sell": "Sell", "maturity": "Maturity", "rollover": "Rollover", "transfer_in": "Transfer in",
-                  "transfer_out": "Transfer out", "other": "Other"}
+                  "transfer_out": "Transfer out", "qualified_withdrawal": "Qualified education withdrawal",
+                  "nonqualified_withdrawal": "Non-qualified withdrawal", "reward": "Reward", "other": "Other"}
+# Money taken out of an account: a 529's withdrawals are qualified (tuition and the like) or not (their earnings are taxed).
+WITHDRAWAL_TYPES = ("withdrawal", "qualified_withdrawal", "nonqualified_withdrawal")
+# Activity that changes how many units a holding has (crypto positions between statements): +1 adds, -1 takes away.
+QUANTITY_SIGNS = {"buy": 1, "transfer_in": 1, "reward": 1, "sell": -1, "transfer_out": -1}
 CONTRIBUTION_SOURCES = {"employee": "From your pay", "employer": "From your employer", "personal": "From you"}
 # Holdings with a principal and terms (a rate or a face value, and usually a maturity date): valued by accrual.
 TERM_CLASSES = ("cd", "treasury_bill", "treasury_note", "treasury_bond", "i_bond", "bond")
@@ -47,14 +58,20 @@ PAYROLL_CATEGORIES = {"retirement": ("retirement_pretax", "retirement_roth"), "h
 PAYROLL_LABELS = {"retirement": "401(k) or retirement", "health": "HSA"}
 # A statement contribution is the same money as a pay stub line when it matches it this closely (or a quarter's lines added up).
 PAYROLL_MATCH_DAYS, PAYROLL_QUARTER_DAYS = 7, 92
-TAX_FORMS = ("1099-INT", "1099-DIV", "1099-B", "1099-R", "1099-SA", "5498", "5498-SA")
+TAX_FORMS = ("1099-INT", "1099-DIV", "1099-B", "1099-R", "1099-SA", "1099-Q", "1099-DA", "5498", "5498-SA")
 # What a form's boxes report, compared with what is recorded for its account and year: (measure, label, {form: boxes}).
-# 1099-INT 1 interest and 3 Treasury interest; 1099-DIV 1a ordinary dividends; 1099-B 1d proceeds and 1e cost; 1099-R and
-# 1099-SA 1 distributions; 5498 1 IRA and 10 Roth IRA contributions; 5498-SA 2 HSA contributions for the year.
+# 1099-INT 1 interest and 3 Treasury interest; 1099-DIV 1a ordinary dividends; 1099-B 1d proceeds and 1e cost (1099-DA 1f and
+# 1g for digital assets); 1099-R, 1099-SA and 1099-Q 1 distributions; 5498 1 IRA and 10 Roth IRA contributions; 5498-SA 2 HSA
+# contributions for the year.
 TAX_CHECKS = [("interest", "Interest", {"1099-INT": ("1", "3")}), ("dividends", "Dividends", {"1099-DIV": ("1a",)}),
-              ("proceeds", "Sale proceeds", {"1099-B": ("1d",)}), ("cost", "Cost of shares sold", {"1099-B": ("1e",)}),
-              ("withdrawals", "Withdrawals", {"1099-R": ("1",), "1099-SA": ("1",)}),
+              ("proceeds", "Sale proceeds", {"1099-B": ("1d",), "1099-DA": ("1f",)}),
+              ("cost", "Cost of shares sold", {"1099-B": ("1e",), "1099-DA": ("1g",)}),
+              ("withdrawals", "Withdrawals", {"1099-R": ("1",), "1099-SA": ("1",), "1099-Q": ("1",)}),
               ("contributions", "Contributions", {"5498": ("1", "10"), "5498-SA": ("2",)})]
+# I bonds (TreasuryDirect): values are worked out per $25 bond and rounded to the cent; interest is added on the first of each
+# month and compounds every six months; it stops after 30 years. Cashed within five years, the last three months' interest is lost.
+IBOND_UNIT_MINOR, IBOND_MONTHS, IBOND_PENALTY_MONTHS, IBOND_PENALTY_YEARS = 2500, 360, 3, 5
+IBOND_YEARLY_LIMIT_MINOR = 1_000_000  # Electronic I bonds a person may buy in a calendar year ($10,000).
 # A ledger account can stand for an investment account (a HYSA): its statements are the values.
 LINKABLE_TYPES = ("savings", "checking", "brokerage", "other")
 PERCENT = r"^-?\d{1,3}(\.\d{1,2})?$"
@@ -130,6 +147,62 @@ def accrued(base_minor, since, on, rate_bp=None, face_minor=None, maturity=None)
         return int(value.to_integral_value(ROUND_HALF_EVEN))
 
 
+def ibond_composite_bp(fixed_bp, inflation_bp):
+    """TreasuryDirect's composite rate: fixed + 2 × semiannual inflation + fixed × semiannual inflation, to the hundredth of a
+    percent, and never below zero (deflation can take it down to zero, not under)."""
+    value = Decimal(fixed_bp) + 2 * Decimal(inflation_bp) + Decimal(fixed_bp) * Decimal(inflation_bp) / 10000
+    return max(int(value.to_integral_value(ROUND_HALF_EVEN)), 0)
+
+
+def ibond_months(issue_date, on):
+    """Whole months of interest an I bond has on a date: it is dated the first of its issue month and gains a month's interest
+    on the first of each month after, for 30 years."""
+    issued, day = date.fromisoformat(issue_date), date.fromisoformat(on)
+    return min(max((day.year - issued.year) * 12 + day.month - issued.month, 0), IBOND_MONTHS)
+
+
+def ibond_rate(rates, day):
+    """The rate row in force on a day: the latest published on or before it."""
+    found = None
+    for row in rates:
+        if row["period_start"] <= day:
+            found = row
+    return found
+
+
+def ibond_value(principal_minor, issue_date, on, rates, months=None):
+    """An I bond's value after `months` of interest (by default, those it has on `on`), from the published rates; None when no
+    rate covers its issue month. Its fixed rate is the one for its issue month; the inflation rate resets every six months from
+    the issue month to the one in force then (the latest published when a period begins after the last one known). Worked out
+    for a $25 bond rounded to the cent at each step, as TreasuryDirect does, then scaled to the principal."""
+    rates = sorted(rates, key=lambda row: row["period_start"])
+    issued = issue_date[:7] + "-01"
+    fixed = ibond_rate(rates, issued)
+    if fixed is None:
+        return None
+    months = ibond_months(issue_date, on) if months is None else months
+    with localcontext() as context:
+        context.prec = 34
+        unit, done = Decimal(IBOND_UNIT_MINOR), 0
+        while done < months:
+            period = ibond_rate(rates, add_months(issued, done))
+            composite = ibond_composite_bp(fixed["fixed_bp"], period["inflation_semiannual_bp"])
+            step = min(6, months - done)
+            unit = (unit * (1 + Decimal(composite) / 20000) ** (Decimal(step) / 6)).to_integral_value(ROUND_HALF_EVEN)
+            done += step
+        return int((unit * Decimal(principal_minor) / IBOND_UNIT_MINOR).to_integral_value(ROUND_HALF_EVEN))
+
+
+def ibond_cash_out(principal_minor, issue_date, on, rates):
+    """What an I bond pays if cashed on a date: nothing before 12 months; before five years, its value three months earlier."""
+    months = ibond_months(issue_date, on)
+    if months < 12:
+        return None
+    if months < IBOND_PENALTY_YEARS * 12:
+        months -= IBOND_PENALTY_MONTHS
+    return ibond_value(principal_minor, issue_date, on, rates, months)
+
+
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -143,6 +216,8 @@ class AccountUpdate(StrictInput):
     ledger_account_id: int | None = Field(default=None, ge=1, description="A savings account whose statements are this account's values.")
     payroll_employer_id: int | None = Field(default=None, ge=0, description="The employer whose pay stub contributions go here; 0 for none, blank to match automatically.")
     monthly_contribution: str | None = Field(default=None, max_length=30, description="What you put in each month, for the forecast; blank uses recent contributions.")
+    beneficiary: str | None = Field(default=None, max_length=80, description="A 529's beneficiary: a profile's name or anyone's.")
+    plan_state: str | None = Field(default=None, pattern=r"^[A-Za-z]{2}$", description="The state whose 529 plan it is.")
 
     @model_validator(mode="after")
     def known_tax(self):
@@ -163,13 +238,56 @@ class ValueInput(StrictInput):
 
 class AccountInput(AccountUpdate):
     currency: str = Field(pattern=r"^[A-Za-z]{3}$")
-    value: str = Field(min_length=1, max_length=30)
-    as_of: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    value: str | None = Field(default=None, min_length=1, max_length=30, description="Today's value; a pension has none (it pays an income).")
+    as_of: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
     @model_validator(mode="after")
     def real_date(self):
-        date.fromisoformat(self.as_of)
+        if self.as_of:
+            date.fromisoformat(self.as_of)
+        if bool(self.value) != bool(self.as_of):
+            raise ValueError("Enter the value with its date.")
         return self
+
+
+class PensionInput(StrictInput):
+    """A pension's terms, as its benefit statement prints them."""
+    monthly_benefit: str = Field(min_length=1, max_length=30, description="What it pays a month from the start date, before tax.")
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    cola_percent: str = Field(default="0", pattern=r"^\d{1,2}(\.\d{1,2})?$", description="Its yearly cost-of-living raise, each January.")
+    survivor_percent: int = Field(default=0, ge=0, le=100, description="The share a surviving spouse keeps.")
+    lump_sum: str | None = Field(default=None, max_length=30, description="A lump sum offered instead, shown beside it and never counted in totals.")
+
+    @model_validator(mode="after")
+    def real_date(self):
+        date.fromisoformat(self.start_date)
+        return self
+
+
+class EventInput(StrictInput):
+    """Activity you record yourself, such as a 529 withdrawal: it counts at once."""
+    event_type: str = Field(json_schema_extra={"enum": list(ACTIVITY_TYPES)})
+    event_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    amount: str = Field(min_length=1, max_length=30)
+    note: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def known(self):
+        if self.event_type not in ACTIVITY_TYPES:
+            raise ValueError(f"Choose one of: {', '.join(ACTIVITY_TYPES)}.")
+        date.fromisoformat(self.event_date)
+        return self
+
+
+class WithdrawalKind(StrictInput):
+    qualified: bool
+
+
+class IbondRateInput(StrictInput):
+    """A rate TreasuryDirect announces each May 1 and November 1."""
+    period_start: str = Field(pattern=r"^\d{4}-(05|11)-01$", description="May 1 or November 1.")
+    fixed_percent: str = Field(pattern=r"^\d{1,2}(\.\d{1,2})?$")
+    inflation_percent: str = Field(pattern=r"^-?\d{1,2}(\.\d{1,2})?$", description="The semiannual inflation rate, as published.")
 
 
 class HoldingInput(StrictInput):
@@ -250,9 +368,11 @@ class Investments:
         """Accounts with their kind and their confirmed and newest values (account-level values only)."""
         where = ["1=1" if include_archived else "a.archived_at IS NULL"] + (["a.id=?"] if account_id is not None else [])
         accounts = db.execute("SELECT a.*,k.label AS kind_label,k.section,k.tax_treatment AS kind_tax,k.value_model,k.has_maturity,k.default_rate_bp,"
-                              "l.display_name AS ledger_account_name,m.canonical_name AS payroll_employer FROM investment_accounts a "
+                              "l.display_name AS ledger_account_name,m.canonical_name AS payroll_employer,p.monthly_benefit_minor,"
+                              "p.start_date AS pension_start,p.cola_bp,p.survivor_pct,p.lump_sum_minor FROM investment_accounts a "
                               "JOIN investment_kinds k ON k.key=a.kind LEFT JOIN accounts l ON l.id=a.ledger_account_id "
-                              f"LEFT JOIN merchants m ON m.id=a.payroll_merchant_id WHERE {' AND '.join(where)} "
+                              "LEFT JOIN merchants m ON m.id=a.payroll_merchant_id LEFT JOIN pension_terms p ON p.account_id=a.id "
+                              f"WHERE {' AND '.join(where)} "
                               "ORDER BY k.position,a.name,a.id", (account_id,) if account_id is not None else ()).fetchall()
         values = {}
         for row in db.execute("SELECT * FROM investment_valuations WHERE holding_id IS NULL AND review_status<>'rejected' ORDER BY as_of DESC,id DESC"):
@@ -304,7 +424,7 @@ class Investments:
                           "LEFT JOIN investment_valuations v ON v.holding_id=h.id AND v.as_of=? AND v.review_status<>'rejected' "
                           "WHERE h.account_id=? AND h.archived_at IS NULL ORDER BY h.maturity_date IS NULL,h.maturity_date,h.name",
                           (latest or "", account_id)).fetchall()
-        found = []
+        found, rates = [], self.ibond_rates(db)
         for row in rows:
             if row["statement_value"] is not None:
                 base, since, counts = row["statement_value"], latest, row["statement_status"] == "verified"
@@ -312,10 +432,53 @@ class Investments:
                 base, since, counts = row["principal_minor"], row["issue_date"] or row["created_at"][:10], row["confirmation_status"] in (None, "verified")
             else:
                 continue  # Listed only on an older statement: sold or matured since.
-            value = lambda on, row=row, base=base, since=since: accrued(base, since, on, row["rate_bp"], row["face_minor"], row["maturity_date"])
+            if self.ibond_terms(row, rates):  # An I bond follows the published rates, not one fixed rate.
+                value = lambda on, row=row: ibond_value(row["principal_minor"], row["issue_date"], on, rates)
+            else:
+                value = lambda on, row=row, base=base, since=since: accrued(base, since, on, row["rate_bp"], row["face_minor"], row["maturity_date"])
             found.append({**dict(row), "base_minor": base, "since": since, "counts": counts, "value_on": value,
                           "matured": bool(row["maturity_date"]) and row["maturity_date"] <= self.today})
         return found
+
+    @staticmethod
+    def ibond_rates(db):
+        return [dict(row) for row in db.execute("SELECT * FROM ibond_rates ORDER BY period_start")]
+
+    @staticmethod
+    def ibond_terms(row, rates):
+        """An I bond with what its value is worked out from: its principal, its issue month and a published rate for that month."""
+        return row["instrument_class"] == "i_bond" and row["principal_minor"] is not None and bool(row["issue_date"]) \
+            and ibond_rate(rates, row["issue_date"][:7] + "-01") is not None
+
+    def ibond_rate_table(self):
+        """The published I bond rates kept here, newest first, with each period's composite rate for a bond bought then."""
+        with self.store.connection() as db:
+            rows = self.ibond_rates(db)
+        return [{**row, "fixed_percent": percent_text(row["fixed_bp"]), "inflation_percent": percent_text(row["inflation_semiannual_bp"]),
+                 "composite_percent": percent_text(ibond_composite_bp(row["fixed_bp"], row["inflation_semiannual_bp"]))} for row in reversed(rows)]
+
+    def set_ibond_rate(self, value: IbondRateInput):
+        """Add or correct a published rate (each May and November). I bond values follow it at once."""
+        fixed, inflation = rate_bp(value.fixed_percent), rate_bp(value.inflation_percent)
+        if fixed > 1000 or abs(inflation) > 1000:
+            raise ValueError("Enter rates of 10% or less, as TreasuryDirect publishes them.")
+        with self.store.connection() as db:
+            db.execute("INSERT INTO ibond_rates(period_start,fixed_bp,inflation_semiannual_bp) VALUES(?,?,?) ON CONFLICT(period_start) DO UPDATE SET "
+                       "fixed_bp=excluded.fixed_bp,inflation_semiannual_bp=excluded.inflation_semiannual_bp", (value.period_start, fixed, inflation))
+        return self.ibond_rate_table()
+
+    def ibond_limits(self, db):
+        """Calendar years whose electronic I bond purchases here pass the $10,000 a person may buy (a profile is one person).
+        Purchases waiting for review count too, so the warning comes before they are confirmed; rejected ones don't."""
+        rows = db.execute("SELECT substr(h.issue_date,1,4) AS year,a.currency,sum(h.principal_minor) AS total FROM holdings h "
+                          "JOIN investment_accounts a ON a.id=h.account_id LEFT JOIN investment_confirmations c ON c.id=h.confirmation_id "
+                          "WHERE h.instrument_class='i_bond' AND h.principal_minor IS NOT NULL AND h.issue_date IS NOT NULL "
+                          "AND coalesce(c.review_status,'verified')<>'rejected' AND a.currency='USD' GROUP BY 1,2 HAVING sum(h.principal_minor)>? ORDER BY 1",
+                          (IBOND_YEARLY_LIMIT_MINOR,)).fetchall()
+        return [{"year": int(row["year"]), "total": money(row["total"], row["currency"]), "limit": money(IBOND_YEARLY_LIMIT_MINOR, row["currency"]),
+                 "message": f"I bonds bought in {row['year']} add up to {format_minor(row['total'], row['currency'])}, more than the "
+                            f"{format_minor(IBOND_YEARLY_LIMIT_MINOR, row['currency'])} a person may buy electronically in a year. Check the "
+                            "amounts, or whether some belong to someone else's profile."} for row in rows]
 
     def estimated_value(self, db, account):
         """Today's value of an account valued by accrual, from its holdings' terms; None when it has none to estimate from.
@@ -346,9 +509,17 @@ class Investments:
         kind_tax = account.pop("kind_tax")
         tax = account["tax_treatment"] or kind_tax
         change = current["value_minor"] - previous["value_minor"] if current and previous else None
+        terms = {key: account.pop(key) for key in ("monthly_benefit_minor", "pension_start", "cola_bp", "survivor_pct", "lump_sum_minor")}
+        # A pension pays an income: its terms, with the lump sum offered instead shown beside them, never counted as a balance.
+        pension = {"monthly_benefit": money(terms["monthly_benefit_minor"], currency), "monthly_benefit_minor": terms["monthly_benefit_minor"],
+                   "start_date": terms["pension_start"], "cola_bp": terms["cola_bp"], "cola_percent": percent_text(terms["cola_bp"]),
+                   "survivor_percent": terms["survivor_pct"],
+                   "lump_sum": money(terms["lump_sum_minor"], currency) if terms["lump_sum_minor"] is not None else None} \
+            if terms["monthly_benefit_minor"] is not None else None
         return {**account, "has_maturity": bool(account["has_maturity"]), "section_label": SECTIONS[account["section"]],
                 "tax_treatment": tax, "tax_label": TAX_TREATMENTS[tax], "tax_overridden": account["tax_treatment"] is not None,
                 "rate_bp": rate, "annual_rate_percent": percent_text(rate), "rate_is_default": account["annual_rate_bp"] is None,
+                "is_income": account["value_model"] == "income", "pension": pension,
                 "current": self.valuation_view(current, currency) if current else None,
                 "change": money(change, currency) if change is not None else None, "change_since": previous["as_of"] if previous else None,
                 "awaiting_review": [self.valuation_view(value, currency) for value in waiting]}
@@ -362,10 +533,11 @@ class Investments:
             confirmations = db.execute("SELECT count(*) FROM investment_confirmations c JOIN investment_accounts a ON a.id=c.account_id "
                                        "WHERE c.review_status='proposed' AND a.archived_at IS NULL").fetchone()[0] \
                 + db.execute("SELECT count(*) FROM tax_forms WHERE review_status='proposed'").fetchone()[0]
+            ibond_warnings = self.ibond_limits(db)
         totals = {}
         for account in accounts:
-            if account["current"] is None or account["archived_at"]:
-                continue
+            if account["current"] is None or account["archived_at"] or account["is_income"]:
+                continue  # A pension's value is the income it pays, not a balance.
             bucket = totals.setdefault(account["currency"], {"total": 0, "sections": {}, "tax": {}, "oldest": None, "estimated": 0})
             minor = account["current"]["value_minor"]
             bucket["estimated"] += account["current"]["source"] == "estimated"
@@ -382,6 +554,7 @@ class Investments:
             views.append({"currency": currency, "total": money(bucket["total"], currency), "oldest_as_of": bucket["oldest"], "estimated_accounts": bucket["estimated"],
                           "sections": split(bucket["sections"], SECTIONS), "tax": split(bucket["tax"], TAX_TREATMENTS)})
         return {"accounts": accounts, "totals": views, "sections": SECTIONS, "maturities": self.maturities(), "payroll_questions": questions,
+                "ibond_warnings": ibond_warnings,
                 "awaiting_review": sum(len(account["awaiting_review"]) for account in accounts if not account["archived_at"]) + confirmations}
 
     def get(self, account_id):
@@ -407,29 +580,33 @@ class Investments:
                 (*LINKABLE_TYPES, currency, account_id))]
             employers = [{"id": employer_id, "name": name} for employer_id, name, employer_currency, _ in self.payroll_employers(db, account["section"])
                          if employer_currency == currency]
+            has_ibonds = any(holding["instrument_class"] == "i_bond" for holding in holdings)
+            ibond_warnings = self.ibond_limits(db) if has_ibonds else []
         monthly = account["monthly_contribution_minor"]
         return {**account, "history": history, "holdings": holdings, "holdings_as_of": holdings_as_of, "events": events, "linkable_accounts": linkable,
                 "confirmations": confirmations, "payroll_employers": employers, "takes_payroll": account["section"] in PAYROLL_CATEGORIES,
-                "monthly_contribution": money(monthly, currency) if monthly is not None else None}
+                "monthly_contribution": money(monthly, currency) if monthly is not None else None,
+                "is_education": account["section"] == "education", "has_crypto": any(holding["instrument_class"] == "crypto" for holding in holdings),
+                "has_ibonds": has_ibonds, "ibond_warnings": ibond_warnings}
 
     def holdings(self, db, account_id, currency):
         """The holdings valued on the account's newest statement date, largest first, with their gain where a cost basis is printed;
         then CDs and Treasuries bought or entered since, valued from their terms (estimated)."""
         latest = self.latest_holdings_date(db, account_id)
-        views = []
+        views, rates = [], self.ibond_rates(db)
         if latest is not None:
-            rows = db.execute("SELECT h.*,v.value_minor,v.quantity,v.price_minor,v.cost_basis_minor,v.review_status FROM holdings h "
+            rows = db.execute("SELECT h.*,v.value_minor,v.quantity,v.price_minor,v.cost_basis_minor,v.review_status,v.source AS value_source FROM holdings h "
                               "JOIN investment_valuations v ON v.holding_id=h.id AND v.as_of=? AND v.review_status<>'rejected' "
                               "WHERE h.account_id=? AND h.archived_at IS NULL ORDER BY v.value_minor DESC,h.name", (latest, account_id)).fetchall()
             for row in rows:
                 gain = row["value_minor"] - row["cost_basis_minor"] if row["cost_basis_minor"] is not None else None
-                views.append(self.holding_view(row, currency, row["value_minor"], estimated=False, gain=gain))
+                views.append(self.holding_view(row, currency, row["value_minor"], estimated=False, gain=gain, rates=rates))
         listed = {view["id"] for view in views}
         for holding in self.term_holdings(db, account_id):
             if holding["id"] in listed:
                 continue
             views.append(self.holding_view(holding, currency, holding["value_on"](self.today), estimated=True,
-                                           status=holding["confirmation_status"] or "verified", matured=holding["matured"]))
+                                           status=holding["confirmation_status"] or "verified", matured=holding["matured"], rates=rates))
         return views, latest
 
     @staticmethod
@@ -446,13 +623,22 @@ class Investments:
             if held is not None and held == shares(found["open_shares"]) and not holding["estimated"]:
                 holding["lot_gain"] = money(holding["value_minor"] - found["open_cost_minor"], currency)
 
-    def holding_view(self, row, currency, value, estimated, gain=None, status=None, matured=False):
+    def holding_view(self, row, currency, value, estimated, gain=None, status=None, matured=False, rates=()):
         row = dict(row)
         row.pop("value_on", None)
+        ibond = self.ibond_terms(row, rates)
+        # An I bond's value at 30 years would rest on rates not yet published, so none is shown; what it pays if cashed today is.
         at_maturity = accrued(row["base_minor"], row["since"], row["maturity_date"], row["rate_bp"], row["face_minor"], row["maturity_date"]) \
-            if estimated and row["maturity_date"] else None
+            if estimated and row["maturity_date"] and not ibond else None
+        cash_out = ibond_cash_out(row["principal_minor"], row["issue_date"], self.today, rates) if ibond else None
+        if ibond:
+            composite = ibond_rate(rates, row["issue_date"][:7] + "-01")
+            current = ibond_rate(rates, add_months(row["issue_date"][:7] + "-01", min(ibond_months(row["issue_date"], self.today) // 6 * 6, IBOND_MONTHS - 6)))
+            row["rate_bp"] = ibond_composite_bp(composite["fixed_bp"], current["inflation_semiannual_bp"])  # The composite rate it earns now.
         show = lambda minor: money(minor, currency) if minor is not None else None
         return {**row, "class_label": INSTRUMENT_CLASSES.get(row["instrument_class"], row["instrument_class"].replace("_", " ").capitalize()),
+                "cash_out": show(cash_out), "penalty_until": add_months(row["issue_date"][:7] + "-01", IBOND_PENALTY_YEARS * 12) if ibond else None,
+                "value_source": row.get("value_source") or ("estimated" if estimated else "statement"),
                 "rate_percent": percent_text(row["rate_bp"]), "value": money(value, currency), "value_minor": value, "estimated": estimated,
                 "review_status": status or row.get("review_status"), "matured": matured, "rollover": bool(row["rollover"]),
                 "price": show(row.get("price_minor")), "cost_basis": show(row.get("cost_basis_minor")), "gain": show(gain),
@@ -630,7 +816,7 @@ class Investments:
         update = AccountUpdate(name=account["name"], kind=account["kind"], institution=account["institution"],
                                annual_rate_percent=None if account["rate_is_default"] else account["annual_rate_percent"],
                                tax_treatment=account["tax_treatment"] if account["tax_overridden"] else None, ledger_account_id=account["ledger_account_id"],
-                               payroll_employer_id=employer_id,
+                               payroll_employer_id=employer_id, beneficiary=account["beneficiary"], plan_state=account["plan_state"],
                                monthly_contribution=format_minor(account["monthly_contribution_minor"], account["currency"]) if account["monthly_contribution_minor"] is not None else None)
         return self.update(account_id, update)
 
@@ -666,17 +852,24 @@ class Investments:
             other = db.execute("SELECT name FROM investment_accounts WHERE ledger_account_id=? AND id IS NOT ?", (value.ledger_account_id, account_id)).fetchone()
             if other:
                 raise ValueError(f"That account is already linked to {other['name']}.")
+        # A 529's beneficiary and plan state; other accounts keep none.
+        education = section == "education"
+        beneficiary = " ".join((value.beneficiary or "").split()) or None if education else None
         return {"name": " ".join(value.name.split()), "kind": value.kind, "institution": " ".join(value.institution.split()),
                 "annual_rate_bp": rate_bp(value.annual_rate_percent) if value.annual_rate_percent is not None else None,
-                "tax_treatment": value.tax_treatment, "ledger_account_id": value.ledger_account_id, **payroll, "monthly_contribution_minor": monthly}
+                "tax_treatment": value.tax_treatment, "ledger_account_id": value.ledger_account_id, **payroll, "monthly_contribution_minor": monthly,
+                "beneficiary": beneficiary, "plan_state": value.plan_state.upper() if education and value.plan_state else None}
 
     def add(self, value: AccountInput):
         """An account the user adds, with its value today; the user's own values count at once."""
         currency = currency_code(value.currency)
         with self.store.connection() as db:
+            if not value.value and self.kind(db, value.kind)["value_model"] != "income":
+                raise ValueError("Enter the account's value and its date.")
             columns = {**self.settings(db, value, currency), "currency": currency, "source": "manual", "created_at": now(), "updated_at": now()}
             account_id = db.execute(f"INSERT INTO investment_accounts({','.join(columns)}) VALUES({','.join('?' * len(columns))})", tuple(columns.values())).lastrowid
-            self.write_value(db, account_id, currency, ValueInput(value=value.value, as_of=value.as_of))
+            if value.value and value.as_of:
+                self.write_value(db, account_id, currency, ValueInput(value=value.value, as_of=value.as_of))
             self.link_payroll(db)
         return self.get(account_id)
 
@@ -708,6 +901,52 @@ class Investments:
         else:
             db.execute("INSERT INTO investment_valuations(account_id,as_of,value_minor,source,review_status,created_at,updated_at) VALUES(?,?,?,'manual','verified',?,?)",
                        (account_id, value.as_of, amount, now(), now()))
+
+    def set_pension(self, account_id, value: PensionInput):
+        """A pension's terms (its benefit statement's monthly amount, start date, raise and survivor share). Counts at once."""
+        account = self.get(account_id)
+        if not account["is_income"]:
+            raise ValueError("Only a pension has a monthly benefit; change the account's kind to Pension first.")
+        currency = account["currency"]
+        benefit = to_minor(value.monthly_benefit, currency)
+        lump = to_minor(value.lump_sum, currency) if value.lump_sum else None
+        if benefit < 0 or (lump is not None and lump < 0):
+            raise ValueError("Enter amounts of zero or more.")
+        cola = rate_bp(value.cola_percent)
+        if cola > 2000:
+            raise ValueError("Enter a yearly raise of 20% or less.")
+        with self.store.connection() as db:
+            db.execute("INSERT INTO pension_terms(account_id,monthly_benefit_minor,start_date,cola_bp,survivor_pct,lump_sum_minor,updated_at) VALUES(?,?,?,?,?,?,?) "
+                       "ON CONFLICT(account_id) DO UPDATE SET monthly_benefit_minor=excluded.monthly_benefit_minor,start_date=excluded.start_date,"
+                       "cola_bp=excluded.cola_bp,survivor_pct=excluded.survivor_pct,lump_sum_minor=excluded.lump_sum_minor,updated_at=excluded.updated_at",
+                       (account_id, benefit, value.start_date, cola, value.survivor_percent, lump, now()))
+        return self.get(account_id)
+
+    def add_event(self, account_id, value: EventInput):
+        """Activity you record (a 529 withdrawal, a contribution): it counts at once, like a value you type."""
+        account = self.get(account_id)
+        amount = to_minor(value.amount, account["currency"])
+        if amount <= 0:
+            raise ValueError("Enter an amount more than zero.")
+        if value.event_type in ("qualified_withdrawal", "nonqualified_withdrawal") and not account["is_education"]:
+            raise ValueError("Only a 529 has qualified and non-qualified withdrawals.")
+        with self.store.connection() as db:
+            db.execute("INSERT INTO investment_events(account_id,event_date,event_type,contribution_source,amount_minor,note,review_status,created_at) "
+                       "VALUES(?,?,?,?,?,?,'verified',?)", (account_id, value.event_date, value.event_type,
+                                                            "personal" if value.event_type == "contribution" else None, amount, " ".join(value.note.split()), now()))
+        return self.get(account_id)
+
+    def classify_withdrawal(self, event_id, value: WithdrawalKind):
+        """Say whether a 529 withdrawal paid for qualified education costs. Only its kind changes; the amount stays as recorded."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT e.*,k.section FROM investment_events e JOIN investment_accounts a ON a.id=e.account_id "
+                             "JOIN investment_kinds k ON k.key=a.kind WHERE e.id=?", (event_id,)).fetchone()
+            if row is None:
+                raise ValueError("Activity not found.")
+            if row["section"] != "education" or row["event_type"] not in WITHDRAWAL_TYPES:
+                raise ValueError("Only a 529's withdrawals are qualified or not.")
+            db.execute("UPDATE investment_events SET event_type=? WHERE id=?", ("qualified_withdrawal" if value.qualified else "nonqualified_withdrawal", event_id))
+        return self.get(row["account_id"])
 
     def archive(self, account_id):
         self.get(account_id)
@@ -767,7 +1006,8 @@ class Investments:
                 # Re-extracting a statement the user already decided on, or a value they typed for that date, changes nothing.
                 if existing["source"] == "manual" or (existing["blob_hash"] == source["blob_hash"] and existing["review_status"] in ("verified", "rejected")):
                     return {**result, "id": existing["id"], "status": "kept_reviewed"}
-                db.execute(f"UPDATE investment_valuations SET {','.join(f'{column}=?' for column in values)},review_status='proposed' WHERE id=?",
+                # A market-price quote for the same date gives way to the statement.
+                db.execute(f"UPDATE investment_valuations SET {','.join(f'{column}=?' for column in values)},source='statement',review_status='proposed' WHERE id=?",
                            (*values.values(), existing["id"]))
                 valuation_id, status = existing["id"], "published"
             else:
@@ -785,7 +1025,7 @@ class Investments:
     def write_holdings(db, account_id, record, source, current):
         """The statement's holdings as of its date, replacing what an earlier reading of that date listed. Terms (rate,
         maturity) are updated only from the newest statement."""
-        db.execute("DELETE FROM investment_valuations WHERE account_id=? AND as_of=? AND holding_id IS NOT NULL AND source='statement'",
+        db.execute("DELETE FROM investment_valuations WHERE account_id=? AND as_of=? AND holding_id IS NOT NULL AND source IN ('statement','quote')",
                    (account_id, record["period_end"]))
         for holding in record.get("holdings") or []:
             terms = {"instrument_class": holding["instrument_class"], "name": holding["name"][:200], "identifier": holding.get("identifier"),
@@ -866,8 +1106,11 @@ class Investments:
         found = db.execute("SELECT id FROM holdings WHERE account_id=? AND holding_key=?", (account_id, key)).fetchone()
         terms = {}
         if trade["action"] in ("buy", "reinvest") and trade["instrument_class"] in TERM_CLASSES:
+            maturity = trade.get("maturity_date")
+            if not maturity and trade["instrument_class"] == "i_bond" and trade.get("issue_date"):
+                maturity = add_months(trade["issue_date"][:7] + "-01", IBOND_MONTHS)  # 30 years unless printed otherwise.
             terms = {"principal_minor": trade.get("principal_minor") or trade["amount_minor"], "rate_bp": trade.get("rate_bp"), "face_minor": trade.get("face_minor"),
-                     "issue_date": trade.get("issue_date"), "maturity_date": trade.get("maturity_date"), "redeemable_date": trade.get("redeemable_date")}
+                     "issue_date": trade.get("issue_date"), "maturity_date": maturity, "redeemable_date": trade.get("redeemable_date")}
         if found is None:
             columns = {"account_id": account_id, "holding_key": key, "instrument_class": trade["instrument_class"], "name": trade["name"][:200],
                        "identifier": trade.get("identifier"), "source": "confirmation", "confirmation_id": confirmation_id,
@@ -918,10 +1161,13 @@ class Investments:
         face = to_minor(value.face_value, currency) if value.face_value else None
         if principal <= 0 or (face is not None and face < principal):
             raise ValueError("Enter what was paid (more than zero), and a face value no smaller than it.")
-        redeemable = add_months(value.issue_date, 12) if value.instrument_class == "i_bond" else None
+        ibond = value.instrument_class == "i_bond"
+        redeemable = add_months(value.issue_date, 12) if ibond else None
+        # An I bond earns interest for 30 years unless its maturity is printed otherwise.
+        maturity = value.maturity_date or (add_months(value.issue_date[:7] + "-01", IBOND_MONTHS) if ibond else None)
         return {"instrument_class": value.instrument_class, "name": " ".join(value.name.split()), "principal_minor": principal, "face_minor": face,
                 "rate_bp": rate_bp(value.annual_rate_percent) if value.annual_rate_percent is not None else None, "issue_date": value.issue_date,
-                "maturity_date": value.maturity_date, "redeemable_date": redeemable, "rollover": int(value.rollover), "updated_at": now()}
+                "maturity_date": maturity, "redeemable_date": redeemable, "rollover": int(value.rollover), "updated_at": now()}
 
     def add_holding(self, account_id, value: HoldingInput):
         """A CD, Treasury or bond the user enters: it counts at once, estimated from its terms."""
@@ -1083,7 +1329,8 @@ class Investments:
         totals = {"interest": 0, "dividends": 0, "withdrawals": 0, "contributions": 0, "proceeds": 0, "cost": 0}
         for event in self.events(db, account):
             if event["review_status"] == "verified" and event["event_date"][:4] == str(year):
-                key = {"interest": "interest", "dividend": "dividends", "withdrawal": "withdrawals", "contribution": "contributions"}.get(event["event_type"])
+                key = "withdrawals" if event["event_type"] in WITHDRAWAL_TYPES else \
+                    {"interest": "interest", "dividend": "dividends", "contribution": "contributions"}.get(event["event_type"])
                 if key:
                     totals[key] += event["amount_minor"]
         sales = realized(db, [account["id"]], year)
@@ -1125,7 +1372,35 @@ class Investments:
                 if sales["proceeds_minor"] or sales["missing"]:
                     gains.append({"currency": currency, **{key: money(sales[f"{key}_minor"], currency) for key in ("proceeds", "cost", "short", "long")},
                                   "missing": [{**gap, "account": accounts[gap["account_id"]]["name"]} for gap in sales["missing"]]})
-        return {"year": int(year), "years": years, "forms": forms, "checks": checks, "gains": gains}
+            education = self.education_earnings(db, year)
+        return {"year": int(year), "years": years, "forms": forms, "checks": checks, "gains": gains, "education": education}
+
+    def education_earnings(self, db, year):
+        """Each 529's withdrawals in a tax year that weren't for qualified education costs, and the part of them that is earnings
+        (taxed as income, usually with a 10% additional tax). The earnings share is the account's confirmed 1099-Q box 2 (earnings)
+        over box 1 (gross distribution); without one it is unknown. Withdrawals not yet marked either way are listed so they can be."""
+        found = []
+        for account in self.rows(db, True):
+            if account["section"] != "education":
+                continue
+            taken = {row["event_type"]: row["total"] for row in db.execute(
+                "SELECT event_type,sum(amount_minor) AS total FROM investment_events WHERE account_id=? AND review_status='verified' "
+                f"AND substr(event_date,1,4)=? AND event_type IN ({','.join('?' * len(WITHDRAWAL_TYPES))}) GROUP BY event_type",
+                (account["id"], str(year), *WITHDRAWAL_TYPES))}
+            nonqualified, unmarked = taken.get("nonqualified_withdrawal", 0), taken.get("withdrawal", 0)
+            if not nonqualified and not unmarked:
+                continue
+            boxes = {row["box"]: row["total"] for row in db.execute(
+                "SELECT b.box,sum(b.amount_minor) AS total FROM tax_form_boxes b JOIN tax_forms f ON f.id=b.form_id WHERE f.account_id=? AND f.tax_year=? "
+                "AND f.review_status='verified' AND b.form='1099-Q' GROUP BY b.box", (account["id"], year))}
+            gross, earnings = boxes.get("1"), boxes.get("2")
+            taxable = int((Decimal(nonqualified) * earnings / gross).to_integral_value(ROUND_HALF_EVEN)) if gross and earnings is not None else None
+            currency = account["currency"]
+            found.append({"account_id": account["id"], "account": account["name"], "currency": currency, "beneficiary": account["beneficiary"],
+                          "nonqualified": money(nonqualified, currency), "unmarked": money(unmarked, currency) if unmarked else None,
+                          "earnings_share_percent": share_text(earnings, gross) if gross and earnings is not None else None,
+                          "taxable_earnings": money(taxable, currency) if taxable is not None else None, "taxable_earnings_minor": taxable})
+        return found
 
     # Required minimum distributions --------------------------------------------------------------------------------
     def required_distributions(self, year, birth_year):
@@ -1134,7 +1409,8 @@ class Investments:
         the amount, confirmed withdrawals already taken that year, what is left, and the deadline (April 1 of the next year for
         the first one). Without a birth year, or before distributions begin, it says so instead."""
         with self.store.connection() as db:
-            accounts = [account for account in self.rows(db) if account["tax_treatment"] in HAS_RMD]
+            # A pension pays its benefit instead; it has no balance to take a distribution from.
+            accounts = [account for account in self.rows(db) if account["tax_treatment"] in HAS_RMD and not account["is_income"]]
             result = {"year": year, "birth_year": birth_year, "accounts": [], "has_accounts": bool(accounts)}
             if not accounts or birth_year is None:
                 return result
@@ -1172,8 +1448,8 @@ class Investments:
         found = []
         with self.store.connection() as db:  # Read only: family members' copies are opened read-only.
             for account in self.rows(db):
-                if account["current"] is None:
-                    continue
+                if account["current"] is None or account["is_income"]:
+                    continue  # A pension joins as an income stream (forecast_pensions), never as a balance.
                 payroll = personal = 0
                 if months:
                     average = lambda total: int((Decimal(total) / months).to_integral_value(ROUND_HALF_EVEN))
@@ -1190,13 +1466,58 @@ class Investments:
                             terms.append({"name": holding["name"], "value_minor": holding["value_on"](self.today), "maturity_month": holding["maturity_date"][:7],
                                           "maturity_value_minor": holding["value_on"](holding["maturity_date"]), "to_cash": not holding["rollover"]})
                 found.append({"account_id": account["id"], "name": account["name"], "kind": account["kind"], "kind_label": account["kind_label"],
-                              "value_model": account["value_model"],
+                              "value_model": account["value_model"], "section": account["section"],
                               "value_minor": account["current"]["value_minor"], "value": account["current"]["value"], "currency": account["currency"],
                               "as_of": account["current"]["as_of"], "annual_rate_bp": account["rate_bp"], "annual_rate_percent": account["annual_rate_percent"],
                               "monthly_payment_minor": None, "monthly_payment": None, "review_status": "verified", "source": "investment", "terms": terms,
                               "tax_treatment": account["tax_treatment"],
                               "payroll_monthly_minor": payroll, "personal_monthly_minor": personal})
         return found
+
+    # Crypto exchange exports ----------------------------------------------------------------------------------------
+    def import_crypto(self, account_id, document_id, digest=None, preset="coinbase"):
+        """An exchange's transaction history (a CSV or XLSX in the library) as this account's buys, sells, transfers and rewards,
+        each in a holding matched by its symbol (BTC, ETH). A deterministic import counts at once, like a transaction import;
+        importing the same file again, or an overlapping one, adds nothing twice. Confirmed buys open tax lots (finance/tax_lots.py),
+        and the units held feed market prices when they are on (finance/prices.py)."""
+        account = self.get(account_id)
+        document, version = self.store.document_version(document_id, digest)
+        if document["deleted_at"]:
+            raise ValueError("Restore the document from Trash before importing it.")
+        suffix = extension(document["relative_path"])
+        if suffix not in (".csv", ".xlsx"):
+            raise ValueError("Exchange imports read CSV and XLSX documents.")
+        data = self.store.blob_path(version["hash"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != version["hash"]:
+            raise ValueError("Preserved evidence failed its integrity check. Nothing was imported.")
+        rows, issues = parse_crypto_export(data, suffix, account["currency"], preset)
+        added = duplicates = 0
+        with self.store.connection() as db:
+            for row in rows:
+                trade = {"identifier": row["asset"], "name": row["asset"]}
+                key = holding_key(trade)
+                found = db.execute("SELECT id FROM holdings WHERE account_id=? AND holding_key=?", (account_id, key)).fetchone()
+                holding_id = found["id"] if found else db.execute(
+                    "INSERT INTO holdings(account_id,instrument_class,name,identifier,holding_key,source,created_at,updated_at) VALUES(?,'crypto',?,?,?,'manual',?,?)",
+                    (account_id, row["asset"], row["asset"], key, now(), now())).lastrowid
+                if db.execute("SELECT 1 FROM investment_events WHERE account_id=? AND holding_id=? AND event_date=? AND event_type=? AND amount_minor=? "
+                              "AND quantity=? AND review_status<>'rejected'", (account_id, holding_id, row["date"], row["type"], row["amount_minor"], row["quantity"])).fetchone():
+                    duplicates += 1
+                    continue
+                db.execute("INSERT INTO investment_events(account_id,holding_id,event_date,event_type,amount_minor,quantity,document_id,blob_hash,note,review_status,created_at) "
+                           "VALUES(?,?,?,?,?,?,?,?,?,'verified',?)", (account_id, holding_id, row["date"], row["type"], row["amount_minor"], row["quantity"],
+                                                                      document_id, version["hash"], row["note"][:200], now()))
+                added += 1
+        return {"account_id": account_id, "added": added, "duplicates": duplicates, "issues": issues[:200], "preset": preset}
+
+    def forecast_pensions(self):
+        """Pensions with terms, shaped as the forecast's income streams (forecast.PensionIncome): the monthly benefit from its
+        start month, raised by its cost-of-living rate each January, and taxed as income when it is tax-deferred."""
+        with self.store.connection() as db:
+            return [{"label": account["name"], "currency": account["currency"], "monthly_amount": account["pension"]["monthly_benefit"]["decimal"],
+                     "start_month": account["pension"]["start_date"][:7], "cola_percent": account["pension"]["cola_percent"],
+                     "taxed": account["tax_treatment"] in HAS_RMD}
+                    for account in self.rows(db) if account["is_income"] and account["pension"]]
 
     def waiting_names(self):
         with self.store.connection() as db:

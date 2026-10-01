@@ -7,7 +7,7 @@ for model generation; organization is serialized by the managed library itself.
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -24,6 +24,7 @@ from ..core.logs import log_failure
 from ..core.money import currency_code, money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
 from ..documents.extraction import ExtractionService
+from ..documents.grouping import Groups
 from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
@@ -69,6 +70,7 @@ LEGACY_HOUSEHOLD = "household.json"
 FAMILY_READ_ONLY = "The family view is read-only. Switch to a member's profile to change records."
 PUBLISH_EVERY_SECONDS = 600  # A member's changed library is published to the family at most this often.
 FAMILY_TICKS = 20  # Inbox-monitor ticks (3 s each) between family checks.
+SOURCE_TICKS = 10  # Inbox-monitor ticks between looks at watched folders, which can be large.
 
 
 def default_control_dir() -> Path:
@@ -99,6 +101,7 @@ class Manager:
         self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
         self.tax_tables = self.tax_figures = None
         self.rate_fetch = https_get  # The ECB download; tests replace it.
+        self.price_fetch = https_get  # Crypto prices (finance/prices.py); tests replace it.
         self.restores = {}  # Restore outcomes for this process; a restore may run with no library open.
         self.shares = {}  # Share exports for this process.
         # A shared library opened for this process only: never saved to settings, deleted when it ends.
@@ -121,6 +124,10 @@ class Manager:
         self.limits = limits or ScanLimits()
         self.stop_monitor = threading.Event()
         self.inbox_seen = self.inbox_candidate = None
+        # Per watched folder, like inbox_seen and inbox_candidate; a folder not yet scanned by this process is rescanned once.
+        self.source_seen: dict[tuple[str, int], tuple] = {}
+        self.source_candidate: dict[tuple[str, int], tuple] = {}
+        self.source_ticks = 0
         try:
             active = self.profiles.active() or self.migrate_settings()
             if active:
@@ -198,6 +205,10 @@ class Manager:
     def watch_inbox(self):
         while not self.stop_monitor.wait(3):
             self.check_inbox()
+            self.source_ticks += 1
+            if self.source_ticks >= SOURCE_TICKS:
+                self.source_ticks = 0
+                self.check_sources()
             self.family_ticks += 1
             if self.family_ticks >= FAMILY_TICKS:
                 self.family_ticks = 0
@@ -228,6 +239,48 @@ class Manager:
                         self.start_inbox()
             except (OSError, ValueError, RuntimeError):
                 return
+
+    def source_snapshot(self, source):
+        """(relative path, size, mtime) of each supported file in a watched folder, bounded like a scan."""
+        root, snapshot, folders = safe_path(Path(source["path"])), [], [Path(source["path"])]
+        while folders and len(snapshot) < self.limits.max_entries:
+            with os.scandir(folders.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        if source["recursive"]:
+                            folders.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False) and extension(Path(entry.name)) in SUPPORTED:
+                        info = entry.stat(follow_symlinks=False)
+                        snapshot.append((Path(entry.path).relative_to(root).as_posix(), info.st_size, info.st_mtime_ns))
+        return tuple(sorted(snapshot))
+
+    def check_sources(self):
+        """Scan a watched folder when its files changed and then held still for one more look, and rescan each one
+        every rescan_hours (and once after the app starts) so a missed change is still found. One scan per call."""
+        with self.mutex:
+            if not self.store or self.busy("capture"):
+                return
+            stale = (datetime.now(timezone.utc) - timedelta(hours=self.household.rescan_hours)).isoformat()
+            for source in self.store.sources():
+                if not source["enabled"]:
+                    continue
+                key = (str(self.store.root), source["id"])
+                try:
+                    snapshot = self.source_snapshot(source)
+                except (OSError, ValueError):
+                    continue  # Unplugged or locked for now; the scan reports it when it runs.
+                due = key not in self.source_seen or not source["last_scan_at"] or source["last_scan_at"] < stale
+                if snapshot != self.source_candidate.get(key) and not due:
+                    self.source_candidate[key] = snapshot
+                    continue  # Two matching observations before scheduling capture.
+                self.source_candidate[key] = snapshot
+                if due or snapshot != self.source_seen.get(key):
+                    try:
+                        self.start_source(source["id"])
+                        self.source_seen[key] = snapshot
+                    except (OSError, ValueError, RuntimeError):
+                        pass  # Tried again on the next look.
+                    return
 
     # Settings ----------------------------------------------------------------
 
@@ -821,12 +874,45 @@ class Manager:
             self.future = self.pipeline(job)
             return job
 
-    def pipeline(self, job):
+    def sources(self):
+        with self.mutex:
+            return self.require(False).sources()
+
+    def add_source(self, path_value, label="", recursive=True):
+        """Watch a folder outside the library (Downloads, a scanner or phone-sync folder). It is scanned soon after."""
+        with self.mutex:
+            if self.session:
+                raise RuntimeError("You are viewing a shared library. End the session to watch folders for your own library.")
+            store = self.require(False)
+            path = separate_folder(path_value, self.control, (store.root,))
+            if not path.is_dir():
+                raise PathError("Choose an existing folder to watch.")
+            return store.add_source(path, label, recursive)
+
+    def update_source(self, source_id, **changes):
+        with self.mutex:
+            return self.require(False).update_source(source_id, **changes)
+
+    def remove_source(self, source_id):
+        with self.mutex:
+            self.require(False).remove_source(source_id)
+
+    def start_source(self, source_id):
+        """Scan one watched folder: new and changed files are copied into the library; the folder is never changed."""
+        with self.mutex:
+            store = self.require("capture", "Wait for the current scan before scanning a watched folder.")
+            source = store.source(source_id)
+            job = store.create_job(Path(source["path"]))
+            store.source_scanned(source_id, job)
+            self.future = self.pipeline(job, source)
+            return job
+
+    def pipeline(self, job, source=None):
         """Capture on the capture queue, then transcription on the inference queue."""
         done, follow = Future(), {}
 
         def capture(work):
-            if self.capture(job):
+            if self.capture(job, source):
                 follow["future"] = self.submit("inference", "transcription", "Text extraction for newly captured documents", self.process_scan, job)
 
         def settle(outer):
@@ -836,14 +922,22 @@ class Manager:
             else:
                 inner.add_done_callback(lambda future: _settle(future, done))
 
-        self.submit("capture", "capture", "Inbox capture", capture).add_done_callback(settle)
+        label = "Inbox capture" if source is None else "Watched folder capture: " + (source["label"] or Path(source["path"]).name)
+        self.submit("capture", "capture", label, capture).add_done_callback(settle)
         return done
 
-    def capture(self, job):
-        Scanner(self.store, self.limits).run(job)
+    def capture(self, job, source=None):
+        if source is None:
+            Scanner(self.store, self.limits).run(job)
+        else:
+            Scanner(self.store, self.limits).run(job, Path(source["path"]), bool(source["recursive"]))
         if self.store.job(job)["status"] not in ("completed", "partial"):
             self.store.organization_state(job, "not_started", "Capture did not complete. Preserved copies remain available.")
             return False
+        try:  # Images that look like pages of one document: suggested in Review, never combined on their own.
+            Groups(self.store).suggest(job)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            log_failure(log, "group suggestions", exc, job=job)
         if not {"captured", "duplicate", "new_version"} & set(self.store.job(job)["counts"]):
             # A rescan that found nothing new (the watcher sees files still waiting in Inbox) queues no model work.
             self.store.organization_state(job, "not_needed", "Nothing new was captured.")
@@ -864,23 +958,7 @@ class Manager:
             self.store.organization_state(job, "running", "Model processing in progress; results appear in the library.", batch)
             self.batches.run(batch, work)
             work.check()
-            failures = 0
-            if self.reasoning_config.model:
-                with self.store.connection() as db:
-                    items = list(db.execute("SELECT document_id,run_id FROM receipt_batch_items WHERE batch_id=?", (batch,)))
-                for item in items:
-                    work.check()
-                    if self.receipts.get(item["run_id"])["status"] not in ("succeeded", "partial"):
-                        continue
-                    try:
-                        extraction, created = self.extractions.enqueue(item["document_id"], item["run_id"], self.reasoning_config,
-                                                                       home_currency=self.household.home_currency, laya=self.laya.installed())
-                        (self.extract_and_file if created else self.file_extraction)(item["document_id"], extraction, work)
-                        if self.extractions.get(extraction)["status"] != "succeeded":
-                            failures += 1
-                    except (ValueError, OSError, RuntimeError):
-                        failures += 1
-                work.check()
+            failures = self.extract_batch(batch, work)
             state = "partial" if failures else self.batches.get(batch)["status"]
             self.store.organization_state(job, state, "Processing finished. Cited classification and extraction determine filing; unresolved documents remain available for review.", batch)
         except Cancelled:
@@ -888,6 +966,76 @@ class Manager:
         except Exception as exc:
             log_failure(log, "inbox processing", exc, job=job)
             self.store.organization_state(job, "failed", "Automatic text extraction failed. Captures are safe; use Extract text from all images to retry.")
+
+    def extract_batch(self, batch, work, force=False):
+        """Record each document a reading batch read, when a reasoning model is set. Returns how many failed.
+        force: record again even from an unchanged reading (after its images were combined or separated)."""
+        failures = 0
+        if not self.reasoning_config.model:
+            return failures
+        with self.store.connection() as db:
+            items = list(db.execute("SELECT document_id,run_id FROM receipt_batch_items WHERE batch_id=?", (batch,)))
+        for item in items:
+            work.check()
+            if self.receipts.get(item["run_id"])["status"] not in ("succeeded", "partial"):
+                continue
+            try:
+                extraction, created = self.extractions.enqueue(item["document_id"], item["run_id"], self.reasoning_config, force,
+                                                               home_currency=self.household.home_currency, laya=self.laya.installed())
+                (self.extract_and_file if created else self.file_extraction)(item["document_id"], extraction, work)
+                if self.extractions.get(extraction)["status"] != "succeeded":
+                    failures += 1
+            except (ValueError, OSError, RuntimeError):
+                failures += 1
+        work.check()
+        return failures
+
+    # Several images as one document ----------------------------------------------
+
+    def suggested_groups(self):
+        with self.mutex:
+            return Groups(self.require(False)).proposed()
+
+    def document_group(self, document_id):
+        with self.mutex:
+            return Groups(self.require(False)).of(document_id)
+
+    def combine_documents(self, document_ids):
+        """Make these images one document, pages in the order given, and read it."""
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before combining images.")
+            group_id = Groups(self.store).create(list(document_ids))
+            return self.read_group(group_id)
+
+    def change_group(self, group_id, status=None, document_ids=None):
+        """Confirm a suggestion, separate a combined document (dismissed) or put its pages in a new order; each reads again."""
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before changing a combined document.")
+            groups = Groups(self.store)
+            before = groups.get(group_id)["status"]
+            group = groups.reorder(group_id, document_ids) if document_ids else groups.set_status(group_id, status)
+            if group["status"] == "dismissed" and before == "proposed":
+                return group  # A suggestion said no to: nothing was read as one.
+            return self.read_group(group_id)
+
+    def read_group(self, group_id):
+        """Read and record what a group change affects. A combined document: its first page reads all pages, and the
+        later pages' own receipts stop counting. Separated images: each is read and recorded on its own again."""
+        group = Groups(self.store).get(group_id)
+        documents = [page["document_id"] for page in group["pages"]]
+        if group["status"] == "confirmed":
+            for page in group["pages"][1:]:
+                self.ledger.retire_segments(page["current_hash"], [], "This image is now a page of a combined document; it is recorded there.")
+            documents = documents[:1]
+        batch = self.batches.enqueue(self.vision, document_ids=documents)
+
+        def run(work):
+            self.batches.run(batch, work)
+            work.check()
+            self.extract_batch(batch, work, force=True)
+        label = "Reading a combined document" if group["status"] == "confirmed" else "Reading separated images"
+        self.future = self.submit("inference", "transcription", label, run)
+        return {**group, "batch_id": batch}
 
     # Library and model operations ----------------------------------------------
 
@@ -950,6 +1098,25 @@ class Manager:
                                       self.extract_and_file if created else self.file_extraction, document_id, run_id)
             return {"run_id": run_id, "reused": not created}
 
+    # Several receipts in one file ------------------------------------------------
+
+    def split(self, document_id):
+        with self.mutex:
+            self.require(False)
+            return self.extractions.split(document_id)
+
+    def confirm_split(self, document_id):
+        with self.mutex:
+            self.require(False)
+            return self.extractions.confirm_split(document_id)
+
+    def set_split(self, document_id, starts):
+        """Split the file where the user says each receipt starts, then record it again with that split."""
+        with self.mutex:
+            self.require("inference", "Model work is running. Wait for it or cancel it before changing how this file is split.")
+            parse_run_id = self.extractions.set_split(document_id, starts)
+            return self.start_extraction(document_id, parse_run_id, force=True)
+
     def extract_and_file(self, document_id, run_id, work):
         self.extractions.run(run_id, work)
         run = self.extractions.get(run_id)
@@ -957,8 +1124,10 @@ class Manager:
         if publication.get("status") == "published" or ((run["result"] or {}).get("payment_terms") or {}).get("proposed"):
             self.reconciler.run("extraction")
         self.file_extraction(document_id, run_id, work)
-        if publication.get("record_type") == "receipt" and publication.get("status") == "published":
-            self.identify_items(publication["id"], work)
+        # A file holding several receipts published one per segment; each has its own items.
+        for published in publication.get("segments") or [publication]:
+            if published.get("record_type") == "receipt" and published.get("status") == "published":
+                self.identify_items(published["id"], work)
         if publication.get("record_type") == "statement" and publication.get("status") == "published":
             self.scan_payees(work)
         if publication.get("record_type") == "income_record" and publication.get("status") == "published":
@@ -1040,10 +1209,21 @@ class Manager:
         return self.rate_status()
 
     def start_rate_refresh(self):
-        """At startup: refresh in the background when rates are on, foreign amounts exist and the cache is a day old. Failures
-        only leave totals partial, so they are logged, never raised."""
+        """At startup: refresh in the background when rates are on, foreign amounts exist and the cache is a day old; and crypto
+        prices when they are on, coins are held and none were fetched today. Failures only leave values older, so they are logged,
+        never raised."""
         store = self.store
-        if not store or not self.household.fetch_exchange_rates or not self.foreign_money(store) or not self.rates(store).due():
+        if not store:
+            return
+        if self.household.fetch_crypto_prices and self.prices(store).due():
+            def prices(work):
+                from ..finance.prices import PriceError
+                try:
+                    self.prices(store).refresh()
+                except PriceError as exc:
+                    log_failure(log, "crypto prices", exc)
+            self.submit("capture", "crypto_prices", "Fetching crypto prices", prices)
+        if not self.household.fetch_exchange_rates or not self.foreign_money(store) or not self.rates(store).due():
             return
 
         def run(work):
@@ -1053,6 +1233,21 @@ class Manager:
             except FxError as exc:
                 log_failure(log, "exchange rates", exc)
         self.submit("capture", "exchange_rates", "Downloading exchange rates", run)
+
+    def prices(self, store=None):
+        from ..finance.prices import CryptoPrices
+        return CryptoPrices(store or self.store, self.price_fetch, self.household.fetch_crypto_prices)
+
+    def price_status(self):
+        with self.mutex:
+            store = self.require(False)
+            return self.prices(store).status()
+
+    def refresh_prices(self):
+        """Fetch crypto prices now (the user's Refresh prices). The only outbound call for prices."""
+        with self.mutex:
+            store = self.require(False)
+        return self.prices(store).refresh()
 
     def build_cpa_pack(self, year):
         """The year-end CPA pack (finance/cpa_pack.py), from one snapshot of this profile's records."""

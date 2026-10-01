@@ -396,8 +396,8 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "note, bond or I bond bought) rather than a period's statement. "
             "paystub: a pay stub or earnings statement for one paycheck. employment_document: an offer letter, employment agreement, "
             "benefits enrollment, separation letter or W-2 wage and tax statement from an employer. investment_tax_form: a 1099-INT, "
-            "1099-DIV, 1099-B, 1099-R, 1099-SA, 5498 or 5498-SA from a bank, brokerage, retirement plan or HSA, including a consolidated "
-            "1099. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. ")
+            "1099-DIV, 1099-B, 1099-R, 1099-SA, 1099-Q, 1099-DA, 5498 or 5498-SA from a bank, brokerage, retirement plan, HSA, 529 plan or "
+            "crypto exchange, including a consolidated 1099. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. ")
 
 
 def chunks(lines, limit=LINES_PER_CALL):
@@ -426,6 +426,92 @@ def whole(lines, notes=None):
     if notes is not None and note not in notes:
         notes.append(note)
     return parts[0] + (parts[-1] if len(parts) > 1 else [])
+
+
+# Several receipts in one file (docs/document-parsing.md, "Several receipts in one file") ---------------------------
+
+SPLIT_NOTE = "This receipt was split from a file holding several; confirm the split on the document's page."
+# A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.
+TOTAL_LINE = re.compile(r"(?<![\w-])(grand\s+)?total(?!\s*(tax|savings?|saved|discounts?|items?|number|qty|quantity|units|points))\b", re.IGNORECASE)
+# What every receipt prints somewhere: what was owed or how it was paid. A part without one is not a receipt of its own.
+MONEY_LINE = re.compile(r"\b(total|balance|amount due|change|cash|visa|mastercard|amex|discover|debit|credit|paid|payment)\b", re.IGNORECASE)
+SEGMENT = ("These lines are a transcription that may hold several separate receipts one after another (receipts scanned or photographed "
+           "together, or the pages of one file). List the first line of each separate receipt that begins in these lines, usually its "
+           "store name or header, citing that line's id and an exact quote. A receipt that continues from earlier lines or onto the next "
+           "page is still one receipt: never list a line that continues one. Return an empty list when no receipt begins in these lines. ")
+
+
+class ReceiptStarts(StrictModel):
+    starts: list[EvidenceQuote] = Field(max_length=100)
+
+
+SCHEMA_FIELDS |= set(ReceiptStarts.model_fields)
+
+
+def looks_like_several(lines):
+    """More than one receipt total: the only text cue that a file may hold several receipts."""
+    return sum(1 for line in lines if TOTAL_LINE.search(line.text) and re.search(r"\d", line.text)) > 1
+
+
+def units(evidence):
+    """{line id: (page, piece of paper)} for a transcription read in parts: PDF pages, and the regions of an image or page."""
+    found = {}
+    pages = getattr(evidence, "pages", None)
+    for page in pages if pages is not None else [SimpleNamespace(number=1, lines=evidence.lines, regions=getattr(evidence, "regions", []))]:
+        region, ranges = 0, [(r.number, r.first_line, r.last_line) for r in page.regions if r.first_line]
+        for line in page.lines:
+            for number, first, _ in ranges:
+                if line.id == first:
+                    region = number
+            found[line.id] = (page.number, region)
+    return found
+
+
+def unit_breaks(evidence, lines):
+    """Indexes in lines (the non-blank ones) where a new page or piece of paper begins."""
+    unit = units(evidence)
+    return [index for index in range(1, len(lines)) if unit.get(lines[index].id) != unit.get(lines[index - 1].id)]
+
+
+def merge_parts(parts, lines):
+    """A part without a total, payment or balance line joins its neighbour: a heading joins the receipt after it,
+    and anything else (a receipt's second page) joins the receipt before it."""
+    merged = []
+    for first, last in parts:
+        has_money = any(MONEY_LINE.search(line.text) for line in lines[first:last])
+        if merged and (not has_money or not merged[-1][2]):
+            merged[-1] = (merged[-1][0], last, merged[-1][2] or has_money)
+        else:
+            merged.append((first, last, has_money))
+    return [(first, last) for first, last, _ in merged]
+
+
+def user_ranges(saved, lines):
+    """The user's split as index ranges, when its lines still exist and cover the text in order; None otherwise."""
+    index = {line.id: position for position, line in enumerate(lines)}
+    ranges = [(index.get(row["first_line_id"]), index.get(row["last_line_id"])) for row in saved]
+    if not ranges or any(first is None or last is None or first > last for first, last in ranges) or ranges[0][0] != 0 \
+            or ranges[-1][1] != len(lines) - 1 or any(ranges[i][1] + 1 != ranges[i + 1][0] for i in range(len(ranges) - 1)):
+        return None
+    return [(first, last + 1) for first, last in ranges]
+
+
+def codes_within(evidence, lines):
+    """Decoded QR codes and barcodes that belong with these lines: all of them, or for one piece of paper of a
+    scan holding several, those printed on it."""
+    codes = [code for code in getattr(evidence, "codes", []) if code.valid and code.text.strip()]
+    regions = getattr(evidence, "regions", [])
+    if not regions or len(lines) == len([line for line in evidence.lines if line.text.strip()]):
+        return codes
+    unit, mine = units(evidence), {line.id for line in lines}
+    numbers = {unit[line_id][1] for line_id in mine if line_id in unit}
+    boxes = [region.bbox for region in regions if region.number in numbers]
+
+    def inside(code):
+        x = sum(point[0] for point in code.polygon) / 4
+        y = sum(point[1] for point in code.polygon) / 4
+        return any(left <= x <= right and top <= y <= bottom for left, top, right, bottom in boxes)
+    return [code for code in codes if inside(code)]
 
 
 def line_amount(quote):
@@ -992,10 +1078,11 @@ class ExtractionService:
         with self.store.connection() as db:
             return [dict(row) for row in db.execute("SELECT id,status,document_type,created_at,error FROM extraction_runs WHERE parse_run_id=? ORDER BY created_at DESC", (parse_run_id,))]
 
-    def extract(self, config, work, lines, notes):
-        """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk."""
+    def extract(self, config, work, lines, notes, classification=None):
+        """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
+        classification: already asked of these same lines."""
         summary_lines = whole(lines, notes)
-        classification = ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes)
+        classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes)
         kind = classification.document_type
         if kind not in HEADERS:
             return classification, None, [], None
@@ -1190,7 +1277,7 @@ class ExtractionService:
         return None, None
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, laya=None, identity=None,
-                category=None, recurrence=None, item_categories=None, rewards=None):
+                category=None, recurrence=None, item_categories=None, rewards=None, segment=0):
         record_notes = []
         name_field = IDENTITY[kind][0]
         if getattr(header, name_field).status != "proposed" and classification.issuer.status == "proposed":
@@ -1219,7 +1306,7 @@ class ExtractionService:
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
         source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
-                  "source_key": "extraction:" + run["id"], "run_id": run["id"]}
+                  "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment}
         if currency is None:
             return record, {"status": "blocked", "reason": "Currency could not be resolved, so nothing was published. Check the currency in the document text and your home currency in Settings, then extract again."}
         if kind in ("bank_statement", "credit_card_statement") and not record["institution"]:
@@ -1265,46 +1352,42 @@ class ExtractionService:
             lines = [line for line in evidence.lines if line.text.strip()]
             with work.attribute("extraction", run_id, EXTRACTION_VERSION, identity):
                 notes = []
-                classification, header, rows, identity = self.extract(config, work, lines, notes)
-                description = category = recurrence = item_categories = rewards = None
-                if classification.document_type == "receipt" and header is not None and rows:
-                    # The seller the record will carry: the seller answer or header, else the classifier's issuer.
-                    merchant = next((field.value for field in (header.merchant, classification.issuer) if field.status == "proposed"), None)
-                    description, category, recurrence, item_categories = self.describe_purchase(config, work, lines, rows, merchant, (identity or {}).get("location"))
-                if classification.document_type == "receipt" and header is not None:
-                    # Rewards and offers sit at the bottom or in a QR code: the whole receipt plus each decoded code, citable by its id.
-                    codes = [SimpleNamespace(id=code.id, text=" ".join(code.text.split())[:CODE_TEXT]) for code in getattr(evidence, "codes", []) if code.valid and code.text.strip()]
-                    work.check()
-                    rewards = self.rewards(config, work, lines + codes)
-                terms, term_notes = [], []
-                if classification.document_type in TERM_KINDS:
-                    terms = self.payment_terms(config, work, classification.document_type, lines, term_notes)
+                classification = ask(config, work, Classification, CLASSIFY, whole(lines, notes), 1024, notes=notes)
+                # A file holding several receipts is read one receipt at a time; anything else stays one document.
+                parts, split_notes = [(0, len(lines))], []
+                if classification.document_type == "receipt":
+                    parts = self.segments(config, work, run, parse, evidence, lines, split_notes)
+                # Every part is classified before any is read, so a file that is not all receipts costs no further questions.
+                kinds = []
+                for first, last in parts if len(parts) > 1 else []:
+                    part_notes = []
+                    kind = ask(config, work, Classification, CLASSIFY, whole(lines[first:last], part_notes), 1024, notes=part_notes)
+                    if kind.document_type != "receipt":
+                        split_notes.append("A part of this file is not a receipt, so the file was read as one document.")
+                        parts, kinds = [(0, len(lines))], []
+                        break
+                    kinds.append((kind, part_notes))
+                readings = [self.read(config, work, run_id, evidence, lines[first:last], use_laya, part_notes, kind)
+                            for (first, last), (kind, part_notes) in zip(parts, kinds)]
+                if not readings:
+                    readings = [self.read(config, work, run_id, evidence, lines, use_laya, notes, classification)]
             work.check()  # Cancellation always wins: never publish after a cancel request.
-            result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
-                      "rows": [row.model_dump() for row in rows], "description": description, "category": category, "recurrence": recurrence,
-                      "item_categories": item_categories, "rewards": rewards,
-                      "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
-                      "normalized": None, "notes": notes}
-            if classification.document_type in TERM_KINDS:
-                records = self.term_records(classification.document_type, terms, lines, home_currency, term_notes)
-                # Proposals only: each waits in Review, and a payee with a bill already gets none.
-                proposed = Reconciler(self.store).propose_terms(records, {"document_id": run["document_id"]})
-                result["payment_terms"] = {"terms": [term.model_dump() for term in terms], "records": records, "proposed": proposed, "notes": term_notes}
-            if use_laya and self.laya:
-                try:
-                    with work.attribute("laya_assessment", run_id, LAYA_REVISION[:12]):
-                        result["laya"] = self.assess(classification, header, rows, lines, work)
-                except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
-                    result["laya"] = {"advisory": True, "error": str(exc)[:300]}
-                work.check()
-            publication = None
-            if header is not None:
-                result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
-                                                                 classification, description, result.get("laya"), identity, category, recurrence,
-                                                                 item_categories, rewards)
+            confirmed = self.split_confirmed(run, parse, lines, parts)  # Also true for the user's own choice of one receipt.
+            outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
+                        for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
+            result, publication = outcomes[0]
+            if len(parts) > 1:
+                bounds = [{"ordinal": ordinal, "first_line": lines[first].id, "last_line": lines[last - 1].id} for ordinal, (first, last) in enumerate(parts)]
+                result = {**result, "segments": [{**bound, **outcome[0]} for bound, outcome in zip(bounds, outcomes)], "split_notes": split_notes}
+                publication = {**(publication or {}), "segments": [{**bound, **(outcome[1] or {})} for bound, outcome in zip(bounds, outcomes)],
+                               "split_confirmed": confirmed}
+            elif split_notes:
+                result["split_notes"] = split_notes
+            self.save_segments(run, parse, lines, parts, confirmed)
+            self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='succeeded',document_type=?,result_json=?,publication_json=?,error=NULL,updated_at=? WHERE id=?",
-                           (classification.document_type, json.dumps(result), json.dumps(publication), now(), run_id))
+                           (result["classification"]["document_type"], json.dumps(result), json.dumps(publication), now(), run_id))
         except Cancelled as exc:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='cancelled',error=?,updated_at=? WHERE id=?", (str(exc), now(), run_id))
@@ -1313,6 +1396,178 @@ class ExtractionService:
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, ValidationError) else "Extraction failed; nothing was published."
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='failed',error=?,updated_at=? WHERE id=?", (message[:1200], now(), run_id))
+
+    def read(self, config, work, run_id, evidence, lines, use_laya, notes, classification=None):
+        """Every model question for one document, or one receipt of a file holding several; nothing is published here."""
+        classification, header, rows, identity = self.extract(config, work, lines, notes, classification)
+        description = category = recurrence = item_categories = rewards = laya = None
+        if classification.document_type == "receipt" and header is not None and rows:
+            # The seller the record will carry: the seller answer or header, else the classifier's issuer.
+            merchant = next((field.value for field in (header.merchant, classification.issuer) if field.status == "proposed"), None)
+            description, category, recurrence, item_categories = self.describe_purchase(config, work, lines, rows, merchant, (identity or {}).get("location"))
+        if classification.document_type == "receipt" and header is not None:
+            # Rewards and offers sit at the bottom or in a QR code: the whole receipt plus each decoded code, citable by its id.
+            codes = [SimpleNamespace(id=code.id, text=" ".join(code.text.split())[:CODE_TEXT]) for code in codes_within(evidence, lines)]
+            work.check()
+            rewards = self.rewards(config, work, lines + codes)
+        terms, term_notes = [], []
+        if classification.document_type in TERM_KINDS:
+            terms = self.payment_terms(config, work, classification.document_type, lines, term_notes)
+        if use_laya and self.laya:
+            try:
+                with work.attribute("laya_assessment", run_id, LAYA_REVISION[:12]):
+                    laya = self.assess(classification, header, rows, lines, work)
+            except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
+                laya = {"advisory": True, "error": str(exc)[:300]}
+            work.check()
+        return {"classification": classification, "header": header, "rows": rows, "identity": identity, "description": description,
+                "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
+                "terms": terms, "term_notes": term_notes, "laya": laya, "notes": notes}
+
+    def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
+        """(result, publication) for one reading: its saved result, and the record published from it."""
+        classification, header, rows, identity = reading["classification"], reading["header"], reading["rows"], reading["identity"]
+        notes = reading["notes"] + ([SPLIT_NOTE] if split else [])
+        result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
+                  "rows": [row.model_dump() for row in rows], "description": reading["description"], "category": reading["category"],
+                  "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
+                  "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
+                  "normalized": None, "notes": notes}
+        if classification.document_type in TERM_KINDS:
+            records = self.term_records(classification.document_type, reading["terms"], lines, home_currency, reading["term_notes"])
+            # Proposals only: each waits in Review, and a payee with a bill already gets none.
+            proposed = Reconciler(self.store).propose_terms(records, {"document_id": run["document_id"]})
+            result["payment_terms"] = {"terms": [term.model_dump() for term in reading["terms"]], "records": records, "proposed": proposed,
+                                       "notes": reading["term_notes"]}
+        if reading["laya"] is not None:
+            result["laya"] = reading["laya"]
+        publication = None
+        if header is not None:
+            result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
+                                                             classification, reading["description"], reading["laya"], identity, reading["category"],
+                                                             reading["recurrence"], reading["item_categories"], reading["rewards"], segment)
+        return result, publication
+
+    # Several receipts in one file ------------------------------------------------
+
+    def segments(self, config, work, run, parse, evidence, lines, notes):
+        """[(first, last)] index ranges of lines, one per receipt, in order; [(0, len(lines))] for one receipt.
+        Ranges the user set win. Otherwise a model question finds where each receipt starts, but only when the file
+        looks like it holds several (more than one page or piece of paper, total line or date): a single receipt costs
+        nothing extra. Page and paper breaks are the fallback when that answer is unusable."""
+        everything = [(0, len(lines))]
+        saved = self.saved_segments(run, parse, source="user")
+        if saved:
+            ranges = user_ranges(saved, lines)
+            if ranges:
+                return ranges  # The user's split, even as one receipt.
+            notes.append("How you split this file no longer matches its text, so it was split again.")
+        breaks = unit_breaks(evidence, lines)
+        if not breaks and not looks_like_several(lines):
+            return everything
+        starts = self.receipt_starts(config, work, lines, notes)
+        if starts is None:
+            starts = set(breaks)
+            notes.append("Where each receipt starts could not be read, so the file was split at its pages and pieces of paper.")
+        # A start a line or two from a page or paper break is that break.
+        starts = {next((point for point in breaks if abs(point - start) <= 2), start) for start in starts}
+        bounds = sorted({0, *(start for start in starts if 0 < start < len(lines))})
+        parts = merge_parts(list(zip(bounds, bounds[1:] + [len(lines)])), lines)
+        return parts if len(parts) > 1 else everything
+
+    def receipt_starts(self, config, work, lines, notes):
+        """Indexes of lines where a new receipt begins, asked chunk by chunk; None when an answer is unusable."""
+        index = {line.id: position for position, line in enumerate(lines)}
+        starts = set()
+        try:
+            for part in chunks(lines):
+                work.check()
+                answer = ask(config, work, ReceiptStarts, SEGMENT, part, 1024, notes=notes)
+                for cite in answer.starts:
+                    if cite.line_id not in index or not cite.quote.strip() or cite.quote not in lines[index[cite.line_id]].text:
+                        return None
+                    starts.add(index[cite.line_id])
+        except ValueError:
+            return None
+        return starts
+
+    def split(self, document_id):
+        """How the document's current version is split into receipts: each part's lines and its receipt. Empty for a
+        file read as one document."""
+        doc = self.store.document(document_id)
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT s.ordinal,s.first_line_id,s.last_line_id,s.status,s.source,r.id AS receipt_id,r.review_status,r.total_minor,r.currency,"
+                "r.purchase_date,m.canonical_name AS merchant FROM document_segments s LEFT JOIN receipts r ON r.blob_hash=s.blob_hash AND r.segment=s.ordinal "
+                "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE s.document_id=? AND s.blob_hash=? ORDER BY s.ordinal", (document_id, doc["current_hash"]))]
+        for row in rows:
+            row["display"] = {"total_minor": format_minor(row["total_minor"], row["currency"])} if row["total_minor"] is not None else {}
+        return {"segments": rows, "confirmed": bool(rows) and all(row["status"] == "confirmed" for row in rows)}
+
+    def confirm_split(self, document_id):
+        """The user agrees with how the file was split: each receipt drops its split note and is judged by its own checks."""
+        doc = self.store.document(document_id)
+        with self.store.connection() as db:
+            if not db.execute("UPDATE document_segments SET status='confirmed',updated_at=? WHERE document_id=? AND blob_hash=?",
+                              (now(), document_id, doc["current_hash"])).rowcount:
+                raise ValueError("This document is not split into several receipts.")
+            for row in db.execute("SELECT id,review_status,review_source,validation_json FROM receipts WHERE blob_hash=? AND review_status<>'rejected'",
+                                  (doc["current_hash"],)).fetchall():
+                issues = [issue for issue in json.loads(row["validation_json"]) if issue != SPLIT_NOTE]
+                if row["review_source"] == "user":
+                    db.execute("UPDATE receipts SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
+                else:  # Exception-based review again: it counts on its own only when every other check passed.
+                    status = "needs_review" if issues else "verified"
+                    db.execute("UPDATE receipts SET validation_json=?,review_status=?,review_source=?,updated_at=? WHERE id=?",
+                               (json.dumps(issues), status, "automatic" if status == "verified" else None, now(), row["id"]))
+        return self.split(document_id)
+
+    def set_split(self, document_id, starts):
+        """The user's own split: starts are the line ids where each receipt begins (one start: the file is one receipt).
+        Returns the reading to extract again; the new split is used and counts as confirmed."""
+        doc = self.store.document(document_id)
+        with self.store.connection() as db:
+            row = db.execute("SELECT e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
+                             "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (document_id, doc["current_hash"])).fetchone()
+        if row is None:
+            raise ValueError("Record this document once before changing how it is split.")
+        lines = [line for line in read_result(self.receipts.get(row["parse_run_id"])["result"]).lines if line.text.strip()]
+        index = {line.id: position for position, line in enumerate(lines)}
+        if not starts or any(start not in index for start in starts) or len(starts) > 200:
+            raise ValueError("Choose where each receipt starts from the document's own lines.")
+        bounds = sorted({0, *(index[start] for start in starts)})
+        parts = list(zip(bounds, bounds[1:] + [len(lines)]))
+        with self.store.connection() as db:
+            db.execute("DELETE FROM document_segments WHERE document_id=? AND blob_hash=?", (document_id, doc["current_hash"]))
+            db.executemany("INSERT INTO document_segments(document_id,blob_hash,ordinal,first_line_id,last_line_id,status,source,created_at,updated_at) "
+                           "VALUES(?,?,?,?,?,'confirmed','user',?,?)",
+                           [(document_id, doc["current_hash"], ordinal, lines[first].id, lines[last - 1].id, now(), now())
+                            for ordinal, (first, last) in enumerate(parts)])
+        return row["parse_run_id"]
+
+    def saved_segments(self, run, parse, source=None):
+        with self.store.connection() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM document_segments WHERE document_id=? AND blob_hash=?" + (" AND source=?" if source else "")
+                                                    + " ORDER BY ordinal", (run["document_id"], parse["blob_hash"], *([source] if source else [])))]
+
+    def split_confirmed(self, run, parse, lines, parts):
+        """The user confirmed (or made) exactly this split before."""
+        saved = self.saved_segments(run, parse)
+        return len(saved) == len(parts) and all(row["status"] == "confirmed" and row["first_line_id"] == lines[first].id and row["last_line_id"] == lines[last - 1].id
+                                                for row, (first, last) in zip(saved, parts))
+
+    def save_segments(self, run, parse, lines, parts, confirmed):
+        """Where each receipt of a split file sits. A file read as one document keeps none."""
+        with self.store.connection() as db:
+            if confirmed and db.execute("SELECT 1 FROM document_segments WHERE document_id=? AND blob_hash=? AND source='user'",
+                                        (run["document_id"], parse["blob_hash"])).fetchone():
+                return  # Exactly the user's split was used.
+            db.execute("DELETE FROM document_segments WHERE document_id=? AND blob_hash=?", (run["document_id"], parse["blob_hash"]))
+            if len(parts) > 1:  # One model part is no split; the user's one part was kept above.
+                db.executemany("INSERT INTO document_segments(document_id,blob_hash,ordinal,first_line_id,last_line_id,status,source,extraction_run_id,created_at,updated_at) "
+                               "VALUES(?,?,?,?,?,?,'model',?,?,?)",
+                               [(run["document_id"], parse["blob_hash"], ordinal, lines[first].id, lines[last - 1].id, "confirmed" if confirmed else "proposed",
+                                 run["id"], now(), now()) for ordinal, (first, last) in enumerate(parts)])
 
     def filing_identity(self, run):
         """(document_type, merchant, date, document name) for managed filing, from cited values only. For a job

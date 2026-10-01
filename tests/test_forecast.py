@@ -81,6 +81,52 @@ def test_adjustments_one_offs_income_changes_and_warnings():
         ForecastInput(inflation_percent="two")
 
 
+def invested(name, value_minor, tax="taxable", section="market", account_id=None):
+    return {**asset("brokerage", value_minor, name=name), "source": "investment", "tax_treatment": tax, "section": section, "account_id": account_id}
+
+
+def test_a_pension_pays_from_its_start_with_a_cola_each_january():
+    pension = {"label": "State pension", "monthly_amount": "1000.00", "start_month": "2027-03", "cola_percent": "3", "taxed": True}
+    retire = {"start_month": "2026-10", "mode": "fixed", "monthly_amount": "0.01", "tax_percent": "20"}
+    result = project(base(pensions=[pension]), ForecastInput(years=3, inflation_percent="0", retirement=retire), TODAY)
+    months = {row["month"]: row for row in result["months"]}
+    assert months["2027-02"]["pension"] == 0 and (months["2027-03"]["pension"], months["2027-03"]["pension_tax"]) == (100000, 20000)
+    assert months["2027-12"]["pension"] == 100000 and months["2028-01"]["pension"] == 103000 and months["2029-01"]["pension"] == 106090
+    assert months["2027-03"]["net_cash_flow"] - months["2027-02"]["net_cash_flow"] == 80000  # After its 20% tax.
+    assert any("State pension: a pension of 1,000.00 USD a month from 2027-03, raised 3% each January, taxed at 20%." == note for note in result["notes"])
+    # Without a retirement plan there is no tax rate, so the pension is paid in full; a What If can add one of its own.
+    untaxed = project(base(), ForecastInput(years=1, inflation_percent="0", pensions=[{**pension, "start_month": "2026-10", "taxed": False}]), TODAY)
+    assert untaxed["months"][0]["pension"] == 100000 and untaxed["months"][0]["pension_tax"] == 0
+    assert untaxed["years"][0]["pension"] == 3 * 100000 + 9 * 103000  # Oct to Dec, then raised from January.
+
+
+def test_a_529_is_never_drawn_for_living_costs_and_pays_education():
+    assets = [invested("Brokerage", 1_000_000), invested("529", 2_000_000, tax="tax_free", section="education", account_id=9)]
+    retire = {"start_month": "2026-10", "mode": "fixed", "monthly_amount": "2000"}
+    result = project(base(cash=0, monthly_income=Decimal(0), monthly_spending={}, assets=assets),
+                     ForecastInput(years=1, inflation_percent="0", retirement=retire, education_withdrawals=[{"month": "2027-01", "amount": "5000", "account_id": 9}]),
+                     TODAY)
+    months = {row["month"]: row for row in result["months"]}
+    # The brokerage pays $2,000 a month for five months, then runs out; the 529 is never touched for it.
+    assert months["2027-02"]["withdrawals"] == 200000 and months["2027-03"]["withdrawals"] == 0
+    assert any("Investments run out in 2027-03" in note for note in result["notes"])
+    assert (months["2027-01"]["education"], months["2027-01"]["education_from_529"]) == (500000, 500000)
+    assert months["2027-01"]["net_cash_flow"] == months["2026-12"]["net_cash_flow"]  # Paid from the 529, not cash.
+    assert months["2027-09"]["assets"] == 1_500_000
+    # More than the 529 holds: the rest comes from cash.
+    short = project(base(assets=[invested("529", 100_000, tax="tax_free", section="education")]),
+                    ForecastInput(years=1, inflation_percent="0", education_withdrawals=[{"month": "2026-11", "amount": "3000"}]), TODAY)
+    november = short["months"][1]
+    assert (november["education"], november["education_from_529"]) == (300000, 100000)
+    assert any("The 529 runs short in 2026-11" in note for note in short["notes"])
+
+
+def test_no_pensions_or_education_leave_the_forecast_as_it_was():
+    plain = project(base(assets=[invested("Brokerage", 1_000_000)]), ForecastInput(years=2), TODAY)
+    assert all(row["pension"] == row["education"] == 0 for row in plain["months"])
+    assert plain["months"][-1]["cash"] == project(base(assets=[invested("Brokerage", 1_000_000)], pensions=[]), ForecastInput(years=2), TODAY)["months"][-1]["cash"]
+
+
 @pytest.fixture
 def books(tmp_path):
     store = Store(tmp_path / "managed")
