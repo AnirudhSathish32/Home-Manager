@@ -15,12 +15,16 @@ import json
 
 from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS, RECURRING_KINDS, suggested_kind
 from ..library.storage import now
+from .fx import REPORTING, EcbRates, FxError
 from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction, name_tokens, normalize_name
 
 RECEIPT_POSTING_DAYS, TRANSFER_DAYS, REFUND_DAYS = 5, 5, 120
 # A charge up to 30% above a receipt's total (a tip added after printing, a currency conversion)
 # from the same merchant is never linked automatically; the user is asked instead.
 NEAR_PERCENT = 130
+# A foreign receipt and a USD card charge: the charge may sit 3% under the ECB reference estimate (a better
+# network rate) or 6% over it (card foreign-transaction fees). Always asked, never linked automatically.
+CROSS_RANGE = (97, 106)
 TRANSFERISH = ("transfer", "payment")
 CADENCES = {"weekly": (6, 8), "monthly": (26, 35), "quarterly": (85, 95), "annual": (360, 370)}
 # Charges in these categories propose a recurring bill after a single payment.
@@ -90,8 +94,12 @@ def bill_payments(db, bill, start=None, end=None):
 # required equal currencies and, except for a user's choice of a near match, equal amounts.
 
 def receipt_match(receipt, transaction):
-    exact = -transaction["amount_minor"] == receipt["total_minor"]
-    points, signals = (60, ["amount"]) if exact else (30, ["near_amount"])
+    if transaction["currency"] != receipt["currency"]:
+        points, signals = 30, ["cross_currency"]
+    elif -transaction["amount_minor"] == receipt["total_minor"]:
+        points, signals = 60, ["amount"]
+    else:
+        points, signals = 30, ["near_amount"]
     lag = gap(transaction["transaction_date"] or transaction["posted_date"], receipt["purchase_date"])
     if lag == 0:
         points, signals = points + 20, signals + ["same_day"]
@@ -115,7 +123,7 @@ def refund_match(purchase, credit):
 
 class Reconciler:
     def __init__(self, store):
-        self.store, self.ledger = store, Ledger(store)
+        self.store, self.ledger, self.rates = store, Ledger(store), EcbRates(store)
 
     def recover(self):
         with self.store.connection() as db:
@@ -199,7 +207,7 @@ class Reconciler:
             if db.execute("SELECT 1 FROM transaction_receipt_links WHERE transaction_id=? AND receipt_id<>? AND review_status<>'rejected'", (chosen["id"], record_id)).fetchone():
                 raise ValueError("That transaction is already matched to another receipt.")
             points, method = receipt_match(receipt, chosen)
-            self.link_receipt(db, receipt, chosen, points, method + "+user_choice", "verified")
+            self.link_receipt(db, receipt, chosen, points, method + "+user_choice", "verified", self.estimate(db, receipt, chosen["currency"]))
             return
         if kind == "investment":
             if db.execute("SELECT 1 FROM investment_events WHERE transaction_id=? AND id<>?", (chosen["id"], record_id)).fetchone():
@@ -224,10 +232,23 @@ class Reconciler:
     def _conflict(status):
         return "DO NOTHING" if status == "proposed" else "DO UPDATE SET review_status=excluded.review_status,match_score=excluded.match_score,match_method=excluded.match_method,updated_at=excluded.updated_at"
 
-    def link_receipt(self, db, receipt, transaction, points, method, status="proposed"):
-        db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,created_at,updated_at) "
-                   f"VALUES(?,?,?,?,?,?,?) ON CONFLICT(transaction_id,receipt_id) {self._conflict(status)}",
-                   (transaction["id"], receipt["id"], points, method, status, now(), now()))
+    def estimate(self, db, receipt, currency):
+        """(rate id, estimate) for a receipt in another currency than the charge, from cached ECB rates; None otherwise.
+        It is provenance only: once linked, the charge is what counts."""
+        if receipt["currency"] == currency or currency != REPORTING or not receipt["total_minor"] or not receipt["purchase_date"]:
+            return None
+        try:
+            handle = self.rates.lookup(receipt["currency"], receipt["purchase_date"], db)
+        except FxError:
+            return None
+        return (handle.rate_id, handle.convert(receipt["total_minor"])) if handle else None
+
+    def link_receipt(self, db, receipt, transaction, points, method, status="proposed", estimate=None):
+        rate_id, estimate_minor = estimate or (None, None)
+        db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,estimate_rate_id,estimate_minor,"
+                   f"created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(transaction_id,receipt_id) {self._conflict(status)}"
+                   + ("" if status == "proposed" else ",estimate_rate_id=excluded.estimate_rate_id,estimate_minor=excluded.estimate_minor"),
+                   (transaction["id"], receipt["id"], points, method, status, rate_id, estimate_minor, now(), now()))
         if receipt["merchant_id"]:
             db.execute("UPDATE transactions SET merchant_id=coalesce(merchant_id,?),updated_at=? WHERE id=?", (receipt["merchant_id"], now(), transaction["id"]))
         self.resolve(db, "ambiguous_receipt_match", "receipt", receipt["id"])
@@ -320,16 +341,33 @@ class Reconciler:
                 created += 1
             elif len(scored) > 1:
                 self.issue(db, "ambiguous_receipt_match", "receipt", receipt["id"], [item[2]["id"] for item in scored])
-            elif receipt["total_minor"] > 0 and receipt["merchant"]:
+            elif receipt["total_minor"] > 0:
                 # No exact charge: a same-merchant charge a little larger is probably this purchase with a tip or
                 # conversion. Counting both would count the purchase twice, so the user decides.
                 near = [row for row in db.execute(
                     f"SELECT t.* FROM transactions t WHERE t.currency=? AND -t.amount_minor>? AND -t.amount_minor*100<=?*{NEAR_PERCENT} AND {MATCHABLE} AND {unlinked}",
                     (receipt["currency"], receipt["total_minor"], receipt["total_minor"], *window))
-                        if name_tokens(receipt["merchant"]) & name_tokens(row["description_raw"])]
+                        if receipt["merchant"] and name_tokens(receipt["merchant"]) & name_tokens(row["description_raw"])]
                 if near:
                     self.issue(db, "ambiguous_receipt_match", "receipt", receipt["id"], [row["id"] for row in near])
+                elif receipt["currency"] != REPORTING:
+                    self.cross_currency(db, receipt, unlinked, window)
         return created
+
+    def cross_currency(self, db, receipt, unlinked, window):
+        """A foreign receipt and the USD card charge that paid it (docs/currency-conversion.md): charges within CROSS_RANGE of
+        the ECB estimate become a question, narrowed to the merchant's charges when any name it. The user decides; once linked
+        the charge counts and the estimate stays as provenance."""
+        estimate = self.estimate(db, receipt, REPORTING)
+        if estimate is None:
+            return
+        low, high = CROSS_RANGE
+        candidates = db.execute(f"SELECT t.* FROM transactions t WHERE t.currency=? AND -t.amount_minor*100 BETWEEN ? AND ? AND {MATCHABLE} AND {unlinked}",
+                                (REPORTING, estimate[1] * low, estimate[1] * high, *window)).fetchall()
+        named = [row for row in candidates if receipt["merchant"] and name_tokens(receipt["merchant"]) & name_tokens(row["description_raw"])]
+        chosen = named or candidates
+        if chosen:
+            self.issue(db, "ambiguous_receipt_match", "receipt", receipt["id"], [row["id"] for row in chosen])
 
     # Statements waiting for the user ---------------------------------------------------
 
@@ -338,7 +376,7 @@ class Reconciler:
         with self.store.connection() as db:
             rows = db.execute("SELECT s.id,s.statement_type,s.period_start,s.period_end,s.currency,s.document_id,a.institution,a.display_name AS account,"
                               "(SELECT count(*) FROM transactions t WHERE t.statement_id=s.id AND t.origin='extraction' AND t.review_status<>'rejected') AS lines,"
-                              "(SELECT count(*) FROM receipts r WHERE r.review_status<>'rejected' AND r.currency=s.currency AND r.purchase_date "
+                              "(SELECT count(*) FROM receipts r WHERE r.review_status<>'rejected' AND (r.currency=s.currency OR s.currency='USD') AND r.purchase_date "
                               "BETWEEN coalesce(s.period_start,s.period_end) AND s.period_end AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l "
                               "WHERE l.receipt_id=r.id AND l.review_status<>'rejected')) AS receipts "
                               "FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.reconciliation='awaiting' AND s.review_status<>'rejected' "

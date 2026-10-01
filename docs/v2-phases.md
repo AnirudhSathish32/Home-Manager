@@ -35,7 +35,7 @@ Runs after each import and extraction (or **Reconcile now**): receipt ↔ transa
 
 ## Not implemented (updated 2026-09-30)
 
-Phase 10 (email ingestion, Laya evaluation) is deferred until the classifier has been benchmarked on real documents. Currency conversion and the Excel report tool (milestone M4b) remain open. The full list of open work is in [milestones](milestones.md#open-work); the assistant's current tool list is in [assistant](assistant.md).
+Phase 10 (email ingestion, Laya evaluation) is deferred until the classifier has been benchmarked on real documents. Currency conversion and the year-end CPA pack (milestone M4b, reshaped) were built 2026-09-30. The full list of open work is in [milestones](milestones.md#open-work); the assistant's current tool list is in [assistant](assistant.md).
 
 Since added (see `ui-design-plan.md` §7): backup to a separate destination and verified restore into a new library (section 19), and a first Phase 9 assistant that answers only through the read-only tools, with figure checks against the cited results. The spec's caution still applies: judge the assistant against real records before relying on it.
 

@@ -6,8 +6,8 @@ Status, 2026-09-28 (checked against the code; open work list updated 2026-09-30)
 | --- | --- |
 | M0–M2b, M3, M3b, M4, M5, M6 | Built: deterministic core, persistence with CSV/XLSX import, evidence storage, vision transcription, typed tools and API, the local model adapter and the bounded assistant. Review and financial publication are built too. |
 | M3c | Partly built. Laya runs as a veto only, sending records to review; it has no routing role until it is benchmarked on real documents. |
-| M2c, M4a | Not built: USD conversion and the exchange-rate tools (there is no ECB or rate code). |
-| M4b | Not built: the Excel report tool. |
+| M2c, M4a | Built 2026-09-30: cached ECB rates, USD totals, foreign receipts matched to their USD card charge, and the read-only rate tools ([currency conversion](currency-conversion.md)). |
+| M4b | Built 2026-09-30, reshaped: a year-end CPA pack made from a Taxes-page button, not a general report and not an assistant tool ([taxes](taxes.md#cpa-pack)). |
 | M7 | Not done: acceptance on real documents. Model accuracy has only been tested on synthetic data so far. |
 | M8–M10 | Deferred (Gmail, broader document automation, broader classifier use). |
 
@@ -24,8 +24,8 @@ Every known open item, gathered from the feature docs on 2026-09-30. Each links 
 | Models | Evaluate the chosen vision and reasoning models on real documents (M7). | [document reading](document-reading.md) §4a |
 | Models | Confirm LM Studio's `/api/v1` load/unload calls against the installed LM Studio. | [shared GPU](shared-gpu-plan.md) |
 | Models | Model comparison evals (A1–A17): run every LLM task against several LM Studio models, grade the outputs against expected answers, and pick a model by a set rule. Not started. | [eval plan](../eval_plan.md) |
-| Money | USD conversion and exchange-rate lookups (M2c, M4a). | above |
-| Money | The Excel report tool (M4b). | above |
+| Money | ~~USD conversion and exchange-rate lookups (M2c, M4a).~~ Built 2026-09-30. Still per currency: category totals, budgets and the Home dashboard. | [currency conversion](currency-conversion.md) |
+| Money | ~~The Excel report tool (M4b).~~ Built 2026-09-30 as the year-end CPA pack. | [taxes](taxes.md#cpa-pack) |
 | Forecast | Taxes other than a flat rate on tax-deferred withdrawals; investment income modelled separately. | [forecast](forecast.md) |
 | Taxes | Not modelled: AMT, the QBI deduction above its threshold, IRA deductibility limits, charity and mortgage-interest limits, 28% and unrecaptured §1250 gains, unlisted credits. | [taxes](taxes.md) |
 | Investments | 529 plans, crypto, pensions, I bonds. | [investments](investments.md) |

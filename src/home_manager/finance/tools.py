@@ -3,8 +3,9 @@
 SQL integer sums and Decimal do all arithmetic; nothing here calls a model. Results
 carry provenance (record IDs, source documents) and explicit coverage, and never
 invent values: a missing balance is reported as unavailable, not estimated. Amounts
-are per currency; no conversion is performed. Model-extracted rows count only once
-verified and are otherwise reported separately as pending review.
+are per currency; when more than one currency (or a foreign one) is involved, usd_total
+adds them up from cached ECB rates (finance/fx.py) and says when it is partial.
+Model-extracted rows count only once verified and are otherwise reported separately as pending review.
 """
 
 from collections import defaultdict
@@ -21,6 +22,7 @@ from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
 from ..library import text_index
+from .fx import REPORTING, EcbRates, FxError
 from .ledger import (
     CHARGE_SHARE,
     COUNTABLE,
@@ -58,6 +60,9 @@ ROW_KIND = "CASE WHEN s.id IS NULL THEN 'charge' WHEN s.receipt_item_id IS NULL 
 RECEIPT_NOTE = ("Spending counts card and bank lines plus approved receipts that no line has replaced yet (from_receipts, receipts). "
                 "When a statement line matches a receipt, the line counts instead, never both.")
 PENDING_NOTE = "pending_review holds extracted lines awaiting review and statement lines waiting for you to reconcile their statement; they are not counted yet."
+USD_NOTE = ("Each currency is totalled separately. usd_total, present when another currency is involved, adds them in USD: card and bank "
+            "lines count as charged, other foreign amounts are converted line by line at cached ECB reference rates (rate_ids). "
+            "status partial means some amounts could not be converted; they are listed under unresolved and left out of the USD figure.")
 
 
 def iso(value):
@@ -176,6 +181,16 @@ class ReceiptSearchInput(ToolInput):
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
 
 
+class RateInput(ToolInput):
+    currency: str = Field(pattern=r"^[A-Za-z]{3}$", description="ISO 4217 code of the amount to convert into USD.")
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="The purchase or transaction date.")
+
+
+class ConvertInput(ToolInput):
+    receipt_id: int = Field(ge=1)
+    rate_id: str = Field(max_length=40, description="The rate_id lookup_exchange_rate returned for this receipt's currency and date.")
+
+
 class EmptyInput(ToolInput):
     pass
 
@@ -229,7 +244,7 @@ def totals_view(currency, bucket):
 
 class FinanceTools(ItemAnalysisTools):
     def __init__(self, store):
-        self.store, self.ledger = store, Ledger(store)
+        self.store, self.ledger, self.rates = store, Ledger(store), EcbRates(store)
 
     @contextmanager
     def connection(self):
@@ -359,17 +374,38 @@ class FinanceTools(ItemAnalysisTools):
     def _net_by_currency(self, start, end, account_id):
         return {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(start, end, account_id).items()}
 
+    def _foreign_lines(self, start, end, account_id):
+        """(date, currency, net spending) of every counted non-USD line _totals adds up, one per charge, refund or receipt.
+        A line is dated by its transaction date when it has one, else its posted date."""
+        scope, params = scope_of(start, end, account_id)
+        rows = self.query(f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,CASE WHEN t.transaction_type='refund' THEN -t.amount_minor "
+                          f"ELSE {TRANSACTION_SPENT} END AS net FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.currency<>? "
+                          f"AND t.transaction_type IN ({SPENDING_TYPES},'refund')", [*params, REPORTING])
+        if account_id is None:
+            rows += self.query(f"SELECT r.purchase_date AS day,r.currency,{RECEIPT_SPENT} AS net FROM receipts r WHERE {STANDALONE_RECEIPT} "
+                               "AND r.purchase_date BETWEEN ? AND ? AND r.currency<>?", (start, end, REPORTING))
+        return [(row["day"], row["currency"], row["net"]) for row in rows]
+
+    def _usd_total(self, start, end, account_id, net_by_currency, always=False):
+        """The period's net spending in USD when anything but USD is involved, else None (USD alone needs no rates)."""
+        if set(net_by_currency) <= {REPORTING} and not always:
+            return None
+        result = self.rates.consolidate([("", REPORTING, net_by_currency.get(REPORTING, 0)), *self._foreign_lines(start, end, account_id)])
+        return {"net": result.pop("usd"), **result}
+
     def get_spending(self, value):
         scope, params = scope_of(value.start, value.end, value.account_id)
         totals = self._totals(value.start, value.end, value.account_id)
         excluded = self.query(f"SELECT count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ('transfer','payment')", params)[0]["count"]
+        net = {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in totals.items()}
         return {"period": {"start": value.start, "end": value.end},
                 "by_currency": [totals_view(currency, bucket) for (_, currency), bucket in sorted(totals.items())],
+                "usd_total": self._usd_total(value.start, value.end, value.account_id, net),
                 "pending_review": [{"currency": row["currency"], "amount": money(row["total"], row["currency"]), "transactions": row["count"]}
                                    for row in self._pending(scope, params)],
                 "excluded_transfers_and_card_payments": excluded, "coverage": self._coverage(scope, params, value.account_id),
                 "notes": [RECEIPT_NOTE if value.account_id is None else "Totals cover only this account's imported or verified transactions.",
-                          PENDING_NOTE, "Each currency is totalled separately; no conversion was applied."]}
+                          PENDING_NOTE, USD_NOTE]}
 
     def spending_series(self, value):
         """Monthly counted spending per currency, in one grouped query. Months without data are listed empty."""
@@ -482,8 +518,15 @@ class FinanceTools(ItemAnalysisTools):
             before, after = first.get(currency, 0), second.get(currency, 0)
             comparisons.append({"currency": currency, "first": money(before, currency), "second": money(after, currency),
                                 "change": money(after - before, currency), "percent_change": percent_change(before, after)})
-        return {"first": value.first.model_dump(), "second": value.second.model_dump(), "by_currency": comparisons,
-                "notes": ["percent_change is null when the first period has no spending."]}
+        usd = None
+        if not (set(first) | set(second)) <= {REPORTING}:
+            totals = [self._usd_total(period.start, period.end, period.account_id, net, always=True)
+                      for period, net in ((value.first, first), (value.second, second))]
+            before, after = (total["net"]["minor"] for total in totals)
+            usd = {"first": totals[0], "second": totals[1], "change": money(after - before, REPORTING), "percent_change": percent_change(before, after),
+                   "status": "complete" if all(total["status"] == "complete" for total in totals) else "partial"}
+        return {"first": value.first.model_dump(), "second": value.second.model_dump(), "by_currency": comparisons, "usd_total": usd,
+                "notes": ["percent_change is null when the first period has no spending.", USD_NOTE]}
 
     def compare_categories(self, value):
         """Per-category spending in two periods, with the exact change between them."""
@@ -560,7 +603,17 @@ class FinanceTools(ItemAnalysisTools):
         excluded = self.query(f"SELECT count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ('transfer','payment')", params)[0]["count"]
         result = [{"currency": currency, "inflow": money(inflow.get(currency, 0), currency), "outflow": money(outflow.get(currency, 0), currency),
                    "net": money(inflow.get(currency, 0) - outflow.get(currency, 0), currency)} for currency in sorted(set(inflow) | set(outflow))]
-        return {"period": {"start": value.start, "end": value.end}, "by_currency": result,
+        usd = None
+        if not (set(inflow) | set(outflow)) <= {REPORTING}:
+            spent = self._usd_total(value.start, value.end, value.account_id, outflow, always=True)
+            received = self.rates.consolidate([("", REPORTING, inflow.get(REPORTING, 0)), *(
+                (row["day"], row["currency"], row["amount_minor"]) for row in self.query(
+                    f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,t.amount_minor FROM transactions t WHERE {COUNTABLE} AND {scope} "
+                    "AND t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other') AND t.currency<>?", [*params, REPORTING]))])
+            usd = {"inflow": received["usd"], "outflow": spent["net"], "net": money(received["usd"]["minor"] - spent["net"]["minor"], REPORTING),
+                   "status": "complete" if received["status"] == spent["status"] == "complete" else "partial",
+                   "rate_ids": sorted(set(received["rate_ids"]) | set(spent["rate_ids"])), "unresolved": received["unresolved"] + spent["unresolved"]}
+        return {"period": {"start": value.start, "end": value.end}, "by_currency": result, "usd_total": usd,
                 "excluded_transfers_and_card_payments": excluded, "coverage": self._coverage(scope, params, value.account_id)}
 
     # Obligations, bills, receipts and refunds -------------------------------------
@@ -693,6 +746,42 @@ class FinanceTools(ItemAnalysisTools):
                            "status": lot["status"], "bought_on": lot["bought_on"], "closed_on": lot["closed_on"], "units": lot["units"]} for lot in lots],
                 "notes": ["Only items from receipt lines the user approved are listed."]}
 
+    # Exchange rates (docs/currency-conversion.md): cached ECB reference rates only; nothing here goes to the network.
+
+    def lookup_exchange_rate(self, value):
+        """The cached ECB reference rate for converting currency on date into USD, with the rate_id to convert with."""
+        try:
+            handle = self.rates.lookup(value.currency, value.date)
+        except FxError as exc:
+            return {"status": "unavailable", "code": exc.code, "reason": str(exc), "currency": value.currency.upper(), "date": value.date}
+        if handle is None:
+            return {"status": "not_needed", "currency": REPORTING, "date": value.date, "reason": "USD amounts need no conversion."}
+        return {"status": "found", **handle.view(),
+                "notes": ["A reference rate estimates USD value; it is not what a card charged. A matched card charge counts instead."]}
+
+    def convert_document_amount(self, value):
+        """A receipt's total in USD at exactly the given rate_id, which must be the rate for its currency and date."""
+        with self.connection() as db:
+            receipt = db.execute("SELECT id,currency,total_minor,purchase_date,review_status FROM receipts WHERE id=?", (value.receipt_id,)).fetchone()
+            if receipt is None:
+                raise ValueError("Receipt not found.")
+            if receipt["total_minor"] is None or receipt["purchase_date"] is None:
+                raise ValueError("This receipt has no total or purchase date to convert.")
+            handle = self.rates.resolve(value.rate_id, db)
+            if handle.currency != receipt["currency"]:
+                raise ValueError(f"That rate is for {handle.currency}; this receipt is in {receipt['currency']}.")
+            if self.rates.lookup(receipt["currency"], receipt["purchase_date"], db).rate_id != handle.rate_id:
+                raise ValueError("That rate is not the one for this receipt's purchase date. Look it up with the receipt's date.")
+            charge = db.execute("SELECT t.id,t.amount_minor,t.currency FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
+                                "WHERE l.receipt_id=? AND l.review_status<>'rejected' AND t.review_status<>'rejected' ORDER BY l.id LIMIT 1",
+                                (receipt["id"],)).fetchone()
+        return {"receipt_id": receipt["id"], "original": money(receipt["total_minor"], receipt["currency"]),
+                "usd": money(handle.convert(receipt["total_minor"]), REPORTING), "basis": "reference_conversion", "rate": handle.view(),
+                "provisional": receipt["review_status"] != "verified",
+                "matched_charge": {"transaction_id": charge["id"], "amount": money(-charge["amount_minor"], charge["currency"])} if charge else None,
+                "notes": ["provisional: the receipt is not approved yet, and converting it approves nothing.",
+                          "When matched_charge is present, that charge is what counts as spent, not this estimate."]}
+
     def review_queue(self, _=None):
         """Everything awaiting a decision, each item carrying display summaries of the records involved."""
         with self.connection() as db:
@@ -750,6 +839,7 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "review_queue": (EmptyInput, "review_queue"), "get_inventory": (InventoryInput, "get_inventory"),
          "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"),
          "search_documents": (DocumentSearchInput, "search_documents"), "get_document_text": (DocumentTextInput, "get_document_text"),
+         "lookup_exchange_rate": (RateInput, "lookup_exchange_rate"), "convert_document_amount": (ConvertInput, "convert_document_amount"),
          **ITEM_TOOLS, **ANOMALY_TOOLS}
 ToolName = Literal[*TOOLS]  # type: ignore[valid-type]
 # Assistant routing (docs/items-assets-search.md §4, docs/document-search.md): item questions see the item tools and

@@ -350,10 +350,12 @@ class TaxTags:
         for row in kept:
             key = (row["kind"], row["line"], row["business_id"] if row["kind"] in BUSINESS_KINDS else None)
             entry = totals.setdefault(key, {"kind": row["kind"], "line": row["line"], "business_id": key[2], "business": row["business"] if key[2] else None,
-                                            "kind_label": row["kind_label"], "line_label": row["line_label"], "amount_minor": 0, "counted_minor": 0, "items": 0})
+                                            "kind_label": row["kind_label"], "line_label": row["line_label"], "amount_minor": 0, "counted_minor": 0, "items": 0,
+                                            "tag_ids": []})
             entry["amount_minor"] += row["amount_minor"]
             entry["counted_minor"] += row["counted_minor"]
             entry["items"] += 1
+            entry["tag_ids"].append(row["id"])
         order = {kind: index for index, kind in enumerate(LINES)}
         lines = sorted(totals.values(), key=lambda entry: (order[entry["kind"]], entry["business"] or "", [key for key, _, _ in LINES[entry["kind"]]].index(entry["line"])))
         for entry in lines:

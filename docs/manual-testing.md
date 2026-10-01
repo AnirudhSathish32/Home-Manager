@@ -1,6 +1,6 @@
 # Run and manually test Home Manager
 
-Updated 2026-09-30. This page covers starting the app, the capture checks (the original D1–D2 slice) and a manual check list for each built feature. Commands, settings files and troubleshooting are in [operations](operations.md). Automated tests are in [development](development.md). Not built yet: Gmail/email ingestion, the Excel report and currency conversion ([milestones](milestones.md)).
+Updated 2026-09-30. This page covers starting the app, the capture checks (the original D1–D2 slice) and a manual check list for each built feature. Commands, settings files and troubleshooting are in [operations](operations.md). Automated tests are in [development](development.md). Not built yet: Gmail/email ingestion ([milestones](milestones.md)). Currency conversion and the CPA pack have no manual check list yet.
 
 ## Start on Windows
 

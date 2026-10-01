@@ -144,6 +144,50 @@ async function loadTaxes() {
   renderWriteOffs(summary, tags.filter(tag => tag.review_status !== "rejected"));
   renderTaxRules(rules, setup);
   renderBusinesses(setup);
+  await loadCpaPacks(year);
+}
+
+// The year-end CPA pack (finance/cpa_pack.py) and the exchange rates its USD values use (finance/fx.py).
+async function loadCpaPacks(year) {
+  const [{packs}, rates] = await Promise.all([api(`/api/tax/cpa-packs?year=${year}`), api("/api/rates")]);
+  const parts = [];
+  if (rates.needed) {
+    const state = !rates.enabled ? "Exchange-rate downloads are off in Settings, so foreign amounts stay unconverted."
+      : rates.downloaded ? `Foreign amounts are converted at ECB reference rates, downloaded through ${rates.last_rate_date}.`
+      : "Foreign amounts need ECB reference rates, which haven't been downloaded yet.";
+    const line = element("p", state, "muted small");
+    if (rates.enabled) line.append(" ", asyncButton("Refresh rates", async () => { await api("/api/rates/refresh", {method: "POST"}); notice("Exchange rates updated."); await loadCpaPacks(year); }, "small quiet"));
+    parts.push(line);
+  }
+  const actions = element("p");
+  parts.push(actions);
+  actions.append(asyncButton(`Build the ${year} CPA pack`, async () => {
+    const pack = await api(`/api/tax/cpa-packs/${year}`, {method: "POST"});
+    notice(pack.reused ? "Nothing changed since the last pack; it's ready to download." : "CPA pack built.");
+    await loadCpaPacks(year);
+  }, ""));
+  if (packs.length) {
+    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
+    for (const [title, numeric] of [["Made", false], ["Records as of", false], ["Needs review", true], ["", false]]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
+    const body = table.createTBody();
+    for (const pack of packs) {
+      const tr = body.insertRow();
+      tr.appendChild(element("td")).append(dateDisplay(pack.created_at.slice(0, 10)));
+      tr.appendChild(element("td")).append(dateDisplay(pack.as_of));
+      cell(tr, pack.needs_review ? String(pack.needs_review) : "Nothing").className = "numeric";
+      tr.insertCell().append(asyncButton("Download", () => downloadCpaPack(pack), "small"));
+    }
+    wrap.append(table); parts.push(wrap);
+  }
+  $("taxes-pack").replaceChildren(...parts);
+}
+async function downloadCpaPack(pack) {
+  const response = await fetch(`/api/tax/cpa-packs/${pack.id}/file`, {headers: {"Authorization": `Bearer ${token}`}});
+  if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || "The pack could not be downloaded."); }
+  const url = URL.createObjectURL(await response.blob());
+  const link = element("a"); link.href = url; link.download = pack.name;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // The return, estimated (finance/tax_return.py): the result, every line with how it was worked out, and what it is built from.

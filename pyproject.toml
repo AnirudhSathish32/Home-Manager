@@ -13,6 +13,8 @@ dependencies = [
   "numpy==2.5.3", "pypdfium2==5.13.0",
   # Encrypted .hmshare files: AES-256-GCM and scrypt.
   "cryptography==46.0.3",
+  # The year-end CPA pack workbook (finance/cpa_pack.py). Writes values only; no formulas are evaluated.
+  "openpyxl==3.1.5",
 ]
 
 [project.optional-dependencies]

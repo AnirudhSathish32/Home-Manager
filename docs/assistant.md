@@ -44,6 +44,8 @@ The assistant (the Ask panel) runs on the configured **reasoning model**. The mo
 | `get_inventory` | Household items from approved receipt lines; in stock unless closed ones are asked for. |
 | `search_documents` | Passages of saved document text containing the words, best first ([document search](document-search.md)). |
 | `get_document_text` | Consecutive lines of one document's saved text, to read around a search hit. |
+| `lookup_exchange_rate` | The cached ECB rate for a currency and date into USD, with its `rate_id`; `unavailable` with a reason when there is none. Never downloads ([currency conversion](currency-conversion.md)). |
+| `convert_document_amount` | A receipt's total in USD at exactly a `rate_id` from `lookup_exchange_rate`; refuses an unknown id, another currency or another date. Marked provisional for an unapproved receipt, and names the matched card charge that counts instead. |
 
 ## Item tools (`ITEM_TOOLS` in `household/analysis.py`)
 

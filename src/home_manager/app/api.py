@@ -893,6 +893,34 @@ def create_app(control: Path | None = None, token: str | None = None,
         TaxYears(family_only()).save(tax_year_value(year), value, f"unit-{unit_id}")
         return manager().family_tax(year)
 
+    # The year-end CPA pack (finance/cpa_pack.py): built only on the user's request, kept under Reports, never overwritten.
+    @app.get("/api/tax/cpa-packs")
+    def cpa_packs(year: int | None = Query(None, ge=1990, le=2100)):
+        store()
+        return {"packs": manager().cpa_packs(year)}
+
+    @app.post("/api/tax/cpa-packs/{year}", status_code=201)
+    def build_cpa_pack(year: int):
+        store()
+        return manager().build_cpa_pack(tax_year_value(year))
+
+    @app.get("/api/tax/cpa-packs/{pack_id}/file")
+    def cpa_pack_file(pack_id: int):
+        store()
+        path, name = manager().cpa_pack_file(pack_id)
+        return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
+
+    # Exchange rates (finance/fx.py): the cache's state, and the user's Refresh rates.
+    @app.get("/api/rates")
+    def rate_status():
+        store()
+        return manager().rate_status()
+
+    @app.post("/api/rates/refresh")
+    def refresh_rates():
+        store()
+        return manager().refresh_rates()
+
     @app.post("/api/tax/units", status_code=201)
     def add_tax_unit(value: TaxUnitInput):
         family_only()

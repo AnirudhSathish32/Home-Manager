@@ -23,7 +23,8 @@ RULES = {
     "split_stale": ("warning", "Category shares remain for a charge no longer matched to that receipt."),
     "link_multi_receipt": ("error", "A charge is matched to more than one receipt."),
     "link_multi_charge": ("warning", "A receipt is matched to more than one charge; each charge counts in full."),
-    "link_currency": ("error", "A receipt is matched to a charge in another currency."),
+    "link_currency": ("error", "A receipt is matched to a charge in another currency without the user choosing it (only a foreign receipt "
+                               "and the USD card charge that paid it may be, once the user picks it)."),
     "link_amount": ("warning", "A proposed match joins a receipt and a charge of different amounts."),
     "receipt_uncounted": ("warning", "A verified receipt is matched only to charges that do not count yet, so its money is counted nowhere."),
     "currency_unknown": ("error", "A record uses a currency Home Manager does not support."),
@@ -117,7 +118,7 @@ def links(db):
         f"WHERE {live} AND t.review_status<>'rejected' GROUP BY l.receipt_id HAVING count(DISTINCT l.transaction_id)>1")]
     found += [problem("link_currency", "receipt", row[0]) for row in db.execute(
         f"SELECT DISTINCT l.receipt_id FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id JOIN transactions t ON t.id=l.transaction_id "
-        f"WHERE {live} AND r.currency<>t.currency")]
+        f"WHERE {live} AND r.currency<>t.currency AND NOT (l.review_status='verified' AND t.currency='USD')")]
     # A match the user verified may differ on purpose (a tip added after printing); a proposed one should not.
     found += [problem("link_amount", "receipt", row[0]) for row in db.execute(
         "SELECT DISTINCT l.receipt_id FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id JOIN transactions t ON t.id=l.transaction_id "

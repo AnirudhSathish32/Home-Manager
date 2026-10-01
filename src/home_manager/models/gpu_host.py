@@ -19,7 +19,7 @@ import argparse
 import hashlib
 import hmac
 import http.client
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import ipaddress
 import json
 import logging
@@ -38,6 +38,7 @@ from pydantic import Field, field_validator
 from ..core.jobs import Work
 from ..core.paths import safe_path, write_atomic
 from ..documents.receipt_schema import StrictModel
+from .http_server import GracefulHTTPServer
 from .model_client import TAILNET, ModelHTTPError, get_json
 from .model_stream import IDLE_SECONDS
 from .residency import MANAGED_MARKER, ensure_loaded
@@ -407,8 +408,8 @@ class Handler(BaseHTTPRequestHandler):
         self.host.relay_chat(self, member, body)
 
 
-class RelayServer(ThreadingHTTPServer):
-    daemon_threads = True
+class RelayServer(GracefulHTTPServer):
+    """Waits for each client to close before closing (models/http_server.py): replies are long event streams."""
 
 
 def make_server(host: GpuHost, address: str, port: int, loopback: bool) -> RelayServer:

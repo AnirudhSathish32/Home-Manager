@@ -164,6 +164,11 @@
         </div>
         <div id="taxes-figures-box"></div></section>
       <section class="panel taxes-personal" aria-labelledby="taxes-write-offs-title"><h2 id="taxes-write-offs-title">Write-offs and tax payments</h2><div id="taxes-write-offs"></div></section>
+      <section class="panel taxes-personal" aria-labelledby="taxes-pack-title"><h2 id="taxes-pack-title">For your accountant</h2>
+        <p class="muted small">The CPA pack is one Excel workbook for the year: the estimate, income, write-offs, investments, tax forms and every
+          transaction, with foreign amounts in USD and the rate used. A Needs review sheet lists anything unfinished. Each pack is kept as made;
+          building again after changes makes a new one.</p>
+        <div id="taxes-pack"></div></section>
       <section class="panel taxes-personal" aria-labelledby="taxes-rules-title"><h2 id="taxes-rules-title">Tax rules</h2>
         <p class="muted small">A rule tags every bank line containing its words, now and as new lines arrive. A tag you set by hand always wins.</p>
         <div id="taxes-rules"></div></section>
@@ -703,6 +708,7 @@
                 <input id="birth-year" type="number" min="1900" max="2100" inputmode="numeric" placeholder="1975">
                 <small>For required minimum distributions from retirement accounts, on Investments and in the forecast. Stays in this profile.</small></div>
               <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
+              <label class="check-field"><input id="fetch-rates" type="checkbox" checked> Download ECB exchange rates for USD totals when you have foreign amounts (the only data sent is the request for the public rate file)</label>
               <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
               <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>
             </form>

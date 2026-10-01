@@ -172,6 +172,7 @@ class HouseholdConfig(StrictModel):
     auto_identify_items: bool = True  # Run item identification on each newly recorded receipt.
     filing_status: Literal["single", "married_joint", "head_of_household"] = "single"  # For the pay stub tax estimate.
     birth_year: int | None = Field(default=None, ge=1900, le=2100)  # For required minimum distributions and retirement in the forecast.
+    fetch_exchange_rates: bool = True  # Download ECB reference rates for USD totals. Off means no outbound calls for rates.
 
     @field_validator("home_currency")
     @classmethod
@@ -419,12 +420,16 @@ class Ledger:
                                                  "WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (receipt_id,))]
         if receipt is None or receipt["total_minor"] is None or not items:
             return
-        charges = [(None, receipt["total_minor"])] + [(row["id"], -row["amount_minor"]) for row in db.execute(
-            "SELECT t.id,t.amount_minor FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
+        charges = [(None, receipt["total_minor"], receipt["currency"])] + [(row["id"], -row["amount_minor"], row["currency"]) for row in db.execute(
+            "SELECT t.id,t.amount_minor,t.currency FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
             "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
         shared = db.execute("SELECT share_minor,total_minor FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,)).fetchone()
-        for transaction_id, target in charges:
-            shares = splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"], target, receipt["category"])
+        for transaction_id, target, currency in charges:
+            if currency == receipt["currency"]:
+                shares = splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"], target, receipt["category"])
+            else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
+                shares = splits.scale(splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"],
+                                                      receipt["total_minor"], receipt["category"]), target)
             if shared:  # Each category keeps its proportion of this person's part.
                 shares = splits.scale(shares, charge_share(target, shared["share_minor"], shared["total_minor"]))
             db.executemany("INSERT INTO category_splits(receipt_id,transaction_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?,?)",

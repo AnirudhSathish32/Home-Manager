@@ -47,7 +47,7 @@ def public_address(host):
     return str(addresses[0])
 
 
-def https_get(url, headers=None):
+def https_get(url, headers=None, max_bytes=MAX_RESPONSE_BYTES):
     """GET one URL: HTTPS, public address, pinned to the checked IP, bounded, following at most five redirects."""
     for _ in range(MAX_REDIRECTS + 1):
         parts = urlsplit(url)
@@ -67,9 +67,9 @@ def https_get(url, headers=None):
             if response.status in (301, 302, 303, 307, 308) and response.getheader("Location"):
                 url = urljoin(url, response.getheader("Location"))
                 continue
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
-                raise LookupFailed("Refused: the response is larger than 1 MB.")
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise LookupFailed(f"Refused: the response is larger than {max_bytes // 1_000_000} MB.")
             return response.status, response.getheader("Content-Type") or "", body, url
         except (OSError, http.client.HTTPException) as exc:
             raise LookupFailed(f"The request failed ({type(exc).__name__}).") from exc

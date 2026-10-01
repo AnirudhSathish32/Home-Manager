@@ -46,6 +46,8 @@ LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
 WHOLE_BYTES = 48 * 1024
 MAX_ITEMS, MAX_REWARDS = 200, 20  # Rows one receipt may list; rewards and offers it may carry.
 CODE_TEXT = 2000  # Characters of a decoded QR code or barcode shown to the rewards question.
+PESOS, PESO_CODES = re.compile(r"\bpesos?\b", re.IGNORECASE), {"MXN", "PHP"}
+PESOS_NOTE = "The document says pesos without a currency code, and pesos can be Mexican (MXN) or Philippine (PHP); choose the currency."
 HEADERS = {
     "receipt": ("merchant", "purchase_date", "currency", "subtotal", "tax", "tip", "total", "card_last_four"),
     "bank_statement": ("institution", "account_reference", "period_start", "period_end", "opening_balance", "closing_balance", "currency"),
@@ -1156,11 +1158,18 @@ class ExtractionService:
 
     def currency_for(self, kind, header, lines, home_currency):
         field = header.currency
+        text = " ".join(line.text for line in lines)
+        codes = {code for code in re.findall(r"\b[A-Z]{3}\b", text) if code in EXPONENTS}
+        # "Pesos" names several currencies (MXN, PHP, …): only a printed code or the account's own currency settles which.
+        pesos = PESOS.search(text) is not None and not codes & PESO_CODES
         if field.status == "proposed":
             try:
-                return currency_code(field.value), None
+                code = currency_code(field.value)
             except MoneyError:
                 return None, None
+            if pesos and code not in codes:
+                return None, PESOS_NOTE
+            return code, None
         if kind in ("bank_statement", "credit_card_statement"):
             name = header.issuer if kind == "credit_card_statement" else header.institution
             digits = re.sub(r"\D", "", header.account_reference.value or "")
@@ -1169,8 +1178,8 @@ class ExtractionService:
                                                                   digits[-4:] if len(digits) >= 4 else None)
             if account:
                 return account["currency"], "Currency is not printed; the existing account's currency was used."
-        text = " ".join(line.text for line in lines)
-        codes = {code for code in re.findall(r"\b[A-Z]{3}\b", text) if code in EXPONENTS}
+        if pesos:
+            return None, PESOS_NOTE
         symbols = {symbol for symbol in SYMBOLS if symbol in text}
         if home_currency:
             # Your explicit setting, used only when every printed symbol can mean it and no other code appears.

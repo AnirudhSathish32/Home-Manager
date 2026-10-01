@@ -6,7 +6,7 @@ rejected rather than guessed. The currency always comes from the caller; a "$"
 sign alone never selects one.
 """
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 import re
 
 # Minor-unit exponents (ISO 4217) for supported currencies.
@@ -87,6 +87,14 @@ def as_decimal_text(amount: int, currency) -> str:
 def format_minor(amount: int, currency) -> str:
     exponent = EXPONENTS[currency_code(currency)]
     return f"{Decimal(amount).scaleb(-exponent):,.{exponent}f} {currency_code(currency)}"
+
+
+def convert_minor(amount: int, from_currency, rate: Decimal, to_currency) -> int:
+    """amount (minor units of from_currency) times rate (to_currency per one from_currency), rounded half-even."""
+    if not isinstance(rate, Decimal) or not rate.is_finite() or rate <= 0:
+        raise MoneyError("A conversion rate must be a positive exact decimal.")
+    shift = EXPONENTS[currency_code(to_currency)] - EXPONENTS[currency_code(from_currency)]
+    return int((Decimal(amount) * rate).scaleb(shift).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
 
 
 def money(amount: int, currency) -> dict:

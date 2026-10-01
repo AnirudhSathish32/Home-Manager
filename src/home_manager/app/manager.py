@@ -51,6 +51,7 @@ from ..models import residency
 from ..models.laya_runtime import LayaRuntime
 from ..models.model_client import check_connection, is_remote, set_token
 from ..models.vision import ROLE_ALIASES, ModelComputer, VisionConfig
+from ..models.web_lookup import https_get
 from .family_sync import FAMILY_MARKER, FamilyFolder, changed_since, publish, read_deliveries, read_invite, sync_folder, write_delivery, write_invite
 from .profiles import Profiles, public
 
@@ -97,6 +98,7 @@ class Manager:
         self.store = self.receipts = self.batches = self.reasoning = self.organization = None
         self.extractions = self.ledger = self.reconciler = self.tools = self.backups = self.assistant = self.items = self.checkins = self.warranties = None
         self.tax_tables = self.tax_figures = None
+        self.rate_fetch = https_get  # The ECB download; tests replace it.
         self.restores = {}  # Restore outcomes for this process; a restore may run with no library open.
         self.shares = {}  # Share exports for this process.
         # A shared library opened for this process only: never saved to settings, deleted when it ends.
@@ -316,6 +318,7 @@ class Manager:
             self.use_profile(profile, persist)
             if self.family:
                 self.start_family_refresh()
+            self.start_rate_refresh()
             return self.settings()
 
     def switch_profile(self, profile_id):
@@ -1012,6 +1015,71 @@ class Manager:
         inputs = tax_year.TaxYears(self.store).inputs(year)
         tables_for = lambda codes: self.tax_tables.tables.for_year(year, codes, status)
         return self.tax_view(year, status, self.household, gathered, inputs, tables_for, self.tax_figures.figures.effective(year, status))
+
+    # Exchange rates and the CPA pack (docs/currency-conversion.md, docs/taxes.md) ----------------------
+
+    def rates(self, store=None):
+        from ..finance.fx import EcbRates
+        return EcbRates(store or self.store, self.rate_fetch, self.household.fetch_exchange_rates)
+
+    def foreign_money(self, store=None):
+        """True when any transaction or receipt is in a currency other than USD: only then are rates needed."""
+        with (store or self.store).connection() as db:
+            return db.execute("SELECT 1 FROM transactions WHERE currency<>'USD' UNION ALL SELECT 1 FROM receipts WHERE currency<>'USD' LIMIT 1").fetchone() is not None
+
+    def rate_status(self):
+        with self.mutex:
+            store = self.require(False)
+            return {**self.rates(store).status(), "needed": self.foreign_money(store)}
+
+    def refresh_rates(self):
+        """Download the ECB history now (the user's Refresh rates). The only outbound call for rates."""
+        with self.mutex:
+            store = self.require(False)
+        self.rates(store).refresh()
+        return self.rate_status()
+
+    def start_rate_refresh(self):
+        """At startup: refresh in the background when rates are on, foreign amounts exist and the cache is a day old. Failures
+        only leave totals partial, so they are logged, never raised."""
+        store = self.store
+        if not store or not self.household.fetch_exchange_rates or not self.foreign_money(store) or not self.rates(store).due():
+            return
+
+        def run(work):
+            from ..finance.fx import FxError
+            try:
+                self.rates(store).refresh()
+            except FxError as exc:
+                log_failure(log, "exchange rates", exc)
+        self.submit("capture", "exchange_rates", "Downloading exchange rates", run)
+
+    def build_cpa_pack(self, year):
+        """The year-end CPA pack (finance/cpa_pack.py), from one snapshot of this profile's records."""
+        from ..finance import tax_year
+        from ..finance.cpa_pack import CpaPacks
+        with self.mutex:
+            store = self.require(False)
+            if self.family:
+                raise ValueError("Open a person's profile to build their CPA pack; the family view has no records of its own.")
+            status = self.household.filing_status
+            household = self.household
+            tables_for = lambda codes: self.tax_tables.tables.for_year(year, codes, status)
+            figures = self.tax_figures.figures.effective(year, status)
+
+        def tax_for(snap):
+            return self.tax_view(year, status, household, tax_year.gather(snap, year, household), tax_year.TaxYears(snap).inputs(year), tables_for, figures)
+        return CpaPacks(store).build(year, tax_for)
+
+    def cpa_packs(self, year=None):
+        from ..finance.cpa_pack import CpaPacks
+        with self.mutex:
+            return CpaPacks(self.require(False)).list(year)
+
+    def cpa_pack_file(self, pack_id):
+        from ..finance.cpa_pack import CpaPacks
+        with self.mutex:
+            return CpaPacks(self.require(False)).path(pack_id)
 
     def family_tax(self, year):
         """Every return in the family (finance/tax_family.py): each one's records gathered from its members' shared copies,

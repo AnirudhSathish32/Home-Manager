@@ -185,6 +185,7 @@ async function loadSettings() {
   $("home-currency").value = homeCurrency = settings.household.home_currency || "";
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
   $("auto-identify").checked = settings.household.auto_identify_items !== false;
+  $("fetch-rates").checked = settings.household.fetch_exchange_rates !== false;
   $("filing-status").value = settings.household.filing_status || "single";
   $("birth-year").value = settings.household.birth_year ?? "";
   showReceiptBatch(settings.receipt_batch);
@@ -387,7 +388,8 @@ $("session-form").addEventListener("submit", async event => {
   } catch (error) { notice(error, true); }
 });
 saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked,
-                                                             filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null}),
+                                                             filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null,
+                                                             fetch_exchange_rates: $("fetch-rates").checked}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

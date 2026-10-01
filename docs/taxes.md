@@ -152,6 +152,32 @@ your spouse's birth year, children and dependents, and the deduction choice.
 - 28% and unrecaptured §1250 gains;
 - credits not listed.
 
+## CPA pack
+
+Built 2026-09-30 (milestone M4b, reshaped from a general Excel report). Code: `finance/cpa_pack.py`; tests:
+`tests/test_cpa_pack.py`. Taxes → **For your accountant** → **Build the YYYY CPA pack** makes one Excel workbook for the
+year to hand an accountant. Only the user's button makes one; the assistant has no tool for it.
+
+Sheets: Summary (the estimate, income, gains, write-offs, household spending in USD, complete or partial), Return (each
+line of the estimate), Income (jobs and every gathered field with its source), Write-offs (counted totals by line),
+Write-off items (every tag, its USD value and whether the estimate counts it), Investments (the year's confirmed
+activity and realized gains per taxable account), Tax forms (confirmed and proposed 1099 and 5498 boxes), Transactions
+(every counted line and stand-alone receipt, with its USD amount, the basis and the rate id), Exchange rates (each rate
+used, with its download's SHA-256), Needs review, and Manifest.
+
+- It does no tax math of its own: it shows what the Taxes page and the finance tools compute, read from one database
+  snapshot. Before saving, the Transactions sheet's Spent (USD) column must add up to household spending, and the
+  reopened workbook must match what was written.
+- **Needs review** lists what's unfinished: receipts and statement lines not yet counted, open matching questions,
+  unconfirmed tags and tax forms, missing figures or unconfirmed tax tables, shares sold with no purchase lot, amounts
+  with no exchange rate, and write-offs in another currency (the estimate counts USD tags only).
+- Values only: Python computes every number. Document text is always written as text, never a formula (a description
+  starting with `=` stays text, quote-prefixed).
+- Kept under `<library root>/Reports/<year>/`, outside `Library/`, so a pack is never read back in as evidence. A pack is
+  never overwritten: building again from unchanged data returns the same file; changed data makes a new file beside the
+  old one. Downloads check the file against the SHA-256 recorded when it was made.
+- A full disk or a locked file (open in Excel) fails with a clear message and leaves nothing behind.
+
 ## Tax Zen
 
 `finance/tax_zen.py`. It is the top of the return panel on the Taxes page. Tax Zen means the return comes out within a

@@ -32,7 +32,8 @@ Every doc, grouped by what it is for. Updated 2026-09-30. The project [readme](.
 | [What If](what-if.md) | Paycheck planner, saved scenarios, plan vs actual. |
 | [jobs and paystubs](jobs-and-paystubs.md) | Employers, the Jobs folders, the paystub tax breakdown, tax tables. |
 | [investments](investments.md) | Investment accounts, holdings, lots, tax forms, RMDs, payment matching. |
-| [taxes](taxes.md) | Tax tags, the year's return estimate, Tax Zen, estimated tax, family returns. |
+| [taxes](taxes.md) | Tax tags, the year's return estimate, Tax Zen, estimated tax, family returns, the year-end CPA pack. |
+| [currency conversion](currency-conversion.md) | ECB rates, USD totals, foreign receipts matched to USD card charges, the rate tools. |
 | [sharing](sharing.md) | Profiles, `.hmshare` exports, families, the family inbox. |
 | [schema map](schema.md) | What each migration (001–047) adds. |
 

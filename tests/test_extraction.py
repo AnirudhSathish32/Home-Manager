@@ -168,7 +168,7 @@ def test_hallucinated_amount_is_rejected_after_one_correction_and_nothing_is_pub
     assert "total: the amount is not printed" in correction and "Total 25.00" not in correction
 
 
-@pytest.mark.parametrize("currency_text,expected", [("", "USD"), ("$", "USD"), ("EUR", None), ("£", None)])
+@pytest.mark.parametrize("currency_text,expected", [("", "USD"), ("$", "USD"), ("EUR", None), ("£", None), ("Pagado en pesos $", None)])
 def test_receipt_defaults_to_usd_without_currency_but_respects_foreign_evidence(tmp_path, local_model, currency_text, expected):
     lines = [*RECEIPT]
     lines[2] = currency_text or "Thank you"

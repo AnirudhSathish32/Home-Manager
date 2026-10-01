@@ -29,7 +29,50 @@ Status: reference (2026-09-30). Setup, commands and on-disk layout are in [opera
 - **The Laya test** (`test_laya.py`) needs `.[laya]` and installed weights. It is skipped unless `RUN_LAYA_TESTS=1`.
 - There are no custom pytest markers. Opt-in tests use `skipif` on those variables.
 - After a scenario that changes the ledger, call `conftest.assert_ledger_healthy(store)`.
-- When changing a component, run that component's tests rather than the whole suite. A rare connection reset in the loopback tests on Windows is environmental.
+- When changing a component, run that component's tests rather than the whole suite. A connection reset in a loopback test is a bug now, not noise: see the next section.
+
+## Windows loopback resets
+
+Fixed 2026-10-01. For a long time a rare test failed with "Local model connection failed or disconnected"
+(`ConnectionResetError`, WinError 10054) and passed on a rerun.
+
+- **Symptom:** the client got the start of a reply (the `200` status line), waited about 19 s for the rest, then the
+  connection was reset.
+- **Cause:** on this Windows machine, when a server closes its socket, or sends FIN with `shutdown(SHUT_WR)`, right
+  after a reply that spans several TCP segments, a segment still in flight is sometimes lost. Python's `socketserver`
+  does exactly that after every HTTP/1.0 reply. Small replies fit in one segment and were never hit.
+- **Measured** with 40 KB replies, raw sockets, 600 transfers each:
+
+  | How the server ends the reply | Lost |
+  | --- | --- |
+  | `shutdown(SHUT_WR)` then close | 8 |
+  | close at once | 5 |
+  | `shutdown` then wait for the client | very many (FIN right behind the data is the trigger) |
+  | wait 0.2 s, then close | 0 |
+  | wait for the client to close first | 0 |
+
+  Through the synthetic model server: 16 of 1,000 requests. The long-statement extraction test failed 4 of 100 runs.
+- **Not the cause:**
+  - The client's request was always delivered: 57,000 requests up to 1 MB were sent with no failure.
+  - The 2026-09-25 "one write per response" change made no difference.
+  - Unproven whether a filter driver (Tailscale, antivirus) is involved. The fix doesn't depend on it.
+- **Fix:** `models/http_server.py` `GracefulHTTPServer`. After a reply the server reads until the client closes (at
+  most 10 s). It never sends FIN first. Every client of these servers closes first, after Content-Length or the
+  stream's `[DONE]`.
+  - Once the client has closed, the server closes with a reset (`SO_LINGER` 0). The client has read everything by then,
+    and the reset leaves neither side in TIME_WAIT.
+  - Without the reset, the client, now the side that closes first, keeps each port in TIME_WAIT for 2 minutes. About
+    16,000 requests in 2 minutes then exhausted Windows' client ports (WinError 10048 on connect), which also broke the
+    next test runs.
+  - A client that never closes gets an ordinary close after 10 s.
+  - The GPU host relay (`RelayServer`) and the tests' synthetic model server (`tests/model_server.py`) both use it.
+  - FastAPI/uvicorn, the app's own server, isn't affected: it keeps connections alive and doesn't close after each
+    reply.
+  - Tests: `tests/test_http_server.py`.
+- **Checking it again:** `.\.venv\Scripts\python.exe scripts\loopback_stress.py --requests 20000 --response-bytes 40000`
+  must report 0 failures. Use `--mode app` to go through `request_completion`. `--backlog 5` reproduces the old listen
+  queue.
+- **Any new HTTP server in this project**, test or product, should subclass `GracefulHTTPServer`.
 
 ## Checks
 

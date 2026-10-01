@@ -133,6 +133,10 @@ The final response carries structured facts, evidence IDs, assumptions, freshnes
 
 ## Excel reporting and currency conversion boundary
 
+Update 2026-09-30: built differently from this original design. The report became the year-end CPA pack, made only from a
+button on the Taxes page; the assistant has no tool that writes files ([taxes](taxes.md#cpa-pack)). Conversion is
+described in [currency conversion](currency-conversion.md).
+
 Include `create_financial_report` in V1. It calls financial services and renders their validated results into a new `.xlsx` workbook, using a library such as openpyxl behind a report-writer interface. Python calculates all values before export; Excel formulas are not the authoritative calculator. openpyxl itself does not evaluate formulas ([library documentation](https://openpyxl.readthedocs.io/en/3.1.3/simple_formulae.html)). No installed Excel instance or COM automation is required for this design.
 
 Start with spending summary, period comparison, and transaction-detail templates. Include Summary, Transactions, Exchange Rates, and Provenance/Assumptions sheets: USD reporting totals, original amounts/currencies, per-row converted amounts, rate/date/source or actual-settlement basis, date/sign/inclusion policies, completeness warnings, record/source IDs and hashes, dataset revision, generation time, and template version. Render a coherent database and rate-set snapshot so concurrent ingestion cannot mix old and new data. Retain a report manifest sufficient to reproduce the numbers. Export all matching records up to a documented workbook/resource limit; fail clearly or split explicitly instead of silently truncating.
