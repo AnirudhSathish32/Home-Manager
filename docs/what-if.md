@@ -119,6 +119,9 @@ stub's earnings, pre-tax, post-tax and employer lines as amounts per paycheck.
 - **Retirement:** a plan can plan withdrawals with the same fields as the Forecast page (retire in, fixed amount or
   cover the shortfall, cash floor, tax on tax-deferred withdrawals). Its paychecks stop at retirement. The comparison
   details show "From investments", "Tax withheld" and "Required (RMD)" for years with withdrawals.
+- **Cancel subscriptions:** a plan can cancel every confirmed subscription from a month on (the forecast's
+  `cut_subscriptions_from`). Bills stay. The notes say how many were cancelled and roughly what that saves a month.
+  Which recurring payments are subscriptions is the user's choice ([receipts-and-statements.md](receipts-and-statements.md#recurring-bills)).
 - **Moving:** a move is a second paycheck from the move month with the new work state (the first gets a last month),
   set spending for rent and the like from that month, and one-offs for movers and deposits.
 - The URL keeps the open plan (`#/whatif?plan=<id>`).

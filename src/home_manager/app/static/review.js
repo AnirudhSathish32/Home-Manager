@@ -138,7 +138,7 @@ function summaryBlock(label, summary, {link = true} = {}) {
 function decide(path, body, message, undo = null) {
   return async () => {
     await api(path, {method: "POST", body: JSON.stringify(body)});
-    const shown = toast(message, {timeout: undo ? 8000 : 6000});
+    const shown = toast(typeof message === "function" ? message() : message, {timeout: undo ? 8000 : 6000});
     if (undo) {
       const button = element("button", "Undo", "small"); button.type = "button";
       button.addEventListener("click", async () => {
@@ -321,17 +321,20 @@ function reviewParts(item) {
                  contract_terms: `Read from the document's payment terms: “${value.evidence || ""}”.`
                 }[value.confidence_source] || `Payments of the same amount arrived at a steady ${FREQUENCY_LABELS[value.frequency]} cadence.`;
     // Confirming sends the chosen frequency: the body is read when the button is pressed.
-    const body = {status: "verified", frequency: value.frequency};
+    const body = {status: "verified", frequency: value.frequency, kind: value.kind};
     const often = element("label", "How often ", "inline-field");
     const select = document.createElement("select");
     for (const [key, label] of Object.entries(FREQUENCY_LABELS)) select.add(new Option(label, key));
     select.value = value.frequency; select.addEventListener("change", () => { body.frequency = select.value; });
     often.append(select);
+    // Bill or subscription is the user's call; the suggestion comes from the category.
+    const kindField = element("label", "Counts as ", "inline-field");
+    kindField.append(kindSelect(value.kind, kind => { body.kind = kind; }));
     const note = value.category ? `Counts under ${categoryLabel(value.category)} in your forecast and budgets once confirmed.` : "Counts in your forecast once confirmed.";
     return {why: `${why} Next expected about ${next}. ${note}`,
-            evidence: [summaryBlock("Recurring bill", {name: value.merchant, amount: value.expected_amount, date: value.next_due_date})], extra: [often],
+            evidence: [summaryBlock("Recurring payment", {name: value.merchant, amount: value.expected_amount, date: value.next_due_date})], extra: [often, kindField],
             document: value.source_document_id,
-            confirm: decide(path, body, "Recurring bill confirmed."), confirmLabel: "Confirm recurring",
+            confirm: decide(path, body, () => `Confirmed as a ${RECURRING_KIND_LABELS[body.kind].toLowerCase()}.`), confirmLabel: "Confirm recurring",
             reject: decide(path, {status: "rejected"}, "Marked not recurring; it won't be proposed again."), rejectLabel: "Not recurring"};
   }
   const path = `/api/items/resolutions/${value.id}/review`;

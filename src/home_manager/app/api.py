@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..core.categories import FREQUENCIES
+from ..core.categories import FREQUENCIES, RECURRING_KINDS
 from ..core.folders import DocumentFolder
 from ..core.formats import IMAGES, extension
 from ..core.logs import attach_server, log_failure
@@ -188,6 +188,12 @@ class ObligationReviewInput(BaseModel):
     status: Literal[*OBLIGATION_DECISIONS]
     note: str = Field(default="", max_length=1000)
     frequency: Literal[*FREQUENCIES] | None = None  # A correction of how often it recurs, made while deciding.
+    kind: Literal[*RECURRING_KINDS] | None = None  # Bill or subscription, chosen while deciding.
+
+
+class ObligationKindInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal[*RECURRING_KINDS]
 
 
 class IssueResolutionInput(BaseModel):
@@ -702,7 +708,12 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.post("/api/finance/recurring/{obligation_id}/review")
     def review_obligation(obligation_id: int, value: ObligationReviewInput):
         store()
-        return manager().reconciler.review_obligation(obligation_id, value.status, value.note, value.frequency)
+        return manager().reconciler.review_obligation(obligation_id, value.status, value.note, value.frequency, value.kind)
+
+    @app.post("/api/finance/recurring/{obligation_id}/kind")
+    def set_obligation_kind(obligation_id: int, value: ObligationKindInput):
+        store()
+        return manager().reconciler.set_obligation_kind(obligation_id, value.kind)
 
     @app.post("/api/finance/links/{kind}/{link_id}/review")
     def review_link(kind: Literal["receipt", "transfer", "refund"], link_id: int, value: LinkReviewInput):

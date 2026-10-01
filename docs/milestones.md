@@ -23,6 +23,7 @@ Every known open item, gathered from the feature docs on 2026-09-30. Each links 
 | Models | Benchmark Laya on real documents before it gets any routing role (M3c). | [V2 phases](v2-phases.md#laya-in-process-advisory) |
 | Models | Evaluate the chosen vision and reasoning models on real documents (M7). | [document reading](document-reading.md) §4a |
 | Models | Confirm LM Studio's `/api/v1` load/unload calls against the installed LM Studio. | [shared GPU](shared-gpu-plan.md) |
+| Models | Model comparison evals (A1–A17): run every LLM task against several LM Studio models, grade the outputs against expected answers, and pick a model by a set rule. Not started. | [eval plan](../eval_plan.md) |
 | Money | USD conversion and exchange-rate lookups (M2c, M4a). | above |
 | Money | The Excel report tool (M4b). | above |
 | Forecast | Taxes other than a flat rate on tax-deferred withdrawals; investment income modelled separately. | [forecast](forecast.md) |
@@ -96,6 +97,27 @@ Each case records: user request and conversation context; frozen clock/timezone;
 | Robustness/security | Prompt-injection cases, unauthorized access, malformed tool output, stale/partial sources, cancellation and dependency outages |
 
 Capture run ID, dataset/prompt/tool-schema versions, model/runtime configuration, seed where supported, hardware, tool names, redacted arguments, statuses, durations, evidence references, and final structured facts. Do not retain raw private prompts or reasoning by default. Hosted experiment trackers are unnecessary.
+
+### Model comparison plan
+
+[eval_plan.md](../eval_plan.md) (2026-09-30) turns this architecture into a buildable plan for choosing between local LM Studio models. Its rules:
+
+- **Ranking.** Models are ranked on output accuracy, structured-output reliability, and consistency across runs.
+- **Real call path.** The runner (`evals/`) calls the app's real task functions, so its prompts are exactly the ones production uses.
+- **One model at a time.** Before each candidate runs, it is loaded with `residency.ensure_loaded` so that only one model is on the GPU.
+- **Code graders.** The app's own validators (`verify`, `validate_interpretation`, `stage`, `propose_*`) are reused as graders, alongside new checks against expected answers.
+- **LLM judge.** The judge is opt-in. It is off by default; the user picks the judge model each run with `--judge <model>`, and can re-judge a saved run later. Judge scores are filed by judge model, calibrated against hand labels, and never come from a candidate in the same run.
+- **Repeat runs.** Every case runs N times (default 5). The report gives pass^N (passes every run) alongside pass@N (passes at least once).
+- **Private documents.** Raw outputs are kept only for synthetic datasets. Runs on private real documents store case IDs only, as described above.
+
+Build order:
+1. A1–A7, the first slice: confirm the LM Studio load API, add a sampling override and a raw-output recording hook, build the `evals/` skeleton, the extraction dataset and its graders, and the multi-model leaderboard.
+2. A8, consistency metrics.
+3. The other tasks.
+4. The decision rule and a real-document set.
+5. The judge and the assistant eval.
+
+Open decisions (candidate models, failure-rate thresholds, eval temperature, task weights) are listed in §7 of the plan.
 
 ## Proposed acceptance gates
 

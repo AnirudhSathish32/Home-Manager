@@ -20,6 +20,14 @@ CATEGORY_GUIDE = ("groceries (food and drink to take home and cook), dining (res
 # How often a bill recurs, and how many months apart its payments are. Weekly is handled as 12/52 of a month.
 FREQUENCY_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
 FREQUENCIES = ("weekly", *FREQUENCY_MONTHS)
+# A recurring payment is a bill (important to the user) or a subscription (less so). The user decides; a new one is
+# suggested from its category, and everything outside these categories starts as a bill.
+RECURRING_KINDS = ("bill", "subscription")
+SUBSCRIPTION_CATEGORIES = ("subscriptions", "entertainment")
+
+
+def suggested_kind(category):
+    return "subscription" if category in SUBSCRIPTION_CATEGORIES else "bill"
 
 
 def receipt_category(value, legacy=False):

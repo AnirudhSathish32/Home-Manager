@@ -135,11 +135,23 @@ def test_repurchase_moves_the_older_lot_forward_and_history_predicts_run_out(sho
     assert current["next_check_on"] == "2026-09-11"  # Median of two finished lots: 10 days.
 
 
-def test_reapproving_a_re_extracted_line_keeps_one_lot(shop):
+def test_re_extracting_an_identified_line_keeps_its_identification_and_one_lot(shop):
+    store, ledger, items, docs = shop
+    receipt_id = receipt(ledger, docs["a.png"], [("GV WHL MLK 1GL", None, 348)])
+    [line_id] = line_ids(items, receipt_id)
+    items.review(items.propose(line_id, MILK, "search", "high")["id"], "verified", today=TODAY)
+    receipt(ledger, docs["a.png"], [("GV WHL MLK 1GL", None, 348)])  # Re-extraction finds the same line again.
+    assert line_ids(items, receipt_id) == [line_id] and items.unresolved(receipt_id) == []
+    assert len(items.inventory(include_closed=True)) == 1
+
+
+def test_reapproving_a_line_whose_lot_exists_keeps_one_lot(shop):
+    # A reading from before lines kept their ids left the lot without its identification; approving again reuses the lot.
     store, ledger, items, docs = shop
     receipt_id = receipt(ledger, docs["a.png"], [("GV WHL MLK 1GL", None, 348)])
     items.review(items.propose(line_ids(items, receipt_id)[0], MILK, "search", "high")["id"], "verified", today=TODAY)
-    receipt(ledger, docs["a.png"], [("GV WHL MLK 1GL", None, 348)])  # Re-extraction rewrites the lines.
+    with store.connection() as db:
+        db.execute("DELETE FROM item_resolutions")
     [line] = items.unresolved(receipt_id)
     known = items.known(line["id"])
     items.review(items.propose(line["id"], ResolutionFields(**{k: v for k, v in known.items() if k not in ("method", "confidence", "product_id")}),

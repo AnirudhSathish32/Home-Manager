@@ -1,5 +1,6 @@
 """A failed schema upgrade keeps earlier steps and the pre-upgrade copy, and the app still starts and says what happened."""
 
+import re
 import sqlite3
 
 import pytest
@@ -60,6 +61,60 @@ def test_a_failing_step_keeps_earlier_steps_and_the_pre_upgrade_copy(tmp_path, n
     assert error.snapshot.exists()
 
 
+def receipt_with_lines(store):
+    """One receipt with an item and a reward: rows that cascade from receipts."""
+    stamp, digest = "2026-09-30T00:00:00+00:00", "a" * 64
+    with store.connection() as db:
+        db.execute("INSERT INTO blobs VALUES(?,1,?)", (digest, stamp))
+        db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed',?,?)", (stamp, stamp))
+        db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,folder_year,folder_month,current_hash,first_seen,last_seen,last_job) "
+                   "VALUES('root','r.png','r.png',0,0,?,?,?,'job')", (digest, stamp, stamp))
+        db.execute("INSERT INTO receipts(document_id,blob_hash,currency,review_status,created_at,updated_at) VALUES(1,?,'USD','verified',?,?)", (digest, stamp, stamp))
+        db.execute("INSERT INTO receipt_items(receipt_id,position,description,review_status) VALUES(1,1,'MILK','verified')")
+        db.execute("INSERT INTO receipt_rewards(receipt_id,position,kind,description,locator_json) VALUES(1,1,'earned','points','{}')")
+
+
+def counts(root, *names):
+    db = sqlite3.connect(root / "inventory.sqlite3")
+    try:
+        return [db.execute(f"SELECT count(*) FROM {name}").fetchone()[0] for name in names]
+    finally:
+        db.close()
+
+
+def test_a_table_rebuild_keeps_the_rows_that_cascade_from_it(tmp_path, next_step):
+    # SQLite's rebuild procedure (new table, copy, drop, rename): with foreign keys on, the DROP would delete the receipt's lines.
+    root = tmp_path / "managed"
+    store = Store(root)
+    receipt_with_lines(store)
+    with store.connection() as db:
+        create = re.sub(r'^CREATE TABLE\s+"?receipts"?', "CREATE TABLE receipts_new", db.execute("SELECT sql FROM sqlite_schema WHERE name='receipts'").fetchone()[0])
+    store.close()
+    next_step(f"{create};\nINSERT INTO receipts_new SELECT * FROM receipts;\nDROP TABLE receipts;\n"
+              f"ALTER TABLE receipts_new RENAME TO receipts;\nPRAGMA user_version={NEXT};")
+    store = Store(root)
+    try:
+        with store.connection() as db:
+            assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1  # Back on for the app.
+    finally:
+        store.close()
+    assert version_of(root) == NEXT
+    assert counts(root, "receipts", "receipt_items", "receipt_rewards") == [1, 1, 1]
+
+
+def test_a_step_that_breaks_references_is_rolled_back(tmp_path, next_step):
+    root = tmp_path / "managed"
+    store = Store(root)
+    receipt_with_lines(store)
+    store.close()
+    next_step(f"DELETE FROM receipts;\nPRAGMA user_version={NEXT};")  # Would orphan the item and the reward.
+    with pytest.raises(MigrationError) as failure:
+        Store(root)
+    assert failure.value.number == NEXT and "broken references" in str(failure.value.__cause__)
+    assert version_of(root) == LATEST
+    assert counts(root, "receipts", "receipt_items", "receipt_rewards") == [1, 1, 1]
+
+
 def test_a_step_that_does_not_record_its_version_is_refused(tmp_path, next_step):
     root = tmp_path / "managed"
     Store(root).close()
@@ -68,6 +123,7 @@ def test_a_step_that_does_not_record_its_version_is_refused(tmp_path, next_step)
         Store(root)
     assert failure.value.number == NEXT
     assert version_of(root) == LATEST
+    assert "forgot_version" not in tables(root)  # Checked before the step commits.
 
 
 def test_an_unreadable_pre_upgrade_copy_is_replaced(tmp_path, next_step):

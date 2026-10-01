@@ -526,27 +526,54 @@ async function loadBills() {
     for (const bill of bills) {
       const li = element("li", "", "bill-row");
       const main = element("div", "", "bill-main");
-      main.append(element("strong", bill.provider), element("span", ` due ${dateText(bill.due_date)} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`, "muted"));
+      main.append(element("strong", bill.provider), element("span", ` due ${dateText(bill.due_date)} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`
+                                                             + (bill.kind === "subscription" ? " · Subscription" : ""), "muted"));
       li.append(main, amount(bill.amount_due, {signed: false}), statusBadge(bill.payment_state));
       if (bill.last_paid_date) li.append(element("small", `Last paid ${dateText(bill.last_paid_date)}`, "muted block"));
       list.append(li);
     }
     wrap.append(list); sections.push(wrap);
   }
-  $("bill-groups").replaceChildren(...(sections.length ? sections : [emptyState("No confirmed recurring bills due soon. Confirm proposed ones below or in Review.")]));
+  $("bill-groups").replaceChildren(...(sections.length ? sections : [emptyState("No confirmed recurring payments due soon. Confirm proposed ones below or in Review.")]));
+  // Subscriptions: each confirmed one, and what they cost together (the server's totals; the browser does no arithmetic).
+  const subscriptions = recurring.obligations.filter(row => row.status === "verified" && row.kind === "subscription");
+  const summary = [];
+  if (subscriptions.length) {
+    const list = element("ul", "", "finance-list");
+    for (const row of subscriptions) {
+      const li = element("li", "", "bill-row"), main = element("div", "", "bill-main");
+      main.append(element("strong", row.merchant), element("span", ` ${FREQUENCY_LABELS[row.frequency] || row.frequency}`, "muted"));
+      li.append(main, amount(row.expected_amount, {signed: false})); list.append(li);
+    }
+    summary.push(list);
+    for (const total of recurring.totals.filter(total => total.kind === "subscription")) {
+      const line = element("p", "", "subscription-total");
+      line.append(element("span", `${total.count} ${total.count === 1 ? "subscription" : "subscriptions"}: about `), amount(total.monthly, {signed: false}),
+                  element("span", " a month, "), amount(total.yearly, {signed: false}), element("span", " a year"));
+      summary.push(line);
+    }
+    summary.push(element("p", "Payments that aren't monthly are spread evenly over the year. What If can show your plan with them cancelled.", "muted small"));
+  } else summary.push(emptyState("No confirmed subscriptions. Mark a recurring payment as a subscription below."));
+  $("subscription-summary").replaceChildren(...summary);
   const decide = (row, status) => api(`/api/finance/recurring/${row.id}/review`, {method: "POST", body: JSON.stringify({status})})
     .then(() => { notice("Saved."); refreshReviewCount(); return loadBills(); });
+  const setKind = (row, kind) => api(`/api/finance/recurring/${row.id}/kind`, {method: "POST", body: JSON.stringify({kind})})
+    .then(() => { notice(`${row.merchant} now counts as a ${RECURRING_KIND_LABELS[kind].toLowerCase()}.`); return loadBills(); })
+    .catch(error => { notice(error, true); return loadBills(); });
   const rows = recurring.obligations.map(row => {
     const tr = document.createElement("tr");
     cell(tr, row.merchant); cell(tr, "").append(amount(row.expected_amount, {signed: false})); tr.lastChild.className = "numeric";
     cell(tr, {weekly: "week", monthly: "month", quarterly: "quarter", semiannual: "6 months", annual: "year"}[row.frequency] || row.frequency); cell(tr, row.next_due_date ? dateText(row.next_due_date) : "—");
+    const kind = kindSelect(row.kind, value => setKind(row, value));
+    kind.setAttribute("aria-label", `${row.merchant} counts as`); kind.className = "kind-select";
+    cell(tr, "").append(kind);
     cell(tr, "").append(statusBadge(row.status));
     const actions = cell(tr, "");
     if (row.status === "proposed") actions.append(asyncButton("Confirm", () => decide(row, "verified"), "small primary"), asyncButton("Not recurring", () => decide(row, "rejected")));
     else actions.append(asyncButton("Ended", () => decide(row, "ended"), "small quiet"));
     return tr;
   });
-  if (rows.length) $("recurring-rows").replaceChildren(...rows); else tableMessage($("recurring-rows"), 6, "No recurring payments detected yet.");
+  if (rows.length) $("recurring-rows").replaceChildren(...rows); else tableMessage($("recurring-rows"), 7, "No recurring payments detected yet.");
 }
 $("recurring-scan").addEventListener("click", () => api("/api/finance/recurring/scan", {method: "POST"})
   .then(() => notice("Looking for recurring bills. Any found wait in Review; Processing shows the progress."))

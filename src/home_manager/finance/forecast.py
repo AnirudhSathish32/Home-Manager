@@ -183,6 +183,8 @@ class ForecastInput(StrictInput):
     spending_changes: list[SpendingChange] = Field(default_factory=list, max_length=50)
     one_offs: list[OneOff] = Field(default_factory=list, max_length=200)
     income_changes: list[IncomeChange] = Field(default_factory=list, max_length=50)
+    cut_subscriptions_from: str | None = Field(default=None, pattern=MONTH.pattern,
+                                               description="From this month on, confirmed subscriptions are cancelled; bills stay.")
 
 
 class Assets:
@@ -306,7 +308,7 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
                 if payment["category"] in categories:
                     categories[payment["category"]] -= payment["amount"]
             bills.append({"name": bill["merchant"], "category": bill["category"] or "bills", "amount_minor": bill["expected_amount_minor"],
-                          "frequency": bill["frequency"], "next_due": bill["next_due_date"]})
+                          "frequency": bill["frequency"], "next_due": bill["next_due_date"], "kind": bill["kind"]})
     categories = {category: total for category, total in categories.items() if total}
     if bills:
         notes.append(f"{len(bills)} confirmed recurring {'bill is' if len(bills) == 1 else 'bills are'} placed on {'its' if len(bills) == 1 else 'their'} "
@@ -447,6 +449,15 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                          + ("replacing the pay on confirmed pay stubs and their contributions." if planned.mode == "replace_pay" else "added to income."))
             if planned.mode == "replace_pay" and not pay and base["monthly_income"]:
                 notes.append(f"{planned.label}: there are no confirmed pay stubs to replace, so recorded income keeps any pay it includes.")
+        cut = value.cut_subscriptions_from
+        cancelled = [bill for bill in base.get("bills", []) if bill.get("kind") == "subscription"]
+        if cut and cancelled:
+            saving = sum((Decimal(bill["amount_minor"]) * 52 / 12 if bill["frequency"] == "weekly" else Decimal(bill["amount_minor"]) / FREQUENCY_MONTHS[bill["frequency"]]
+                          for bill in cancelled), Decimal(0))
+            notes.append(f"From {cut}, {len(cancelled)} confirmed {'subscription is' if len(cancelled) == 1 else 'subscriptions are'} cancelled, "
+                         f"about {money(minor(saving), currency)['display']} a month in today's money; bills stay.")
+        elif cut:
+            notes.append("There are no confirmed subscriptions to cancel.")
         for since, category, level in set_amounts:
             notes.append(f"From {since}, {category} is set to {money(minor(level), currency)['display']} a month in today's money, "
                          "instead of its recent average and bills.")
@@ -495,7 +506,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                 for holding, amount, yearly in entry["targets"]:
                     contributions[id(holding)] = contributions.get(id(holding), Decimal(0)) + amount + yearly.get(calendar, Decimal(0))
             for bill in base.get("bills", []):
-                if bill["category"] in fixed_now:
+                if bill["category"] in fixed_now or bill.get("kind") == "subscription" and cut and month >= cut:
                     continue
                 due = bill_amount(bill, month, start) * changes.get(bill["category"], one)
                 if due:
@@ -589,7 +600,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                             "income_changes": [change.model_dump() for change in value.income_changes],
                             "pay_plans": [item.model_dump() for item in value.pay_plans],
                             "category_amounts": [item.model_dump() for item in value.category_amounts],
-                            "one_offs": [item.model_dump() for item in value.one_offs],
+                            "one_offs": [item.model_dump() for item in value.one_offs], "cut_subscriptions_from": cut,
                             "retirement": plan.model_dump() if plan else None, "birth_year": birth_year,
                             "rmd_start": {"year": first_rmd, "age": rmd_start_age(birth_year)} if birth_year else None},
             "starting_point": {"cash": money(base["cash"], currency), "balances": base["balances"],
@@ -597,7 +608,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                                "monthly_pay": money(minor(pay), currency),
                                "monthly_spending": [{"category": category, "amount": money(minor(amount), currency)}
                                                     for category, amount in base["monthly_spending"].items()],
-                               "recurring_bills": [{"name": bill["name"], "category": bill["category"], "frequency": bill["frequency"],
+                               "recurring_bills": [{"name": bill["name"], "category": bill["category"], "kind": bill.get("kind", "bill"), "frequency": bill["frequency"],
                                                     "next_due": bill["next_due"], "amount": money(bill["amount_minor"], currency)}
                                                    for bill in base.get("bills", [])],
                                "assets": [{"name": asset["name"], "kind": asset["kind"], "kind_label": asset.get("kind_label"), "investment": asset.get("source") == "investment",

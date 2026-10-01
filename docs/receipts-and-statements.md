@@ -45,6 +45,24 @@ The app asks: "Credit card statement recorded … Begin reconciling receipts?"
 
 Statements recorded before this change were already reconciled and are unaffected.
 
+## Reading a statement or receipt again
+
+Extracting a document again (a better model, or **Try again**) never touches a record you approved or rejected
+yourself. For one waiting in Review or approved automatically, the new reading replaces the old one, line by line:
+
+- A line it finds again keeps its place in the ledger and everything attached to it, and takes the new reading's text.
+  - A statement line is the same line when it has the same posted date, amount and currency. Its category, write-off
+    tags and receipt match stay.
+  - A receipt item is the same item when it has the same description (ignoring case and punctuation) and line total.
+    It keeps its identification, write-off tags, household item and your own category, and it moves to the new
+    reading's position, so a line the first reading missed can appear above it.
+- A line it no longer finds is removed, with the app's own proposals about it (matches, open questions).
+- A line it no longer finds but that you worked on is kept, and the record waits in Review with a note to check it.
+  - For a statement line, that means one you categorised, tagged, matched to a receipt, a transfer or a bill, or
+    linked to an investment.
+  - For a receipt item, it means one you categorised, identified or tagged, or one in your household items. It's kept
+    after the new reading's items.
+
 ## Near matches
 
 Exact-amount matching misses a tip added after the receipt printed, or a currency conversion. When no charge
@@ -197,6 +215,13 @@ Recurring bills are for forecasting and budgets (migration 028, `Reconciler.prop
   whose citations fail twice is skipped with a note and never fails the document. Each term is proposed
   (`contract_terms`) with its document and quoted amount line, next due from a printed first due date rolled
   forward (else set by the first matched payment).
+- **Bill or subscription** (migration 048, `recurring_obligations.kind`). Every recurring payment is one or the
+  other, and you decide: a bill is one you count as important, a subscription one you count as less so (a game
+  subscription can be either). A new proposal is suggested from its category (subscriptions and entertainment
+  start as subscriptions, everything else as a bill; contract terms are always bills). You confirm or change it in
+  Review, and change it later on the Bills page; each change is audited in `review_events`. Re-detection never
+  overwrites it. Both kinds count the same in spending, budgets and the forecast; the Bills page totals
+  subscriptions separately, and What If can cancel them from a month on.
 - **One bill per payee.** A payee that already has a bill, including one you rejected, gets no new proposal.
 - **Deleting the source** (a receipt or document emptied from Trash) keeps the recurring bill and clears the link.
 - **Later payments keep it current.** A counted payment to the same payee within 50%-150% of the usual amount is a

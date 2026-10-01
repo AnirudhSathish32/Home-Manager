@@ -149,7 +149,7 @@ function renderForecast(result) {
   // Confirmed recurring bills are projected on their due dates rather than averaged.
   const bills = element("ul", "", "finance-list");
   for (const bill of start.recurring_bills || []) {
-    bills.append(element("li", `${bill.name} (${bill.category}): ${bill.amount.display} ${FREQUENCY_LABELS[bill.frequency].toLowerCase()}${bill.next_due ? `, next ${dateText(bill.next_due)}` : ""}`));
+    bills.append(element("li", `${bill.name} (${bill.kind === "subscription" ? "subscription, " : ""}${bill.category}): ${bill.amount.display} ${FREQUENCY_LABELS[bill.frequency].toLowerCase()}${bill.next_due ? `, next ${dateText(bill.next_due)}` : ""}`));
   }
   const invested = start.assets.filter(asset => asset.investment), investments = element("ul", "", "finance-list");
   for (const asset of invested) {
@@ -161,7 +161,7 @@ function renderForecast(result) {
   }
   $("forecast-start").replaceChildren(facts, element("h3", "Monthly spending by category"),
     start.monthly_spending.length ? spending : element("p", "No recent counted spending.", "muted"),
-    ...((start.recurring_bills || []).length ? [element("h3", "Recurring bills"), bills] : []),
+    ...((start.recurring_bills || []).length ? [element("h3", "Recurring bills and subscriptions"), bills] : []),
     element("h3", "Investments"), invested.length ? investments : element("p", "No confirmed investment values.", "muted"),
     homeLink("Open Investments to add accounts or change growth rates", "#/investments"));
   forecastCategories = [...new Set([...start.monthly_spending.map(row => row.category), ...(start.recurring_bills || []).map(bill => bill.category)])];

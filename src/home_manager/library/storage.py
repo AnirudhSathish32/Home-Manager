@@ -88,19 +88,42 @@ class MigrationError(RuntimeError):
         self.number, self.version, self.snapshot = number, version, snapshot
 
 
+def reference_problems(db) -> Counter:
+    """Rows whose foreign key points at nothing, counted per (table, parent)."""
+    return Counter((row[0], row[2]) for row in db.execute("PRAGMA foreign_key_check"))
+
+
 def apply_migrations(db, version, snapshot=None):
-    """Run each schema script newer than version on an open connection (autocommit), in order.
+    """Run each schema script newer than version on an open connection, in order.
 
     Each script is its own transaction, so a failure keeps the scripts before it and the next start resumes.
+    Foreign keys are off while scripts run, as SQLite's table-rebuild procedure requires: with them on, the
+    DROP TABLE of a rebuild deletes every ON DELETE CASCADE child row. Instead, a step that leaves new broken
+    references is rolled back before it commits.
     """
+    enforced = db.execute("PRAGMA foreign_keys").fetchone()[0]
+    db.execute("PRAGMA foreign_keys=OFF")  # Only takes effect outside a transaction, so never inside a script.
+    try:
+        _apply_migrations(db, version, snapshot)
+    finally:
+        db.execute(f"PRAGMA foreign_keys={'ON' if enforced else 'OFF'}")
+
+
+def _apply_migrations(db, version, snapshot):
     for number, script in MIGRATIONS:
         if version < number:
             log.info("schema upgrade step=%03d", number)
             try:
-                db.executescript("BEGIN IMMEDIATE;\n" + script.read_text() + "\nCOMMIT;")
+                before = reference_problems(db)
+                db.executescript("BEGIN IMMEDIATE;\n" + script.read_text())
                 reached = db.execute("PRAGMA user_version").fetchone()[0]
                 if reached != number:
                     raise sqlite3.DatabaseError(f"Upgrade step {number:03d} did not record its version.")
+                broken = reference_problems(db) - before
+                if broken:
+                    raise sqlite3.IntegrityError(f"Upgrade step {number:03d} would leave {sum(broken.values())} broken references "
+                                                 f"({', '.join(f'{table} -> {parent}' for table, parent in sorted(broken))}).")
+                db.execute("COMMIT")
             except sqlite3.Error as exc:
                 if db.in_transaction:
                     db.rollback()

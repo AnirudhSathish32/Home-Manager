@@ -257,8 +257,9 @@ class Ledger:
 
     # Transactions -------------------------------------------------------------
 
-    def insert_transactions(self, db, account, rows, origin, source, statement_id=None, review_status="proposed"):
-        """Insert or de-duplicate rows, returning (inserted_ids, duplicate_ids). Evidence is always linked."""
+    def insert_transactions(self, db, account, rows, origin, source, statement_id=None, review_status="proposed", refresh=()):
+        """Insert or de-duplicate rows, returning (inserted_ids, duplicate_ids). Evidence is always linked.
+        A duplicate whose id is in refresh takes this reading's description, dates, type and review state."""
         inserted, duplicates = [], []
         for row, fingerprint in zip(rows, fingerprints(account["id"], rows)):
             if row["currency"] != account["currency"]:
@@ -278,6 +279,10 @@ class Ledger:
                 duplicates.append(record)
                 if statement_id:
                     db.execute("UPDATE transactions SET statement_id=coalesce(statement_id,?),updated_at=? WHERE id=?", (statement_id, now(), record))
+                if record in refresh:
+                    db.execute("UPDATE transactions SET transaction_date=?,description_raw=?,transaction_type=?,review_status=?,review_source=?,updated_at=? WHERE id=?",
+                               (row.get("transaction_date"), row["description"][:500], kind, review_status,
+                                "automatic" if review_status == "verified" else None, now(), record))
             self.add_evidence(db, "transaction", record, source, row["locator"])
         self.apply_rules(db, inserted)
         from .tax_tags import TaxTags  # Tax rules and suggestions for the new lines (finance/tax_tags.py imports this module).
@@ -315,30 +320,83 @@ class Ledger:
                 "recurrence": record.get("recurrence"), "payment_last_four": record.get("payment_last_four"),
                 "review_status": status, "validation_json": json.dumps(record["issues"]),
                 "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote")})
+            kept = 0
             if written:
-                stale = [row[0] for row in db.execute("SELECT id FROM receipt_items WHERE receipt_id=?", (receipt_id,))]
-                db.executemany("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", [(item,) for item in stale])
-                db.execute("DELETE FROM receipt_items WHERE receipt_id=?", (receipt_id,))
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
                 self.apply_corrections(db, "receipt", receipt_id)
-                remembered = self.remembered_categories(db, record["merchant"])
-                for position, item in enumerate(record["items"], 1):
-                    category, category_source = remembered.get(normalize_name(item["description"])), "memory"
-                    if category is None:
-                        category, category_source = receipt_category(item.get("category")), "model"
-                    taxed = item.get("taxed")
-                    item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                         "taxed,category,category_source,review_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                         (receipt_id, position, item["description"], item["product_code"], item["quantity"], item["unit_price_minor"],
-                                          item["line_total_minor"], item["discount_minor"], None if taxed is None else int(taxed), category,
-                                          category_source if category else None, status)).lastrowid
-                    self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
+                kept = self._replace_items(db, receipt_id, record, source, status)
+                if kept:
+                    issues = [*record["issues"], f"This reading no longer finds {kept} item{'s' if kept > 1 else ''} you worked on; "
+                              "they were kept at the end of the list. Check them against the receipt."]
+                    db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json) VALUES(?,?,?,?,?,?,?,?)",
                                [(receipt_id, position, reward["kind"], reward["description"], reward["amount"], reward["expires"], reward["link"],
                                  json.dumps(reward["locator"])) for position, reward in enumerate(record.get("rewards", []), 1)])
                 self.refresh_splits(db, receipt_id)
-        return self._published("receipt", receipt_id, written, items=len(record["items"]))
+        return self._published("receipt", receipt_id, written, items=len(record["items"]), kept=kept)
+
+    @staticmethod
+    def item_keys(items):
+        """Reading-independent identity of receipt lines: description and line total, with an ordinal for repeated lines."""
+        seen = Counter()
+        for item in items:
+            key = (normalize_name(item["description"]), item["line_total_minor"])
+            yield (*key, seen[key])
+            seen[key] += 1
+
+    def _replace_items(self, db, receipt_id, record, source, status):
+        """Write this reading's items. An item it finds again keeps its id, so its identification, write-off tags, household
+        lot and the user's category stay; it takes the new text and position. One it no longer finds is removed, unless the
+        user worked on it: then it is kept after the new items. Returns how many were kept that way."""
+        earlier = [dict(row) for row in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))]
+        by_key = dict(zip(self.item_keys(earlier), earlier))
+        matched = {}  # new position -> earlier item
+        for position, key in enumerate(self.item_keys(record["items"]), 1):
+            if key in by_key:
+                matched[position] = by_key.pop(key)
+        kept = [item for item in by_key.values() if self.item_worked_on(db, receipt_id, item)]
+        for item in by_key.values():
+            if item not in kept:
+                db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item["id"],))
+                db.execute("DELETE FROM receipt_items WHERE id=?", (item["id"],))
+        # Lines and their lots move to their new positions in two steps, as positions are unique per receipt.
+        moves = {**{item["position"]: position for position, item in matched.items()},
+                 **{item["position"]: len(record["items"]) + index for index, item in enumerate(kept, 1)}}
+        for table in ("receipt_items", "inventory_lots"):
+            db.execute(f"UPDATE {table} SET position=-position WHERE receipt_id=? AND position>0", (receipt_id,))
+            db.executemany(f"UPDATE {table} SET position=? WHERE receipt_id=? AND position=?", [(new, receipt_id, -old) for old, new in moves.items()])
+        # A lot whose line had already gone (a reading before this change replaced every line) keeps its product, not a position.
+        db.execute("UPDATE inventory_lots SET position=NULL WHERE receipt_id=? AND position<0", (receipt_id,))
+        remembered = self.remembered_categories(db, record["merchant"])
+        for position, item in enumerate(record["items"], 1):
+            category, category_source = remembered.get(normalize_name(item["description"])), "memory"
+            if category is None:
+                category, category_source = receipt_category(item.get("category")), "model"
+            taxed = None if item.get("taxed") is None else int(item["taxed"])
+            values = (item["description"], item["product_code"], item["quantity"], item["unit_price_minor"], item["line_total_minor"], item["discount_minor"], taxed)
+            if position in matched:
+                item_id, earlier_item = matched[position]["id"], matched[position]
+                if earlier_item["category_source"] == "user":  # The user's own category outlives any reading.
+                    category, category_source = earlier_item["category"], "user"
+                db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
+                           "category=?,category_source=?,review_status=? WHERE id=?", (*values, category, category_source if category else None, status, item_id))
+                db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
+            else:
+                item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
+                                     "taxed,category,category_source,review_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     (receipt_id, position, *values, category, category_source if category else None, status)).lastrowid
+            self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
+        return len(kept)
+
+    @staticmethod
+    def item_worked_on(db, receipt_id, item):
+        """Whether the user categorised, identified or tagged a receipt line, or keeps it in the household (a lot)."""
+        return item["category_source"] == "user" or db.execute(
+            "SELECT EXISTS(SELECT 1 FROM item_resolutions WHERE receipt_item_id=:i AND review_status='verified') "
+            "OR EXISTS(SELECT 1 FROM tax_tags WHERE receipt_item_id=:i AND (source='user' OR review_status='verified')) "
+            "OR EXISTS(SELECT 1 FROM inventory_lots WHERE receipt_id=:r AND position=:p)",
+            {"i": item["id"], "r": receipt_id, "p": item["position"]}).fetchone()[0] == 1
 
     # Item categories --------------------------------------------------------------
     # Each receipt item has its own spending category; category_splits divides the money (finance/splits.py).
@@ -437,16 +495,50 @@ class Ledger:
                 return self._published("statement", statement_id, False, account_id=account["id"])
             self.add_evidence(db, "statement", statement_id, source, record["locator"])
             # Rows from an earlier extraction the user has not decided (unreviewed or accepted automatically) that no other source supports.
-            stale = [row[0] for row in db.execute(
-                "SELECT t.id FROM transactions t WHERE t.statement_id=? AND t.origin='extraction' "
+            # A row this reading finds again (same fingerprint) keeps its id, so its tags, links and category stay; it takes the new
+            # reading's text. A row it no longer finds is removed, unless the user worked on it: then it stays and the statement waits in Review.
+            found = set(fingerprints(account["id"], record["transactions"]))
+            earlier = db.execute(
+                "SELECT t.id,t.source_fingerprint FROM transactions t WHERE t.statement_id=? AND t.origin='extraction' "
                 "AND (t.review_status IN ('proposed','needs_review') OR t.review_source='automatic') "
                 "AND NOT EXISTS(SELECT 1 FROM financial_evidence_links e WHERE e.record_type='transaction' AND e.record_id=t.id AND e.source_key NOT LIKE 'extraction:%')",
-                (statement_id,))]
-            for transaction in stale:
-                db.execute("DELETE FROM financial_evidence_links WHERE record_type='transaction' AND record_id=?", (transaction,))
-                db.execute("DELETE FROM transactions WHERE id=?", (transaction,))
-            inserted, duplicates = self.insert_transactions(db, account, record["transactions"], "extraction", source, statement_id, status)
-        return self._published("statement", statement_id, True, account_id=account["id"], inserted=len(inserted), duplicates=len(duplicates))
+                (statement_id,)).fetchall()
+            refresh = {row["id"] for row in earlier if row["source_fingerprint"] in found}
+            missing = [row["id"] for row in earlier if row["source_fingerprint"] not in found]
+            kept = [transaction for transaction in missing if self.user_worked_on(db, transaction)]
+            for transaction in refresh:  # Cited from this reading only, below.
+                db.execute("DELETE FROM financial_evidence_links WHERE record_type='transaction' AND record_id=? AND blob_hash=? AND source_key LIKE 'extraction:%'",
+                           (transaction, source["blob_hash"]))
+            for transaction in set(missing) - set(kept):
+                self.remove_transaction(db, transaction)
+            inserted, duplicates = self.insert_transactions(db, account, record["transactions"], "extraction", source, statement_id, status, refresh)
+            if kept:
+                issues = [*record["issues"], f"This reading no longer finds {len(kept)} transaction{'s' if len(kept) > 1 else ''} you worked on; "
+                          "they were kept. Check them against the statement."]
+                db.execute("UPDATE statements SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), statement_id))
+        return self._published("statement", statement_id, True, account_id=account["id"], inserted=len(inserted), duplicates=len(duplicates), kept=len(kept))
+
+    @staticmethod
+    def user_worked_on(db, transaction_id):
+        """Whether the user categorised, tagged or matched a transaction (a machine proposal does not count)."""
+        return db.execute(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE id=:t AND category_source='user') "
+            "OR EXISTS(SELECT 1 FROM transaction_receipt_links WHERE transaction_id=:t AND review_status='verified') "
+            "OR EXISTS(SELECT 1 FROM transaction_links WHERE :t IN (from_transaction_id,to_transaction_id) AND review_status='verified') "
+            "OR EXISTS(SELECT 1 FROM bills WHERE payment_transaction_id=:t) "
+            "OR EXISTS(SELECT 1 FROM tax_tags WHERE transaction_id=:t AND (source='user' OR review_status='verified')) "
+            "OR EXISTS(SELECT 1 FROM investment_events WHERE transaction_id=:t AND transaction_link='user')",
+            {"t": transaction_id}).fetchone()[0] == 1
+
+    @staticmethod
+    def remove_transaction(db, transaction_id):
+        """Delete a transaction no reading supports, with the machine-made rows that point at it. Tags, splits and
+        payment rejections go by cascade; the typed-ID rows are removed here, as emptying Trash does."""
+        db.execute("DELETE FROM transaction_receipt_links WHERE transaction_id=?", (transaction_id,))
+        db.execute("DELETE FROM transaction_links WHERE ? IN (from_transaction_id,to_transaction_id)", (transaction_id,))
+        for table in ("financial_evidence_links", "reconciliation_issues", "review_events"):
+            db.execute(f"DELETE FROM {table} WHERE record_type='transaction' AND record_id=?", (transaction_id,))
+        db.execute("DELETE FROM transactions WHERE id=?", (transaction_id,))
 
     def publish_bill(self, record, source, status):
         with self.store.connection() as db:

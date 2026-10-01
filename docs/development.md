@@ -45,12 +45,13 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 1. Add `src/home_manager/library/migrations/NNN_short_name.sql`, where `NNN` is one more than the highest number there. `MIGRATIONS` picks it up by name. The package data in `pyproject.toml` already ships `migrations/*.sql`.
 2. Start it with a comment saying what it is for and which doc covers it. End it with `PRAGMA user_version=NNN;`. The runner refuses a step that doesn't record its own number.
 3. Don't write `BEGIN` or `COMMIT`. The runner wraps each script in one `BEGIN IMMEDIATE … COMMIT`, so a failed step rolls back whole, earlier steps are kept, and the next start retries.
-4. SQLite can't change a `CHECK` constraint or drop some columns in place. Build a `*_new` table, copy the rows, drop the old one and rename (see `024`, `028`, `034`).
-5. Upgrades are forward-only. Existing libraries get the new schema at their next start, after the app takes an `inventory.before-vNNN.sqlite3` copy ([managed library](managed-library.md)).
-6. Backups record their `schema_version`. A backup from an older version restores and then upgrades; one from a newer version is refused (`library/backup.py`). No extra step is needed, but don't renumber or edit a released migration.
-7. If new work has a `*_runs` table, give its service a `recover()` that marks `queued`/`running` rows `interrupted`, and call it from `Manager.open_library`.
-8. Test the feature against the new tables in the feature's own test file. `tests/test_migrations.py` covers the upgrade machinery (failed step, missing version, damaged database).
-9. Add the migration to [schema.md](schema.md).
+4. SQLite can't change a `CHECK` constraint or drop some columns in place. Build a `*_new` table, copy the rows, drop the old one and rename (see `024`, `028`, `034`). Foreign keys are off while scripts run, so the `DROP TABLE` doesn't delete the rows that cascade from it. Recreate the table's indexes and triggers after the rename. The runner runs `PRAGMA foreign_key_check` before committing, and refuses a step that leaves new broken references.
+5. Every table is `STRICT` (since `050`): end each `CREATE TABLE … ) STRICT;` and use only `INTEGER`, `REAL`, `TEXT`, `BLOB` or `ANY`. Dates and JSON are `TEXT`; money is `INTEGER` minor units; a boolean is `INTEGER … CHECK (x IN (0,1))`; a state or kind gets a `CHECK (x IN (…))` listing every value the code writes. A rebuilt table must stay `STRICT`, and SQLite writes the renamed table's name quoted (`CREATE TABLE "receipts"`).
+6. Upgrades are forward-only. Existing libraries get the new schema at their next start, after the app takes an `inventory.before-vNNN.sqlite3` copy ([managed library](managed-library.md)).
+7. Backups record their `schema_version`. A backup from an older version restores and then upgrades; one from a newer version is refused (`library/backup.py`). No extra step is needed, but don't renumber or edit a released migration.
+8. If new work has a `*_runs` table, give its service a `recover()` that marks `queued`/`running` rows `interrupted`, and call it from `Manager.open_library`. If its status has a `CHECK`, list `interrupted` in it.
+9. Test the feature against the new tables in the feature's own test file. `tests/test_migrations.py` covers the upgrade machinery (failed step, missing version, damaged database, table rebuilds, broken references).
+10. Add the migration to [schema.md](schema.md).
 
 ## Rules that apply everywhere
 

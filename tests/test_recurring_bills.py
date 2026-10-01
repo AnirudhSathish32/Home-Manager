@@ -18,7 +18,7 @@ from home_manager.finance.forecast import ForecastInput, forecast
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.recurring_scan import RecurringScan
-from home_manager.finance.tools import AsOfInput, BudgetInput, FinanceTools
+from home_manager.finance.tools import AsOfInput, BudgetInput, FinanceTools, RecurringInput
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from home_manager.library.trash import empty
@@ -120,6 +120,63 @@ def test_upcoming_bills_are_confirmed_recurring_bills_by_next_due_date(books):
     assert upcoming("2026-10-05") == [("Oak Street Rentals", "2026-11-03", "1500.00", "due")]
     home = dashboard(store, "2026-10", today=date(2026, 10, 5))["bills"]
     assert ([bill["provider"] for bill in home["upcoming"]], home["overdue"], home["total"]) == (["Oak Street Rentals"], [], 1)
+
+
+def test_bill_or_subscription_is_suggested_and_the_users_choice_stays(books):
+    store, ledger, reconciler, docs = books
+    checking = ledger.create_account("First Local Bank", "checking", "USD")
+    ledger.add_rule("STREAMFLIX", "subscriptions")
+    ledger.add_rule("GEICO", "insurance")
+    add(store, ledger, checking, docs["export.csv"], [("2026-09-10", "GEICO AUTO", -30000), ("2026-09-11", "STREAMFLIX", -1599),
+                                                        # Uncategorized, at a steady cadence: detected, and a bill until the user says otherwise.
+                                                        ("2026-07-05", "GAME PASS", -1700), ("2026-08-05", "GAME PASS", -1700), ("2026-09-05", "GAME PASS", -1700)])
+    reconciler.run()
+    found = bills(FinanceTools(store))
+    assert {name: row["kind"] for name, row in found.items()} == {"GEICO AUTO": "bill", "STREAMFLIX": "subscription", "GAME PASS": "bill"}
+    # The user decides: while confirming, or at any time after.
+    reconciler.review_obligation(found["GAME PASS"]["id"], "verified", kind="subscription")
+    reconciler.review_obligation(found["STREAMFLIX"]["id"], "verified")
+    assert reconciler.set_obligation_kind(found["STREAMFLIX"]["id"], "bill") == {"id": found["STREAMFLIX"]["id"], "kind": "bill"}
+    with pytest.raises(ValueError, match="bill or subscription"):
+        reconciler.set_obligation_kind(found["GEICO AUTO"]["id"], "luxury")
+    reconciler.review_obligation(found["GEICO AUTO"]["id"], "rejected")
+    with pytest.raises(ValueError, match="proposed or confirmed"):
+        reconciler.set_obligation_kind(found["GEICO AUTO"]["id"], "subscription")
+    add(store, ledger, checking, docs["export.csv"], [("2026-10-05", "GAME PASS", -1700)])
+    reconciler.run()  # Re-detection never overwrites the user's choice.
+    after = bills(FinanceTools(store))
+    assert (after["GAME PASS"]["kind"], after["STREAMFLIX"]["kind"]) == ("subscription", "bill")
+    with store.connection() as db:
+        notes = [row[0] for row in db.execute("SELECT note FROM review_events WHERE record_type='recurring_obligation' ORDER BY id")]
+    assert "Kind: subscription." in notes and "Kind: subscription to bill." in notes
+    upcoming = FinanceTools(store).get_upcoming_bills(AsOfInput(as_of="2026-10-06", days=60))["bills"]
+    assert {bill["provider"]: bill["kind"] for bill in upcoming} == {"GAME PASS": "subscription", "STREAMFLIX": "bill"}
+
+
+def test_subscriptions_are_totalled_and_what_if_can_cancel_them(books):
+    store, ledger, reconciler, docs = books
+    paid(ledger, docs["rent.png"], "Oak Street Rentals", "2026-09-01", 150000, "housing", "monthly")
+    paid(ledger, docs["power.png"], "Stream Co", "2026-09-02", 1599, "subscriptions", "monthly")
+    paid(ledger, docs["insurance.png"], "Game Club", "2026-09-03", 500, "entertainment", "weekly")
+    reconciler.run()
+    tools = FinanceTools(store)
+    for bill in bills(tools).values():
+        reconciler.review_obligation(bill["id"], "verified")
+    result = tools.get_recurring_obligations(RecurringInput())
+    # Weekly counts 52/12 a month: 1599 + 500 * 52 / 12 = 3765.67 a month, 1599 * 12 + 500 * 52 = 451.88 a year.
+    assert [(row["kind"], row["count"], row["monthly"]["decimal"], row["yearly"]["decimal"]) for row in result["totals"]] == [
+        ("bill", 1, "1500.00", "18000.00"), ("subscription", 2, "37.66", "451.88")]
+    only = tools.get_recurring_obligations(RecurringInput(kind="subscription"))["obligations"]
+    assert sorted(row["merchant"] for row in only) == ["Game Club", "Stream Co"]
+    base = forecast(store, ForecastInput(years=1, inflation_percent="0"), today=date(2026, 10, 15))
+    cut = forecast(store, ForecastInput(years=1, inflation_percent="0", cut_subscriptions_from="2027-01"), today=date(2026, 10, 15))
+    assert {bill["name"]: bill["kind"] for bill in cut["starting_point"]["recurring_bills"]} == {
+        "Oak Street Rentals": "bill", "Stream Co": "subscription", "Game Club": "subscription"}
+    before, after = [row["spending"] for row in base["months"]], [row["spending"] for row in cut["months"]]
+    assert before[:2] == after[:2]  # November and December still pay them.
+    assert all(old - new == 1599 + 2167 for old, new in zip(before[2:], after[2:]))  # From January, rent alone.
+    assert any("2 confirmed subscriptions are cancelled" in note and "37.66" in note for note in cut["notes"])
+    assert cut["assumptions"]["cut_subscriptions_from"] == "2027-01"
 
 
 def test_a_confirmed_bill_outlives_the_receipt_it_came_from(books):
@@ -243,13 +300,26 @@ def test_browser_confirms_a_proposed_bill_with_its_frequency(tmp_path):
             detail = page.locator("#review-detail")
             playwright.expect(detail).to_contain_text("A receipt was read as a payment for a service billed on a schedule")
             detail.get_by_label("How often").select_option("semiannual")
+            playwright.expect(detail.get_by_label("Counts as")).to_have_value("bill")  # Insurance is suggested as a bill.
+            detail.get_by_label("Counts as").select_option("subscription")
             detail.get_by_role("button", name="Confirm recurring (V)").click()
+            playwright.expect(page.locator(".toast").last).to_contain_text("Confirmed as a subscription")
             playwright.expect(detail).to_contain_text("Nothing needs your review")
             page.locator("#nav-bills").click()
             playwright.expect(page.locator("#recurring-rows")).to_contain_text("6 months")
             playwright.expect(page.locator("#recurring-rows")).to_contain_text("Mar 15, 2027")
             playwright.expect(page.locator("#recurring-scan")).to_be_visible()
             playwright.expect(page.locator("#bill-groups")).not_to_be_empty()  # The bill, or the empty state while it is months away.
+            # Every six months: 600.00 / 6 = 100.00 a month, 1,200.00 a year.
+            summary = page.locator("#subscription-summary")
+            playwright.expect(summary).to_contain_text("Harbor Insurance")
+            playwright.expect(summary).to_contain_text("1 subscription: about 100.00 USD a month, 1,200.00 USD a year")
+            # Changed back later on the Bills page.
+            page.get_by_label("Harbor Insurance counts as").select_option("bill")
+            playwright.expect(summary).to_contain_text("No confirmed subscriptions")
+            for width in (390, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
             assert not failures
             browser.close()
     finally:

@@ -290,6 +290,10 @@ def test_new_endpoints_are_typed_and_wired(tmp_path, local_model):
         assert client.post("/api/finance/issues/1/resolve", json={"transaction_id": None}).status_code == 400
         assert client.post("/api/finance/bills/1/payment", json={"status": "settled"}).status_code == 422
         assert client.post("/api/finance/recurring/1/review", json={"status": "verified"}).status_code == 400
+        assert client.post("/api/finance/recurring/1/review", json={"status": "verified", "kind": "luxury"}).status_code == 422
+        assert client.post("/api/finance/recurring/1/kind", json={"kind": "luxury"}).status_code == 422
+        assert client.post("/api/finance/recurring/1/kind", json={"kind": "bill", "note": "x"}).status_code == 422
+        assert client.post("/api/finance/recurring/1/kind", json={"kind": "subscription"}).status_code == 400  # Not found.
         assert client.post("/api/finance/reconcile").status_code == 200
         assert client.get("/api/finance/reconciliation-runs").json()[0]["trigger"] == "manual"
         assert client.post("/api/finance/tools/spending_series", json={"start_month": "2026-01", "end_month": "2026-03"}).status_code == 200

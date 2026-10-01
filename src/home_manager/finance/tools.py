@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..core.categories import FREQUENCY_MONTHS, RECURRING_KINDS
 from ..core.money import currency_code, money, to_minor
 from ..household.analysis import ANOMALY_TOOLS, ITEM_TOOLS, ItemAnalysisTools
 from ..household.items import ItemLedger
@@ -177,6 +178,10 @@ class ReceiptSearchInput(ToolInput):
 
 class EmptyInput(ToolInput):
     pass
+
+
+class RecurringInput(ToolInput):
+    kind: Literal[*RECURRING_KINDS] | None = Field(default=None, description="Only bills (important to the user) or only subscriptions.")  # type: ignore[valid-type]
 
 
 class BudgetInput(ToolInput):
@@ -560,18 +565,36 @@ class FinanceTools(ItemAnalysisTools):
 
     # Obligations, bills, receipts and refunds -------------------------------------
 
-    def get_recurring_obligations(self, _=None):
+    def get_recurring_obligations(self, value=None):
+        """Recurring payments, proposed and confirmed, each a bill or a subscription (kind), with what the confirmed ones
+        cost a month and a year."""
+        kind = value.kind if value else None
         rows = self.query("SELECT r.*,m.canonical_name AS merchant FROM recurring_obligations r JOIN merchants m ON m.id=r.merchant_id "
-                          "WHERE r.status IN ('proposed','verified') ORDER BY r.next_due_date")
-        return {"obligations": [{**row, "expected_amount": money(row["expected_amount_minor"], row["currency"])} for row in rows],
+                          "WHERE r.status IN ('proposed','verified') AND (? IS NULL OR r.kind=?) ORDER BY r.next_due_date", (kind, kind))
+        monthly: dict[tuple[str, str], list] = defaultdict(lambda: [Decimal(0), 0])
+        for row in rows:
+            if row["status"] == "verified":
+                amount = Decimal(row["expected_amount_minor"])
+                total = monthly[(row["currency"], row["kind"])]
+                total[0] += amount * 52 / 12 if row["frequency"] == "weekly" else amount / FREQUENCY_MONTHS[row["frequency"]]
+                total[1] += 1
+        totals = []
+        for (currency, name), (month, count) in sorted(monthly.items()):
+            month_minor = int(month.to_integral_value(ROUND_HALF_EVEN))
+            year_minor = int((month * 12).to_integral_value(ROUND_HALF_EVEN))
+            totals.append({"currency": currency, "kind": name, "count": count, "monthly": money(month_minor, currency), "yearly": money(year_minor, currency)})
+        return {"obligations": [{**row, "expected_amount": money(row["expected_amount_minor"], row["currency"])} for row in rows], "totals": totals,
                 "notes": ["Proposed from a steady cadence of payments, one bill payment, a statement payee the local model read as a service, "
-                          "or payment terms in a contract (source_document_id, evidence); each is a proposal until verified."]}
+                          "or payment terms in a contract (source_document_id, evidence); each is a proposal until verified.",
+                          "kind is the user's choice: a bill is a recurring payment they count as important, a subscription one they count as less so. "
+                          "Both count in spending, budgets and the forecast.",
+                          "totals are confirmed payments only: weekly ones count 52/12 times a month, others their amount over the months between payments."]}
 
     def get_upcoming_bills(self, value):
         """Confirmed recurring bills by next due date. Each matched payment moves a bill's next due date on,
         so a due date already past means no payment has been found since."""
         until = shift(value.as_of, value.days)
-        bills = self.query("SELECT o.id,o.merchant_id,o.account_id,o.category,o.frequency,o.currency,o.expected_amount_minor,o.last_paid_date,"
+        bills = self.query("SELECT o.id,o.merchant_id,o.account_id,o.category,o.kind,o.frequency,o.currency,o.expected_amount_minor,o.last_paid_date,"
                            "o.next_due_date AS due_date,m.canonical_name AS provider FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
                            "WHERE o.status='verified' AND o.next_due_date IS NOT NULL AND o.next_due_date<=? ORDER BY o.next_due_date,m.canonical_name", (until,))
         return {"as_of": value.as_of, "until": until,
@@ -719,7 +742,7 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "get_spending_by_category": (PeriodInput, "get_spending_by_category"), "get_spending_items": (SpendingItemsInput, "get_spending_items"),
          "compare_periods": (CompareInput, "compare_periods"),
          "compare_categories": (CompareInput, "compare_categories"),
-         "calculate_cashflow": (PeriodInput, "calculate_cashflow"), "get_recurring_obligations": (EmptyInput, "get_recurring_obligations"),
+         "calculate_cashflow": (PeriodInput, "calculate_cashflow"), "get_recurring_obligations": (RecurringInput, "get_recurring_obligations"),
          "get_upcoming_bills": (AsOfInput, "get_upcoming_bills"), "find_receipt": (ReceiptSearchInput, "find_receipt"),
          "get_unmatched_receipts": (PeriodInput, "get_unmatched_receipts"),
          "find_purchase": (TransactionsInput, "find_purchase"), "get_statement": (RecordInput, "get_statement"),

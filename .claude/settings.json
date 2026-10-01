@@ -9,7 +9,14 @@
       "PowerShell(Select-Object *)",
       "Bash(node --check *)",
       "PowerShell(Select-String *)",
-      "Bash(curl -s -m 5 http://127.0.0.1:1234/api/v1/models)"
+      "Bash(curl -s -m 5 http://127.0.0.1:1234/api/v1/models)",
+      "PowerShell(.venv/Scripts/python.exe -m pytest *)",
+      "PowerShell($env:RUN_BROWSER_TESTS = \"1\"; .venv/Scripts/python.exe -m pytest *)",
+      "Bash(.venv/Scripts/python -m pytest *)",
+      "Bash(./.venv/Scripts/python.exe -m pytest *)",
+      "PowerShell(.\\.venv\\Scripts\\python.exe -m pytest *)",
+      "PowerShell(python -m mypy *)",
+      "PowerShell(git diff *)"
     ]
   }
 }

@@ -69,6 +69,23 @@ def test_empty_trash_removes_readings_artifacts_and_ledger(library):
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
 
 
+def test_empty_trash_removes_a_shared_receipts_family_rows(library):
+    # Left behind, the share would scale the next receipt given the same id (ids are reused).
+    store, source = library
+    doc = capture(store, source, "shared.csv")
+    with store.connection() as db:
+        receipt_id = db.execute("INSERT INTO receipts(document_id,blob_hash,total_minor,currency,review_status,created_at,updated_at) VALUES(?,?,2000,'USD','verified',?,?)",
+                                (doc["id"], doc["current_hash"], now(), now())).lastrowid
+        db.execute("INSERT INTO record_shares VALUES('receipt',?,500,2000,'[]','key',?)", (receipt_id, now()))
+        db.execute("INSERT INTO family_assignments(record_type,record_id,family_record_key,mode,status,updated_at) VALUES('receipt',?,'key','shared','delivered',?)",
+                   (receipt_id, now()))
+    trash(store, source, doc)
+    assert empty(store)["deleted"] == 1
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM record_shares").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM family_assignments").fetchone()[0] == 0
+
+
 def test_empty_trash_keeps_shared_imported_transactions(library):
     store, source = library
     content = b"Date,Description,Amount\n2026-09-24,COFFEE,-5.00\n"

@@ -97,6 +97,15 @@ const STATUS = {
 };
 // How often a recurring bill is paid, as shown to people.
 const FREQUENCY_LABELS = {weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", semiannual: "Every 6 months", annual: "Yearly"};
+// A recurring payment is a bill (important to the user) or a subscription (less so); the user decides.
+const RECURRING_KIND_LABELS = {bill: "Bill", subscription: "Subscription"};
+function kindSelect(kind, onChange) {
+  const select = document.createElement("select");
+  for (const [key, label] of Object.entries(RECURRING_KIND_LABELS)) select.add(new Option(label, key));
+  select.value = kind || "bill";
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
 // Receipt categories are stored in lower case ("dining"); shown capitalized.
 function categoryLabel(category) {
   return category ? category.replace(/^./, character => character.toUpperCase()) : "Uncategorized";

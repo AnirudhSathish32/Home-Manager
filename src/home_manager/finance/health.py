@@ -31,7 +31,14 @@ RULES = {
     "share_total": ("error", "A shared record's share was recorded against a different total, or is larger than the total."),
     "lots_uncovered": ("info", "Shares were sold that no recorded lot covers."),
     "lots_vs_holding": ("info", "A holding's open lots do not add up to the shares its latest statement shows."),
+    "orphan_share": ("error", "A family share or assignment names a record that no longer exists; the next record given that id would inherit it."),
+    "orphan_reference": ("warning", "Evidence, a correction, a review note or an open question names a record that no longer exists."),
 }
+# Tables that name a record by (record_type, record_id) instead of a foreign key, and the records they can name.
+TYPED_ID_TABLES = {"record_shares": "orphan_share", "family_assignments": "orphan_share", "financial_evidence_links": "orphan_reference",
+                   "record_corrections": "orphan_reference", "review_events": "orphan_reference", "reconciliation_issues": "orphan_reference"}
+RECORD_TABLES = {"receipt": "receipts", "bill": "bills", "statement": "statements", "income_record": "income_records",
+                 "transaction": "transactions", "receipt_item": "receipt_items"}
 
 
 class Problem(NamedTuple):
@@ -50,7 +57,7 @@ def problem(code, record_type, record_id):
 def check_ledger(db) -> list[Problem]:
     """Every rule over the whole database. db: an open connection with sqlite3.Row rows; nothing is written."""
     found: list[Problem] = []
-    for check in (split_sums, split_coverage, links, uncounted_receipts, currencies, statement_balances, record_shares, lots):
+    for check in (split_sums, split_coverage, links, uncounted_receipts, currencies, statement_balances, record_shares, lots, orphans):
         found += check(db)
     return sorted(found, key=lambda item: (SEVERITIES.index(item.severity), item.code, str(item.record_id)))
 
@@ -157,6 +164,17 @@ def record_shares(db):
         found += [problem("share_total", kind, row[0]) for row in db.execute(
             f"SELECT h.record_id FROM record_shares h JOIN {table} x ON x.id=h.record_id WHERE h.record_type=? "
             f"AND (x.{column} IS NULL OR x.{column}<>h.total_minor OR abs(h.share_minor)>abs(h.total_minor) OR h.share_minor*h.total_minor<0)", (kind,))]
+    return found
+
+
+def orphans(db):
+    """Typed-ID rows name a record that exists. Ids are reused once deleted, so an orphan can attach itself to a new record.
+    Reported by the orphan's own table and rowid; review_events also notes records of other kinds, which are not checked."""
+    found = []
+    for table, code in TYPED_ID_TABLES.items():
+        for kind, records in RECORD_TABLES.items():
+            found += [problem(code, table, row[0]) for row in db.execute(
+                f"SELECT rowid FROM {table} WHERE record_type=? AND record_id NOT IN (SELECT id FROM {records})", (kind,))]
     return found
 
 

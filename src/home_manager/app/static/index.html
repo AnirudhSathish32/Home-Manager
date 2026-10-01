@@ -201,6 +201,11 @@
           <h3>Spending changes</h3><p class="muted small">Raise or lower a category from its recent average, e.g. dining -20.</p>
           <div id="scenario-changes" class="forecast-list"></div>
           <button id="add-scenario-change" type="button" class="quiet">Add spending change</button>
+          <h3>Subscriptions</h3><p class="muted small">See the plan with your confirmed subscriptions cancelled from a month on. Bills stay; the plan's notes say how much it saves.</p>
+          <label class="check-field"><input id="scenario-cut-subscriptions" type="checkbox"> Cancel subscriptions</label>
+          <div class="forecast-row" id="scenario-cut-fields" hidden>
+            <div class="field"><label for="scenario-cut-month">Cancel from</label><input id="scenario-cut-month" type="month"></div>
+          </div>
           <h3>One-off amounts</h3><p class="muted small">Moving costs and deposits are negative; money in is positive.</p>
           <div id="scenario-one-offs" class="forecast-list"></div>
           <button id="add-scenario-one-off" type="button" class="quiet">Add one-off amount</button>
@@ -445,15 +450,16 @@
 
     <section id="bills-panel" class="page" data-page="bills" aria-labelledby="bills-title" hidden>
       <header class="page-header"><div><h1 id="bills-title" tabindex="-1">Bills &amp; recurring</h1>
-        <p class="page-subtitle">Recurring bills, when they are next due, and whether a payment was found.</p></div></header>
-      <section class="panel"><h2>Upcoming bills</h2><div id="bill-groups"></div>
-        <p class="muted small">Confirmed recurring bills only. Each matched payment moves a bill to its next due date; “no payment found” only reflects imported transactions. The amount is the average of the last three payments.</p></section>
+        <p class="page-subtitle">Recurring bills and subscriptions, when they are next due, and whether a payment was found.</p></div></header>
+      <section class="panel"><h2>Upcoming</h2><div id="bill-groups"></div>
+        <p class="muted small">Confirmed recurring payments only. Each matched payment moves a bill to its next due date; “no payment found” only reflects imported transactions. The amount is the average of the last three payments.</p></section>
+      <section class="panel"><h2>Subscriptions</h2><div id="subscription-summary"></div></section>
       <section class="panel"><h2>Recurring payments</h2>
-        <p class="muted small">Proposed from a steady cadence of payments, a bill payment, a statement payee the local model reads as a service, or a contract's payment terms. Each is a proposal until you confirm it.</p>
+        <p class="muted small">Proposed from a steady cadence of payments, a bill payment, a statement payee the local model reads as a service, or a contract's payment terms. Each is a proposal until you confirm it. Call the ones that matter most bills and the rest subscriptions; both count in your spending and forecast.</p>
         <p><button type="button" id="recurring-scan" class="small">Look for recurring bills</button>
           <span class="muted small">Asks the local model about statement payees it hasn't seen yet.</span></p>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="numeric">Expected</th><th scope="col">Every</th><th scope="col">Next about</th>
-          <th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
+          <th scope="col">Counts as</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
     </section>
 
     <section id="accounts-panel" class="page" data-page="accounts" aria-labelledby="accounts-title" hidden>

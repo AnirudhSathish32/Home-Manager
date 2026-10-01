@@ -72,6 +72,9 @@ This page lists what each migration adds. The `.sql` file is the source of truth
 | 045 | `tax_tags` | `businesses`, `tax_rules`, `tax_tags` | [taxes](taxes.md) |
 | 046 | `tax_figures` | `tax_figure_sets`, `tax_years` | Figure lookups reuse `tax_table_runs`. |
 | 047 | `tax_units` | `tax_units` (who files together; kept in the family's own library) | |
+| 048 | `recurring_kind` | | `recurring_obligations.kind`: `bill` or `subscription`, suggested from the category and set by the user |
+| 049 | `audit_cleanup` | | Fixes from the [database audit](../db_audit_report.md): removes `record_shares` and `family_assignments` rows whose record is gone; ISO timestamps on the seeded `return_policies`; indexes for per-row lookups on links, organization intents, reconciliation issues, a statement's transactions and a document's extractions; drops the unused `bills.bill_type` and `investment_valuations.vested_minor` |
+| 050 | `strict_tables` | | Every table rebuilt `STRICT` (the full-text index excepted), so a wrong-typed value is refused. Adds `CHECK`s on run and job states (`jobs`, `receipt_batches`, `parse_runs`, `reasoning_runs`, `extraction_runs`, `managed_organization_intents`), `occurrences.source_status`/`source_kind`, `tax_rules.kind`, `investment_events.transaction_previous_type`, and the booleans `accounts.active` and `receipt_batch_items.reused`. Unknown run states become `interrupted` first. Generated from the version 49 schema. |
 
 ## Runs and startup recovery
 

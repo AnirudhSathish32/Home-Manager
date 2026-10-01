@@ -203,9 +203,9 @@ def test_the_whole_receipt_category_sets_items_the_user_has_not_chosen(books):
     record = ledger.correct("receipt", receipt_id, {"category": "furniture & decor"})
     assert [(row["category"], row["category_source"]) for row in record["items"]] == [("entertainment", "user"), ("furniture & decor", "receipt"), ("furniture & decor", "receipt")]
     assert {row["category"]: row["amount_minor"] for row in record["splits"]} == {"furniture & decor": 61999, "entertainment": 162}
-    # Extracted again: the remembered item keeps the user's category; the others take the model's.
+    # Extracted again: the item the user chose keeps their category (the line is found again); the others take the model's.
     costco_receipt(ledger, docs["costco.png"])
     items = ledger.record("receipt", receipt_id)["items"]
-    assert [(row["category"], row["category_source"]) for row in items] == [("entertainment", "memory"), ("furniture & decor", "model"), ("groceries", "model")]
+    assert [(row["category"], row["category_source"]) for row in items] == [("entertainment", "user"), ("furniture & decor", "model"), ("groceries", "model")]
     with pytest.raises(ValueError, match="listed categories"):
         ledger.set_item_category(receipt_id, 1, "coffee")

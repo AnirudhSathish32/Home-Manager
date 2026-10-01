@@ -130,10 +130,12 @@ def empty(store):
                     if additions:
                         doomed[table].update(additions)
                         changed = True
-            # These provenance tables use typed IDs rather than SQL foreign keys.
+            # These provenance and family tables use typed IDs rather than SQL foreign keys. Ids are reused once
+            # deleted, so a row left behind here would attach itself to the next record that gets the same id.
             for table, kind in RECORDS.items():
                 targets = {rows[table][key]["id"] for key in doomed[table]}
-                for dependent in ("financial_evidence_links", "review_events", "record_corrections", "reconciliation_issues"):
+                for dependent in ("financial_evidence_links", "review_events", "record_corrections", "reconciliation_issues",
+                                  "record_shares", "family_assignments"):
                     additions = {key for key, row in rows[dependent].items()
                                  if row["record_type"] == kind and row["record_id"] in targets} - doomed[dependent]
                     if additions:

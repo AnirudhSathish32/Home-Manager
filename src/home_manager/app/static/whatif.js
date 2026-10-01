@@ -391,8 +391,10 @@ function scenarioRequest() {
                      income_growth_percent: planText("scenario-income-growth") || "0",
                      category_amounts: forecastItems("scenario-amounts"), spending_changes: forecastItems("scenario-changes"),
                      one_offs: forecastItems("scenario-one-offs").map(item => ({...item, label: item.label || ""})),
-                     retirement: scenarioRetirement()}};
+                     retirement: scenarioRetirement(),
+                     cut_subscriptions_from: $("scenario-cut-subscriptions").checked ? $("scenario-cut-month").value || null : null}};
 }
+$("scenario-cut-subscriptions").addEventListener("change", () => { $("scenario-cut-fields").hidden = !$("scenario-cut-subscriptions").checked; });
 function fillScenario(scenario) {
   const inputs = scenario?.inputs || {name: "", basis: scenarioView.bases[0], starting_cash: "0", paychecks: [], forecast: {}};
   scenarioId = scenario?.id ?? null;
@@ -404,6 +406,9 @@ function fillScenario(scenario) {
     for (const item of forecast[key] || []) scenarioRow(list, SCENARIO_LISTS[list], item);
   }
   fillScenarioRetirement(forecast.retirement);
+  $("scenario-cut-subscriptions").checked = Boolean(forecast.cut_subscriptions_from);
+  $("scenario-cut-month").value = forecast.cut_subscriptions_from || "";
+  $("scenario-cut-fields").hidden = !forecast.cut_subscriptions_from;
   scenarioPaychecks = structuredClone(inputs.paychecks); editingPaycheck = null;
   $("scenario-cash-field").hidden = $("scenario-basis").value !== "blank";
   $("scenario-duplicate").disabled = $("scenario-delete").disabled = scenarioId == null;

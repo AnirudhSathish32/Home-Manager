@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 import json
 
-from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS
+from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS, RECURRING_KINDS, suggested_kind
 from ..library.storage import now
 from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction, name_tokens, normalize_name
 
@@ -433,7 +433,8 @@ class Reconciler:
         """Same account, merchant key and exact amount at a steady cadence, three or more times."""
         known = self.bills(db)
         groups = defaultdict(list)
-        for row in db.execute(f"SELECT t.* FROM transactions t WHERE t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') AND {COUNTABLE} ORDER BY t.posted_date,t.id"):
+        for row in db.execute(f"SELECT t.*,{TRANSACTION_CATEGORY} AS spending_category FROM transactions t WHERE t.amount_minor<0 "
+                              f"AND t.transaction_type IN ('purchase','fee') AND {COUNTABLE} ORDER BY t.posted_date,t.id"):
             key = payee_key(row["description_raw"])
             if key:
                 groups[(row["account_id"], key, row["amount_minor"], row["currency"])].append(row)
@@ -449,12 +450,14 @@ class Reconciler:
                    for bill in known):
                 continue
             next_due = due_after(rows[-1]["posted_date"], frequency)
+            # Kind is only suggested on insert: an update never overwrites the user's bill-or-subscription choice.
             db.execute("INSERT INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,next_due_date,status,"
-                       "confidence_source,created_at,updated_at) VALUES(?,?,'subscription_or_bill',?,?,?,?,'proposed',?,?,?) "
+                       "confidence_source,kind,created_at,updated_at) VALUES(?,?,'subscription_or_bill',?,?,?,?,'proposed',?,?,?,?) "
                        "ON CONFLICT(merchant_id,account_id,currency,frequency) DO UPDATE SET next_due_date=excluded.next_due_date,updated_at=excluded.updated_at,"
                        "expected_amount_minor=CASE WHEN recurring_obligations.status='proposed' THEN excluded.expected_amount_minor ELSE recurring_obligations.expected_amount_minor END "
                        "WHERE recurring_obligations.status NOT IN ('rejected','ended')",
-                       (merchant, account_id, -amount, currency, frequency, next_due, f"deterministic_cadence:{len(rows)}_payments", now(), now()))
+                       (merchant, account_id, -amount, currency, frequency, next_due, f"deterministic_cadence:{len(rows)}_payments",
+                        suggested_kind(rows[-1]["spending_category"]), now(), now()))
             found += 1
         return found
 
@@ -475,8 +478,9 @@ class Reconciler:
             nonlocal created
             cursor = db.execute(
                 "INSERT OR IGNORE INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,next_due_date,"
-                "status,confidence_source,category,last_paid_date,source_receipt_id,created_at,updated_at) VALUES(?,?,'bill',?,?,?,?,'proposed',?,?,?,?,?,?)",
-                (merchant_id, account_id, amount, currency, frequency, due_after(paid, frequency), source, category, paid, receipt_id, now(), now()))
+                "status,confidence_source,category,kind,last_paid_date,source_receipt_id,created_at,updated_at) VALUES(?,?,'bill',?,?,?,?,'proposed',?,?,?,?,?,?,?)",
+                (merchant_id, account_id, amount, currency, frequency, due_after(paid, frequency), source, category, suggested_kind(category), paid,
+                 receipt_id, now(), now()))
             if cursor.rowcount:
                 created += 1
                 known.append(dict(db.execute("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
@@ -580,17 +584,22 @@ class Reconciler:
                 TaxTags(self.ledger.store).apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
 
-    def review_obligation(self, obligation_id, status, note="", frequency=None):
-        """Confirm, reject or end a detected recurring payment, optionally correcting how often it recurs.
-        Rejected and ended ones are never re-proposed."""
+    def review_obligation(self, obligation_id, status, note="", frequency=None, kind=None):
+        """Confirm, reject or end a detected recurring payment, optionally correcting how often it recurs and
+        whether it is a bill or a subscription. Rejected and ended ones are never re-proposed."""
         if status not in OBLIGATION_DECISIONS:
             raise ValueError("Choose confirm, not recurring, or ended.")
         if frequency is not None and frequency not in FREQUENCIES:
             raise ValueError("Choose weekly, monthly, quarterly, every six months or yearly.")
+        if kind is not None and kind not in RECURRING_KINDS:
+            raise ValueError("Choose bill or subscription.")
         with self.store.connection() as db:
             row = db.execute("SELECT * FROM recurring_obligations WHERE id=?", (obligation_id,)).fetchone()
             if row is None:
                 raise ValueError("Recurring payment not found.")
+            if kind and kind != row["kind"]:
+                db.execute("UPDATE recurring_obligations SET kind=? WHERE id=?", (kind, obligation_id))
+                note = f"Kind: {kind}. {note}".strip()
             if frequency and frequency != row["frequency"]:
                 if db.execute("SELECT 1 FROM recurring_obligations WHERE merchant_id=? AND account_id IS ? AND currency=? AND frequency=? AND id<>?",
                               (row["merchant_id"], row["account_id"], row["currency"], frequency, obligation_id)).fetchone():
@@ -603,3 +612,19 @@ class Reconciler:
             db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('recurring_obligation',?,?,?,?,?)",
                        (obligation_id, row["status"], status, note[:1000], now()))
         return {"id": obligation_id, "status": status}
+
+    def set_obligation_kind(self, obligation_id, kind):
+        """Call a proposed or confirmed recurring payment a bill or a subscription. Audited like a review; the status stays."""
+        if kind not in RECURRING_KINDS:
+            raise ValueError("Choose bill or subscription.")
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM recurring_obligations WHERE id=?", (obligation_id,)).fetchone()
+            if row is None:
+                raise ValueError("Recurring payment not found.")
+            if row["status"] not in ("proposed", "verified"):
+                raise ValueError("Only a proposed or confirmed recurring payment can be changed.")
+            if kind != row["kind"]:
+                db.execute("UPDATE recurring_obligations SET kind=?,updated_at=? WHERE id=?", (kind, now(), obligation_id))
+                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('recurring_obligation',?,?,?,?,?)",
+                           (obligation_id, row["status"], row["status"], f"Kind: {row['kind']} to {kind}.", now()))
+        return {"id": obligation_id, "kind": kind}

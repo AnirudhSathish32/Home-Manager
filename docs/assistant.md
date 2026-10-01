@@ -33,8 +33,8 @@ The assistant (the Ask panel) runs on the configured **reasoning model**. The mo
 | `calculate_cashflow` | Money in and out over a period. |
 | `get_budgets` | Each monthly budget against the month's counted category spending, with the pace so far. |
 | `get_categories` | Every category in use (transactions, receipt items, budgets, rules), with its transaction count. |
-| `get_recurring_obligations` | Recurring bills and their merchants. |
-| `get_upcoming_bills` | Confirmed recurring bills by next due date. |
+| `get_recurring_obligations` | Recurring payments and their merchants, each a bill or a subscription (`kind`, optional filter), with monthly and yearly totals per kind. |
+| `get_upcoming_bills` | Confirmed recurring payments (bills and subscriptions, with `kind`) by next due date. |
 | `find_receipt` | Receipts matching a search (rejected ones excluded). |
 | `get_unmatched_receipts` | Receipts in a period that no card or bank line matches yet. |
 | `get_statement` | One statement record. |

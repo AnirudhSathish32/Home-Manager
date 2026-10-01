@@ -138,6 +138,17 @@ def test_a_share_recorded_against_another_total(books):
     assert ("share_total", "receipt", ids["cafe"]) in found(store)
 
 
+def test_rows_that_name_a_record_that_no_longer_exists(books):
+    store, ids = books
+    damage(store, "INSERT INTO record_shares(record_type,record_id,share_minor,total_minor,family_record_key,created_at) VALUES('receipt',9999,400,900,'k','t')")
+    damage(store, "INSERT INTO reconciliation_issues(issue_type,record_type,record_id,detail_json,status,created_at,updated_at) "
+                  "VALUES('ambiguous_refund','transaction',9999,'{}','open','t','t')")
+    damage(store, "INSERT INTO review_events(record_type,record_id,previous_status,new_status,created_at) VALUES('warranty',9999,'proposed','verified','t')")
+    problems = found(store)
+    assert {code for code, table, _ in problems if code.startswith("orphan_")} == {"orphan_share", "orphan_reference"}
+    assert not any(table == "review_events" for code, table, _ in problems)  # Other kinds of record are not checked.
+
+
 def test_tax_lots_that_do_not_cover_sales_or_holdings(books):
     store, ids = books
     with store.connection() as db:

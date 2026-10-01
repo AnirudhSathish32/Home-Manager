@@ -437,6 +437,8 @@ dialog.drawer { margin: 0 0 0 auto; height: 100vh; max-height: 100vh; width: min
 .bill-group + .bill-group { margin-top: var(--space-4); }
 .bill-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-3); }
 .bill-row > small { grid-column: 1 / -1; }
+.kind-select { width: auto; min-height: var(--control-sm); font-size: var(--text-xs); }
+.subscription-total { margin: var(--space-3) 0 var(--space-1); font-weight: 600; }
 .bill-actions { display: flex; gap: var(--space-1); }
 .account-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .account-balance .amount { display: block; font-size: var(--text-lg); font-weight: 600; }
