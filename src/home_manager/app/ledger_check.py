@@ -1,7 +1,7 @@
 """`home-manager check-ledger`: the ledger health report for each profile's library, printed for the user to read or share.
 
 Opens each database read-only (no lock, no upgrade), so it can run while the app is open. The report names rules and
-record ids only; it prints no amounts, names or document text.
+record ids only; it prints no amounts, names or document text. It starts with whether each tax engine can run here.
 """
 
 import argparse
@@ -62,6 +62,8 @@ def main(argv=None):
     if not found:
         print("No profiles with a library were found. Pass --library to check a folder.")
         return 1
+    from ..finance import tax_engine
+    print("\n".join(["Tax engines"] + [f"  {item['note']}" for item in (tax_engine.readiness(slot) for slot in tax_engine.ENGINES)]) + "\n")
     failed = False
     for label, database in found:
         lines = report(label, database)

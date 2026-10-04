@@ -47,17 +47,17 @@ from ..finance.tax_tags import TaxTags
 from ..finance.tax_year import TaxYears
 from ..finance.tools import ToolName, call_tool
 from ..household.items import CHECKIN_ANSWERS, LOT_EVENTS, ResolutionFields
-from ..household.tax_figures import TaxFigures
 from ..household.warranty import Warranties
 from ..library.scanner import ScanLimits
 from ..library.storage import digest_file
+from ..models.decisions import DecisionConfig
 from ..models.vision import ModelComputer, VisionConfig
 from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "style.css": "text/css"}
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "style.css": "text/css"}
 
 
 class SettingsInput(BaseModel):
@@ -196,6 +196,44 @@ class ReviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     status: Literal["verified", "rejected", "needs_review"]
     note: str = Field(default="", max_length=1000)
+
+
+class DonationStart(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    record_type: Literal["receipt", "statement", "income_record"]
+    record_id: int = Field(ge=1)
+
+
+class DonationField(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    text: str | None = Field(default=None, max_length=200)
+    state: Literal["correct", "fixed", "unchecked"] = "unchecked"
+
+
+class DonationBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    page: int = Field(ge=1, le=20)
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+
+class DonationAnswers(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fields: dict[str, DonationField] = Field(default_factory=dict, max_length=20)
+    rows: list[dict[str, str | None]] | None = Field(default=None, max_length=500)
+    rows_state: Literal["correct", "fixed", "unchecked"] | None = None
+    rows_complete: bool | None = None
+    source_kind: Literal["phone_photo", "scan", "native_pdf", "image_pdf"] | None = None
+    redactions: list[DonationBox] | None = Field(default=None, max_length=50)
+    finish: bool = False
+
+
+class DonationExport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    check_ids: list[int] = Field(min_length=1, max_length=200)
+    donor: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,16}$")
 
 
 class AccountInput(BaseModel):
@@ -416,22 +454,11 @@ class BusinessInput(BaseModel):
     name: str = Field(min_length=1, max_length=60)
 
 
-class TaxFiguresInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    filing_status: Literal["single", "married_joint", "head_of_household"] | None = None
-    figures: dict[str, str | None] = Field(description="Figure key: an amount or rate as text, or null to remove your figure.")
-
-
 class TaxUnitInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(default="", max_length=60)
     members: list[str] = Field(min_length=1, max_length=2)
     filing_status: Literal["single", "married_joint", "head_of_household"]
-
-
-class TaxFiguresLookupInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    filing_status: Literal["single", "married_joint", "head_of_household"] | None = None
 
 
 class AdoptInput(BaseModel):
@@ -726,11 +753,17 @@ def create_app(control: Path | None = None, token: str | None = None,
         if owner.family:
             return owner.family_dashboard(month, months, currency)
         with owner.mutex:
-            return dashboard(owner.require(False), month, months, currency, owner.household.home_currency)
+            found = dashboard(owner.require(False), month, months, currency, owner.household.home_currency)
+        found["attention"]["tax"] = owner.tax_attention()  # Tax Zen got worse since the Taxes page last showed it (§42).
+        return found
 
     @app.put("/api/reasoning-settings")
     def reasoning_settings(value: ReasoningConfig):
         return manager().configure_reasoning(value)
+
+    @app.put("/api/decision-settings")
+    def decision_settings(value: DecisionConfig):
+        return manager().configure_decision(value)
 
     @app.post("/api/documents/{document_id}/reasoning-runs", status_code=202)
     def analyze_document(document_id: int, value: ReasoningInput):
@@ -757,10 +790,13 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.get("/api/finance/health")
     def ledger_health():
-        """Every ledger rule the data breaks, by record id (finance/health.py). Read-only."""
+        """Every ledger rule the data breaks, by record id (finance/health.py), and whether each tax engine can run here.
+        Read-only."""
+        from ..finance import tax_engine
         with store().connection() as db:
             problems = check_ledger(db)
-        return {"summary": summary(problems), "problems": [item._asdict() for item in problems]}
+        return {"summary": summary(problems), "problems": [item._asdict() for item in problems],
+                "tax_engines": [tax_engine.readiness(slot) for slot in tax_engine.ENGINES]}
 
     @app.post("/api/finance/accounts", status_code=201)
     def create_account(value: AccountInput):
@@ -972,7 +1008,7 @@ def create_app(control: Path | None = None, token: str | None = None,
             raise ValueError("Choose a tax year between 1990 and 2100.")
         return TaxTags(store()).year(year, currency)
 
-    # The year's return, estimated (finance/tax_year.py, finance/tax_return.py) and its figures (household/tax_figures.py).
+    # The year's return, worked out by the tax engine (finance/tax_year.py, finance/tax_engine.py).
     def tax_year_value(year):
         if not 1990 <= year <= 2100:
             raise ValueError("Choose a tax year between 1990 and 2100.")
@@ -981,13 +1017,13 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/tax/year/{year}")
     def tax_year(year: int):
         store()
-        return manager().tax_year(tax_year_value(year))
+        return manager().tax_year(tax_year_value(year), seen=True)
 
     @app.put("/api/tax/year/{year}")
     def save_tax_year(year: int, value: dict):
         store()
         TaxYears(store()).save(tax_year_value(year), value)
-        return manager().tax_year(year)
+        return manager().tax_year(year, seen=True)
 
     # The family's returns: who files together, and each return's estimate and Tax Zen (finance/tax_family.py).
     def family_only():
@@ -998,12 +1034,12 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/tax/family/{year}")
     def family_tax(year: int):
         family_only()
-        return manager().family_tax(tax_year_value(year))
+        return manager().family_tax(tax_year_value(year), seen=True)
 
     @app.put("/api/tax/family/{year}/{unit_id}")
     def save_family_tax(year: int, unit_id: int, value: dict):
         TaxYears(family_only()).save(tax_year_value(year), value, f"unit-{unit_id}")
-        return manager().family_tax(year)
+        return manager().family_tax(year, seen=True)
 
     # The year-end CPA pack (finance/cpa_pack.py): built only on the user's request, kept under Reports, never overwritten.
     @app.get("/api/tax/cpa-packs")
@@ -1021,6 +1057,55 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         path, name = manager().cpa_pack_file(pack_id)
         return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=name)
+
+    # Donating checked documents for model evaluation (documents/donations.py): labels only, never ledger changes.
+    @app.get("/api/donations")
+    def donations():
+        store()
+        service = manager().donations()
+        return {"candidates": service.candidates(), "checks": service.checks()}
+
+    @app.post("/api/donations/checks", status_code=201)
+    def start_donation_check(value: DonationStart):
+        store()
+        return manager().donations().start(value.record_type, value.record_id)
+
+    @app.get("/api/donations/checks/{check_id}")
+    def donation_check(check_id: int):
+        store()
+        return manager().donations().get(check_id)
+
+    @app.put("/api/donations/checks/{check_id}")
+    def save_donation_check(check_id: int, value: DonationAnswers):
+        store()
+        return manager().donations().save(check_id, {name: field.model_dump() for name, field in value.fields.items()}, value.rows,
+                                          value.rows_state, value.rows_complete, value.source_kind,
+                                          [box.model_dump() for box in value.redactions] if value.redactions is not None else None, value.finish)
+
+    @app.post("/api/donations/checks/{check_id}/reopen")
+    def reopen_donation_check(check_id: int):
+        store()
+        return manager().donations().reopen(check_id)
+
+    @app.delete("/api/donations/checks/{check_id}", status_code=204)
+    def delete_donation_check(check_id: int):
+        store()
+        manager().donations().delete(check_id)
+
+    @app.get("/api/donations/checks/{check_id}/pages/{number}")
+    def donation_page(check_id: int, number: int):
+        store()
+        return FileResponse(manager().donations().page(check_id, number), media_type="image/png")
+
+    @app.post("/api/donations/bundles", status_code=201)
+    def export_donation(value: DonationExport):
+        store()
+        return manager().donations().export(value.check_ids, value.donor)
+
+    @app.get("/api/donations/bundles/{name}")
+    def donation_bundle(name: str):
+        store()
+        return FileResponse(manager().donations().bundle_file(name), media_type="application/zip", filename=name)
 
     # Exchange rates (finance/fx.py): the cache's state, and the user's Refresh rates.
     @app.get("/api/rates")
@@ -1052,24 +1137,6 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.delete("/api/tax/units/{unit_id}")
     def delete_tax_unit(unit_id: int):
         return TaxUnits(family_only()).delete(unit_id)
-
-    @app.put("/api/tax/figures/{year}")
-    def type_tax_figures(year: int, value: TaxFiguresInput):
-        store()
-        return TaxFigures(store()).type_in(tax_year_value(year), value.filing_status or manager().household.filing_status, value.figures)
-
-    @app.post("/api/tax/figures/{year}/lookup", status_code=202)
-    def look_up_tax_figures(year: int, value: TaxFiguresLookupInput):
-        store()
-        return manager().start_tax_figures_lookup(tax_year_value(year), value.filing_status)
-
-    @app.get("/api/tax/figure-sets")
-    def tax_figure_sets(status: Literal["proposed", "verified", "rejected"] | None = None):
-        return {"sets": TaxFigures(store()).list(status)}
-
-    @app.post("/api/tax/figure-sets/{set_id}/review")
-    def review_tax_figures(set_id: int, value: TaxTableReviewInput):
-        return TaxFigures(store()).review(set_id, value.status)
 
     # A plan put to use: its set spending as budgets, then compared with what happened.
     @app.get("/api/scenarios/{scenario_id}/budgets")
@@ -1135,6 +1202,10 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.post("/api/model-connection-tests")
     def model_connection(value: ReasoningConfig):
         return manager().test_model_connection(value)
+
+    @app.post("/api/decision-model-tests")
+    def decision_model_test(value: DecisionConfig):
+        return manager().test_decision_model(value)
 
     @app.put("/api/model-computer")
     def model_computer(value: ModelComputerInput):

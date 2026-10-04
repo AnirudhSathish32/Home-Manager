@@ -191,8 +191,9 @@ def copy_database(source: Path, target: Path):
         src.close()
 
 
-def publish(store, link, member_name):
-    """Write <sync>/<family>/<member>.hmfamily from this library's database. Returns the publish time."""
+def publish(store, link, member_name, birth_year=None):
+    """Write <sync>/<family>/<member>.hmfamily from this library's database. Returns the publish time. The birth year
+    (Settings) goes in the sealed header, for the family's tax returns (ages count on a return)."""
     sync = sync_folder(link["sync"])
     folder = safe_path(sync / link["family_id"])
     folder.mkdir(exist_ok=True)
@@ -206,7 +207,7 @@ def publish(store, link, member_name):
         finally:
             db.close()
         header = {"kind": "home-manager-family-snapshot", "family_id": link["family_id"], "member_id": link["member_id"],
-                  "member_name": member_name, "published_at": published_at, "schema_version": version}
+                  "member_name": member_name, "published_at": published_at, "schema_version": version, "birth_year": birth_year}
         _seal(safe_path(folder / (link["member_id"] + SNAPSHOT_EXTENSION)), header, staging, key=decode_key(link["key"]), magic=SNAPSHOT_MAGIC)
     finally:
         staging.unlink(missing_ok=True)
@@ -390,6 +391,8 @@ class FamilyFolder:
                         raise ValueError(f"{member['name']}'s copy is larger than Home Manager accepts.")
                     target.write(chunk)
             raw.close()
+            born = header.get("birth_year")
+            member["birth_year"] = born if isinstance(born, int) and not isinstance(born, bool) and 1900 <= born <= 2100 else None
             return self._install(member, staged, header.get("published_at"), signature)
         finally:
             raw.close()

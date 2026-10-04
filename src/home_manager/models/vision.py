@@ -8,16 +8,16 @@ import base64
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_serializer, model_validator
 
 from ..core.paths import write_atomic
 from ..documents.receipt_schema import Issue, ReceiptResult, Region, StrictModel, TextLine, code_transcript
-from .model_client import is_tailnet_host, request_completion
+from .model_client import DEFAULT_TEMPERATURE, is_tailnet_host, request_completion
 
 VISION_VERSION = "receipt-vision-v5-text"
 # Family members ask the GPU computer for a role; its owner maps each role to a model ID.
 ROLE_ALIASES = {"vision": "home-manager/vision", "reasoning_config": "home-manager/reasoning",
-                "reviewer_config": "home-manager/reviewer"}
+                "reviewer_config": "home-manager/reviewer", "decision_config": "home-manager/decision"}
 
 
 def endpoint_url(value, tailnet=False):
@@ -36,7 +36,30 @@ def endpoint_url(value, tailnet=False):
     return value
 
 
-class VisionConfig(StrictModel):
+class Sampling(StrictModel):
+    """Generation overrides for evals; unset means the app's own (temperature 0.1, no seed, enforced schema).
+
+    Unset overrides are left out of every dump: model configs are saved as settings and copied into run
+    options that act as reuse keys, so those stay byte-for-byte what they were before these fields existed.
+    """
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    # False drops response_format and puts the schema in the system prompt instead (eval_plan.md A15).
+    schema_enforced: bool = True
+
+    @model_serializer(mode="wrap")
+    def omit_unset_sampling(self, handler):
+        data = handler(self)
+        for key, default in SAMPLING_DEFAULTS.items():
+            if key in data and data[key] == default:
+                del data[key]
+        return data
+
+
+SAMPLING_DEFAULTS = {"temperature": None, "seed": None, "schema_enforced": True}
+
+
+class VisionConfig(Sampling):
     base_url: str = "http://127.0.0.1:1234/v1"
     model: str = Field(default="", max_length=200)
     # Persisted name retained for existing settings; now controls transcription only.
@@ -141,7 +164,10 @@ def transcribe_preview(folder, config: VisionConfig, work=None):
     data.update(parser_version=VISION_VERSION, transcription_method="vision_model", title=None, folder=None, regions=[region.model_dump() for region in regions],
                 model_text=full_text, lines=lines, extracted_text=full_text + code_transcript(prepared.codes), model_hashes={},
                 engine={"model_id": config.model, "base_url": config.base_url, "prompt_version": VISION_VERSION,
-                        "temperature": "0.1", "max_tokens": "8192", "stream": "true"},
+                        "temperature": str(DEFAULT_TEMPERATURE if config.temperature is None else config.temperature),
+                        "max_tokens": "8192", "stream": "true",
+                        **({"seed": str(config.seed)} if config.seed is not None else {}),
+                        **({} if config.schema_enforced else {"schema_enforced": "false"})},
                 fields=None,
                 issues=[issue for issue in prepared.issues if issue.code in ("no_code_decoded", "code_decode_error")] + [
                     Issue(code="unverified_vision", message="Model-generated transcription is unverified. Compare all text against the image; the model can omit or invent content. Text-region coordinates are unavailable."),

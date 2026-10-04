@@ -12,6 +12,8 @@ import uvicorn
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.app.family_sync import FamilyFolder
+from home_manager.finance.engines import taxcalc
+from home_manager.finance.engines.opentax import YEARS
 from home_manager.household.tax_tables import TaxTables
 from home_manager.library.scanner import ScanLimits
 from test_plan_tracking import stub
@@ -19,8 +21,13 @@ from test_tax_family import paid
 from test_tax_return import JOINT
 from test_withholding import FEDERAL, confirmed
 
+# The page works out this year's return, and Engine 1 covers only the years it's pinned for: past them, re-pin the
+# engine (docs/tax-engines.md) rather than let these tests fail as if the page were broken.
+this_year_covered = pytest.mark.skipif(date.today().year not in YEARS, reason=f"Engine 1 covers {sorted(YEARS)} only; re-pin it for this year")
+
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+@this_year_covered
 def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     with socket.socket() as sock:
@@ -38,6 +45,7 @@ def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
         assert server.started
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1985}))  # The tax engine's age facts.
         store, ledger = manager.store, manager.ledger
         confirmed(TaxTables(store), "US", FEDERAL)
         inbox_scan(store, {"stub.png": b"stub", "export.csv": b"date,amount\n"})
@@ -63,12 +71,28 @@ def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
             playwright.expect(zen).to_contain_text("in Step 4(a), other income")
             playwright.expect(zen).to_contain_text("From January")
             playwright.expect(zen).to_contain_text("Or pay it as estimated tax instead")
-            # Entering the W-4 that's on file now changes the advice to the new total for that box.
-            before = zen.locator("strong").first.inner_text()
+            # Owing: the simplest answer comes first, one box (Step 4(c) extra a paycheck), with Step 4(a) as the alternative.
+            playwright.expect(zen.locator(".taxes-zen-headline")).to_contain_text("of extra withholding a paycheck")
+            playwright.expect(zen.locator(".status-badge[data-status=tax_action]")).to_contain_text("Change recommended")
+            # When a new W-4 takes effect: after the next paycheck.
+            playwright.expect(zen).to_contain_text("A W-4 handed in now takes effect after the next paycheck")
+            # Each value says what kind it is: the interest is as recorded (January's, nothing more to project), the job is projected.
+            inputs = page.locator("#taxes-inputs")
+            playwright.expect(inputs.locator(".value-kind").first).to_be_visible()
+            playwright.expect(inputs).to_contain_text("Projected to Dec 31:")
+            if taxcalc.installed() == taxcalc.PINNED:  # The second engine checks the return line by line.
+                playwright.expect(page.locator("#taxes-return")).to_contain_text("Engine 2 checked it and agrees")
+            # Entering the W-4 that's on file now changes the 4(a) advice to the new total for that box.
+            four_a = zen.locator("p", has_text="Step 4(a), other income")
+            before = four_a.first.inner_text()
             page.locator("[data-w4][data-key=other_income]").first.fill("5000")
             page.get_by_role("button", name="Save and estimate again").click()
-            playwright.expect(zen.locator("strong").first).not_to_have_text(before)
+            playwright.expect(four_a.first).not_to_have_text(before)
             playwright.expect(page.locator("[data-w4][data-key=other_income]").first).to_have_value("5000")
+            # A different aim is saved with the year and steers the advice: keep cash, owing at most $999 less the buffer.
+            page.locator("#taxes-zen-strategy").select_option("cash_retention")
+            playwright.expect(page.locator("#taxes-zen-amount")).to_be_visible()
+            playwright.expect(zen).to_contain_text("your aim is owing 599.00 USD")
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 900})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
@@ -80,6 +104,7 @@ def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
 
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+@this_year_covered
 def test_the_family_files_a_joint_return(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     with socket.socket() as sock:
@@ -100,11 +125,13 @@ def test_the_family_files_a_joint_return(tmp_path):
         manager.rename_profile(manager.profile["id"], "Mom")
         mom = manager.profile["id"]
         paid(manager, "mom", 30000)
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1980}))
         tables = TaxTables(manager.store)
         tables.review(tables.propose("US", date.today().year, "married_joint", JOINT, [])["id"], "verified")
         dad = manager.create_profile("Dad", str(tmp_path / "dad"))
         manager.switch_profile(dad["id"])
         paid(manager, "dad", 20000)
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1978}))
         manager.switch_profile(mom)
         family = manager.create_family("The Smiths", str(tmp_path / "family"), str(tmp_path), ["Dad"], my_profile=mom)
         folder = FamilyFolder(tmp_path / "family")
@@ -143,6 +170,7 @@ def test_the_family_files_a_joint_return(tmp_path):
 
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+@this_year_covered
 def test_tagging_write_offs_and_tax_payments(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     with socket.socket() as sock:
@@ -160,6 +188,7 @@ def test_tagging_write_offs_and_tax_payments(tmp_path):
         assert server.started
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1985}))
         store, ledger = manager.store, manager.ledger
         confirmed(TaxTables(store), "US", FEDERAL)
         inbox_scan(store, {"export.csv": b"date,amount\n"})
@@ -211,22 +240,19 @@ def test_tagging_write_offs_and_tax_payments(tmp_path):
             estimate = page.locator("#taxes-return")
             playwright.expect(estimate.locator(".plan-figure")).to_contain_text("3,000.00")
             playwright.expect(estimate).to_contain_text("Refund")
-            # A job typed in (not in pay stubs): 94,770 of wages less the 119.98 loss; taxable 79,650.02 → 12,443 from the Tax Table.
+            # Worked out by Engine 1, never named otherwise on the page.
+            playwright.expect(estimate).to_contain_text("worked out by Engine 1")
+            assert "OpenTax" not in page.content()
+            # A job typed in (not in pay stubs): 94,770 of wages less the 119.98 loss and the 16,100 standard deduction; 78,550.02 is in
+            # the 78,550–78,600 row of the Tax Table: 1,240 + 4,560 + 22% of 28,175 = 11,998.50, about 11,999.
             page.get_by_role("button", name="Add a job not in your pay stubs").click()
             job = page.locator(".taxes-extra-job").last
             job.locator("[data-key=name]").fill("Spouse's job")
             job.locator("[data-key=wages]").fill("94770")
             job.locator("[data-key=federal_withheld]").fill("12463.36")
             page.get_by_role("button", name="Save and estimate again").click()
-            playwright.expect(estimate.locator(".plan-figure")).to_contain_text("3,020.36")
-            playwright.expect(estimate).to_contain_text("12,443.00")
-            # A figure typed by you counts at once.
-            figures = page.locator(".taxes-figures")
-            if not figures.evaluate("node => node.open"):
-                figures.locator("summary").click()
-            page.locator("#tax-figure-cg_zero_max").fill("48,350")
-            figures.get_by_role("button", name="Save figures").click()
-            playwright.expect(page.locator(".taxes-figures")).to_contain_text("Typed by you")
+            playwright.expect(estimate.locator(".plan-figure")).to_contain_text(re.compile(r"3,46[45]\.36"))
+            playwright.expect(estimate).to_contain_text(re.compile(r"11,99[89]\.00"))
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 900})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width

@@ -473,8 +473,8 @@ class ManagedLibrary:
         date_kind = {"receipt": "purchase_date", "bank_statement": "period_end", "credit_card_statement": "period_end"}.get(document_type, "issue_date")
         review = run.get("review")
         result = (review or {}).get("result") or {}
-        # Advisory (Laya) reviews, including failed ones, never block filing until Laya is benchmarked.
-        advisory = result.get("advisory") or json.loads((review or {}).get("config_json") or "{}").get("provider") == "laya"
+        # Advisory decision-model reviews (and older Laya ones), including failed ones, never block filing.
+        advisory = result.get("advisory") or json.loads((review or {}).get("config_json") or "{}").get("provider") in ("laya", "decision")
         review_blocks = review and not advisory and (review["status"] != "succeeded" or not result.get("classification_supported"))
         supported = cited(output.get("classification_evidence", [])) and not review_blocks
         return self.file_classified(document_id, source["blob_hash"], document_type if supported else "unknown",

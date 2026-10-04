@@ -8,6 +8,13 @@ If live data is truly needed, first explain why and what exactly would be read,
 then ask me to run a command myself and paste the result (redacted as I see fit).
 Never access it directly, even read-only.
 
+## Donated document corpus
+Never read, list, search, copy or run anything against P:\EvalCorpus: friends' and family's donated
+documents, their answer files and eval results. This is stricter than the rule above. Don't ask the
+user to paste anything from it except an allowlisted `summary.json`. Write and test the eval suite
+only on the synthetic fixtures in Git; the user runs it on the corpus in their own terminal.
+See docs/private-reliability-testing.md.
+
 ## Everything Claude writes for this project stays in this directory
 - **Skills:** create and change project skills only in `.claude/skills/` here. Never write skills to
   `C:\Users\Anirudh\.claude\skills` or any other location on the C: drive.

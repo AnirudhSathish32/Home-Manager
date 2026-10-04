@@ -7,7 +7,7 @@ import pytest
 
 from conftest import inbox_scan
 from home_manager.finance.forecast import ForecastInput, project
-from home_manager.finance.investments import AccountInput, HoldingInput, Investments, MaturedInput, ValueInput, accrued, add_months
+from home_manager.finance.investments import AccountInput, HoldingInput, Investments, MaturedInput, ValueInput, accrued, add_months, ibond_value
 from test_extraction import cite, extract, transcribe, value
 
 TREASURY = ["TreasuryDirect", "Account number ending 7788", "Purchase confirmation", "Issue date 2026-07-01 Currency USD",
@@ -63,8 +63,12 @@ def test_a_treasury_confirmation_adds_holdings_that_count_once_confirmed(tmp_pat
         assert [trade["type_label"] for trade in pending["trades"]] == ["Buy", "Buy"]
         investments.review_confirmation(publication["id"], "verified")
         account = investments.get(publication["account_id"])
-        # Today's value is estimated from the terms: the bill 91 days along to its face value, the I bond at its rate.
-        expected = accrued(975000, "2026-07-01", "2026-09-30", face_minor=1000000, maturity="2026-12-31") + accrued(100000, "2026-07-01", "2026-09-30", rate_bp=428)
+        # Today's value is estimated from the terms: the bill 91 days along to its face value, the I bond from the published
+        # rates (whole months of interest, as TreasuryDirect counts them).
+        with manager.store.connection() as db:
+            rates = Investments.ibond_rates(db)
+        ibond_on = lambda day: ibond_value(100000, "2026-07-01", day, rates)
+        expected = accrued(975000, "2026-07-01", "2026-09-30", face_minor=1000000, maturity="2026-12-31") + ibond_on("2026-09-30")
         assert (account["current"]["source"], account["current"]["value_minor"], account["current"]["as_of"]) == ("estimated", expected, "2026-09-30")
         assert investments.summary()["totals"][0]["estimated_accounts"] == 1
         assert {event["review_status"] for event in account["events"]} == {"verified"}
@@ -82,7 +86,7 @@ def test_a_treasury_confirmation_adds_holdings_that_count_once_confirmed(tmp_pat
         account = after.get(publication["account_id"])
         assert [holding["name"] for holding in account["holdings"]] == ["Series I Savings Bond"]
         assert account["events"][0]["type_label"] == "Maturity" and account["events"][0]["amount"]["display"] == "10,000.00 USD"
-        assert account["current"]["value_minor"] == accrued(100000, "2026-07-01", "2027-01-05", rate_bp=428)
+        assert account["current"]["value_minor"] == ibond_on("2027-01-05")
         with pytest.raises(ValueError, match="already closed"):
             after.mark_matured(due["holding_id"], MaturedInput(outcome="cash"))
     finally:

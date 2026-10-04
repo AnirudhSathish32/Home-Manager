@@ -160,6 +160,8 @@ function renderHome(data) {
     [`${counts.records} financial records awaiting review`, "#/review", "All dates and currencies"],
     [`${counts.links} proposed matches · ${counts.issues} unresolved questions`, "#/review", "All dates and currencies"],
     [`${counts.ready} documents ready to record`, "#/documents?status=ready_for_ledger", "All dates"]];
+  // Tax Zen got worse since the Taxes page last showed it (finance/tax_zen.py TaxZenEvaluations.attention).
+  if (counts.tax) rows.unshift([`Taxes: ${counts.tax.status_text}`, "#/taxes", counts.tax.trigger ? `What changed: ${counts.tax.trigger}` : `${counts.tax.year} return`]);
   for (const [label, href, note] of rows) { const li = document.createElement("li"); li.append(homeLink(label, href), element("small", note, "muted")); list.append(li); }
   attention.append(list);
   const bills = homePanel("Upcoming bills", `${data.bills.as_of} – ${data.bills.until} · ${data.currency}`);

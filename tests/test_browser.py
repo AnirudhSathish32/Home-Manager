@@ -99,6 +99,18 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.locator("#reasoning-model").fill("synthetic-reasoning")
             page.locator("#save-reasoning").click()
             playwright.expect(page.locator("#toasts")).to_contain_text("Reasoning settings saved")
+            # A decision model in LM Studio: every answer is "A" (yes, or the first document type: receipt).
+            local_model["decide"] = lambda path, body: {"output": [{"type": "message", "content": [{"type": "output_text", "text": "A",
+                "logprobs": [{"token": "A", "logprob": -0.05, "top_logprobs": [{"token": "A", "logprob": -0.05}, {"token": "B", "logprob": -3.0}]}]}]}]}
+            page.locator("#decision-provider").select_option("lmstudio")
+            page.locator("#decision-url").fill(local_model["config"].base_url)
+            page.locator("#decision-model").fill("synthetic-reasoning")
+            page.locator("#test-decision").click()
+            playwright.expect(page.locator("#test-decision-result")).to_contain_text("answers with option probabilities")
+            page.locator("#save-decision").click()
+            playwright.expect(page.locator("#toasts")).to_contain_text("Decision model saved")
+            page.get_by_role("tab", name="Independent checks", exact=True).click()
+            playwright.expect(page.locator("#decision-status")).to_contain_text("synthetic-reasoning checks every ledger extraction")
             page.locator("#nav-processing").click()
             page.locator("#parse-all-receipts").click()
             playwright.expect(page.locator("#receipt-batch-status")).to_contain_text("completed", timeout=30000)

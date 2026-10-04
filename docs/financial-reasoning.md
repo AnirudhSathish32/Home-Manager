@@ -1,6 +1,6 @@
 # Financial reasoning over saved text
 
-This line-by-line interpretation (the former audit analysis) is no longer offered in the interface: typed extraction, the automatic checks and Laya do its job. The service and its API remain; ledger records come from typed extraction; see [v2-phases.md](v2-phases.md).
+This line-by-line interpretation (the former audit analysis) is no longer offered in the interface: typed extraction, the automatic checks and the [decision model](decision-models.md) do its job. The service and its API remain; ledger records come from typed extraction; see [v2-phases.md](v2-phases.md).
 
 The reasoning stage consumes an exact saved vision transcription. It produces a proposed document title and type, financial facts, evidence-linked observations and limitations. It is separate from image extraction: running or retrying analysis does not call the vision model or change its output.
 

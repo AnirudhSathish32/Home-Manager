@@ -71,6 +71,14 @@ def start_model_server():
                     reply = {"instance_id": body["instance_id"]}
                 self.respond(200, json.dumps(reply).encode(), "application/json")
                 return
+            if self.path in ("/v1/responses", "/v1/systemone"):
+                # Decision models (models/decisions.py): state["decide"](path, body) -> reply; asked kept apart from chat requests.
+                state.setdefault("decisions", []).append((self.path, body))
+                if "decide" not in state:
+                    self.respond(404, b"{}", "application/json")
+                    return
+                self.respond(200, json.dumps(state["decide"](self.path, body)).encode(), "application/json")
+                return
             if native is not None:
                 native["calls"].append(("chat", body.get("model")))
             if not state.get("forget_requests"):

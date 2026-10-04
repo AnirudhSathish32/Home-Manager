@@ -77,12 +77,14 @@ async function loadModelFacets() {
 }
 // Settings depth (Phase E): connection tests and backup & restore.
 for (const button of document.querySelectorAll("[data-test]")) button.addEventListener("click", async () => {
-  const kind = button.dataset.test, target = $(`test-${kind}-result`);
+  const kind = button.dataset.test, target = $(`test-${kind}-result`), provider = $(`${kind}-provider`);
   button.disabled = true; target.replaceChildren(element("p", "Asking the local server which models it serves…", "muted small"));
   try {
-    const result = await api("/api/model-connection-tests", {method: "POST", body: JSON.stringify({base_url: $(`${kind}-url`).value.trim(), model: $(`${kind}-model`).value.trim()})});
-    const ok = result.reachable && result.model_listed;
-    const parts = [alertBox(ok ? `Connected in ${result.latency_ms} ms. The server lists this model.` : result.problem, {tone: ok ? "info" : "warning"})];
+    const body = {base_url: $(`${kind}-url`).value.trim(), model: $(`${kind}-model`).value.trim(), ...(provider ? {provider: provider.value} : {})};
+    const result = await api(button.dataset.endpoint || "/api/model-connection-tests", {method: "POST", body: JSON.stringify(body)});
+    const ok = result.reachable && result.model_listed && !result.problem;
+    const done = provider ? "The model answers with option probabilities." : "The server lists this model.";
+    const parts = [alertBox(ok ? `Connected in ${result.latency_ms} ms. ${done}` : result.problem, {tone: ok ? "info" : "warning"})];
     if (result.available_models.length) {
       const list = element("ul", "", "model-list");
       for (const id of result.available_models) {

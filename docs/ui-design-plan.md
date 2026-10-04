@@ -17,7 +17,7 @@ One page with three tabs: **Documents**, **Finances**, **Scans & activity**. The
 | # | Workflow | Where it happens today |
 |---|---|---|
 | W1 | First run: choose the source and managed directories | Settings modal → Directories |
-| W2 | Configure the vision, reasoning, and checker models (LM Studio or Laya) | Settings modal → Local model |
+| W2 | Configure the vision, reasoning, and decision models (LM Studio or a `/v1/systemone` server) | Settings modal → Local model |
 | W3 | Capture: drop files in Inbox (auto-watched) | Scans & activity; the Inbox is watched in the background |
 | W4 | Browse and search the library by folder and work filter | Documents tab |
 | W5 | Extract text, then extract to the ledger (one document or all) | Row primary action, toolbar "Extract text for all", inspector steps |
@@ -346,7 +346,7 @@ The audit analysis status is **not** part of the summary. It's an optional, seco
   - **Details**: managed path, original source path, source status, versions, hash (monospace, copyable), current version.
   - **History**: parse, extraction, and review runs, with telemetry per run.
   - **Audit**: the optional line-by-line analysis. It's labeled **"Model interpretation, not your record"** and styled as secondary (no amounts in large type, no green).
-- The Laya panel stays an advisory disclosure under Checks, labeled "Independent check (advisory)".
+- The independent-check panel (the decision model; Laya before 2026-10-03) stays an advisory disclosure under Checks, labeled "Independent check (advisory)".
 
 **States:** loading (both panes skeleton, title from the list row) · unread ("Home Manager hasn't read this document yet. [Read document]", with the model requirement noted if no model is configured) · reading (live stage and elapsed time, Cancel) · read but not recorded ("Record it to your ledger [Extract to ledger]") · recorded but needs review · verified (a quiet confirmation line with who and when; the Verify button becomes "Verified ✓ · Undo") · failed (a user-facing reason plus Retry, with the raw error in Details) · cancelled · blocked publication (e.g., currency unknown: "Can't record this: the document doesn't state a currency. Set a home currency in Settings or verify manually.", which maps the existing `publication.reason`) · historical version (a banner: "You're viewing an earlier version captured Sep 2").
 
@@ -378,7 +378,7 @@ A full page with a left sub-navigation (not a modal). Each section is a narrow 7
 | **Library** | Managed library folder, Inbox path (copyable), capture limits | Exists |
 | **Financial preferences** | Home currency, date display format (UI-only preference), default period | Currency exists; the others are UI-only |
 | **Local models** | Vision model, reasoning model: URL, model ID, a "Test connection" button (Backend B12), auto-read new files | Exists, including the connection test (Phase E) |
-| **Independent checks** | Laya / chat checker, installed state | Exists |
+| **Independent checks** | The decision model's status (chosen model, calibrated or not); it is chosen under Local models | Exists |
 | **Backup & restore** | Back up to a folder, verify, restore into a new library | Built (Backend B13, Phase E) |
 | **Privacy & security** | A read-only statement of guarantees: loopback-only, no telemetry, read-only sources, where data lives | Static content, derived from the architecture |
 | **Advanced** | Raw endpoint URLs, model identity, schema/app version, database location | Mostly exists in `/api/settings` |

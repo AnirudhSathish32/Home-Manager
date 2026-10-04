@@ -65,11 +65,13 @@ def test_the_family_computes_a_couples_joint_return(tmp_path):
         manager.rename_profile(manager.profile["id"], "Mom")
         mom = manager.profile["id"]
         paid(manager, "mom", 30000)
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1980}))
         tables = TaxTables(manager.store)
         tables.review(tables.propose("US", year, "married_joint", JOINT, [])["id"], "verified")
         dad = manager.create_profile("Dad", str(tmp_path / "dad"))
         manager.switch_profile(dad["id"])
         paid(manager, "dad", 20000)
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1955}))
         manager.switch_profile(mom)
         family = manager.create_family("The Smiths", str(tmp_path / "family"), str(tmp_path), ["Dad"], my_profile=mom)
         folder = FamilyFolder(tmp_path / "family")
@@ -92,5 +94,7 @@ def test_the_family_computes_a_couples_joint_return(tmp_path):
         wages = next(line for line in result["lines"] if line["key"] == "wages")["amount_minor"]
         assert wages == sum(job["values"]["wages"] for job in jobs)
         assert joint["view"]["zen"]["ready"] and joint["view"]["zen"]["job"]["key"] in {job["key"] for job in jobs}
+        # Each member's birth year (their own Settings) reaches the return, so the engine's age facts are filled.
+        assert [person["birth_year"] for person in joint["view"]["input"]["people"]] == [1980, 1955]
     finally:
         manager.close()

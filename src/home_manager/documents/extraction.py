@@ -29,7 +29,8 @@ from ..finance.reconcile import Reconciler, due_after
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
 from ..library.storage import now
-from ..models.laya_runtime import LAYA_REVISION, SUPPORT_THRESHOLD
+from ..models import decisions
+from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
 from .pdf_reader import read_result
 from .reasoning import EvidenceQuote, ReasoningConfig, require_transcription
@@ -106,8 +107,9 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
           "investment_confirmation": "trade or purchase confirmation from a brokerage, bank or TreasuryDirect for stocks, funds, a CD, a Treasury "
                                      "bill, note or bond, or an I bond (account_name is the account's printed name or type; trade_date is the "
                                      "trade, purchase or issue date)",
-          "investment_tax_form": "1099 or 5498 tax form from a bank, brokerage, retirement plan or HSA, possibly a consolidated 1099 "
-                                 "(institution is the payer or trustee; tax_year is the printed tax year, such as 2026; document_date is "
+          "investment_tax_form": "1099 or 5498 tax form from a bank, brokerage, retirement plan or HSA, possibly a consolidated 1099, or a 1098 "
+                                 "mortgage interest statement from a lender "
+                                 "(institution is the payer, trustee or lender; tax_year is the printed tax year, such as 2026; document_date is "
                                  "the form's printed date if any)",
           "loan_document": "loan statement for a mortgage, auto, student or personal loan (principal_balance is the unpaid principal; "
                            "interest_rate is the printed annual rate with its % sign; monthly_payment is the regular scheduled payment)"}
@@ -397,7 +399,7 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "paystub: a pay stub or earnings statement for one paycheck. employment_document: an offer letter, employment agreement, "
             "benefits enrollment, separation letter or W-2 wage and tax statement from an employer. investment_tax_form: a 1099-INT, "
             "1099-DIV, 1099-B, 1099-R, 1099-SA, 1099-Q, 1099-DA, 5498 or 5498-SA from a bank, brokerage, retirement plan, HSA, 529 plan or "
-            "crypto exchange, including a consolidated 1099. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. ")
+            "crypto exchange, including a consolidated 1099, or a 1098 mortgage interest statement from a lender. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. ")
 
 
 def chunks(lines, limit=LINES_PER_CALL):
@@ -976,7 +978,7 @@ def paystub_lines(record, rows, money, issues, currency, total):
                               f"({format_minor(net, currency)}); a line may be missing or misread.")
 
 
-def review_reasons(kind, record, laya=None, issues=()):
+def review_reasons(kind, record, decision=None, issues=()):
     """Why an extracted record cannot count without the user, beyond the issues already found. Empty means
     every automatic check passed. Each reason starts with its field's label, so correcting that field clears it."""
     reasons = []
@@ -993,31 +995,21 @@ def review_reasons(kind, record, laya=None, issues=()):
     if kind in CROSS_CHECKED and not record.get("cross_checks"):
         reasons.append(CROSS_CHECKED[kind])
     # The independent check can only send a record to review; it never approves one.
-    for check in (laya or {}).get("checks", []):
+    for check in (decision or {}).get("checks", []):
         if check["supported"] is False:
             label = check["field"].replace("_", " ").capitalize()
             reasons.append(f"{label}: the independent check could not confirm it from its cited text.")
     return reasons
 
 
-LAYA_TYPES = {"receipt": "a store or restaurant purchase receipt", "bank_statement": "a bank account statement",
-              "credit_card_statement": "a credit card statement", "bill": "a bill or invoice asking for payment",
-              "paystub": "a pay stub or earnings statement", "employment_document": "an offer letter, W-2 or other employment document",
-              "investment_statement": "an investment or brokerage statement",
-              "investment_confirmation": "a trade, CD or Treasury purchase confirmation",
-              "investment_tax_form": "a 1099 or 5498 tax form from a bank or brokerage",
-              "loan_document": "a loan document", "insurance_document": "an insurance document", "housing_document": "a lease, mortgage or housing document",
-              "tax_document": "a tax form", "unknown": "none of these"}
-
-
 class ExtractionService:
-    def __init__(self, store, receipts, laya=None):
-        self.store, self.receipts, self.ledger, self.laya = store, receipts, Ledger(store), laya
+    def __init__(self, store, receipts):
+        self.store, self.receipts, self.ledger = store, receipts, Ledger(store)
 
-    def assess(self, classification, header, rows, lines, work):
-        """Advisory in-process Laya scores: shadow classification plus claim-to-citation support.
-        Recorded beside the record; never changes review status, publication or filing."""
-        shadow, confidence = self.laya.classify("\n".join(line.text for line in lines[:40]), LAYA_TYPES, work)
+    def assess(self, decision, classification, header, rows, lines, work):
+        """Advisory decision-model scores: shadow classification plus claim-to-citation support.
+        Recorded beside the record; an unconfirmed value can send it to review, never approve it."""
+        shadow, confidence = decisions.classify(decision, "\n".join(line.text for line in lines[:40]), decisions.DOCUMENT_TYPES, work)
         labels, claims = [], []
         for name in (type(header).model_fields if header else []):
             field = getattr(header, name)
@@ -1028,8 +1020,9 @@ class ExtractionService:
             amount = getattr(row, "line_total", None) or getattr(row, "amount", None)
             labels.append(f"row {index}")
             claims.append((f"{row.description}: {amount}" if amount else row.description, [cite.quote for cite in row.evidence]))
-        scores = self.laya.support(claims, work) if claims else []
-        return {"advisory": True, "classification": {"document_type": shadow, "confidence": confidence, "agrees": shadow == classification.document_type},
+        scores = decisions.support(decision, claims, work) if claims else []
+        return {"advisory": True, "model": decision.summary(),
+                "classification": {"document_type": shadow, "confidence": confidence, "agrees": None if shadow is None else shadow == classification.document_type},
                 "checks": [{"field": label, "probability": score, "supported": None if score is None else score >= SUPPORT_THRESHOLD}
                            for label, score in zip(labels, scores)]}
 
@@ -1038,7 +1031,8 @@ class ExtractionService:
             db.execute("UPDATE extraction_runs SET status='interrupted',error='Extraction interrupted before publication. Retry from the saved transcription.',updated_at=? "
                        "WHERE status IN ('queued','running')", (now(),))
 
-    def enqueue(self, document_id, parse_run_id, config, force=False, home_currency=None, laya=False):
+    def enqueue(self, document_id, parse_run_id, config, force=False, home_currency=None, decision=None):
+        """decision: the DecisionConfig whose advisory checks run on this extraction, or None."""
         if not config.model:
             raise ValueError("Configure a local reasoning model in Settings first.")
         run = self.receipts.get(parse_run_id)
@@ -1048,8 +1042,9 @@ class ExtractionService:
         if run["status"] not in ("succeeded", "partial") or not run["result"]:
             raise ValueError("Complete text extraction before ledger extraction.")
         require_transcription(read_result(run["result"]))
-        # The home currency changes publication, so it is part of the reuse key.
-        options = json.dumps({**config.model_dump(), "home_currency": home_currency, "laya": laya}, sort_keys=True)
+        # The home currency and the decision model change publication, so they are part of the reuse key.
+        checks = decision.model_dump() if decision is not None and decision.enabled else None
+        options = json.dumps({**config.model_dump(), "home_currency": home_currency, "decision": checks}, sort_keys=True)
         identity = resolve_identity(self.store, config)
         with self.store.connection() as db:
             for row in db.execute("SELECT id,status,model_identity FROM extraction_runs WHERE parse_run_id=? AND document_id=? AND config_json=? AND prompt_version=? "
@@ -1276,7 +1271,7 @@ class ExtractionService:
             return "USD", "Receipt currency was not identified; amounts were assumed to be USD."
         return None, None
 
-    def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, laya=None, identity=None,
+    def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0):
         record_notes = []
         name_field = IDENTITY[kind][0]
@@ -1300,7 +1295,7 @@ class ExtractionService:
             record["return_days_printed"], record["return_policy_quote"] = printed_return_days(line.text for line in lines)
             record["rewards"] = rewards or []
         issues.extend(notes)  # Dropped identifying fields need a person to check them.
-        issues.extend(review_reasons(kind, record, laya, issues))
+        issues.extend(review_reasons(kind, record, decision, issues))
         if record_notes:
             record["notes"] = record_notes
         # Exception-based review: a record counts on its own only when every automatic check passed.
@@ -1341,7 +1336,9 @@ class ExtractionService:
             work.check()
             run = self.get(run_id)
             settings = dict(run["config"])
-            home_currency, use_laya = settings.pop("home_currency", None), settings.pop("laya", False)
+            home_currency, checks = settings.pop("home_currency", None), settings.pop("decision", None)
+            settings.pop("laya", None)  # Runs queued before decision models replaced Laya.
+            decision = DecisionConfig.model_validate(checks) if checks else None
             config = ReasoningConfig.model_validate(settings)
             identity = resolve_identity(self.store, config)
             with self.store.connection() as db:
@@ -1367,10 +1364,10 @@ class ExtractionService:
                         parts, kinds = [(0, len(lines))], []
                         break
                     kinds.append((kind, part_notes))
-                readings = [self.read(config, work, run_id, evidence, lines[first:last], use_laya, part_notes, kind)
+                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind)
                             for (first, last), (kind, part_notes) in zip(parts, kinds)]
                 if not readings:
-                    readings = [self.read(config, work, run_id, evidence, lines, use_laya, notes, classification)]
+                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification)]
             work.check()  # Cancellation always wins: never publish after a cancel request.
             confirmed = self.split_confirmed(run, parse, lines, parts)  # Also true for the user's own choice of one receipt.
             outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
@@ -1397,10 +1394,10 @@ class ExtractionService:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='failed',error=?,updated_at=? WHERE id=?", (message[:1200], now(), run_id))
 
-    def read(self, config, work, run_id, evidence, lines, use_laya, notes, classification=None):
+    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here."""
         classification, header, rows, identity = self.extract(config, work, lines, notes, classification)
-        description = category = recurrence = item_categories = rewards = laya = None
+        description = category = recurrence = item_categories = rewards = checks = None
         if classification.document_type == "receipt" and header is not None and rows:
             # The seller the record will carry: the seller answer or header, else the classifier's issuer.
             merchant = next((field.value for field in (header.merchant, classification.issuer) if field.status == "proposed"), None)
@@ -1413,16 +1410,16 @@ class ExtractionService:
         terms, term_notes = [], []
         if classification.document_type in TERM_KINDS:
             terms = self.payment_terms(config, work, classification.document_type, lines, term_notes)
-        if use_laya and self.laya:
+        if decision is not None:
             try:
-                with work.attribute("laya_assessment", run_id, LAYA_REVISION[:12]):
-                    laya = self.assess(classification, header, rows, lines, work)
+                with work.attribute("decision_assessment", run_id, DECISION_VERSION):
+                    checks = self.assess(decision, classification, header, rows, lines, work)
             except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
-                laya = {"advisory": True, "error": str(exc)[:300]}
+                checks = {"advisory": True, "model": decision.summary(), "error": str(exc)[:300]}
             work.check()
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
-                "terms": terms, "term_notes": term_notes, "laya": laya, "notes": notes}
+                "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes}
 
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
@@ -1439,12 +1436,12 @@ class ExtractionService:
             proposed = Reconciler(self.store).propose_terms(records, {"document_id": run["document_id"]})
             result["payment_terms"] = {"terms": [term.model_dump() for term in reading["terms"]], "records": records, "proposed": proposed,
                                        "notes": reading["term_notes"]}
-        if reading["laya"] is not None:
-            result["laya"] = reading["laya"]
+        if reading["decision"] is not None:
+            result["decision"] = reading["decision"]
         publication = None
         if header is not None:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
-                                                             classification, reading["description"], reading["laya"], identity, reading["category"],
+                                                             classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment)
         return result, publication
 

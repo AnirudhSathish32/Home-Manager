@@ -5,7 +5,12 @@ Status: built 2026-09-28 (Parts A–C). Companion plan: `docs/profiles-and-famil
 ## As built
 - **Residency** (`models/residency.py`) parses `GET /api/v1/models` as `{"models": [{"key", "type", "loaded_instances": [{"id"}]}]}`,
   tolerating `id`/`instance_id` variants. Unload is `POST /api/v1/models/unload {instance_id}`, load is `POST /api/v1/models/load {model}`.
-  **Not yet confirmed against the installed LM Studio** (still open 2026-09-30; tracked in [milestones](milestones.md#open-work)); LM Studio was not running when this was built. There is no `/api/v0` fallback,
+  **Confirmed 2026-10-03** against the installed LM Studio (`lms` CLI commit 69d945a): `ensure_loaded` swapped qwen/qwen3-vl-8b →
+  gemma-3-12b-it → qwen/qwen3-vl-8b with exactly one model loaded after each step (loads 6–11 s, no out-of-memory error).
+  Real replies: load → `{"type": "llm", "instance_id": KEY, "load_time_seconds": N, "status": "loaded"}`; unload → `{"instance_id": KEY}`;
+  a loaded instance is `{"id": KEY, "config": {"context_length": 8192, ...}}`, so the instance ID equals the model key.
+  `GET /api/v0/models/KEY` gives `arch`, `quantization` (e.g. `Q4_K_M`), `max_context_length` and `loaded_context_length`.
+  Note: a model loaded by key gets LM Studio's default context (8192 here), not its maximum. There is no `/api/v0` fallback,
   because v0 cannot unload. A 404 means JIT loading plus a Settings hint about "JIT models auto-evict".
 - **Setting** "Keep one model loaded at a time" lives on the new *Model computer* setting (`model_computer.json`), not on each
   model config. Model configs are copied into run options, so adding fields there would change every saved run's options.
@@ -81,7 +86,8 @@ Decisions already made:
   - Connection failures read "The family GPU computer is offline or not on Tailscale."
 - **Settings UI:** "Model computer: This PC / Family GPU (Tailscale)", with URL + token fields. The existing "Test connection" button (`processing.js:83-90`) works unchanged through `/v1/models`.
 - **Residency on clients:** `ensure_loaded` is skipped for `family_gpu`; the host owns residency.
-- Laya keeps running in-process on CPU as today (`laya_runtime.py`).
+- ~~Laya keeps running in-process on CPU as today (`laya_runtime.py`).~~ Superseded 2026-10-03: Laya was removed. An LM Studio
+  [decision model](decision-models.md) is shared as the `home-manager/decision` role, and the relay forwards `/v1/responses` for that role only.
 
 ## Critical files
 - new `models/residency.py`, `models/gpu_host.py`

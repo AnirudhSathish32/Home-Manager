@@ -7,7 +7,7 @@ Every doc, grouped by what it is for. Updated 2026-09-30. The project [readme](.
 | Doc | What it covers |
 |---|---|
 | [operations](operations.md) | Install, commands and flags, environment variables, where files live, LM Studio, backups, background work, troubleshooting. |
-| [development](development.md) | Code layout, tests (unit, browser, Laya), ruff/mypy, how to add a migration. |
+| [development](development.md) | Code layout, tests (unit, browser, decision models), ruff/mypy, how to add a migration. |
 | [manual testing](manual-testing.md) | Starting the app, capture checks, a manual check list per feature. |
 | [milestones](milestones.md) | What is built, and the **[open work](milestones.md#open-work)** list. |
 
@@ -19,7 +19,8 @@ Every doc, grouped by what it is for. Updated 2026-09-30. The project [readme](.
 | [library browser](library-browser.md) | The sidebar, folders, document rows, Trash. |
 | [image transcription](receipt-parsing.md) | The vision model: setup, evidence, failure handling. |
 | [financial reasoning](financial-reasoning.md) | The reasoning stage over saved text (API only), model residency. |
-| [V2 phases](v2-phases.md) | Typed extraction, review, reconciliation, the finance tools, Laya. |
+| [V2 phases](v2-phases.md) | Typed extraction, review, reconciliation, the finance tools. |
+| [decision models](decision-models.md) | The independent checks: a plug-and-play System One model in LM Studio or a `/v1/systemone` server (Kev), calibration. |
 | [receipts and statements](receipts-and-statements.md) | Money vs document folders, receipt counting, statements, recurring bills, rewards. |
 | [money, review and inventory](money-review-inventory.md) | Review, budgets and rules, check-ins, inventory. |
 | [household items](household-items.md) | Item identification, inventory lots, web lookups. |
@@ -54,6 +55,8 @@ These plans are built. They explain the reasoning behind a feature; the referenc
 
 | Doc | Status |
 |---|---|
+| [Donated document corpus](private-reliability-testing.md) | Built: friends and family check and donate documents (Donate documents page); a private corpus run locally by the deterministic eval suite in `evals/`. Consent text: [donation-consent.md](donation-consent.md). |
+| [Model comparison evaluations](../eval_plan.md) | Proposed: task inventory, graders, and comparing local model configurations; paired with the private reliability plan. |
 | [new UI/UX design](new_ui_ux_design.md) | The "Household ledger" restyle (dark theme, fonts); not started. |
 
 ## Archive

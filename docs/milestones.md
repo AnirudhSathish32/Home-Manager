@@ -5,7 +5,7 @@ Status, 2026-09-28 (checked against the code; open work list updated 2026-09-30)
 | Milestones | State |
 | --- | --- |
 | M0–M2b, M3, M3b, M4, M5, M6 | Built: deterministic core, persistence with CSV/XLSX import, evidence storage, vision transcription, typed tools and API, the local model adapter and the bounded assistant. Review and financial publication are built too. |
-| M3c | Partly built. Laya runs as a veto only, sending records to review; it has no routing role until it is benchmarked on real documents. |
+| M3c | Partly built. The plug-and-play [decision model](decision-models.md) (Laya until 2026-10-03) runs as a veto only, sending records to review; it has no routing role until it is calibrated on real documents. |
 | M2c, M4a | Built 2026-09-30: cached ECB rates, USD totals, foreign receipts matched to their USD card charge, and the read-only rate tools ([currency conversion](currency-conversion.md)). |
 | M4b | Built 2026-09-30, reshaped: a year-end CPA pack made from a Taxes-page button, not a general report and not an assistant tool ([taxes](taxes.md#cpa-pack)). |
 | M7 | Not done: acceptance on real documents. Model accuracy has only been tested on synthetic data so far. |
@@ -21,10 +21,10 @@ Every known open item, gathered from the feature docs on 2026-09-30. Each links 
 | Ingestion | ~~Scheduled rescans or a folder watcher outside Inbox; linking duplicates found under different sources.~~ Built 2026-10-01 (watched folders, `occurrence_links`). | [document reading](document-reading.md) |
 | Ingestion | ~~A file holding several receipts records only one. Split it into one receipt each: several pages, several receipts on one page, or a stacked strip.~~ Built 2026-10-01 (regions + segments, migration 054). | [document parsing](document-parsing.md#several-receipts-in-one-file-built-2026-10-01) |
 | Ingestion | ~~Grouping several images into one document (multi-page receipts).~~ Built 2026-10-01 (suggested in Review, combined in the library, migration 055). | [document parsing](document-parsing.md#several-images-as-one-document-built-2026-10-01) |
-| Models | Benchmark Laya on real documents before it gets any routing role (M3c). | [V2 phases](v2-phases.md#laya-in-process-advisory) |
+| Models | ~~Replace Laya with a plug-and-play decision model.~~ Built 2026-10-03: LM Studio (logprobs on `/v1/responses`) or a `/v1/systemone` server such as Kev, plus the evals `decisions` task with calibration. Open: check the `/v1/responses` logprob shape against the installed LM Studio, then calibrate a chosen model on real documents before it gets any routing role (M3c). The end-to-end corpus run doesn't yet report decision-model calibration. | [decision models](decision-models.md) |
 | Models | Evaluate the chosen vision and reasoning models on real documents (M7). | [document reading](document-reading.md) §4a |
-| Models | Confirm LM Studio's `/api/v1` load/unload calls against the installed LM Studio. | [shared GPU](shared-gpu-plan.md) |
-| Models | Model comparison evals (A1–A17): run every LLM task against several LM Studio models, grade the outputs against expected answers, and pick a model by a set rule. Not started. | [eval plan](../eval_plan.md) |
+| Models | Model comparison evals (A1–A17): run every LLM task against several LM Studio models, grade the outputs against expected answers, and pick a model by a set rule. A1–A17 done 2026-10-03: the documents suite (`evals.run`), the per-task suite for every other model task including the web agents (`evals.tasks`), `--compare-schema`, the decision rule and an opt-in judge. Open: the judge needs hand labels to be calibrated. | [eval plan](../eval_plan.md) |
+| Reliability | Opt-in automated validation on each user's own computer, with previewable reports they can send manually. Proposed, not built; training any model remains deferred. | [local validation testing](private-reliability-testing.md) |
 | Money | ~~USD conversion and exchange-rate lookups (M2c, M4a).~~ Built 2026-09-30. Still per currency: category totals, budgets and the Home dashboard. | [currency conversion](currency-conversion.md) |
 | Money | ~~The Excel report tool (M4b).~~ Built 2026-09-30 as the year-end CPA pack. | [taxes](taxes.md#cpa-pack) |
 | Forecast | Taxes other than a flat rate on tax-deferred withdrawals; investment income modelled separately (planned 2026-10-01, phase 5). | [forecast](forecast.md), [plan](investments-next.md#phase-5-investment-income-modelled-separately-forecast) |

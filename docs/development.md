@@ -13,7 +13,7 @@ Status: reference (2026-09-30). Setup, commands and on-disk layout are in [opera
 | `documents/` | Readers (images, PDF, CSV/XLSX), vision transcription, reasoning, typed extraction, the reviewer. |
 | `finance/` | Ledger, reconciliation, tools and assistant, budgets, forecast, investments, paychecks, scenarios, taxes, charts, health checks. |
 | `household/` | Items and inventory, item identification, warranties, returns, tax tables and figures (web lookups). |
-| `models/` | Model client, residency, Laya runtime, GPU host, web lookup connectors. |
+| `models/` | Model client, residency, decision models, GPU host, web lookup connectors. |
 | `app/` | FastAPI app (`api.py`), `Manager`, profiles, family sync, the CLI subcommands, and `static/` (the UI). |
 
 ## Tests
@@ -25,8 +25,10 @@ Status: reference (2026-09-30). Setup, commands and on-disk layout are in [opera
 ```
 
 - **Unit and API tests** need `.[test]`. They use a synthetic local model server (`tests/conftest.py` `local_model`) and never contact a real model or the network.
+- **Tax engine tests:** Engine 1's need Node.js 20+ and Engine 2's need `.[engine2]` (Tax-Calculator); each skips
+  without its engine. Install both before changing anything in `finance/tax_*.py` or `finance/engines/`.
 - **Browser tests** need `.[browser-test]`. They drive the installed **Microsoft Edge** through Playwright (`channel="msedge"`), so `playwright install` isn't needed. They are skipped unless you pass `--browser` or set `RUN_BROWSER_TESTS=1`. They live in the `test_*_browser.py` files and `test_browser.py`, plus browser cases inside `test_employers`, `test_forecast`, `test_investments`, `test_receipt_counting`, `test_recurring_bills` and `test_share`.
-- **The Laya test** (`test_laya.py`) needs `.[laya]` and installed weights. It is skipped unless `RUN_LAYA_TESTS=1`.
+- **Decision models** (`test_decisions.py`) use the same synthetic server: set `local_model["decide"]` to a function `(path, body) -> reply` that answers `/v1/responses` and `/v1/systemone`. Requests to those paths are kept in `local_model["decisions"]`, apart from chat requests.
 - There are no custom pytest markers. Opt-in tests use `skipif` on those variables.
 - After a scenario that changes the ledger, call `conftest.assert_ledger_healthy(store)`.
 - When changing a component, run that component's tests rather than the whole suite. A connection reset in a loopback test is a bug now, not noise: see the next section.

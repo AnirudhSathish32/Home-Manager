@@ -1,0 +1,21 @@
+{
+  "package": "@invaro/opentax",
+  "version": "0.4.0",
+  "license": "AGPL-3.0-only (commercial license available from Invaro Inc.; versions <= 0.2.1 were Apache-2.0)",
+  "source": "https://github.com/Invaro/opentax-engine (packages/mcp)",
+  "npm_tarball": "https://registry.npmjs.org/@invaro/opentax/-/opentax-0.4.0.tgz",
+  "npm_integrity": "sha512-8UHXCfYePub/MVGw0A3Pg0ki9abia942cDkawH9geWDSGOU6Tlo9ry6jK5MrJ5LGlu/om10TfYyV8nilGx7eew==",
+  "tarball_sha256": "fcf23891ce81b213225838adc6a781dbc419a0c70c80277c437c9c4bbca65beb",
+  "engine": {"name": "@invaro/opentax-core", "version": "0.1.0"},
+  "corpus": {"name": "@invaro/opentax-corpus-us-federal", "version": "0.37.0",
+             "merkle_root": "sha256:6c422520ead11760adc2090b94426f61030743205515627fbc749f14fb498c8a"},
+  "files": {
+    "main.js": "55072affc5554463e8484c10396f04713299ffd53adba8ba5e2a336e24820a26",
+    "LICENSE": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "COMMERCIAL-LICENSE.md": "2be3124a492a5ae3fbc952e712db0a279db6415aca9daba0e24ffab9684d0d8f",
+    "package.json": "361413704d7f576012a2ef8c47aa0190c34baa306081aafa3f426c554e3d0afd",
+    "README.md": "4c6b256a1da054d8f0767c49aadf28628c5e790f508e1f5724064295b1974f7a"
+  },
+  "run": "node --permission --allow-fs-read=<this folder> --allow-fs-read=<facts folder> main.js eval --facts <file> --as-of <year>-12-31 --json, with OPENTAX_TELEMETRY=0 and DO_NOT_TRACK=1",
+  "audited": "2026-10-03: one outbound call, an anonymous usage ping (event, version, platform) to opentax.invaro.ai/api/t, off when OPENTAX_TELEMETRY=0 or DO_NOT_TRACK=1; a 'signup' command (never run). child_process only inside the bundled commander library. Unmodified from npm."
+}

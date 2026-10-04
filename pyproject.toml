@@ -20,10 +20,10 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
 browser-test = ["playwright==1.63.0"]
+# Engine 2, the second tax engine (finance/engines/taxcalc.py; docs/tax-engines.md): public domain (CC0).
+engine2 = ["taxcalc==6.8.4"]
 # Checks: `ruff check src tests`, `mypy`, `pytest --cov`.
 dev = ["pytest-cov==7.1.0", "ruff==0.16.9", "mypy==2.3.1"]
-# In-process advisory checks. Weights: `home-manager --install-laya` (pinned revision, one download).
-laya = ["laya==0.3.20"]
 
 [project.scripts]
 home-manager = "home_manager.__main__:main"
@@ -34,10 +34,12 @@ where = ["src"]
 [tool.setuptools.package-data]
 "home_manager.app" = ["static/*"]
 "home_manager.library" = ["migrations/*.sql"]
+# The pinned OpenTax engine (docs/tax-engines.md): unmodified from npm, run as a separate Node process.
+"home_manager" = ["vendor/NOTICES.md", "vendor/opentax/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]  # "." for the eval suite (evals/), tested on synthetic data only.
 addopts = "-ra"
 
 [tool.coverage.run]
@@ -51,7 +53,7 @@ skip_covered = true
 [tool.ruff]
 line-length = 160
 target-version = "py313"
-src = ["src", "tests"]
+src = ["src", "tests", "."]
 
 [tool.ruff.lint]
 # Likely bugs (pyflakes, bugbear, syntax errors), current-Python idioms and import order. No formatter.

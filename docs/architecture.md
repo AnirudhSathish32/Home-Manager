@@ -169,7 +169,7 @@ Conversion of an unreviewed interpreted candidate can be shown as a provisional 
 
 Receipt review and transaction matching precede authoritative expense recognition. A reviewed receipt can establish a standalone expense when no bank posting is represented, but any later match must replace/link that representation without double-counting. Transcription or conversion alone never establishes that money moved. Spending categories belong to receipt items, not whole receipts: a receipt's amount, or its matched charge's, is divided across its items' categories exactly (`category_splits`). Reconciliation stays per charge, because a statement lists charges, not items. See [receipts-and-statements.md](receipts-and-statements.md#item-categories).
 
-## Model adapters and Laya
+## Model adapters and the decision model
 
 Use a narrow internal model interface for messages, tool specifications, tool calls, final content, usage, and errors. Keep server-specific reasoning controls, templates, and parsing in configuration/adapters. No cloud fallback, remote embeddings, hosted OCR, or hosted telemetry. A missing local model returns an actionable availability error.
 
@@ -177,7 +177,7 @@ Both requested models remain candidates. OpenAI describes gpt-oss-20b as an open
 
 Before choosing, run the same contract/evaluation cases on each exact model/runtime configuration: valid tool JSON, invalid arguments, unknown tool, multiple tool calls, no-tool answer, reasoning/content separation, truncation, timeout, structured result grounding, and prompt injection. Record model revision, quantization, runtime/parser version, template, decoding settings, hardware, and context budget. Pin a passing configuration; swapping models reruns the suite. V1 needs one passing configuration, not simultaneous production support for both.
 
-A separate local reasoning adapter consumes saved transcription for field interpretation, titles and classification (built; see [financial reasoning](financial-reasoning.md)). Laya runs in-process as an advisory check only: it can send a record to review but cannot read image pixels, approve records or replace source review. The earlier preliminary-OCR routing proposal is superseded. See [the reading design](document-reading.md).
+A separate local reasoning adapter consumes saved transcription for field interpretation, titles and classification (built; see [financial reasoning](financial-reasoning.md)). A plug-and-play [decision model](decision-models.md) (LM Studio, or a `/v1/systemone` server; Laya in-process until 2026-10-03) runs as an advisory check only: it can send a record to review but cannot read image pixels, approve records or replace source review. The earlier preliminary-OCR routing proposal is superseded. See [the reading design](document-reading.md).
 
 ## Ingestion and document lifecycle
 
@@ -233,18 +233,20 @@ src/home_manager/
   library/                   # the document store and its lifecycle
     storage.py migrations/ managed_library.py trash.py scanner.py
     organization.py backup.py share.py text_index.py
-  models/                    # model transport, residency, family GPU relay, Laya, vision, web lookups
+  models/                    # model transport, residency, family GPU relay, decision models, vision, web lookups
     model_client.py model_stream.py residency.py gpu_host.py
-    laya_runtime.py vision.py web_lookup.py
+    decisions.py vision.py web_lookup.py
   documents/                 # reading documents into evidence and records
     pdf_reader.py receipt_schema.py receipt_service.py receipt_worker.py
     receipt_batch.py reasoning.py extraction.py reviewer.py
   finance/                   # canonical ledger, deterministic tools and views
     ledger.py splits.py item_categories.py tools.py reconcile.py recurring_scan.py tabular.py
-    forecast.py charts.py dashboard.py assistant.py checkin.py paystub.py paycheck.py scenarios.py plan_tracking.py tax_lines.py tax_tags.py tax_year.py tax_return.py tax_zen.py tax_family.py health.py
+    forecast.py charts.py dashboard.py assistant.py checkin.py paystub.py paycheck.py scenarios.py plan_tracking.py tax_lines.py tax_tags.py tax_year.py tax_return.py tax_engine.py safe_harbor.py tax_zen.py tax_family.py withholding.py health.py
     investments.py tax_lots.py retirement.py family.py family_routing.py
+    engines/opentax.py       # Engine 1: the federal return (docs/tax-engines.md); vendor/opentax holds the pinned engine
+    engines/taxcalc.py       # Engine 2: the second opinion (optional extra), run by engines/taxcalc_run.py in its own process
   household/                 # items, inventory, warranties and tax-table lookups
-    items.py analysis.py resolver.py resolver_tools.py warranty.py tax_tables.py tax_figures.py
+    items.py analysis.py resolver.py resolver_tools.py warranty.py tax_tables.py
   app/                       # wiring: work queues, loopback API and UI, profiles and family sync
     manager.py api.py profiles.py family_sync.py ledger_check.py index_documents.py static/
 tests/                       # flat pytest modules; synthetic data only

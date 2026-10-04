@@ -11,8 +11,9 @@ The Taxes page (`static/taxes.js`) is where the year's taxes come together. It h
 
 The design is the approved plan of 2026-09-30.
 - A **tax return is the unit that reaches $0**: a single filer, or a married couple filing jointly.
-- Every yearly figure comes from a quoted lookup confirmed in Review.
-- Figures fixed in law are constants citing the statute.
+- The federal return's law comes from Engine 1, which cites the rule for every line (since 2026-10-04). The tax tables
+  for pay stub withholding come from a quoted lookup confirmed in Review.
+- Figures fixed in law that the app itself uses are constants citing the statute.
 - Nothing is guessed.
 
 ## Tax tags
@@ -72,8 +73,23 @@ The design is the approved plan of 2026-09-30.
 
 ## The year's return, estimated
 
-`finance/tax_year.py` (gather and merge), `finance/tax_return.py` (the estimate), `household/tax_figures.py` (the year's
-figures), migration `046_tax_figures.sql` (`tax_figure_sets`, `tax_years`). This is the Taxes page's first panel.
+`finance/tax_year.py` (gather and merge), `finance/tax_engine.py` (the engine), `finance/tax_return.py` (the profile and
+the simplified state return), migration `046_tax_figures.sql` (`tax_years`). This is the Taxes page's first panel.
+
+**Engines 1 and 2** (docs/tax-engines.md, 2026-10-04):
+- The federal return is worked out by **Engine 1**, which runs on this computer. The app shows numbered engines and
+  never an engine's own name. Settings and the health check say whether each can run here.
+- **Engine 2** (optional: `pip install "home-manager[engine2]"`) checks every return line by line. It's on by default
+  once installed (Settings → "Check every return with a second engine"). Where they differ, the page lists the lines
+  and Tax Zen asks you to check the return first.
+- Both cover 2025 and 2026 returns. A return Engine 1 doesn't cover (both spouses self-employed, more than three AOTC
+  students, other credits typed in) is worked out by Engine 2 instead, and the page says so. A year or a case neither
+  covers gives no estimate, and the page names the reason.
+- Engines ask rather than guess. When one needs a fact that no record gives, the page says what to enter.
+- Each distinct result is kept in `tax_calculations`.
+- The hand-written federal return and its yearly-figures lookup were retired on 2026-10-04. Engine 1 carries its own
+  yearly law. The federal tax table (Review → "Tax tables to confirm") is still used for pay stub withholding
+  (Pub 15-T) and Tax Zen's W-4 answers, and for the marginal rate shown on the page.
 
 **Gathered from records** (each field names its source on the page):
 - **Jobs:** one per employer, from this year's confirmed pay stubs.
@@ -82,7 +98,8 @@ figures), migration `046_tax_figures.sql` (`tax_figure_sets`, `tax_years`). This
   - The latest stub's paycheck is then added for each payday left this year, counted from the pay frequency and the
     last pay date.
   - From these: wages (gross less pre-tax deductions), Social Security and Medicare wages (gross less health, dental,
-    vision, HSA and FSA), and federal, state and Medicare withheld.
+    vision, HSA and FSA), federal, state and Medicare withheld, and HSA money through payroll (yours and the
+    employer's).
 - **Interest:** bank interest lines plus interest in taxable investment accounts.
 - **Dividends:** dividends in taxable accounts.
 - Interest and dividends are counted so far and projected to Dec 31 at the same pace. Confirmed 1099-INT and
@@ -95,62 +112,53 @@ figures), migration `046_tax_figures.sql` (`tax_figure_sets`, `tax_years`). This
   spending (dependent care, tuition, energy), and estimated tax paid (federal and state).
 - **Work state:** from the latest stub.
 
-**Typed over the records** (saved per year): any field, any job's figures, jobs not in your pay stubs (a spouse's),
-your spouse's birth year, children and dependents, and the deduction choice.
+**Engine facts filled from records** (so the engine doesn't have to ask):
+- **Form 1098:** box 1 gives the mortgage interest and box 10 the property tax, when no tag already counts them.
+- **The mortgage's average balance** (Pub 936; it limits interest above $750,000), worked out by the first method
+  that has what it needs:
+  1. the average of 1098 box 2 (principal on Jan 1) and the mortgage's balance on Dec 31;
+  2. 1098 box 2 alone, as an upper bound;
+  3. the year's interest divided by the mortgage's yearly rate.
 
-**Yearly figures:**
-- The figures the brackets don't hold: capital-gains 0% and 15% thresholds, child tax credit and its refundable limit,
-  credit for other dependents, additional standard deduction at 65, senior deduction, student-loan phase-out, SALT
-  limit and phase-down start, QBI threshold, educator limit, IRA and HSA limits, dependent care limits and rates, and
-  energy credit rate and limit.
-- **Look up:** the local model searches irs.gov, quotes every number from a page it opened, and proposes the set. It
-  waits in Review as "Tax figures to confirm".
-- **Type in:** a figure you type counts at once and replaces the looked-up one.
-- A figure that's missing is named, and the line that needs it says what was left out. Nothing is assumed.
+  "The mortgage" is a confirmed loan whose name says mortgage, home loan, home equity or HELOC. Its Dec 31 balance is
+  projected from its recorded balance, rate and monthly payment, as the forecast does.
+- **HSA coverage:** the year's HSA contributions are compared with the self-only limit (IRC §223(b), $1,000 more from
+  55).
+  - The contributions are 5498-SA box 2 once it arrives. Until then, payroll HSA lines projected to Dec 31 plus your
+    own tagged contributions.
+  - At or under the limit: self-only, since the coverage doesn't change the deduction at that amount.
+  - Over it: family.
+- **Ages:** your birth year (Settings). In the family view, each member's birth year comes from their own Settings
+  (sent with their published copy) for the two people on a joint return.
+- **Last year's tax and AGI** (the estimated-tax safe harbor): last year's return as worked out here, until you type
+  the filed return's figures.
 
-**The estimate, in Form 1040 order:**
-1. **Income:** wages, interest, dividends, capital gain or loss (a net loss counts up to $3,000; the rest carries
-   over), taxable retirement distributions, Schedule C profit or loss, unemployment, HSA money not spent on medical
-   care, other income, and taxable Social Security (the §86 worksheet: 50%/85% above $25,000/$34,000, or
-   $32,000/$44,000 married filing jointly).
-2. **Adjustments:** educator expenses (capped), HSA, half of self-employment tax, self-employed health insurance, IRA,
-   student-loan interest (at most $2,500, phased out by the year's figures), and others.
-3. **Deduction:** the standard deduction from the tax table (plus the 65+ amount), or itemized, whichever is larger
-   unless you choose.
-   - Itemized: medical above 7.5% of AGI; state and local taxes up to the SALT limit (shrinking 30% of MAGI above its
-     start, not below $10,000); mortgage interest; charity; other.
-   - The senior deduction (with its 6% phase-out) and other deductions you type come off too.
-4. **QBI deduction:** 20% of business profit less half of SE tax and SE health insurance, limited to 20% of taxable
-   income less gains. Above the threshold it isn't modelled, and the page says so.
-5. **Tax:** the Tax Table below $100,000 of taxable income (the tax at the middle of each $50 row, rounded to the
-   dollar) and the Tax Computation Worksheet above. Qualified dividends and long-term gains use the Qualified Dividends
-   and Capital Gain Tax Worksheet at 0/15/20%.
-6. **Credits:**
-   - Dependent care: the rate falls 1 point per $2,000 of AGI above $15,000, from the year's high rate to its low.
-   - Education: AOTC 100% of $2,000 plus 25% of the next $2,000, 40% refundable; lifetime learning 20% of up to
-     $10,000; both phased out at $80,000–$90,000, or $160,000–$180,000 married filing jointly.
-   - Energy, and other credits.
-   - Then the child tax credit and credit for other dependents: $50 less per $1,000 of AGI above $200,000, or
-     $400,000 married filing jointly. Its refundable part is up to the year's limit per child, and 15% of earned
-     income above $2,500.
-7. **Other taxes:**
-   - Self-employment tax: 92.35% of profit; 12.4% up to the wage base less that person's W-2 Social Security wages,
-     plus 2.9%; none under $400.
-   - Additional Medicare: the table's rate above its threshold, on wages plus self-employment earnings.
-   - Net investment income tax: 3.8% above $200,000, or $250,000 married filing jointly.
-   - 10% on early distributions, and 20% on HSA money not spent on medical care.
-8. **Payments:** withholding (every job, and 1099 box 4), additional Medicare withheld, estimated tax paid, and
-   refundable credits. The result is the refund, or the amount owed.
-9. **State (simplified):** federal AGI less the state's deduction (or yours), the state's brackets, less state credits,
-   against state withholding and estimated payments.
+**Typed over the records** (saved per year):
+- any field, any job's figures, and jobs not in your pay stubs (a spouse's);
+- your spouse's birth year, children and dependents;
+- itemizing anyway;
+- qualified tips (with the tipped occupation from the Treasury list) and the overtime premium.
 
-**Not modelled** (said on the page):
-- the alternative minimum tax;
-- the QBI deduction above its threshold;
-- IRA deductibility limits (enter the deductible part);
-- charity and mortgage-interest limits;
-- 28% and unrecaptured §1250 gains;
-- credits not listed.
+**Still asked for, because no record says it:** qualifying children and other dependents, the qualified part of
+dividends before the 1099-DIV, and which tuition is for whom.
+
+**The estimate, in Form 1040 order:** income, adjustments, the deduction (standard with the 2026 charitable deduction
+for non-itemizers, or itemized), the senior, tips and overtime deductions, QBI, tax, credits, other taxes
+(self-employment, Additional Medicare, net investment income tax and the rest), then payments.
+- Each line says how it was worked out and cites the rule it follows.
+- **Payments** are added up by the app: withholding (every job, and 1099 box 4), Additional Medicare withheld,
+  estimated tax paid, and refundable credits. The result is the refund, or the amount owed.
+- **State (simplified):** federal AGI less the state's deduction (or yours), the state's brackets, less state credits,
+  against state withholding and estimated payments. It's labeled simplified, since Engine 1 has no full return for
+  most states.
+
+**Not covered by Engine 1** (named on the page, and no estimate is given):
+- both spouses self-employed;
+- educator expenses on a joint return;
+- forcing the standard deduction;
+- the energy credit;
+- other credits typed in;
+- more than three AOTC students.
 
 ## CPA pack
 
@@ -169,7 +177,7 @@ used, with its download's SHA-256), Needs review, and Manifest.
   snapshot. Before saving, the Transactions sheet's Spent (USD) column must add up to household spending, and the
   reopened workbook must match what was written.
 - **Needs review** lists what's unfinished: receipts and statement lines not yet counted, open matching questions,
-  unconfirmed tags and tax forms, missing figures or unconfirmed tax tables, shares sold with no purchase lot, amounts
+  unconfirmed tags and tax forms, unconfirmed tax tables, shares sold with no purchase lot, amounts
   with no exchange rate, and write-offs in another currency (the estimate counts USD tags only).
 - Values only: Python computes every number. Document text is always written as text, never a formula (a description
   starting with `=` stays text, quote-prefixed).
@@ -183,18 +191,82 @@ used, with its download's SHA-256), Needs review, and Manifest.
 `finance/tax_zen.py`. It is the top of the return panel on the Taxes page. Tax Zen means the return comes out within a
 dollar of $0, since withholding is in cents and the W-4 is in whole dollars.
 
+**Aim and status** (built 2026-10-03, docs/tax_intelligence_architecture.md §12–26):
+- **The aim** ("Aim for", saved with the year as `zen_policy`):
+  - $0 (the default);
+  - a small refund (default $200);
+  - keep cash: owe at most a limit (default $999) less a $400 buffer, so the aim is owing $599;
+  - owe what the safe harbor allows, less the buffer.
+- **The status** is a badge:
+  - **Tax Zen:** at the aim (within a dollar for $0, otherwise within $100) with the safe harbor met;
+  - **Close · watch it:** within $500 and safe, so no change is asked;
+  - **On track · could turn** (AT_RISK): at the aim or close to it, but the low end of the likely range owes $1,000 or
+    more. The page gives a cushion: the extra 4(c) withholding a paycheck that keeps even the low end under $1,000;
+  - **Change recommended;**
+  - **Check the return first:** the two engines disagree;
+  - **Not enough to go on;**
+  - **Not covered.**
+- **The safe harbor** is `finance/safe_harbor.py`, apart from the return.
+  - Rules: under $1,000 owed, or payments reaching the smaller of 90% of this year's tax and 100% (110%) of last
+    year's.
+  - Timing: withholding counts evenly through the year, estimated payments by date, and short quarters are named.
+    Annualized income isn't worked out.
+- **Why:** the page says where the year ends, the aim and the paychecks left.
+  - When short of the aim, the first answer is one box, Step 4(c) extra a paycheck (§20), with 4(a) as the
+    alternative.
+  - Each answer is **checked**: the return is worked out again by the engine with that withholding (§46).
+- **The assistant** has `get_tax_zen_status`: the status, aim, year end, likely range, what changed, safe harbor and W-4
+  answer as worked out here. It explains them and never recomputes.
+
+**The likely range** (built 2026-10-04, §23, §36): the return is worked out twice more with only the projected parts
+moved, then shown as "Likely between X and Y" with a confidence.
+- **What moves:** pay still to come moves by how much this year's paychecks varied (at least 5%), with its withholding.
+  Interest and dividends still to come move by 25%. Recorded and typed values don't move.
+- **Confidence:** high when under 10% of income is projected, medium under 30%, else low.
+
+**Each value says what kind it is** (§35), beside its field on the page: "From records", "Worked out from records" (the
+mortgage's average balance, HSA coverage, early distributions), "Projected to Dec 31", "Enter it" (the qualified part of
+dividends before the 1099-DIV) or "You typed". Each job says whether it's projected. `gather` returns them as `kinds`.
+
+**Steady advice** (built 2026-10-04, §25, §37, §42, §43; migration `060_tax_zen_evaluations.sql`):
+- **History:** each evaluation is kept: status, range, W-4 answer, aim, the figures it rested on, and what changed. A
+  row is added only when the status, the answer or the inputs changed.
+- **Staying Tax Zen:** once Tax Zen, it takes 1.5 times the band to leave it.
+- **Keeping the W-4 answer:** a new answer replaces the last one only when it moves withholding by $25 or more a
+  paycheck, the status got worse, or something material changed:
+  - a new or dropped job;
+  - pay per paycheck moving by more than 10%;
+  - a tax form arriving.
+
+  Otherwise the page says the advice from that date still stands, worked out again for today.
+- **What changed** since Tax Zen last looked is listed in words (new stubs, withholding per paycheck, new forms, amounts
+  that moved $100 or more).
+- **On Home:** when the status got worse than when the Taxes page last showed it (to On track · could turn, Change
+  recommended, or Check the return first), Home's "Needs attention" lists it with what changed, until Taxes is opened.
+  - Home works this year's return out again in the background whenever a confirmed pay stub, tax form, tag or typed
+    value is newer than the last evaluation.
+
 **Paychecks ahead:**
 - Jobs come from pay stubs. Every payday after the latest stub counts in the year's totals (paid like that stub, whether
   or not its stub is here yet). Only paydays after today can change with a new W-4.
-- Each paycheck's federal withholding is worked out as payroll does: IRS Publication 15-T's annual percentage method for
-  a 2020+ W-4 (Step 2's half-size schedule, Step 3 credits a year, 4(a) other income, 4(b) deductions, 4(c) extra per
-  paycheck).
+- Each paycheck's federal withholding is worked out as payroll does, by the withholding engine (`finance/withholding.py`,
+  §30): IRS Publication 15-T's annual percentage method for a 2020+ W-4 (Step 2's half-size schedule, Step 3 credits a
+  year, 4(a) other income, 4(b) deductions, 4(c) extra per paycheck).
+- **When a new W-4 counts** (§21): payroll puts it in by the first payroll period ending 30 days after it's handed in
+  (Pub 15, section 9). So by default the next paycheck passes first, and the answer is spread over the paychecks after
+  it (`w4_delay_checks` in the aim). The page names the next payday. When none is left after that, it says so.
 - That result is matched to what the latest stub actually withholds. The difference is kept, so a W-4 you haven't
   entered, or a payroll quirk, carries into the answer.
 - Enter the W-4 on file ("Your W-4 there now") and the answer is the new total for the box.
 
-**The answer, for one job** (the largest paycheck by default; you can choose another):
-- **Owing:** raise Step 4(a) other income. **Getting a refund:** raise Step 4(b) deductions.
+**The answer, for one job** (by default the job with the most paychecks left, then the larger paycheck; you can choose
+another):
+- **Owing:** raise Step 4(a) other income. **Getting a refund:** raise Step 4(b) deductions, or Step 3 credits when the
+  W-4 already claims dependents.
+- Every answer is listed (`recommendations`), simplest first: fewest boxes changed, then the smallest change in
+  withholding.
+- **Checked against the return** (§46): when the engine's year-end with an answer differs by more than a cent a paycheck,
+  the answer is aimed at the gap it reports and checked again, up to three times.
 - The search is over whole dollars and keeps the entry that lands nearest $0. It is exact because withholding only rises
   as 4(a) rises and only falls as 4(b) rises. The page shows the new withholding per paycheck and where the year ends.
 - When owing, the same catch-up is also shown as a 4(c) extra amount per paycheck.
@@ -228,16 +300,18 @@ track to refund, or state estimated tax when there's no job.
 
 **What If:**
 - Each compared plan gets "Tax Zen in <year>": a full year at the pay the plan ends with (its paychecks with no last
-  month), in place of your jobs when one replaces pay, with this year's other income, deductions and figures. It shows
+  month), in place of your jobs when one replaces pay, with this year's other income and deductions. It shows
   the year-end result with the W-4 in the plan, and the entry that brings it to $0.
 - "Now" is this year's return.
 - The paycheck planner shows "At tax time" for its paycheck alone.
 
 **API:**
-- `GET /api/tax/year/{year}`: gathered, typed, merged, figures, tables, the estimate and Tax Zen (`w4`,
-  `prior_year_tax` and `zen_job` are saved with the typed values).
+- `GET /api/tax/year/{year}`: gathered, typed, merged, tables, the estimate (`engine` is the slot: `{slot, label,
+  version}`), `prior_year` (typed, or last year's return as worked out here), `tipped_occupations` and Tax Zen
+  (`w4`, `prior_year_tax`, `zen_job` and `zen_policy` are saved with the typed values).
 - `GET /api/tax/family/{year}`, `PUT /api/tax/family/{year}/{unit}`, `POST /api/tax/units`, `DELETE /api/tax/units/{id}`
 - `PUT /api/tax/year/{year}`: your typed values.
-- `PUT /api/tax/figures/{year}`: typed figures.
-- `POST /api/tax/figures/{year}/lookup`
-- `GET /api/tax/figure-sets?status=`, `POST /api/tax/figure-sets/{id}/review`
+- Both mark the year's Tax Zen as seen. Tax Zen in the response carries `range`, `changed`, `cushion` (AT_RISK) and,
+  per job, `payroll`, `recommendations` and `steady`.
+- `GET /api/dashboard`: `attention.tax` is this year's Tax Zen when it got worse since last seen, else null.
+- `GET /api/finance/health`: `tax_engines` says whether each engine can run here.

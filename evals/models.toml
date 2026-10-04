@@ -1,0 +1,49 @@
+# Candidate models for `python -m evals.run`. Each candidate is a vision model (reads the page) and a reasoning
+# model (extracts the fields), both served by LM Studio on this computer. Use the model IDs LM Studio lists.
+# Copy this file to keep your own list; pass it with --config.
+
+[server]
+# This computer's LM Studio. Never the family GPU relay (port 8766) or another computer: evals refuse both.
+base_url = "http://127.0.0.1:1234/v1"
+
+[run]
+# A document that takes longer than this is recorded as a timeout and the run moves on.
+case_timeout_seconds = 1800
+
+[sampling]
+# Leave these out to measure what the app does: temperature 0.1, no seed, the JSON schema enforced by the server.
+# temperature = 0.1
+# seed = 1234
+# schema_enforced = false   # the schema goes in the system prompt instead, to see who keeps to JSON unaided
+
+[decision]
+# How the report picks a model (evals/decision.py). These are the defaults; uncomment to change them.
+# min_valid_rate = 0.99      # share of runs that ended with a valid answer
+# max_money_errors = 0       # wrong money amounts allowed
+# min_pass_all = 0.9         # per task: share of cases passed in every repeat
+# max_p95_seconds = 120      # usability floor: 95th-percentile seconds per case (off unless set)
+# tie_points = 2.0           # candidates this close in accuracy are ordered by consistency, then a calibrated judge
+# [decision.weights]         # task weights in the weighted accuracy (1 each by default)
+# assistant = 2
+
+[[candidate]]
+name = "baseline"
+vision = "qwen2.5-vl-7b-instruct"
+reasoning = "qwen3-8b"
+
+# [[candidate]]
+# name = "bigger-reasoner"
+# vision = "qwen2.5-vl-7b-instruct"
+# reasoning = "qwen3-14b"
+
+# Decision models (models/decisions.py) for `python -m evals.tasks --tasks decisions`. Add `decision` to a candidate
+# above, or list decision-only candidates. The report shows calibration and a fitted temperature for each.
+# [[candidate]]
+# name = "winnow"
+# decision = "winnow-12b"                     # a GGUF loaded in LM Studio at [server] base_url
+#
+# [[candidate]]
+# name = "kev-4b"
+# decision = "kev-latest"
+# decision_provider = "systemone"              # Kev's own server: python -m kev.serve --run jaredpalmer/kev-4b --port 8009
+# decision_url = "http://127.0.0.1:8009/v1"

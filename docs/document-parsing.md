@@ -24,7 +24,7 @@ Do not add financial extraction directly to `Scanner.capture`. After a successfu
 | CSV reader | Python standard-library `csv`, explicit string-preserving dialect/encoding handling | Ready |
 | XLSX reader | openpyxl with hardened package inspection and preservation of raw numerical evidence | Ready, exact dependency pin at implementation |
 | Image text reader | Local vision returns only full text; no OCR fallback or financial inference | Implemented |
-| Interpretation | Separate local reasoning model consumes saved evidence; optional judge assessment follows later | Implemented (typed extraction; Laya/independent checks advisory) |
+| Interpretation | Separate local reasoning model consumes saved evidence; optional judge assessment follows later | Implemented (typed extraction; decision-model independent checks advisory) |
 | Persistence | Add versioned SQLite extraction tables and artifact manifests; retain existing inventory tables | Ready |
 | Trigger | UI option to parse newly captured supported files, plus Parse/Reprocess on existing captured versions | Ready; default off until parser setup passes |
 | Review | Source alongside proposed fields, editable corrections with provenance; no model approval rights | Ready |

@@ -35,27 +35,18 @@ Runs after each import and extraction (or **Reconcile now**): receipt ↔ transa
 
 ## Not implemented (updated 2026-09-30)
 
-Phase 10 (email ingestion, Laya evaluation) is deferred until the classifier has been benchmarked on real documents. Currency conversion and the year-end CPA pack (milestone M4b, reshaped) were built 2026-09-30. The full list of open work is in [milestones](milestones.md#open-work); the assistant's current tool list is in [assistant](assistant.md).
+Phase 10 (email ingestion, decision-model evaluation on real documents) is deferred until the classifier has been benchmarked on real documents. Currency conversion and the year-end CPA pack (milestone M4b, reshaped) were built 2026-09-30. The full list of open work is in [milestones](milestones.md#open-work); the assistant's current tool list is in [assistant](assistant.md).
 
 Since added (see `ui-design-plan.md` §7): backup to a separate destination and verified restore into a new library (section 19), and a first Phase 9 assistant that answers only through the read-only tools, with figure checks against the cited results. The spec's caution still applies: judge the assistant against real records before relying on it.
 
-## Laya, in-process (advisory)
+## Independent checks: the decision model (advisory)
 
-```text
-                         HOME MANAGER
-              ┌───────────────┴───────────────┐
-       Laya Python SDK                  LM Studio API
-       same process                     127.0.0.1
-      classification /                 generative models
-      scoring / routing                VLM / reasoning
-```
+Until 2026-10-03 the independent checks ran on Laya, an in-process checkpoint. They now run on a plug-and-play
+[decision model](decision-models.md), chosen in Settings like the vision and reasoning models. It can be any model in
+LM Studio, with probabilities read from `/v1/responses` log-probabilities, or a `/v1/systemone` server such as Kev.
 
-Laya runs inside Home Manager through the `laya` SDK (`pip install -e .[laya]`); there is no laya-serve HTTP server. Install the weights once with `home-manager --install-laya`: it downloads `convaiinnovations/laya` at pinned revision `55cf4c4ebb4e` (about 850 MB, Apache-2.0) to `%LOCALAPPDATA%\HomeManager\models\laya`, verifying TLS against the Windows certificate store. The LM Studio `laya_english_q8_0.gguf` file is not used; the SDK needs the safetensors checkpoint.
+**Use.** When a decision model is chosen, every ledger extraction runs it automatically: a shadow classification plus a support score for every proposed value and row. It acts only as a veto: a value it cannot confirm sends the record to review with a reason; it never approves a record, and its classification is shown for reference only. The Independent checks setting chooses the checker for audit analyses.
 
-**Privacy.** The SDK source contains no telemetry. Its only network paths are Hugging Face downloads and an optional laya-serve client that Home Manager never imports. Before loading, Home Manager sets `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` and `HF_HUB_DISABLE_TELEMETRY`; an opt-in test (`RUN_LAYA_TESTS=1`) loads and scores with all socket connections blocked.
+**Exception-based review (2026-09-24).** An extracted record counts in your finances automatically ("Checked automatically") when every deterministic check passes: its required fields are present (a receipt's merchant, date and total), at least one arithmetic cross-check ran and agreed (subtotal, tax and tip equal the total, or items equal the subtotal; statement balances reconcile), nothing was ambiguous or dropped, and the decision model doubted nothing. Anything else goes to Needs review with the reasons listed. Correcting a field with Edit details clears the reasons about it; when none remain, the record passes. Only the user's own decisions stop a later extraction from rewriting a record.
 
-**Use.** When the weights are installed, every ledger extraction runs Laya automatically: a shadow classification plus a support score for every proposed value and row. It acts only as a veto: a value it cannot confirm sends the record to review with a reason; it never approves a record, and its classification is shown for reference only. The Independent checks setting now chooses the checker for audit analyses.
-
-**Exception-based review (2026-09-24).** An extracted record counts in your finances automatically ("Checked automatically") when every deterministic check passes: its required fields are present (a receipt's merchant, date and total), at least one arithmetic cross-check ran and agreed (subtotal, tax and tip equal the total, or items equal the subtotal; statement balances reconcile), nothing was ambiguous or dropped, and Laya doubted nothing. Anything else goes to Needs review with the reasons listed. Correcting a field with Edit details clears the reasons about it; when none remain, the record passes. Only the user's own decisions stop a later extraction from rewriting a record.
-
-**Why only a veto.** The checkpoint warns that some temperatures are uncalibrated. On the household's Target receipts it scored exact totals correctly (0.94 for the printed total, 0.03 for a wrong one) but gave a correct footer-derived merchant 0.17 and classified a receipt as a bill with 95% confidence. Per the spec, it earns routing or gating authority only after a benchmark on real documents.
+**Why only a veto.** Scores earn routing or gating authority only after calibration on real documents (the evals `decisions` task fits a temperature). The history: the Laya checkpoint warned that some temperatures are uncalibrated. On the household's Target receipts it scored exact totals correctly (0.94 for the printed total, 0.03 for a wrong one) but gave a correct footer-derived merchant 0.17 and classified a receipt as a bill with 95% confidence. Per the spec, it earns routing or gating authority only after a benchmark on real documents.

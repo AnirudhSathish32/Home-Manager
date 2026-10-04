@@ -8,7 +8,7 @@ if (fragment.has("token")) {
 const token = sessionStorage.getItem("home-manager-token") || "";
 // Capture and model inference are independent queues; library actions wait for neither.
 // familyMode: a family profile is open. It has no library of its own; only Home and Settings apply.
-let savedManaged = "", inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
+let savedManaged = "", savedDecision = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
 const pageSize = 100;
 function element(tag, text = "", className = "") {
   const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
@@ -178,9 +178,13 @@ async function loadSettings() {
   $("vision-model").value = settings.vision.model;
   $("reasoning-url").value = settings.reasoning.base_url;
   $("reasoning-model").value = settings.reasoning.model;
-  $("laya-status").textContent = settings.laya.installed
-    ? `Laya is installed (revision ${settings.laya.revision.slice(0, 12)}) and checks every ledger extraction on this computer. A value it cannot confirm sends the record to review; it never approves one.`
-    : `Laya weights are not installed at ${settings.laya.path}.`;
+  const decision = savedDecision = settings.decision;
+  $("decision-provider").value = decision.provider;
+  $("decision-url").value = decision.base_url;
+  $("decision-model").value = decision.model;
+  const decisionOn = decision.provider !== "off" && decision.model;
+  $("decision-status").textContent = !decisionOn ? "No decision model is chosen, so extractions are not checked independently."
+    : `${decision.model} checks every ledger extraction. ${decision.calibrated ? "It is calibrated on your documents." : "It is not yet calibrated on your documents, so its scores are a hint."}`;
   $("auto-organize").checked = settings.vision.organize_after_scan;
   $("home-currency").value = homeCurrency = settings.household.home_currency || "";
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
@@ -190,6 +194,15 @@ async function loadSettings() {
   $("rescan-hours").value = settings.household.rescan_hours ?? 6;
   $("filing-status").value = settings.household.filing_status || "single";
   $("birth-year").value = settings.household.birth_year ?? "";
+  // Whether the year's return can be worked out here (finance/tax_engine.py readiness), and where the licenses are.
+  const engine = settings.tax_engine;
+  const seconds = (settings.tax_engines || []).filter(item => item.slot !== engine?.slot);
+  const notes = [engine?.note, ...seconds.map(item => item.ready ? `${item.label} can check it.` : item.note)].filter(Boolean);
+  $("tax-engine-status").textContent = engine ? `${notes.join(" ")} Open-source components and their licenses are listed in vendor/NOTICES.md where Home Manager is installed.` : "";
+  $("tax-engine-status").classList.toggle("item-warning", Boolean(engine && !engine.ready));
+  // The second opinion is offered once another engine can run here.
+  $("tax-compare-field").hidden = !seconds.some(item => item.ready);
+  $("tax-compare").checked = settings.household.tax_engine_compare !== false;
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
@@ -367,6 +380,10 @@ $("test-model-computer").addEventListener("click", async () => {
 saveSettingsForm("reasoning-form", "/api/reasoning-settings",
   () => ({base_url:$("reasoning-url").value.trim(), model:$("reasoning-model").value.trim()}),
   "Reasoning settings saved. Open a read document and select Extract to ledger.");
+// The decision model (models/decisions.py). Calibration values come from an eval run and are kept as saved.
+saveSettingsForm("decision-form", "/api/decision-settings",
+  () => ({...savedDecision, provider: $("decision-provider").value, base_url: $("decision-url").value.trim(), model: $("decision-model").value.trim()}),
+  "Decision model saved. Use Test connection to check that it answers.");
 $("share-form").addEventListener("submit", async event => {
   event.preventDefault();
   const passphrase = $("share-passphrase").value;
@@ -392,7 +409,8 @@ $("session-form").addEventListener("submit", async event => {
 saveSettingsForm("household-form", "/api/household-settings", () => ({home_currency: $("home-currency").value || null, checkin_weekday: Number($("checkin-weekday").value), auto_identify_items: $("auto-identify").checked,
                                                              filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null,
                                                              fetch_exchange_rates: $("fetch-rates").checked,
-                                                             fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value)}),
+                                                             fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value),
+                                                             tax_engine_compare: $("tax-compare").checked}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

@@ -112,10 +112,12 @@ def role_models(control: Path) -> dict:
         value = data.get("model")
         return value.strip() if isinstance(value, str) else ""
 
-    vision, reasoning, reviewer = saved("vision.json"), saved("reasoning.json"), saved("reviewer.json")
+    vision, reasoning, reviewer, decision = saved("vision.json"), saved("reasoning.json"), saved("reviewer.json"), saved("decision.json")
     review = model(reviewer) if reviewer.get("provider") == "chat" and model(reviewer) else model(reasoning)
+    # Only an LM Studio decision model is shared; a /v1/systemone server is not behind this relay.
+    decide = model(decision) if decision.get("provider") == "lmstudio" else ""
     return {ROLE_ALIASES["vision"]: model(vision), ROLE_ALIASES["reasoning_config"]: model(reasoning),
-            ROLE_ALIASES["reviewer_config"]: review}
+            ROLE_ALIASES["reviewer_config"]: review, ROLE_ALIASES["decision_config"]: decide}
 
 
 def role_label(alias):
@@ -248,7 +250,8 @@ class GpuHost:
             return 502, {"error": "LM Studio is not running on the GPU computer."}
         return 200, {**details, "id": model} if isinstance(details, dict) else details
 
-    def relay_chat(self, handler, member, body):
+    def relay_chat(self, handler, member, body, path="/chat/completions"):
+        """Relay one request. /chat/completions streams; /responses (decision models only) is one JSON reply."""
         try:
             payload = json.loads(body)
         except ValueError:
@@ -259,6 +262,9 @@ class GpuHost:
         if isinstance(resolved, str):
             return handler.reply(403, {"error": resolved})
         target, alias = resolved
+        streaming = path == "/chat/completions"
+        if not streaming and alias != ROLE_ALIASES["decision_config"] and not handler.loopback:
+            return handler.reply(403, {"error": "Only the decision model role is shared on this endpoint."})
         payload["model"] = target
         body = json.dumps(payload).encode()
         del payload
@@ -270,11 +276,12 @@ class GpuHost:
 
         t0, usage = time.monotonic(), {}
         try:
-            ticket = self.scheduler.acquire(target, member, role_label(alias), keepalive, self.keepalive_seconds)
+            # A JSON reply can't carry keep-alive comments, so a queued decision request waits silently.
+            ticket = self.scheduler.acquire(target, member, role_label(alias), keepalive if streaming else None, self.keepalive_seconds)
         except OSError:
             return  # The member disconnected while waiting.
         try:
-            self.forward(handler, target, body, stream, usage)
+            self.forward(handler, target, body, stream, usage, path)
         except OSError:
             pass  # The member disconnected; closing the upstream connection stops generation.
         finally:
@@ -282,17 +289,17 @@ class GpuHost:
             log.info("%s — %s — %s — %s prompt / %s completion tokens", member, role_label(alias), _clock(time.monotonic() - t0),
                      usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
 
-    def forward(self, handler, target, body, stream, usage):
+    def forward(self, handler, target, body, stream, usage, path="/chat/completions"):
         try:
             ensure_loaded(self.upstream(target), Work.detached())
         except (ModelHTTPError, ValueError) as exc:
             return handler.fail(stream, 502, str(exc))
         url = urlsplit(self.config.upstream)
         connection = http.client.HTTPConnection(url.hostname, url.port, timeout=IDLE_SECONDS)
+        accept = "text/event-stream" if path == "/chat/completions" else "application/json"
         try:
             try:
-                connection.request("POST", url.path + "/chat/completions", body,
-                                   {"Content-Type": "application/json", "Accept": "text/event-stream"})
+                connection.request("POST", url.path + path, body, {"Content-Type": "application/json", "Accept": accept})
                 response = connection.getresponse()
             except (OSError, http.client.HTTPException):
                 return handler.fail(stream, 502, "LM Studio is not running on the GPU computer.")
@@ -403,9 +410,10 @@ class Handler(BaseHTTPRequestHandler):
         member = self.member()
         if member is None:
             return
-        if urlsplit(self.path).path != "/v1/chat/completions":
+        path = urlsplit(self.path).path
+        if path not in ("/v1/chat/completions", "/v1/responses"):
             return self.reply(404, {"error": "Not available on the family GPU computer."})
-        self.host.relay_chat(self, member, body)
+        self.host.relay_chat(self, member, body, path.removeprefix("/v1"))
 
 
 class RelayServer(GracefulHTTPServer):

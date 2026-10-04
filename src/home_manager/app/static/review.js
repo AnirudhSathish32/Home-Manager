@@ -8,7 +8,7 @@ const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "
 const ITEM_CATEGORIES = ["produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages", "household cleaning",
                          "paper & disposables", "personal care", "health", "baby", "pet", "home maintenance", "other"];
 const REVIEW_GROUPS = [["issue", "Questions"], ["link", "Proposed matches"], ["record", "Records to verify"], ["asset", "Investment and loan documents to confirm"], ["warranty", "Warranties to confirm"],
-                       ["tax_table", "Tax tables to confirm"], ["tax_figures", "Tax figures to confirm"], ["tax_tag", "Possible write-offs and tax payments"], ["recurring", "Recurring payments"],
+                       ["tax_table", "Tax tables to confirm"], ["tax_tag", "Possible write-offs and tax payments"], ["recurring", "Recurring payments"],
                        ["item", "Receipt items to identify"]];
 const STATEMENT_ASSET_LABELS = {loan: "Loan"};
 let reviewItems = [], reviewIndex = 0, reviewLoad = 0, reviewThumb = null;
@@ -18,15 +18,15 @@ const proposedAssets = (assets, investments = []) => [
   ...assets.filter(asset => asset.source === "statement" && asset.review_status === "proposed").map(value => ({kind: "asset", id: value.id, value})),
   // Investment statement values and purchase confirmations; the server names each one's review path.
   ...investments.map(value => ({kind: "asset", id: `${value.record_type}-${value.id}`, value}))];
-function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = [], investments = [], taxTags = [], taxFigures = []) {
+function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = [], investments = [], taxTags = []) {
   return queue.records.length + queue.links.length + queue.issues.length + recurring.obligations.filter(row => row.status === "proposed").length
-    + items.length + proposedAssets(assets, investments).length + warranties.length + taxTables.length + taxTags.length + taxFigures.length;
+    + items.length + proposedAssets(assets, investments).length + warranties.length + taxTables.length + taxTags.length;
 }
 async function loadNavCounts() {
-  const [queue, recurring, items, assets, checkin, warranties, taxTables, investments, taxTags, taxFigures] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
+  const [queue, recurring, items, assets, checkin, warranties, taxTables, investments, taxTags] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
     api("/api/items/resolutions?status=proposed&limit=1000"), api("/api/assets"), api("/api/inventory/checkin").catch(() => null), api("/api/warranties?status=proposed"),
-    api("/api/tax-tables?status=proposed"), api("/api/investments/review"), api("/api/tax-tags?status=proposed"), api("/api/tax/figure-sets?status=proposed")]);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables, investments, taxTags.tags, taxFigures.sets), "need review");
+    api("/api/tax-tables?status=proposed"), api("/api/investments/review"), api("/api/tax-tags?status=proposed")]);
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables, investments, taxTags.tags), "need review");
   if (checkin) setNavCount($("nav-checkin-count"), checkin.lots.length + checkin.waiting, "to check in");
 }
 
@@ -61,13 +61,13 @@ async function loadReview(keep = true) {
   else loadGroupSuggestions().catch(error => notice(error, true));
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
-  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags, taxFigures;
+  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags;
   try {
-    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}, {sets: taxFigures}] = await Promise.all([
+    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}] = await Promise.all([
       tool("review_queue"), tool("get_recurring_obligations"),
       api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
       api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed"), api("/api/investments/review"),
-      api("/api/tax-tags?status=proposed"), api("/api/tax/figure-sets?status=proposed")]);
+      api("/api/tax-tags?status=proposed")]);
   } catch (error) {
     if (load === reviewLoad) { $("review-status").textContent = ""; $("review-detail").replaceChildren(alertBox(`Couldn't load the review queue. ${error.message}`, {tone: "error", action: asyncButton("Retry", () => loadReview())})); }
     return;
@@ -78,7 +78,6 @@ async function loadReview(keep = true) {
                  ...proposedAssets(assets, investments),
                  ...warranties.map(value => ({kind: "warranty", id: value.id, value})),
                  ...taxTables.map(value => ({kind: "tax_table", id: value.id, value})),
-                 ...taxFigures.map(value => ({kind: "tax_figures", id: value.id, value})),
                  ...taxTags.map(value => ({kind: "tax_tag", id: value.id, value})),
                  ...recurring.obligations.filter(row => row.status === "proposed").map(value => ({kind: "recurring", id: value.id, value})),
                  ...items.map(value => ({kind: "item", id: value.id, value}))];
@@ -88,7 +87,7 @@ async function loadReview(keep = true) {
   renderReviewQueue(catalog);
   renderReviewDetail();
   renderUnmatched(unmatched);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables, investments, taxTags, taxFigures), "need review");
+  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables, investments, taxTags), "need review");
 }
 function reviewTitle(item) {
   const value = item.value;
@@ -100,7 +99,6 @@ function reviewTitle(item) {
   if (item.kind === "warranty") return `Warranty: ${[value.brand, value.name].filter(Boolean).join(" ")}`;
   if (item.kind === "tax_table") return `${value.year} ${value.name} income tax table`;
   if (item.kind === "tax_tag") return `${value.target.description} · ${value.line_label}`;
-  if (item.kind === "tax_figures") return `${value.year} federal tax figures`;
   return value.line.description;
 }
 function renderReviewQueue(catalog) {
@@ -237,21 +235,6 @@ function reviewParts(item) {
             evidence: [box, sources], document: null,
             confirm: decide(path, {status: "verified"}, "Tax table confirmed."), confirmLabel: "Confirm table",
             reject: decide(path, {status: "rejected"}, "Rejected; it can be looked up again from the pay stub."), rejectLabel: "Reject"};
-  }
-  if (item.kind === "tax_figures") {
-    // A year's federal figures, each quoted from an official page (household/tax_figures.py).
-    const path = `/api/tax/figure-sets/${value.id}/review`;
-    const box = element("div", "", "review-side"), list = element("ul", "", "tax-brackets");
-    box.append(element("span", `${value.year} · filing ${value.filing_status.replaceAll("_", " ")}`, "figure-label"));
-    for (const figure of Object.values(value.figures)) list.append(element("li", `${figure.label}: ${figure.display}`));
-    box.append(list);
-    const sources = element("div", "", "review-side");
-    sources.appendChild(element("span", "Quoted from", "figure-label"));
-    for (const source of value.sources) sources.append(element("span", `“${source.quote}”`, "block"), element("small", source.url, "muted block mono"));
-    return {why: "The local model looked these figures up for this year's tax estimate. Every number is quoted from the pages below; the Taxes page uses them once you confirm them.",
-            evidence: [box, sources], document: null,
-            confirm: decide(path, {status: "verified"}, "Tax figures confirmed."), confirmLabel: "Confirm figures",
-            reject: decide(path, {status: "rejected"}, "Rejected; they can be looked up again from the Taxes page."), rejectLabel: "Reject"};
   }
   if (item.kind === "tax_tag") {
     // A suggested tax tag: the bank line, what it would count as, and why it was suggested. Confirming can make a rule too.

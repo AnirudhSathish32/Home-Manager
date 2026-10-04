@@ -116,6 +116,25 @@ def test_role_aliases_map_to_the_owners_models(relay, monkeypatch):
         request_completion(VisionConfig(base_url=relay["member"], model="some-other-model"), dict(MESSAGES))
 
 
+def test_decision_requests_relay_only_for_the_decision_role(relay, monkeypatch):
+    from home_manager.models import decisions
+    from home_manager.models.decisions import DecisionConfig
+    state = relay["upstream"]
+    state["decide"] = lambda path, body: {"output": [{"type": "message", "content": [{"type": "output_text", "text": "A", "logprobs": [
+        {"token": "A", "logprob": -0.1, "top_logprobs": [{"token": "A", "logprob": -0.1}, {"token": "B", "logprob": -2.4}]}]}]}]}
+    as_member(monkeypatch, relay)
+    member = DecisionConfig(provider="lmstudio", base_url=relay["member"], model="home-manager/decision")
+    with pytest.raises(ValueError):  # The owner has not shared a decision model yet.
+        decisions.support(member, [("total: 1.00", ["Total 1.00"])])
+    (relay["control"] / "decision.json").write_text(json.dumps({"provider": "lmstudio", "base_url": "http://127.0.0.1:1234/v1", "model": "synthetic-reasoning"}))
+    assert decisions.support(member, [("total: 1.00", ["Total 1.00"])])[0] > 0.8
+    assert state["decisions"][-1] == ("/v1/responses", {**state["decisions"][-1][1], "model": "synthetic-reasoning"})
+    # Another role's model can't be asked on /v1/responses.
+    other = DecisionConfig(provider="lmstudio", base_url=relay["member"], model="home-manager/reasoning")
+    with pytest.raises(ValueError):
+        decisions.support(other, [("total: 1.00", ["Total 1.00"])])
+
+
 def test_the_owners_app_uses_loopback_without_a_token(relay):
     state = relay["upstream"]
     state["native"] = {"loaded": {"synthetic-vision"}, "types": {}, "calls": []}

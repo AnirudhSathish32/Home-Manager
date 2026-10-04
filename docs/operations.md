@@ -11,23 +11,23 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
-Optional extras (`pyproject.toml`), which can be combined, as in `.[test,dev,browser-test,laya]`:
+Optional extras (`pyproject.toml`), which can be combined, as in `.[test,dev,browser-test]`:
 
 | Extra | For |
 |---|---|
 | `test` | pytest and httpx, to run the test suite. |
 | `browser-test` | Playwright, for the opt-in browser tests (they use the installed Microsoft Edge). |
 | `dev` | `ruff`, `mypy`, `pytest-cov`. |
-| `laya` | The in-process Laya checker. Download its weights once with `home-manager --install-laya` (about 850 MB). See [V2 phases](v2-phases.md#laya-in-process-advisory). |
 
 ### Local models (LM Studio)
 
-The app never downloads or loads model weights itself (Laya aside). It talks to an OpenAI-compatible server on loopback, normally LM Studio at `http://127.0.0.1:1234/v1`. That server must support streaming chat completions and JSON-schema output, and the vision model needs image input.
+The app never downloads or loads model weights itself. It talks to an OpenAI-compatible server on loopback, normally LM Studio at `http://127.0.0.1:1234/v1`. That server must support streaming chat completions and JSON-schema output, and the vision model needs image input.
 
 In **Settings → Local models**, save the URL and exact model ID for:
 - **Vision model**: reads images into text. See [image transcription](receipt-parsing.md).
 - **Reasoning model**: extraction, the assistant, item identification and the web lookups.
-- **Independent checks** (optional): a second chat model, or Laya. See [assistant](assistant.md#the-independent-reviewer-independent-checks).
+- **Decision model** (optional): the independent checks on every extraction. It can be a model in LM Studio 0.3.39 or later, or a `/v1/systemone` server such as Kev. See [decision models](decision-models.md).
+- **Independent checks** for audit analyses (optional): a second chat model, or the decision model. See [assistant](assistant.md#the-independent-reviewer-independent-checks).
 
 By default the app keeps one generative model loaded at a time. Before each request it unloads the others through LM Studio's `/api/v1` API; the **Keep one model loaded at a time** setting turns this off. See [financial reasoning](financial-reasoning.md) and [shared GPU](shared-gpu-plan.md) for residency, and for using another family member's GPU computer.
 
@@ -48,7 +48,6 @@ Without the key, those lookups fail with "Web search is not configured". Everyth
 | Command | What it does |
 |---|---|
 | `home-manager [--port 8765] [--control-dir DIR]` | Starts the app on `127.0.0.1`. Prints a private session link (`http://127.0.0.1:<port>/#token=…`) and the log's path. No browser opens by itself; open the link. The port must be between 1024 and 65535. |
-| `home-manager --install-laya [--control-dir DIR]` | Downloads the pinned Laya checkpoint to `<control>/models/laya`, then exits. |
 | `home-manager check-ledger [--control-dir DIR] [--library DIR]` | Read-only [ledger health](architecture.md#diagnostics-and-checks) report for every individual profile, or for one library folder. It is safe while the app runs. Exits 1 if any error-level rule is broken. The report shows rule names and record ids, never amounts or text. |
 | `home-manager index-documents [--rebuild] [--control-dir DIR] [--library DIR]` | Builds the [document search](document-search.md) index. The app indexes new readings by itself; use `--rebuild` to throw the index away and build it again. It takes each library's lock, so close the app first. |
 | `home-manager gpu-host [--control-dir DIR] serve [--bind IP]` | Runs the family GPU relay. `add-member NAME` (prints the token once), `remove-member NAME` and `members` manage who can use it. See [shared GPU](shared-gpu-plan.md). |
@@ -62,9 +61,6 @@ Stop the app with Ctrl+C. Each start makes a new session link, so a tab left ope
 | `LOCALAPPDATA` | Windows: the default control dir is `%LOCALAPPDATA%\HomeManager`. Elsewhere it is `~/.local/share/home-manager`. |
 | `HOME_MANAGER_BRAVE_API_KEY` | Brave Search API key for web lookups. It is never written to settings files, prompts or logs. |
 | `RUN_BROWSER_TESTS=1` | Test runs only: include the browser tests (or pass `--browser`). |
-| `RUN_LAYA_TESTS=1` | Test runs only: include the test that loads the real Laya checkpoint. |
-
-The app sets `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` and `HF_HUB_DISABLE_TELEMETRY` itself before loading Laya.
 
 ## Where things live
 
@@ -76,11 +72,10 @@ Described from the code; the app creates everything below. Keep the control dir 
 |---|---|
 | `settings.json` | The library folder last opened. |
 | `profiles.json`, `profiles/<id>/household.json` | Profiles ([sharing](sharing.md)) and each profile's financial preferences. An older single `household.json` moves into the first profile. |
-| `vision.json`, `reasoning.json`, `reviewer.json` | Model settings. Invalid saved settings fall back to defaults, which switch that model off. |
+| `vision.json`, `reasoning.json`, `reviewer.json`, `decision.json` | Model settings. Invalid saved settings fall back to defaults, which switch that model off. |
 | `model_computer.json`, `gpu_token.txt` | Whether models run on this PC or a family GPU computer, and the member token (never returned by the API). |
 | `gpu_host.json` | Only on a GPU host: its members and their tokens. |
 | `logs/home-manager.log` (+ `.1`–`.5`) | The diagnostic log. It rotates at 1 MB. It records events, ids and code tracebacks, never document text, amounts, merchant names or file names. |
-| `models/laya/` | Laya weights, if installed. |
 | `sessions/` | Temporary copies for an opened shared library; deleted at start. |
 | `.home-manager.lock` | One process per control dir. |
 

@@ -26,13 +26,8 @@ def main():
                                                  "or `home-manager index-documents --rebuild` to rebuild the search index of document text.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--control-dir", type=Path, help="Settings location; default is %%LOCALAPPDATA%%/HomeManager on Windows.")
-    parser.add_argument("--install-laya", action="store_true", help="Download the pinned Laya checkpoint once (about 850 MB), then exit.")
     args = parser.parse_args()
     from .app.manager import default_control_dir
-    if args.install_laya:
-        from .models.laya_runtime import install
-        print("Laya installed at", install((args.control_dir or default_control_dir()) / "models" / "laya"))
-        return
     if not 1024 <= args.port <= 65535:
         parser.error("Choose a port between 1024 and 65535.")
     from .core.logs import configure

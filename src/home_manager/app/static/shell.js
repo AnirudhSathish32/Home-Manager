@@ -22,6 +22,8 @@ const ROUTES = {
   document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version"), route.params.get("lines")) : null},
   processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory(), loadProcessing()]) : null},
   settings: {title: "Settings", show: () => null},
+  // #/donate lists checks and documents; #/donate/ID is one check beside its original.
+  donate: {title: "Donate documents", show: route => configured ? openDonate(route) : null},
 };
 const DEFAULT_ROUTE = "home";
 let currentRoute = null, listScroll = 0, openedFromList = false;
@@ -37,6 +39,7 @@ function parseRoute() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const [name, id] = path.split("/");
   if (name === "documents" && /^\d+$/.test(id || "")) return {name: "document", id: Number(id), params: new URLSearchParams(query)};
+  if (name === "donate" && /^\d+$/.test(id || "")) return {name, id: Number(id), params: new URLSearchParams(query)};
   return {name: name in ROUTES ? name : DEFAULT_ROUTE, params: new URLSearchParams(query)};
 }
 // A family profile's own library is only its inbox: uploads are read, reviewed and routed to people from these pages.

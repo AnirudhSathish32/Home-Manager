@@ -5,10 +5,12 @@ can be inherited or triggered by a document. Endpoints are validated URLs: a loo
 server on this computer, or a family GPU computer on the tailnet (models/gpu_host.py).
 """
 
+from contextlib import contextmanager
 import hashlib
 import http.client
 import ipaddress
 import json
+import logging
 import queue
 import re
 import socket
@@ -17,9 +19,14 @@ import time
 from urllib.parse import quote, urlsplit
 
 from ..core.jobs import Cancelled, Work
+from ..core.logs import log_failure
 from ..library.storage import now
 from .model_stream import IDLE_SECONDS, read_completion
 
+log = logging.getLogger(__name__)
+
+DEFAULT_TEMPERATURE = 0.1
+UNENFORCED_SCHEMA = "Reply with one JSON object and nothing else. It must match this JSON schema:\n"
 # Listing fields that change without the model bytes changing.
 VOLATILE_METADATA = {"created", "object", "state", "loaded_context_length"}
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
@@ -28,6 +35,9 @@ REMOTE_OFFLINE = "The family GPU computer is offline or not on Tailscale. Check 
 # host:port -> bearer token for a family GPU computer. Set by the app from its control
 # directory; never part of a model config, so it never reaches run options or the database.
 _tokens = {}
+# In-process callbacks that see every attempt's raw output (evals). Never persisted by the app.
+_recorders = []
+_recorders_lock = threading.Lock()
 
 
 def is_tailnet_host(host):
@@ -190,20 +200,112 @@ def telemetry(config, input_bytes, started_at, t0, finished, stats, status, erro
             "status": status, "error_category": error_category}
 
 
-def request_completion(config, payload, work=None):
-    """Stream one chat completion. Cancellation releases the caller immediately.
+@contextmanager
+def recording(callback):
+    """Call callback(attempt) after every model request in this process while inside, success or not.
 
-    The HTTP exchange runs on a helper thread: on Windows a socket shutdown does not
-    interrupt a receive already blocked during prompt processing, but it does abort
-    the connection when the next token arrives, which also stops server generation.
+    attempt holds the raw output text (None when the request failed), the finish reason, status, error
+    category, the sampling sent, the work's attribution and the request's telemetry. A correction-turn
+    retry is two attempts, the second with follow_up set. A callback that raises is logged and ignored, so recording never changes results.
     """
+    with _recorders_lock:
+        _recorders.append(callback)
+    try:
+        yield
+    finally:
+        with _recorders_lock:
+            _recorders.remove(callback)
+
+
+def _record_attempt(work, payload, text, metrics):
+    with _recorders_lock:
+        recorders = list(_recorders)
+    if not recorders:
+        return
+    task, owner_id, prompt_version, _ = work.attribution
+    # follow_up: the request carried an earlier model answer, as a correction turn (or an agent's next step) does.
+    follow_up = any(isinstance(message, dict) and message.get("role") == "assistant" for message in payload.get("messages", []))
+    attempt = {"work_id": work.id, "task": task, "owner_id": owner_id, "prompt_version": prompt_version, "text": text, "follow_up": follow_up,
+               "finish_reason": metrics["finish_reason"], "status": metrics["status"], "error_category": metrics["error_category"],
+               "params": {key: payload.get(key) for key in ("temperature", "seed", "max_tokens")}
+               | {"schema_enforced": "response_format" in payload},
+               "metrics": metrics}
+    for recorder in recorders:
+        try:
+            recorder(attempt)
+        except Exception as exc:  # A broken recorder never fails the model request it observed.
+            log_failure(log, "attempt recorder", exc, work=work.id)
+
+
+def apply_sampling(config, payload):
+    """Set the request's sampling from the config's overrides (models/vision.py Sampling), else the app's defaults."""
+    temperature = getattr(config, "temperature", None)
+    payload.update(model=config.model, stream=True, temperature=DEFAULT_TEMPERATURE if temperature is None else temperature,
+                   stream_options={"include_usage": True})
+    if getattr(config, "seed", None) is not None:
+        payload["seed"] = config.seed
+    if not getattr(config, "schema_enforced", True) and "response_format" in payload:
+        # Unenforced: the model sees the same schema as an instruction, and the caller's validation is unchanged.
+        schema = payload.pop("response_format").get("json_schema", {}).get("schema")
+        if schema is not None:
+            instruction = UNENFORCED_SCHEMA + json.dumps(schema, separators=(",", ":"))
+            messages = payload["messages"]
+            if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+                messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + instruction}
+            else:
+                messages.insert(0, {"role": "system", "content": instruction})
+    return payload
+
+
+def request_completion(config, payload, work=None):
+    """Stream one chat completion. Cancellation releases the caller immediately."""
     from .residency import ensure_loaded  # Imports this module.
 
     work = work or Work.detached()
-    remote = is_remote(config)
     # The single choke point for every model task: eject other models, then load this one.
     ensure_loaded(config, work)
-    payload.update(model=config.model, stream=True, temperature=0.1, stream_options={"include_usage": True})
+    apply_sampling(config, payload)
+    return _exchange(config, "/chat/completions", payload, "text/event-stream", read_completion, work,
+                     "Local model returned an invalid completion stream.")
+
+
+def _usage(usage):
+    """Chat completions report prompt/completion tokens; the Responses API reports input/output tokens."""
+    usage = usage if isinstance(usage, dict) else {}
+    return {"prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+            "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens"))}
+
+
+def read_json_reply(response, work, limit=4 * 1024**2):
+    raw = response.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("Model server response exceeds the size limit.")
+    reply = json.loads(raw)
+    if not isinstance(reply, dict):
+        raise TypeError("Model server reply is not a JSON object.")
+    return reply, {"usage": _usage(reply.get("usage")), "output_bytes": len(raw), "finish_reason": reply.get("status")}
+
+
+def request_json(config, path, payload, work=None, manage_loading=True):
+    """POST one non-streaming JSON request under /v1 (decision models). Same residency, cancellation,
+    error categories and telemetry as request_completion; the caller sets the payload's model and sampling.
+    manage_loading=False skips LM Studio residency, for servers that aren't LM Studio (a /v1/systemone server)."""
+    from .residency import ensure_loaded  # Imports this module.
+
+    work = work or Work.detached()
+    if manage_loading:
+        ensure_loaded(config, work)
+    return _exchange(config, path, payload, "application/json", read_json_reply, work, "Local model returned an invalid reply.")
+
+
+def _exchange(config, path, payload, accept, reader, work, invalid_message):
+    """One POST to the model server, run on a helper thread. reader(response, work) -> (value, stats).
+
+    On Windows a socket shutdown does not interrupt a receive already blocked during prompt
+    processing, but it does abort the connection when the next token arrives, which also stops
+    server generation. Cancellation therefore releases the caller immediately.
+    """
+    remote = is_remote(config)
     body = json.dumps(payload).encode()
     connection, prefix = _connection(config, IDLE_SECONDS)
     state, lock, outcome = {"sock": None, "aborted": False}, threading.Lock(), queue.Queue(maxsize=1)
@@ -226,11 +328,10 @@ def request_completion(config, payload, work=None):
                 if state["aborted"]:
                     raise Cancelled()
                 state["sock"] = connection.sock  # getresponse() may detach it from the connection.
-            connection.request("POST", prefix + "/chat/completions", body,
-                               _headers(config, {"Content-Type": "application/json", "Accept": "text/event-stream"}))
+            connection.request("POST", prefix + path, body, _headers(config, {"Content-Type": "application/json", "Accept": accept}))
             response = connection.getresponse()
             _check_status(response, remote)
-            text, stats = read_completion(response, work)
+            text, stats = reader(response, work)
             outcome.put((text, stats, None))
         except BaseException as exc:
             outcome.put((None, stats, exc))
@@ -261,14 +362,18 @@ def request_completion(config, payload, work=None):
         mapped = ValueError("Local model request timed out after 15 minutes without socket activity. Model loading or generation may be stalled; no partial result was saved.")
     elif isinstance(error, (KeyError, IndexError, TypeError, UnicodeDecodeError, json.JSONDecodeError)):
         status, category = "failed", "invalid_stream"
-        mapped = ValueError("Local model returned an invalid completion stream.")
+        mapped = ValueError(invalid_message)
     elif isinstance(error, (OSError, http.client.HTTPException)):
         status, category = "failed", "connection"
         mapped = ValueError(REMOTE_OFFLINE + " No partial result was saved." if remote and stats is None else
                             "Local model connection failed or disconnected. Check the server log and loaded model; no partial result was saved.")
     elif error is not None:
         status, category = "failed", "invalid_or_truncated_output"
-    work.record(telemetry(config, len(body), started_at, t0, time.monotonic(), stats, status, category))
+    metrics = telemetry(config, len(body), started_at, t0, time.monotonic(), stats, status, category)
+    work.record(metrics)
+    # Recorders always see the raw reply as text.
+    seen = text if error is not None or isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+    _record_attempt(work, payload, seen if error is None else None, metrics)
     if mapped is not None:
         raise mapped from (error if mapped is not error else None)
     return text

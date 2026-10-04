@@ -8,6 +8,7 @@ is a return of their own. The family is Tax Zen when every return is.
 import json
 
 from ..library.storage import now
+from .tax_year import KIND_ORDER
 
 STATUSES = ("single", "married_joint", "head_of_household")
 
@@ -52,16 +53,23 @@ def combine(parts):
     jobs, businesses and payments are listed with whose they are."""
     values: dict = {}
     sources: dict = {}
-    combined = {"values": values, "sources": sources, "jobs": [], "businesses": [], "state": None, "notes": [],
+    kinds: dict = {}
+    combined: dict = {"values": values, "sources": sources, "kinds": kinds, "projected": {}, "jobs": [], "businesses": [], "state": None, "notes": [],
                 "estimated_payments": {"federal_estimated": [], "state_estimated": []}}
     for name, gathered in parts:
         for key, amount in gathered["values"].items():
             if isinstance(amount, list):
                 values.setdefault(key, []).extend(amount)
+            elif key == "hsa_coverage":  # Family coverage on either member's HSA covers the return.
+                values[key] = "family" if "family" in (values.get(key), amount) else amount
             else:
                 values[key] = values.get(key, 0) + amount
         for key, text in gathered["sources"].items():
             sources[key] = f"{sources[key]}; {name}: {text}" if key in sources and len(parts) > 1 else (f"{name}: {text}" if len(parts) > 1 else text)
+        for key, kind in gathered.get("kinds", {}).items():  # The least certain member's kind is the sum's.
+            kinds[key] = max(kinds.get(key, kind), kind, key=KIND_ORDER.index)
+        for key, amount in gathered.get("projected", {}).items():
+            combined["projected"][key] = combined["projected"].get(key, 0) + amount
         combined["jobs"] += [{**job, "key": f"{name}:{job['key']}", "name": f"{name} · {job['name']}" if len(parts) > 1 else job["name"], "owner": name}
                              for job in gathered["jobs"]]
         combined["businesses"] += [{**business, "key": f"{name}:{business['key']}", "owner": name} for business in gathered["businesses"]]

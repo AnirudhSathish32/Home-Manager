@@ -58,7 +58,8 @@ PAYROLL_CATEGORIES = {"retirement": ("retirement_pretax", "retirement_roth"), "h
 PAYROLL_LABELS = {"retirement": "401(k) or retirement", "health": "HSA"}
 # A statement contribution is the same money as a pay stub line when it matches it this closely (or a quarter's lines added up).
 PAYROLL_MATCH_DAYS, PAYROLL_QUARTER_DAYS = 7, 92
-TAX_FORMS = ("1099-INT", "1099-DIV", "1099-B", "1099-R", "1099-SA", "1099-Q", "1099-DA", "5498", "5498-SA")
+# 1098 (a lender's mortgage interest statement) has no investment account: its boxes feed the year's return (finance/tax_year.py).
+TAX_FORMS = ("1099-INT", "1099-DIV", "1099-B", "1099-R", "1099-SA", "1099-Q", "1099-DA", "5498", "5498-SA", "1098")
 # What a form's boxes report, compared with what is recorded for its account and year: (measure, label, {form: boxes}).
 # 1099-INT 1 interest and 3 Treasury interest; 1099-DIV 1a ordinary dividends; 1099-B 1d proceeds and 1e cost (1099-DA 1f and
 # 1g for digital assets); 1099-R, 1099-SA and 1099-Q 1 distributions; 5498 1 IRA and 10 Roth IRA contributions; 5498-SA 2 HSA
@@ -1275,7 +1276,7 @@ class Investments:
         return matches[0] if len(matches) == 1 else None
 
     def publish_tax_form(self, record, source):
-        """A 1099 or 5498 (or a consolidated 1099) and its boxes, waiting for review; re-reading one the user decided on changes nothing."""
+        """A 1099, 5498 or 1098 (or a consolidated 1099) and its boxes, waiting for review; re-reading one the user decided on changes nothing."""
         with self.store.connection() as db:
             existing = db.execute("SELECT * FROM tax_forms WHERE blob_hash=?", (source["blob_hash"],)).fetchone()
             if existing and existing["review_status"] in ("verified", "rejected"):

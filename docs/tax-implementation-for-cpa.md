@@ -2,6 +2,11 @@
 
 *Prepared 2026-09-30 from the source code, not just the design docs.*
 
+> **Superseded 2026-10-04.** The hand-written federal return and the yearly-figures lookup described below were retired.
+> The federal return is now worked out by Engine 1 (see [tax engines](tax-engines.md)), which cites the rule behind
+> every line. Sections on withholding (Pub 15-T), Tax Zen, the safe harbor and the simplified state return still apply.
+> The rest is kept as a record of the earlier implementation.
+
 ## About this document
 Home Manager is a personal finance app. It estimates a household's federal return (and a simplified state return)
 during the year and suggests W-4 changes or estimated payments so the return comes out near $0. This document lists,

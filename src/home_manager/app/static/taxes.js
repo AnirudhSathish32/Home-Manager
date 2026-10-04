@@ -201,8 +201,9 @@ const RETURN_FIELDS = [
                    ["se_health_insurance", "Self-employed health insurance"], ["ira_deduction", "Deductible IRA contributions"],
                    ["student_loan_interest", "Student-loan interest"], ["other_adjustments", "Other adjustments"]]],
   ["Deductions", [["medical", "Medical and dental"], ["state_local_tax", "State and local income tax"], ["property_tax", "Property tax"],
-                  ["mortgage_interest", "Mortgage interest"], ["charity", "Charity"], ["other_itemized", "Other itemized"],
-                  ["other_deductions", "Other deductions (e.g. tips, overtime, car-loan interest)"]]],
+                  ["mortgage_interest", "Mortgage interest"], ["mortgage_average_balance", "Mortgage's average balance this year"],
+                  ["charity", "Charity (cash)"], ["charity_noncash", "Charity (goods)"], ["other_itemized", "Other itemized"],
+                  ["qualified_tips", "Qualified tips (below the line)"], ["qualified_overtime", "Overtime premium (the extra half of time-and-a-half)"]]],
   ["Credits", [["qualifying_children", "Qualifying children (under 17)", true], ["other_dependents", "Other dependents", true],
                ["dependent_care_expenses", "Child and dependent care costs"], ["dependent_care_people", "People those costs were for", true],
                ["energy_home_expenses", "Energy-efficient home improvements"], ["other_credits", "Other credits"], ["other_refundable_credits", "Other refundable credits"]]],
@@ -266,28 +267,88 @@ function renderFamilyTaxes(family) {
   $("taxes-return-panel").hidden = !shown;
   if (shown) { taxUnit = shown.id; $("taxes-return-title").textContent = `${shown.name}: the return, estimated`; renderTaxYear(shown.view); }
 }
+// What kind of value a field holds (finance/tax_year.py KIND_ORDER; §35), in words beside it with where it came from.
+const VALUE_KINDS = {record: "From records", worked_out: "Worked out from records", projected: "Projected to Dec 31", to_enter: "Enter it", typed: "You typed"};
+function valueKind(field, typedValue, gathered, key) {
+  const typedHere = typedValue !== undefined && typedValue !== null && typedValue !== "";
+  const kind = typedHere ? "typed" : gathered.kinds?.[key];
+  if (!kind) return field;
+  const source = typedHere ? "used instead of your records" : gathered.sources?.[key];
+  field.append(element("small", source ? `${VALUE_KINDS[kind]}: ${source}` : VALUE_KINDS[kind], `value-kind value-kind-${kind}`));
+  return field;
+}
 function taxInput(id, value, placeholder, title = "") {
   const input = forecastInput(id, {inputmode: "decimal"}); input.value = value ?? ""; input.placeholder = placeholder || "0.00";
   if (title) input.title = title;
   return input;
 }
 // Tax Zen (finance/tax_zen.py): what to put on a W-4, or pay ahead, so the return comes out at $0.
+// The aim (finance/tax_zen.py TaxZenPolicy), in words; the status badges are in ui.js STATUS.
+const ZEN_STRATEGIES = {precision: "Come out at $0", small_refund: "A small refund", cash_retention: "Keep cash, owe a little", safe_harbor: "Owe what's allowed without a penalty"};
+const ZEN_BADGES = {ZEN: "tax_zen", WATCH: "tax_watch", AT_RISK: "tax_at_risk", ACTION_RECOMMENDED: "tax_action", REVIEW_REQUIRED: "tax_review", INSUFFICIENT_DATA: "tax_insufficient", ENGINE_UNSUPPORTED: "tax_unsupported"};
+function zenPolicyForm(view) {
+  const zen = view.zen, saved = view.inputs.zen_policy || {}, row = element("div", "", "forecast-row");
+  const strategy = planSelect("taxes-zen-strategy", ZEN_STRATEGIES, zen.policy?.strategy || "precision");
+  row.append(forecastField("Aim for", strategy));
+  const amountFor = {small_refund: ["refund", "Refund to aim for ($)", "refund_minor"], cash_retention: ["max_owed", "Most you'd owe in April ($)", "max_owed_minor"]}[strategy.value];
+  let typed = null;
+  if (amountFor) { typed = taxInput("taxes-zen-amount", saved[amountFor[0]], zen.display?.[amountFor[2]] || "", "Whole dollars"); row.append(forecastField(amountFor[1], typed)); }
+  const save = async () => {
+    const policy = {strategy: strategy.value};
+    if (typed && typed.value.trim() && amountFor && strategy.value === zen.policy?.strategy) policy[amountFor[0]] = typed.value.trim();
+    try { await saveTaxInputs({...view.inputs, zen_policy: policy}); } catch (error) { notice(error, true); }
+  };
+  strategy.addEventListener("change", save); typed?.addEventListener("change", save);
+  return row;
+}
 function renderTaxZen(view) {
-  const zen = view.zen, target = $("taxes-zen"), parts = [element("h3", "Tax Zen", "")];
-  parts[0].id = "taxes-zen-title";
+  const zen = view.zen, target = $("taxes-zen"), title = element("h3", "Tax Zen ", ""), parts = [title];
+  title.id = "taxes-zen-title";
+  if (zen?.status) title.append(statusBadge(ZEN_BADGES[zen.status]));
   if (!zen?.ready) { target.replaceChildren(...parts, element("p", zen?.note || "", "muted small")); return; }
-  if (zen.zen) parts.push(element("p", `You're Tax Zen for ${view.year}: the return comes out within a dollar of $0.`, "taxes-zen-headline"));
+  parts.push(zenPolicyForm(view));
+  const aim = zen.target_minor === 0 ? "$0" : zen.target_minor > 0 ? `a refund of ${zen.display.target_minor}` : `owing ${zen.display.target_minor}`;
+  if (zen.zen) parts.push(element("p", `You're Tax Zen for ${view.year}: the return comes out at your aim (${aim}).`, "taxes-zen-headline"));
+  else parts.push(element("p", zen.reason, "small"));
+  // §23: the likely range, with the projected pay and interest moved down and up; and what changed since last time (§43).
+  if (zen.range && zen.range.low_minor !== zen.range.high_minor) parts.push(element("p", `Likely between ${zen.range.display.low_minor} and `
+    + `${zen.range.display.high_minor} (${zen.range.confidence} confidence: ${{high: "little of it is projected", medium: "some of it is projected", low: "much of it is projected"}[zen.range.confidence]}).`, "muted small"));
+  if (zen.changed?.texts?.length) {
+    const changed = element("details"), list = element("ul", "", "small");
+    changed.append(element("summary", "What changed since Tax Zen last looked"));
+    for (const text of zen.changed.texts) list.append(element("li", text));
+    changed.append(list); parts.push(changed);
+  }
   const job = zen.job;
-  if (job && !zen.zen) {
+  if (zen.cushion) parts.push(element("p", zen.cushion.text, "taxes-zen-headline"));
+  if (job?.steady && !["ZEN", "WATCH", "AT_RISK"].includes(zen.status)) parts.push(element("p", job.steady.text, "small"));
+  if (job && !["ZEN", "WATCH", "AT_RISK"].includes(zen.status)) {
+    // Why (§43): where the year ends, the aim, and the paychecks left to get there; when a new W-4 takes effect (§21).
+    const payroll = job.payroll || {};
+    const timing = payroll.delay_checks ? ` A W-4 handed in now takes effect after ${payroll.delay_checks === 1 ? "the next paycheck" : `the next ${payroll.delay_checks} paychecks`}`
+      + `${payroll.next_pay_date ? ` (${dateText(payroll.next_pay_date)})` : ""}, so it changes ${job.paychecks_left} of the ${payroll.paychecks_left} left.` : "";
+    parts.push(element("p", `Why: at today's withholding the year ends ${zen.result_minor >= 0 ? "with a refund of" : "owing"} ${zen.display.result_minor}; `
+      + `your aim is ${aim}, with ${job.paychecks_left} paychecks to change at ${job.name}.${timing}`, "small"));
     const rest = job.rest, entry = rest.field === "4(a)" ? "Step 4(a), other income" : "Step 4(b), deductions";
-    const headline = element("p", "", "taxes-zen-headline");
+    const checked = part => part.checked ? " Checked: working the return out again with it ends the year there." : part.checked === false ? " It couldn't be checked against the return; treat it as approximate." : "";
+    const extraLine = job.extra && element("p", "", job.primary === "extra" ? "taxes-zen-headline" : "small");
+    if (job.extra) {
+      if (job.primary === "extra") extraLine.append(`On ${job.name}'s W-4, add `, element("strong", job.extra.display.per_check_minor), ` of extra withholding a paycheck (Step 4(c): ${job.extra.display.total_4c_minor} in all). `
+        + `The year then ends at ${job.extra.year_end_minor >= 0 ? "a refund of" : "owing"} ${job.extra.display.year_end_minor.replace("-", "")}.${checked(job.extra)}`);
+      else extraLine.textContent = `Or keep the W-4 as it is and add ${job.extra.display.per_check_minor} of extra withholding a paycheck (Step 4(c): ${job.extra.display.total_4c_minor} in all).`;
+    }
+    if (job.primary === "extra") parts.push(extraLine);
+    const headline = element("p", "", job.primary === "extra" ? "small" : "taxes-zen-headline");
     if (rest.unreachable) headline.textContent = `No W-4 entry at ${job.name} can close this with ${job.paychecks_left} paychecks left: withholding can't go below zero. `
       + "The rest comes back as a refund; see January below.";
-    else headline.append(`On ${job.name}'s W-4, put `, element("strong", `${rest.display.amount}`), ` in ${entry}, for the ${job.paychecks_left} paychecks left this year.`);
+    else if (job.primary === "extra") headline.textContent = `Or put ${rest.display.amount} in ${entry} instead.`;
+    else headline.append(`On ${job.name}'s W-4, put `, element("strong", `${rest.display.amount}`), ` in ${entry}, for the ${job.paychecks_left} paychecks it changes this year.`);
     parts.push(headline);
-    if (!rest.unreachable) parts.push(element("p", `Withholding becomes ${rest.display.per_check} a paycheck (now ${job.display.per_check_now_minor}), and the year ends at `
-      + `${rest.year_end_minor >= 0 ? "a refund of" : "owing"} ${rest.display.year_end_minor.replace("-", "")}. The amount replaces what's in that box now; leave the other boxes as they are.`, "small"));
-    if (job.extra) parts.push(element("p", `Or keep the W-4 as it is and add ${job.extra.display.per_check_minor} of extra withholding a paycheck (Step 4(c): ${job.extra.display.total_4c_minor} in all).`, "small"));
+    if (!rest.unreachable && job.primary !== "extra") parts.push(element("p", `Withholding becomes ${rest.display.per_check} a paycheck (now ${job.display.per_check_now_minor}), and the year ends at `
+      + `${rest.year_end_minor >= 0 ? "a refund of" : "owing"} ${rest.display.year_end_minor.replace("-", "")}. The amount replaces what's in that box now; leave the other boxes as they are.${checked(rest)}`, "small"));
+    if (job.extra && job.primary !== "extra") parts.push(extraLine);
+    if (job.step3) parts.push(element("p", `Or, since the W-4 claims dependents, raise Step 3 to ${job.step3.display.amount}: withholding becomes `
+      + `${job.step3.display.per_check} a paycheck and the year ends at ${job.step3.year_end_minor >= 0 ? "a refund of" : "owing"} ${job.step3.display.year_end_minor.replace("-", "")}.`, "small"));
     const january = job.january;
     if (january.field && january.amount != null) parts.push(element("p", `From January, for a full year at this pay: ${january.field === "4(a)" ? "Step 4(a)" : "Step 4(b)"} ${january.display.amount}. `
       + `Check again when ${view.year + 1}'s tax tables are confirmed.`, "small"));
@@ -320,7 +381,6 @@ function renderTaxZen(view) {
 function renderTaxYear(view) {
   taxView = view;
   renderTaxZen(view);
-  $("taxes-figures-box").replaceChildren(taxFiguresEditor(view));  // Saved on its own, apart from the editor's typed values.
   const result = view.return, alerts = $("taxes-alerts");
   alerts.replaceChildren();
   for (const [code, status] of Object.entries(view.tables)) if (status !== "verified") {
@@ -331,11 +391,6 @@ function renderTaxYear(view) {
         notice("Looking it up. The table will wait for you in Review.");
       })}));
   }
-  const figuresMissing = (result.missing || []).filter(key => key !== "federal_table");
-  if (figuresMissing.length) alerts.append(alertBox(`Some of the ${view.year} tax figures this return needs are missing: ${figuresMissing.map(key => view.figures.labels[key] || key).join("; ")}.`,
-    {tone: "warning", action: view.figures.waiting ? homeLink("They wait in Review", "#/review") : asyncButton(`Look up the ${view.year} figures`, async () => {
-      await api(`/api/tax/figures/${view.year}/lookup`, {method: "POST", body: JSON.stringify({})}); notice("Looking them up. They will wait for you in Review.");
-    })}));
   const target = $("taxes-return");
   if (result.result_minor == null) { target.replaceChildren(emptyState(result.notes[0])); renderTaxInputs(view); return; }
   const headline = element("dl", "", "plan-headline");
@@ -344,7 +399,10 @@ function renderTaxYear(view) {
       ["Total tax", result.lines.find(line => line.key === "total_tax").display], ["Paid and credited", result.lines.find(line => line.key === "total_payments").display]]) {
     const dd = element("dd", "", big ? "plan-figure" : ""); dd.append(amount(value, {signed: false})); headline.append(element("dt", label), dd);
   }
-  const parts = [headline, element("p", `${view.year} · filing ${view.filing_status_name} · top federal bracket ${(result.marginal_bp / 100).toFixed(0)}%. `
+  // Which engine slot worked it out (finance/tax_engine.py): "Engine 1", never an engine's own name.
+  const engine = result.engine?.label || "the tax engine";
+  const parts = [headline, element("p", `${view.year} · filing ${view.filing_status_name}`
+    + (result.marginal_bp != null ? ` · top federal bracket ${(result.marginal_bp / 100).toFixed(0)}%` : "") + ` · worked out by ${engine}. `
     + "Withholding and pay are projected to Dec 31 from your pay stubs; change anything on the right.", "muted small")];
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows paystub-table");
   let section = null, body = null;
@@ -361,6 +419,26 @@ function renderTaxYear(view) {
     tr.appendChild(element("td", "", "numeric")).append(amount(line.display, {signed: false}));
   }
   wrap.append(table); parts.push(wrap);
+  // Another engine slot's answer, when there is one and Settings asks for it (finance/tax_engine.py compare): lines more than a dollar apart.
+  const comparison = result.comparison;
+  if (comparison) {
+    const other = comparison.engine?.label || "The other engine";
+    if (!comparison.ready) parts.push(alertBox(`${other} gave no estimate to compare: ${comparison.note}`, {tone: "info"}));
+    else if (comparison.agree) parts.push(alertBox(`${other} checked it and agrees on every line it works out (within ${comparison.display.within}).`, {tone: "info"}));
+    else {
+      const box = alertBox(`The engines disagree: ${other} has ${comparison.other_refund ? "a refund of" : "you owing"} ${comparison.display.other_result}`
+        + ` (${comparison.display.difference} apart). Check the lines below before relying on either.`, {tone: "warning"});
+      const diffWrap = element("div", "", "table-wrap"), diff = element("table", "", "ledger-rows");
+      const head = diff.createTHead().insertRow();
+      for (const [title, numeric] of [["Line", false], [engine, true], [other, true], ["Difference", true]]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
+      const rows = diff.createTBody();
+      for (const line of comparison.lines) {
+        const tr = rows.insertRow(); const th = tr.appendChild(element("th", line.label)); th.scope = "row";
+        for (const key of ["this", "other", "difference"]) tr.appendChild(element("td", "", "numeric")).append(amount(line.display[key], {signed: key === "difference"}));
+      }
+      diffWrap.append(diff); box.querySelector(".alert-body").append(diffWrap); parts.push(box);
+    }
+  }
   if (result.state) parts.push(element("p", result.state.complete
     ? `${result.state.state} (simplified): tax ${result.state.display.tax_minor}, paid ${result.state.display.payments_minor}: ${result.state.result_minor >= 0 ? "refund" : "owed"} ${result.state.display.result_minor}. ${result.state.note}`
     : `${result.state.state}: ${result.state.note}`, "small"));
@@ -378,7 +456,7 @@ function renderTaxInputs(view) {
   for (const job of gathered.jobs) {
     const set = element("fieldset", "", "taxes-job"), jobTyped = view.inputs.jobs?.[job.key] || {};
     const unrecorded = job.paychecks_projected - job.paychecks_left;
-    set.append(element("legend", job.name), element("p", `${job.stubs} pay stub${job.stubs === 1 ? "" : "s"} through ${dateText(job.last_pay_date)}; `
+    set.append(element("legend", job.name), element("p", `${VALUE_KINDS[job.kind] || VALUE_KINDS.record}: ${job.stubs} pay stub${job.stubs === 1 ? "" : "s"} through ${dateText(job.last_pay_date)}; `
       + (unrecorded ? `${unrecorded} payday${unrecorded === 1 ? "" : "s"} since then without a stub here, counted like the last one; ` : "")
       + `${job.paychecks_left} paycheck${job.paychecks_left === 1 ? "" : "s"} still ahead this year, ${job.per_check_display.federal} federal withheld from each.`
       + `${job.ytd_printed ? "" : " Year-to-date figures weren't printed, so the stubs are added up."}`, "muted small"));
@@ -401,6 +479,7 @@ function renderTaxInputs(view) {
   priorSet.append(element("legend", "Last year's return (for the estimated-tax safe harbor)"));
   priorRow.append(forecastField("Total tax", taxInput("tax-prior-tax", prior.tax, "Form 1040 line 24")), forecastField("AGI", taxInput("tax-prior-agi", prior.agi, "Form 1040 line 11")));
   priorSet.append(priorRow);
+  if (view.prior_year?.source) priorSet.append(element("p", view.prior_year.source, "muted small"));  // Filled from last year's return here.
   const extra = element("div", "", "forecast-list"); extra.id = "taxes-extra-jobs";
   const addExtra = (job = {}) => {
     const row = element("div", "", "forecast-row forecast-item taxes-extra-job"), id = ++taxFormId;
@@ -433,11 +512,20 @@ function renderTaxInputs(view) {
     for (const [key, label, count] of fields) {
       const input = count ? forecastInput(`tax-field-${key}`, {type: "number", min: "0", max: "20", placeholder: String(view.input[key] ?? 0)}) : taxInput(`tax-field-${key}`, typed[key], gathered.display[key], gathered.sources[key]);
       if (count) input.value = typed[key] ?? "";
-      input.dataset.field = key; row.append(forecastField(label, input));
+      input.dataset.field = key; row.append(valueKind(forecastField(label, input), typed[key], gathered, key));
+    }
+    if (title === "Adjustments") {
+      // Blank: what the records say (finance/tax_year.py works it out from the year's HSA contributions).
+      const recorded = {self: "Self-only", family: "Family"}[gathered.values.hsa_coverage];
+      const coverage = planSelect("tax-field-hsa_coverage", {"": recorded ? `From records: ${recorded}` : "Not said", self: "Self-only", family: "Family"}, typed.hsa_coverage || "");
+      if (gathered.sources.hsa_coverage) coverage.title = gathered.sources.hsa_coverage;
+      row.append(valueKind(forecastField("HSA coverage", coverage), typed.hsa_coverage, gathered, "hsa_coverage"));
     }
     if (title === "Deductions") {
-      const choose = planSelect("tax-field-itemize", {auto: "Whichever is larger", yes: "Itemize", no: "Standard deduction"}, typed.itemize === true ? "yes" : typed.itemize === false ? "no" : "auto");
-      row.append(forecastField("Deduction", choose));
+      const choose = planSelect("tax-field-itemize", {auto: "Whichever is larger", yes: "Itemize"}, typed.itemize === true ? "yes" : "auto");
+      const jobs = Object.fromEntries([["", "Not said"], ...view.tipped_occupations.map(slug => [slug, slug === "other" ? "Not on the list" : slug.replaceAll("-", " ")])]);
+      const occupation = planSelect("tax-field-tipped_occupation", jobs, typed.tipped_occupation || "");
+      row.append(forecastField("Deduction", choose), forecastField("Tipped occupation (Treasury list)", occupation));
     }
     set.append(row); parts.push(set);
   }
@@ -455,7 +543,9 @@ function renderTaxInputs(view) {
 function taxInputsRequest() {
   const form = $("taxes-inputs"), fields = {}, jobs = {}, businesses = {};
   for (const input of form.querySelectorAll("[data-field]")) if (input.value.trim() !== "") fields[input.dataset.field] = input.value.trim();
-  const itemize = $("tax-field-itemize").value; if (itemize !== "auto") fields.itemize = itemize === "yes";
+  const itemize = $("tax-field-itemize").value; if (itemize === "yes") fields.itemize = true;
+  const occupation = $("tax-field-tipped_occupation").value; if (occupation) fields.tipped_occupation = occupation;
+  const coverage = $("tax-field-hsa_coverage").value; if (coverage) fields.hsa_coverage = coverage;
   for (const input of form.querySelectorAll("[data-job]")) if (input.value.trim() !== "") (jobs[input.dataset.job] ||= {})[input.dataset.key] = input.value.trim();
   for (const input of form.querySelectorAll("[data-business]")) if (input.value.trim() !== "") (businesses[input.dataset.business] ||= {})[input.dataset.key] = input.value.trim();
   const extra_jobs = [...form.querySelectorAll(".taxes-extra-job")].map(row => Object.fromEntries([...row.querySelectorAll("input")].map(input => [input.dataset.key, input.value.trim()])))
@@ -474,35 +564,6 @@ $("taxes-inputs").addEventListener("submit", async event => {
   try { await saveTaxInputs(taxInputsRequest()); notice("Saved; the return is estimated again."); }
   catch (error) { notice(error, true); }
 });
-function taxFiguresEditor(view) {
-  // The year's figures: confirmed from a lookup, typed by you, or missing. Typing one counts at once.
-  const figures = view.figures, details = element("details", "", "taxes-figures");
-  details.open = (view.return.missing || []).some(key => key !== "federal_table");
-  details.append(element("summary", `Tax figures for ${view.year} (${Object.keys(figures.values).length} of ${Object.keys(figures.labels).length} known)`));
-  const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
-  for (const [title, numeric] of [["Figure", false], ["Value", true], ["From", false], ["Type your own", false]]) { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; }
-  const body = table.createTBody();
-  for (const [key, label] of Object.entries(figures.labels)) {
-    const tr = body.insertRow(); cell(tr, label);
-    tr.appendChild(element("td", figures.display[key] || "—", "numeric"));
-    cell(tr, {lookup: "Looked up, confirmed", typed: "Typed by you"}[figures.sources[key]] || (figures.waiting ? "Waiting in Review" : "Missing"));
-    const input = forecastInput(`tax-figure-${key}`, {maxlength: "20", placeholder: figures.kinds[key] === "rate" ? "e.g. 35%" : "e.g. 48,350"});
-    input.value = figures.typed?.figures?.[key] ? figures.typed.figures[key].display.replace(" USD", "") : ""; input.dataset.figure = key;
-    input.setAttribute("aria-label", `Your figure: ${label}`); tr.insertCell().append(input);
-  }
-  wrap.append(table);
-  const save = element("button", "Save figures", "small"); save.type = "button"; save.dataset.figures = "1";
-  save.addEventListener("click", async () => {
-    const values = Object.fromEntries([...details.querySelectorAll("[data-figure]")].map(input => [input.dataset.figure, input.value.trim() || null]));
-    try {
-      await api(`/api/tax/figures/${view.year}`, {method: "PUT", body: JSON.stringify({figures: values, filing_status: view.filing_status})}); notice("Figures saved.");
-      if (taxUnit == null) renderTaxYear(await api(`/api/tax/year/${view.year}`)); else await loadFamilyTaxes(view.year);
-    }
-    catch (error) { notice(error, true); }
-  });
-  details.append(element("p", "Figures come from the year's IRS inflation adjustments and form instructions. A looked-up set waits for you in Review; a figure you type counts at once.", "muted small"), wrap, save);
-  return details;
-}
 $("taxes-year").addEventListener("change", () => { location.hash = `#/taxes?year=${$("taxes-year").value}`; });
 function renderWriteOffs(summary, tags) {
   const target = $("taxes-write-offs"), parts = [];

@@ -31,6 +31,7 @@ const ICONS = {
   transfer: ["M8 3 4 7l4 4", "M4 7h16", "m16 21 4-4-4-4", "M20 17H4"],
   "arrow-left": ["m12 19-7-7 7-7", "M19 12H5"],
   "chevron-right": ["m9 18 6-6-6-6"],
+  gift: ["M3 8h18v4H3z", "M12 8v13", "M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7", "M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5"],
   message: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
   search: ["M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0", "m21 21-4.3-4.3"],
   "list-checks": ["m3 17 2 2 4-4", "m3 7 2 2 4-4", "M13 6h8", "M13 12h8", "M13 18h8"],
@@ -98,6 +99,12 @@ const STATUS = {
   // Family members' copies (Settings → Profiles & family).
   current: ["Up to date", "positive", "check"], waiting: ["Waiting for their data", "neutral", "clock"],
   ready_to_import: ["Ready to import", "neutral", null], in_trash: ["In Trash", "neutral", null], process_failed: ["Couldn't process", "danger", "octagon"],
+  // Donation checks (Donate documents): being checked, or finished and ready to donate.
+  donation_draft: ["Being checked", "neutral", "clock"], donation_checked: ["Ready to donate", "positive", "check-circle"],
+  // Tax Zen (finance/tax_zen.py status_of): where the year ends against the household's aim.
+  tax_zen: ["Tax Zen", "positive", "check-circle"], tax_watch: ["Close · watch it", "info", "clock"], tax_at_risk: ["On track · could turn", "warning", "clock"],
+  tax_action: ["Change recommended", "warning", "alert"], tax_review: ["Check the return first", "warning", "alert"],
+  tax_insufficient: ["Not enough to go on", "neutral", "clock"], tax_unsupported: ["Not covered", "neutral", "slash"],
 };
 // How often a recurring bill is paid, as shown to people.
 const FREQUENCY_LABELS = {weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", semiannual: "Every 6 months", annual: "Yearly"};

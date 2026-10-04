@@ -195,6 +195,10 @@ class EmptyInput(ToolInput):
     pass
 
 
+class TaxYearInput(ToolInput):
+    year: int | None = Field(default=None, ge=2000, le=2100, description="The tax year; omit for this year.")
+
+
 class RecurringInput(ToolInput):
     kind: Literal[*RECURRING_KINDS] | None = Field(default=None, description="Only bills (important to the user) or only subscriptions.")  # type: ignore[valid-type]
 
@@ -243,8 +247,18 @@ def totals_view(currency, bucket):
 
 
 class FinanceTools(ItemAnalysisTools):
+    # The app sets this to its Tax Zen status (app/manager.py tax_zen_status): the return needs settings and tables, not
+    # just this store.
+    tax_status = None
+
     def __init__(self, store):
         self.store, self.ledger, self.rates = store, Ledger(store), EcbRates(store)
+
+    def get_tax_zen_status(self, value):
+        """Tax Zen as the deterministic engines worked it out (finance/tax_zen.py); explain it, never recompute it."""
+        if self.tax_status is None:
+            raise ValueError("Tax Zen isn't available here.")
+        return self.tax_status(value.year or date.today().year)
 
     @contextmanager
     def connection(self):
@@ -837,6 +851,7 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "find_purchase": (TransactionsInput, "find_purchase"), "get_statement": (RecordInput, "get_statement"),
          "match_receipt_to_transaction": (RecordInput, "match_receipt_to_transaction"), "get_refunds": (EmptyInput, "get_refunds"),
          "review_queue": (EmptyInput, "review_queue"), "get_inventory": (InventoryInput, "get_inventory"),
+         "get_tax_zen_status": (TaxYearInput, "get_tax_zen_status"),
          "get_budgets": (BudgetInput, "get_budgets"), "get_categories": (EmptyInput, "get_categories"),
          "search_documents": (DocumentSearchInput, "search_documents"), "get_document_text": (DocumentTextInput, "get_document_text"),
          "lookup_exchange_rate": (RateInput, "lookup_exchange_rate"), "convert_document_amount": (ConvertInput, "convert_document_amount"),

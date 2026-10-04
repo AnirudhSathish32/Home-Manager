@@ -6,6 +6,7 @@ import pytest
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.app.ledger_check import main as check_ledger_cli
+from home_manager.finance import tax_engine
 from home_manager.finance.health import RULES, check_ledger, summary
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
@@ -178,10 +179,15 @@ def test_the_report_endpoint_and_command(tmp_path, capsys):
         client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
         response = client.get("/api/finance/health")
         assert response.status_code == 200
-        assert response.json() == {"summary": {"error": 0, "warning": 0, "info": 0, "by_rule": {}}, "problems": []}
+        found = response.json()
+        assert {key: found[key] for key in ("summary", "problems")} == {"summary": {"error": 0, "warning": 0, "info": 0, "by_rule": {}}, "problems": []}
+        # Whether each tax engine can run here shows before tax season, by its slot's label only.
+        assert [item["label"] for item in found["tax_engines"]] == [tax_engine.label_of(slot) for slot in tax_engine.ENGINES]
+        assert all(item["label"] in item["note"] for item in found["tax_engines"])
         # The command reads the same library read-only while the app holds it open.
         assert check_ledger_cli(["--control-dir", str(tmp_path / "control")]) == 0
-    assert "0 error, 0 warning, 0 info" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "0 error, 0 warning, 0 info" in printed and printed.startswith("Tax engines\n") and "Engine 1" in printed.split("\n\n")[0]
 
 
 def test_the_command_reports_rules_by_record_id(books, capsys):

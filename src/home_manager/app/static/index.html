@@ -21,6 +21,7 @@
   <script src="/taxes.js" defer></script>
   <script src="/investments.js" defer></script>
   <script src="/profiles.js" defer></script>
+  <script src="/donate.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -65,6 +66,7 @@
       <nav class="nav" aria-label="System">
         <button id="nav-ask" class="nav-link nav-button" type="button" data-icon="message" aria-controls="assistant-panel" aria-expanded="false" aria-keyshortcuts="Control+J"><span class="nav-label">Ask</span></button>
         <a id="nav-processing" class="nav-link" href="#/processing" data-route="processing" data-icon="activity"><span class="nav-label">Processing</span></a>
+        <a id="nav-donate" class="nav-link" href="#/donate" data-route="donate" data-icon="gift"><span class="nav-label">Donate documents</span></a>
         <a id="nav-settings" class="nav-link" href="#/settings" data-route="settings" data-icon="settings"><span class="nav-label">Settings</span></a>
       </nav>
     </div>
@@ -165,7 +167,7 @@
           <div id="taxes-return"></div>
           <form id="taxes-inputs" class="form taxes-inputs" novalidate></form>
         </div>
-        <div id="taxes-figures-box"></div></section>
+      </section>
       <section class="panel taxes-personal" aria-labelledby="taxes-write-offs-title"><h2 id="taxes-write-offs-title">Write-offs and tax payments</h2><div id="taxes-write-offs"></div></section>
       <section class="panel taxes-personal" aria-labelledby="taxes-pack-title"><h2 id="taxes-pack-title">For your accountant</h2>
         <p class="muted small">The CPA pack is one Excel workbook for the year: the estimate, income, write-offs, investments, tax forms and every
@@ -665,6 +667,59 @@
       </section>
     </section>
 
+    <section id="donate-panel" class="page" data-page="donate" aria-labelledby="donate-title" hidden>
+      <div id="donate-list-view">
+        <header class="page-header"><div><h1 id="donate-title" tabindex="-1">Donate documents</h1>
+          <p class="page-subtitle">Help test how well Home Manager reads documents. Check a document against its original, then save a donation file and hand it over yourself. Nothing is sent from this computer, and checking never changes your records.</p></div></header>
+        <section class="panel" aria-labelledby="donate-ready-title"><h2 id="donate-ready-title">Ready to donate</h2>
+          <p class="muted small">Only checked documents can be donated. The file holds each original (with any parts you blacked out), your checked answers, and what Home Manager read.</p>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col"><span class="visually-hidden">Include</span></th><th scope="col">Document</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Checked</th></tr></thead>
+            <tbody id="donate-checks"></tbody></table></div>
+          <div class="donate-actions"><label class="inline-field">Donor ID <input id="donate-donor" maxlength="16" pattern="[a-z0-9-]{1,16}" placeholder="optional, e.g. d07" aria-describedby="donate-donor-hint"></label>
+            <button id="donate-export" class="primary" type="button">Save donation file</button></div>
+          <p id="donate-donor-hint" class="muted small">The ID the person collecting donations gave you. Leave it blank if you don't have one.</p>
+        </section>
+        <section class="panel" aria-labelledby="donate-candidates-title"><h2 id="donate-candidates-title">Documents you can check</h2>
+          <p class="muted small">Receipts, statements and pay stubs read from a photo, scan or PDF.</p>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Document</th><th scope="col">Type</th><th scope="col">Date</th><th scope="col">Check</th></tr></thead>
+            <tbody id="donate-candidates"></tbody></table></div>
+        </section>
+      </div>
+      <div id="donate-check-view" class="inspector" hidden>
+        <header class="inspector-header">
+          <a class="back-link" href="#/donate">Donate documents</a>
+          <div class="inspector-heading"><h1 id="donate-check-title" tabindex="-1">Check a document</h1>
+            <p class="page-subtitle">Compare each value with the original. Mark it Correct, or type the right value. Leave anything you didn't look at as Not checked: it is never counted.</p></div>
+          <div class="page-actions"><span id="donate-check-state"></span></div>
+        </header>
+        <div class="inspector-body">
+          <section class="inspector-pane source-pane donate-source" aria-labelledby="donate-source-heading">
+            <div class="pane-heading"><h2 id="donate-source-heading">Original</h2>
+              <label class="inline-field">Page <select id="donate-page"></select></label></div>
+            <div class="image-scroll"><div id="donate-frame" class="donate-frame"><img id="donate-image" alt="Original document page"><div id="donate-boxes" class="donate-boxes"></div></div></div>
+            <div class="donate-actions"><button id="donate-redact" type="button" aria-pressed="false">Black out an area</button><button id="donate-clear-boxes" type="button">Remove blacked-out areas</button></div>
+            <p class="muted small">Black out account numbers, Social Security numbers and anything else you'd rather not share: drag across it on the page. Only the donated copy is changed.</p>
+          </section>
+          <section class="inspector-pane record-pane" aria-labelledby="donate-answers-heading">
+            <div class="pane-heading"><h2 id="donate-answers-heading">Values</h2>
+              <label class="inline-field">Source <select id="donate-source-kind"><option value="phone_photo">Phone photo</option><option value="scan">Scan</option><option value="native_pdf">PDF with text</option><option value="image_pdf">Scanned PDF</option></select></label></div>
+            <div class="table-wrap"><table class="data-table donate-fields"><thead><tr><th scope="col">Value (as Home Manager read it)</th><th scope="col">On the document</th><th scope="col">Check</th></tr></thead>
+              <tbody id="donate-fields"></tbody></table></div>
+            <h3 id="donate-rows-title">Rows</h3>
+            <p id="donate-rows-note" class="muted small"></p>
+            <div class="table-wrap"><table class="data-table donate-rows"><thead id="donate-rows-head"></thead><tbody id="donate-rows"></tbody></table></div>
+            <div class="donate-actions"><button id="donate-add-row" type="button">Add a missing row</button>
+              <label class="check-field"><input id="donate-rows-complete" type="checkbox"> Every row on the document is listed, once, with the right values</label></div>
+            <div class="donate-decision">
+              <p id="donate-error" class="error-text" role="alert"></p>
+              <button id="donate-save" type="button">Save for later</button>
+              <button id="donate-finish" class="primary" type="button">Finish check</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+
     <section id="settings-panel" class="page" data-page="settings" aria-labelledby="settings-title" hidden>
       <header class="page-header"><div><h1 id="settings-title" tabindex="-1">Settings</h1></div></header>
       <div class="settings-layout">
@@ -729,6 +784,8 @@
               <div class="field"><label for="birth-year">Year you were born</label>
                 <input id="birth-year" type="number" min="1900" max="2100" inputmode="numeric" placeholder="1975">
                 <small>For required minimum distributions from retirement accounts, on Investments and in the forecast. Stays in this profile.</small></div>
+              <p id="tax-engine-status" class="muted small"></p>
+              <label class="check-field" id="tax-compare-field" hidden><input id="tax-compare" type="checkbox" checked> Check every return with a second engine and show any line where the two differ</label>
               <label class="check-field"><input id="auto-identify" type="checkbox" checked> Identify receipt items automatically when a receipt is recorded</label>
               <div class="field"><label for="rescan-hours">Rescan watched folders every (hours)</label><input id="rescan-hours" type="number" min="1" max="168" step="1" value="6" required>
                 <small>Changes are picked up within a minute while Home Manager runs; this full rescan catches anything missed, such as files added while it was closed.</small></div>
@@ -775,11 +832,23 @@
                 <button id="test-reasoning" type="button" data-test="reasoning">Test connection</button></div>
               <div id="test-reasoning-result" class="connection-result" role="status"></div>
             </form>
+            <form id="decision-form" class="form"><h3>Decision model</h3>
+              <div class="field"><label for="decision-provider">Runs in</label>
+                <select id="decision-provider"><option value="off">Off</option><option value="lmstudio">LM Studio</option><option value="systemone">A System One server (/v1/systemone)</option></select>
+                <small id="decision-provider-note">Answers yes/no and pick-one questions with probabilities instead of text. It checks each extracted value against the line it was read from.</small></div>
+              <div class="field"><label for="decision-url">Decision API base URL</label><input id="decision-url" required value="http://127.0.0.1:1234/v1">
+                <small>LM Studio 0.3.39 or later, or a System One server such as Kev (for example http://127.0.0.1:8009/v1).</small></div>
+              <div class="field"><label for="decision-model">Decision model ID</label><input id="decision-model" placeholder="Copy the model ID from your server">
+                <small>In LM Studio, use a model that answers directly, not one that thinks first.</small></div>
+              <div class="button-row"><button id="save-decision" class="primary" type="submit">Save decision model</button>
+                <button id="test-decision" type="button" data-test="decision" data-endpoint="/api/decision-model-tests">Test connection</button></div>
+              <div id="test-decision-result" class="connection-result" role="status"></div>
+            </form>
           </div>
           <div id="checks-panel" role="tabpanel" aria-labelledby="checks-tab" hidden>
             <h2>Independent checks</h2>
-            <p id="laya-status" class="muted small"></p>
-            <p class="muted small">Laya checks every ledger extraction on this computer. A value it cannot confirm sends the record to review; it never approves one.</p>
+            <p id="decision-status" class="muted small"></p>
+            <p class="muted small">The decision model checks every ledger extraction. A value it cannot confirm sends the record to review; it never approves one. Choose it under Local models.</p>
           </div>
           <div id="privacy-panel" role="tabpanel" aria-labelledby="privacy-tab" hidden>
             <h2>Privacy &amp; security</h2>

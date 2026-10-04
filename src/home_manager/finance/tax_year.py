@@ -6,7 +6,10 @@ gather(): every figure the records give, with where it came from:
 - interest (bank interest and taxable investment accounts) and dividends: year to date, projected to Dec 31 at the same
   pace; confirmed 1099-INT/-DIV forms replace them once they arrive;
 - realized gains in taxable accounts (tax lots); distributions from tax-deferred accounts (early before 59½);
-- businesses, adjustments, itemized deductions, credit spending and tax paid ahead: confirmed tax tags.
+- businesses, adjustments, itemized deductions, credit spending and tax paid ahead: confirmed tax tags;
+- the facts the tax engine needs that records can answer: Form 1098's interest and property tax, the mortgage's average
+  balance (1098 box 2 and the recorded mortgage, or interest ÷ rate; Pub 936), and HSA coverage (from the year's HSA
+  contributions against the self-only limit).
 merge(): your typed values over them: any field, any job's field, jobs typed in (a spouse's), people, students.
 The result is a tax_return.ReturnInput, and each field keeps its source for the page.
 """
@@ -14,14 +17,15 @@ The result is a tax_return.ReturnInput, and each field keeps its source for the 
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 import json
+import re
 
-from ..core.money import to_minor
+from ..core.money import format_minor, to_minor
 from ..library.storage import now
 from .investments import Investments
 from .ledger import COUNTABLE
 from .paystub import FICA_EXEMPT
 from .tax_lots import realized
-from .tax_return import Job, ReturnInput
+from .tax_return import TIPPED_OCCUPATIONS, Job, ReturnInput, rate
 from .tax_tags import TaxTags
 
 CURRENCY = "USD"
@@ -29,12 +33,25 @@ MONEY_FIELDS = ("interest", "us_obligation_interest", "tax_exempt_interest", "or
                 "capital_loss_carryover", "retirement_distributions", "early_distributions", "hsa_nonqualified", "social_security_benefits",
                 "unemployment", "other_income", "educator_expenses", "hsa_contributions", "se_health_insurance", "ira_deduction",
                 "student_loan_interest", "other_adjustments", "medical", "state_local_tax", "property_tax", "mortgage_interest", "charity",
-                "other_itemized", "other_deductions", "dependent_care_expenses", "energy_home_expenses", "other_credits",
+                "charity_noncash", "mortgage_average_balance", "other_itemized", "qualified_tips", "qualified_overtime", "dependent_care_expenses", "energy_home_expenses", "other_credits",
                 "other_refundable_credits", "other_federal_withholding", "federal_estimated_paid", "state_deduction", "state_credits",
                 "state_estimated_paid")
 # Accounts whose interest is US savings bond or Treasury interest: federal-taxable, state-exempt (the Education Savings Bond
 # exclusion for I bonds cashed for tuition isn't worked out; enter it typed over the records).
 US_OBLIGATION_KINDS = ("i_bond", "treasury")
+# HSA contribution limits (IRC §223(b)(2), inflation-adjusted): (self-only, family) in cents. Rev. Proc. 2024-25 (2025) and
+# Rev. Proc. 2025-19 (2026). Used only to tell the coverage from what went in; the engine applies the limit itself.
+HSA_LIMITS = {2025: (430_000, 855_000), 2026: (440_000, 875_000)}
+HSA_CATCH_UP = 100_000  # §223(b)(3): $1,000 more from age 55.
+# A loan is the mortgage when its name says so (assets of kind 'loan': a home loan statement or one typed in).
+MORTGAGE_WORDS = re.compile(r"MORTGAGE|HOME\s*LOAN|HOME\s*EQUITY|HELOC", re.IGNORECASE)
+# Kinds of value (docs/tax_intelligence_architecture.md §35), from most to least certain: a record as it stands, worked
+# out from records, projected to Dec 31, or still to enter. What you type is "typed".
+KIND_ORDER = ("record", "worked_out", "projected", "to_enter")
+# The likely range (docs/tax_intelligence_architecture.md §23): projected pay moves by how much this year's paychecks
+# varied, at least 5%; projected interest and dividends by 25%. Recorded and typed values don't move.
+SPREAD_FLOOR_BP = 500
+PACED_SPREAD_BP = 2500
 COUNT_FIELDS = ("qualifying_children", "other_dependents", "dependent_care_people")
 JOB_FIELDS = ("wages", "ss_wages", "medicare_wages", "federal_withheld", "state_withheld", "medicare_withheld")
 # Tax tag lines -> return fields.
@@ -42,7 +59,7 @@ TAG_FIELDS = {("adjustment", "educator"): "educator_expenses", ("adjustment", "h
               ("adjustment", "se_health_insurance"): "se_health_insurance", ("adjustment", "ira"): "ira_deduction",
               ("adjustment", "student_loan_interest"): "student_loan_interest", ("itemized", "medical"): "medical",
               ("itemized", "state_local_tax"): "state_local_tax", ("itemized", "property_tax"): "property_tax",
-              ("itemized", "mortgage_interest"): "mortgage_interest", ("itemized", "charity_cash"): "charity", ("itemized", "charity_noncash"): "charity",
+              ("itemized", "mortgage_interest"): "mortgage_interest", ("itemized", "charity_cash"): "charity", ("itemized", "charity_noncash"): "charity_noncash",
               ("itemized", "other"): "other_itemized", ("credit_spending", "dependent_care"): "dependent_care_expenses",
               ("credit_spending", "energy_home"): "energy_home_expenses"}  # Tax paid ahead is gathered by its own year window below.
 
@@ -104,25 +121,83 @@ def jobs(db, year, today):
         medicare_ytd, _ = year_to_date(stubs, lines_of, "tax", ("medicare",))
         latest_lines = lines_of[latest["id"]]
         gross_now = latest["gross_pay_minor"] or 0
+        # HSA money through payroll, yours and the employer's: it counts toward the HSA limit (finance/tax_year.hsa_coverage).
+        hsa_ytd = sum(year_to_date(stubs, lines_of, group, ("hsa",))[0] for group in ("pre_tax", "employer_paid"))
         per_check = {"wages": gross_now - amounts(latest_lines, "current_minor", "pre_tax"),
                      "fica": gross_now - amounts(latest_lines, "current_minor", "pre_tax", FICA_EXEMPT),
                      "federal": amounts(latest_lines, "current_minor", "tax", ("federal_income_tax",)),
                      "state": amounts(latest_lines, "current_minor", "tax", ("state_income_tax",)),
-                     "medicare": amounts(latest_lines, "current_minor", "tax", ("medicare",))}
+                     "medicare": amounts(latest_lines, "current_minor", "tax", ("medicare",)),
+                     "hsa": sum(amounts(latest_lines, "current_minor", group, ("hsa",)) for group in ("pre_tax", "employer_paid"))}
         # Every payday after the latest stub counts in the year (paid like it, whether or not its stub is here yet); only the
         # ones still ahead can change with a new W-4.
         coming = paydays(latest["pay_date"], latest["pay_frequency"], year) if year >= today.year else []
         left = len(coming)
         ahead = sum(1 for payday in coming if payday > today)
+        # How much paychecks vary: the year's stubs' gross pay, low to high against the latest (at least 5%), for the range.
+        grosses = [stub["gross_pay_minor"] for stub in stubs if stub["gross_pay_minor"]]
+        spread_bp = max(SPREAD_FLOOR_BP, (max(grosses) - min(grosses)) * 10000 // gross_now if grosses and gross_now else 0)
         found.append({"key": f"employer-{key}", "name": latest["employer"], "stubs": len(stubs), "last_pay_date": latest["pay_date"],
                       "pay_frequency": latest["pay_frequency"], "work_state": latest["work_state"], "paychecks_left": ahead,
+                      "next_pay_date": next((payday.isoformat() for payday in coming if payday > today), None),
                       "paychecks_projected": left, "ytd_printed": printed,
                       "per_check": per_check,
                       "values": {"wages": gross_ytd - pre_ytd + left * per_check["wages"], "ss_wages": gross_ytd - exempt_ytd + left * per_check["fica"],
                                  "medicare_wages": gross_ytd - exempt_ytd + left * per_check["fica"], "federal_withheld": federal_ytd + left * per_check["federal"],
                                  "state_withheld": state_ytd + left * per_check["state"], "medicare_withheld": medicare_ytd + left * per_check["medicare"]},
-                      "withheld_so_far": federal_ytd})
+                      "withheld_so_far": federal_ytd, "hsa_minor": abs(hsa_ytd) + left * abs(per_check["hsa"]),
+                      # The part of each figure that's projected (the paydays without a stub yet), and how much pay varies.
+                      "projected": {"wages": left * per_check["wages"], "ss_wages": left * per_check["fica"], "medicare_wages": left * per_check["fica"],
+                                    "federal_withheld": left * per_check["federal"], "state_withheld": left * per_check["state"],
+                                    "medicare_withheld": left * per_check["medicare"]},
+                      "spread_bp": spread_bp})
     return found
+
+
+def balance_at(loan, day):
+    """A loan's balance on a day, from its recorded balance, yearly rate and monthly payment (month by month, as the forecast
+    pays loans down); None without a payment to project with."""
+    when = date.fromisoformat(loan["as_of"][:10])
+    months = (day.year - when.year) * 12 + day.month - when.month
+    balance, monthly = Decimal(loan["value_minor"]), Decimal(loan["annual_rate_bp"]) / 10000 / 12
+    if months == 0:
+        return loan["value_minor"]
+    payment = loan["monthly_payment_minor"]
+    if not payment:
+        return None
+    for _ in range(abs(months)):
+        balance = max(Decimal(0), balance * (1 + monthly) - payment) if months > 0 else (balance + payment) / (1 + monthly)
+    return int(balance.to_integral_value(ROUND_HALF_EVEN))
+
+
+def average_balance(interest, start, loans, year):
+    """The mortgage's average balance for the year (Pub 936, Table 1's methods) and how it was worked out, or None.
+    start: 1098 box 2 (principal outstanding on Jan 1); loans: the recorded mortgages."""
+    end = balance_at(loans[0], date(year, 12, 31)) if len(loans) == 1 else None
+    if start is not None and end is not None:
+        return (start + end) // 2, f"Average of the principal on Jan 1 (1098 box 2) and {loans[0]['name']}'s balance on Dec 31 (Pub 936)"
+    if start is not None:
+        return start, "The principal on Jan 1 (1098 box 2); the average is at most this, since the loan is paid down (Pub 936)"
+    if len(loans) == 1 and loans[0]["annual_rate_bp"] > 0:
+        average = int((Decimal(interest) * 10000 / loans[0]["annual_rate_bp"]).to_integral_value(ROUND_HALF_EVEN))
+        return average, f"The year's mortgage interest divided by {loans[0]['name']}'s yearly rate (Pub 936)"
+    return None
+
+
+def hsa_coverage(total, year, birth_year):
+    """Self-only or family HDHP coverage, from the year's HSA contributions (payroll, the employer's and your own), and why;
+    None when the year's limits aren't here or nothing was put in."""
+    if not total or year not in HSA_LIMITS:
+        return None
+    self_only, family = HSA_LIMITS[year]
+    catch_up = HSA_CATCH_UP if birth_year and year - birth_year >= 55 else 0
+    shown = format_minor(self_only + catch_up, CURRENCY)
+    if total <= self_only + catch_up:
+        return "self", f"{format_minor(total, CURRENCY)} went into the HSA, within the self-only limit of {shown}, so the coverage doesn't change the deduction"
+    note = f"{format_minor(total, CURRENCY)} went into the HSA, more than the self-only limit of {shown}, so family coverage"
+    if total > family + catch_up:
+        note += f"; that's also more than the family limit of {format_minor(family + catch_up, CURRENCY)}, and the excess is taxed until it's withdrawn"
+    return "family", note
 
 
 def gather(store, year, household, today=None):
@@ -155,6 +230,9 @@ def gather(store, year, household, today=None):
         # Summed while the connection is open (it closes with this block).
         investment_interest, dividends = events("interest", taxable), events("dividend", taxable)
         federal_only_interest, deferred_withdrawals = events("interest", federal_only), events("withdrawal", deferred)
+        mortgages = [dict(row) for row in db.execute("SELECT name,value_minor,as_of,annual_rate_bp,monthly_payment_minor FROM assets WHERE kind='loan' "
+                                                     "AND review_status='verified' AND archived_at IS NULL AND currency=? ORDER BY id", (CURRENCY,))
+                     if MORTGAGE_WORDS.search(row["name"])]
     if ("1099-INT", "1") in forms or ("1099-INT", "3") in forms:
         # Box 3 (savings bond and Treasury interest) is taxable interest too, reported apart from box 1.
         values["interest"] = forms.get(("1099-INT", "1"), 0) + forms.get(("1099-INT", "3"), 0) + scaled(bank_interest, pace)
@@ -204,6 +282,24 @@ def gather(store, year, household, today=None):
         elif line["kind"] == "credit_spending" and line["line"] == "education":
             values.setdefault("students", []).append({"expenses": line["counted_minor"], "aotc": True})
             sources["students"] = "Tagged tuition; say which student and whether it's their first four years"
+    # Form 1098: the lender's mortgage interest and property tax, when no tag already counts them; then the mortgage's
+    # average balance, which the tax engine needs whenever there's mortgage interest (the $750,000 limit, Pub 936).
+    for box, field in (("1", "mortgage_interest"), ("10", "property_tax")):
+        if ("1098", box) in forms and not values.get(field):
+            values[field], sources[field] = forms[("1098", box)], f"1098 box {box}"
+    if values.get("mortgage_interest"):
+        average = average_balance(values["mortgage_interest"], forms.get(("1098", "2")), mortgages, year)
+        if average:
+            values["mortgage_average_balance"], sources["mortgage_average_balance"] = average
+    # HSA coverage, from what went in: 5498-SA box 2 (every contribution for the year) once it's here, else payroll lines
+    # (yours and the employer's) projected to Dec 31 plus your own tagged contributions.
+    if ("5498-SA", "2") in forms:
+        hsa_total = forms[("5498-SA", "2")]
+    else:
+        hsa_total = sum(job["hsa_minor"] for job in found_jobs) + values.get("hsa_contributions", 0)
+    coverage = hsa_coverage(hsa_total, year, household.birth_year)
+    if coverage:
+        values["hsa_coverage"], sources["hsa_coverage"] = coverage
     # Estimated tax belongs to the year it's paid for: the fourth quarter is due Jan 15 of the next year, so federal and state
     # estimated payments dated Feb 1 to Jan 31 count for this year (1040-ES).
     payments = {"federal_estimated": [], "state_estimated": []}
@@ -214,10 +310,56 @@ def gather(store, year, household, today=None):
         values[field] = sum(payment["amount_minor"] for payment in payments[line])
         sources[field] = "Tagged tax payments, Feb 1 to Jan 31 (the fourth quarter is due in January)"
     work_state = next((job["work_state"] for job in reversed(found_jobs) if job["work_state"]), None)
-    return {"values": values, "sources": sources, "jobs": found_jobs, "businesses": list(businesses.values()), "state": work_state,
+    # What kind of value each one is (KIND_ORDER). A value you type is "typed" on the page (merge keeps it over these).
+    projected = pace != 1
+    kinds = {field: "record" for field in sources}
+    interest_forms = ("1099-INT", "1") in forms or ("1099-INT", "3") in forms
+    paced = {"interest": bank_interest if interest_forms else bank_interest + investment_interest,  # The parts scaled to Dec 31.
+             "us_obligation_interest": 0 if interest_forms else federal_only_interest,
+             "ordinary_dividends": 0 if ("1099-DIV", "1a") in forms else dividends}
+    projected_parts = {}
+    for field, amount in paced.items():
+        if projected and amount:
+            kinds[field] = "projected"
+            projected_parts[field] = scaled(amount, pace) - amount
+    if ("1099-DIV", "1a") not in forms:
+        kinds["qualified_dividends"] = "to_enter"
+    for field in ("early_distributions", "mortgage_average_balance", "hsa_coverage"):
+        if field in kinds:
+            kinds[field] = "worked_out"
+    for job in found_jobs:
+        job["kind"] = "projected" if job["paychecks_projected"] else "record"
+    return {"values": values, "sources": sources, "kinds": kinds, "projected": projected_parts, "jobs": found_jobs, "businesses": list(businesses.values()), "state": work_state,
             "estimated_payments": payments,
             "notes": tagged["notes"] + ([] if year < today.year else ["Business income and expenses count what's tagged so far; add the rest of the year's in "
                                                                       "“Typed over the records” to project it."] if businesses else [])}
+
+
+def likely_range(merged: ReturnInput, gathered, inputs):
+    """The return with its projected parts moved down and up (§23): (lower, higher, confidence). Pay and its withholding
+    move by how much this year's paychecks varied (at least 5%), interest and dividends still to come by 25%; recorded and
+    typed values stay. Confidence: high when under 10% of income is projected, medium under 30%, else low."""
+    typed = {key for key, text in inputs.get("fields", {}).items() if text not in (None, "")}
+
+    def moved(sign):
+        changes: dict = {}
+        for field, part in gathered.get("projected", {}).items():
+            if field not in typed:
+                changes[field] = max(0, getattr(merged, field) + sign * rate(part, PACED_SPREAD_BP))
+        if "ordinary_dividends" in changes:
+            changes["qualified_dividends"] = min(merged.qualified_dividends, changes["ordinary_dividends"])
+        jobs = list(merged.jobs)
+        for index, job in enumerate(gathered["jobs"]):  # merge() lists the gathered jobs first, in order.
+            mine = inputs.get("jobs", {}).get(job["key"], {})
+            jobs[index] = jobs[index].model_copy(update={key: max(0, getattr(jobs[index], key) + sign * rate(part, job.get("spread_bp", SPREAD_FLOOR_BP)))
+                                                         for key, part in job.get("projected", {}).items() if part and mine.get(key) in (None, "")})
+        return merged.model_copy(update={**changes, "jobs": jobs})
+    projected = sum(part for field, part in gathered.get("projected", {}).items() if field not in typed and field != "us_obligation_interest") \
+        + sum(job.get("projected", {}).get("wages", 0) for job in gathered["jobs"] if inputs.get("jobs", {}).get(job["key"], {}).get("wages") in (None, ""))
+    income = sum(job.wages for job in merged.jobs) + merged.interest + merged.ordinary_dividends + sum(business.income for business in merged.businesses) \
+        + max(merged.short_term_gain + merged.long_term_gain, 0) + merged.retirement_distributions + merged.social_security_benefits + merged.unemployment
+    share = projected * 10000 // income if income > 0 else 0
+    return moved(-1), moved(1), "high" if share < 1000 else "medium" if share < 3000 else "low"
 
 
 def merge(year, filing_status, household, gathered, inputs):
@@ -231,6 +373,10 @@ def merge(year, filing_status, household, gathered, inputs):
             fields[key] = int(text or 0)
         elif key == "itemize":
             fields[key] = text
+        elif key == "hsa_coverage":
+            fields[key] = text if text in ("self", "family") else None
+        elif key == "tipped_occupation":
+            fields[key] = text if text in TIPPED_OCCUPATIONS else None
         elif key == "state":
             fields[key] = text or None
     job_rows = []
@@ -287,12 +433,12 @@ class TaxYears:
         return json.loads(row["inputs_json"]) if row else {}
 
     def save(self, year, inputs, unit="me"):
-        allowed = {"fields", "jobs", "extra_jobs", "businesses", "people", "students", "w4", "prior_year_tax", "zen_job"}
+        allowed = {"fields", "jobs", "extra_jobs", "businesses", "people", "students", "w4", "prior_year_tax", "zen_job", "zen_policy"}
         unknown = set(inputs) - allowed
         if unknown:
             raise ValueError(f"Unknown inputs: {', '.join(sorted(unknown))}.")
         for key in inputs.get("fields", {}):
-            if key not in MONEY_FIELDS + COUNT_FIELDS + ("itemize", "state"):
+            if key not in MONEY_FIELDS + COUNT_FIELDS + ("itemize", "state", "hsa_coverage", "tipped_occupation"):
                 raise ValueError(f"Unknown field {key}.")
         with self.store.connection() as db:
             db.execute("INSERT INTO tax_years(year,unit,inputs_json,updated_at) VALUES(?,?,?,?) ON CONFLICT(year,unit) DO UPDATE SET "

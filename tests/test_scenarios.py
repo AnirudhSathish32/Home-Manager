@@ -207,6 +207,7 @@ def test_scenario_endpoints(tmp_path):
     app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
         client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        client.put("/api/household-settings", json={"birth_year": 1990})  # The tax engine's age facts (the earned income credit).
         tables = TaxTables(app.state.manager.store)
         confirmed(tables, "US", FEDERAL)
         confirmed(tables, "GA", GEORGIA)

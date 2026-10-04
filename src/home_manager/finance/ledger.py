@@ -175,6 +175,14 @@ class HouseholdConfig(StrictModel):
     fetch_exchange_rates: bool = True  # Download ECB reference rates for USD totals. Off means no outbound calls for rates.
     fetch_crypto_prices: bool = False  # Fetch crypto market prices (CoinGecko) for coins held. Off means no outbound calls for prices.
     rescan_hours: int = Field(default=6, ge=1, le=168)  # Full rescan of each watched folder, catching changes the watcher missed.
+    tax_engine: Literal["engine_1"] = "engine_1"  # The engine slot that works out the year's return (finance/tax_engine.py).
+    tax_engine_compare: bool = True  # Also work it out with another engine that can run here (Engine 2), and show where they differ.
+
+    @field_validator("tax_engine", mode="before")
+    @classmethod
+    def engine_slot(cls, value):
+        # Engine names saved before the numbered slots: their work is done by Engine 1 now.
+        return {"builtin": "engine_1", "opentax": "engine_1"}.get(value, value)
 
     @field_validator("home_currency")
     @classmethod

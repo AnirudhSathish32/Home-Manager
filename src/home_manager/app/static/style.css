@@ -306,7 +306,6 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 .taxes-inputs { max-width: none; margin: 0; gap: var(--space-3); }
 .taxes-inputs fieldset { min-width: 0; margin: 0; }
 .taxes-inputs > button.quiet { align-self: flex-start; }
-.taxes-figures { margin-top: var(--space-3); }
 .taxes-zen { margin-bottom: var(--space-5); padding-bottom: var(--space-4); border-bottom: 1px solid var(--border); }
 .taxes-zen:empty { display: none; }
 .taxes-zen-headline { font-size: var(--text-lg); margin-bottom: var(--space-2); }
@@ -582,7 +581,7 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs); color: var(--accent); border-color: var(--border); }
 #receipt-issues { padding-left: var(--space-5); font-size: var(--text-sm); }
 #receipt-version, #receipt-telemetry { overflow-wrap: anywhere; font-size: var(--text-xs); }
-.laya-panel { margin-top: var(--space-3); font-size: var(--text-sm); }
+.decision-panel { margin-top: var(--space-3); font-size: var(--text-sm); }
 
 /* ---- Search ---------------------------------------------------------------------- */
 .global-search { position: relative; margin: 0 0 var(--space-3); }
@@ -608,6 +607,8 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .connection-result:empty { display: none; }
 .model-list { list-style: none; margin: var(--space-1) 0 0; padding: 0; font-size: var(--text-sm); columns: 2; }
 .field-note { margin: 2px 0 var(--space-3) 26px; }
+.value-kind { overflow-wrap: anywhere; }
+.value-kind-to_enter { color: var(--warning); }
 .warranty-note { margin-top: 2px; color: var(--text-secondary); }
 
 /* ---- Assistant panel (Phase F) ------------------------------------------------------ */
@@ -694,3 +695,37 @@ button.nav-link.nav-button { width: 100%; border: 0; background: transparent; ju
 .forecast-facts dt { color: var(--text-secondary); }
 .forecast-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .forecast-notes { margin: var(--space-1) 0 0; padding-left: var(--space-5); }
+
+/* Donate documents: the original beside the values; the decision stays at the bottom of the values pane, in view. */
+#donate-panel > div + div, #donate-list-view > .panel + .panel { margin-top: var(--space-4); }
+#donate-check-view { display: flex; flex-direction: column; }
+#donate-check-view[hidden] { display: none; }
+.donate-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin-top: var(--space-3); }
+.donate-frame { position: relative; background: #fff; touch-action: none; }
+.donate-frame img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.donate-boxes { position: absolute; inset: 0; }
+.donate-frame.drawing { cursor: crosshair; }
+.donate-box { position: absolute; background: var(--text); }
+.donate-box.pending { background: transparent; border: 2px dashed var(--danger); }
+.record-pane .donate-fields td, .record-pane .donate-rows td { vertical-align: middle; }
+.donate-fields input, .donate-rows input, .donate-rows select { width: 100%; min-width: 7ch; }
+.donate-fields td.numeric, .donate-rows td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.donate-check { display: inline-flex; gap: var(--space-1); flex-wrap: nowrap; }
+.donate-fields th[scope="row"] { position: static; background: transparent; color: var(--text); font-size: var(--text-sm); white-space: normal; }
+#donate-check-view .inspector-body { grid-template-columns: minmax(260px, 40fr) minmax(0, 60fr); }
+.donate-fields td:nth-child(2) input { width: 13ch; min-width: 0; }
+.donate-fields td:nth-child(2) input[type="date"] { width: 18ch; }
+.donate-check button { padding-inline: var(--space-2); }
+.record-pane thead th { z-index: 1; }
+.donate-read { display: block; color: var(--text-muted); font-weight: 400; font-size: var(--text-xs); overflow-wrap: anywhere; }
+.donate-check button[aria-pressed="true"] { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
+.donate-decision { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2);
+  padding: var(--space-3) 0 0; margin-top: var(--space-2); background: var(--surface); border-top: 1px solid var(--border); }
+.donate-decision .error-text { flex: 1 1 100%; margin: 0; }
+#donate-check-view .record-pane .table-wrap { max-height: 46vh; overflow-y: auto; }
+@media (max-width: 800px) {
+  #donate-check-view .inspector-body { grid-template-columns: 1fr; }
+  #donate-check-view .record-pane .table-wrap { max-height: none; }
+  #donate-check-view .record-pane { padding-bottom: calc(var(--control-md) + var(--space-7)); }
+  .donate-decision { position: fixed; left: 0; right: 0; padding: var(--space-3) var(--space-4); z-index: 5; }
+}

@@ -11,7 +11,7 @@ from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
-from ..models.vision import VisionConfig
+from ..models.vision import Sampling, VisionConfig
 from .pdf_reader import read_result
 from .receipt_schema import StrictModel
 
@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 REASONING_VERSION = "financial-interpretation-v5"
 
 
-class ReasoningConfig(StrictModel):
+class ReasoningConfig(Sampling):
     base_url: str = "http://127.0.0.1:1234/v1"
     model: str = Field(default="", max_length=200)
 

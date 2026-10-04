@@ -405,19 +405,25 @@ const CORRECTABLE = {receipt: {merchant: "merchant", location: "location", purch
                      bill: {merchant: "provider", issue_date: "issue_date", due_date: "due_date"},
                      income_record: {merchant: "payer", pay_date: "pay_date"}};
 const isDateField = field => field.endsWith("_date");
-function layaPanel(laya, extractedType) {
+function decisionPanel(check, extractedType) {
   // Advisory only: shown beside the record, never used to approve, reject or file it.
-  const panel = element("details", "", "laya-panel");
-  if (laya.error) { panel.append(element("summary", "Laya check unavailable"), element("p", laya.error, "muted")); return panel; }
-  const scored = laya.checks.filter(check => check.supported !== null), doubted = scored.filter(check => !check.supported);
-  const shadow = laya.classification;
-  panel.appendChild(element("summary", `Independent check (Laya): ${scored.length - doubted.length} of ${scored.length} values confirmed`));
-  panel.appendChild(element("p", `Laya classifies this as ${shadow.document_type.replaceAll("_", " ")} (${Math.round(shadow.confidence * 100)}%)` +
-    (shadow.agrees ? ", matching the extraction." : `; the extraction says ${(extractedType || "unknown").replaceAll("_", " ")}.`), shadow.agrees ? "muted" : "item-warning"));
+  // Extractions from before decision models carry Laya's result in the same shape, without a model.
+  const name = check.model ? check.model.model : "Laya";
+  const panel = element("details", "", "decision-panel");
+  if (check.error) { panel.append(element("summary", `Independent check (${name}) unavailable`), element("p", check.error, "muted")); return panel; }
+  const scored = check.checks.filter(item => item.supported !== null), doubted = scored.filter(item => !item.supported);
+  const unscored = check.checks.length - scored.length, shadow = check.classification;
+  panel.appendChild(element("summary", `Independent check (${name}): ${scored.length - doubted.length} of ${scored.length} values confirmed`));
+  if (shadow.document_type) {
+    panel.appendChild(element("p", `${name} classifies this as ${shadow.document_type.replaceAll("_", " ")} (${Math.round(shadow.confidence * 100)}%)` +
+      (shadow.agrees ? ", matching the extraction." : `; the extraction says ${(extractedType || "unknown").replaceAll("_", " ")}.`), shadow.agrees ? "muted" : "item-warning"));
+  }
   const list = element("ul", "", "analysis-limitations");
-  for (const check of doubted) list.appendChild(element("li", `${check.field.replaceAll("_", " ")}: not confirmed from its cited text (${Math.round(check.probability * 100)}%)`));
+  for (const item of doubted) list.appendChild(element("li", `${item.field.replaceAll("_", " ")}: not confirmed from its cited text (${Math.round(item.probability * 100)}%)`));
   if (doubted.length) panel.appendChild(list);
-  panel.appendChild(element("p", "Laya runs on this computer after every extraction. A value it cannot confirm sends the record to review; it never approves one, and its document type is shown only for reference.", "muted"));
+  if (unscored) panel.appendChild(element("p", `${unscored} ${unscored === 1 ? "value" : "values"} could not be scored.`, "muted"));
+  const calibration = check.model && check.model.calibrated ? "" : " Its scores are not yet calibrated on your documents.";
+  panel.appendChild(element("p", `${name} checks every extraction. A value it cannot confirm sends the record to review; it never approves one, and its document type is shown only for reference.${calibration}`, "muted"));
   return panel;
 }
 async function loadExtraction(state, parseId) {
@@ -445,7 +451,8 @@ async function loadExtraction(state, parseId) {
   if (publication.record_type === "tax_form") { await renderTaxFormRecord(target, publication); return; }
   if (publication.segments) { await renderSplit(target, state, publication); return; }
   await renderLedgerRecord(target, publication.record_type, publication.id, publication.status === "kept_reviewed");
-  if (run.result.laya) target.appendChild(layaPanel(run.result.laya, run.document_type));
+  const check = run.result.decision || run.result.laya;
+  if (check) target.appendChild(decisionPanel(check, run.document_type));
 }
 // A file holding several receipts (docs/document-parsing.md): pick one, confirm the split once, or change it.
 function segmentLines(segment) {

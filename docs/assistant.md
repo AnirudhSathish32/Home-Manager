@@ -82,7 +82,6 @@ Separate small agents use the reasoning model with their own tool sets. Each one
 | Item identification | `household/resolver_tools.py` | `get_receipt_line`, `find_similar_lines`, `lookup_barcode`, `web_search`, `open_result`, `find_in_page`, `propose_item_resolution` | [household items](household-items.md) |
 | Warranty lookup | `household/warranty.py` | `get_item`, `web_search`, `open_result`, `find_in_page`, `propose_warranty` | [warranties](warranties-assistant-processing.md) |
 | Paycheck tax tables | `household/tax_tables.py` | `web_search`, `open_result`, `find_in_page`, `propose_tax_table` | [jobs and paystubs](jobs-and-paystubs.md) |
-| Year's tax figures | `household/tax_figures.py` | `web_search`, `open_result`, `find_in_page`, `propose_tax_figures` | [taxes](taxes.md) |
 
 ## The independent reviewer ("Independent checks")
 
@@ -90,12 +89,12 @@ Configured in **Settings → Local models** and saved as `reviewer.json` (`Revie
 
 - `off` (the default).
 - `chat`: a second loopback chat model. It gets the transcription and the proposed analysis. It checks the classification, omitted or invented items, amounts, dates, currency and unsupported claims, and cites exact source text for each problem. A review that cites text not in the transcription, or whose verdict contradicts its findings, is rejected. Input is capped at 96 KiB and is never truncated.
-- `laya`: the in-process Laya checkpoint scores each claim against its cited text in one batched pass. Scores below `SUPPORT_THRESHOLD` become findings. It is advisory and uncalibrated.
+- `decision`: the [decision model](decision-models.md) chosen in Settings scores each claim against its cited text. Scores below `SUPPORT_THRESHOLD` become findings. It is advisory: a failed or doubtful decision review never blocks filing. A saved `laya` setting reads as `decision`.
 
 **When it runs:** after a successful [financial reasoning](financial-reasoning.md) run (`Manager.reason_and_file`), before the document is filed. The result is saved in `analysis_reviews`. A failed review leaves the analysis unreviewed.
 
 **What it never does:** approve or change records. "No issues found" is not proof of correctness.
 
-Typed extraction uses Laya separately, as a veto on filing; see [V2 phases](v2-phases.md).
+Typed extraction uses the decision model separately, on every extraction, as a veto that sends a record to review; see [decision models](decision-models.md).
 
 On a [family GPU computer](shared-gpu-plan.md), members ask for the `home-manager/reviewer` role. It maps to the host's reviewer chat model, or to its reasoning model if none is set.
