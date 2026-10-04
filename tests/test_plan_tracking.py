@@ -1,4 +1,4 @@
-"""A What If plan put to use (docs/what-if.md, phase 3): its set spending as budgets, then planned pay and spending against
+"""A What If plan put to use (docs/planning.md "Following a plan"): its set spending as budgets, then planned pay and spending against
 what happened. Synthetic tables, stubs and transactions only."""
 
 from datetime import date

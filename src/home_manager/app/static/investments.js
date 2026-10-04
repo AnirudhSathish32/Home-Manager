@@ -1,5 +1,5 @@
 "use strict";
-// Investments (docs/investments.md): accounts grouped by section, what share each section and tax treatment holds,
+// Investments (docs/planning.md "Investments"): accounts grouped by section, what share each section and tax treatment holds,
 // and one account's values over time. The server does every sum and share; the page only arranges its text.
 // The open account lives in the URL (#/investments?account=ID) so Back and reload keep it.
 let investmentKinds = [], investmentsLoad = 0;

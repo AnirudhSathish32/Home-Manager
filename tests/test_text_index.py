@@ -1,4 +1,4 @@
-"""Full-text index over saved document text (docs/document-search.md). Synthetic transcriptions only."""
+"""Full-text index over saved document text (docs/documents.md "Searching document text"). Synthetic transcriptions only."""
 
 import json
 import sqlite3

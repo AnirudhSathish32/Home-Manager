@@ -287,7 +287,7 @@ def test_every_w4_answer_is_listed_and_step_3_is_offered_with_dependents():
 
 
 def test_the_architecture_example_owing_3700_steered_to_owing_500():
-    # docs/tax_intelligence_architecture.md §27: 3,700 owed, keeping cash with at most 999 owed and a 499 buffer: aim to owe 500.
+    # docs/taxes.md "Design": 3,700 owed, keeping cash with at most 999 owed and a 499 buffer: aim to owe 500.
     estimate_ = answer(1246500 + 370000, 1246500)
     policy = TaxZenPolicy(strategy="cash_retention", max_owed_minor=99900, buffer_minor=49900)
     zen = advise(estimate_, [JOB], FEDERAL, {}, [], 2026, date(2026, 9, 30), policy=policy)

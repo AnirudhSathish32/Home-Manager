@@ -1,4 +1,4 @@
-"""The estimated-tax safe harbor (IRC §6654; docs/tax_intelligence_architecture.md §13–14, §22): whether the year's
+"""The estimated-tax safe harbor (IRC §6654; docs/taxes.md "Design"): whether the year's
 withholding and estimated payments avoid an underpayment penalty, worked out apart from the return and from Tax Zen.
 
 No penalty applies when (§6654(e)(1)) less than $1,000 is owed after withholding and refundable credits, or when the

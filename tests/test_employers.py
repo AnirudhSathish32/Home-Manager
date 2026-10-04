@@ -1,4 +1,4 @@
-"""Jobs: an employer folder per employer with Paystubs and Documents, pay stub lines and titles (docs/jobs-and-paystubs.md).
+"""Jobs: an employer folder per employer with Paystubs and Documents, pay stub lines and titles (docs/taxes.md "Jobs and pay stubs").
 Synthetic data only."""
 
 import json

@@ -1,4 +1,4 @@
--- Investments phase 3 (docs/investments.md): purchase confirmations (a trade, a CD or a Treasury bought), and the terms
+-- Investments phase 3 (docs/planning.md "Investments"): purchase confirmations (a trade, a CD or a Treasury bought), and the terms
 -- a holding's value is estimated from between statements.
 -- One confirmation per document: the reviewable record, as an account value is for a statement.
 CREATE TABLE investment_confirmations (

@@ -1,5 +1,5 @@
 """Reading a statement or receipt again keeps the lines it finds again, with everything attached to them
-(db_audit_report.md, INT-3 and INT-4)."""
+(docs/money.md "Reading a statement or receipt again")."""
 
 import pytest
 

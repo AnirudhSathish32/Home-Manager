@@ -1,4 +1,4 @@
-"""Category rules and monthly budgets (docs/money-review-inventory.md §2), with synthetic data only."""
+"""Category rules and monthly budgets (docs/money.md "Category rules and budgets"), with synthetic data only."""
 
 from fastapi.testclient import TestClient
 import pytest

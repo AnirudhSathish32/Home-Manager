@@ -1252,7 +1252,7 @@ def create_app(control: Path | None = None, token: str | None = None,
     def archive_asset(asset_id: int):
         return Assets(store()).archive(asset_id)
 
-    # Investments (docs/investments.md): accounts, their values over time, and statement values to confirm.
+    # Investments (docs/planning.md "Investments"): accounts, their values over time, and statement values to confirm.
     @app.get("/api/investment-kinds")
     def investment_kinds():
         return Investments(store()).kinds()

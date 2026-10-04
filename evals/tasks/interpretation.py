@@ -1,4 +1,4 @@
-"""Interpretation (eval_plan.md task 9): the financial reading of a receipt's transcription (documents/reasoning.py).
+"""Interpretation (docs/evals.md, task 9): the financial reading of a receipt's transcription (documents/reasoning.py).
 
 The app's own validate_interpretation runs inside interpret(), so an answer that cites text not on the page or
 leaves a line unaccounted for fails there. Graded here against the synthetic receipts' known answers: the type,

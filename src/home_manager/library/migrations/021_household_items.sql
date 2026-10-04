@@ -1,4 +1,4 @@
--- Household items (docs/household-items.md): receipt lines resolved to products, a
+-- Household items (docs/household.md): receipt lines resolved to products, a
 -- household inventory of purchase lots, and the history behind run-out dates.
 
 -- A canonical product. Created or matched only when the user approves a resolution.

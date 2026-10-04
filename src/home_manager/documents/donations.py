@@ -1,4 +1,4 @@
-"""Donation checks and bundles (docs/private-reliability-testing.md).
+"""Donation checks and bundles (docs/evals.md).
 
 A person checks an extracted record field by field against its original, then exports the checked documents as one
 zip for the person collecting them for the private eval corpus. A check is an evaluation label: it never changes the

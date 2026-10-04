@@ -1,4 +1,4 @@
-"""Warranties for durable household items (docs/warranties-assistant-processing.md §1).
+"""Warranties for durable household items (docs/household.md "Warranties").
 
 A warranty the user enters counts at once. A looked-up one is a proposal: it must quote an opened
 web page exactly, the quote must be about a warranty, and the length proposed must be stated in the

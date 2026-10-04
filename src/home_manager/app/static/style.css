@@ -1,4 +1,4 @@
-/* Home Manager interface. Tokens and rules follow docs/ui-design-plan.md §4. */
+/* Home Manager interface. Tokens and rules follow docs/ui.md "Design system" */
 
 /* ---- Tokens ---------------------------------------------------------------- */
 :root {
@@ -592,7 +592,7 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .search-results .panel h2 { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
 .search-results .panel h2 a { font-size: var(--text-sm); font-weight: 500; }
 .search-hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; }
-/* Words matched inside a document's text, quoted under its name (docs/document-search.md). */
+/* Words matched inside a document's text, quoted under its name (docs/documents.md "Searching document text"). */
 .search-snippet { margin: 2px 0 0; font-size: var(--text-sm); color: var(--text-secondary); overflow-wrap: anywhere; }
 .search-snippet mark { background: var(--accent-subtle); color: var(--text); border-radius: var(--radius-sm); padding: 0 1px; }
 .match-state { margin-top: 2px; }

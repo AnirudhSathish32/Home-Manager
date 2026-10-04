@@ -1,4 +1,4 @@
-"""Warranties, automatic item identification and job history (docs/warranties-assistant-processing.md). Synthetic data only."""
+"""Warranties, automatic item identification and job history (docs/household.md "Warranties"). Synthetic data only."""
 
 from datetime import date
 import json

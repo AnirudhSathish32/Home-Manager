@@ -1,4 +1,4 @@
-"""Household items (docs/household-items.md): receipt lines resolved to products, and inventory.
+"""Household items (docs/household.md): receipt lines resolved to products, and inventory.
 
 Only the user's approval creates a product, an alias or an inventory lot. Resolutions from
 the model, the alias table or a barcode lookup are proposals. Run-out answers and manual lot
@@ -26,7 +26,7 @@ DEFAULT_FIRST_CHECK_DAYS = 28
 BASE_INTERVAL_DAYS, MAX_INTERVAL_DAYS = 7, 182
 LOT_EVENTS = ("still_have", "finished", "thrown_out", "reopened", "opened")
 LOT_STATE = ("status", "closed_on", "closed_precision_days", "next_check_on", "check_interval_days", "opened_on")
-# Food and drink are not tracked as opened or returnable; everything else is (docs/items-assets-search.md §5).
+# Food and drink are not tracked as opened or returnable; everything else is (docs/household.md "Opened items and return windows").
 FOOD = ("produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages")
 OPENABLE = tuple(category for category in CATEGORIES if category not in FOOD)
 RETURNS_CLOSING_DAYS = 14

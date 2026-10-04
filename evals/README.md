@@ -1,6 +1,6 @@
 # Evals
 
-Tests of how well Home Manager's local models do their jobs, for choosing between models. There are two suites. The plans are [eval_plan.md](../eval_plan.md) and [docs/private-reliability-testing.md](../docs/private-reliability-testing.md).
+Tests of how well Home Manager's local models do their jobs, for choosing between models. There are two suites. The design, the donation flow and the corpus's AI boundary are in [docs/evals.md](../docs/evals.md).
 
 - **Documents** (`python -m evals.run`): whole documents read and extracted end to end, over a corpus. The corpus can be synthetic, or the private corpus of donated documents.
 - **Tasks** (`python -m evals.tasks`): each of the app's other model tasks on its own, over made-up cases with known answers. See [Per-task evals](#per-task-evals).
@@ -132,7 +132,7 @@ Each task calls the app's own function for that job (never a copy of its prompt)
 | `tax_table` | reasoning | 10 state and federal tables | The standard deduction, every bracket and, for federal, the FICA figures exactly, past the prior year's page; none for an unpublished year |
 | `decisions` | decision | 40 document classifications and 116 claims, half with a planted wrong value | The document type picked; a true claim supported and a wrong one not (at the app's 0.8 threshold); the report adds calibration error, Brier score and a fitted temperature |
 
-The `decisions` task needs a candidate with a `decision` model (see [decision models](../docs/decision-models.md)); a candidate may
+The `decisions` task needs a candidate with a `decision` model (see [decision models](../docs/documents.md "Decision models")); a candidate may
 name only a decision model, and then runs only this task. Without one, the default task list leaves it out.
 
 Web agents: `item_lookup`, `warranty` and `tax_table`. They run their real tool loops and checks against recorded, made-up pages (`evals/tasks/web.py`): every search answers with the case's results, pages come from the recording, and nothing goes to the web. Their tax tables are invented, not any year's real ones.

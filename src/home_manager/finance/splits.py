@@ -1,4 +1,4 @@
-"""A receipt's money divided by item category (docs/receipts-and-statements.md, "Item categories").
+"""A receipt's money divided by item category (docs/money.md, "Item categories and splits").
 
 One receipt can hold several kinds of spending: a hot dog, a mattress and groceries on one Costco
 receipt. Each item carries its own category, and the amount actually paid is shared out so the

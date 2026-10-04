@@ -1,4 +1,4 @@
--- Investments (docs/investments.md). What an investment is (its kind) is data, not a CHECK: a new kind is a row here.
+-- Investments (docs/planning.md "Investments"). What an investment is (its kind) is data, not a CHECK: a new kind is a row here.
 -- The page and the forecast branch only on section, tax treatment and value model, never on the kind itself.
 CREATE TABLE investment_kinds (
     key TEXT PRIMARY KEY CHECK (key GLOB '[a-z0-9]*' AND key NOT GLOB '*[^a-z0-9_]*'),
@@ -44,7 +44,7 @@ CREATE TABLE investment_accounts (
     tax_treatment TEXT CHECK (tax_treatment IS NULL OR tax_treatment IN ('taxable','tax_deferred','tax_free','hsa')),
     -- Yearly growth or interest; NULL uses the kind's default.
     annual_rate_bp INTEGER CHECK (annual_rate_bp IS NULL OR annual_rate_bp BETWEEN -10000 AND 10000),
-    -- A savings account also in the ledger, so its cash is counted once (docs/investments.md, phase 2).
+    -- A savings account also in the ledger, so its cash is counted once (docs/planning.md "Reading statements").
     ledger_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     source TEXT NOT NULL CHECK (source IN ('manual','statement')),
     archived_at TEXT,

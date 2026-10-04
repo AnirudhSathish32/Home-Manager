@@ -1,4 +1,4 @@
--- Full-text index over saved transcriptions (docs/document-search.md). Rebuildable: library/text_index.py
+-- Full-text index over saved transcriptions (docs/documents.md "Searching document text"). Rebuildable: library/text_index.py
 -- fills it from parse_runs.result_json, so nothing here is the only copy of any text.
 -- A passage is a few consecutive lines of one page, with the line IDs that locate it in the transcription.
 CREATE TABLE document_passages (

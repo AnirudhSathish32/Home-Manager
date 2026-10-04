@@ -1,4 +1,4 @@
-"""Several images that are one document (docs/document-parsing.md, "Several images as one document").
+"""Several images that are one document (docs/documents.md, "Several images as one document").
 
 Suggestions are deterministic and never applied on their own: images captured together from the same folder whose
 names continue one series (IMG_0012, IMG_0013; scan (1), scan (2); receipt_p1, receipt_p2) and whose files were

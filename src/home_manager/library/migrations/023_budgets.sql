@@ -1,4 +1,4 @@
--- Category rules and monthly budgets (docs/money-review-inventory.md), and free-text check-in runs.
+-- Category rules and monthly budgets (docs/money.md), and free-text check-in runs.
 
 -- A user-written rule: transactions whose merchant key contains every word of the pattern get the category.
 CREATE TABLE category_rules (

@@ -357,7 +357,7 @@ class Reconciler:
         return created
 
     def cross_currency(self, db, receipt, unlinked, window):
-        """A foreign receipt and the USD card charge that paid it (docs/currency-conversion.md): charges within CROSS_RANGE of
+        """A foreign receipt and the USD card charge that paid it (docs/money.md "Currency conversion"): charges within CROSS_RANGE of
         the ECB estimate become a question, narrowed to the merchant's charges when any name it. The user decides; once linked
         the charge counts and the estimate stays as provenance."""
         estimate = self.estimate(db, receipt, REPORTING)

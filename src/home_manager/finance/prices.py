@@ -1,4 +1,4 @@
-"""Crypto market prices from CoinGecko, only when the household turns them on (docs/investments.md, crypto).
+"""Crypto market prices from CoinGecko, only when the household turns them on (docs/planning.md "Crypto").
 
 The only network access is refresh(): one HTTPS request to CoinGecko's public simple-price endpoint (no key), naming only
 coin ids and currencies, never amounts or accounts. It is off by default (HouseholdConfig.fetch_crypto_prices), runs at

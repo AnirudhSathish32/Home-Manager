@@ -1,4 +1,4 @@
-"""The opt-in judge (eval_plan.md A12): a local model scores what code cannot check, against a written rubric.
+"""The opt-in judge (docs/evals.md): a local model scores what code cannot check, against a written rubric.
 
   python -m evals.judge --run .runtime\\eval-tasks\\<run_id> --judge MODEL [--allow-self-judge]
   python -m evals.judge --export-labels --run FOLDER --rubric describe --to labels.jsonl [--count 30]

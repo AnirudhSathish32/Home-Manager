@@ -1,4 +1,4 @@
--- A bank or card line matched to money paid into an investment can be undone (docs/investments.md).
+-- A bank or card line matched to money paid into an investment can be undone (docs/planning.md "Investments").
 -- What the line was before the match made it a transfer, restored on undo; and who made the match.
 ALTER TABLE investment_events ADD COLUMN transaction_previous_type TEXT;
 ALTER TABLE investment_events ADD COLUMN transaction_link TEXT CHECK (transaction_link IS NULL OR transaction_link IN ('auto','user'));

@@ -1,4 +1,4 @@
-"""Payment terms (eval_plan.md task 8): scheduled payments stated in a lease, insurance policy or loan document.
+"""Payment terms (docs/evals.md, task 8): scheduled payments stated in a lease, insurance policy or loan document.
 
 Each printed scheduled payment must be found once with its payee, exact amount and frequency. Deposits, late fees,
 coverage limits, deductibles and totals for the whole term are not payment terms, and a section with none must give none.

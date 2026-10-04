@@ -1,4 +1,4 @@
-"""Required minimum distributions and retirement withdrawals in the forecast (docs/investments.md, docs/forecast.md). Synthetic data only."""
+"""Required minimum distributions and retirement withdrawals in the forecast (docs/planning.md "Investments", docs/planning.md "Forecast"). Synthetic data only."""
 
 from datetime import date
 from decimal import Decimal

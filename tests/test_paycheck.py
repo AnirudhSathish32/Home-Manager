@@ -1,4 +1,4 @@
-"""The paycheck planner: a paycheck worked out forward from gross pay (docs/what-if.md). The tables are synthetic, the same
+"""The paycheck planner: a paycheck worked out forward from gross pay (docs/planning.md "What If"). The tables are synthetic, the same
 as test_withholding.py's, so the planner and the pay stub explanation can be checked against each other."""
 
 from fastapi.testclient import TestClient

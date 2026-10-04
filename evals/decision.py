@@ -1,4 +1,4 @@
-"""Picking a model by a rule set in advance (eval_plan.md A13): gate, rank, tie-break, usability floor.
+"""Picking a model by a rule set in advance (docs/evals.md): gate, rank, tie-break, usability floor.
 
 1. Gate: a candidate is eligible only if its final answers were valid in at least min_valid_rate of runs, it made at most
    max_money_errors wrong money amounts, and every task passed in every repeat (pass^N) for at least min_pass_all of its
@@ -8,7 +8,7 @@
 4. Tie-break: candidates within tie_points percentage points of the leader are ordered by mean pass^N, then by a
    calibrated judge's mean score. An uncalibrated judge never counts.
 
-Thresholds live in [decision] of the config (models.toml); these defaults are eval_plan.md's proposals.
+Thresholds live in [decision] of the config (models.toml); these defaults are docs/evals.md's proposals.
 """
 
 DEFAULTS = {"min_valid_rate": 0.99, "max_money_errors": 0, "min_pass_all": 0.9, "max_p95_seconds": None, "tie_points": 2.0}

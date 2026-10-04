@@ -1196,7 +1196,7 @@ class Manager:
         return self.tax_view(year, status, self.household, gathered, inputs, tables_for, today=today, seen=seen)
 
     def tax_attention(self, today=None, wait=False):
-        """For Home (docs/tax_intelligence_architecture.md §42): this year's Tax Zen when it got worse since the Taxes page
+        """For Home (docs/taxes.md "Design"): this year's Tax Zen when it got worse since the Taxes page
         last showed it, else None. When a pay stub, tax form, tag or typed value is newer than the last evaluation, the
         return is worked out again in the background, so Home shows any change on its next load. wait: work it out
         first (tests)."""
@@ -1225,7 +1225,7 @@ class Manager:
         return TaxZenEvaluations(store).attention(today.year)
 
     def tax_zen_status(self, year):
-        """Tax Zen for the assistant (docs/tax_intelligence_architecture.md §28, §41): the deterministic result, small, for
+        """Tax Zen for the assistant (docs/taxes.md "Design"): the deterministic result, small, for
         the model to explain. Every figure is the engines' own."""
         view = self.tax_year(year)
         zen, result = view["zen"], view["return"]
@@ -1256,7 +1256,7 @@ class Manager:
                                "checked": rest.get("checked"), "unchanged_since": (job.get("steady") or {}).get("since")}
         return found
 
-    # Exchange rates and the CPA pack (docs/currency-conversion.md, docs/taxes.md) ----------------------
+    # Exchange rates and the CPA pack (docs/money.md "Currency conversion", docs/taxes.md) ----------------------
 
     def rates(self, store=None):
         from ..finance.fx import EcbRates
@@ -1633,7 +1633,7 @@ class Manager:
             return {"started": bool(pending), "receipts": pending}
 
     def identify_items(self, receipt_id, work):
-        """Automatic item identification after a receipt is recorded (docs/warranties-assistant-processing.md §2).
+        """Automatic item identification after a receipt is recorded (docs/household.md "Identifying receipt lines").
         Runs in the same model job; every result is still a proposal in Review. Never fails the extraction."""
         if not self.household.auto_identify_items:
             return

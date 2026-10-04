@@ -91,7 +91,7 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
         ready = db.execute(store.library_query() + f"SELECT count(*) FROM library WHERE deleted_at IS NULL AND {WORK_FILTERS['ready_for_ledger']}").fetchone()[0]
         bill_result = tools.get_upcoming_bills(AsOfInput(as_of=today.isoformat(), days=30))
         bills = [row for row in bill_result["bills"] if row["currency"] == chosen]
-        # CDs and Treasuries coming due, or matured and waiting for an answer (docs/investments.md, phase 3).
+        # CDs and Treasuries coming due, or matured and waiting for an answer (docs/planning.md "Purchase confirmations, estimates and maturities").
         maturities = Investments(SnapshotStore(store, db), today).maturities(currency=chosen)
         coverage = [dict(row) for row in db.execute(f"SELECT a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions "
                      f"FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE {COUNTABLE} AND t.currency=? AND t.posted_date BETWEEN ? AND ? GROUP BY a.id",

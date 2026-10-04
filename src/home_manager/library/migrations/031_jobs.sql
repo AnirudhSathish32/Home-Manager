@@ -1,4 +1,4 @@
--- Income becomes Jobs: one folder per employer, each with Paystubs and Documents (docs/jobs-and-paystubs.md).
+-- Income becomes Jobs: one folder per employer, each with Paystubs and Documents (docs/taxes.md "Jobs and pay stubs").
 -- On startup the managed library moves files out of Library/Income into Jobs.
 UPDATE folder_aliases SET folder='Jobs' WHERE folder='Income';
 INSERT OR IGNORE INTO folder_aliases VALUES ('Jobs','Jobs');

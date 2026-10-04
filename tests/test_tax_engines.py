@@ -1,4 +1,4 @@
-"""Tax engines (docs/tax-engines.md): numbered slots, the capability check, Engine 1's mapping and refusals, and hand-worked
+"""Tax engines (docs/taxes.md "The tax engines"): numbered slots, the capability check, Engine 1's mapping and refusals, and hand-worked
 2026 returns it must match.
 
 The golden returns are worked by hand from 2026 law (Rev. Proc. 2025-32 and the OBBBA): each line within a dollar

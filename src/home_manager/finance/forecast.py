@@ -1,4 +1,4 @@
-"""Deterministic income, spending and net-worth forecast (docs/forecast.md).
+"""Deterministic income, spending and net-worth forecast (docs/planning.md "Forecast").
 
 Starting figures come from the ledger: each account's latest statement balance, average monthly
 income and per-category spending over recent full months, and reviewed assets and loans. The
@@ -132,7 +132,7 @@ class YearlyBonus(StrictInput):
 
 
 class PayPlan(StrictInput):
-    """A planned paycheck (docs/what-if.md), already worked out by finance/paycheck.py: its take-home pay and its payroll
+    """A planned paycheck (docs/planning.md "What If"), already worked out by finance/paycheck.py: its take-home pay and its payroll
     contributions a month. replace_pay: it becomes the pay (confirmed pay stubs' take-home pay and their contributions stop
     while it runs); add: another earner, on top."""
     label: str = Field(min_length=1, max_length=60)

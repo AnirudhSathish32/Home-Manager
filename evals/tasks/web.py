@@ -1,4 +1,4 @@
-"""Recorded web for the web-agent evals (eval_plan.md A16): the agents' real tool loops against fixed pages, offline.
+"""Recorded web for the web-agent evals (docs/evals.md): the agents' real tool loops against fixed pages, offline.
 
 A case's web is a list of search results and the HTML of each result's page. Every search answers with the case's
 results, ranked by how many of the query's words they share, so an agent's own wording of a query never changes what

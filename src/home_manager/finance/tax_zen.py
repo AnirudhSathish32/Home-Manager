@@ -11,7 +11,7 @@ withholding. Tax Zen changes one job's W-4 for the paychecks left:
 Two answers: for the paychecks left this year (larger, since fewer paychecks catch up), and from January (a full year at
 the same pay). Without withholding to change (1099 work), it is advance tax instead: the 1040-ES quarters.
 
-The aim is the household's policy (docs/tax_intelligence_architecture.md §12, §24): $0 (precision, the default), a small
+The aim is the household's policy (docs/taxes.md "Design"): $0 (precision, the default), a small
 refund, keeping cash while owing under a limit less a safety buffer, or owing as much as the safe harbor allows. Tax Zen
 is a status, not a yes or no (§26): ZEN, WATCH, AT_RISK (on track, but the likely range reaches a penalty),
 ACTION_RECOMMENDED, REVIEW_REQUIRED (the two tax engines disagree), INSUFFICIENT_DATA or ENGINE_UNSUPPORTED. The safe

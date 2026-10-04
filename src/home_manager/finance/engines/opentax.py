@@ -1,4 +1,4 @@
-"""Invaro OpenTax (docs/tax-engines.md): the federal return from an open-source, cited rule corpus, run as a separate Node
+"""Invaro OpenTax (docs/taxes.md "The tax engines"): the federal return from an open-source, cited rule corpus, run as a separate Node
 process.
 
 The engine is the pinned, unmodified npm build in vendor/opentax (AGPL-3.0; PIN.json). Each run:
@@ -11,7 +11,7 @@ The engine refuses rather than guesses: facts it needs are named (NEEDS_FACTS) a
 covered. Payments (withholding, estimated tax) are added up here: the engine's balance due counts withholding only. The
 state return is the simplified one (tax_return.state_return), labeled.
 
-The app shows this engine as its slot ("Engine 1"); its name stays in this file, the records and docs/tax-engines.md.
+The app shows this engine as its slot ("Engine 1"); its name stays in this file, the records and docs/taxes.md "The tax engines".
 """
 
 from collections import OrderedDict
@@ -62,7 +62,7 @@ def earned_by_owner(value: ReturnInput):
 
 
 def facts_for(value: ReturnInput):
-    """The OpenTax facts for this profile, and notes on how it was mapped (docs/tax-engines.md has the table)."""
+    """The OpenTax facts for this profile, and notes on how it was mapped (docs/taxes.md "The tax engines" has the table)."""
     facts: dict = {"filingStatus": STATUS[value.filing_status], "wages": dollars(sum(job.wages for job in value.jobs))}
     notes = []
 
@@ -242,7 +242,7 @@ class OpenTaxEngine:
         return None
 
     def capabilities(self):
-        # FEATURES (finance/tax_engine.py) it covers: none of them yet (docs/tax-engines.md lists each gap).
+        # FEATURES (finance/tax_engine.py) it covers: none of them yet (docs/taxes.md "The tax engines" lists each gap).
         return Capabilities(years=YEARS, statuses=STATUSES, features=frozenset(), states=frozenset())
 
     def calculate(self, value: ReturnInput, context, label="The tax engine"):

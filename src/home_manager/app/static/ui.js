@@ -1,5 +1,5 @@
 "use strict";
-// Shared interface primitives (docs/ui-design-plan.md §4.3). Each returns a DOM node; no framework, no build step.
+// Shared interface primitives (docs/ui.md "Design system"). Each returns a DOM node; no framework, no build step.
 
 // Icon paths adapted from Lucide (ISC License, https://lucide.dev). Drawn inline so the CSP needs no extra sources.
 const ICONS = {
@@ -76,7 +76,7 @@ const STATUS = {
   payment_found: ["Payment found", "positive", "check"], due: ["Due", "neutral", "clock"], overdue: ["Overdue · no payment found", "danger", "alert"],
   past_due_no_payment_found: ["Past due · no payment found", "danger", "alert"],
   posted_credit_found: ["Credit posted", "positive", "check"], evidence_only_not_settled: ["Refund not yet posted", "warning", "clock"],
-  // Document summary states (docs/ui-design-plan.md §3.7).
+  // Document summary states (docs/documents.md "Browsing the library").
   not_read: ["Not read yet", "neutral", null], read: ["Read, not recorded", "neutral", "file"], recorded: ["Recorded", "positive", "check-circle"],
   // Budgets, bills and inventory.
   on_track: ["On track", "info", "check"], ahead_of_pace: ["Ahead of pace", "warning", "alert"], over: ["Over budget", "danger", "octagon"],

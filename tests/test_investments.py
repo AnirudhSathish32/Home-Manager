@@ -1,4 +1,4 @@
-"""Investments (docs/investments.md): kinds as data, values over time, review, totals and the 036 move. Synthetic data only."""
+"""Investments (docs/planning.md "Investments"): kinds as data, values over time, review, totals and the 036 move. Synthetic data only."""
 
 from datetime import date
 import sqlite3
@@ -400,7 +400,7 @@ def test_browser_investments_page(tmp_path):
         server.should_exit = True
 
 
-# Phase 4 (docs/investments-next.md): I bonds, 529 plans, pensions and the new tax forms ---------------------------------------
+# Phase 4 (docs/planning.md "Kinds made specific"): I bonds, 529 plans, pensions and the new tax forms ---------------------------------------
 RATES = [{"period_start": "2023-11-01", "fixed_bp": 130, "inflation_semiannual_bp": 197},
          {"period_start": "2024-05-01", "fixed_bp": 130, "inflation_semiannual_bp": 148},
          {"period_start": "2024-11-01", "fixed_bp": 120, "inflation_semiannual_bp": 95}]

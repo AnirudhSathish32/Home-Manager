@@ -1,71 +1,23 @@
 # Home Manager docs
 
-Every doc, grouped by what it is for. Updated 2026-09-30. The project [readme](../readme.md) has the quick start.
-
-## Start here
-
-| Doc | What it covers |
-|---|---|
-| [operations](operations.md) | Install, commands and flags, environment variables, where files live, LM Studio, backups, background work, troubleshooting. |
-| [development](development.md) | Code layout, tests (unit, browser, decision models), ruff/mypy, how to add a migration. |
-| [manual testing](manual-testing.md) | Starting the app, capture checks, a manual check list per feature. |
-| [milestones](milestones.md) | What is built, and the **[open work](milestones.md#open-work)** list. |
-
-## Reference: how built features work
+The project [readme](../readme.md) has the quick start. Every doc describes the app as it is now; what isn't built yet
+is in [open work](open-work.md). Git history keeps the older plans and proposals these docs were consolidated from
+(2026-10-04).
 
 | Doc | What it covers |
 |---|---|
-| [managed library](managed-library.md) | Library/Inbox, automatic filing, schema upgrades and recovering from a failed one. |
-| [library browser](library-browser.md) | The sidebar, folders, document rows, Trash. |
-| [image transcription](receipt-parsing.md) | The vision model: setup, evidence, failure handling. |
-| [financial reasoning](financial-reasoning.md) | The reasoning stage over saved text (API only), model residency. |
-| [V2 phases](v2-phases.md) | Typed extraction, review, reconciliation, the finance tools. |
-| [decision models](decision-models.md) | The independent checks: a plug-and-play System One model in LM Studio or a `/v1/systemone` server (Kev), calibration. |
-| [receipts and statements](receipts-and-statements.md) | Money vs document folders, receipt counting, statements, recurring bills, rewards. |
-| [money, review and inventory](money-review-inventory.md) | Review, budgets and rules, check-ins, inventory. |
-| [household items](household-items.md) | Item identification, inventory lots, web lookups. |
-| [items, assets and search](items-assets-search.md) | Returns, statement assets, item questions. |
-| [warranties](warranties-assistant-processing.md) | Warranty lookups and the assistant's processing. |
-| [document search](document-search.md) | Full-text search of document text (FTS5), `index-documents`. |
-| [assistant](assistant.md) | How Ask answers, every tool and route, web lookup agents, the independent reviewer. |
-| [home screen](home-screen-design.md) | The Home dashboard. |
-| [forecast](forecast.md) | Long-range forecast, assets and loans, retirement and RMDs. |
-| [What If](what-if.md) | Paycheck planner, saved scenarios, plan vs actual. |
-| [jobs and paystubs](jobs-and-paystubs.md) | Employers, the Jobs folders, the paystub tax breakdown, tax tables. |
-| [investments](investments.md) | Investment accounts, holdings, lots, tax forms, RMDs, payment matching. |
-| [taxes](taxes.md) | Tax tags, the year's return estimate, Tax Zen, estimated tax, family returns, the year-end CPA pack. |
-| [currency conversion](currency-conversion.md) | ECB rates, USD totals, foreign receipts matched to USD card charges, the rate tools. |
-| [sharing](sharing.md) | Profiles, `.hmshare` exports, families, the family inbox. |
-| [schema map](schema.md) | What each migration (001–047) adds. |
+| [operations](operations.md) | Install, first start, local models and residency, commands, environment variables, where files live, backups, background work, the log and ledger health, troubleshooting. |
+| [development](development.md) | Code layout, architecture and security rules, tests, manual checks, ruff/mypy, adding a migration, the schema map (001–060), database checks. |
+| [documents](documents.md) | The managed library, watched folders, duplicates, browsing and Trash, schema upgrades; reading images, PDFs and CSV/XLSX; several receipts in one file; several images as one document; typed extraction and review; decision models; document search. |
+| [money](money.md) | Money rules; what counts; statements and reconciliation; categories and item splits; rules and budgets; rewards; recurring bills; currency conversion; the money pages and Home. |
+| [planning](planning.md) | The forecast, assets and loans, retirement and RMDs; What If (paycheck planner, saved plans, following a plan); investments. |
+| [taxes](taxes.md) | The design behind Tax Zen and the engines; tax tags; the year's return; Engines 1 and 2; Tax Zen; the CPA pack; jobs and pay stubs; notes for a CPA. |
+| [household](household.md) | Identifying receipt lines, inventory, run-out and check-ins, return windows, warranties, item analysis. |
+| [assistant](assistant.md) | The Ask panel, how questions are answered, every tool and route, the web lookup agents, the independent reviewer. |
+| [family](family.md) | Profiles, families, the family inbox, `.hmshare` sharing, the family GPU relay. |
+| [ui](ui.md) | Pages, Review, the document page, Processing and Settings; the design system; accessibility; money on screen; the proposed restyle. Rules to apply: the `app-ux` skill. |
+| [evals](evals.md) | Why and how models are evaluated; donating documents; the private corpus and its AI boundary. Runbook: [evals/README.md](../evals/README.md). |
+| [open work](open-work.md) | Everything known to be unbuilt or broken. |
+| [donation consent](donation-consent.md) | The consent form given to people who donate documents. |
 
-## Plans with an "as built" record
-
-These plans are built. They explain the reasoning behind a feature; the reference docs above describe how it works now.
-
-| Doc | Status |
-|---|---|
-| [architecture](architecture.md) | The original design proposal; mostly built. It also covers the diagnostic log and ledger health. |
-| [document reading](document-reading.md) | The original reading/ingestion design; built, with open items. |
-| [document parsing](document-parsing.md) | Parsing decisions; built, with open items. |
-| [UI design plan](ui-design-plan.md) | Phases A–F built. With the `app-ux` skill, it is the current design system. |
-| [profiles and family plan](profiles-and-family-plan.md) | Built 2026-09-28; current behavior is in [sharing](sharing.md). |
-| [shared GPU plan](shared-gpu-plan.md) | Built 2026-09-28. LM Studio load/unload is not yet confirmed. |
-
-## Planned, not built
-
-| Doc | Status |
-|---|---|
-| [Donated document corpus](private-reliability-testing.md) | Built: friends and family check and donate documents (Donate documents page); a private corpus run locally by the deterministic eval suite in `evals/`. Consent text: [donation-consent.md](donation-consent.md). |
-| [Model comparison evaluations](../eval_plan.md) | Proposed: task inventory, graders, and comparing local model configurations; paired with the private reliability plan. |
-| [new UI/UX design](new_ui_ux_design.md) | The "Household ledger" restyle (dark theme, fonts); not started. |
-
-## Archive
-
-Superseded; kept for history.
-
-| Doc | Replaced by |
-|---|---|
-| [homepage proposal](archive/homepage-proposal.md) | [UI design plan](ui-design-plan.md), [home screen](home-screen-design.md) |
-| [V2 Phase 1 plan](archive/phase-1-plan.md) | [managed library](managed-library.md) |
-
-`Home_Manager_Architecture_Implementation_Spec.docx` is the V2 specification the phases were built from.
+Licenses for the vendored tax engine are in `src/home_manager/vendor/NOTICES.md`.

@@ -1,4 +1,4 @@
-"""What If scenarios (docs/what-if.md): named plans run through the forecast beside "Now".
+"""What If scenarios (docs/planning.md "What If"): named plans run through the forecast beside "Now".
 
 A scenario stores its inputs only: planned paychecks (finance/paycheck.py inputs, each with the months it is paid and whether
 it replaces pay or adds to it), set category amounts, one-offs and the forecast's assumptions. Running it works every

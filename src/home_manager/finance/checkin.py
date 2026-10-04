@@ -1,4 +1,4 @@
-"""Free-text check-in answers (docs/money-review-inventory.md §4).
+"""Free-text check-in answers (docs/household.md "Run-out, cost per day and check-ins").
 
 "Finished the milk on Tuesday, still have rice" is read by the local model into proposed lot
 updates. The model may only name lots from this check-in and pick from fixed answers and times;

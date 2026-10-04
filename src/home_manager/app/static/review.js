@@ -1,5 +1,5 @@
 "use strict";
-// Review (docs/ui-design-plan.md §3.2, Phase D): one queue of everything awaiting a decision.
+// Review (docs/ui.md "Review"): one queue of everything awaiting a decision.
 // Left: groups with counts. Right: what the item is, why it needs you, the evidence and the decision.
 // Keys: J/K move, V confirms, R rejects; a decision advances to the next item.
 const ISSUE_KINDS = {ambiguous_receipt_match: "Which charge is this receipt?", ambiguous_transfer: "Which account received this transfer?",

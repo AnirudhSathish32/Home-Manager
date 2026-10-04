@@ -1,4 +1,4 @@
-"""Tools for the item-resolution agent (docs/household-items.md).
+"""Tools for the item-resolution agent (docs/household.md).
 
 One ItemTools instance serves one receipt line. The shape mirrors gpt-oss's trained browsing
 tool (search, open, find). Its only write is a proposal, which the user reviews. Search queries

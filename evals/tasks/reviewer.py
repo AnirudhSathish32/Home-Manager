@@ -1,4 +1,4 @@
-"""Reviewer (eval_plan.md task 10): a second model checks a proposed analysis against the transcription.
+"""Reviewer (docs/evals.md, task 10): a second model checks a proposed analysis against the transcription.
 
 Each case is a synthetic receipt with a correct analysis, into which one error is planted in most cases: a wrong
 total, a wrong date, the wrong merchant, an invented item or a missing item. The reviewer must say needs_attention

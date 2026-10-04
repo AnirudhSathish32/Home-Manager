@@ -1,4 +1,4 @@
-"""Which statement payees are ongoing services billed on a schedule (docs/receipts-and-statements.md).
+"""Which statement payees are ongoing services billed on a schedule (docs/money.md).
 
 A phone plan, internet, streaming or gym charge is a recurring bill, but one charge in the shopping or
 uncategorized columns doesn't say so, and varying amounts never meet the three-equal-payments rule. The local

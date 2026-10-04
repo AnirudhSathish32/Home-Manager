@@ -1,4 +1,4 @@
--- Fixes from the database audit (db_audit_report.md: INT-2, INT-9, SIM-1, SIM-2).
+-- Fixes from the database audit (docs/development.md "Database checks": INT-2, INT-9, SIM-1, SIM-2).
 
 -- INT-2: family rows whose record was deleted by emptying Trash. Ids are reused, so these would attach to the
 -- next record given the same id. Rows already attached to a newer record cannot be told apart and are kept.

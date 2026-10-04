@@ -304,7 +304,7 @@ def rebuild(corpus, folder):
 
 
 def schema_comparison(pairs):
-    """eval_plan.md A15: each candidate with the schema enforced by the server and with it only in the prompt.
+    """docs/evals.md: each candidate with the schema enforced by the server and with it only in the prompt.
     pairs: [(name, enforced, prompt_only)], each {runs, valid, failures: Counter, first_try: (valid, of), score}."""
     if not pairs:
         return []
@@ -346,7 +346,7 @@ def decision_rows(manifest, results):
 
 
 def leaderboard(manifest, results):
-    """One row per candidate, in the config's order: no ranking or winner is computed here (eval_plan.md A13)."""
+    """One row per candidate, in the config's order: no ranking or winner is computed here (docs/evals.md)."""
     out = ["## Leaderboard", "", "| Candidate | Cases passed | Mean score | Fields wrong of checked | Rows found | First answers valid "
            "| Every repeat / any repeat | Score spread | Failed to process | Time p50 / p95 |", "|---|---|---|---|---|---|---|---|---|---|"]
     for candidate in manifest["candidates"]:

@@ -1,4 +1,4 @@
-"""Item-level analysis tools for the assistant (docs/items-assets-search.md §4, household-items H4).
+"""Item-level analysis tools for the assistant (docs/household.md "Item analysis").
 
 Read-only, over inventory lots the user approved, plus counted transactions for anomalies. Exact
 Decimal arithmetic; amounts are rounded half-even to the minor unit only for display. Every result

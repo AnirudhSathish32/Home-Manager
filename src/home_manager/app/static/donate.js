@@ -1,5 +1,5 @@
 "use strict";
-// Donate documents (docs/private-reliability-testing.md): check a record against its original, field by field, then
+// Donate documents (docs/evals.md): check a record against its original, field by field, then
 // save a donation file the person hands over themselves. A check is a label for testing; it never changes records.
 const DONATE_TYPES = {receipt: "Receipt", bank_statement: "Bank statement", credit_card_statement: "Card statement", paystub: "Pay stub",
                       statement: "Statement", income_record: "Pay stub"};

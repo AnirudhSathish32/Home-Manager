@@ -1,4 +1,4 @@
-"""Withholding engines (docs/tax_intelligence_architecture.md §21, §30): what payroll withholds from a paycheck for a W-4,
+"""Withholding engines (docs/taxes.md "Design"): what payroll withholds from a paycheck for a W-4,
 behind one interface, so a different method can replace IRS Publication 15-T without changing Tax Zen.
 
 - WithholdingEngine: per_check(federal table, wages a paycheck, paychecks a year, W-4 entries) -> cents.

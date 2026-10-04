@@ -1,4 +1,4 @@
--- ECB reference exchange rates cached on this device, for USD conversion (docs/currency-conversion.md).
+-- ECB reference exchange rates cached on this device, for USD conversion (docs/money.md "Currency conversion").
 -- Each download is one fx_rate_sets row. A published (date, currency) rate is stored once, by the download that first
 -- brought it, and never changes: triggers refuse updates and deletes, so a rate id cited by a total or a CPA pack always
 -- resolves to the same value. Rates are exact decimal text (units per euro), never REAL.

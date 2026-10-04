@@ -1,4 +1,4 @@
-"""Tax engines (docs/tax-engines.md): the year's return worked out behind one interface, so an engine can be added or
+"""Tax engines (docs/taxes.md "The tax engines"): the year's return worked out behind one interface, so an engine can be added or
 replaced without changing the Taxes page, Tax Zen, What If or the CPA pack.
 
 Engines are numbered slots: the app says "Engine 1", "Engine 2" (ENGINES, in order), never an engine's own name. The

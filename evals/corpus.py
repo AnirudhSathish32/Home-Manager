@@ -22,7 +22,7 @@ from home_manager.core.answers import Answers
 CORPUS_FORMAT = "home-manager-corpus/1"
 CASE_FORMAT = "home-manager-case/1"
 CASE_ID = re.compile(r"[0-9a-f]{16}")
-# The edges a case tests (eval_plan.md A5). Synthetic cases carry them; the collector may add them to donated ones.
+# The edges a case tests (docs/evals.md). Synthetic cases carry them; the collector may add them to donated ones.
 TAGS = ("long", "multi_page", "non_usd", "injection", "ambiguous_kind", "no_items", "duplicates", "date_format", "faded", "ytd")
 DONOR_ID = re.compile(r"[a-z0-9-]{1,16}")
 ORIGINALS = ("original.png", "original.jpg", "original.pdf")

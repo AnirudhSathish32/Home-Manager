@@ -760,7 +760,7 @@ class FinanceTools(ItemAnalysisTools):
                            "status": lot["status"], "bought_on": lot["bought_on"], "closed_on": lot["closed_on"], "units": lot["units"]} for lot in lots],
                 "notes": ["Only items from receipt lines the user approved are listed."]}
 
-    # Exchange rates (docs/currency-conversion.md): cached ECB reference rates only; nothing here goes to the network.
+    # Exchange rates (docs/money.md "Currency conversion"): cached ECB reference rates only; nothing here goes to the network.
 
     def lookup_exchange_rate(self, value):
         """The cached ECB reference rate for converting currency on date into USD, with the rate_id to convert with."""
@@ -857,7 +857,7 @@ TOOLS = {"get_accounts": (EmptyInput, "get_accounts"), "get_account_balance": (A
          "lookup_exchange_rate": (RateInput, "lookup_exchange_rate"), "convert_document_amount": (ConvertInput, "convert_document_amount"),
          **ITEM_TOOLS, **ANOMALY_TOOLS}
 ToolName = Literal[*TOOLS]  # type: ignore[valid-type]
-# Assistant routing (docs/items-assets-search.md §4, docs/document-search.md): item questions see the item tools and
+# Assistant routing (docs/household.md "Item analysis", docs/documents.md "Searching document text"): item questions see the item tools and
 # spending basics; questions about what a document says see the document tools and a few ledger basics; every other
 # question sees the finance tools. A smaller list keeps a small model's prompt short. search_documents is in every route
 # as the fallback for anything the ledger does not hold.

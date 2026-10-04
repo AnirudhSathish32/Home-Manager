@@ -13,7 +13,12 @@ Never read, list, search, copy or run anything against P:\EvalCorpus: friends' a
 documents, their answer files and eval results. This is stricter than the rule above. Don't ask the
 user to paste anything from it except an allowlisted `summary.json`. Write and test the eval suite
 only on the synthetic fixtures in Git; the user runs it on the corpus in their own terminal.
-See docs/private-reliability-testing.md.
+See docs/evals.md.
+
+## Docs
+Docs live in `docs/` (index: docs/README.md), one doc per area. Describe what is built in the area's doc, and put
+anything not built in docs/open-work.md, not in a new plan doc. Code comments cite docs as `docs/<doc>.md "Heading"`,
+so keep headings stable or update the citations when renaming one.
 
 ## Everything Claude writes for this project stays in this directory
 - **Skills:** create and change project skills only in `.claude/skills/` here. Never write skills to

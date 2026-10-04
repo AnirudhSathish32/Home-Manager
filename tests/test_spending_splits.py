@@ -18,7 +18,7 @@ def item(total, category, taxed=None, discount=None):
     return {"line_total_minor": total, "discount_minor": discount, "taxed": taxed, "category": category}
 
 
-# The worked example in docs/receipts-and-statements.md: tax falls only on the taxed hot dog and mattress.
+# The worked example in docs/money.md: tax falls only on the taxed hot dog and mattress.
 COSTCO = [item(150, "dining", True), item(49999, "furniture & decor", True), item(8000, "groceries", False)]
 
 

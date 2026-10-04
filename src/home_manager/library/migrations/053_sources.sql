@@ -1,4 +1,4 @@
--- Watched folders outside Library/Inbox (docs/document-reading.md, "Sources"). A scan copies each new or changed file into
+-- Watched folders outside Library/Inbox (docs/documents.md, "Watched folders"). A scan copies each new or changed file into
 -- the library and never moves, renames or deletes the original. path_key is the folder's normalized path, the same value
 -- its captures carry in occurrences.source_root.
 

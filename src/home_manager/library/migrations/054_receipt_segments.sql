@@ -1,4 +1,4 @@
--- Several receipts in one file (docs/document-parsing.md, "Several receipts in one file"). A file's receipts are numbered by
+-- Several receipts in one file (docs/documents.md, "Several receipts in one file"). A file's receipts are numbered by
 -- segment, 0 for the first; a file with one receipt has only segment 0, so every existing receipt keeps its meaning.
 -- document_segments records where each receipt sits in the file's text (its first and last line), and whether the user
 -- confirmed the split. Segments written by the user (source user) win over the model's on later extractions.

@@ -1,4 +1,4 @@
-"""Income tax tables for the pay stub tax estimate (docs/jobs-and-paystubs.md).
+"""Income tax tables for the pay stub tax estimate (docs/taxes.md "Jobs and pay stubs").
 
 A table (federal or one state's, for a tax year and filing status) is looked up on the web by the local model when a
 pay stub from a new year is recorded. It is a proposal: every number must be printed in a passage the model quotes
@@ -166,8 +166,7 @@ class TaxTables:
 
 
 class TaxTableTools:
-    max_searches, max_opens = MAX_SEARCHES, MAX_OPENS  # The figures lookup (household/tax_figures.py) reads more pages.
-
+    max_searches, max_opens = MAX_SEARCHES, MAX_OPENS
     def __init__(self, tables: TaxTables, web: WebLookup, jurisdiction, year, filing_status, run_id=None):
         self.tables, self.web, self.run_id = tables, web, run_id
         self.jurisdiction, self.year, self.filing_status = jurisdiction, year, filing_status

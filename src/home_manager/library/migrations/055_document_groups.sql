@@ -1,4 +1,4 @@
--- Several images that are one document, such as a long receipt photographed in parts (docs/document-parsing.md,
+-- Several images that are one document, such as a long receipt photographed in parts (docs/documents.md,
 -- "Several images as one document"). The app suggests groups (proposed); the user confirms or dismisses them, or
 -- combines images directly (confirmed). A confirmed group reads as one multi-page document under its first page,
 -- the lead, which carries the reading and the records; the other pages are hidden from lists while it lasts.

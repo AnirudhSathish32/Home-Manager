@@ -1,4 +1,4 @@
--- Donation checks (docs/private-reliability-testing.md): a person marks each critical field of an extracted record, and
+-- Donation checks (docs/evals.md): a person marks each critical field of an extracted record, and
 -- for a statement or pay stub its rows, as correct or fixed against the original, so the document can be donated with
 -- answers someone actually checked. A check is an evaluation label only: it never changes the ledger, review status or
 -- filing. proposal_json is the model's normalized result before any check; answers_json holds the checked answers

@@ -485,7 +485,7 @@ class Ledger:
         return {"receipt_id": receipt_id, "position": position, "category": category, "category_source": "user"}
 
     def publish_asset(self, record, source):
-        """A loan statement's balance as the forecast loan for its account (docs/items-assets-search.md §6); investment
+        """A loan statement's balance as the forecast loan for its account (docs/planning.md "Assets and loans"); investment
         statements go to finance/investments.py. One row per account: a newer statement updates it and returns it to
         proposed; an older one changes nothing."""
         kind, institution = record["asset_kind"], " ".join(record["institution"].split())

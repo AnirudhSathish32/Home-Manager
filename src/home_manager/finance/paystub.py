@@ -1,4 +1,4 @@
-"""A pay stub, explained (docs/jobs-and-paystubs.md).
+"""A pay stub, explained (docs/taxes.md "Jobs and pay stubs").
 
 breakdown(): the printed lines grouped from gross pay down to net pay, with subtotals for this period and year to date.
 explain(): how the income taxes and FICA on the stub are figured. Federal and state income tax use the year's tax table

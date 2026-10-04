@@ -1,5 +1,5 @@
 "use strict";
-// Global search (docs/items-assets-search.md §2): one query across documents, transactions, items and accounts.
+// Global search (docs/documents.md "Searching document text"): one query across documents, transactions, items and accounts.
 // Ctrl+K or "/" focuses the search box; results link into each page's own filtered view.
 let searchLoad = 0;
 
@@ -20,7 +20,7 @@ function searchHit(link, detail, right = null, extra = null) {
   if (right) li.append(right);
   return li;
 }
-// Where a document's text matched (docs/document-search.md). The server marks the matched words with \x02…\x03;
+// Where a document's text matched (docs/documents.md "Searching document text"). The server marks the matched words with \x02…\x03;
 // they become <mark> from text nodes, never HTML, since the words come from the document.
 function matchSnippet(match) {
   const quote = element("p", "", "search-snippet");

@@ -1,4 +1,4 @@
-"""Opt-in browser test for searching document text (docs/document-search.md): RUN_BROWSER_TESTS=1, Edge + Playwright."""
+"""Opt-in browser test for searching document text (docs/documents.md "Searching document text"): RUN_BROWSER_TESTS=1, Edge + Playwright."""
 
 import json
 import os

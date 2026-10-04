@@ -1,4 +1,4 @@
-"""Eval hooks in the model transport: sampling overrides (eval_plan.md A2) and attempt recording (A3)."""
+"""Eval hooks in the model transport: sampling overrides and attempt recording (docs/evals.md "Architecture")."""
 
 import json
 

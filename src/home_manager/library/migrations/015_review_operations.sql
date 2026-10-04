@@ -1,5 +1,5 @@
 -- Review decisions, reconciliation history, backups and assistant runs
--- (docs/ui-design-plan.md §7: B6, B10, B13, B15, B16).
+-- (docs/ui.md).
 
 -- A bill's payment state set by the user may name the transaction that paid it.
 ALTER TABLE bills ADD COLUMN payment_transaction_id INTEGER REFERENCES transactions(id);

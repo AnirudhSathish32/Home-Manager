@@ -1,4 +1,4 @@
--- Warranties for durable household items (docs/warranties-assistant-processing.md §1).
+-- Warranties for durable household items (docs/household.md "Warranties").
 CREATE TABLE warranties (
     id INTEGER PRIMARY KEY,
     lot_id INTEGER NOT NULL REFERENCES inventory_lots(id) ON DELETE CASCADE,

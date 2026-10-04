@@ -1,4 +1,4 @@
-"""USD conversion from ECB reference rates cached on this device (docs/currency-conversion.md).
+"""USD conversion from ECB reference rates cached on this device (docs/money.md "Currency conversion").
 
 The only network access is refresh(): one HTTPS download of the ECB's public history file, which carries no
 household data. Everything else reads the local cache, so totals and assistant tools are deterministic and work

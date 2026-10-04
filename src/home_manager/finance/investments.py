@@ -1,4 +1,4 @@
-"""Investments (docs/investments.md): accounts, their holdings and activity, and their values over time.
+"""Investments (docs/planning.md "Investments"): accounts, their holdings and activity, and their values over time.
 
 What an investment is lives in the investment_kinds table. The page and the forecast use only a kind's section,
 tax treatment and value model, so a new kind is a row there, not new code. A pension (value model 'income') pays a
@@ -993,7 +993,7 @@ class Investments:
                           "VALUES(?,?,?,?,?,'statement',?,?)", (kind, name, institution, record["currency"], self.account_key(record), now(), now())).lastrowid
 
     def publish_statement(self, record, source):
-        """An investment statement's ending value, holdings and activity for its account (docs/investments.md). One account per
+        """An investment statement's ending value, holdings and activity for its account (docs/planning.md "Investments"). One account per
         institution and account; each statement date adds a value, older statements fill in history. A value the user already
         decided on for that date and document is kept, with what that statement listed."""
         values = {"value_minor": record["value_minor"], "blob_hash": source["blob_hash"], "document_id": source["document_id"],

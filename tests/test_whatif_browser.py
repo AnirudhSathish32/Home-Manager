@@ -1,4 +1,4 @@
-"""What If page: the paycheck planner in the browser, using synthetic tax tables only (docs/what-if.md)."""
+"""What If page: the paycheck planner in the browser, using synthetic tax tables only (docs/planning.md "What If")."""
 from datetime import date
 import os
 import socket

@@ -5,7 +5,8 @@ description: Screen and interaction rules for Home Manager's web UI (src/home_ma
 
 # Screens in Home Manager
 
-The full design record is `docs/ui-design-plan.md` (§3 screens, §4 design system, §5 accessibility, §6 money).
+The full design record is `docs/ui.md` ("Pages", "Design system", "Accessibility", "Money and dates on screen").
+Known UI bugs and UX findings are under "UI" in `docs/open-work.md`.
 These are the rules to apply on every UI change; they win over general design advice where the two differ.
 Use `frontend-design` for visual direction *within* the tokens below, never to replace them. Use
 `forecast-charts` for any chart.

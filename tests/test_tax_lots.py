@@ -1,4 +1,4 @@
-"""Investments phase 5 (docs/investments.md): tax lots, realized gains, and 1099/5498 forms checked against records. Synthetic data only."""
+"""Investments phase 5 (docs/planning.md "Investments"): tax lots, realized gains, and 1099/5498 forms checked against records. Synthetic data only."""
 
 from datetime import date
 

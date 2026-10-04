@@ -1,4 +1,4 @@
-"""The paycheck planner: a paycheck worked out forward from gross pay (docs/what-if.md).
+"""The paycheck planner: a paycheck worked out forward from gross pay (docs/planning.md "What If").
 
 paystub.py explains a real stub backward; this builds one from typed inputs, for a new job, a raise, a move to another state
 or another person's salary. Every line from gross to net is shown for one paycheck and for the year:

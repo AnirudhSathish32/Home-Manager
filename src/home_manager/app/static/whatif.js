@@ -1,5 +1,5 @@
 "use strict";
-// What If (docs/what-if.md): the paycheck planner. The server works out every line from gross to net
+// What If (docs/planning.md "What If"): the paycheck planner. The server works out every line from gross to net
 // (finance/paycheck.py); this page only collects the inputs and shows the server's exact text.
 const PLAN_STATES = {AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware",
   DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",

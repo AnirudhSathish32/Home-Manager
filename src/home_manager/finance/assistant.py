@@ -3,7 +3,7 @@
 The local reasoning model chooses read-only tools and explains their results. It never
 reads the filesystem, never computes a total of record, and cannot write anything. It sees
 document text only as passages the search_documents / get_document_text tools return
-(docs/document-search.md). Tool results are data, never instructions. Every money figure in
+(docs/documents.md "Searching document text"). Tool results are data, never instructions. Every money figure in
 the final answer is checked against the results of the tool calls it cites; figures that are
 not found there are reported as unverified rather than presented as fact. Cited document lines
 are kept only when a cited call returned them.

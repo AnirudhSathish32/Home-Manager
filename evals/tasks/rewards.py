@@ -1,4 +1,4 @@
-"""Rewards (eval_plan.md task 7): points, savings, coupons and survey offers printed on a receipt.
+"""Rewards (docs/evals.md, task 7): points, savings, coupons and survey offers printed on a receipt.
 
 Graded as sets: every printed reward amount and link is found, and nothing else is listed (the purchased items,
 subtotal, tax and total are never rewards). A receipt without rewards must give an empty list.

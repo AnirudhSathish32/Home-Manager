@@ -5,7 +5,7 @@ Usage:  python scripts/db_checks.py "<path to inventory.sqlite3>"
 Opens the file read-only, copies it into memory with SQLite's backup API (a consistent snapshot, including
 the WAL), closes the file, and runs every check on the in-memory copy. Nothing is written anywhere.
 Prints only counts, row ids and app-defined enum values: no names, amounts, descriptions or paths.
-Findings it reports are explained in db_audit_report.md.
+Findings it reports are explained in docs/development.md "Database checks".
 """
 from pathlib import Path
 import re

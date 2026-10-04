@@ -1,4 +1,4 @@
-"""Several receipts in one file: split, read one receipt at a time, confirmed once (docs/document-parsing.md)."""
+"""Several receipts in one file: split, read one receipt at a time, confirmed once (docs/documents.md)."""
 
 from types import SimpleNamespace
 

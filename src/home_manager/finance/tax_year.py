@@ -45,10 +45,10 @@ HSA_LIMITS = {2025: (430_000, 855_000), 2026: (440_000, 875_000)}
 HSA_CATCH_UP = 100_000  # §223(b)(3): $1,000 more from age 55.
 # A loan is the mortgage when its name says so (assets of kind 'loan': a home loan statement or one typed in).
 MORTGAGE_WORDS = re.compile(r"MORTGAGE|HOME\s*LOAN|HOME\s*EQUITY|HELOC", re.IGNORECASE)
-# Kinds of value (docs/tax_intelligence_architecture.md §35), from most to least certain: a record as it stands, worked
+# Kinds of value (docs/taxes.md "Design"), from most to least certain: a record as it stands, worked
 # out from records, projected to Dec 31, or still to enter. What you type is "typed".
 KIND_ORDER = ("record", "worked_out", "projected", "to_enter")
-# The likely range (docs/tax_intelligence_architecture.md §23): projected pay moves by how much this year's paychecks
+# The likely range (docs/taxes.md "Design"): projected pay moves by how much this year's paychecks
 # varied, at least 5%; projected interest and dividends by 25%. Recorded and typed values don't move.
 SPREAD_FLOOR_BP = 500
 PACED_SPREAD_BP = 2500

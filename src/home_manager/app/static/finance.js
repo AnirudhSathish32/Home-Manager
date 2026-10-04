@@ -1,5 +1,5 @@
 "use strict";
-// Money pages (docs/money-review-inventory.md §1): Transactions, Spending & budgets, Bills & recurring, Accounts.
+// Money pages (docs/money.md "Money pages"): Transactions, Spending & budgets, Bills & recurring, Accounts.
 // Every figure comes from a deterministic server tool as exact display text; the browser does no money arithmetic.
 const tool = (name, args = {}) => api(`/api/finance/tools/${name}`, {method: "POST", body: JSON.stringify(args)});
 const pad = value => String(value).padStart(2, "0");
@@ -160,7 +160,7 @@ function transactionRow(row) {
   tr.addEventListener("click", event => { if (!event.target.closest("a, button")) openTransaction(row.id); });
   return tr;
 }
-// Items: every counted charge and receipt, one row per item with its share of what was paid (docs/receipts-and-statements.md).
+// Items: every counted charge and receipt, one row per item with its share of what was paid (docs/money.md).
 function itemQuery() {
   const args = {limit: TX_PAGE, offset: Number(txParams.get("offset") || 0)};
   if ($("tx-from").value) args.start = $("tx-from").value;

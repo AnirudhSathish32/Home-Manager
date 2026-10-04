@@ -1,4 +1,4 @@
--- Investments phase 4 (docs/investments.md): contributions. Pay stub 401(k), Roth, HSA and employer-match lines are read at
+-- Investments phase 4 (docs/planning.md "Investments"): contributions. Pay stub 401(k), Roth, HSA and employer-match lines are read at
 -- the account whose employer they come from; the forecast adds contributions each month.
 -- The employer (as pay stubs name it: income_records.payer_merchant_id) whose pay stub contributions go to this account.
 ALTER TABLE investment_accounts ADD COLUMN payroll_merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL;

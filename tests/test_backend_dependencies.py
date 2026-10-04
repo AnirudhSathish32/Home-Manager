@@ -1,4 +1,4 @@
-"""UI-plan backend dependencies (docs/ui-design-plan.md §7, B1-B16)."""
+"""The backend behind the UI pages: review summaries, transaction filters and links, series, jobs, backups (docs/ui.md)."""
 
 import json
 import socket

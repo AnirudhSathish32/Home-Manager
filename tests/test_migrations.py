@@ -167,7 +167,7 @@ def test_a_damaged_database_is_not_upgraded(tmp_path, next_step):
 
 
 def test_056_makes_pensions_income_and_keeps_values_and_forms():
-    """Investment kinds made specific (docs/investments-next.md): rebuilt tables keep their rows and take the new values."""
+    """Investment kinds made specific (docs/planning.md "Kinds made specific"): rebuilt tables keep their rows and take the new values."""
     db = sqlite3.connect(":memory:")
     try:
         for number, script in MIGRATIONS:

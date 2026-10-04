@@ -44,7 +44,7 @@ function folderLabel(folder) {
 function fileName(doc) { return doc.relative_path.split(/[\\/]/).pop(); }
 function documentName(doc) { return doc.title || fileName(doc); }
 function documentState(doc) {
-  // One summary per document, derived from the per-step statuses (docs/ui-design-plan.md §3.7).
+  // One summary per document, derived from the per-step statuses (docs/documents.md "Browsing the library").
   if (doc.deleted_at) return "in_trash";
   if (PENDING.includes(doc.parse_status) || PENDING.includes(doc.extraction_status)) return "running";
   if (["failed", "interrupted"].includes(doc.parse_status) || ["failed", "interrupted"].includes(doc.extraction_status)) return "process_failed";
@@ -55,7 +55,7 @@ function documentState(doc) {
   return {proposed: "needs_review", needs_review: "needs_review", verified: "recorded", rejected: "rejected"}[doc.ledger_status] || doc.ledger_status;
 }
 function matchText(doc) {
-  // B9: a receipt's match to a card or bank charge, or a bill's payment state (docs/ui-design-plan.md §3.7).
+  // B9: a receipt's match to a card or bank charge, or a bill's payment state (docs/documents.md "Browsing the library").
   if (!doc.reconciliation_status || doc.deleted_at) return "";
   if (doc.folder === "Bills") return {matched: "Paid", unmatched: "Marked unpaid"}[doc.reconciliation_status] || "";
   return {matched: "Matched to a charge", proposed: "Match proposed", ambiguous: "Several possible charges", unmatched: "No matching charge yet"}[doc.reconciliation_status] || "";

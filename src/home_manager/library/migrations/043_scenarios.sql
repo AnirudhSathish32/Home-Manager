@@ -1,4 +1,4 @@
--- What If scenarios (docs/what-if.md): a named plan (planned paychecks, set category amounts, one-offs, forecast
+-- What If scenarios (docs/planning.md "What If"): a named plan (planned paychecks, set category amounts, one-offs, forecast
 -- assumptions) run through the forecast beside "Now". Inputs only; results are always worked out again.
 CREATE TABLE scenarios (
     id INTEGER PRIMARY KEY,

@@ -1,4 +1,4 @@
-"""Payee scan (eval_plan.md task 11): which statement payees are ongoing services billed on a schedule.
+"""Payee scan (docs/evals.md, task 11): which statement payees are ongoing services billed on a schedule.
 
 Each case is a batch of payees with their recent charges, as finance/recurring_scan.py sends them. A recurring payee
 needs its frequency (judged from the service and the charge dates) and a category; a shop, restaurant or fuel stop

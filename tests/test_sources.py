@@ -1,4 +1,4 @@
-"""Watched folders outside Library/Inbox: copied in, never changed (docs/document-reading.md, "Sources")."""
+"""Watched folders outside Library/Inbox: copied in, never changed (docs/documents.md, "Watched folders")."""
 
 import hashlib
 

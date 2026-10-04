@@ -1,4 +1,4 @@
-"""Assistant (eval_plan.md A11): questions about a synthetic household's money, answered through the app's tool loop.
+"""Assistant (docs/evals.md): questions about a synthetic household's money, answered through the app's tool loop.
 
 The library (tasks/library.py) holds three months of made-up bank and card lines. Each case's right figures are worked
 out by calling the same read-only tools directly, so the answer is graded on: a fitting tool was called; no tool from

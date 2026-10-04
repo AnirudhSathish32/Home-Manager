@@ -1,4 +1,4 @@
-"""Tax table lookup (eval_plan.md task 14, household/tax_tables.py): one jurisdiction's income tax brackets and standard
+"""Tax table lookup (docs/evals.md, task 14, household/tax_tables.py): one jurisdiction's income tax brackets and standard
 deduction for a year, quoted from recorded pages. The figures are made up, not any year's real ones.
 
 Graded on the proposed table: the standard deduction and every bracket exactly, plus the FICA figures for federal.

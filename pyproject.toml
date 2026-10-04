@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
 browser-test = ["playwright==1.63.0"]
-# Engine 2, the second tax engine (finance/engines/taxcalc.py; docs/tax-engines.md): public domain (CC0).
+# Engine 2, the second tax engine (finance/engines/taxcalc.py; docs/taxes.md "The tax engines"): public domain (CC0).
 engine2 = ["taxcalc==6.8.4"]
 # Checks: `ruff check src tests`, `mypy`, `pytest --cov`.
 dev = ["pytest-cov==7.1.0", "ruff==0.16.9", "mypy==2.3.1"]
@@ -34,7 +34,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "home_manager.app" = ["static/*"]
 "home_manager.library" = ["migrations/*.sql"]
-# The pinned OpenTax engine (docs/tax-engines.md): unmodified from npm, run as a separate Node process.
+# The pinned OpenTax engine (docs/taxes.md "The tax engines"): unmodified from npm, run as a separate Node process.
 "home_manager" = ["vendor/NOTICES.md", "vendor/opentax/*"]
 
 [tool.pytest.ini_options]

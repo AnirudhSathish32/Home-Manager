@@ -454,7 +454,7 @@ async function loadExtraction(state, parseId) {
   const check = run.result.decision || run.result.laya;
   if (check) target.appendChild(decisionPanel(check, run.document_type));
 }
-// A file holding several receipts (docs/document-parsing.md): pick one, confirm the split once, or change it.
+// A file holding several receipts (docs/documents.md): pick one, confirm the split once, or change it.
 function segmentLines(segment) {
   const lines = (receipt?.result?.lines || []).filter(line => line.text.trim());
   const first = lines.findIndex(line => line.id === segment.first_line_id), last = lines.findIndex(line => line.id === segment.last_line_id);
@@ -616,7 +616,7 @@ function ledgerRows(record, categories = [], onSaved = null) {
   return wrap;
 }
 async function renderAssetRecord(target, publication) {
-  // Investment and loan statements feed the forecast's assets; their values wait for review (docs/items-assets-search.md §6).
+  // Investment and loan statements feed the forecast's assets; their values wait for review (docs/planning.md "Assets and loans").
   const asset = (await api("/api/assets?include_archived=true")).find(row => row.id === publication.id);
   // Investment values recorded before they had their own page moved there, keeping the old asset's number.
   if (!asset) { await renderInvestmentRecord(target, publication, `/api/investments/valuations/by-asset/${publication.id}`); return; }
@@ -635,7 +635,7 @@ async function renderAssetRecord(target, publication) {
   target.replaceChildren(heading, facts, ...notes, element("p", "Statement values count in your forecast once you confirm them.", "muted small"), next);
 }
 async function renderInvestmentRecord(target, publication, path) {
-  // An investment statement's value for its account (docs/investments.md); it waits for review like other statement values.
+  // An investment statement's value for its account (docs/planning.md "Investments"); it waits for review like other statement values.
   let valuation;
   try { valuation = await api(path); } catch { target.replaceChildren(element("p", "The value recorded from this statement was removed.", "muted")); return; }
   const heading = element("div", "", "ledger-record-heading");
@@ -655,7 +655,7 @@ async function renderInvestmentRecord(target, publication, path) {
   target.replaceChildren(heading, facts, ...notes, element("p", "Statement values count once you confirm them.", "muted small"), next);
 }
 async function renderConfirmationRecord(target, publication) {
-  // A trade, CD or Treasury purchase confirmation (docs/investments.md, phase 3); it waits for review like statement values.
+  // A trade, CD or Treasury purchase confirmation (docs/planning.md "Purchase confirmations, estimates and maturities"); it waits for review like statement values.
   let confirmation;
   try { confirmation = await api(`/api/investments/confirmations/${publication.id}`); } catch { target.replaceChildren(element("p", "The purchase recorded from this confirmation was removed.", "muted")); return; }
   const heading = element("div", "", "ledger-record-heading");
@@ -673,7 +673,7 @@ async function renderConfirmationRecord(target, publication) {
   target.replaceChildren(heading, facts, ...notes, element("p", "Purchases count once you confirm them.", "muted small"), next);
 }
 async function renderTaxFormRecord(target, publication) {
-  // A 1099 or 5498 (docs/investments.md, phase 5): its boxes, checked against the account's records in Investments → Taxes.
+  // A 1099 or 5498 (docs/planning.md "Tax lots, gains and tax forms"): its boxes, checked against the account's records in Investments → Taxes.
   let form;
   try { form = await api(`/api/investments/tax-forms/${publication.id}`); } catch { target.replaceChildren(element("p", "The tax form recorded from this document was removed.", "muted")); return; }
   const heading = element("div", "", "ledger-record-heading");
@@ -744,7 +744,7 @@ async function renderLedgerRecord(target, type, id, kept) {
   if (type === "receipt" && record.review_status !== "rejected") target.append(taxReceiptSection(record));
 }
 
-// Pay stubs (docs/jobs-and-paystubs.md): gross to net, then how the taxes were figured. Every amount is the server's text.
+// Pay stubs (docs/taxes.md "Jobs and pay stubs"): gross to net, then how the taxes were figured. Every amount is the server's text.
 function paystubRow(body, cells, className = "", lineIds = null) {
   const tr = body.insertRow(); if (className) tr.className = className;
   cells.forEach((value, index) => {

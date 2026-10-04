@@ -1,6 +1,6 @@
 -- Every ordinary table becomes STRICT, so a value of the wrong type is refused instead of stored (a '12.50' in a
 -- *_minor column used to become the float 12.5). The same rebuild adds the CHECKs the database audit found missing:
--- run and job states, document source states, tax rule kinds and two booleans (db_audit_report.md: INT-5 to INT-8).
+-- run and job states, document source states, tax rule kinds and two booleans (docs/development.md "Database checks": INT-5 to INT-8).
 -- The full-text index (document_passages_fts) is a virtual table and stays as it is; its rowids follow document_passages.ids.
 -- Generated from the version 49 schema: each table is rebuilt as SQLite documents (new table, copy, drop, rename), then its
 -- indexes and triggers are created again. The runner turns foreign keys off for this and checks references before committing.
@@ -465,7 +465,7 @@ CREATE TABLE "investment_accounts_new" (
     tax_treatment TEXT CHECK (tax_treatment IS NULL OR tax_treatment IN ('taxable','tax_deferred','tax_free','hsa')),
     -- Yearly growth or interest; NULL uses the kind's default.
     annual_rate_bp INTEGER CHECK (annual_rate_bp IS NULL OR annual_rate_bp BETWEEN -10000 AND 10000),
-    -- A savings account also in the ledger, so its cash is counted once (docs/investments.md, phase 2).
+    -- A savings account also in the ledger, so its cash is counted once (docs/planning.md "Reading statements").
     ledger_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     source TEXT NOT NULL CHECK (source IN ('manual','statement')),
     archived_at TEXT,

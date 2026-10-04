@@ -19,7 +19,7 @@ FILING_FOLDERS = ["Unfiled", *FOLDERS]
 LIBRARY_FOLDERS = ["Inbox", *FILING_FOLDERS]
 # Folders no longer filed into, and where startup moves their files. They stay readable until then.
 RETIRED_FOLDERS = {"Bills": "Unfiled", "Income": "Jobs"}
-# Jobs holds one folder per employer, each with these sections (docs/jobs-and-paystubs.md).
+# Jobs holds one folder per employer, each with these sections (docs/taxes.md "Jobs and pay stubs").
 JOB_SECTIONS = ("Paystubs", "Documents")
 DocumentFolder = Enum("DocumentFolder", {f"folder_{i}": value for i, value in enumerate(FILING_FOLDERS)}, type=str)  # type: ignore[misc]
 HistoricalFolder = Enum("HistoricalFolder", {f"folder_{i}": value for i, value in enumerate(  # type: ignore[misc]

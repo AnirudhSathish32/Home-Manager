@@ -1,5 +1,5 @@
 "use strict";
-// The assistant panel (docs/ui-design-plan.md §3.11, Phase F). Answers are prose in the secondary style, never large
+// The assistant panel (docs/ui.md). Answers are prose in the secondary style, never large
 // figures; each cited tool call becomes an evidence chip that opens the matching page; "How I got this" lists every call.
 const TOOL_LABELS = {get_transactions: "transactions", find_purchase: "transactions", get_spending: "spending", spending_series: "monthly spending",
   get_spending_by_category: "spending by category", compare_periods: "period comparison", compare_categories: "category comparison",
@@ -60,7 +60,7 @@ function renderAnswer(run) {
     box.append(element("p", "Not in your records:", "muted small"), missing);
   }
   const chips = element("div", "", "evidence-chips");
-  // A document the answer quotes opens at the quoted lines (docs/document-search.md); its search is not a chip of its own.
+  // A document the answer quotes opens at the quoted lines (docs/documents.md "Searching document text"); its search is not a chip of its own.
   for (const source of result.sources || [])
     chips.append(homeLink(`From ${source.title}`, `#/documents/${source.document_id}?${new URLSearchParams({lines: source.line_ids.join(",")})}`, "evidence-chip"));
   for (const number of result.cited_calls) {

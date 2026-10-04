@@ -1,4 +1,4 @@
-"""Transcription (eval_plan.md task 1): the vision model reads a drawn document image into text.
+"""Transcription (docs/evals.md, task 1): the vision model reads a drawn document image into text.
 
 The cases are the synthetic corpus's image documents (evals/synthetic.py), so the printed text is known exactly.
 Graded by character and word error rate against that text, and by the lines that matter most being read exactly:

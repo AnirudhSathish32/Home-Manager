@@ -1,4 +1,4 @@
-"""Investments phase 3 (docs/investments.md): purchase confirmations, values estimated from terms, maturities. Synthetic data only."""
+"""Investments phase 3 (docs/planning.md "Investments"): purchase confirmations, values estimated from terms, maturities. Synthetic data only."""
 
 from datetime import date
 from decimal import Decimal

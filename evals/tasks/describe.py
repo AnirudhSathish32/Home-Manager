@@ -1,4 +1,4 @@
-"""Describe purchase (eval_plan.md task 6): a receipt's category, how often it recurs, and a category per item.
+"""Describe purchase (docs/evals.md, task 6): a receipt's category, how often it recurs, and a category per item.
 
 Categories are graded against the set a careful person would accept (toothpaste at a pharmacy is personal care,
 allergy tablets are health). The one-or-two-word description is checked only for shape here; whether it is useful

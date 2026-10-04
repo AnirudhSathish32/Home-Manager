@@ -1,4 +1,4 @@
--- Family inbox (docs/sharing.md, "Family inbox"). A document uploaded to a family is routed to one person or shared.
+-- Family inbox (docs/family.md, "Family inbox"). A document uploaded to a family is routed to one person or shared.
 -- The card a receipt was paid with, when printed ("VISA ****1234"): four digits at most, used to suggest whose it is.
 ALTER TABLE receipts ADD COLUMN payment_last_four TEXT CHECK (payment_last_four IS NULL OR payment_last_four GLOB '[0-9][0-9][0-9][0-9]');
 -- In a person's library: the part of a shared receipt or bill this person carries. No row means all of it.

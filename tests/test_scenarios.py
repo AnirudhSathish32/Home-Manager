@@ -1,4 +1,4 @@
-"""What If scenarios (docs/what-if.md): planned paychecks and set spending in the forecast, saved plans, the three bases and
+"""What If scenarios (docs/planning.md "What If"): planned paychecks and set spending in the forecast, saved plans, the three bases and
 the comparison. Synthetic tables and records only."""
 
 from decimal import Decimal

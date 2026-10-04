@@ -1,4 +1,4 @@
-"""Full-text index over saved transcriptions (docs/document-search.md): SQLite FTS5, no model involved.
+"""Full-text index over saved transcriptions (docs/documents.md "Searching document text"): SQLite FTS5, no model involved.
 
 A reading's lines are cut into short overlapping passages that never cross a PDF page. Each passage keeps its
 line IDs, so a hit opens the transcription at the right place and an answer can cite it. The index is rebuilt

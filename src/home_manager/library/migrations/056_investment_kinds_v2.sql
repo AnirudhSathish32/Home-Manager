@@ -1,4 +1,4 @@
--- Investment kinds made specific (docs/investments-next.md, phase 4) and phase 5's account columns.
+-- Investment kinds made specific (docs/planning.md "Kinds made specific") and phase 5's account columns.
 -- A pension is an income stream, not a balance: value model 'income'. A crypto market price adds a 'quote' value. 1099-Q
 -- (529 withdrawals) and 1099-DA (digital asset sales) join the tax forms. The CHECKs that change need table rebuilds, done as
 -- in 050 (new table, copy, drop, rename); the runner turns foreign keys off and checks references before committing.

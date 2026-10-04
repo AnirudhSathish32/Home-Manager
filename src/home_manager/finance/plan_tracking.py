@@ -1,4 +1,4 @@
-"""A What If plan put to use (docs/what-if.md, phase 3).
+"""A What If plan put to use (docs/planning.md "Following a plan").
 
 budget_changes(): the budgets a plan's set spending would make for a month, beside the budgets there are now; nothing
 changes until adopt() applies them (ledger.set_budget) and marks the plan adopted from that month.

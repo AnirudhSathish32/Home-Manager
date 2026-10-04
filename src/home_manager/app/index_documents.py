@@ -1,4 +1,4 @@
-"""`home-manager index-documents`: build the full-text index of each profile's documents (docs/document-search.md).
+"""`home-manager index-documents`: build the full-text index of each profile's documents (docs/documents.md "Searching document text").
 
 The app does this by itself at start for readings not yet indexed; this command is for a full rebuild. It opens each
 library as the app does (taking its lock), so close Home Manager first. It prints counts only, never document text.

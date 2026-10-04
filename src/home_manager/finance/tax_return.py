@@ -1,4 +1,4 @@
-"""The tax profile (docs/taxes.md, docs/tax-engines.md) and a simplified state return.
+"""The tax profile (docs/taxes.md "The tax engines") and a simplified state return.
 
 ReturnInput is what every tax engine works from (finance/tax_engine.py): whole-year amounts in cents, gathered from
 records by tax_year.py and adjusted by the user. The federal return itself is worked out by the tax engine; the state
@@ -87,7 +87,7 @@ class Person(BaseModel):
 
 class ReturnInput(BaseModel):
     """The tax profile every tax engine works from (finance/tax_engine.py). A new field needs a mapping in each engine
-    (docs/tax-engines.md); a field an engine can't use is a FEATURE it names, never dropped."""
+    (docs/taxes.md "The tax engines"); a field an engine can't use is a FEATURE it names, never dropped."""
     model_config = ConfigDict(extra="forbid")
     schema_version: int = 2
     year: int

@@ -1,4 +1,4 @@
-"""How a pay stub's taxes are figured, and looking up tax tables (docs/jobs-and-paystubs.md). The tables here are
+"""How a pay stub's taxes are figured, and looking up tax tables (docs/taxes.md "Jobs and pay stubs"). The tables here are
 synthetic, not any year's real figures."""
 
 import json

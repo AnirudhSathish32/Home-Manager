@@ -59,9 +59,9 @@ HEADERS = {
                 "net_pay", "net_pay_ytd", "taxes", "deductions", "currency"),
     # Offer letters, W-2s and other employment papers: read only to file them under their employer in Jobs.
     "employment_document": ("employer", "document_name", "document_date"),
-    # Statement values for the forecast's assets and loans (docs/items-assets-search.md §6).
+    # Statement values for the forecast's assets and loans (docs/planning.md "Assets and loans").
     "investment_statement": ("institution", "account_name", "account_reference", "period_end", "ending_value", "currency"),
-    # A trade, CD or Treasury purchase confirmation: holdings with their terms (docs/investments.md, phase 3).
+    # A trade, CD or Treasury purchase confirmation: holdings with their terms (docs/planning.md "Purchase confirmations, estimates and maturities").
     "investment_confirmation": ("institution", "account_name", "account_reference", "trade_date", "currency"),
     # A 1099 or 5498 (or a consolidated 1099) from a bank, brokerage or plan: its boxes, checked against what is recorded (phase 5).
     "investment_tax_form": ("institution", "account_reference", "tax_year", "document_date", "currency"),
@@ -430,7 +430,7 @@ def whole(lines, notes=None):
     return parts[0] + (parts[-1] if len(parts) > 1 else [])
 
 
-# Several receipts in one file (docs/document-parsing.md, "Several receipts in one file") ---------------------------
+# Several receipts in one file (docs/documents.md, "Several receipts in one file") ---------------------------
 
 SPLIT_NOTE = "This receipt was split from a file holding several; confirm the split on the document's page."
 # A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.

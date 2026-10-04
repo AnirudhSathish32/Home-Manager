@@ -1,4 +1,4 @@
-"""Required minimum distributions (docs/investments.md): deterministic and exact.
+"""Required minimum distributions (docs/planning.md "Investments"): deterministic and exact.
 
 The divisor is the Uniform Lifetime Table in 26 CFR 1.401(a)(9)-9(c), Table 2 (distribution calendar years from 2022; the
 same table as IRS Publication 590-B, Appendix B, Table III), checked row by row against the regulation on 2026-09-28.

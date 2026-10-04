@@ -1,4 +1,4 @@
-"""Per-task evals (eval_plan.md A9–A11): each of the app's model tasks on its own, over synthetic cases with known answers.
+"""Per-task evals (docs/evals.md): each of the app's model tasks on its own, over synthetic cases with known answers.
 
 A task module defines NAME, ROLE ("vision", "reasoning" or "decision"), VERSION (its dataset version) and PROMPT_VERSION, and:
   cases() -> [{"id", "tags", "input", "expected"}]   deterministic and made up, safe to read and share

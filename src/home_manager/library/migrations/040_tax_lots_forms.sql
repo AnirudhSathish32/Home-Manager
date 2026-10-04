@@ -1,4 +1,4 @@
--- Investments phase 5 (docs/investments.md): tax lots and 1099/5498 forms.
+-- Investments phase 5 (docs/planning.md "Investments"): tax lots and 1099/5498 forms.
 -- Lots bought through a confirmation, or listed as buys on a statement, come from their activity when read; this table keeps
 -- only lots the user enters (shares bought before the documents here begin). Sales are matched to lots first in, first out.
 CREATE TABLE tax_lots (

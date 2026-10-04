@@ -87,7 +87,7 @@ NO_SCHEMA = "@no-schema"
 
 
 def schema_variants(candidates):
-    """eval_plan.md A15: each candidate twice, as configured and with the JSON schema only in the prompt (the server
+    """docs/evals.md: each candidate twice, as configured and with the JSON schema only in the prompt (the server
     enforces nothing), to measure how well each model keeps to the format unaided."""
     return [variant for candidate in candidates
             for variant in (candidate, {**candidate, "name": candidate["name"] + NO_SCHEMA, "schema_enforced": False})]

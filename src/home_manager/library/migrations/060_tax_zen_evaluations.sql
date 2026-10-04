@@ -1,4 +1,4 @@
--- Tax Zen evaluations (docs/taxes.md; docs/tax_intelligence_architecture.md §25, §37, §42): what Tax Zen said for a
+-- Tax Zen evaluations (docs/taxes.md "Tax Zen", "Design"): what Tax Zen said for a
 -- return and why, kept so advice stays steady and a change can be explained. A row is added only when the status, the
 -- W-4 answer or the return's inputs changed since the last one for that year and filing unit ('me' or 'unit-<id>');
 -- rows are never rewritten, except seen_at, set when the Taxes page shows the return.

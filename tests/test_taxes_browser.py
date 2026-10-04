@@ -22,7 +22,7 @@ from test_tax_return import JOINT
 from test_withholding import FEDERAL, confirmed
 
 # The page works out this year's return, and Engine 1 covers only the years it's pinned for: past them, re-pin the
-# engine (docs/tax-engines.md) rather than let these tests fail as if the page were broken.
+# engine (docs/taxes.md "The tax engines") rather than let these tests fail as if the page were broken.
 this_year_covered = pytest.mark.skipif(date.today().year not in YEARS, reason=f"Engine 1 covers {sorted(YEARS)} only; re-pin it for this year")
 
 

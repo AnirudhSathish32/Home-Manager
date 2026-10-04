@@ -1,4 +1,4 @@
-"""Check-in (eval_plan.md task 13): a free-text answer to the weekly household check-in, read into lot updates.
+"""Check-in (docs/evals.md, task 13): a free-text answer to the weekly household check-in, read into lot updates.
 
 The model names lots and picks an answer and a time word; the app's own CheckinService.stage turns those into dates
 and sets aside anything invalid. Graded on the staged updates: the right lots, the right event, the right day, and

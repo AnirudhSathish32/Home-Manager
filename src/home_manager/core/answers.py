@@ -1,4 +1,4 @@
-"""Checked answers for one donated document (docs/private-reliability-testing.md).
+"""Checked answers for one donated document (docs/evals.md).
 
 The shape a donor's check is saved in (library/donations.py) and the eval suite grades against (evals/). Keys are the
 normalized record's keys (documents/extraction.normalize), so a model's result and its answers compare field by field.

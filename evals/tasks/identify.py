@@ -1,4 +1,4 @@
-"""Identify (eval_plan.md task 5): who sold a purchase and where, read from a receipt's lines.
+"""Identify (docs/evals.md, task 5): who sold a purchase and where, read from a receipt's lines.
 
 The location is the street name only ('1450 Oak Ridge Rd, Springfield' gives 'Oak Ridge Rd'), Online for an order
 shipped or delivered, and missing when no street is printed. A seller printed only in a footer or web address counts.

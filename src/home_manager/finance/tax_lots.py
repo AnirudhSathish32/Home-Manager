@@ -1,4 +1,4 @@
-"""Tax lots and realized gains (docs/investments.md, phase 5).
+"""Tax lots and realized gains (docs/planning.md "Tax lots, gains and tax forms").
 
 Worked out when read, never stored, so they always follow the activity's review: each confirmed buy with a printed quantity
 opens a lot (from a purchase confirmation, or a statement's activity when no confirmation records the same buy), and so does

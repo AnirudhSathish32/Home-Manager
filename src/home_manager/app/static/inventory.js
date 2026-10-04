@@ -1,5 +1,5 @@
 "use strict";
-// Inventory and the weekly check-in (docs/money-review-inventory.md §4). The user's answers apply at once;
+// Inventory and the weekly check-in (docs/household.md "Run-out, cost per day and check-ins"). The user's answers apply at once;
 // a free-text answer is read by the local model into a list of changes that apply only when confirmed.
 const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const CHECKIN_BUTTONS = [["still_have", "Still have it"], ["finished_today", "Finished today"], ["finished_this_week", "Finished this week"], ["thrown_out", "Thrown out"]];
@@ -209,7 +209,7 @@ function inventoryRow(lot) {
   actions.append(menu(`Actions for ${lot.name}`, items));
   return tr;
 }
-// Warranties (docs/warranties-assistant-processing.md §1): entered by hand, or looked up and confirmed in Review.
+// Warranties (docs/household.md "Warranties"): entered by hand, or looked up and confirmed in Review.
 let warrantyLot = null;
 function openWarrantyDialog(lot) {
   warrantyLot = lot;

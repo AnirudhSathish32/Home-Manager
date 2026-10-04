@@ -44,7 +44,7 @@ class Sampling(StrictModel):
     """
     temperature: float | None = Field(default=None, ge=0, le=2)
     seed: int | None = Field(default=None, ge=0, le=2**31 - 1)
-    # False drops response_format and puts the schema in the system prompt instead (eval_plan.md A15).
+    # False drops response_format and puts the schema in the system prompt instead (docs/evals.md).
     schema_enforced: bool = True
 
     @model_serializer(mode="wrap")

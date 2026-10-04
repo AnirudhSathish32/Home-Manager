@@ -505,7 +505,7 @@ class Store:
                 "(SELECT d.description FROM document_descriptions d WHERE d.document_id=o.id) AS user_description,"
                 "(SELECT r.location FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS location,"
                 "(SELECT r.description FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS model_description,"
-                # A file holding several receipts (docs/document-parsing.md): how many it records.
+                # A file holding several receipts (docs/documents.md): how many it records.
                 "(SELECT count(*) FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') AS receipt_count,"
                 # Several images as one document (documents/grouping.py): a later page names its first page and is not listed;
                 # the first page counts the document's pages.
@@ -630,7 +630,7 @@ class Store:
             clause += " AND " + WORK_FILTERS[status]
         expression = match_expression(query) if query else None
         if query:
-            # The name, merchant or file name, or words anywhere in the document's text (docs/document-search.md).
+            # The name, merchant or file name, or words anywhere in the document's text (docs/documents.md "Searching document text").
             words, word_params = matching_runs(expression) if expression else ("SELECT NULL WHERE 0", [])
             clause += (" AND (lower(coalesce(title,'')) LIKE ? ESCAPE '\\' OR lower(coalesce(merchant,'')) LIKE ? ESCAPE '\\' "
                        f"OR lower(relative_path) LIKE ? ESCAPE '\\' OR text_run_id IN ({words}))")

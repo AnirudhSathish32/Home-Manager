@@ -1,4 +1,4 @@
-"""ECB rate cache, lookups and USD conversion (docs/currency-conversion.md), with a synthetic ECB file only."""
+"""ECB rate cache, lookups and USD conversion (docs/money.md "Currency conversion"), with a synthetic ECB file only."""
 
 from decimal import Decimal
 import io

@@ -1,4 +1,4 @@
-"""Investments phase 4 (docs/investments.md): contributions from pay stubs, payments into investments, the forecast's flows.
+"""Investments phase 4 (docs/planning.md "Investments"): contributions from pay stubs, payments into investments, the forecast's flows.
 Synthetic data only."""
 
 from datetime import date

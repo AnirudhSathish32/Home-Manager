@@ -1,5 +1,5 @@
 """Loan statements become proposed forecast loans and investment statements proposed investment values
-(docs/items-assets-search.md §6, docs/investments.md). Synthetic data only."""
+(docs/planning.md "Assets and loans", docs/planning.md "Investments"). Synthetic data only."""
 
 from fastapi.testclient import TestClient
 import pytest

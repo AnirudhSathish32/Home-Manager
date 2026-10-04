@@ -1,4 +1,4 @@
-"""Item lookup (eval_plan.md task 14, household/resolver.py): the full product behind an abbreviated receipt line,
+"""Item lookup (docs/evals.md, task 14, household/resolver.py): the full product behind an abbreviated receipt line,
 found with web search over recorded pages.
 
 Graded on the proposal the agent sends for review: the product's name words, brand, category and whether it runs out.

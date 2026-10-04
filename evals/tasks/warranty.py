@@ -1,4 +1,4 @@
-"""Warranty lookup (eval_plan.md task 14, household/warranty.py): the manufacturer's stated warranty for an owned item,
+"""Warranty lookup (docs/evals.md, task 14, household/warranty.py): the manufacturer's stated warranty for an owned item,
 found with web search over recorded pages and quoted exactly.
 
 Graded on the proposal: its length in months (or lifetime) and kind. Pages hold traps: another model's warranty, an

@@ -1,4 +1,4 @@
--- Assets and loans for the forecast (docs/forecast.md). A value the user types in (a car, a house)
+-- Assets and loans for the forecast (docs/planning.md "Forecast"). A value the user types in (a car, a house)
 -- is their own input and counts at once; a value read from a statement is proposed until reviewed.
 CREATE TABLE assets (
     id INTEGER PRIMARY KEY,

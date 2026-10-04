@@ -1,4 +1,4 @@
-"""PSLmodels Tax-Calculator (docs/tax-engines.md): the federal return from a public-domain (CC0) model of federal income
+"""PSLmodels Tax-Calculator (docs/taxes.md "The tax engines"): the federal return from a public-domain (CC0) model of federal income
 and payroll tax that tax economists maintain, run in a separate Python process (engines/taxcalc_run.py).
 
 It is installed as an optional extra (`pip install "home-manager[engine2]"`, pinned in pyproject.toml); without it the
@@ -18,7 +18,7 @@ it from the law and says so in the notes:
 Like Engine 1 it asks rather than guesses: a fact it needs that wasn't entered is named (tax_engine.NEEDS ids). With no
 birth year it takes the same documented default (not 65 or older), and asks when the earned income credit turns on age.
 
-The app shows this engine as its slot ("Engine 2"); its name stays in this file, the records and docs/tax-engines.md.
+The app shows this engine as its slot ("Engine 2"); its name stays in this file, the records and docs/taxes.md "The tax engines".
 """
 
 from collections import OrderedDict
@@ -122,7 +122,7 @@ def needed(value: ReturnInput):
 
 
 def record_for(value: ReturnInput):
-    """One Tax-Calculator record for this profile (dollars), and notes on how it was mapped. docs/tax-engines.md has the table."""
+    """One Tax-Calculator record for this profile (dollars), and notes on how it was mapped. docs/taxes.md "The tax engines" has the table."""
     joint = value.filing_status == "married_joint"
     notes = []
     whose = lambda owner: "s" if joint and owner == "spouse" else "p"

@@ -1,4 +1,4 @@
-"""H4 item analysis tools and assistant routing (docs/items-assets-search.md §4), with synthetic data only."""
+"""H4 item analysis tools and assistant routing (docs/household.md "Item analysis"), with synthetic data only."""
 
 from datetime import date
 from decimal import Decimal

@@ -1,4 +1,4 @@
--- Opened items, return windows and statement assets (docs/items-assets-search.md).
+-- Opened items, return windows and statement assets (docs/household.md).
 
 -- When a non-food lot was opened; an opened item usually can't be returned.
 ALTER TABLE inventory_lots ADD COLUMN opened_on TEXT;
