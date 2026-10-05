@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..core.logs import log_failure
 from ..core.money import format_minor, to_minor
+from ..core.trace import NULL
 from ..library.storage import now
 from .safe_harbor import NO_PENALTY_BELOW, due_dates, required_payment
 from .safe_harbor import evaluate as safe_harbor
@@ -124,10 +125,21 @@ def shown(amount):
     return format_minor(amount, CURRENCY)
 
 
-def withholding(federal, wages, checks, w4):
+def withholding(federal, wages, checks, w4, recorder=NULL):
     """One paycheck's federal withholding for these W-4 entries, by the withholding engine (finance/withholding.py: Pub 15-T;
     all amounts in cents; 4(a), 4(b), Step 3 a year)."""
-    return WITHHOLDING.per_check(federal, wages, checks, w4)
+    return WITHHOLDING.per_check(federal, wages, checks, w4, recorder)
+
+
+def withheld_with(federal, wages, checks, w4, offset, recorder=NULL):
+    """What payroll withholds a paycheck with these W-4 entries: the withholding engine's figure, plus what payroll does that
+    the W-4 entered here doesn't explain (offset), never below zero. As solve() works it out."""
+    engine = withholding(federal, wages, checks, w4, recorder)
+    if recorder.live:
+        recorder.add("What payroll withholds beyond the W-4 as entered here (its own rounding, other settings)", offset, CURRENCY)
+        if engine + offset < 0:
+            recorder.add("Withholding can't go below zero", -(engine + offset), CURRENCY)
+    return max(0, engine + offset)
 
 
 FIELDS = {"other_income": "4(a)", "deductions": "4(b)", "credits": "3"}
@@ -137,7 +149,7 @@ def solve(federal, wages, checks, w4, offset, target, key=None):
     """The whole-dollar Step 4(a) (owing) or 4(b) (refund) that brings the paycheck's withholding nearest `target`; or the
     given box (Step 3 credits lower withholding, as 4(b) does)."""
     def paid(changed):
-        return max(0, withholding(federal, wages, checks, changed) + offset)
+        return withheld_with(federal, wages, checks, changed, offset)
     now = paid(w4)
     if abs(target - now) < 1:
         return {"field": None, "amount": 0, "per_check": now}
@@ -167,9 +179,43 @@ def solve(federal, wages, checks, w4, offset, target, key=None):
     return {"field": FIELDS[key], "key": key, "amount": base + best * 100, "per_check": at(best)}
 
 
-def advance_tax(year, today, needed, payments, safe_total, owed_after_withholding):
+def advance_needed(estimate, recorder=NULL, total_trace=None):
+    """What estimated payments must cover: the year's total tax less withholding and refundable credits, never below zero."""
+    covered = estimate["payments_minor"] - estimate["estimated_minor"]
+    needed = max(0, estimate["total_tax_minor"] - covered)
+    if recorder.live:
+        recorder.add("The year's total tax", estimate["total_tax_minor"], CURRENCY, trace=total_trace)
+        recorder.add("Withholding and refundable credits", -covered, CURRENCY)
+        if needed != estimate["total_tax_minor"] - covered:
+            recorder.add("Nothing is needed when they cover it all", needed - (estimate["total_tax_minor"] - covered), CURRENCY)
+    return needed
+
+
+def per_check_up(amount, left, label, recorder=NULL):
+    """An amount spread over paychecks, rounded up to the cent so the paychecks never fall short. A live recorder gets the
+    share rounded down, and the rounding up."""
+    each = int((Decimal(amount) / left).to_integral_value(ROUND_CEILING))
+    if recorder.live:
+        down = amount // left
+        recorder.add(f"{label}, {format_minor(amount, CURRENCY)}, over {left} paycheck{'s' if left != 1 else ''}", down, CURRENCY)
+        recorder.round(each - down, CURRENCY, method="up", note="Rounded up to the cent, so the paychecks never fall short.")
+    return each
+
+
+def extra_per_check(goal_minor, result, left, recorder=NULL):
+    """The extra withholding a paycheck (W-4 Step 4(c)) that closes the gap to the aim over the paychecks left."""
+    return per_check_up(goal_minor - result, left, "Short of the aim", recorder)
+
+
+def cushion_short(low_minor):
+    """What the low end of the likely range owes beyond just under $1,000 (owing less carries no penalty)."""
+    return -low_minor - (NO_PENALTY_BELOW - 100)
+
+
+def advance_tax(year, today, needed, payments, safe):
     """The quarters: paid so far (each payment counts for the first quarter due on or after it), and what to pay in each
-    quarter still ahead so that estimated payments cover `needed`."""
+    quarter still ahead so that estimated payments cover `needed`. The safe harbor by each due date and the underpaid
+    quarters are the safe harbor's own (safe_harbor.evaluate), so the two never disagree."""
     dates = due_dates(year)
     paid = [0, 0, 0, 0]
     for payment in payments:
@@ -183,20 +229,20 @@ def advance_tax(year, today, needed, payments, safe_total, owed_after_withholdin
         each = int((Decimal(left) / len(ahead)).to_integral_value(ROUND_CEILING))
         for position, index in enumerate(ahead):
             share[index] = each if position < len(ahead) - 1 else left - each * (len(ahead) - 1)
-    safe_each = int((Decimal(safe_total) / 4).to_integral_value(ROUND_CEILING)) if safe_total is not None else None
+    safe_by_now = [row["estimated_needed_by_now_minor"] for row in safe["quarters"]]
     rows = [{"quarter": index + 1, "due": dates[index].isoformat(), "paid_minor": paid[index], "pay_minor": share[index],
-             "safe_by_now_minor": safe_each * (index + 1) if safe_each is not None else None,
-             "display": {"paid_minor": shown(paid[index]), "pay_minor": shown(share[index]),
-                         **({"safe_by_now_minor": shown(safe_each * (index + 1))} if safe_each is not None else {})}} for index in range(4)]
+             "safe_by_now_minor": safe_by_now[index],
+             "display": {"paid_minor": shown(paid[index]), "pay_minor": shown(share[index]), "safe_by_now_minor": shown(safe_by_now[index])}}
+            for index in range(4)]
     notes = []
     if left and not ahead:
         notes.append("Every due date for this year has passed: pay what's left with the return, and a small underpayment penalty may apply.")
-    missed = [row["quarter"] for row in rows if dates[row["quarter"] - 1] < today and safe_each is not None and sum(paid[:row["quarter"]]) < safe_each * row["quarter"]]
-    if missed and owed_after_withholding >= NO_PENALTY_BELOW:
-        notes.append(f"Payments through quarter {missed[-1]} were below the safe harbor, so an underpayment penalty may apply for that period (Form 2210).")
-    return {"needed_minor": needed, "paid_minor": sum(paid), "left_minor": left, "quarters": rows, "safe_harbor_minor": safe_total,
+    if safe["underpaid_quarters"] and not safe["less_than_1000"]:
+        notes.append(f"Payments through quarter {safe['underpaid_quarters'][-1]} were below the safe harbor, so an underpayment penalty may apply "
+                     "for that period (Form 2210).")
+    return {"needed_minor": needed, "paid_minor": sum(paid), "left_minor": left, "quarters": rows, "safe_harbor_minor": safe_by_now[-1],
             "display": {"needed_minor": shown(needed), "paid_minor": shown(sum(paid)), "left_minor": shown(left),
-                        **({"safe_harbor_minor": shown(safe_total)} if safe_total is not None else {})}, "notes": notes}
+                        "safe_harbor_minor": shown(safe_by_now[-1])}, "notes": notes}
 
 
 def advise(estimate, jobs, federal, w4s, estimated_payments, year, today=None, choose=None, prior=None, policy=None, recheck=None,
@@ -223,6 +269,7 @@ def advise(estimate, jobs, federal, w4s, estimated_payments, year, today=None, c
     view = {"ready": True, "zen": status == "ZEN", "status": status, "status_text": STATUS_TEXT[status], "reason": reason, "policy": policy.model_dump(),
             "target_minor": target, "result_minor": result, "safe_harbor": safe, "jobs": [], "notes": [],
             "display": {"result_minor": shown(abs(result)), "target_minor": shown(abs(target)), "required_minor": shown(safe["required_minor"]),
+                        "aim": shown(0) if target == 0 else f"a refund of {shown(target)}" if target > 0 else f"owing {shown(-target)}",
                         **{key: f"{getattr(policy, key) // 100}" for key in ("refund_minor", "max_owed_minor", "buffer_minor")}}}
     if outcomes:  # §23: where the year likely ends, with the projected pay and interest moved down and up.
         view["range"] = {**outcomes, "expected_minor": result,
@@ -249,27 +296,25 @@ def advise(estimate, jobs, federal, w4s, estimated_payments, year, today=None, c
                 check_advice(advice, recheck, federal, chosen, w4s.get(chosen["key"], {}))
             advice["recommendations"] = recommendations(advice)
         if status == "AT_RISK" and advice:  # The cushion: enough extra a paycheck that even the low end owes under $1,000.
-            short = -outcomes["low_minor"] - (NO_PENALTY_BELOW - 100)
-            per_check = int((Decimal(short) / advice["paychecks_left"]).to_integral_value(ROUND_CEILING))
+            per_check = per_check_up(cushion_short(outcomes["low_minor"]), advice["paychecks_left"], "Owed at the low end beyond just under $1,000")
             view["cushion"] = {"per_check_minor": per_check, "job": chosen["name"],
                                "text": f"To be safe, add {shown(per_check)} of extra withholding a paycheck at {chosen['name']} (W-4 Step 4(c)): even if "
                                        "the rest of the year comes in at the low end, you'd owe under $1,000."}
     elif jobs:
         view["notes"].append("No paychecks are left this year on the jobs here, so a W-4 change can't help this year; see January.")
     # Advance tax: what estimated payments must cover, after withholding and refundable credits.
-    needed = max(0, estimate["total_tax_minor"] - covered_elsewhere)
+    needed = advance_needed(estimate)
     if not prior or prior.get("tax_minor") is None:
         view["notes"].append("Enter last year's total tax (and AGI) to see the safe harbor based on it; until then it is 90% of this year's.")
-    safe_total = max(0, required - covered_elsewhere)
     if needed or estimated_payments:
-        view["advance"] = advance_tax(year, today, needed, estimated_payments, safe_total, needed)
+        view["advance"] = advance_tax(year, today, needed, estimated_payments, safe)
     # State: extra withholding per paycheck on the chosen job, or estimated payments.
     state = estimate.get("state")
     if state and state.get("complete"):
         owed = -state["result_minor"]
         job = view.get("job")
         if abs(owed) >= ZEN_WITHIN and job:
-            per_check = int((Decimal(abs(owed)) / job["paychecks_left"]).to_integral_value(ROUND_CEILING))
+            per_check = per_check_up(abs(owed), job["paychecks_left"], "The state's year-end gap")
             view["state"] = {"state": state["state"], "owed": owed > 0, "per_check_minor": per_check,
                              "text": (f"Add {shown(per_check)} of extra {state['state']} withholding to each of {job['name']}'s remaining paychecks (on the state's "
                                       "withholding form)." if owed > 0 else
@@ -322,6 +367,7 @@ def plan_tax_zen(paychecks, gathered, household, filing_status, year, tables_for
     advice = job_advice(main, result, federal, w4, delay=0)  # A full year at the planned pay: the W-4 counts from its first paycheck.
     rest = advice["rest"]
     return {"ready": True, "year": year, "zen": abs(result["result_minor"]) < ZEN_WITHIN, "result_minor": result["result_minor"],
+            "payments_minor": result["payments_minor"], "total_tax_minor": result["total_tax_minor"], "engine": result.get("engine"),
             "display": {"result_minor": shown(abs(result["result_minor"]))}, "job": label, "w4": rest,
             "notes": ["A full year at the planned pay, with this year's other income and deductions."]}
 
@@ -376,7 +422,7 @@ def job_advice(job, estimate, federal, w4, goal_minor=0, today=None, delay=W4_DE
     advice = {"key": job["key"], "name": job["name"], "paychecks_left": left, "frequency": checks, "per_check_now_minor": actual, "offset_minor": offset,
               "goal_minor": goal_minor, "rest": {**rest, "year_end_minor": rest_year_end}, "primary": "rest", "payroll": payroll.as_dict()}
     if result < goal_minor:  # Short of the aim: the same catch-up as a fixed extra amount per paycheck, one W-4 box (§20).
-        extra = int((Decimal(goal_minor - result) / left).to_integral_value(ROUND_CEILING))
+        extra = extra_per_check(goal_minor, result, left)
         advice["extra"] = {"per_check_minor": extra, "total_4c_minor": w4.get("extra", 0) + extra, "year_end_minor": result + extra * left}
         advice["primary"] = "extra"
     elif result > goal_minor and w4.get("credits"):  # A refund, and the W-4 claims dependents: Step 3 can lower withholding too (§19).

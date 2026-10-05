@@ -10,6 +10,16 @@ from home_manager.models.decisions import DecisionConfig
 from test_extraction import receipt  # noqa: F401 (fixture)
 
 
+def test_the_document_page_gets_the_checks_counts_and_percents_from_the_server():
+    from home_manager.documents.extraction import check_counts
+    check = {"advisory": True, "model": None, "classification": {"document_type": "receipt", "confidence": 0.875, "agrees": True},
+             "checks": [{"field": "merchant", "probability": 0.92, "supported": True}, {"field": "total", "probability": 0.305, "supported": False},
+                        {"field": "row 1", "probability": None, "supported": None}]}
+    found = check_counts(check)
+    assert (found["confirmed"], found["scored"], found["unscored"]) == (1, 2, 1)
+    assert found["classification"]["confidence_percent"] == "88" and [item["probability_percent"] for item in found["checks"]] == ["92", "30", None]
+
+
 def responses_reply(top):
     return {"output": [{"type": "message", "content": [{"type": "output_text", "text": "A",
             "logprobs": [{"token": "A", "logprob": 0, "top_logprobs": [{"token": t, "logprob": math.log(p)} for t, p in top]}]}]}],
@@ -63,7 +73,8 @@ def test_every_extraction_is_checked_and_a_doubted_value_sends_the_record_to_rev
     run = extract(manager, doc, parse_id)
     check = run["result"]["decision"]
     assert check["model"]["model"] == "synthetic-reasoning" and check["advisory"]
-    assert check["classification"] == {"document_type": "bill", "confidence": pytest.approx(0.9), "agrees": False}
+    assert check["classification"] == {"document_type": "bill", "confidence": pytest.approx(0.9), "agrees": False, "confidence_percent": "90"}
+    assert (check["confirmed"], check["scored"]) == (9, 10)  # Counted by the server for the document page.
     assert [item["field"] for item in check["checks"] if not item["supported"]] == ["merchant"]
     assert len(check["checks"]) == 10 and len(local_model["decisions"]) == 11  # One type question, then one per value.
     assert "D. bill: a bill or invoice asking for payment" in local_model["decisions"][0][1]["input"][1]["content"]

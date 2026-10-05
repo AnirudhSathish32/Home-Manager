@@ -117,9 +117,10 @@ async function loadBackups() {
   });
   if (rows.length) $("backup-rows").replaceChildren(...rows); else tableMessage($("backup-rows"), 5, "No backups yet.");
 }
-$("backup-tab").addEventListener("click", () => loadBackups().catch(error => notice(error, true)));
+$("backup-tab").addEventListener("tabshow", () => loadBackups().catch(error => notice(error, true)));
 $("backup-form").addEventListener("submit", async event => {
   event.preventDefault();
+  busy.capture = true; controls();  // Back up now stays unavailable until this backup finishes (app.js controls).
   try {
     await api("/api/backups", {method: "POST", body: JSON.stringify({destination: $("backup-destination").value.trim()})});
     notice("Backup started. Progress shows in the sidebar; the list updates when it finishes.");
@@ -131,7 +132,7 @@ $("backup-form").addEventListener("submit", async event => {
       await loadBackups();
       if (!running && latest) notice(latest.status === "succeeded" ? `Backup finished: ${latest.file_count} files.` : `The backup ${statusLabel(latest.status).toLowerCase()}. ${latest.error || ""}`, latest.status !== "succeeded");
     }
-  } catch (error) { notice(error, true); }
+  } catch (error) { notice(error, true); busy.capture = false; controls(); }
 });
 $("restore-form").addEventListener("submit", async event => {
   event.preventDefault();

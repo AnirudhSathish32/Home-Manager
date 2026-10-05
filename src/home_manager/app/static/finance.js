@@ -63,6 +63,8 @@ async function loadTransactionOptions() {
 async function openTransactions(params) {
   txParams = new URLSearchParams(params);
   if (!txParams.has("start") && !txParams.has("end") && !txParams.has("period")) txParams.set("period", "last_90");
+  // Items lists spending only: a drill-down to money in or cash flow opens the charges, where those rows are.
+  if (["inflow", "cashflow"].includes(txParams.get("metric")) && !txParams.has("view")) txParams.set("view", "charges");
   await loadTransactionOptions();
   for (const [key, id] of Object.entries(TX_FIELDS)) $(id).value = txParams.get(key) || (key === "sort" ? "date_desc" : "");
   $("tx-period").value = txParams.get("period") || "custom";
@@ -168,8 +170,10 @@ function itemQuery() {
   if ($("tx-search").value.trim()) args.query = $("tx-search").value.trim();
   if ($("tx-account").value) args.account_id = Number($("tx-account").value);
   if ($("tx-category").value) args.category = $("tx-category").value;
-  const categories = transactionQuery().categories;  // A drill-down from Home's category chart.
+  // A drill-down from Home or Spending: its category group and currency (items are spending, so the metric is implied).
+  const {categories, currency} = transactionQuery();
   if (categories) args.categories = categories;
+  if (currency) args.currency = currency;
   return args;
 }
 async function loadItems() {
@@ -389,7 +393,7 @@ function openSpending(params) {
 function meter(row) {
   // Share of the budget used; the fill carries the status and is always paired with its icon and label.
   const track = element("div", "", "meter"); track.dataset.status = row.status;
-  const fill = element("div", "", "meter-fill"); fill.style.width = `${Math.min(100, Number(row.percent_used))}%`;
+  const fill = element("div", "", "meter-fill"); fill.style.width = `${row.meter_percent}%`;
   track.append(fill); track.setAttribute("role", "img"); track.setAttribute("aria-label", `${row.percent_used}% of the budget used`);
   return track;
 }
@@ -415,12 +419,16 @@ async function loadSpending() {
   const figures = [];
   for (const row of spending.by_currency) {
     const group = element("div", "", "figure-group");
-    const main = element("div", "", "figure-main"); main.append(element("span", "Net spending", "figure-label"), homeLink(row.net_spending.display, txHref({start: period.start, end: period.end, currency: row.currency, metric: "spending"}), "figure-value"));
+    const main = element("div", "", "figure-main"), net = homeLink("", txHref({start: period.start, end: period.end, currency: row.currency, metric: "spending"}), "figure-value");
+    net.append(amount(row.net_spending, {signed: false}));
+    main.append(element("span", "Net spending", "figure-label"), net);
     group.append(main);
     // Spent includes receipts no card or bank charge has replaced yet, shown separately so the source is clear.
-    for (const [label, value] of [["Spent", row.spending.display], ["Refunded", row.refunds.display], ["Transactions", String(row.transactions)],
-                                  ...(row.receipts ? [["From receipts only", `${row.from_receipts.display} · ${row.receipts} ${row.receipts === 1 ? "receipt" : "receipts"}`]] : [])]) {
-      const item = element("div", "", "figure-item"); item.append(element("span", label, "figure-label"), element("span", value, "figure-small")); group.append(item);
+    const money = value => amount(value, {signed: false});
+    for (const [label, value] of [["Spent", money(row.spending)], ["Refunded", money(row.refunds)], ["Transactions", String(row.transactions)],
+                                  ...(row.receipts ? [["From receipts only", [money(row.from_receipts), ` · ${row.receipts} ${row.receipts === 1 ? "receipt" : "receipts"}`]]] : [])]) {
+      const figure = element("span", "", "figure-small"); figure.append(...[value].flat());
+      const item = element("div", "", "figure-item"); item.append(element("span", label, "figure-label"), figure); group.append(item);
     }
     figures.push(group);
   }
@@ -435,7 +443,7 @@ async function loadSpending() {
     const item = element("div", "", "budget-row");
     const head = element("div", "", "budget-head");
     head.append(homeLink(row.category, txHref({start: period.start, end: period.end, category: row.category, currency: row.currency})), statusBadge(row.status));
-    const text = `${row.spent.display} of ${row.budget.display} · ${row.remaining.minor < 0 ? `${row.remaining.display.replace("-", "")} over` : `${row.remaining.display} left`} · ${row.percent_used}% used`;
+    const text = `${row.spent.display} of ${row.budget.display} · ${row.remaining_state === "over" ? `${row.over.display} over` : `${row.remaining.display} left`} · ${row.percent_used}% used`;
     const actions = element("div", "", "budget-actions");
     actions.append(asyncButton("Change", async () => {
       $("budget-category").value = row.category; $("budget-currency").value = row.currency; $("budget-amount").value = row.budget.decimal; $("budget-amount").focus();
@@ -511,12 +519,10 @@ $("rule-form").addEventListener("submit", async event => {
 
 async function loadBills() {
   if (!configured) return;
-  const today = todayIso(), [year, month, day] = today.split("-").map(Number);
-  const week = isoDay(new Date(year, month - 1, day + 7));
-  const [upcoming, recurring] = await Promise.all([tool("get_upcoming_bills", {as_of: today, days: 120}), tool("get_recurring_obligations")]);
-  const groups = [["Overdue, no payment found yet", upcoming.bills.filter(bill => bill.due_date < today)],
-                  ["Due in the next 7 days", upcoming.bills.filter(bill => bill.due_date >= today && bill.due_date <= week)],
-                  ["Later", upcoming.bills.filter(bill => bill.due_date > week)]];
+  const [upcoming, recurring] = await Promise.all([tool("get_upcoming_bills", {as_of: todayIso(), days: 120}), tool("get_recurring_obligations")]);
+  // The server groups each bill (overdue, this_week, later).
+  const groups = [["Overdue, no payment found yet", "overdue"], ["Due in the next 7 days", "this_week"], ["Later", "later"]]
+    .map(([title, key]) => [title, upcoming.bills.filter(bill => bill.group === key)]);
   const sections = [];
   for (const [title, bills] of groups) {
     if (!bills.length) continue;
@@ -570,14 +576,22 @@ async function loadBills() {
     cell(tr, "").append(statusBadge(row.status));
     const actions = cell(tr, "");
     if (row.status === "proposed") actions.append(asyncButton("Confirm", () => decide(row, "verified"), "small primary"), asyncButton("Not recurring", () => decide(row, "rejected")));
-    else actions.append(asyncButton("Ended", () => decide(row, "ended"), "small quiet"));
+    // Only a confirmed payment can end, and ending it is asked first: it leaves bills, budgets and the forecast.
+    else if (row.status === "verified") actions.append(asyncButton("Ended", async () => {
+      if (!await confirmAction({title: `Has ${row.merchant} ended?`, message: `${row.merchant} stops counting as a recurring payment: it leaves upcoming bills, budgets and the forecast. Its past payments stay recorded.`,
+                                confirmLabel: "Mark as ended"})) return;
+      await decide(row, "ended");
+    }, "small quiet"));
     return tr;
   });
   if (rows.length) $("recurring-rows").replaceChildren(...rows); else tableMessage($("recurring-rows"), 7, "No recurring payments detected yet.");
 }
-$("recurring-scan").addEventListener("click", () => api("/api/finance/recurring/scan", {method: "POST"})
-  .then(() => notice("Looking for recurring bills. Any found wait in Review; Processing shows the progress."))
-  .catch(error => notice(error, true)));
+$("recurring-scan").addEventListener("click", () => {
+  busy.inference = true; controls();  // Unavailable until the scan finishes (app.js controls, from the server's busy flags).
+  api("/api/finance/recurring/scan", {method: "POST"})
+    .then(() => notice("Looking for recurring bills. Any found wait in Review; Processing shows the progress."))
+    .catch(error => { notice(error, true); busy.inference = false; controls(); });
+});
 
 // Accounts -----------------------------------------------------------------------------------------------
 

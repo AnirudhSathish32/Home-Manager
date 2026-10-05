@@ -13,6 +13,7 @@ import hashlib
 import json
 import uuid
 
+from ..core import actor
 from ..core.money import money
 from ..library.storage import now
 from .ledger import Ledger, normalize_name
@@ -122,8 +123,8 @@ class FamilyRouting:
             raise ValueError("Choose a person or Shared by the family.")
         self.get(record_type, record_id)
         with self.store.connection() as db:
-            db.execute("UPDATE family_assignments SET mode=?,members_json=?,status='confirmed',updated_at=? WHERE record_type=? AND record_id=?",
-                       (mode, json.dumps([member for member in known_members if member in members]), now(), record_type, record_id))
+            db.execute("UPDATE family_assignments SET mode=?,members_json=?,status='confirmed',updated_at=?,actor=? WHERE record_type=? AND record_id=?",
+                       (mode, json.dumps([member for member in known_members if member in members]), now(), actor.current(), record_type, record_id))
         return self.get(record_type, record_id)
 
     def pending(self):

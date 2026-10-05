@@ -36,6 +36,8 @@ where = ["src"]
 "home_manager.library" = ["migrations/*.sql"]
 # The pinned OpenTax engine (docs/taxes.md "The tax engines"): unmodified from npm, run as a separate Node process.
 "home_manager" = ["vendor/NOTICES.md", "vendor/opentax/*"]
+# Engine 2's worksheet map (docs/taxes.md "The tax engines"): how its outputs relate, checked against each run.
+"home_manager.finance.engines" = ["taxcalc_map.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

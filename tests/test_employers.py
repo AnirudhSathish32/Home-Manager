@@ -86,7 +86,7 @@ def test_a_pay_stub_files_under_its_employer_with_its_breakdown(tmp_path, local_
         library = manager.store.library.root
         assert (library / "Jobs" / "Google" / "Documents").is_dir() and not (library / "Income").exists() or not os.listdir(library / "Income")
         folders = manager.store.folders()
-        assert folders["jobs"] == [{"id": filed["employer_id"], "name": "Google", "folder": "Google", "sections": {"Paystubs": 1, "Documents": 0}}]
+        assert folders["jobs"] == [{"id": filed["employer_id"], "name": "Google", "folder": "Google", "sections": {"Paystubs": 1, "Documents": 0}, "total": 1}]
         assert manager.store.documents(folder="Jobs", employer=filed["employer_id"], section="Paystubs")["total"] == 1
         # Reading it again, the model is told Google already has a folder; "Google LLC" still maps to it.
         local_model["outputs"] = [stub_classification(employer="Google LLC"), stub_summary(employer="Google LLC"), stub_lines()]

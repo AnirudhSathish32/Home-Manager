@@ -102,6 +102,19 @@ def test_the_pack_holds_the_year_with_usd_values_rates_and_what_needs_review(app
     assert client.get("/api/tax/cpa-packs", params={"year": 2025}).json()["packs"][0]["id"] == pack["id"]
 
 
+def test_the_pack_shows_the_values_the_return_used_typed_ones_included(app_books):
+    client, _, _ = app_books
+    # A spouse's job and interest typed on the Taxes page: the return counts them, so the pack's Summary and Income must too.
+    client.put("/api/tax/year/2025", json={"extra_jobs": [{"name": "Spouse's job", "wages": "50000", "federal_withheld": "5000"}],
+                                           "fields": {"interest": "120"}})
+    used = client.get("/api/tax/year/2025").json()["input"]
+    book = workbook(client, build(client))
+    summary = {row[0]: row[1:] for row in rows(book, "Summary")[1:]}
+    assert summary["Wages"][0] == Decimal(sum(job["wages"] for job in used["jobs"])) / 100 == Decimal("50000.00")
+    assert summary["Interest"] == (Decimal("120.00"), "Typed on the Taxes page")
+    assert ("Job", "Spouse's job", Decimal("50000.00"), Decimal("5000.00")) in [row[:4] for row in rows(book, "Income")]
+
+
 def test_same_data_gives_back_the_same_pack_and_new_data_never_overwrites(app_books):
     client, manager, charge = app_books
     first = build(client)

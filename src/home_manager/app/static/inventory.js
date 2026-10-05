@@ -110,9 +110,9 @@ function renderReading(run) {
     nodes.push(asyncButton("Apply selected changes", async () => {
       const lot_ids = [...list.querySelectorAll("input:checked:not(:disabled)")].map(input => Number(input.value));
       if (!lot_ids.length) { notice("Select at least one change.", true); return; }
-      const {outcomes} = await api(`/api/inventory/checkin-runs/${run.id}/apply`, {method: "POST", body: JSON.stringify({lot_ids})});
-      const failed = outcomes.filter(outcome => outcome.status === "failed");
-      notice(failed.length ? `${outcomes.length - failed.length} applied; ${failed.length} couldn't be: ${failed[0].error}` : `${outcomes.length} change${outcomes.length === 1 ? "" : "s"} applied.`, Boolean(failed.length));
+      const {outcomes, applied, failed} = await api(`/api/inventory/checkin-runs/${run.id}/apply`, {method: "POST", body: JSON.stringify({lot_ids})});
+      const firstError = outcomes.find(outcome => outcome.status === "failed")?.error;
+      notice(failed ? `${applied} applied; ${failed} couldn't be: ${firstError}` : `${applied} change${applied === 1 ? "" : "s"} applied.`, Boolean(failed));
       $("checkin-text").value = "";
       renderReading(await api(`/api/inventory/checkin-runs/${run.id}`));
       await afterInventoryChange();
@@ -230,7 +230,12 @@ $("warranty-form").addEventListener("submit", async event => {
   } catch (error) { $("warranty-dialog-error").textContent = error.message; }
 });
 async function lookUpWarranty(lot) {
-  const {run_id} = await api(`/api/inventory/lots/${lot.id}/warranty-lookups`, {method: "POST"});
+  // One model job at a time: while one runs, a second click says so instead of starting another.
+  if (busy.inference) { notice("Model work is running. The warranty can be looked up when it finishes.", true); return; }
+  busy.inference = true; controls();
+  let run_id;
+  try { ({run_id} = await api(`/api/inventory/lots/${lot.id}/warranty-lookups`, {method: "POST"})); }
+  catch (error) { busy.inference = false; controls(); throw error; }
   notice(`Looking up the warranty for ${lot.name}. A result waits for you in Review.`);
   let run;
   do { await new Promise(resolve => setTimeout(resolve, 1500)); run = await api(`/api/warranty-lookups/${run_id}`); } while (["queued", "running"].includes(run.status));

@@ -275,7 +275,9 @@ licenses, and `PIN.json` with the SHA-256 of every file and the npm integrity). 
   tax and credits from the engine and adds up payments itself.
 - **Adapter** (`finance/engines/opentax.py`):
   - It reads the proof tree into the app's line keys. Lines the tree doesn't name separately go to "other" lines, so
-    totals always reconcile.
+    totals always reconcile. The tips, overtime and car-loan line is what's left of AGI less taxable income before the
+    QBI deduction after the deductions above, never below zero. When the deductions are larger than AGI, the taxable
+    income line shows the floor as the engine applies it (fixed 2026-10-05: the line used to come out positive).
   - Answers are cached in memory by facts (32 of them). One run takes about 0.3 s.
   - The bundle's hash is checked once, and again whenever its file time or size changes.
 - **Rounding.** Engine 1 works Schedule SE in whole dollars, so a hand-worked line, or a second engine's, agrees within
@@ -393,6 +395,77 @@ older) and says so. It asks for the birth year when the earned income credit dep
 - **Lines it doesn't work out separately** (left out of comparisons): the SEP deduction, the saver's credit and the
   premium tax credit.
 
+### The engines' worksheets
+
+Every line of the return can show how its engine worked it out, step by step, down to the facts sent and the law. The
+`tax.node` trace reads one engine-neutral graph ([ui](ui.md#trace-contract)), and each engine's adapter produces it.
+
+**The graph** (`finance/worksheet.py`). A node is `{id, label, amount_minor, op, inputs, cite, source, when, detail}`,
+plus `count`/`value` on a node that isn't money.
+- **Ops.** `sum` (signed by `detail.signs`), `difference`, `min`, `max`, `multiply` (`a × b ÷ c` with `detail.divide`),
+  `rate`, `round`, `steps` (whole steps of a unit), `lookup` (a rate table, each slice rounded half-up), and the leaves
+  `fact`, `law`, `constant` and `opaque`.
+- **No `if` nodes.** An `if` or `match` is never a node: the node takes the branch that applied, and `when` says why
+  ("Filing status is head of household"). The branch not taken is never shown.
+- **Sources.** A `fact` names the `ReturnInput` fields it came from (`[field, sign]`; `jobs.wages` adds up every job's,
+  `jobs.0.wages` is one job's), or `{"assumed": …}` for the engine's documented default. A `law` names its parameter,
+  year and filing status.
+- **One evaluator** runs a rule written in OpenTax's expression language over known values. It uses exact integer cents
+  and OpenTax's rounding modes, and stops an `and`/`or` where the engine stops. Both adapters use it.
+- **Ids.** OpenTax rule ids, `<rule>~<path>` for a rule's inner steps, `fact:<id>`, `law:<rule>:<param>`,
+  `const:money:<cents>`, Tax-Calculator output names, and `line:<key>` for what an adapter or `tax_engine.completed`
+  works out itself (residual lines, the deduction less the charitable part, payments: withholding from each job and
+  1099, Additional Medicare paid job by job).
+- **Lines.** Each line carries `node` beside its `how` (`how` is still shown by the Taxes page and the CPA pack).
+- **When it's built.** `tax_engine.worksheet(slot, profile)` builds the graph only when a trace asks. It works the return
+  out again, which is a hit in the engine's answer cache: tables only feed the state return and the marginal rate, which
+  have no nodes. It keeps the last 8 graphs, keyed by slot, the engine's pin and the profile. A Taxes page load costs
+  nothing new.
+
+**Engine 1.** The proof records each rule's value and the values it read (`inputs`), but not its arithmetic. A memoized
+rule appears once in full and elsewhere as a stub without children. So the adapter re-runs each applied rule from its
+formula and parameters in the pinned corpus.
+- **The corpus.** `main.js corpus export` (24 MB of JSON) is read once per run of the app under the same sandbox, and
+  only the federal rules are kept.
+- **Labels.** Rule titles and fact descriptions without their asides.
+- **Facts.** `facts_for` records each fact's fields as it builds the fact, so the mapping and its sources can't drift.
+- **Overriders.** A rule that overrode another (the Tax Table over the general tax rule) is reached through the
+  general rule's id, with `when` naming the override.
+- **Opaque.** A rule that can't be re-run, or comes out at another value, is `opaque` with the reason. On the synthetic
+  returns none is.
+
+**Engine 2.** Tax-Calculator reports named outputs with no graph. Its functions also overwrite their own intermediate
+values: a credit is limited to the tax in place, and the standard deduction becomes 0 once it itemizes.
+- **The map.** `finance/engines/taxcalc_map.json` writes a formula for each output whose final value follows from other
+  final values: AGI and the income before it, the Social Security worksheet, capital gains, self-employment tax and its
+  deductible half, adjustments, the standard deduction, taxable income, credits used, NIIT, Additional Medicare tax,
+  other taxes and refundable credits.
+- **Formulas.** They're written as readable text (`max(0 - Capital_loss_limitation, p22250 + p23250)`) and compiled to
+  the shared expression language. A name is an output, a record input, a part, or a law parameter.
+- **Extra values.** `taxcalc_run.py` reads back the extra outputs and parameters the map names. They're part of the
+  answer cache's key.
+- **Checked every run.** Each formula is re-run over the engine's own values and must give its value within 2 cents
+  (float dollars rounded to cents). One that doesn't is `opaque` with the reason.
+- **Pinned.** The map is pinned to the release and the SHA-256 of its law file. A different one isn't used: every
+  output is then `opaque`.
+- **What stays opaque** (`TaxCalculatorEngine.opaque_lines`): the tax from the rate schedules and the capital gains
+  worksheet (`taxbc`), the AMT, itemized deductions, the senior and QBI deductions, the dependent care and education
+  credits (limited in place), and the EITC, ACTC and refundable AOTC.
+  - The Tax Table's tax, which the adapter works out itself, is shown as nodes: the row's middle, the year's rate
+    schedule on it, rounded to the dollar.
+  - So are the HSA limit and the non-itemizer's charitable limit.
+- **Upkeep.** When the pinned release or its law file changes:
+  1. Run `python scripts/taxcalc_map_skeleton.py <output>` for each output's inputs and parameters (read from
+     `calcfunctions.py`, never run).
+  2. Check each formula against the new code.
+  3. Update `law_sha256`.
+
+**Conformance** (`tests/test_engine_worksheets.py`) runs every registered engine on the synthetic returns in
+`tests/tax_returns.py`. Every non-total line's node must exist and match the line. Every node must reconcile under its op
+within the engine's `tolerance_minor`. Every fact must name `ReturnInput` fields or a declared default, and every law
+leaf must have a citation. No line may be `opaque` unless the engine declares it in `opaque_lines`. An engine counts as
+traced once this passes, so the test is what adding an engine costs.
+
 ### Comparing, records and tests
 
 - **The interface** (`finance/tax_engine.py`):
@@ -416,12 +489,13 @@ older) and says so. It asks for the birth year when the earned income credit dep
 - **Records.** `tax_calculations` (migration 058) keeps each distinct return per year, filing unit, engine
   implementation, version and profile.
   - It keeps the profile, the result, the facts, the assumptions, the corpus Merkle root and the artifact hash. The
-    proof tree is left out, since re-running rebuilds it.
+    proof tree and the lines' own worksheet nodes are left out, since re-running rebuilds them.
   - Rows are never rewritten. A new engine version adds a row beside the old one.
   - `TaxCalculations.prior(year)` is the newest row for a year, for next year's safe harbor.
 - **Licenses.** `vendor/NOTICES.md` lists what ships, and Settings points to it.
 - **Tests.** `tests/test_tax_engines.py` covers the slots and legacy settings, the capability check and the mapping. It
-  also covers missing facts (the mortgage balance, the tipped occupation), a tampered bundle, and no Node.
+  also covers missing facts (the mortgage balance, the tipped occupation), a tampered bundle, and no Node. The synthetic
+  returns live in `tests/tax_returns.py`, shared with the worksheet conformance test.
   - **Hand-worked 2026 returns:** W-2 only; joint with children, gains and contract work; high wages with Additional
     Medicare and NIIT; and the OBBBA charity, tips and overtime deductions. They run against both engines and match
     line by line within a dollar (`test_the_second_engine_checks_the_first_line_by_line`).
@@ -532,8 +606,10 @@ choose another.
   after its date.
 - **What to pay:** what's left is split over the quarters still ahead.
 - **Safe harbor** (§6654(d)): 90% of this year's tax, or 100% of last year's (110% above $150,000 of AGI), whichever is
-  less, less withholding. It is shown as the floor by each date. A missed quarter below it with $1,000 or more owed is
-  noted (Form 2210).
+  less. The floor by each date is the estimated-tax safe harbor's own (`safe_harbor.evaluate`): that date's share of
+  it less withholding's share, since withholding counts evenly through the year. The underpaid quarters come from it
+  too, so Tax Zen and the safe harbor never disagree. A missed quarter below it with $1,000 or more owed is noted
+  (Form 2210).
 - **When it shows:** it is the answer when there's no paycheck to change (1099 work). Otherwise it is the folded-away
   alternative.
 
@@ -579,6 +655,8 @@ no tool that writes files.
 - **Summary:** the estimate, income, gains, write-offs, and household spending in USD (complete or partial).
 - **Return:** each line of the estimate.
 - **Income:** jobs and every gathered field, with its source.
+- Wages, income and the job rows are the values the return used (`tax_year.merge`: typed values over the gathered ones,
+  and jobs typed in), never the records alone, so the pack and the return agree. A typed value says so as its source.
 - **Write-offs:** counted totals by line. **Write-off items:** every tag, its USD value, and whether the estimate counts
   it.
 - **Investments:** the year's confirmed activity and realized gains per taxable account.
@@ -665,8 +743,11 @@ The page explains the stub's withholding (`finance/paystub.py`) as an estimate b
   - a paycheck's wages are multiplied by the paychecks in a year (from the printed pay frequency, otherwise the pay
     period's length);
   - the standard deduction is the 0% bucket, with its share of each paycheck;
-  - each bracket taxes only its own slice;
-  - the year's tax, spread over the paychecks, is the estimate.
+  - each bracket taxes only its own slice (`tax_return.bracket_slices`, the one bracket function: the paycheck
+    planner, the simplified state return and Engine 2's rate schedule use it too);
+  - the year's tax, spread over the paychecks, is the estimate;
+  - the top bucket is the rate on the next dollar of wages: 0% while still inside the deductions, else
+    `tax_return.marginal`, the same rate the return shows as its top bracket.
 
   A bar chart splits the year's wages into the buckets, with a table of each bucket's wages and tax per year and per
   paycheck.

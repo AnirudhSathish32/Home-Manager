@@ -34,7 +34,7 @@ function closeReceipt() {
 }
 async function imageForReceipt(path, expected) {
   const response = await fetch(path, {headers:{"Authorization":`Bearer ${token}`}});
-  if (!response.ok) { const data = await response.json(); throw new Error(data.detail || "Could not retrieve image."); }
+  if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || "Could not retrieve image."); }
   const blob = await response.blob();
   if (receipt !== expected) return;
   if (receiptImageURL) URL.revokeObjectURL(receiptImageURL);
@@ -141,7 +141,12 @@ async function openReceipt(doc, digest = doc.current_hash) {
   renderRecordPane(state); receiptControls();
   $("group-pages").hidden = true; $("group-pages").replaceChildren();
   loadGroupPages(state).catch(() => {});
-  await imageForReceipt(`/api/documents/${doc.id}/preview?blob_hash=${digest}`, state);
+  // A preview that can't be shown is said beside the image; the text, readings and record still load.
+  let previewError = "";
+  try { await imageForReceipt(`/api/documents/${doc.id}/preview?blob_hash=${digest}`, state); }
+  catch (error) { previewError = `The preview couldn't be shown: ${error.message}`; }
+  if (receipt !== state) return;
+  $("receipt-preview-error").replaceChildren(...(previewError ? [alertBox(previewError, {tone: "error"})] : []));
   await receiptHistory(state);
   if (receipt !== state) return;
   if (state.runId) await displayReceiptRun(state.runId, state);
@@ -411,15 +416,15 @@ function decisionPanel(check, extractedType) {
   const name = check.model ? check.model.model : "Laya";
   const panel = element("details", "", "decision-panel");
   if (check.error) { panel.append(element("summary", `Independent check (${name}) unavailable`), element("p", check.error, "muted")); return panel; }
-  const scored = check.checks.filter(item => item.supported !== null), doubted = scored.filter(item => !item.supported);
-  const unscored = check.checks.length - scored.length, shadow = check.classification;
-  panel.appendChild(element("summary", `Independent check (${name}): ${scored.length - doubted.length} of ${scored.length} values confirmed`));
+  // Counts and percents are the server's (documents/extraction.py check_counts).
+  const doubted = check.checks.filter(item => item.supported === false), unscored = check.unscored, shadow = check.classification;
+  panel.appendChild(element("summary", `Independent check (${name}): ${check.confirmed} of ${check.scored} values confirmed`));
   if (shadow.document_type) {
-    panel.appendChild(element("p", `${name} classifies this as ${shadow.document_type.replaceAll("_", " ")} (${Math.round(shadow.confidence * 100)}%)` +
+    panel.appendChild(element("p", `${name} classifies this as ${shadow.document_type.replaceAll("_", " ")} (${shadow.confidence_percent}%)` +
       (shadow.agrees ? ", matching the extraction." : `; the extraction says ${(extractedType || "unknown").replaceAll("_", " ")}.`), shadow.agrees ? "muted" : "item-warning"));
   }
   const list = element("ul", "", "analysis-limitations");
-  for (const item of doubted) list.appendChild(element("li", `${item.field.replaceAll("_", " ")}: not confirmed from its cited text (${Math.round(item.probability * 100)}%)`));
+  for (const item of doubted) list.appendChild(element("li", `${item.field.replaceAll("_", " ")}: not confirmed from its cited text (${item.probability_percent}%)`));
   if (doubted.length) panel.appendChild(list);
   if (unscored) panel.appendChild(element("p", `${unscored} ${unscored === 1 ? "value" : "values"} could not be scored.`, "muted"));
   const calibration = check.model && check.model.calibrated ? "" : " Its scores are not yet calibrated on your documents.";
@@ -831,12 +836,12 @@ function withholdingSection(record) {
       for (const key of ["income_minor", "tax_minor", "per_paycheck_tax_minor"]) tr.appendChild(element("td", "", "numeric")).appendChild(amount(bucket.display[key], {signed: false}));
     }
     wrap.appendChild(table); block.appendChild(wrap);
-    const rate = (points => `${(points / 100).toFixed(2).replace(/\.?0+$/, "")}%`);
-    block.appendChild(element("p", `A year's tax: ${d.annual_tax_minor} (${rate(part.effective_rate_bp)} of wages; your top bucket is ${rate(part.top_rate_bp)}). `
+    block.appendChild(element("p", `A year's tax: ${d.annual_tax_minor} (${part.effective_rate_percent}% of wages; your top bucket is ${part.top_rate_percent}%). `
       + `Spread over ${plan.paychecks} paychecks: about ${d.estimate_minor}. Withheld: ${d.actual_minor || "not on this stub"}`
-      + (d.difference_minor ? `, ${part.difference_minor > 0 ? "more" : "less"} than the estimate by ${d.difference_minor.replace("-", "")}.` : ".")));
+      + (part.difference_word ? `, ${part.difference_word} than the estimate by ${d.difference_size_minor}.` : ".")));
     const sources = element("p", "Table: ", "muted small");
-    part.sources.forEach((source, index) => { const link = element("a", source.title || source.url); link.href = source.url; link.target = "_blank"; link.rel = "noreferrer"; sources.append(index ? ", " : "", link); });
+    // Addresses the model read from the web are shown as text, never live links (docs/ui.md "Conventions").
+    part.sources.forEach((source, index) => sources.append(index ? ", " : "", ...(source.title ? [`${source.title} `] : []), element("span", source.url, "mono")));
     if (part.sources.length) block.appendChild(sources);
     section.appendChild(block);
   }
@@ -849,7 +854,7 @@ function withholdingSection(record) {
     const body = table.createTBody();
     for (const row of plan.fica) {
       const tr = body.insertRow(); const th = tr.appendChild(element("th", row.name)); th.scope = "row";
-      th.appendChild(element("small", `${row.rate_bp / 100}%${row.additional_wages_minor ? ` + ${row.additional_rate_bp / 100}%` : ""} of wages`, "muted"));
+      th.appendChild(element("small", `${row.rate_percent}%${row.additional_wages_minor ? ` + ${row.additional_rate_percent}%` : ""} of wages`, "muted"));
       for (const key of ["wages_minor", "estimate_minor", "actual_minor", "difference_minor"]) tr.appendChild(element("td", "", "numeric")).appendChild(amount(row.display[key] || "—", {signed: key === "difference_minor"}));
     }
     wrap.appendChild(table); block.appendChild(wrap);

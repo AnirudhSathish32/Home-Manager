@@ -2,7 +2,7 @@
 
 http.client never consults proxy settings and never follows redirects, so neither
 can be inherited or triggered by a document. Endpoints are validated URLs: a loopback
-server on this computer, or a family GPU computer on the tailnet (models/gpu_host.py).
+server on this computer, or a shared GPU computer on the tailnet (models/gpu_host.py).
 """
 
 from contextlib import contextmanager
@@ -31,8 +31,8 @@ UNENFORCED_SCHEMA = "Reply with one JSON object and nothing else. It must match 
 VOLATILE_METADATA = {"created", "object", "state", "loaded_context_length"}
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
 TS_NET_HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$")
-REMOTE_OFFLINE = "The family GPU computer is offline or not on Tailscale. Check that Tailscale is connected on both computers and the GPU host is running."
-# host:port -> bearer token for a family GPU computer. Set by the app from its control
+REMOTE_OFFLINE = "The shared GPU computer is offline or not on Tailscale. Check that Tailscale is connected on both computers and the GPU host is running."
+# host:port -> bearer token for a shared GPU computer. Set by the app from its control
 # directory; never part of a model config, so it never reaches run options or the database.
 _tokens = {}
 # In-process callbacks that see every attempt's raw output (evals). Never persisted by the app.
@@ -77,10 +77,10 @@ def server_error(status, body: bytes, remote=False):
     # Inspect only for known diagnostic categories. Server bodies can echo receipt
     # contents, paths or prompts, so never persist or display the raw error body.
     body = body.decode("utf-8", errors="replace").lower()
-    prefix = f"{'Family GPU computer' if remote else 'Local model server'} returned HTTP {status}. "
+    prefix = f"{'Shared GPU computer' if remote else 'Local model server'} returned HTTP {status}. "
     if status in (401, 403):
         if remote:
-            return prefix + "Your family GPU token was rejected. Ask the person who runs the GPU computer for a new one."
+            return prefix + "Your shared GPU token was rejected or has expired. Ask the person who runs the GPU computer for a new one."
         return prefix + "The server requires authorization. This adapter currently supports a loopback server without API-token authentication."
     if any(value in body for value in ("out of memory", "cuda out", "failed to allocate", "insufficient memory")):
         return prefix + "The server reported insufficient memory. Unload other models, reduce GPU offload/context, or use a smaller model."

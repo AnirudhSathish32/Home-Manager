@@ -13,10 +13,13 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 import json
 
+from ..core import actor
 from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS, RECURRING_KINDS, suggested_kind
+from ..core.trace import NULL
 from ..library.storage import now
 from .fx import REPORTING, EcbRates, FxError
 from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction, name_tokens, normalize_name
+from .provenance import light
 
 RECEIPT_POSTING_DAYS, TRANSFER_DAYS, REFUND_DAYS = 5, 5, 120
 # A charge up to 30% above a receipt's total (a tip added after printing, a currency conversion)
@@ -81,13 +84,28 @@ def bill_payments(db, bill, start=None, end=None):
     amounts = (bill["currency"], bill["expected_amount_minor"] * low, bill["expected_amount_minor"] * high)
     rows = db.execute(
         f"SELECT * FROM (SELECT 'transaction' AS record_type,t.id,coalesce(t.transaction_date,t.posted_date) AS day,-t.amount_minor AS amount,"
-        f"{TRANSACTION_CATEGORY} AS category,t.description_raw||' '||coalesce(m.canonical_name,'') AS name FROM transactions t "
+        f"{TRANSACTION_CATEGORY} AS category,t.description_raw||' '||coalesce(m.canonical_name,'') AS name,t.origin FROM transactions t "
         f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND t.transaction_type IN ('purchase','fee') AND t.currency=? "
         f"AND -t.amount_minor*100 BETWEEN ? AND ? "
-        f"UNION ALL SELECT 'receipt',r.id,r.purchase_date,r.total_minor,coalesce(r.category,'uncategorized'),coalesce(m.canonical_name,'') FROM receipts r "
+        f"UNION ALL SELECT 'receipt',r.id,r.purchase_date,r.total_minor,coalesce(r.category,'uncategorized'),coalesce(m.canonical_name,''),'extraction' FROM receipts r "
         f"LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT} AND r.currency=? AND r.total_minor*100 BETWEEN ? AND ?) "
         f"WHERE 1=1{window} ORDER BY day,record_type,id", (*amounts, *amounts, *params)).fetchall()
     return [dict(row) for row in rows if bill_matches(bill, row["name"], bill["currency"])]
+
+
+def expected_amount(paid, currency=None, recorder=NULL):
+    """A bill's usual amount: the average of its last three payments (or fewer, when that's all there are), rounded half
+    to even. A live recorder gets each payment's share rounded down, and the rest of the rounding."""
+    recent = paid[-3:]
+    expected = int((Decimal(sum(payment["amount"] for payment in recent)) / len(recent)).to_integral_value(ROUND_HALF_EVEN))
+    if recorder.live:
+        parts = [payment["amount"] // len(recent) for payment in recent]
+        for payment, part in zip(recent, parts):
+            recorder.add(f"{payment['day']} payment ÷ {len(recent)}", part, currency)
+            recorder.input(f"{payment['record_type']}:{payment['id']}", f"{' '.join(payment['name'].split())} · {payment['day']}", payment["amount"], currency,
+                           light(payment["record_type"], payment["id"], payment["origin"]))
+        recorder.round(expected - sum(parts), currency, note="The average is rounded once, half to even.")
+    return expected
 
 
 # Scoring rules: integer points plus the signals that earned them. Callers have already
@@ -137,7 +155,8 @@ class Reconciler:
             run_id = db.execute("INSERT INTO reconciliation_runs(trigger,status,started_at) VALUES(?,'running',?)", (trigger, now())).lastrowid
         try:
             with self.store.connection() as db:
-                summary = {"receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
+                summary = {"manual_replaced": self.replace_manual(db),  # First, so receipts and bills match the real line.
+                           "receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
                            "investment_transfers": self.investment_transfers(db), "recurring": self.recurring(db) + self.propose_bills(db)}
                 self.track_bills(db)
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
@@ -197,8 +216,8 @@ class Reconciler:
                 self.link_choice(db, ISSUE_KINDS[issue["issue_type"]], issue["record_id"], chosen)
                 resolution = "linked"
             db.execute("UPDATE reconciliation_issues SET status='resolved',resolution=?,updated_at=? WHERE id=?", (resolution, now(), issue_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('reconciliation_issue',?,'open',?,?,?)",
-                       (issue_id, resolution, f"Chose transaction {transaction_id}." if transaction_id else "", now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('reconciliation_issue',?,'open',?,?,?,?)",
+                       (issue_id, resolution, f"Chose transaction {transaction_id}." if transaction_id else "", now(), actor.current()))
         return {"id": issue_id, "resolution": resolution, "transaction_id": transaction_id}
 
     def link_choice(self, db, kind, record_id, chosen):
@@ -298,8 +317,8 @@ class Reconciler:
                            "VALUES('ambiguous_investment_transfer','investment_event',?,?,'resolved','left_unmatched',?,?) ON CONFLICT(issue_type,record_type,record_id) "
                            "DO UPDATE SET status='resolved',resolution='left_unmatched',updated_at=excluded.updated_at",
                            (event_id, json.dumps({"candidate_transaction_ids": []}), now(), now()))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('investment_payment_link',?,'linked','unlinked',?,?)",
-                       (event_id, f"Transaction {event['transaction_id']} is not this payment.", now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('investment_payment_link',?,'linked','unlinked',?,?,?)",
+                       (event_id, f"Transaction {event['transaction_id']} is not this payment.", now(), actor.current()))
         return {"event_id": event_id, "question": bool(candidates), "candidates": len(candidates)}
 
     @staticmethod
@@ -576,6 +595,33 @@ class Reconciler:
                                                  "WHERE o.id=?", (cursor.lastrowid,)).fetchone()))
         return created
 
+    def replace_manual(self, db):
+        """A transaction entered by hand counts at once. When the statement or import line for the same payment arrives
+        and counts (same account, currency and amount, posted within RECEIPT_POSTING_DAYS either side), it replaces the
+        manual one: that stops counting and names its replacement, and a category the person chose moves across when the
+        line has none, as does a tax tag the person made or confirmed (over a rule's or a suggestion's unconfirmed tag).
+        With two or more such lines nothing is replaced, so nothing is counted twice or dropped by a guess."""
+        replaced = 0
+        for manual in db.execute("SELECT * FROM transactions WHERE origin='manual' AND review_status<>'rejected' AND replaced_by IS NULL").fetchall():
+            candidates = db.execute(f"SELECT t.id,t.category,t.posted_date FROM transactions t WHERE {COUNTABLE} AND t.origin<>'manual' AND t.account_id=? AND t.currency=? "
+                                    "AND t.amount_minor=? AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transactions x WHERE x.replaced_by=t.id)",
+                                    (manual["account_id"], manual["currency"], manual["amount_minor"], shift(manual["posted_date"], -RECEIPT_POSTING_DAYS),
+                                     shift(manual["posted_date"], RECEIPT_POSTING_DAYS))).fetchall()
+            if len(candidates) != 1:
+                continue
+            line = candidates[0]
+            db.execute("UPDATE transactions SET review_status='rejected',replaced_by=?,updated_at=? WHERE id=?", (line["id"], now(), manual["id"]))
+            if manual["category"] and manual["category_source"] == "user" and not line["category"]:
+                db.execute("UPDATE transactions SET category=?,category_source='user',updated_at=? WHERE id=?", (manual["category"], now(), line["id"]))
+            if db.execute("SELECT 1 FROM tax_tags WHERE transaction_id=? AND (source='user' OR review_status='verified')", (manual["id"],)).fetchone() and \
+                    not db.execute("SELECT 1 FROM tax_tags WHERE transaction_id=? AND (source='user' OR review_status='verified')", (line["id"],)).fetchone():
+                db.execute("DELETE FROM tax_tags WHERE transaction_id=?", (line["id"],))
+                db.execute("UPDATE tax_tags SET transaction_id=?,tax_date=?,updated_at=? WHERE transaction_id=?", (line["id"], line["posted_date"], now(), manual["id"]))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('transaction',?,?,'rejected',?,?)",
+                       (manual["id"], manual["review_status"], f"Replaced by transaction {line['id']}, the same payment from its statement or import.", now()))
+            replaced += 1
+        return replaced
+
     def track_bills(self, db):
         """Bring every open bill up to date with its latest matched payment."""
         for bill in self.bills(db):
@@ -585,9 +631,7 @@ class Reconciler:
             if not paid:
                 continue
             latest = paid[-1]["day"]
-            recent = [payment["amount"] for payment in paid[-3:]]
-            expected = int((Decimal(sum(recent)) / len(recent)).to_integral_value(ROUND_HALF_EVEN))
-            update = (expected, latest, due_after(latest, bill["frequency"]))
+            update = (expected_amount(paid), latest, due_after(latest, bill["frequency"]))
             if update != (bill["expected_amount_minor"], bill["last_paid_date"], bill["next_due_date"]):
                 db.execute("UPDATE recurring_obligations SET expected_amount_minor=?,last_paid_date=?,next_due_date=?,updated_at=? WHERE id=?",
                            (*update, now(), bill["id"]))
@@ -650,6 +694,8 @@ class Reconciler:
             row = db.execute("SELECT * FROM recurring_obligations WHERE id=?", (obligation_id,)).fetchone()
             if row is None:
                 raise ValueError("Recurring payment not found.")
+            if status == "ended" and row["status"] != "verified":
+                raise ValueError("Only a confirmed recurring payment can end.")
             if kind and kind != row["kind"]:
                 db.execute("UPDATE recurring_obligations SET kind=? WHERE id=?", (kind, obligation_id))
                 note = f"Kind: {kind}. {note}".strip()
@@ -662,8 +708,8 @@ class Reconciler:
                            (frequency, due_after(paid, frequency) if paid else None, obligation_id))
                 note = f"How often: {frequency}. {note}".strip()
             db.execute("UPDATE recurring_obligations SET status=?,updated_at=? WHERE id=?", (status, now(), obligation_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('recurring_obligation',?,?,?,?,?)",
-                       (obligation_id, row["status"], status, note[:1000], now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('recurring_obligation',?,?,?,?,?,?)",
+                       (obligation_id, row["status"], status, note[:1000], now(), actor.current()))
         return {"id": obligation_id, "status": status}
 
     def set_obligation_kind(self, obligation_id, kind):
@@ -678,6 +724,6 @@ class Reconciler:
                 raise ValueError("Only a proposed or confirmed recurring payment can be changed.")
             if kind != row["kind"]:
                 db.execute("UPDATE recurring_obligations SET kind=?,updated_at=? WHERE id=?", (kind, now(), obligation_id))
-                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('recurring_obligation',?,?,?,?,?)",
-                           (obligation_id, row["status"], row["status"], f"Kind: {row['kind']} to {kind}.", now()))
+                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('recurring_obligation',?,?,?,?,?,?)",
+                           (obligation_id, row["status"], row["status"], f"Kind: {row['kind']} to {kind}.", now(), actor.current()))
         return {"id": obligation_id, "kind": kind}

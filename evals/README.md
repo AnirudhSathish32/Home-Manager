@@ -59,7 +59,7 @@ What a run does:
 - **Reads each case through the app's real pipeline.** Capture, reading and extraction run in a throwaway library that is deleted afterwards, so the eval measures exactly what the app does.
 - **Runs only on this computer.**
   - It refuses any server other than `http://127.0.0.1:PORT/v1`.
-  - It refuses the family GPU relay, by its port or by its listing.
+  - It refuses the shared GPU relay, by its port or by its listing.
   - It checks that every model is listed before the first case.
   - It blocks every network connection except loopback for the whole process.
 - **Loads each candidate's models before its cases.** A model that cannot load (out of memory, for example) is recorded as one `load_fail` per case, and the run moves on to the next candidate.

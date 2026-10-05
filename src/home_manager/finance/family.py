@@ -6,10 +6,12 @@ module only adds them together, so the family total always equals the sum of its
 """
 
 from contextlib import contextmanager
+import copy
 from datetime import date
 import sqlite3
 
 from ..core.money import money
+from ..core.trace import figure, ref
 from ..library.storage import Store, now
 from .dashboard import CURRENCIES_SQL, choose_currency, dashboard, group_categories, periods
 from .forecast import Assets, baseline
@@ -84,8 +86,13 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
         # Each member's three soonest include the family's three soonest.
         maturities += [{**row, "member": member["name"]} for row in data["maturities"]]
         maturity_count += data["maturities_total"]
-        breakdown.append({"member_id": member["member_id"], "name": member["name"], "as_of": member.get("as_of"),
-                          "totals": data["totals"], "cashflow": data["cashflow"], "series": data["series"]})
+        mine = {"start": period.start, "end": period.end, "currency": chosen, "member": member["member_id"]}
+        own = copy.deepcopy({"totals": data["totals"], "cashflow": data["cashflow"]})  # Their own figures, traced on their copy.
+        if own["totals"]:
+            own["totals"]["net_spending"]["trace"] = ref("spending.net", **mine)
+        if own["cashflow"]:
+            own["cashflow"]["net"]["trace"], own["cashflow"]["outflow"]["trace"] = ref("cashflow.net", **mine), ref("spending.net", **mine)
+        breakdown.append({"member_id": member["member_id"], "name": member["name"], "as_of": member.get("as_of"), **own, "series": data["series"]})
         for row in data["coverage"]:
             row["display_name"] = f"{member['name']} · {row['display_name']}"
         if total is None:
@@ -102,9 +109,21 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
             total["comparison"] = combined
     if total is None:
         return None
+    # Each family figure traces to its members' (finance/traces.py family_sum).
+    shown = {"start": period.start, "end": period.end, "currency": chosen}
+    for row in raw_categories.values():
+        row["spending"] = figure(row["spending"]["minor"], chosen, ref("family.spending.category", category=row["category"], **shown))
     ordered = sorted(raw_categories.values(), key=lambda row: -row["spending"]["minor"])
-    total["categories"], gross = group_categories(ordered, chosen)
-    total["gross"] = money(gross, chosen)
+    total["categories"], gross, total["categories_chartable"] = group_categories(ordered, chosen)
+    for row in total["categories"]:
+        if row["category"] == "Other":
+            row["spending"]["trace"] = ref("family.spending.other", **shown)
+    total["gross"] = figure(gross, chosen, ref("family.spending.gross", **shown))
+    if total["totals"]:
+        total["totals"]["net_spending"] = figure(total["totals"]["net_spending"]["minor"], chosen, ref("family.spending.net", **shown))
+    if total["cashflow"]:
+        total["cashflow"]["net"] = figure(total["cashflow"]["net"]["minor"], chosen, ref("family.cashflow.net", **shown))
+        total["cashflow"]["outflow"] = figure(total["cashflow"]["outflow"]["minor"], chosen, ref("family.spending.net", **shown))
     bills.sort(key=lambda bill: (bill["due_date"], bill["provider"]))
     as_of = today.isoformat()
     total["bills"].update(upcoming=[bill for bill in bills if bill["due_date"] >= as_of][:3],
@@ -126,8 +145,11 @@ def family_net_worth(members, currency=None, history_months=3, today=None):
         loans = sum(asset["value_minor"] for asset in base["assets"] if asset["kind"] == "loan")
         rows.append({"member_id": member["member_id"], "name": member["name"], "cash": base["cash"], "assets": assets, "loans": loans,
                      "net_worth": base["cash"] + assets - loans, "notes": base["notes"]})
-    view = lambda row: {**row, **{key: money(row[key], chosen) for key in ("cash", "assets", "loans", "net_worth")}}
+    # Each member's figure traces on their copy (worth.today with member); the family's adds them up.
+    worth = lambda key, **more: ref("worth.today", figure=key, currency=chosen, history_months=history_months, **more)
+    view = lambda row: {**row, **{key: figure(row[key], chosen, worth(key, member=row["member_id"])) for key in ("cash", "assets", "loans", "net_worth")}}
     total = {key: sum(row[key] for row in rows) for key in ("cash", "assets", "loans", "net_worth")}
-    return {"currency": chosen, "members": [view(row) for row in rows], "total": {key: money(value, chosen) for key, value in total.items()},
+    return {"currency": chosen, "members": [view(row) for row in rows],
+            "total": {key: figure(value, chosen, "family." + worth(key)) for key, value in total.items()},
             "notes": ["Cash is each account's latest statement balance (card balances count as owed). Assets and loans are the ones "
                       "each member verified. A joint account is counted once."]}

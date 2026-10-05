@@ -15,9 +15,13 @@ tag on the bank line it is matched to.
 from decimal import ROUND_HALF_EVEN, Decimal
 import re
 
-from ..core.money import format_minor, money, to_minor
+from ..core import actor
+from ..core.money import format_minor, money, percent_text, to_minor
+from ..core.trace import NULL, figure, ref
 from ..library.storage import now
+from . import rules
 from .ledger import COUNTABLE, normalize_name
+from .provenance import light
 from .reconcile import payee_key
 from .tax_lines import BUSINESS_KINDS, INCOME_KINDS, KINDS, LINES, SHARE_BP, check, labels
 
@@ -143,8 +147,8 @@ class TaxTags:
             if row is None:
                 raise ValueError("Tag not found.")
             db.execute("UPDATE tax_tags SET review_status='rejected',source=CASE WHEN source='rule' THEN 'user' ELSE source END,updated_at=? WHERE id=?", (now(), tag_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('tax_tag',?,?,'rejected','',?)",
-                       (tag_id, row["review_status"], now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('tax_tag',?,?,'rejected','',?,?)",
+                       (tag_id, row["review_status"], now(), actor.current()))
         return self.get(tag_id)
 
     def review(self, tag_id, status, rule_words=None):
@@ -156,8 +160,8 @@ class TaxTags:
             if row is None:
                 raise ValueError("Tag not found.")
             db.execute("UPDATE tax_tags SET review_status=?,updated_at=? WHERE id=?", (status, now(), tag_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('tax_tag',?,?,?,'',?)",
-                       (tag_id, row["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('tax_tag',?,?,?,'',?,?)",
+                       (tag_id, row["review_status"], status, now(), actor.current()))
         if status == "verified" and rule_words:
             self.add_rule(rule_words, row["kind"], row["line"], row["business_id"])
         return self.get(tag_id)
@@ -319,9 +323,10 @@ class TaxTags:
 
     # The year -----------------------------------------------------------------------
 
-    def year(self, year, currency):
+    def year(self, year, currency, recorder=NULL, only=None):
         """Confirmed tags that count in a tax year, by kind and line (and business), each item once. Items that don't count
-        (a rejected bank line, an unconfirmed receipt) are left out."""
+        (a rejected bank line, an unconfirmed receipt) are left out. only: (kind, line, business id or None) whose tags a
+        live recorder gets, each item's counted part (finance/tax_traces.py)."""
         rows = [row for row in self.list(status="verified", year=year) if row["currency"] == currency]
         notes = []
         with self.store.connection() as db:
@@ -356,8 +361,19 @@ class TaxTags:
             entry["counted_minor"] += row["counted_minor"]
             entry["items"] += 1
             entry["tag_ids"].append(row["id"])
+            if recorder.live and key == only:
+                share = SHARE_BP.get((row["kind"], row["line"]))
+                target = next(kind for kind in TARGETS if row[f"{kind}_id"])
+                recorder.add(f"{row['target']['description']} · {row['tax_date']}" + (f" · {percent_text(share)}% of it" if share else ""),
+                             row["counted_minor"], currency)
+                recorder.input(f"{target}:{row[f'{target}_id']}", f"{row['target']['description']} · {row['tax_date']}", row["amount_minor"], currency,
+                               light(target, row[f"{target}_id"], kind="manual" if row["source"] == "user" else "computed"))
+                if share:
+                    recorder.rule(rules.rule("meals_share"))
         order = {kind: index for index, kind in enumerate(LINES)}
         lines = sorted(totals.values(), key=lambda entry: (order[entry["kind"]], entry["business"] or "", [key for key, _, _ in LINES[entry["kind"]]].index(entry["line"])))
         for entry in lines:
-            entry["amount"], entry["counted"] = money(entry["amount_minor"], currency), money(entry["counted_minor"], currency)
+            entry["amount"] = money(entry["amount_minor"], currency)
+            entry["counted"] = figure(entry["counted_minor"], currency, ref("tax.tags", year=year, currency=currency, kind=entry["kind"], line=entry["line"],
+                                                                         business_id=entry["business_id"]))
         return {"year": year, "currency": currency, "lines": lines, "notes": notes}

@@ -223,6 +223,12 @@ def test_browser_prompts_to_reconcile_and_lists_receipt_subfolders(tmp_path):
             page.wait_for_timeout(500)  # Let the viewer finish loading.
             page.locator("#close-receipt").click()
             playwright.expect(page.locator("#library-panel")).to_be_visible()
+            # A preview that fails is said beside the image, and the rest of the page still loads (never stuck on "Loading").
+            page.route("**/preview*", lambda route: route.fulfill(status=500, content_type="application/json", body='{"detail": "Synthetic preview failure."}'))
+            page.evaluate(f"location.hash = '#/documents/{pdf['id']}'")
+            playwright.expect(page.locator("#receipt-preview-error")).to_contain_text("Synthetic preview failure.")
+            playwright.expect(page.locator("#receipt-status")).not_to_contain_text("Loading the preserved document")
+            page.unroute("**/preview*")
             assert not failures
             browser.close()
     finally:

@@ -13,6 +13,9 @@ owed in all. Annualized-income installments (Schedule AI) aren't worked out, and
 
 from datetime import date, timedelta
 
+from ..core.trace import NULL
+
+CURRENCY = "USD"
 RULES_VERSION = "2026-1"  # Fixed in the law, not indexed; a change in law is a new version.
 THIS_YEAR_BP, LAST_YEAR_BP, LAST_YEAR_HIGH_BP = 9000, 10000, 11000  # §6654(d)(1)(B), (C)
 HIGH_AGI = 15_000_000  # §6654(d)(1)(C)(i): $150,000 of last year's AGI.
@@ -29,15 +32,21 @@ def due_dates(year):
     return dates
 
 
-def required_payment(total_tax, prior):
-    """The required annual payment, and which rule set it. prior: last year's {"tax_minor", "agi_minor"}, or None."""
+def required_payment(total_tax, prior, recorder=NULL, total_trace=None):
+    """The required annual payment, and which rule set it. prior: last year's {"tax_minor", "agi_minor"}, or None. A live
+    recorder gets the steps of the rule that set it (total_trace: the ref of this year's total tax)."""
     this_year = total_tax * THIS_YEAR_BP // 10000
-    if not prior or prior.get("tax_minor") is None:
-        return this_year, "90% of this year's tax"
-    high = (prior.get("agi_minor") or 0) > HIGH_AGI
-    last_year = prior["tax_minor"] * (LAST_YEAR_HIGH_BP if high else LAST_YEAR_BP) // 10000
-    if last_year < this_year:
+    high = bool(prior) and (prior.get("agi_minor") or 0) > HIGH_AGI
+    last_year = None if not prior or prior.get("tax_minor") is None else prior["tax_minor"] * (LAST_YEAR_HIGH_BP if high else LAST_YEAR_BP) // 10000
+    if last_year is not None and last_year < this_year:
+        if recorder.live:
+            recorder.add("Last year's total tax", prior["tax_minor"], CURRENCY)
+            if high:
+                recorder.add("10% more: last year's AGI was over $150,000", last_year - prior["tax_minor"], CURRENCY)
         return last_year, f"{'110' if high else '100'}% of last year's tax"
+    if recorder.live:
+        recorder.add("This year's total tax", total_tax, CURRENCY, trace=total_trace)
+        recorder.add("The 10% the safe harbor doesn't ask for", this_year - total_tax, CURRENCY)
     return this_year, "90% of this year's tax"
 
 
@@ -61,9 +70,11 @@ def evaluate(year, total_tax, withheld, refundable, estimated_payments, prior=No
     for index, due in enumerate(dates):
         running += by_quarter[index]
         share = required * (index + 1) // 4
-        covered = (withheld + refundable) * (index + 1) // 4 + running
+        withholding_share = (withheld + refundable) * (index + 1) // 4
+        covered = withholding_share + running
+        # What estimated payments must have reached by this due date: Tax Zen's advance tax shows this (tax_zen.advance_tax).
         quarters.append({"quarter": index + 1, "due": due.isoformat(), "required_by_now_minor": share, "paid_by_now_minor": covered,
-                         "short": covered < share and due < today})
+                         "estimated_needed_by_now_minor": max(0, share - withholding_share), "short": covered < share and due < today})
     short = [row["quarter"] for row in quarters if row["short"]]
     satisfied = under_1000 or meets_required
     risk = "none" if satisfied and not short or under_1000 else "possible" if satisfied else "likely"

@@ -82,6 +82,12 @@ def test_a_categorized_charge_proposes_a_bill_the_user_confirms_or_rejects(books
     assert reconciler.run()["recurring"] == 0  # A rejected payee is never proposed again.
     geico = bills(FinanceTools(store))["GEICO AUTO"]
     assert (geico["status"], geico["frequency"], geico["next_due_date"]) == ("verified", "semiannual", "2027-03-10")
+    # Only a confirmed payment can end: a rejected one can't, and ending one twice is refused.
+    with pytest.raises(ValueError, match="Only a confirmed"):
+        reconciler.review_obligation(found["ACME LOANS"]["id"], "ended")
+    assert reconciler.review_obligation(geico["id"], "ended")["status"] == "ended"
+    with pytest.raises(ValueError, match="Only a confirmed"):
+        reconciler.review_obligation(geico["id"], "ended")
 
 
 def test_confirmed_bills_are_forecast_on_schedule_and_budgeted(books):
@@ -114,6 +120,9 @@ def test_upcoming_bills_are_confirmed_recurring_bills_by_next_due_date(books):
     reconciler.review_obligation(bills(tools)["Oak Street Rentals"]["id"], "verified")
     assert upcoming("2026-09-20") == [("Oak Street Rentals", "2026-10-01", "1500.00", "due")]
     assert upcoming("2026-10-05") == [("Oak Street Rentals", "2026-10-01", "1500.00", "overdue")]  # No payment found since.
+    # The Bills page's groups come from the server: overdue, within seven days, or later.
+    group = lambda day: [bill["group"] for bill in tools.get_upcoming_bills(AsOfInput(as_of=day))["bills"]]
+    assert (group("2026-10-05"), group("2026-09-24"), group("2026-09-23")) == (["overdue"], ["this_week"], ["later"])
     checking = ledger.create_account("First Local Bank", "checking", "USD")
     add(store, ledger, checking, docs["export.csv"], [("2026-10-03", "OAK STREET RENTALS", -150000)])
     reconciler.run()

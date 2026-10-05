@@ -227,7 +227,7 @@ dialog code { display: block; overflow-wrap: anywhere; margin: var(--space-1) 0;
 .data-table td.nowrap, .data-table td.profile-name > span { white-space: nowrap; overflow-wrap: normal; }
 .data-table td.profile-name { min-width: 120px; }
 #profile-form, #family-section > h2, #family-section > .form { margin-top: var(--space-6); }
-/* Family inbox: each upload beside its decision (app-ux rule 1: what, why and the button together). */
+/* Family inbox: each upload beside its decision (docs/ui.md "Layout" rule 1: what, why and the button together). */
 .family-routing { margin-bottom: var(--space-4); }
 .routing-list { margin: 0; padding: 0; list-style: none; }
 .routing-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px solid var(--border); }

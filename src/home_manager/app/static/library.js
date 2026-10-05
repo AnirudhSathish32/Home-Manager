@@ -107,7 +107,7 @@ function jobsGroup(catalog) {
   if (!jobsOpen) return [toggle];
   const rows = [toggle, folderButton("Jobs", catalog.counts.Jobs, null, "All job documents")];
   for (const employer of catalog.jobs || []) {
-    const total = employer.sections.Paystubs + employer.sections.Documents, open = openEmployers.has(employer.id);
+    const total = employer.total, open = openEmployers.has(employer.id);
     rows.push(groupToggle(`employer-${employer.id}`, employer.name, total, open,
                           () => { if (open) openEmployers.delete(employer.id); else openEmployers.add(employer.id); }, "subfolder"));
     if (open) {
@@ -331,17 +331,18 @@ async function afterLibraryChange() {
   if (receipt) await refreshInspectorDoc();
 }
 async function eachDocument(docs, request) {
-  // Applies one action per document; reports every failure instead of stopping at the first.
+  // Applies one action per document; reports every failure instead of stopping at the first. Each request's own
+  // answer is counted (one request per document, so the server never sees the batch).
   const failures = [];
+  let done = 0;
   for (const doc of docs) {
-    try { await request(doc); } catch (error) { failures.push(`${documentName(doc)}: ${error.message}`); }
+    try { await request(doc); done += 1; } catch (error) { failures.push(`${documentName(doc)}: ${error.message}`); }
   }
-  return failures;
+  return {done, failures};
 }
 async function restoreDocuments(docs) {
-  const failures = await eachDocument(docs, doc => api(`/api/documents/${doc.id}/restore`, {method:"POST", body:JSON.stringify({expected_hash:doc.current_hash})}));
+  const {done: restored, failures} = await eachDocument(docs, doc => api(`/api/documents/${doc.id}/restore`, {method:"POST", body:JSON.stringify({expected_hash:doc.current_hash})}));
   await afterLibraryChange();
-  const restored = docs.length - failures.length;
   if (restored) notice(restored === 1 ? "Document restored to the library." : `${restored} documents restored to the library.`);
   if (failures.length) notice(`${failures.length} couldn't be restored. ${failures.join(" ")}`, true);
 }
@@ -417,12 +418,11 @@ $("confirm-library-action").addEventListener("click", async () => {
       if (result.cleanup_pending) notice("Some files could not be removed. Close them in other programs and retry Empty trash, or restart the app to retry cleanup.", true);
       return;
     }
-    const failures = await eachDocument(docs, doc => api(`/api/documents/${doc.id}/${action === "trash" ? "trash" : "folder"}`,
+    const {done, failures} = await eachDocument(docs, doc => api(`/api/documents/${doc.id}/${action === "trash" ? "trash" : "folder"}`,
       {method: action === "trash" ? "POST" : "PUT", body: JSON.stringify(action === "trash" ? {expected_hash: doc.current_hash, confirmed: true} : {expected_hash: doc.current_hash, folder})}));
-    if (failures.length === docs.length) { $("library-action-error").textContent = failures.join(" "); return; }
+    if (!done) { $("library-action-error").textContent = failures.join(" "); return; }
     pendingLibraryAction = null; $("library-action-dialog").close();
     await afterLibraryChange();
-    const done = docs.length - failures.length;
     notice(action === "trash" ? (done === 1 ? "Document moved to Trash. You can restore it from Trash." : `${done} documents moved to Trash. You can restore them from Trash.`)
       : (done === 1 ? "Document moved to the selected folder." : `${done} documents moved to the selected folder.`));
     if (failures.length) notice(`${failures.length} couldn't be changed. ${failures.join(" ")}`, true);

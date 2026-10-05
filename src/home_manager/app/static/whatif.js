@@ -114,7 +114,7 @@ function fillPaycheck(value) {
   for (const bonus of value.bonuses || []) bonusRow(bonus);
 }
 
-const planRate = points => points == null ? "—" : `${(points / 100).toFixed(2).replace(/\.?0+$/, "")}%`;
+const planRate = percent => percent == null ? "—" : `${percent}%`;  // The server's *_percent text.
 function planTableRow(body, label, how, perCheck, perYear, className = "") {
   const tr = body.insertRow(); if (className) tr.className = className;
   const th = tr.appendChild(element("th", label)); th.scope = "row";
@@ -200,8 +200,8 @@ function paycheckJurisdictions(result) {
       for (const key of ["income_minor", "tax_minor", "per_paycheck_tax_minor"]) tr.appendChild(element("td", "", "numeric")).appendChild(amount(bucket.display[key], {signed: false}));
     }
     wrap.appendChild(table); details.append(element("summary", "Show every bucket"), wrap); block.appendChild(details);
-    block.appendChild(element("p", `A year's tax: ${d.annual_tax_minor}${part.credits_minor ? ` after ${d.credits_minor} of credits` : ""} (${planRate(part.effective_rate_bp)} of wages; `
-      + `top bucket ${planRate(part.top_rate_bp)}). Each paycheck: ${d.estimate_minor}${part.extra_withholding_minor ? ` plus ${d.extra_withholding_minor} extra withholding` : ""}.`));
+    block.appendChild(element("p", `A year's tax: ${d.annual_tax_minor}${part.credits_minor ? ` after ${d.credits_minor} of credits` : ""} (${planRate(part.effective_rate_percent)} of wages; `
+      + `top bucket ${planRate(part.top_rate_percent)}). Each paycheck: ${d.estimate_minor}${part.extra_withholding_minor ? ` plus ${d.extra_withholding_minor} extra withholding` : ""}.`));
     section.appendChild(block);
   }
   return section;
@@ -222,9 +222,9 @@ function renderPaycheck(result) {
     const dd = element("dd", "", big ? "plan-figure" : ""); dd.appendChild(amount(value, {signed: false}));
     headline.append(element("dt", label), dd);
   }
-  const rates = element("p", `Taxes take ${planRate(result.rates.total_tax_bp)} of gross pay; you keep ${planRate(result.rates.take_home_bp)}.`
-    + (result.rates.federal_marginal_bp != null ? ` Top federal bucket ${planRate(result.rates.federal_marginal_bp)}` : "")
-    + (result.rates.state_marginal_bp != null ? `, top ${result.state_name} bucket ${planRate(result.rates.state_marginal_bp)}.` : result.rates.federal_marginal_bp != null ? "." : ""), "muted small");
+  const rates = element("p", `Taxes take ${planRate(result.rates.total_tax_percent)} of gross pay; you keep ${planRate(result.rates.take_home_percent)}.`
+    + (result.rates.federal_marginal_percent != null ? ` Top federal bucket ${planRate(result.rates.federal_marginal_percent)}` : "")
+    + (result.rates.state_marginal_percent != null ? `, top ${result.state_name} bucket ${planRate(result.rates.state_marginal_percent)}.` : result.rates.federal_marginal_percent != null ? "." : ""), "muted small");
   const parts = [element("h2", "From gross pay to net pay"), headline, rates];
   const taxTime = result.tax_time;
   if (taxTime?.ready) parts.push(element("p", taxTimeText(taxTime, "With this paycheck alone for a full year"), "small"));
@@ -552,8 +552,6 @@ $("scenario-try").addEventListener("click", () => {
 });
 
 // Following a plan (finance/plan_tracking.py): its set spending as budgets, then planned pay and spending against what happened.
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const monthText = month => `${MONTH_NAMES[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
 function thisMonth() { const today = new Date(); return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`; }
 function trackTable(columns, rows, fill) {
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();

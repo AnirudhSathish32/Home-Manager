@@ -1002,6 +1002,22 @@ def review_reasons(kind, record, decision=None, issues=()):
     return reasons
 
 
+def whole_percent(probability):
+    """A model probability (0–1) as whole-percent text, rounded half-even, or None."""
+    return None if probability is None else str(int((Decimal(str(probability)) * 100).to_integral_value(ROUND_HALF_EVEN)))
+
+
+def check_counts(check):
+    """An independent check as the document page shows it, counted here: values scored, confirmed and not scored, and each
+    probability as percent text."""
+    checks = [{**item, "probability_percent": whole_percent(item["probability"])} for item in check.get("checks", [])]
+    scored = [item for item in checks if item["supported"] is not None]
+    classification = check.get("classification") or {}
+    return {**check, "checks": checks, "scored": len(scored), "confirmed": sum(1 for item in scored if item["supported"]),
+            "unscored": len(checks) - len(scored),
+            "classification": {**classification, "confidence_percent": whole_percent(classification.get("confidence"))}}
+
+
 class ExtractionService:
     def __init__(self, store, receipts):
         self.store, self.receipts, self.ledger = store, receipts, Ledger(store)
@@ -1064,6 +1080,9 @@ class ExtractionService:
         value = dict(row)
         value["config"] = json.loads(value.pop("config_json"))
         value["result"] = json.loads(value.pop("result_json") or "null")
+        for key in ("decision", "laya"):  # Laya's checks, from before decision models, share the shape.
+            if isinstance(value["result"], dict) and value["result"].get(key) and not value["result"][key].get("error"):
+                value["result"][key] = check_counts(value["result"][key])
         value["publication"] = json.loads(value.pop("publication_json") or "null")
         value["model_runs"] = self.store.model_runs(run_id)
         return value

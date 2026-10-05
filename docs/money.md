@@ -72,6 +72,40 @@ posted dates, purchase date and due date. A statement spanning two months is fou
 - **Totals show the split.** Spending results carry `from_receipts` and `receipts`: the part that so far only receipts
   show.
 
+## Manual transactions
+
+A payment entered by hand (`POST /api/finance/transactions`: account, date, description, a positive amount, money out
+or in, and an optional category) is stored with origin `manual`. It is verified by the person who entered it, and
+counts at once.
+- **Its statement line replaces it.** On the next reconciliation pass (`reconcile.replace_manual`, run first), one
+  line that matches it replaces it. That line must count, come from an import or statement in the same account and
+  currency, have the same amount, and be posted within five days either side. The manual row is rejected and names the
+  line in `replaced_by`. A category the person chose moves across when the line has none, and so does a tax tag the
+  person made or confirmed (taking the place of a rule's or a suggestion's unconfirmed tag on the line, dated by the
+  line). The payment counts once throughout.
+- **No guessing.** When two or more lines could be the same payment, nothing is replaced, so nothing is counted twice
+  or dropped.
+- There's no form for it yet. The redesigned Transactions screen adds one (docs/open-work.md "UI redesign" 6).
+
+## Corrections
+
+A value the import or the reading got wrong is corrected in place, and kept with the value it replaced, the person
+(who's here) and an optional reason (`record_corrections`). Its review state doesn't change. Each correction outlives
+reading the document again.
+- **Receipts, bills, pay stubs and statements:** `PATCH /api/finance/records/{type}/{id}` with `changes` and `reason`
+  (`ledger.CORRECTABLE`).
+- **Transactions:** the same endpoint (`ledger.correct_transaction`): the date, the amount (entered positive), its
+  direction (money out or in), the merchant and the type. A statement read again puts them back on its lines. A
+  manual entry its statement line replaced can't be corrected; the line can. Setting a category by hand is kept as a
+  correction too.
+- **Account values and tax form boxes:** `POST /api/investments/valuations/{id}/correction` and
+  `POST /api/investments/tax-forms/{id}/boxes/correction`.
+- **Holdings:** `POST /api/investments/holdings/{id}/correction` with `field` (`rate`, `maturity_date` or `value` with
+  `as_of`). Statements rewrite a holding's terms and values each time, so the correction is kept by the holding and put
+  back after each statement or confirmation. A holding you entered is changed by editing it.
+
+There's no screen for these yet; the redesigned document page adds Correct (docs/open-work.md "UI redesign" 6).
+
 ## New statements wait for you
 
 Recording a bank or credit card statement marks it `awaiting` (`statements.reconciliation`). Until you reconcile it,
@@ -99,8 +133,8 @@ one line by line:
 - **A line no longer found** is removed, along with the app's own proposals about it (matches, open questions).
 - **A line no longer found that you worked on** is kept, and the record waits in Review with a note asking you to
   check it.
-  - For a statement line, "worked on" means you categorised it, tagged it, or matched it to a receipt, a transfer or a
-    bill, or linked it to an investment.
+  - For a statement line, "worked on" means you categorised, corrected or tagged it, or matched it to a receipt, a
+    transfer or a bill, or linked it to an investment.
   - For a receipt item, it means you categorised, identified or tagged it, or it is in your household items. It is
     placed after the new reading's items.
 
@@ -402,7 +436,7 @@ spending changing, and what needs attention. Every total links to the records be
 - **Spending by category.** A donut of gross spending before refunds. Refunds are shown beside it to explain the gap
   to net spending.
   - It shows the top five categories, Other and Uncategorized, which is never folded into Other. Uncategorized is gray.
-  - Every chart has a text summary and a **View data table** control (chart rules: the `forecast-charts` skill).
+  - Every chart has a text summary and a **View data table** control (chart rules: `docs/ui.md` "Conventions").
 - **Needs attention.** Separate rows, never added into one total:
   - receipts with no matching charge (these count on their own until a charge replaces them);
   - receipts without a purchase date;

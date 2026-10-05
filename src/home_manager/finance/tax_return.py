@@ -43,14 +43,21 @@ def rate(amount, basis_points):
     return cents(Decimal(amount) * basis_points / 10000)
 
 
-def bracket_tax(amount, brackets):
-    """Exact tax on taxable income over the brackets (starts in cents over taxable income, rates in basis points)."""
-    tax = Decimal(0)
+def bracket_slices(amount, brackets):
+    """Each bracket's slice of taxable income and its exact tax: (bracket, end or None, slice, Decimal tax). Brackets start in
+    cents over taxable income, rates in basis points. The one place bracket tax is worked out: the pay stub and the
+    paycheck planner (finance/paystub.py), the state return, and Engine 2's rate schedule (engines/taxcalc.py) use it."""
+    found = []
     for index, bracket in enumerate(brackets):
         end = brackets[index + 1]["from_minor"] if index + 1 < len(brackets) else None
         piece = max(0, (min(amount, end) if end is not None else amount) - bracket["from_minor"])
-        tax += Decimal(piece) * bracket["rate_bp"] / 10000
-    return tax
+        found.append((bracket, end, piece, Decimal(piece) * bracket["rate_bp"] / 10000))
+    return found
+
+
+def bracket_tax(amount, brackets):
+    """Exact tax on taxable income over the brackets."""
+    return sum((tax for *_, tax in bracket_slices(amount, brackets)), Decimal(0))
 
 
 class Job(BaseModel):
@@ -145,7 +152,7 @@ class ReturnInput(BaseModel):
 
 
 def marginal(taxable, brackets):
-    """The ordinary rate on the next dollar of taxable income."""
+    """The ordinary rate on the next dollar of taxable income: the pay stub's top bucket and the return's top bracket."""
     found = brackets[0]["rate_bp"]
     for bracket in brackets:
         if taxable >= bracket["from_minor"]:

@@ -113,6 +113,7 @@ def test_asset_review_and_search_endpoints(tmp_path, local_model):
         assert client.post(f"/api/assets/{asset_id}/review", json={"status": "maybe"}).status_code == 422
         found = client.get("/api/search", params={"q": "vanguard"}).json()
         assert found["accounts"]["total"] == 0 and found["documents"]["total"] == 0
+        assert found["total"] == sum(found[group]["total"] for group in ("documents", "transactions", "inventory", "accounts"))
         assert client.get("/api/search", params={"q": ""}).status_code == 422
         assert client.get("/api/return-policies").json()[0]["merchant"] == "Amazon"
         policy = client.put("/api/return-policies", json={"merchant": "Corner Hardware", "days": 30}).json()

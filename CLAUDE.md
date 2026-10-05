@@ -30,9 +30,11 @@ so keep headings stable or update the citations when renaming one.
 - Temporary scripts and scratch files may use Claude's session scratchpad, which is cleaned up.
 
 ## Skills in this project
-- `forecast-charts` — chart and chart-color rules; read before changing `src/home_manager/finance/charts.py`,
-  the Home dashboard charts or any new chart.
-- `app-ux` — this app's screen rules (decision in view, source beside the record, tokens, status, money);
-  read before changing any page, layout, dialog or flow in `src/home_manager/app/static/`.
-- `frontend-design` — Anthropic's visual-design skill (Apache 2.0, copied from anthropics/claude-code); use for
-  visual direction within the `app-ux` tokens, never to replace them.
+- `ui-ux-pro-max` — visual design intelligence (styles, palettes, type, UX guidelines). Use it before changing
+  any page in `src/home_manager/app/static/` or charts in `src/home_manager/finance/charts.py`. The persisted design
+  system lives in `design-system/home-manager/MASTER.md`. On Windows run its scripts with `python`.
+- `ui-redesign` — the redesign process: phases, the per-screen planning procedure, the hand-off template the
+  implementation session builds from, the selector contract, and synthetic before/after screenshots
+  (`scripts/ui_shots.py`). Load it in plan mode before planning any redesign work, and when implementing that plan.
+- App rules beat any skill advice: `docs/ui.md` "Screen rules". That means decision in view, source beside the
+  record, money from the server, a strict CSP (no CDN fonts or assets) and no framework or build step.

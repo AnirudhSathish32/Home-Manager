@@ -2,11 +2,11 @@
 
 Each person has their own library. A family view adds the members up without merging their data, and a family inbox
 takes one upload for the whole house. An encrypted `.hmshare` export lets someone look at a copy of your library. One
-GPU computer can run the models for the whole family.
+GPU computer can run the models for the whole family, and for friends testing the app.
 
 Ground rules:
 - **Each member runs the app on their own PC.**
-- **Only model calls leave a member's machine** (rendered page images and text prompts, sent to the family GPU).
+- **Only model calls leave a member's machine** (rendered page images and text prompts, sent to the shared GPU).
 - **Documents and databases stay local.** The exceptions are the encrypted family snapshot and family deliveries
   described below, which only ever travel as ciphertext.
 
@@ -128,15 +128,17 @@ One person exports an encrypted `.hmshare` file. Another person opens it as a te
 - Sessions don't persist across restarts, by design.
 - The passphrase is the only protection once the file leaves the sender's computer. Use four or more unrelated words.
 
-## Family GPU
+## Shared GPU
 
-Family members without a GPU send their model calls to one GPU computer over **Tailscale**. Their documents and
-database stay on their own machine.
+People without a GPU send their model calls to one GPU computer over **Tailscale**. Their documents and database stay
+on their own machine. Members are either **family** or **testers**: friends outside the family trying the app. A tester
+needs no family, and the GPU computer never sees their library, only the model calls.
 
 **On the GPU computer.** `home-manager gpu-host` runs the relay (`models/gpu_host.py`). It is a small separate stdlib
 `ThreadingHTTPServer` process, independent of the main app, so it can run as a Windows startup task.
-- **Commands:** `home-manager gpu-host [serve --bind 100.x.y.z]`, `gpu-host add-member NAME`,
-  `gpu-host remove-member NAME`, `gpu-host members` (details in [operations](operations.md#commands)).
+- **Commands:** `home-manager gpu-host [serve --bind 100.x.y.z]`, `gpu-host add-member NAME [--tester]
+  [--expires YYYY-MM-DD]`, `gpu-host remove-member NAME`, `gpu-host members` (details in
+  [operations](operations.md#commands)).
 - **Two listeners on one port (8766):**
   - the Tailscale IP, where a per-member bearer token is required. `add-member` prints the token and stores only its
     SHA-256. Tailscale provides encryption and device identity; the token adds revocation per person;
@@ -160,14 +162,35 @@ database stay on their own machine.
   its own residency calls.
 - **Privacy.** The relay never logs or stores request or response bodies. It logs only member, model role, token
   counts and duration. A loopback-only `GET /status` shows who is running and who is queued.
+  - Prompts (page images and text) still pass through LM Studio, so keep any LM Studio option that logs or saves
+    request contents turned off on the GPU computer.
 
-**On a member's computer.** In Settings → Local models, choose "Model computer: Family GPU (Tailscale)" and enter the
+**Testers.**
+- **Tokens expire.** `add-member NAME --tester` gives a token that works for 30 days (`TESTER_DAYS`), or until
+  `--expires`. An expired token gets 401, as a revoked one does, and takes effect without restarting the relay.
+  `members` shows each person's kind and expiry. A `gpu_host.json` from before kinds existed reads as family members
+  with no expiry.
+- **Family first.** A tester's request waits behind this computer's and the family's, but is skipped at most
+  `MAX_SKIPS` times, so it is never starved.
+- **Joining the tailnet.** Share only the GPU computer with each tester through Tailscale's machine sharing; don't
+  invite them into the tailnet. Restrict shared users to the relay in the tailnet policy:
+
+  ```json
+  {"grants": [{"src": ["autogroup:shared"], "dst": ["tag:gpu"], "ip": ["tcp:8766"]}]}
+  ```
+
+  `tag:gpu` is the tag on the GPU computer, and the port is the one in `gpu_host.json`. The default allow-all rule
+  (`"src": ["*"]`) also covers shared users, so narrow it to `autogroup:member` first. Then a tester can't reach any
+  other port or computer, including the family hub when it exists.
+- **Their side** is the same as a family member's, below.
+
+**On a member's computer.** In Settings → Local models, choose "Model computer: Shared GPU (Tailscale)" and enter the
 host URL and token (`model_computer.json`: `provider`, `gpu_host_url`, `manage_model_loading`).
 - **The token** is kept in `gpu_token.txt` in the settings folder. It is never part of a config, a run option or an API
   response.
 - **The URL** may be only `http://<100.64.0.0/10 address or *.ts.net host>:PORT/v1`. This PC's own model settings stay
   saved, and the vision and reasoning forms still accept loopback only.
-- **Error messages.** A rejected token says to ask the host for a new one. A connection failure says the family GPU
+- **Error messages.** A rejected token says to ask the host for a new one. A connection failure says the shared GPU
   computer is offline or not on Tailscale.
 - **Test connection** works unchanged.
 - **Residency** is skipped on members' computers, because the host owns it.

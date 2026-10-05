@@ -21,6 +21,7 @@ birth year it takes the same documented default (not 65 or older), and asks when
 The app shows this engine as its slot ("Engine 2"); its name stays in this file, the records and docs/taxes.md "The tax engines".
 """
 
+import ast
 from collections import OrderedDict
 from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 import hashlib
@@ -30,8 +31,9 @@ from pathlib import Path
 import subprocess
 import sys
 
-from ..tax_engine import NEEDS, STATUSES, Capabilities, completed
-from ..tax_return import ReturnInput, rate
+from .. import worksheet
+from ..tax_engine import NEEDS, STATUSES, Capabilities, Lines, completed
+from ..tax_return import ReturnInput, bracket_tax, rate
 
 PACKAGE = "taxcalc"
 PINNED = "6.8.4"  # pyproject.toml's engine2 extra; tested against this release.
@@ -121,11 +123,35 @@ def needed(value: ReturnInput):
     return wanted
 
 
-def record_for(value: ReturnInput):
-    """One Tax-Calculator record for this profile (dollars), and notes on how it was mapped. docs/taxes.md "The tax engines" has the table."""
+# Where each record input comes from in the return's inputs ([field, sign]): the worksheet's `fact` source
+# (finance/worksheet.py). The per-person ones (…p, …s) are filled in by record_for.
+SOURCES = {"MARS": ["filing_status"], "XTOT": ["qualifying_children", "other_dependents"], "n24": ["qualifying_children"], "nu18": ["qualifying_children"],
+           "EIC": ["qualifying_children"], "f2441": ["dependent_care_people"], "age_head": ["people.birth_year"], "age_spouse": ["people.birth_year"],
+           "e00200": ["jobs.wages"], "e00900": ["businesses.profit"], "e00300": ["interest"], "e00400": ["tax_exempt_interest"], "e00600": ["ordinary_dividends"],
+           "e00650": ["qualified_dividends"], "p22250": ["short_term_gain", "-capital_loss_carryover"], "p23250": ["long_term_gain"],
+           "e01500": ["retirement_distributions"], "e01700": ["retirement_distributions"], "e02400": ["social_security_benefits"], "e02300": ["unemployment"],
+           "e00700": ["other_income", "hsa_nonqualified"], "e09900": ["early_distributions", "hsa_nonqualified"], "e03220": ["educator_expenses"],
+           "e03290": ["hsa_contributions"], "e03270": ["se_health_insurance"], "e03150": ["ira_deduction"], "e03210": ["student_loan_interest"],
+           "e03400": ["other_adjustments"], "e17500": ["medical"], "e18400": ["state_local_tax"], "e18500": ["property_tax"], "e19200": ["mortgage_interest"],
+           "e19800": ["charity"], "e20100": ["charity_noncash"], "e32800": ["dependent_care_expenses"], "e87521": ["students.expenses"],
+           "e87530": ["students.expenses"], "p08000": ["other_credits"], "tip_income": ["qualified_tips"], "overtime_income": ["qualified_overtime"]}
+INT_FIELDS = frozenset({"RECID", "FLPDYR", "MARS", "XTOT", "n24", "nu18", "EIC", "f2441", "age_head", "age_spouse"})
+
+
+def record_for(value: ReturnInput, sources: dict | None = None):
+    """One Tax-Calculator record for this profile (dollars), and notes on how it was mapped. docs/taxes.md "The tax engines" has the table.
+    sources, when given, gets each record input's ReturnInput fields ([field, sign]; SOURCES, and the per-person ones here)."""
     joint = value.filing_status == "married_joint"
     notes = []
     whose = lambda owner: "s" if joint and owner == "spouse" else "p"
+    if sources is not None:
+        sources |= {key: [[field.lstrip("-"), -1 if field.startswith("-") else 1] for field in fields] for key, fields in SOURCES.items()}
+        for person in "ps":  # One person's jobs and businesses; just "jobs" or "businesses" when they have none (it's zero).
+            jobs = [index for index, job in enumerate(value.jobs) if whose(job.owner) == person]
+            businesses = [index for index, business in enumerate(value.businesses) if whose(business.owner) == person]
+            sources[f"e00200{person}"] = [[f"jobs.{index}.wages", 1] for index in jobs] or [["jobs", 1]]
+            sources[f"pencon_{person}"] = [item for index in jobs for item in ([f"jobs.{index}.medicare_wages", 1], [f"jobs.{index}.wages", -1])] or [["jobs", 1]]
+            sources[f"e00900{person}"] = [[f"businesses.{index}.profit", 1] for index in businesses] or [["businesses", 1]]
     ages = [value.year - person.birth_year if person.birth_year else None for person in value.people[:2]]
     ages += [None] * (2 - len(ages))
     if ages[0] is None or (joint and ages[1] is None):  # As Engine 1's documented default: not 65 or older.
@@ -175,14 +201,16 @@ def record_for(value: ReturnInput):
     return record, notes
 
 
-def evaluate(record, year):
-    """The runner's JSON answer for this record and year (cached by both)."""
-    key = hashlib.sha256(json.dumps([record, year], sort_keys=True).encode()).hexdigest()
+def evaluate(record, year, outputs=(), policy=()):
+    """The runner's JSON answer for this record and year (cached by both), with the extra outputs and law parameters the
+    worksheet map reads."""
+    key = hashlib.sha256(json.dumps([record, year, list(outputs), list(policy)], sort_keys=True).encode()).hexdigest()
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
+    request = {"year": year, "record": record, "outputs": list(outputs), "policy": list(policy)}
     try:
-        done = subprocess.run([sys.executable, "-I", str(RUNNER)], input=json.dumps({"year": year, "record": record}).encode(), capture_output=True,
+        done = subprocess.run([sys.executable, "-I", str(RUNNER)], input=json.dumps(request).encode(), capture_output=True,
                               timeout=TIMEOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0)
     except subprocess.TimeoutExpired as exc:
         raise EngineFailed(f"didn't answer within {TIMEOUT} seconds.") from exc
@@ -201,15 +229,11 @@ def evaluate(record, year):
 
 
 def schedule(amount: Decimal, policy):
-    """Tax on taxable income (dollars) over the year's rate schedule for this filing status."""
-    tax, start = Decimal(0), Decimal(0)
-    for number in range(1, 8):
-        end = Decimal(str(policy[f"II_brk{number}"])) if number < 7 else None
-        rate = Decimal(str(policy[f"II_rt{number}"]))
-        if end is None or amount <= end:
-            return tax + (amount - start) * rate
-        tax, start = tax + (end - start) * rate, end
-    return tax
+    """Tax on taxable income (dollars) over the year's rate schedule for this filing status, through the one bracket function
+    (tax_return.bracket_tax): the schedule's bounds become cents and its rates basis points."""
+    brackets = [{"from_minor": Decimal(str(policy[f"II_brk{number - 1}"])) * 100 if number > 1 else Decimal(0),
+                 "rate_bp": Decimal(str(policy[f"II_rt{number}"])) * 10000} for number in range(1, 8)]
+    return bracket_tax(amount * 100, brackets) / 100
 
 
 def table_tax(taxable_minor, policy):
@@ -226,8 +250,148 @@ def table_tax(taxable_minor, policy):
     return int(schedule(middle, policy).to_integral_value(ROUND_HALF_UP)) * 100
 
 
+# The worksheet ---------------------------------------------------------------------------------------------------
+
+MAP = Path(__file__).with_name("taxcalc_map.json")
+_map: dict = {}
+
+
+def worksheet_map():
+    """taxcalc_map.json with each formula compiled to the worksheet's expression language (finance/worksheet.py), and the
+    outputs and law parameters it reads beyond what every run reads back (OUTPUTS and POLICY in taxcalc_run.py)."""
+    if not _map:
+        from .taxcalc_run import OUTPUTS, POLICY
+        found = json.loads(MAP.read_text(encoding="utf-8"))
+        outputs, read = set(found["nodes"]) | set(found["opaque"]), set()
+        for spec in found["nodes"].values():
+            spec["compiled"] = compile_formula(spec["formula"], outputs, found["facts"], found["parts"], read)
+            spec["reads"] = sorted(name for name in names_in(spec["formula"], found["parts"]) if name in outputs or name in found["facts"])
+        found["policy"] = sorted(read)
+        found["extra_outputs"] = sorted(outputs - set(OUTPUTS))
+        found["extra_policy"] = sorted(read - set(POLICY))
+        _map.update(found)
+    return _map
+
+
+def names_in(text, parts):
+    found = set()
+    for item in ast.walk(ast.parse(text, mode="eval")):
+        if isinstance(item, ast.Name):
+            found |= names_in(parts[item.id], parts) if item.id in parts else {item.id}
+    return found
+
+
+def fraction(literal):
+    """A rate written as a decimal (0.9235) as the exact fraction {num, den}."""
+    value = Decimal(repr(literal))
+    places = max(0, -value.as_tuple().exponent)
+    return {"num": str(int(value.scaleb(places))), "den": str(10 ** places)}
+
+
+def compile_formula(text, outputs, facts, parts, read):
+    """A map formula as an expression: + and − add and take away, `x * 0.5` is a rate (rounded half-even, as cents),
+    `x * y` a product with a count, min/max/max0, `if_(condition, then, else)`, comparisons with and/or/not, `int(n)` a
+    count; any other number is dollars. A name is an output (a rule), a record input (a fact), a part (its formula) or else
+    a law parameter (read collects those)."""
+    def walk(item):
+        if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Add):
+            left, right = walk(item.left), walk(item.right)
+            return {"kind": "add", "args": (left["args"] if left["kind"] == "add" else [left]) + [right]}
+        if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Sub):
+            return {"kind": "sub", "left": walk(item.left), "right": walk(item.right)}
+        if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Mult):
+            literal, other = (item.right, item.left) if isinstance(item.right, ast.Constant) else (item.left, item.right) \
+                if isinstance(item.left, ast.Constant) else (None, None)
+            if literal is not None:
+                return {"kind": "mulRate", "base": walk(other), "rate": fraction(literal.value), "round": "half-even"}
+            return {"kind": "mulInt", "base": walk(item.left), "count": walk(item.right)}
+        if isinstance(item, ast.UnaryOp) and isinstance(item.op, ast.USub):
+            return {"kind": "sub", "left": {"kind": "money", "cents": "0"}, "right": walk(item.operand)}
+        if isinstance(item, ast.UnaryOp) and isinstance(item.op, ast.Not):
+            return {"kind": "not", "arg": walk(item.operand)}
+        if isinstance(item, ast.BoolOp):
+            return {"kind": "and" if isinstance(item.op, ast.And) else "or", "args": [walk(value) for value in item.values]}
+        if isinstance(item, ast.Compare) and len(item.ops) == 1:
+            op = {ast.Lt: "lt", ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge", ast.Eq: "eq", ast.NotEq: "ne"}[type(item.ops[0])]
+            return {"kind": "cmp", "op": op, "left": walk(item.left), "right": walk(item.comparators[0])}
+        if isinstance(item, ast.Call) and isinstance(item.func, ast.Name):
+            name, args = item.func.id, item.args
+            if name in ("min", "max"):
+                return {"kind": name, "args": [walk(value) for value in args]}
+            if name == "max0":
+                return {"kind": "max0", "arg": walk(args[0])}
+            if name == "if_":
+                return {"kind": "if", "cond": walk(args[0]), "then": walk(args[1]), "else": walk(args[2])}
+            if name == "int":
+                return {"kind": "int", "value": str(int(args[0].value))}
+        if isinstance(item, ast.Constant) and isinstance(item.value, int | float):
+            return {"kind": "money", "cents": str(int(Decimal(repr(item.value)) * 100))}
+        if isinstance(item, ast.Name):
+            if item.id in parts:
+                return walk(ast.parse(parts[item.id], mode="eval").body)
+            if item.id in outputs:
+                return {"kind": "rule", "ruleId": item.id}
+            if item.id in facts:
+                return {"kind": "fact", "factId": item.id}
+            read.add(item.id)
+            return {"kind": "param", "name": item.id}
+        raise ValueError(f"The worksheet map can't read {ast.unparse(item)} in {text}.")
+    return walk(ast.parse(text, mode="eval").body)
+
+
+def map_worksheet(raw, year, status, tolerance):
+    """The engine's outputs as worksheet nodes: each one the map writes a formula for, re-run over the values the engine
+    reported (within tolerance: it works in float dollars); the rest, and any formula that doesn't reproduce the engine's
+    value, as `opaque`. A map written for another release or law file isn't used."""
+    found = worksheet_map()
+    record, sources = raw.get("record") or {}, raw.get("record_sources") or {}
+    amounts = {name: cents(amount) for name, amount in (raw.get("values") or {}).items()}
+    refusal = None
+    if found["pinned"] != installed() or found["law_sha256"] != law_sha256():
+        refusal = "the worksheet map was written for another Tax-Calculator release or law file"
+    elif year not in found["years"]:
+        refusal = f"the worksheet map doesn't cover {year}"
+    nodes, typed = {}, {}
+    for name, label in found["facts"].items():
+        number = int(record.get(name, 0)) if name in INT_FIELDS else cents(record.get(name, 0))
+        typed[name] = ("int" if name in INT_FIELDS else "money", number)
+        source = {"fields": sources.get(name, [])} if name in record else {"assumed": "Not sent: Tax-Calculator takes it as zero"}
+        nodes[f"fact:{name}"] = worksheet.node(f"fact:{name}", label, "fact", None if name in INT_FIELDS else number, source=source,
+                                               count=number if name in INT_FIELDS else None)
+    typed |= {name: ("money", amount) for name, amount in amounts.items()}
+    refs = {name: name for name in amounts} | {name: f"fact:{name}" for name in found["facts"]}
+    labels = {**found["facts"], **found["opaque"], **{name: spec["label"] for name, spec in found["nodes"].items()}}
+    params = {name: {"type": "money", "value": str(cents(value))} for name, value in (raw.get("policy") or {}).items() if name in found["policy"]}
+    law = {"year": year, "filing_status": status}
+    for name, label in found["opaque"].items():
+        if name in amounts:
+            nodes[name] = worksheet.node(name, label, "opaque", amounts[name], detail={"reason": "Tax-Calculator gives this amount without its steps"})
+    for name, spec in found["nodes"].items():
+        if name not in amounts:
+            continue
+        reason = refusal
+        if not refusal:
+            made: dict = {}
+            try:
+                top = worksheet.Evaluator(name, spec["label"], spec["cite"], typed, refs, labels, params, law, made).run(spec["compiled"])
+                if abs(top.value - amounts[name]) <= tolerance:
+                    made[name]["amount_minor"] = amounts[name]  # The engine's value; its steps agree within the tolerance.
+                    nodes.update(made)
+                    continue
+                reason = f"its formula gives {worksheet.shown(top.value)}"
+            except (worksheet.Unsupported, KeyError, TypeError, ValueError) as exc:
+                reason = f"its formula couldn't be run ({str(exc)[:120]})"
+        nodes[name] = worksheet.node(name, spec["label"], "opaque", amounts[name], [refs[item] for item in spec["reads"] if item in refs], spec["cite"],
+                                     detail={"reason": reason})
+    return nodes
+
+
 class TaxCalculatorEngine:
     name = "taxcalc"  # For the records only: the page shows the slot's label (finance/tax_engine.py).
+    # Lines it gives without steps (docs/taxes.md "The tax engines"): its outputs overwrite their own intermediate values
+    # (a credit is limited to the tax in place), or the worksheet behind them isn't mapped yet.
+    opaque_lines = frozenset({"tax", "amt", "deduction", "senior", "qbi", "credit_dependent_care", "credit_education", "pay_eitc", "pay_actc", "pay_aotc"})
+    tolerance_minor = 2  # It works in float dollars: each output is rounded to the cent.
 
     def version(self):
         return {"name": self.name, "version": installed() or PINNED, "pinned": PINNED, "pin_sha256": law_sha256()}
@@ -260,9 +424,11 @@ class TaxCalculatorEngine:
             return self.empty(value, ["To work out the return, enter " + "; ".join(dict.fromkeys(NEEDS[fact] for fact in wanted)) + "."], needs=wanted)
         if value.other_itemized:
             return self.empty(value, [f"{label} doesn't cover other itemized deductions typed in."], unsupported=["engine:other_itemized"])
-        record, notes = record_for(value)
+        sources: dict = {}
+        record, notes = record_for(value, sources)
+        mapped = worksheet_map()
         try:
-            answer = evaluate(record, value.year)
+            answer = evaluate(record, value.year, mapped["extra_outputs"], mapped["extra_policy"])
         except EngineFailed as exc:
             return self.empty(value, [f"{label} {exc}"])
         if not answer.get("ok"):
@@ -277,58 +443,72 @@ class TaxCalculatorEngine:
         itemizing = found["c04470"] > 0
         if value.itemize and not itemizing:
             return self.empty(value, [f"{label} doesn't cover itemizing when the standard deduction is larger."], unsupported=["engine:force_itemize"])
-        return self.shaped(value, found, answer, record, context, notes, label)
+        result = self.shaped(value, found, answer, record, context, notes, label)
+        result["raw"]["record_sources"] = sources
+        return result
+
+    def worksheet(self, result):
+        """How this return was worked out, node by node (finance/worksheet.py): the outputs the map writes formulas for,
+        re-run over what the engine reported; the rest as the engine's values; the lines' own nodes."""
+        raw = result.get("raw") or {}
+        nodes = map_worksheet(raw, result["year"], result["filing_status"], self.tolerance_minor) if raw.get("values") else {}
+        return {**nodes, **(raw.get("line_nodes") or {})}
 
     def shaped(self, value: ReturnInput, found, answer, record, context, notes, slot_label):
+        """The return's lines from the engine's outputs, each with its node: an output's node is the output's name
+        (map_worksheet); what this file works out itself gets its own (Lines.made, Lines.fact)."""
         policy = answer["policy"]
-        lines: list[dict] = []
-
-        def line(key, label, amount, explained="", section="", within=0):
-            lines.append({"key": key, "label": label, "amount_minor": amount, "how": explained, "section": section, **({"within": within} if within else {})})
-            return amount
-        # Income: what was sent, with the model's capital gain or loss and taxable Social Security.
-        line("wages", "Wages (every job's W-2 box 1)", sum(job.wages for job in value.jobs), f"{len(value.jobs)} job{'s' if len(value.jobs) != 1 else ''}", "income")
-        line("interest", "Taxable interest", value.interest, section="income")
-        line("dividends", "Ordinary dividends", value.ordinary_dividends, section="income")
-        line("capital", "Capital gain or loss", found["c01000"], "Schedule D netting; a loss counts up to $3,000", "income")
-        line("distributions", "Taxable retirement distributions", value.retirement_distributions, section="income")
-        line("business", "Business profit or loss (Schedule C)", sum(business.income - business.expenses for business in value.businesses), section="income")
-        line("unemployment", "Unemployment", value.unemployment, section="income")
-        line("hsa_nonqualified", "HSA money not spent on medical care", value.hsa_nonqualified, section="income")
-        line("other_income", "Other income", value.other_income, section="income")
-        line("social_security", "Taxable Social Security benefits", found["c02500"], "the taxable share of benefits (IRC §86)", "income")
+        lines = Lines()
+        line = lines.add
+        lines.income(value, found["c01000"], found["c02500"], capital_how="Schedule D netting; a loss counts up to $3,000",
+                     social_security_how="the taxable share of benefits (IRC §86)", capital_node="c01000", social_security_node="c02500")
         agi, adjustments = found["c00100"], found["c02900"]
-        total_income = agi + adjustments
-        counted = sum(item["amount_minor"] for item in lines if item["section"] == "income")
-        if counted != total_income:
-            line("income_engine", "Other income as the engine counts it", total_income - counted, "the engine's total income less the lines above", "income")
-        line("total_income", "Total income", total_income, section="total")
-        listed = 0
-        for key, amount, label in (("se_half", found["c03260"], "Half of self-employment tax"), ("hsa", cents(record["e03290"]), "HSA contributions (not through payroll)"),
-                                   ("se_health", value.se_health_insurance, "Self-employed health insurance"), ("ira", value.ira_deduction, "Traditional IRA deduction")):
+        lines.total_income(agi + adjustments, lines.made("total_income", "Total income: AGI with the adjustments added back", "sum", agi + adjustments,
+                                                         ["c00100", "c02900"]))
+        listed, listed_nodes = 0, []
+        for key, amount, label, node in (("se_half", found["c03260"], "Half of self-employment tax", "c03260"),
+                                         ("hsa", cents(record["e03290"]), "HSA contributions (not through payroll)", self.hsa_node(lines, value, cents(record["e03290"]))),
+                                         ("se_health", value.se_health_insurance, "Self-employed health insurance", None),
+                                         ("ira", value.ira_deduction, "Traditional IRA deduction", None)):
             if amount:
-                listed += line(f"adjust_{key}", label, -amount, section="adjustments") * -1
+                node = node or lines.fact(f"adjust_{key}", label, amount, [["se_health_insurance" if key == "se_health" else "ira_deduction", 1]])
+                listed += line(f"adjust_{key}", label, -amount, section="adjustments", node=node) * -1
+                listed_nodes.append(node)
         student_loan = min(value.student_loan_interest, max(adjustments - listed, 0))
+        loan_node = (lines.fact("adjust_student_loan", "Student-loan interest", student_loan, [["student_loan_interest", 1]])
+                     if student_loan == value.student_loan_interest else
+                     lines.made("adjust_student_loan", "Student-loan interest", "difference", student_loan, ["c02900", *listed_nodes])) if student_loan else None
         if adjustments - listed - student_loan:
-            line("adjust_other", "Educator expenses and other adjustments", -(adjustments - listed - student_loan), section="adjustments")
+            line("adjust_other", "Educator expenses and other adjustments", -(adjustments - listed - student_loan), section="adjustments",
+                 node=lines.made("adjust_other", "Educator expenses and other adjustments", "difference", adjustments - listed - student_loan,
+                                 ["c02900", *listed_nodes, *([loan_node] if loan_node else [])]))
         if student_loan:
-            line("adjust_student_loan", "Student-loan interest", -student_loan, section="adjustments")
-        line("agi", "Adjusted gross income (AGI)", agi, section="total")
+            line("adjust_student_loan", "Student-loan interest", -student_loan, section="adjustments", node=loan_node)
+        line("agi", "Adjusted gross income (AGI)", agi, section="total", node="c00100")
         # Deduction: the model's standard deduction includes the non-itemizer's charitable deduction; it's shown apart.
         standard, itemized = found["standard"], found["c04470"]
-        charity = 0 if itemized else min(value.charity, cents(policy["STD_charity_ded_nonitemizers_max"]), standard)
+        limit = cents(policy["STD_charity_ded_nonitemizers_max"])
+        charity = 0 if itemized else min(value.charity, limit, standard)
+        charity_node = lines.made("charity_nonitemizer", "Charitable deduction (not itemizing)", "min", charity, [
+            lines.fact("charity_nonitemizer~gifts", "Cash gifts to charity", value.charity, [["charity", 1]]),
+            self.law_node(lines, "charity_nonitemizer~limit", "The year's limit on the charitable deduction for non-itemizers", limit,
+                          "STD_charity_ded_nonitemizers_max", value, "26 U.S.C. § 170(p)"), "standard"]) if charity else None
         line("deduction", "Itemized deductions" if itemized else "Standard deduction", -(itemized or standard - charity),
-             "itemized, after limits" if itemized else "standard, with any extra for age", "deductions")
+             "itemized, after limits" if itemized else "standard, with any extra for age", "deductions",
+             node="c04470" if itemized else lines.made("deduction", "Standard deduction, less the charitable deduction shown on its own line", "difference",
+                                                       standard - charity, ["standard", *([charity_node] if charity_node else [])]))
         if charity:
-            line("charity_nonitemizer", "Charitable deduction (not itemizing)", -charity, "cash gifts, up to the year's limit", "deductions")
+            line("charity_nonitemizer", "Charitable deduction (not itemizing)", -charity, "cash gifts, up to the year's limit", "deductions", node=charity_node)
         if found["senior_deduction"]:
-            line("senior", "Senior deduction", -found["senior_deduction"], "65 or older, phased out above the income limit", "deductions")
+            line("senior", "Senior deduction", -found["senior_deduction"], "65 or older, phased out above the income limit", "deductions", node="senior_deduction")
         other = found["tip_income_deduction"] + found["overtime_income_deduction"] + found["auto_loan_interest_deduction"]
         if other:
-            line("other_deductions", "Tips, overtime and car-loan interest deductions", -other, "each up to its limit, phased out above the income limit", "deductions")
+            line("other_deductions", "Tips, overtime and car-loan interest deductions", -other, "each up to its limit, phased out above the income limit", "deductions",
+                 node=lines.made("other_deductions", "Tips, overtime and car-loan interest deductions", "sum", other,
+                                 ["tip_income_deduction", "overtime_income_deduction", "auto_loan_interest_deduction"]))
         if found["qbided"]:
-            line("qbi", "Qualified business income deduction", -found["qbided"], section="deductions")
-        taxable = line("taxable_income", "Taxable income", found["c04800"], section="total")
+            line("qbi", "Qualified business income deduction", -found["qbided"], section="deductions", node="qbided")
+        taxable = line("taxable_income", "Taxable income", found["c04800"], section="total", node="c04800")
         # Tax: the Tax Table below $100,000 (redone here when there's no preferential income), else the model's.
         preferential = value.qualified_dividends > 0 or (value.long_term_gain > 0 and value.long_term_gain + min(value.short_term_gain - value.capital_loss_carryover, 0) > 0)
         table = None if preferential else table_tax(taxable, policy)
@@ -337,33 +517,98 @@ class TaxCalculatorEngine:
         if leeway:
             notes.append("With qualified dividends or long-term gains below $100,000 of taxable income, the tax is worked from the rate schedule, "
                          "not the Tax Table's rows: it can differ by a few dollars.")
-        line("tax", "Tax", tax, "the Tax Table" if table is not None else "the rate schedules and the capital gains worksheet", "tax", leeway)
+        tax_node = table_nodes(lines, taxable, policy, tax) if table is not None else "taxbc"
+        line("tax", "Tax", tax, "the Tax Table" if table is not None else "the rate schedules and the capital gains worksheet", "tax", leeway, node=tax_node)
         if found["c09600"]:
-            line("amt", "Alternative minimum tax", found["c09600"], section="tax")
+            line("amt", "Alternative minimum tax", found["c09600"], section="tax", node="c09600")
         credits = found["c07100"]
-        credited = 0
-        for key, amount, label in (("dependent_care", found["c07180"], "Child and dependent care credit"), ("education", found["c07230"], "Education credits (nonrefundable part)"),
-                                   ("child", found["c07220"] + found["odc"], "Child tax credit and credit for other dependents")):
+        credited, credit_nodes = 0, []
+        for key, amount, label, node in (("dependent_care", found["c07180"], "Child and dependent care credit", "c07180"),
+                                         ("education", found["c07230"], "Education credits (nonrefundable part)", "c07230"),
+                                         ("child", found["c07220"] + found["odc"], "Child tax credit and credit for other dependents", None)):
             if amount:
-                credited += line(f"credit_{key}", label, -amount, section="credits") * -1
+                node = node or lines.made("credit_child", label, "sum", amount, ["c07220", "odc"])
+                credited += line(f"credit_{key}", label, -amount, section="credits", node=node) * -1
+                credit_nodes.append(node)
         if credits - credited:
-            line("credit_other", "Other credits", -(credits - credited), "other credits typed in", "credits")
+            line("credit_other", "Other credits", -(credits - credited), "other credits typed in", "credits",
+                 node=lines.made("credit_other", "Other credits", "difference", credits - credited, ["c07100", *credit_nodes]))
         other_taxes = found["othertaxes"]
-        listed = 0
-        for key, amount, label in (("se", found["setax"], "Self-employment tax"), ("additional_medicare", found["ptax_amc"], "Additional Medicare tax"),
-                                   ("niit", found["niit"], "Net investment income tax")):
+        listed, listed_nodes = 0, []
+        for key, amount, label, node in (("se", found["setax"], "Self-employment tax", "setax"), ("additional_medicare", found["ptax_amc"], "Additional Medicare tax", "ptax_amc"),
+                                         ("niit", found["niit"], "Net investment income tax", "niit")):
             if amount:
-                listed += line(f"other_{key}", label, amount, section="other_taxes")
+                listed += line(f"other_{key}", label, amount, section="other_taxes", node=node)
+                listed_nodes.append(node)
         if other_taxes - listed:
-            line("other_other", "Other taxes", other_taxes - listed, "10% on early distributions, 20% on HSA money", "other_taxes")
+            line("other_other", "Other taxes", other_taxes - listed, "10% on early distributions, 20% on HSA money", "other_taxes",
+                 node=lines.made("other_other", "Other taxes", "difference", other_taxes - listed, ["othertaxes", *listed_nodes]))
         # Nonrefundable credits can't exceed the tax: with the Tax Table's tax they're used against it the same way.
         after = max(0, tax + found["c09600"] - credits)
-        total_tax = line("total_tax", "Total tax", after + other_taxes, section="total", within=leeway)
+        before = lines.made("total_tax~before", "The tax and the alternative minimum tax, less nonrefundable credits", "sum", tax + found["c09600"] - credits,
+                            [tax_node, "c09600", "c07100"], signs=[1, 1, -1])
+        after_node = lines.made("total_tax~after", "The tax after credits, not below zero", "max", after, [before, constant(lines, 0)])
+        total_tax = line("total_tax", "Total tax", after + other_taxes, section="total", within=leeway,
+                         node=lines.made("total_tax", "Total tax: the tax after credits plus other taxes", "sum", after + other_taxes, [after_node, "othertaxes"]))
         refundable = found["refund"]
-        refundable_lines = [("eitc", "Earned income credit", found["eitc"], ""), ("actc", "Additional child tax credit", found["c11070"], ""),
-                            ("aotc", "American opportunity credit (refundable part)", found["c10960"], "")]
+        refundable_lines = [("eitc", "Earned income credit", found["eitc"], "", "eitc"), ("actc", "Additional child tax credit", found["c11070"], "", "c11070"),
+                            ("aotc", "American opportunity credit (refundable part)", found["c10960"], "", "c10960")]
         notes.append(f"Worked out by {slot_label} from the {value.year} law as published.")
         result = completed(value, lines, agi=agi, taxable=taxable, tax=tax, total_tax=total_tax, refundable=refundable, refundable_lines=refundable_lines,
-                           context=context, notes=notes, slot_label=slot_label, raw={"record": record, "values": answer["values"], "policy": policy})
+                           context=context, notes=notes, slot_label=slot_label, raw={"record": record, "values": answer["values"], "policy": policy},
+                           refundable_node="refund")
         result["reports"] = sorted(REPORTS)
         return result
+
+    @staticmethod
+    def law_node(lines, key, label, amount, parameter, value, cite):
+        name = f"line:{key}"
+        lines.nodes[name] = worksheet.node(name, label, "law", amount, cite=cite, source={"parameter": parameter, "year": value.year,
+                                                                                           "filing_status": value.filing_status})
+        return name
+
+    def hsa_node(self, lines, value: ReturnInput, deduction):
+        """The HSA deduction as this file limits it (hsa_deduction): the contributions, or the year's §223(b) limit."""
+        if not deduction:
+            return None
+        contributions = lines.fact("adjust_hsa~sent", "HSA contributions (not through payroll)", value.hsa_contributions, [["hsa_contributions", 1]])
+        if deduction == value.hsa_contributions:
+            return contributions
+        limit = self.law_node(lines, "adjust_hsa~limit", "The year's HSA contribution limit for the coverage", deduction, "HSA limit", value, "26 U.S.C. § 223(b)")
+        return lines.made("adjust_hsa", "HSA contributions, up to the year's limit", "min", deduction, [contributions, limit])
+
+
+def table_nodes(lines: Lines, taxable, policy, tax):
+    """The Tax Table's tax (table_tax) as nodes: the middle of taxable income's row, the year's rate schedule on it (a
+    rate table), rounded to the dollar."""
+    amount = Decimal(max(taxable, 0)) / 100
+    if amount < 25:
+        middle = 250 if amount < 5 else 1000 if amount < 15 else 2000  # The rows $0-5, $5-15 and $15-25.
+        middle_node = constant(lines, middle)
+    else:
+        width = 2500 if amount < 3000 else 5000
+        rows = lines.made("tax~rows", f"Whole ${width // 100} rows below taxable income", "steps", None, ["c04800"],
+                          detail={"unit_minor": width, "round": "floor"})
+        count = max(taxable, 0) // width
+        lines.nodes[rows] |= {"count": count, "value": str(count)}
+        start = lines.made("tax~start", "Where taxable income's row starts", "multiply", count * width, [constant(lines, width), rows])
+        middle = count * width + width // 2
+        middle_node = lines.made("tax~middle", "The middle of taxable income's row in the Tax Table", "sum", middle, [start, constant(lines, width // 2)])
+    table = [{"from_minor": int(Decimal(str(policy[f"II_brk{number - 1}"])) * 100) if number > 1 else 0, **rate_of(policy[f"II_rt{number}"])}
+             for number in range(1, 8)]
+    scheduled = worksheet.bracket_tax(middle, table)
+    on_schedule = lines.made("tax~schedule", "The rate schedule on the middle of the row", "lookup", scheduled, [middle_node], detail={"table": table})
+    return lines.made("tax", "The Tax Table's tax: the rate schedule on the middle of the row, rounded to the dollar", "round", tax, [on_schedule],
+                      detail={"round": "half-up"}, cite="Form 1040 instructions, Tax Table (taxable income below $100,000)")
+
+
+def rate_of(rate):
+    """A rate from the law file (0.22) as the worksheet's {num, den, rate}."""
+    found = fraction(rate)
+    return {"num": int(found["num"]), "den": int(found["den"]), "rate": worksheet.percent(int(found["num"]), int(found["den"]))}
+
+
+def constant(lines: Lines, minor):
+    name = f"const:money:{minor}"
+    lines.nodes[name] = worksheet.node(name, worksheet.shown(minor), "constant", minor)
+    return name

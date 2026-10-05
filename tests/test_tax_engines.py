@@ -15,6 +15,7 @@ from home_manager.finance.engines import opentax, taxcalc
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.tax_return import Business, Job, Person, ReturnInput, Student
 from home_manager.library.storage import Store
+import tax_returns
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js isn't installed")
 needs_engine_2 = pytest.mark.skipif(taxcalc.installed() != taxcalc.PINNED, reason='Engine 2 isn\'t installed (pip install ".[engine2]")')
@@ -142,7 +143,7 @@ NAMES = {"engine_1": ("opentax", "OpenTax"), "engine_2": ("taxcalc", "Tax-Calcul
 
 @pytest.mark.parametrize("slot", ENGINE_SLOTS)
 def test_a_w2_return(slot):
-    result = worked(profile(people=[Person(birth_year=1990)], jobs=[Job(wages=8500000, federal_withheld=900000)], interest=30000), slot)
+    result = worked(tax_returns.W2, slot)
     # 85,300 less the 16,100 standard deduction; 69,200 is in the 69,200–69,250 row of the Tax Table: 9,942. 9,000 withheld.
     assert (amounts(result)["taxable_income"], amounts(result)["tax"], result["result_minor"]) == (6920000, 994200, -94200)
     label = tax_engine.label_of(slot)
@@ -154,11 +155,7 @@ def test_a_w2_return(slot):
 
 @pytest.mark.parametrize("slot", ENGINE_SLOTS)
 def test_a_joint_return_with_children_gains_and_contract_work(slot):
-    value = profile(filing_status="married_joint", people=[Person(birth_year=1985), Person(birth_year=1987)],
-                    jobs=[Job(name="A", wages=15000000, ss_wages=15000000, medicare_wages=15000000, federal_withheld=1400000, medicare_withheld=217500)],
-                    interest=120000, ordinary_dividends=200000, qualified_dividends=160000, long_term_gain=500000,
-                    businesses=[Business(name="Contract", owner="spouse", income=2500000, expenses=500000)], qualifying_children=2,
-                    federal_estimated_paid=300000)
+    value = tax_returns.JOINT_CONTRACT
     # SE: 20,000 × 92.35% = 18,470 × 15.3% = 2,825.91 (2,826 in whole dollars); half, 1,413, comes off. Income 178,200, AGI 176,787.
     # 32,200 standard: 144,587; QBI 20% of (20,000 − 1,413) = 3,717.40: taxable 140,869.60. Ordinary 134,269.60:
     # 2,480 + 9,120 + 22% of 33,469.60 (7,363.31) = 18,963.31, and 6,600 of gains and qualified dividends at 15%: 990.
@@ -170,8 +167,7 @@ def test_a_joint_return_with_children_gains_and_contract_work(slot):
 
 @pytest.mark.parametrize("slot", ENGINE_SLOTS)
 def test_high_wages_with_additional_medicare_and_investment_income_tax(slot):
-    value = profile(people=[Person(birth_year=1975)], jobs=[Job(wages=26000000, ss_wages=18450000, medicare_wages=26000000, federal_withheld=6000000,
-                                                                medicare_withheld=431000)], interest=1000000, long_term_gain=2000000)
+    value = tax_returns.HIGH_WAGES
     # AGI 290,000; taxable 273,900. Ordinary 253,900: 1,240 + 4,560 + 12,166 + 23,058 + 32% of 52,125 (16,680) = 57,704; 20,000 at 15%: 3,000.
     # Additional Medicare 0.9% of 60,000 = 540 (all withheld above 1.45%); NIIT 3.8% of 30,000 = 1,140.
     matches(worked(value, slot), {"agi": 29000000, "taxable_income": 27390000, "tax": 6070400, "other_additional_medicare": 54000, "other_niit": 114000,
@@ -181,11 +177,9 @@ def test_high_wages_with_additional_medicare_and_investment_income_tax(slot):
 @pytest.mark.parametrize("slot", ENGINE_SLOTS)
 def test_2026_law_the_old_hand_written_return_lacked(slot):
     # OBBBA: a couple not itemizing deducts up to 2,000 of cash gifts to charity; tips and overtime come off below the line.
-    charity = worked(profile(filing_status="married_joint", people=[Person(birth_year=1985), Person(birth_year=1985)], jobs=[Job(wages=10000000)],
-                             charity=250000), slot)
+    charity = worked(tax_returns.CHARITY, slot)
     matches(charity, {"charity_nonitemizer": -200000, "taxable_income": 10000000 - 3220000 - 200000})
-    tipped = worked(profile(people=[Person(birth_year=1990)], jobs=[Job(wages=6000000)], qualified_tips=500000, tipped_occupation="bartenders",
-                            qualified_overtime=200000), slot)
+    tipped = worked(tax_returns.TIPPED, slot)
     matches(tipped, {"other_deductions": -700000, "taxable_income": 6000000 - 1610000 - 700000})
 
 

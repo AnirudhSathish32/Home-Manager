@@ -70,7 +70,7 @@ class ItemCategorizer:
                         source, value = ("memory", chosen) if chosen else ("model", category or "other")
                     else:
                         continue
-                    db.execute("UPDATE receipt_items SET category=?,category_source=? WHERE id=?", (value, source, row["id"]))
+                    db.execute("UPDATE receipt_items SET category=?,category_source=?,updated_at=? WHERE id=?", (value, source, now(), row["id"]))
                     items += 1
                 if receipt["category"] in LEGACY_CATEGORIES:
                     replacement = receipt_answer or "other"

@@ -78,7 +78,7 @@ def test_a_treasury_confirmation_adds_holdings_that_count_once_confirmed(tmp_pat
         # Coming due: the bill within 90 days of mid-October; the I bond's lock ends later.
         later = Investments(manager.store, date(2026, 10, 15))
         assert [(row["name"], row["kind"], row["state"], row["amount"]["display"]) for row in later.maturities()] == [
-            ("26-Week Bill", "matures", "due", "10,000.00 USD")]
+            ("26-Week Bill", "matures", "coming_due", "10,000.00 USD")]
         after = Investments(manager.store, date(2027, 1, 5))
         [due] = [row for row in after.maturities() if row["kind"] == "matures"]
         assert due["state"] == "matured"

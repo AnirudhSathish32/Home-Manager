@@ -96,10 +96,10 @@ class Collector:
     # Sheets ------------------------------------------------------------------------------
 
     def summary(self, spending):
-        estimate, gathered = self.tax["return"], self.tax["gathered"]
-        values = gathered["values"]
+        # The return's own input: the gathered values with the typed ones over them (tax_year.merge), so the pack and the return agree.
+        estimate, values = self.tax["return"], self.tax["input"]
         result = estimate["result_minor"]
-        wages = sum(job["values"]["wages"] for job in gathered["jobs"])
+        wages = sum(job["wages"] for job in values["jobs"])
         write_offs = sum(line["counted_minor"] for line in TaxTags(self.snap).year(self.year, REPORTING)["lines"])
         rows = [["Tax year", str(self.year), ""], ["Filing status", self.tax["filing_status_name"], ""],
                 ["As of", D(self.today.isoformat()), "Projected to Dec 31: the year is still in progress." if self.year >= self.today.year else ""],
@@ -108,11 +108,10 @@ class Collector:
                 ["Total tax", M(estimate.get("total_tax_minor"), REPORTING), "See Return"],
                 ["Total payments", M(estimate.get("payments_minor"), REPORTING), "Withholding, estimated tax and refundable credits"],
                 ["Adjusted gross income", M(estimate.get("agi_minor"), REPORTING), ""],
-                ["Wages", M(wages, REPORTING), "From confirmed pay stubs; see Income"],
-                ["Interest", M(values.get("interest", 0), REPORTING), gathered["sources"].get("interest", "")],
-                ["Ordinary dividends", M(values.get("ordinary_dividends", 0), REPORTING), gathered["sources"].get("ordinary_dividends", "")],
-                ["Short-term gains", M(values.get("short_term_gain", 0), REPORTING), gathered["sources"].get("short_term_gain", "")],
-                ["Long-term gains", M(values.get("long_term_gain", 0), REPORTING), gathered["sources"].get("long_term_gain", "")],
+                ["Wages", M(wages, REPORTING), "From confirmed pay stubs and your typed values; see Income"],
+                *[[label, M(values.get(key, 0), REPORTING), self.source(key)] for key, label in (
+                    ("interest", "Interest"), ("ordinary_dividends", "Ordinary dividends"), ("short_term_gain", "Short-term gains"),
+                    ("long_term_gain", "Long-term gains"))],
                 ["Write-offs counted", M(write_offs, REPORTING), "Confirmed USD tags; see Write-offs"]]
         usd = spending["usd_total"]
         net_usd = usd["net"]["minor"] if usd else next((row["net_spending"]["minor"] for row in spending["by_currency"] if row["currency"] == REPORTING), 0)
@@ -123,6 +122,12 @@ class Collector:
         complete = estimate["complete"] and not self.review
         rows.append(["Status", "Complete" if complete else "Partial", "Nothing is waiting" if complete else f"{len(self.review)} item(s) on Needs review"])
         return sheet(["Item", "Value", "Note"], rows, [28, 22, 80])
+
+    def source(self, key):
+        """Where a return field came from: typed on the Taxes page, else the gathered records' source."""
+        if self.tax["inputs"].get("fields", {}).get(key) not in (None, ""):
+            return "Typed on the Taxes page"
+        return self.tax["gathered"]["sources"].get(key, "")
 
     def return_sheet(self):
         estimate = self.tax["return"]
@@ -141,11 +146,16 @@ class Collector:
         return sheet(["Section", "Line", "Amount", "How"], rows, [16, 48, 18, 70])
 
     def income(self):
-        gathered = self.tax["gathered"]
-        rows = [["Job", job["name"], M(job["values"]["wages"], REPORTING), M(job["values"]["federal_withheld"], REPORTING),
-                 M(job["values"]["state_withheld"], REPORTING), f"{job['stubs']} stubs, last {job['last_pay_date']}, {job['pay_frequency'] or ''}".strip(", ")]
-                for job in gathered["jobs"]]
-        rows += [["Field", key, M(value, REPORTING), None, None, gathered["sources"].get(key, "")]
+        gathered, merged = self.tax["gathered"], self.tax["input"]["jobs"]
+        # The return's jobs (tax_year.merge lists the gathered ones first, in order, then the ones typed in), typed values over records.
+        rows = []
+        for index, job in enumerate(merged):
+            found = gathered["jobs"][index] if index < len(gathered["jobs"]) else None
+            typed = found and any(job[key] != found["values"].get(key) for key in ("wages", "federal_withheld", "state_withheld"))
+            note = (f"{found['stubs']} stubs, last {found['last_pay_date']}, {found['pay_frequency'] or ''}".strip(", ") + ("; typed values over them" if typed else "")
+                    if found else "Typed on the Taxes page")
+            rows.append(["Job", job["name"], M(job["wages"], REPORTING), M(job["federal_withheld"], REPORTING), M(job["state_withheld"], REPORTING), note])
+        rows += [["Field", key, M(self.tax["input"].get(key, value), REPORTING), None, None, self.source(key)]
                  for key, value in sorted(gathered["values"].items()) if isinstance(value, int) and not isinstance(value, bool)]
         return sheet(["Kind", "Name", "Amount", "Federal withheld", "State withheld", "Source"], rows, [8, 34, 16, 16, 16, 70])
 

@@ -2,6 +2,7 @@
 filled from records, and your typed values over them. Synthetic data only."""
 
 from datetime import date
+from decimal import Decimal
 import json
 import shutil
 
@@ -62,6 +63,7 @@ def test_the_return_is_gathered_from_stubs_interest_and_tags(store):
     # No year-to-date figures printed: the two stubs added up, then 8 more paydays like the last. Two of them (Sep 11 and 25) are
     # already past on Sep 30 without a stub here: they count, but only the 6 ahead can change with a new W-4.
     assert (job["stubs"], job["paychecks_projected"], job["paychecks_left"], job["ytd_printed"]) == (2, 8, 6, False)
+    assert job["paydays_without_stub"] == 2  # Shown on the Taxes page as is.
     assert job["values"]["wages"] == 10 * (400000 - 34000) and job["values"]["federal_withheld"] == 45000 + 47000 + 8 * 47000
     assert job["values"]["ss_wages"] == 10 * (400000 - 10000)  # Health lowers FICA wages; the 401(k) doesn't.
     # 1,200 of interest by September, projected at the same pace: 1,600.
@@ -149,6 +151,14 @@ def test_the_average_balance_methods_and_balances_over_time():
     # Back in time too: last Dec 31's balance, paid down again, comes back to Sep 30's within a cent.
     back = balance_at(mortgage, date(2025, 12, 31))
     assert abs(balance_at({**mortgage, "value_minor": back, "as_of": "2025-12-31"}, date(2026, 9, 30)) - 29000000) <= 1
+    # The forecast pays the same loan down with the same monthly step (forecast.loan_month): its December balance agrees.
+    from home_manager.finance.forecast import ForecastInput, project
+    base = {"currency": "USD", "cash": 0, "balances": [], "monthly_income": Decimal(0), "monthly_pay": Decimal(0), "monthly_spending": {}, "bills": [], "notes": [],
+            "history": {"start": "2026-03-01", "end": "2026-08-31", "months": 6, "months_with_data": 6},
+            "assets": [{"name": "Home Mortgage", "kind": "loan", "value_minor": 29000000, "value": None, "annual_rate_bp": 400, "annual_rate_percent": "4",
+                        "monthly_payment_minor": 180000, "monthly_payment": None, "terms": []}]}
+    december = next(row for row in project(base, ForecastInput(years=1, inflation_percent="0"), today=date(2026, 9, 30))["months"] if row["month"] == "2026-12")
+    assert december["loans"] == balance_at(mortgage, date(2026, 12, 31))
     # No box 2: the year's interest ÷ the yearly rate (12,000 ÷ 4%); box 2 alone: the Jan 1 principal, an upper bound.
     assert average_balance(1200000, None, [mortgage], 2026)[0] == 30000000
     assert average_balance(1200000, 31000000, [], 2026)[0] == 31000000

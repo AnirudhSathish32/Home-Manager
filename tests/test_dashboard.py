@@ -40,6 +40,18 @@ def test_dashboard_totals_categories_series_and_drilldowns(books):
     assert pending[0] not in [row["id"] for row in rows["transactions"]]
 
 
+def test_category_shares_are_whole_basis_points_that_close_the_donut():
+    from home_manager.core.money import money
+    from home_manager.finance.dashboard import group_categories
+    rows = [{"category": name, "spending": money(amount, "USD"), "transactions": 1} for name, amount in (("a", 100), ("b", 100), ("c", 100))]
+    groups, gross, chartable = group_categories(rows, "USD")
+    # Thirds: 3,334 + 3,333 + 3,333, so the slices sum to the whole ring and each label names its own slice.
+    assert chartable and gross == 300 and [row["share_bp"] for row in groups] == [3334, 3333, 3333]
+    assert [row["share"] for row in groups] == ["33.3", "33.3", "33.3"]
+    refund = [*rows, {"category": "d", "spending": money(-50, "USD"), "transactions": 1}]
+    assert group_categories(refund, "USD")[2] is False
+
+
 def test_dashboard_other_uncategorized_and_currency_separation(books):
     store, ledger, docs = books
     account = ledger.create_account("USD Bank", "checking", "USD")

@@ -54,8 +54,9 @@ def combine(parts):
     values: dict = {}
     sources: dict = {}
     kinds: dict = {}
+    # parts: each member's own amount of each value, {key: [(name, amount, source)]}, so a family return's input traces to them.
     combined: dict = {"values": values, "sources": sources, "kinds": kinds, "projected": {}, "jobs": [], "businesses": [], "state": None, "notes": [],
-                "estimated_payments": {"federal_estimated": [], "state_estimated": []}}
+                      "estimated_payments": {"federal_estimated": [], "state_estimated": []}, "parts": {}}
     for name, gathered in parts:
         for key, amount in gathered["values"].items():
             if isinstance(amount, list):
@@ -64,6 +65,7 @@ def combine(parts):
                 values[key] = "family" if "family" in (values.get(key), amount) else amount
             else:
                 values[key] = values.get(key, 0) + amount
+                combined["parts"].setdefault(key, []).append((name, amount, gathered["sources"].get(key)))
         for key, text in gathered["sources"].items():
             sources[key] = f"{sources[key]}; {name}: {text}" if key in sources and len(parts) > 1 else (f"{name}: {text}" if len(parts) > 1 else text)
         for key, kind in gathered.get("kinds", {}).items():  # The least certain member's kind is the sum's.

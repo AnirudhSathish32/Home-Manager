@@ -1,5 +1,7 @@
 """Receipt spending categories: one fixed, flat list, used for receipt items, the Receipts folder's subfolders and spending totals."""
 
+from decimal import Decimal
+
 RECEIPT_CATEGORIES = ("groceries", "dining", "furniture & decor", "household supplies", "home improvement", "clothing", "electronics",
                       "personal care", "transportation", "travel", "health", "entertainment", "subscriptions", "housing", "insurance",
                       "pets", "kids & baby", "gifts & donations", "other")
@@ -28,6 +30,13 @@ SUBSCRIPTION_CATEGORIES = ("subscriptions", "entertainment")
 
 def suggested_kind(category):
     return "subscription" if category in SUBSCRIPTION_CATEGORIES else "bill"
+
+
+def monthly_equivalent(amount_minor, frequency):
+    """What a recurring payment costs a month, exact (Decimal minor units): weekly 52/12 times, others their amount over the
+    months between payments. The one definition for recurring totals and the forecast."""
+    amount = Decimal(amount_minor)
+    return amount * 52 / 12 if frequency == "weekly" else amount / FREQUENCY_MONTHS[frequency]
 
 
 def receipt_category(value, legacy=False):

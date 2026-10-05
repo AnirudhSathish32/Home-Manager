@@ -89,7 +89,7 @@ const STATUS = {
   // Investment accounts: a statement value waiting for the user, or an account left out of totals.
   value_to_confirm: ["New value to confirm", "info", "dashed"], removed: ["Removed", "neutral", "slash"],
   // A value worked out from a CD's or Treasury's terms, and one that has matured and waits for an answer.
-  estimated: ["Estimated", "neutral", "clock"], matured: ["Matured", "warning", "alert"], due: ["Coming due", "info", "clock"],
+  estimated: ["Estimated", "neutral", "clock"], matured: ["Matured", "warning", "alert"], coming_due: ["Coming due", "info", "clock"],
   // A value from a crypto market price (Settings turns prices on); a pension, which pays an income instead of holding a balance.
   quote: ["Market price", "neutral", "clock"], pension_income: ["Pays an income", "neutral", null],
   // A 529 withdrawal not yet marked qualified or not.
@@ -158,6 +158,12 @@ function dateText(iso) {
   if (!match) return iso || "—";
   const [, year, month, day] = match;
   return `${MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
+}
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function monthText(iso) {
+  // A YYYY-MM month (or a date's month): "September 2026".
+  const match = /^(\d{4})-(\d{2})/.exec(iso || "");
+  return match ? `${MONTH_NAMES[Number(match[2]) - 1]} ${match[1]}` : iso || "—";
 }
 function dateDisplay(iso) {
   const time = document.createElement("time"); time.textContent = dateText(iso);

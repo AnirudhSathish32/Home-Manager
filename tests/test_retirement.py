@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from conftest import inbox_scan
-from home_manager.finance.forecast import ForecastInput, RetirementPlan, project
+from home_manager.finance.forecast import ForecastInput, RetirementPlan, forecast, project
 from home_manager.finance.investments import AccountInput, Investments, ValueInput
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.retirement import divisor, required, rmd_start_age
@@ -56,6 +56,11 @@ def test_this_years_required_distributions(store):
             first["deadline"], first["status"], first["stale"]) == ("26,500.00 USD", "26.5", "1,000.00 USD", "400.00 USD", "600.00 USD", "2027-04-01", "due", False)
     assert (rows["Old 401(k)"]["stale"], rows["Old 401(k)"]["balance_as_of"]) == (True, "2025-10-31")
     assert investments.required_distributions(2027, 1953)["accounts"][0]["deadline"] == "2027-12-31"
+    # The forecast's first December takes what /api/investments/rmd says is left: from last Dec 31's confirmed balance, never
+    # today's (30,000) value, less this year's confirmed withdrawals. 600.00 + 377.36.
+    projected = forecast(store, ForecastInput(years=1, inflation_percent="0"), today=date(2026, 9, 28), birth_year=1953)
+    december = next(row for row in projected["months"] if row["month"] == "2026-12")
+    assert december["rmd"] == sum(int(row["left"]["minor"]) for row in due["accounts"]) == 97736
 
 
 def base(assets, cash=0, income=500000, pay=400000, spending=300000):

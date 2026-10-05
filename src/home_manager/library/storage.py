@@ -691,7 +691,8 @@ class Store:
                                                                      "WHERE deleted_at IS NULL AND folder='Jobs' AND employer_id IS NOT NULL GROUP BY 1,2")}
             # Every employer is listed, a new one with nothing filed yet too, each with both sections.
             jobs = [{"id": row["id"], "name": row["name"], "folder": row["folder_name"],
-                     "sections": {section: filed.get((row["id"], section), 0) for section in JOB_SECTIONS}}
+                     "sections": {section: filed.get((row["id"], section), 0) for section in JOB_SECTIONS},
+                     "total": sum(filed.get((row["id"], section), 0) for section in JOB_SECTIONS)}
                     for row in db.execute("SELECT * FROM employers ORDER BY name COLLATE NOCASE")]
         listed = SCOPE_FOLDERS.get(scope, LIBRARY_FOLDERS)
         counts = {folder: 0 for folder in ["all", "trash", *LIBRARY_FOLDERS]}

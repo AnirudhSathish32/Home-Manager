@@ -18,9 +18,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.money import as_decimal_text, currency_code, money, to_minor
+from ..core.trace import NULL, ref
 from ..library.storage import now
 from .charts import line_chart
-from .forecast import MONTH, PERCENT, Assets, ForecastInput, PayPlan, YearlyBonus, baseline, month_add, month_end, project
+from .forecast import MONTH, PERCENT, Assets, ForecastInput, PayPlan, YearlyBonus, add_refs, baseline, month_add, month_end, project
 from .paycheck import CURRENCY, PaycheckInput, calculate
 from .paystub import rounded
 from .tools import FinanceTools
@@ -182,15 +183,28 @@ def paycheck_plans(value: ScenarioInput, tables_for):
     return plans, summaries
 
 
-def run(value: ScenarioInput, base, tables_for, today=None, birth_year=None):
-    """One scenario's forecast from its base."""
+def scenario_ref(name, value: ScenarioInput, today, **params):
+    """A trace ref that re-runs this plan exactly: its input (as JSON, defaults left out) and the day it was worked out
+    (finance/wealth_traces.py, finance/tax_traces.py)."""
+    return ref(name, scenario=value.model_dump_json(exclude_defaults=True), today=today.isoformat(), **params)
+
+
+def run(value: ScenarioInput, base, tables_for, today=None, birth_year=None, recorder=NULL, only=None):
+    """One scenario's forecast from its base, with every month's and year's cash and net worth, and each planned
+    paycheck's take-home pay, given its trace ref. only: what a live recorder gets (forecast.project)."""
+    today = today or date.today()
     plans, summaries = paycheck_plans(value, tables_for)
     if plans and base["currency"] != CURRENCY:
         raise ValueError(f"Planned paychecks are in {CURRENCY}; this forecast is in {base['currency']}.")
-    result = project(base, value.forecast.model_copy(update={"pay_plans": plans}), today, birth_year)
+    result = project(base, value.forecast.model_copy(update={"pay_plans": plans}), today, birth_year, recorder, only)
     for summary in summaries:
         if not summary["complete"]:
             result["notes"].append(f"{summary['label']}: some tax tables are missing, so its take-home pay leaves out those taxes and is too high.")
+    for plan, summary in zip(value.paychecks, summaries):
+        shown = plan.paycheck.model_dump_json(exclude_defaults=True)
+        summary["net_per_check"]["trace"] = ref("paycheck.net", input=shown)
+        summary["net_monthly"]["trace"] = ref("paycheck.net", input=shown, per="month")
+    add_refs(result, lambda figure, month: scenario_ref(f"forecast.{figure}", value, today, month=month))
     return {**result, "paychecks": summaries}
 
 

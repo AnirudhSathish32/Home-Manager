@@ -13,10 +13,8 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.money import EXPONENTS, money
-from ..finance.ledger import COUNTABLE, SPENDING, normalize_name
 from .items import normalize_text
 
-SPENDING_TYPES = ",".join(f"'{kind}'" for kind in SPENDING)
 # Unit -> (dimension, base units per unit). Bare "oz" is weight; "fl oz" is volume.
 UNITS = {"fl oz": ("volume", Decimal("29.5735295625")), "floz": ("volume", Decimal("29.5735295625")), "oz": ("mass", Decimal("28.349523125")),
          "lb": ("mass", Decimal("453.59237")), "lbs": ("mass", Decimal("453.59237")), "g": ("mass", Decimal(1)), "kg": ("mass", Decimal(1000)),
@@ -272,13 +270,11 @@ class ItemAnalysisTools:
         periods = [(start - timedelta(days=length * n), end - timedelta(days=length * n)) for n in range(4)]
 
         def spent(first, last):
-            # Categories as every other total counts them: by item category, with receipts no line has replaced.
+            # Categories and merchants as every other total counts them (finance/tools.py _category_totals, _merchant_totals).
             by = defaultdict(int, {("category", currency, category): total for (currency, category), (total, _)
                                    in self._category_totals(first.isoformat(), last.isoformat(), None).items()})
-            for row in self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS merchant,"
-                                  f"t.amount_minor FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} "
-                                  f"AND t.transaction_type IN ({SPENDING_TYPES}) AND t.posted_date BETWEEN ? AND ?", (first.isoformat(), last.isoformat())):
-                by[("merchant", row["currency"], " ".join(normalize_name(row["merchant"]).split()[:3]) or "UNKNOWN")] -= row["amount_minor"]
+            by.update({("merchant", currency, name): total for (currency, name), (total, _)
+                       in self._merchant_totals(first.isoformat(), last.isoformat(), None).items()})
             return by
 
         current, history = spent(*periods[0]), [spent(*period) for period in periods[1:]]

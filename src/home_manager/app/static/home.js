@@ -1,6 +1,6 @@
 "use strict";
 let homeLoad = 0, homeMonths = 6;
-// Categorical slots 1–6 of the validated palette (forecast-charts skill); the legend and table view relieve the contrast warning.
+// Categorical slots 1–6 of the validated chart palette (docs/ui.md "Conventions"); the legend and table view relieve the contrast warning.
 const CHART_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"];
 const categoryColors = new Map();
 function localMonth() {
@@ -50,9 +50,11 @@ function homeTable(headings, rows) {
   }
   table.append(head, body); wrap.append(table); details.append(wrap); return details;
 }
-function homeMetric(label, amount, note, href) {
+function homeMetric(label, value, note, href) {
   const panel = element("section", "", "panel home-metric");
-  panel.append(element("h2", label), homeLink(amount?.display || "No recorded data", href, "home-figure"), element("p", note, "muted small"));
+  const figure = homeLink("", href, "home-figure");
+  figure.append(value ? amount(value, {signed: false}) : document.createTextNode("No recorded data"));
+  panel.append(element("h2", label), figure, element("p", note, "muted small"));
   return panel;
 }
 function homeTrend(data) {
@@ -78,7 +80,7 @@ function homeTrend(data) {
     if (low < 0) svg.append(chartNode("text", {x: 40, y: 225, class: "chart-label"}, lowest.totals.net_spending.display));
     data.series.forEach((row, index) => {
       const x = 45 + index * step, value = row.totals?.net_spending.minor;
-      const label = `${row.month}${row.partial ? " (partial)" : ""}: ${row.totals?.net_spending.display || "No recorded transactions"}`;
+      const label = `${monthText(row.month)}${row.partial ? " (partial)" : ""}: ${row.totals?.net_spending.display || "No recorded transactions"}`;
       if (row.totals) {
         const link = chartNode("a", {href: financeHref(data, {start: row.start, end: row.end, metric: "spending"}), "aria-label": label, tabindex: "0"});
         const rect = chartNode("rect", {x, y: Math.min(y(value), zero) - (value === 0 ? 1 : 0), width: step - 12,
@@ -91,11 +93,12 @@ function homeTrend(data) {
       if (row.partial) svg.append(chartNode("text", {x: x + (step - 12) / 2, y: 253, "text-anchor": "middle", class: "chart-label"}, "partial"));
     });
     panel.append(svg, chartDetails(svg));
-    panel.append(element("p", `${data.series[0].month} – ${data.series.at(-1).month}. Outlined bars show a partial month.`, "muted small"));
+    panel.append(element("p", `${monthText(data.series[0].month)} – ${monthText(data.series.at(-1).month)}. Outlined bars show a partial month.`, "muted small"));
   }
+  const money = value => value ? amount(value, {signed: false}) : "—";
   panel.append(homeTable(["Month", "Spent", "Refunded", "Net", "Transactions"], data.series.map(row => [
-    homeLink(row.month + (row.partial ? " (partial)" : ""), financeHref(data, {start: row.start, end: row.end, metric: "spending"})),
-    row.totals?.spending.display || "No data", row.totals?.refunds.display || "—", row.totals?.net_spending.display || "—", String(row.totals?.transactions ?? "—")])));
+    homeLink(monthText(row.month) + (row.partial ? " (partial)" : ""), financeHref(data, {start: row.start, end: row.end, metric: "spending"})),
+    row.totals ? money(row.totals.spending) : "No data", money(row.totals?.refunds), money(row.totals?.net_spending), String(row.totals?.transactions ?? "—")])));
   return panel;
 }
 function categoryColor(name) {
@@ -111,19 +114,19 @@ function categoryColor(name) {
   categoryColors.set(name, chosen); return chosen;
 }
 function homeCategories(data) {
-  const panel = homePanel("Spending by category", `${data.month} · Before refunds`);
+  const panel = homePanel("Spending by category", `${monthText(data.month)} · Before refunds`);
   const href = row => financeHref(data, {metric: "categories", categories: JSON.stringify(row.members)});
-  if (data.gross.minor <= 0 || data.categories.some(row => row.spending.minor < 0)) {
+  if (!data.categories_chartable) {
     panel.append(emptyState(data.categories.length ? "Category totals include adjustments. See the exact amounts in the table below." : "No category spending recorded for this period."));
   } else {
     const svg = chartNode("svg", {viewBox: "0 0 260 230", class: "home-donut", role: "group", "aria-label": `Category spending before refunds: ${data.gross.display}`});
     let offset = 0;
     for (const row of data.categories) {
-      const share = row.spending.minor / data.gross.minor * 100;
+      const share = row.share_bp;  // The server's share (basis points summing to 10,000) is the slice's length.
       const link = chartNode("a", {href: href(row), tabindex: "0", "aria-label": `${row.category}: ${row.spending.display}, ${row.share}%`});
       link.append(chartNode("title", {}, `${row.category}: ${row.spending.display} (${row.share}%)`),
         chartNode("circle", {cx: 130, cy: 110, r: 78, fill: "none", stroke: categoryColor(row.category), "stroke-width": 27,
-          pathLength: 100, "stroke-dasharray": `${share} ${100 - share}`, "stroke-dashoffset": -offset, transform: "rotate(-90 130 110)"}));
+          pathLength: 10000, "stroke-dasharray": `${share} ${10000 - share}`, "stroke-dashoffset": -offset, transform: "rotate(-90 130 110)"}));
       svg.append(link); offset += share;
     }
     svg.append(chartNode("text", {x: 130, y: 104, "text-anchor": "middle", class: "donut-total"}, data.gross.decimal),
@@ -139,13 +142,13 @@ function homeCategories(data) {
     panel.append(legend);
   }
   if (data.totals) panel.append(element("p", `${data.totals.refunds.display} refunded; ${data.totals.net_spending.display} net spending.`, "muted small home-footer"));
-  panel.append(homeTable(["Category", "Spent", "Share"], data.categories.map(row => [homeLink(row.category, href(row)), row.spending.display, `${row.share}%`])));
+  panel.append(homeTable(["Category", "Spent", "Share"], data.categories.map(row => [homeLink(row.category, href(row)), amount(row.spending, {signed: false}), `${row.share}%`])));
   return panel;
 }
 function renderHome(data) {
   const content = $("home-content"), metrics = element("div", "", "home-metrics");
   const compare = data.comparison;
-  const note = compare ? `Previous period ${compare.first.display}; change ${compare.change.display}${compare.percent_change === null ? "" : ` (${compare.percent_change}%)`}. ${data.previous_period.start} – ${data.previous_period.end}.` : "No recorded spending in the comparison period.";
+  const note = compare ? `Previous period ${compare.first.display}; change ${compare.change.display}${compare.percent_change === null ? "" : ` (${compare.percent_change}%)`}. ${dateText(data.previous_period.start)} – ${dateText(data.previous_period.end)}.` : "No recorded spending in the comparison period.";
   metrics.append(homeMetric("Net spending", data.totals?.net_spending, note, financeHref(data, {metric: "spending"})),
     homeMetric("Money in", data.cashflow?.inflow, "Counted inflows for this period", financeHref(data, {metric: "inflow"})),
     homeMetric("Net cash flow", data.cashflow?.net, "Inflows less outflows · not an account balance", financeHref(data, {metric: "cashflow"})));
@@ -164,14 +167,14 @@ function renderHome(data) {
   if (counts.tax) rows.unshift([`Taxes: ${counts.tax.status_text}`, "#/taxes", counts.tax.trigger ? `What changed: ${counts.tax.trigger}` : `${counts.tax.year} return`]);
   for (const [label, href, note] of rows) { const li = document.createElement("li"); li.append(homeLink(label, href), element("small", note, "muted")); list.append(li); }
   attention.append(list);
-  const bills = homePanel("Upcoming bills", `${data.bills.as_of} – ${data.bills.until} · ${data.currency}`);
+  const bills = homePanel("Upcoming bills", `${dateText(data.bills.as_of)} – ${dateText(data.bills.until)} · ${data.currency}`);
   for (const [title, items] of [["Overdue", data.bills.overdue], ["Next 30 days", data.bills.upcoming]]) {
     if (!items.length) continue;
     bills.append(element("h3", title));
     const ul = element("ul", "", "finance-list");
     for (const bill of items) {
       const li = document.createElement("li");
-      li.append(homeLink(bill.provider, "#/bills"), element("small", `${bill.member ? `${bill.member} · ` : ""}${bill.due_date} · ${bill.amount_due.display} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`));
+      li.append(homeLink(bill.provider, "#/bills"), element("small", `${bill.member ? `${bill.member} · ` : ""}${dateText(bill.due_date)} · ${bill.amount_due.display} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`));
       ul.append(li);
     }
     bills.append(ul);
@@ -184,7 +187,7 @@ function renderHome(data) {
     for (const due of data.maturities) {
       const li = document.createElement("li"), when = MATURITY_STATES[due.state === "matured" ? "matured" : due.kind];
       li.append(homeLink(due.name, due.member ? "#/investments" : `#/investments?account=${due.account_id}`),
-                element("small", `${due.member ? `${due.member} · ` : ""}${due.account} · ${when} ${due.date} · ${due.amount.display}`));
+                element("small", `${due.member ? `${due.member} · ` : ""}${due.account} · ${when} ${dateText(due.date)} · ${due.amount.display}`));
       ul.append(li);
     }
     bills.append(ul);
@@ -193,8 +196,8 @@ function renderHome(data) {
   bills.append(homeLink(`${data.family ? "Bills due or overdue across the family" : "View all bills"} (${data.bills.total})`, "#/bills", "home-footer"));
   bottom.append(attention, bills);
   const household = element("div", "", "home-bottom"); household.id = "home-extras";
-  const coverage = homePanel("What these numbers cover", `${data.period.start} – ${data.period.end} · ${data.currency}`);
-  coverage.append(element("p", data.coverage.map(row => `${row.display_name}: ${row.first} to ${row.last} (${row.transactions} counted transactions)`).join("; ") || "No counted account transactions in this period.", "muted small"));
+  const coverage = homePanel("What these numbers cover", `${dateText(data.period.start)} – ${dateText(data.period.end)} · ${data.currency}`);
+  coverage.append(element("p", data.coverage.map(row => `${row.display_name}: ${dateText(row.first)} to ${dateText(row.last)} (${row.transactions} counted transactions)`).join("; ") || "No counted account transactions in this period.", "muted small"));
   if (data.pending) coverage.append(element("p", `${data.pending.amount.display} across ${data.pending.transactions} transactions awaits review or reconciliation and is not counted.`, "item-warning"));
   coverage.append(element("p", "Totals reflect recorded transactions and approved receipts, not all household spending. A receipt counts until a card or bank charge replaces it, never both. Transfers and card payments are excluded from spending. Each currency is shown separately.", "muted small"));
   if (data.family) {
@@ -233,7 +236,7 @@ function asOfText(iso) {
   return iso ? `${dateText(iso)} ${new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : "No data yet";
 }
 function familyMembers(data) {
-  const panel = homePanel("Each person", `${data.month} · ${data.currency} · the family totals above are these rows added together`);
+  const panel = homePanel("Each person", `${monthText(data.month)} · ${data.currency} · the family totals above are these rows added together`);
   panel.id = "family-members";
   panel.append(familyTable(["Person", "Net spending", "Money in", "Net cash flow", "Data as of"], data.members.map(row => [
     row.name, amount(row.totals?.net_spending || "—", {signed: false}), amount(row.cashflow?.inflow || "—", {signed: false}),
@@ -257,8 +260,8 @@ function familyAdjustments(family) {
     li.append(element("span", `${pair.from} → ${pair.to}`), element("small", `${dateText(pair.date)} · ${pair.amount.display} · a transfer within the family, not spending or income`, "muted"));
     list.append(li);
   }
-  const more = (family.adjustments?.transfer_count || 0) - transfers.length;
-  if (more > 0) list.append(element("li", `${more} more transfers within the family.`, "muted small"));
+  const more = family.adjustments?.transfers_not_listed || 0;
+  if (more) list.append(element("li", `${more} more transfers within the family.`, "muted small"));
   panel.append(joint.length || transfers.length ? list : emptyState("No shared accounts or transfers between family members were found."));
   return panel;
 }
@@ -349,7 +352,7 @@ async function loadHome() {
     $("home-currency-select").replaceChildren(...data.currencies.map(code => new Option(code, code)));
     $("home-currency-select").value = data.currency;
     renderHome(data);
-    $("home-status").textContent = `${data.period.start} – ${data.period.end} · Updated ${new Date(data.loaded_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`;
+    $("home-status").textContent = `${dateText(data.period.start)} – ${dateText(data.period.end)} · Updated ${new Date(data.loaded_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`;
   } catch (error) {
     if (load !== homeLoad) return;
     $("home-content").replaceChildren();

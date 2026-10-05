@@ -23,6 +23,7 @@ from ..core.jobs import QUEUES, Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import currency_code, money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
+from ..core.trace import ref
 from ..documents.extraction import ExtractionService
 from ..documents.grouping import Groups
 from ..documents.reasoning import ReasoningConfig, ReasoningService
@@ -63,7 +64,7 @@ from .profiles import Profiles, public
 CANCELLABLE_CAPTURE = ("backup", "restore")
 MODEL_SETTINGS = {"vision": ("vision.json", VisionConfig), "reasoning_config": ("reasoning.json", ReasoningConfig),
                   "reviewer_config": ("reviewer.json", ReviewerConfig), "decision_config": ("decision.json", DecisionConfig)}
-# This PC's server or a family GPU computer. The token has its own file and is never returned by the API.
+# This PC's server or a shared GPU computer. The token has its own file and is never returned by the API.
 MODEL_COMPUTER, GPU_TOKEN = "model_computer.json", "gpu_token.txt"
 log = logging.getLogger(__name__)
 # Before profiles, financial preferences were one file for the computer; the first profile inherits it.
@@ -111,7 +112,7 @@ class Manager:
         if self.sessions.exists():
             shutil.rmtree(self.sessions)  # Temporary copies left by a session the app did not end.
         # Model settings as saved; self.vision, self.reasoning_config, self.reviewer_config and self.decision_config are what runs
-        # (the same, or pointed at the family GPU computer by apply_model_computer).
+        # (the same, or pointed at the shared GPU computer by apply_model_computer).
         self.model_settings = {attribute: self.load_setting(name, model) for attribute, (name, model) in MODEL_SETTINGS.items()}
         self.model_computer = self.load_setting(MODEL_COMPUTER, ModelComputer)
         self.apply_model_computer()
@@ -285,10 +286,22 @@ class Manager:
 
     # Settings ----------------------------------------------------------------
 
+    def people(self):
+        """Who can be chosen in the who's-here picker (core/actor.py): the profile's owner, the spouse named on their
+        latest return, and in a family every member; nobody before a profile is set up."""
+        from ..finance.tax_year import TaxYears
+        found = [self.profile["name"]] if self.profile else []
+        if found and self.store:
+            found += TaxYears(self.store).spouse_names()
+        if self.family:
+            found += [member["name"] for member in self.family.summary()["members"] if member.get("name")]
+        return list(dict.fromkeys(found))
+
     def settings(self):
         activity = self.activity() if self.store else []
         progress = next((item["progress"] for item in activity if item["queue"] == "inference" and item["progress"]), None)
         return {"profile": public(self.profile) if self.profile else None, "profiles": [public(item) for item in self.profiles.all()],
+                "people": self.people(),
                 "family": self.family.summary() if self.family else None,
                 "managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
                 "session": {key: value for key, value in self.session.items() if key != "home"} if self.session else None,
@@ -804,7 +817,7 @@ class Manager:
             return ""
 
     def apply_model_computer(self):
-        """Point every model task at this PC's server, or at the family GPU computer under role names
+        """Point every model task at this PC's server, or at the shared GPU computer under role names
         (the GPU computer's owner chooses the actual models)."""
         computer = self.model_computer
         family = computer.provider == "family_gpu"
@@ -820,7 +833,7 @@ class Manager:
     def configure_model(self, attribute, config):
         if is_remote(config):
             raise ValueError("Enter this computer's model server here (http://127.0.0.1:PORT/v1). "
-                             "To use a family member's GPU, choose it under Model computer.")
+                             "To use a shared GPU, choose it under Model computer.")
         with self.mutex:
             if self.busy("inference"):
                 raise RuntimeError("Wait for model work to finish, or cancel it, before changing model settings.")
@@ -850,7 +863,7 @@ class Manager:
                 "loading_hint": residency.hint() if self.model_computer.provider == "local" else None}
 
     def test_model_computer(self):
-        """Read-only check that the family GPU computer answers and serves this app's roles."""
+        """Read-only check that the shared GPU computer answers and serves this app's roles."""
         checks = {"vision": check_connection(self.vision), "reasoning": check_connection(self.reasoning_config)}
         if self.decision_config.provider == "lmstudio":
             checks["decision"] = check_connection(self.decision_config)
@@ -1174,14 +1187,24 @@ class Manager:
         """A pay stub record with how its taxes were figured (finance/paystub.py) and a bucket chart per jurisdiction."""
         record = self.ledger.record("income_record", income_id)
         year = int(record["pay_date"][:4]) if record.get("pay_date") else None
-        state = record.get("work_state")
-        tables = self.tax_tables.tables.for_year(year, ["US", *([state] if state else [])], self.household.filing_status) if year else {}
-        record["withholding"] = paystub.explain(record, record["lines"], tables, self.household.filing_status)
+        record["withholding"] = self.paystub_taxes(record)
+        for part in [*record["withholding"]["jurisdictions"], *record["withholding"]["fica"]]:  # Each estimate's breakdown (finance/tax_traces.py).
+            if part.get("estimate_minor") is not None:
+                part["trace"] = ref("paystub.tax", income_id=income_id, part=part.get("jurisdiction") or part["category"])
         for part in record["withholding"]["jurisdictions"]:
             if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
                 part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {year}", part["buckets"], record["currency"],
                                                     record["withholding"]["paychecks"])
         return record
+
+    def paystub_taxes(self, record, recorder=None, only=None):
+        """How a pay stub's taxes are figured, from its year's tables (paystub.explain); a live recorder gets one part's
+        estimate (finance/tax_traces.py)."""
+        from ..core.trace import NULL
+        year = int(record["pay_date"][:4]) if record.get("pay_date") else None
+        state = record.get("work_state")
+        tables = self.tax_tables.tables.for_year(year, ["US", *([state] if state else [])], self.household.filing_status) if year else {}
+        return paystub.explain(record, record["lines"], tables, self.household.filing_status, recorder or NULL, only)
 
     def tax_year(self, year, today=None, seen=False):
         """This profile's return for a year (finance/tax_year.py, finance/tax_engine.py): what the records give, what you typed,
@@ -1194,6 +1217,11 @@ class Manager:
         inputs = tax_year.TaxYears(self.store).inputs(year)
         tables_for = lambda codes: self.tax_tables.tables.for_year(year, codes, status)
         return self.tax_view(year, status, self.household, gathered, inputs, tables_for, today=today, seen=seen)
+
+    def gathered_tax_year(self, year):
+        """What the records give for a year, before anything typed: kept beside each typed change (tax_input_changes)."""
+        from ..finance import tax_year
+        return tax_year.gather(self.store, year, self.household)
 
     def tax_attention(self, today=None, wait=False):
         """For Home (docs/taxes.md "Design"): this year's Tax Zen when it got worse since the Taxes page
@@ -1467,20 +1495,34 @@ class Manager:
         for business in gathered["businesses"]:
             business["display"] = money_view(business)
         return {"year": year, "filing_status": status, "filing_status_name": paystub.STATUS_NAMES[status], "gathered": gathered, "inputs": inputs,
-                "input": merged.model_dump(), "return": estimate, "zen": zen, "prior_year": prior and {key: prior[key] for key in ("tax_minor", "agi_minor", "source") if key in prior},
+                "input": merged.model_dump(), "typed_over": tax_year.typed_over(gathered, inputs), "return": estimate, "zen": zen, "prior_year": prior and {key: prior[key] for key in ("tax_minor", "agi_minor", "source") if key in prior},
                 "tipped_occupations": TIPPED_OCCUPATIONS,
                 "tables": {code: (tables[code]["status"] if code in tables else "missing") for code in codes}}
 
-    def paycheck(self, value):
-        """A planned paycheck, gross to net (finance/paycheck.py), with a bucket chart per income tax."""
+    def paycheck_tables(self, value):
+        return self.tax_tables.tables.for_year(value.year, ["US", *([value.work_state] if value.work_state else [])], value.filing_status)
+
+    def paycheck_tax_time(self, value, result, tables):
+        """At tax time: this paycheck alone for a full year, and the W-4 entry that brings its return to $0 (finance/tax_zen.py)."""
         from ..finance import tax_zen
         from ..finance.ledger import HouseholdConfig
-        tables = self.tax_tables.tables.for_year(value.year, ["US", *([value.work_state] if value.work_state else [])], value.filing_status)
-        result = paycheck.calculate(value, tables)
-        # At tax time: this paycheck alone for a full year, and the W-4 entry that brings its return to $0 (finance/tax_zen.py).
         empty = {"values": {}, "sources": {}, "jobs": [], "businesses": [], "state": None, "notes": [], "estimated_payments": {"federal_estimated": [], "state_estimated": []}}
-        result["tax_time"] = tax_zen.plan_tax_zen([("This paycheck", result, value, True)], empty, HouseholdConfig(filing_status=value.filing_status),
-                                                  value.filing_status, value.year, lambda codes: tables, self.household.tax_engine)
+        return tax_zen.plan_tax_zen([("This paycheck", result, value, True)], empty, HouseholdConfig(filing_status=value.filing_status),
+                                    value.filing_status, value.year, lambda codes: tables, self.household.tax_engine)
+
+    def paycheck(self, value):
+        """A planned paycheck, gross to net (finance/paycheck.py), with a bucket chart per income tax."""
+        tables = self.paycheck_tables(value)
+        result = paycheck.calculate(value, tables)
+        result["tax_time"] = self.paycheck_tax_time(value, result, tables)
+        # Each figure's breakdown re-runs this paycheck from its input (finance/tax_traces.py).
+        shown = value.model_dump_json(exclude_defaults=True)
+        result["traces"] = {"net_per_check": ref("paycheck.net", input=shown), "net_monthly": ref("paycheck.net", input=shown, per="month")}
+        for group in result["groups"]:
+            for line in group["lines"] if group["group"] == "tax" else []:
+                line["trace"] = ref("paycheck.line", input=shown, category=line["category"])
+        if result["tax_time"].get("result_minor") is not None:
+            result["tax_time"]["trace"] = ref("taxzen.paycheck", input=shown)
         for part in result["jurisdictions"]:
             if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
                 part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {value.year}", part["buckets"], result["currency"],
@@ -1536,10 +1578,14 @@ class Manager:
                       if include_now else [])
             chosen += [saved.input(scenario_id) for scenario_id in ids] + ([draft] if draft else [])
             runs = []
+            today = date.today()
             for value in chosen:
                 value = value.model_copy(update={"forecast": value.forecast.model_copy(update={"years": years})})
-                result = scenarios.run(value, self.scenario_base(value), tables_for, birth_year=self.household.birth_year)
-                result["tax_zen"] = self.plan_tax_zen(value, tables_for)
+                result = scenarios.run(value, self.scenario_base(value), tables_for, today, birth_year=self.household.birth_year)
+                result["tax_zen"] = self.plan_tax_zen(value, tables_for, today)
+                if result["tax_zen"].get("result_minor") is not None:  # Its breakdown (finance/tax_traces.py).
+                    result["tax_zen"]["trace"] = ref("tax.result", year=today.year) if not value.paychecks else \
+                        scenarios.scenario_ref("taxzen.plan", value, today)
                 runs.append((value.name, result))
         return scenarios.compare(runs)
 
@@ -1680,11 +1726,21 @@ class Manager:
         except (ValueError, OSError, RuntimeError):
             pass  # Filing intents retain their error; valid financial analysis remains available.
 
-    def correct_record(self, record_type, record_id, changes):
+    def add_manual_transaction(self, value):
+        """A payment entered by hand, then a reconciliation pass: a line already here for it replaces it at once."""
+        with self.mutex:
+            self.require(False)
+        record = self.ledger.add_manual_transaction(value.account_id, value.date, value.description, value.amount, value.direction, value.category)
+        return {"record": record, "reconciliation": self.reconciler.run("manual")}
+
+    def correct_record(self, record_type, record_id, changes, reason=None):
         """A user correction, then a reconciliation pass: dates and merchants decide matches and spending months."""
         with self.mutex:
             self.require(False)
-        record = self.ledger.correct(record_type, record_id, changes)
+        if record_type == "transaction":
+            record = self.ledger.correct_transaction(record_id, changes, reason)
+        else:
+            record = self.ledger.correct(record_type, record_id, changes, reason)
         return {"record": record, "reconciliation": self.reconciler.run("correction")}
 
     # Models, backups, restores and questions -----------------------------------------

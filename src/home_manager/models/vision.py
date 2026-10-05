@@ -1,7 +1,7 @@
 """Bounded vision adapter. Documents never select endpoints or tools.
 
 Model endpoints are a loopback server on this computer or, when "Model computer" is
-set to a family GPU, that computer on the tailnet. Nothing else is ever accepted.
+set to a shared GPU, that computer on the tailnet. Nothing else is ever accepted.
 """
 
 import base64
@@ -15,7 +15,7 @@ from ..documents.receipt_schema import Issue, ReceiptResult, Region, StrictModel
 from .model_client import DEFAULT_TEMPERATURE, is_tailnet_host, request_completion
 
 VISION_VERSION = "receipt-vision-v5-text"
-# Family members ask the GPU computer for a role; its owner maps each role to a model ID.
+# Members of a shared GPU ask it for a role; its owner maps each role to a model ID.
 ROLE_ALIASES = {"vision": "home-manager/vision", "reasoning_config": "home-manager/reasoning",
                 "reviewer_config": "home-manager/reviewer", "decision_config": "home-manager/decision"}
 
@@ -31,7 +31,7 @@ def endpoint_url(value, tailnet=False):
     host_ok = is_tailnet_host(url.hostname) if tailnet else url.hostname == "127.0.0.1"
     if (url.scheme != "http" or not host_ok or not port
             or url.username or url.password or url.query or url.fragment or url.path != "/v1"):
-        raise ValueError("Use http://<Tailscale IP or name.ts.net>:PORT/v1 for the family GPU computer." if tailnet else
+        raise ValueError("Use http://<Tailscale IP or name.ts.net>:PORT/v1 for the shared GPU computer." if tailnet else
                          "Use http://127.0.0.1:PORT/v1 for a local model server.")
     return value
 
@@ -68,7 +68,7 @@ class VisionConfig(Sampling):
     @field_validator("base_url")
     @classmethod
     def local_only(cls, value):
-        # Run options saved while using a family GPU carry its tailnet URL; settings forms accept loopback only.
+        # Run options saved while using a shared GPU carry its tailnet URL; settings forms accept loopback only.
         try:
             return endpoint_url(value)
         except ValueError:

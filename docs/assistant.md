@@ -130,5 +130,5 @@ document is filed. The result is saved in `analysis_reviews`. A failed review le
 
 Typed extraction uses the decision model separately, on every extraction, as a veto that sends a record to review.
 
-On a [family GPU computer](family.md#family-gpu), members ask for the `home-manager/reviewer` role. It maps to the
+On a [shared GPU computer](family.md#shared-gpu), members ask for the `home-manager/reviewer` role. It maps to the
 host's reviewer chat model, or to its reasoning model if none is set.

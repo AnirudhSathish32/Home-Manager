@@ -21,10 +21,12 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..core import actor
 from ..core.formats import extension
-from ..core.money import currency_code, format_minor, money, to_minor
+from ..core.money import currency_code, format_minor, money, percent_text, to_minor
+from ..core.trace import NULL, figure, ref
 from ..library.storage import now
-from .ledger import name_tokens, normalize_name
+from .ledger import clean_reason, name_tokens, normalize_name
 from .retirement import HAS_RMD, divisor, required, rmd_start_age
 from .tabular import parse_crypto_export
 from .tax_lots import account_lots, realized, shares
@@ -103,10 +105,6 @@ def rate_bp(percent):
     return int(rate)
 
 
-def percent_text(bp):
-    return None if bp is None else f"{(Decimal(bp) / 100).normalize():f}"
-
-
 def share_text(part, whole):
     return f"{(Decimal(part) * 100 / whole).quantize(Decimal('0.1'), ROUND_HALF_EVEN)}" if whole else "0.0"
 
@@ -126,14 +124,16 @@ def add_months(day, months):
     return date(year, month, min(start.day, last)).isoformat()
 
 
-def accrued(base_minor, since, on, rate_bp=None, face_minor=None, maturity=None):
+def accrued(base_minor, since, on, rate_bp=None, face_minor=None, maturity=None, recorder=NULL, currency="USD"):
     """A fixed-income holding's value on a date from its terms, exact and rounded half-even to the minor unit. With a face value
     (a Treasury bill bought at a discount) it rises in a straight line to the face at maturity; otherwise it compounds at its
-    yearly rate (a CD's APY, an I bond's rate). Nothing accrues before `since` or after maturity."""
+    yearly rate (a CD's APY, an I bond's rate). Nothing accrues before `since` or after maturity. A live recorder gets its
+    value on `since` and what it gained since."""
     start, end = date.fromisoformat(since), date.fromisoformat(on)
     if maturity:
         end = min(end, date.fromisoformat(maturity))
     days = (end - start).days
+    recorder.add(f"Its value on {since}", base_minor, currency)
     if days <= 0:
         return base_minor
     with localcontext() as context:
@@ -141,11 +141,16 @@ def accrued(base_minor, since, on, rate_bp=None, face_minor=None, maturity=None)
         if face_minor is not None and maturity:
             term = (date.fromisoformat(maturity) - start).days
             value = Decimal(base_minor) + (Decimal(face_minor) - base_minor) * days / term
+            label = f"{days} of the {term} days to maturity, rising in a straight line to its face value of {format_minor(face_minor, currency)}"
         elif rate_bp:
             value = Decimal(base_minor) * (1 + Decimal(rate_bp) / 10000) ** (Decimal(days) / 365)
+            label = f"{days} days at {percent_text(rate_bp)}% a year, compounded"
         else:
-            value = Decimal(base_minor)
-        return int(value.to_integral_value(ROUND_HALF_EVEN))
+            value, label = Decimal(base_minor), ""
+        result = int(value.to_integral_value(ROUND_HALF_EVEN))
+        if label:
+            recorder.add(label, result - base_minor, currency)
+        return result
 
 
 def ibond_composite_bp(fixed_bp, inflation_bp):
@@ -171,7 +176,7 @@ def ibond_rate(rates, day):
     return found
 
 
-def ibond_value(principal_minor, issue_date, on, rates, months=None):
+def ibond_value(principal_minor, issue_date, on, rates, months=None, recorder=NULL, currency="USD"):
     """An I bond's value after `months` of interest (by default, those it has on `on`), from the published rates; None when no
     rate covers its issue month. Its fixed rate is the one for its issue month; the inflation rate resets every six months from
     the issue month to the one in force then (the latest published when a period begins after the last one known). Worked out
@@ -185,13 +190,23 @@ def ibond_value(principal_minor, issue_date, on, rates, months=None):
     with localcontext() as context:
         context.prec = 34
         unit, done = Decimal(IBOND_UNIT_MINOR), 0
+        scale = Decimal(principal_minor) / IBOND_UNIT_MINOR
+        recorder.add("What was paid", principal_minor, currency)
+        steps = principal_minor
         while done < months:
             period = ibond_rate(rates, add_months(issued, done))
             composite = ibond_composite_bp(fixed["fixed_bp"], period["inflation_semiannual_bp"])
             step = min(6, months - done)
+            before = unit
             unit = (unit * (1 + Decimal(composite) / 20000) ** (Decimal(step) / 6)).to_integral_value(ROUND_HALF_EVEN)
+            if recorder.live:
+                gained = int(((unit - before) * scale).to_integral_value(ROUND_HALF_EVEN))
+                recorder.add(f"{step} month{'s' if step != 1 else ''} from {add_months(issued, done)[:7]} at {percent_text(composite)}% a year", gained, currency)
+                steps += gained
             done += step
-        return int((unit * Decimal(principal_minor) / IBOND_UNIT_MINOR).to_integral_value(ROUND_HALF_EVEN))
+        value = int((unit * scale).to_integral_value(ROUND_HALF_EVEN))
+        recorder.round(value - steps, currency, note="Worked out for a $25 bond rounded to the cent each period, as TreasuryDirect does, then scaled.")
+        return value
 
 
 def ibond_cash_out(principal_minor, issue_date, on, rates):
@@ -501,6 +516,12 @@ class Investments:
         row["issues"] = json.loads(row.pop("validation_json", None) or "[]")
         return {**row, "value": money(row["value_minor"], currency)}
 
+    @staticmethod
+    def traced(current, account_id):
+        """An account's current value with its trace (finance/wealth_traces.py)."""
+        current["value"] = figure(current["value_minor"], current["value"]["currency"], ref("investments.value", account_id=account_id))
+        return current
+
     def view(self, account, values):
         currency = account["currency"]
         confirmed = [value for value in values if value["review_status"] == "verified"]
@@ -521,7 +542,7 @@ class Investments:
                 "tax_treatment": tax, "tax_label": TAX_TREATMENTS[tax], "tax_overridden": account["tax_treatment"] is not None,
                 "rate_bp": rate, "annual_rate_percent": percent_text(rate), "rate_is_default": account["annual_rate_bp"] is None,
                 "is_income": account["value_model"] == "income", "pension": pension,
-                "current": self.valuation_view(current, currency) if current else None,
+                "current": self.traced(self.valuation_view(current, currency), account["id"]) if current else None,
                 "change": money(change, currency) if change is not None else None, "change_since": previous["as_of"] if previous else None,
                 "awaiting_review": [self.valuation_view(value, currency) for value in waiting]}
 
@@ -552,7 +573,8 @@ class Investments:
             # Called within this iteration only, so the loop variables are current.
             split = lambda parts, labels: [{"key": key, "label": labels[key], "total": money(parts[key], currency), "share_percent": share_text(parts[key], bucket["total"])}  # noqa: B023
                                            for key in labels if key in parts]
-            views.append({"currency": currency, "total": money(bucket["total"], currency), "oldest_as_of": bucket["oldest"], "estimated_accounts": bucket["estimated"],
+            views.append({"currency": currency, "total": figure(bucket["total"], currency, ref("investments.total", currency=currency)),
+                          "oldest_as_of": bucket["oldest"], "estimated_accounts": bucket["estimated"],
                           "sections": split(bucket["sections"], SECTIONS), "tax": split(bucket["tax"], TAX_TREATMENTS)})
         return {"accounts": accounts, "totals": views, "sections": SECTIONS, "maturities": self.maturities(), "payroll_questions": questions,
                 "ibond_warnings": ibond_warnings,
@@ -622,7 +644,7 @@ class Investments:
             holding["lots_missing"] = found["missing"]
             held = shares(holding.get("quantity"))
             if held is not None and held == shares(found["open_shares"]) and not holding["estimated"]:
-                holding["lot_gain"] = money(holding["value_minor"] - found["open_cost_minor"], currency)
+                holding["lot_gain"] = figure(holding["value_minor"] - found["open_cost_minor"], currency, ref("investments.lot_gain", holding_id=holding["id"]))
 
     def holding_view(self, row, currency, value, estimated, gain=None, status=None, matured=False, rates=()):
         row = dict(row)
@@ -640,7 +662,8 @@ class Investments:
         return {**row, "class_label": INSTRUMENT_CLASSES.get(row["instrument_class"], row["instrument_class"].replace("_", " ").capitalize()),
                 "cash_out": show(cash_out), "penalty_until": add_months(row["issue_date"][:7] + "-01", IBOND_PENALTY_YEARS * 12) if ibond else None,
                 "value_source": row.get("value_source") or ("estimated" if estimated else "statement"),
-                "rate_percent": percent_text(row["rate_bp"]), "value": money(value, currency), "value_minor": value, "estimated": estimated,
+                "rate_percent": percent_text(row["rate_bp"]), "value_minor": value, "estimated": estimated,
+                "value": figure(value, currency, ref("investments.holding", holding_id=row["id"]) if estimated else None),
                 "review_status": status or row.get("review_status"), "matured": matured, "rollover": bool(row["rollover"]),
                 "price": show(row.get("price_minor")), "cost_basis": show(row.get("cost_basis_minor")), "gain": show(gain),
                 "principal": show(row["principal_minor"]), "face": show(row["face_minor"]), "at_maturity": show(at_maturity),
@@ -903,6 +926,101 @@ class Investments:
             db.execute("INSERT INTO investment_valuations(account_id,as_of,value_minor,source,review_status,created_at,updated_at) VALUES(?,?,?,'manual','verified',?,?)",
                        (account_id, value.as_of, amount, now(), now()))
 
+    # Corrections (docs/ui.md "Redesign: calculation observability"): a value read from a document set right by a person,
+    # kept with the value it replaced, who and why (record_corrections), and re-applied if the document is read again.
+    def correct_valuation(self, valuation_id, value_text, reason=None):
+        """An account value read from a statement, corrected. It keeps its statement and review state."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT v.*,a.currency FROM investment_valuations v JOIN investment_accounts a ON a.id=v.account_id "
+                             "WHERE v.id=? AND v.holding_id IS NULL", (valuation_id,)).fetchone()
+            if row is None:
+                raise ValueError("Account value not found.")
+            if row["source"] == "manual":
+                raise ValueError("A value you entered is changed by entering it again for its date.")
+            amount = to_minor(value_text, row["currency"])
+            if amount < 0:
+                raise ValueError("Enter a value of zero or more.")
+            db.execute("UPDATE investment_valuations SET value_minor=?,updated_at=? WHERE id=?", (amount, now(), valuation_id))
+            self.add_correction(db, "investment_valuation", valuation_id, "value", money(amount, row["currency"])["decimal"],
+                                money(row["value_minor"], row["currency"])["decimal"], reason)
+        return self.get(row["account_id"])
+
+    def correct_tax_form_box(self, form_id, form, box, amount_text, reason=None):
+        """One box of a tax form, corrected. Boxes are written again when a form is re-read, so the correction is kept
+        by the form and the box as printed ("1099-INT box 1"), not by the row."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT b.*,f.currency FROM tax_form_boxes b JOIN tax_forms f ON f.id=b.form_id WHERE b.form_id=? AND b.form=? AND b.box=?",
+                             (form_id, form, str(box).lower())).fetchone()
+            if row is None:
+                raise ValueError("That box isn't on this tax form.")
+            amount = to_minor(amount_text, row["currency"])
+            db.execute("UPDATE tax_form_boxes SET amount_minor=?,updated_at=? WHERE id=?", (amount, now(), row["id"]))
+            self.add_correction(db, "tax_form_box", form_id, f"{row['form']} box {row['box']}", money(amount, row["currency"])["decimal"],
+                                money(row["amount_minor"], row["currency"])["decimal"], reason)
+        return self.tax_form(form_id)
+
+    def correct_holding(self, holding_id, field, text, as_of=None, reason=None):
+        """A holding read from a statement or confirmation, corrected: its yearly rate, its maturity date, or its value on
+        one statement date (field "value", with as_of). Statements rewrite a holding's terms and values each time they are
+        read, so the correction is kept by the holding ("value 2026-06-30" for a dated value) and put back after
+        (reapply_holding). A holding entered by hand is changed by editing it instead."""
+        with self.store.connection() as db:
+            row = self.holding(db, holding_id)
+            if row["source"] == "manual":
+                raise ValueError("A holding you entered is changed by editing it.")
+            currency = row["currency"]
+            if field == "rate":
+                cleaned = (text or "").strip().rstrip("%").strip()
+                try:
+                    value = rate_bp(cleaned) if cleaned else None
+                except ArithmeticError:
+                    raise ValueError("Enter the yearly rate as a percent, such as 4.25.") from None
+                db.execute("UPDATE holdings SET rate_bp=?,updated_at=? WHERE id=?", (value, now(), holding_id))
+                self.add_correction(db, "holding", holding_id, "rate", percent_text(value) if value is not None else None, percent_text(row["rate_bp"]), reason)
+            elif field == "maturity_date":
+                try:
+                    day = date.fromisoformat(text).isoformat() if text else None
+                except ValueError:
+                    raise ValueError("Enter the maturity date as YYYY-MM-DD.") from None
+                db.execute("UPDATE holdings SET maturity_date=?,updated_at=? WHERE id=?", (day, now(), holding_id))
+                self.add_correction(db, "holding", holding_id, "maturity_date", day, row["maturity_date"], reason)
+            elif field == "value":
+                point = db.execute("SELECT * FROM investment_valuations WHERE holding_id=? AND as_of=? AND source='statement'", (holding_id, as_of or "")).fetchone()
+                if point is None:
+                    raise ValueError("No statement value for this holding on that date.")
+                amount = to_minor(text, currency)
+                if amount < 0:
+                    raise ValueError("Enter a value of zero or more.")
+                db.execute("UPDATE investment_valuations SET value_minor=?,updated_at=? WHERE id=?", (amount, now(), point["id"]))
+                self.add_correction(db, "holding", holding_id, f"value {as_of}", money(amount, currency)["decimal"], money(point["value_minor"], currency)["decimal"], reason)
+            else:
+                raise ValueError("Choose the rate, the maturity date or a dated value.")
+        return self.get(row["account_id"])
+
+    @staticmethod
+    def reapply_holding(db, holding_id):
+        """Put a person's corrections back after a statement or confirmation rewrote the holding's terms or values."""
+        currency = db.execute("SELECT a.currency FROM holdings h JOIN investment_accounts a ON a.id=h.account_id WHERE h.id=?", (holding_id,)).fetchone()[0]
+        for field, text in Investments.latest_corrections(db, "holding", holding_id).items():
+            if field == "rate":
+                db.execute("UPDATE holdings SET rate_bp=? WHERE id=?", (rate_bp(text) if text else None, holding_id))
+            elif field == "maturity_date":
+                db.execute("UPDATE holdings SET maturity_date=? WHERE id=?", (text, holding_id))
+            elif field.startswith("value "):
+                db.execute("UPDATE investment_valuations SET value_minor=? WHERE holding_id=? AND as_of=? AND source='statement'",
+                           (to_minor(text, currency), holding_id, field[6:]))
+
+    @staticmethod
+    def add_correction(db, record_type, record_id, field, value, previous, reason):
+        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                   (record_type, record_id, field, value, previous, clean_reason(reason), actor.current(), now()))
+
+    @staticmethod
+    def latest_corrections(db, record_type, record_id):
+        """{field: value text}: the newest correction of each field."""
+        return dict(db.execute("SELECT field,value FROM record_corrections c WHERE record_type=? AND record_id=? AND id=(SELECT max(id) FROM record_corrections "
+                               "WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)", (record_type, record_id)).fetchall())
+
     def set_pension(self, account_id, value: PensionInput):
         """A pension's terms (its benefit statement's monthly amount, start date, raise and survivor share). Counts at once."""
         account = self.get(account_id)
@@ -969,8 +1087,8 @@ class Investments:
                        (status, now(), current["account_id"], current["as_of"]))
             if current["blob_hash"]:
                 db.execute("UPDATE investment_events SET review_status=? WHERE account_id=? AND blob_hash=?", (status, current["account_id"], current["blob_hash"]))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('investment_valuation',?,?,?,'',?)",
-                       (valuation_id, current["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('investment_valuation',?,?,?,'',?,?)",
+                       (valuation_id, current["review_status"], status, now(), actor.current()))
         return self.valuation(valuation_id)
 
     @staticmethod
@@ -1011,6 +1129,10 @@ class Investments:
                 db.execute(f"UPDATE investment_valuations SET {','.join(f'{column}=?' for column in values)},source='statement',review_status='proposed' WHERE id=?",
                            (*values.values(), existing["id"]))
                 valuation_id, status = existing["id"], "published"
+                corrected = self.latest_corrections(db, "investment_valuation", valuation_id).get("value")
+                if corrected is not None:  # A person's correction outlives a new reading.
+                    currency = db.execute("SELECT currency FROM investment_accounts WHERE id=?", (account_id,)).fetchone()[0]
+                    db.execute("UPDATE investment_valuations SET value_minor=? WHERE id=?", (to_minor(corrected, currency), valuation_id))
             else:
                 newer = db.execute("SELECT 1 FROM investment_valuations WHERE account_id=? AND holding_id IS NULL AND as_of>? AND review_status<>'rejected'",
                                    (account_id, record["period_end"])).fetchone()
@@ -1028,6 +1150,7 @@ class Investments:
         maturity) are updated only from the newest statement."""
         db.execute("DELETE FROM investment_valuations WHERE account_id=? AND as_of=? AND holding_id IS NOT NULL AND source IN ('statement','quote')",
                    (account_id, record["period_end"]))
+        written = []
         for holding in record.get("holdings") or []:
             terms = {"instrument_class": holding["instrument_class"], "name": holding["name"][:200], "identifier": holding.get("identifier"),
                      "rate_bp": holding.get("rate_bp"), "maturity_date": holding.get("maturity_date"), "updated_at": now()}
@@ -1039,12 +1162,15 @@ class Investments:
                 holding_id = found["id"]
                 if current:
                     db.execute(f"UPDATE holdings SET {','.join(f'{column}=?' for column in terms)} WHERE id=?", (*terms.values(), holding_id))
+            written.append(holding_id)
             if holding.get("value_minor") is None:
                 continue  # Listed without a value: the holding is known, but has no value to record.
             db.execute("INSERT OR REPLACE INTO investment_valuations(account_id,holding_id,as_of,value_minor,quantity,price_minor,cost_basis_minor,source,"
                        "document_id,blob_hash,extraction_run_id,review_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'statement',?,?,?,'proposed',?,?)",
                        (account_id, holding_id, record["period_end"], holding["value_minor"], holding.get("quantity"), holding.get("price_minor"),
                         holding.get("cost_basis_minor"), source["document_id"], source["blob_hash"], source["run_id"], now(), now()))
+        for holding_id in written:
+            Investments.reapply_holding(db, holding_id)
 
     @staticmethod
     def write_events(db, account_id, record, source):
@@ -1120,6 +1246,7 @@ class Investments:
         if terms:
             db.execute(f"UPDATE holdings SET {','.join(f'{column}=?' for column in terms)},confirmation_id=?,archived_at=NULL,updated_at=? WHERE id=?",
                        (*terms.values(), confirmation_id, now(), found["id"]))
+            Investments.reapply_holding(db, found["id"])
         return found["id"]
 
     def confirmation_view(self, db, row, currency):
@@ -1152,8 +1279,8 @@ class Investments:
         with self.store.connection() as db:
             db.execute("UPDATE investment_confirmations SET review_status=?,updated_at=? WHERE id=?", (status, now(), confirmation_id))
             db.execute("UPDATE investment_events SET review_status=? WHERE confirmation_id=?", (status, confirmation_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('investment_confirmation',?,?,?,'',?)",
-                       (confirmation_id, current["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('investment_confirmation',?,?,?,'',?,?)",
+                       (confirmation_id, current["review_status"], status, now(), actor.current()))
         return self.confirmation(confirmation_id)
 
     # Holdings the user adds, and maturities ----------------------------------------------------------------------------
@@ -1240,7 +1367,7 @@ class Investments:
                         if day < self.today and newest and newest >= day and holding["source"] == "statement":
                             continue  # A statement since then already shows where the money went.
                         found.append({"holding_id": holding["id"], "name": holding["name"], "account_id": account["id"], "account": account["name"],
-                                      "kind": kind, "date": day, "state": "matured" if day <= self.today and kind == "matures" else "due",
+                                      "kind": kind, "date": day, "state": "matured" if day <= self.today and kind == "matures" else "coming_due",
                                       "rollover": bool(holding["rollover"]), "currency": account["currency"],
                                       "amount": money(holding["value_on"](day), account["currency"])})
         return sorted(found, key=lambda row: (row["date"], row["name"]))
@@ -1291,8 +1418,11 @@ class Investments:
             else:
                 columns = {**values, "blob_hash": source["blob_hash"], "created_at": now()}
                 form_id = db.execute(f"INSERT INTO tax_forms({','.join(columns)}) VALUES({','.join('?' * len(columns))})", tuple(columns.values())).lastrowid
-            db.executemany("INSERT INTO tax_form_boxes(form_id,form,box,label,amount_minor,locator_json) VALUES(?,?,?,?,?,?)",
-                           [(form_id, box["form"], box["box"], box["label"], box["amount_minor"], json.dumps(box["locator"])) for box in record["boxes"]])
+            corrected = self.latest_corrections(db, "tax_form_box", form_id)  # A person's corrections outlive a new reading.
+            db.executemany("INSERT INTO tax_form_boxes(form_id,form,box,label,amount_minor,locator_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                           [(form_id, box["form"], box["box"], box["label"],
+                             to_minor(corrected[f"{box['form']} box {box['box']}"], record["currency"]) if f"{box['form']} box {box['box']}" in corrected else box["amount_minor"],
+                             json.dumps(box["locator"]), now(), now()) for box in record["boxes"]])
         return {"record_type": "tax_form", "id": form_id, "account_id": values["account_id"], "status": "published", "boxes": len(record["boxes"])}
 
     def tax_form(self, form_id):
@@ -1320,8 +1450,8 @@ class Investments:
         current = self.tax_form(form_id)
         with self.store.connection() as db:
             db.execute("UPDATE tax_forms SET review_status=?,updated_at=? WHERE id=?", (status, now(), form_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('tax_form',?,?,?,'',?)",
-                       (form_id, current["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('tax_form',?,?,?,'',?,?)",
+                       (form_id, current["review_status"], status, now(), actor.current()))
         return self.tax_form(form_id)
 
     def measures(self, db, account, year):
@@ -1423,21 +1553,28 @@ class Investments:
             year_end = f"{year - 1}-12-31"
             for account in accounts:
                 currency = account["currency"]
-                own = [dict(row) for row in db.execute("SELECT * FROM investment_valuations WHERE account_id=? AND holding_id IS NULL", (account["id"],))]
-                balance = next((value for value in self.merged_values(db, account, own)
-                                if value["review_status"] == "verified" and value["source"] != "estimated" and value["as_of"] <= year_end), None)
+                balance, taken = self.rmd_basis(db, account, year)
                 amount = required(balance["value_minor"], birth_year, year) if balance else None
-                taken = sum(event["amount_minor"] for event in self.events(db, account)
-                            if event["event_type"] == "withdrawal" and event["review_status"] == "verified" and event["event_date"][:4] == str(year))
                 show = lambda minor: money(minor, currency) if minor is not None else None  # noqa: B023 - used in this iteration only
                 result["accounts"].append({
                     "account_id": account["id"], "name": account["name"], "currency": currency,
                     "balance": show(balance["value_minor"] if balance else None), "balance_as_of": balance["as_of"] if balance else None,
                     "stale": bool(balance) and (date.fromisoformat(year_end) - date.fromisoformat(balance["as_of"])).days > 31,
-                    "divisor": f"{divisor(year - birth_year)}", "required": show(amount), "taken": show(taken),
-                    "left": show(max(amount - taken, 0) if amount is not None else None),
+                    "divisor": f"{divisor(year - birth_year)}", "taken": show(taken),
+                    "required": figure(amount, currency, ref("investments.rmd", account_id=account["id"], year=year)) if amount is not None else None,
+                    "left": figure(max(amount - taken, 0), currency, ref("investments.rmd_left", account_id=account["id"], year=year)) if amount is not None else None,
                     "deadline": f"{year + 1}-04-01" if year == first else f"{year}-12-31", "status": "verified" if amount is not None and taken >= amount else "due"})
         return result
+
+    def rmd_basis(self, db, account, year):
+        """What a year's required distribution is figured from, here and in the forecast: the newest confirmed (never estimated)
+        value on or before Dec 31 of the year before, or None; and the confirmed withdrawals already taken in the year."""
+        own = [dict(row) for row in db.execute("SELECT * FROM investment_valuations WHERE account_id=? AND holding_id IS NULL", (account["id"],))]
+        balance = next((value for value in self.merged_values(db, account, own)
+                        if value["review_status"] == "verified" and value["source"] != "estimated" and value["as_of"] <= f"{year - 1}-12-31"), None)
+        taken = sum(event["amount_minor"] for event in self.events(db, account)
+                    if event["event_type"] == "withdrawal" and event["review_status"] == "verified" and event["event_date"][:4] == str(year))
+        return balance, taken
 
     # The forecast ------------------------------------------------------------------------------------------------
     def forecast_assets(self, start=None, end=None, months=None):
@@ -1466,12 +1603,15 @@ class Investments:
                         if holding["counts"] and not holding["matured"] and holding["maturity_date"]:
                             terms.append({"name": holding["name"], "value_minor": holding["value_on"](self.today), "maturity_month": holding["maturity_date"][:7],
                                           "maturity_value_minor": holding["value_on"](holding["maturity_date"]), "to_cash": not holding["rollover"]})
+                # This year's required distribution starts from the same balance as required_distributions(), never from an estimate.
+                rmd_balance, rmd_taken = self.rmd_basis(db, account, int(self.today[:4])) if account["tax_treatment"] in HAS_RMD else (None, 0)
                 found.append({"account_id": account["id"], "name": account["name"], "kind": account["kind"], "kind_label": account["kind_label"],
                               "value_model": account["value_model"], "section": account["section"],
                               "value_minor": account["current"]["value_minor"], "value": account["current"]["value"], "currency": account["currency"],
                               "as_of": account["current"]["as_of"], "annual_rate_bp": account["rate_bp"], "annual_rate_percent": account["annual_rate_percent"],
                               "monthly_payment_minor": None, "monthly_payment": None, "review_status": "verified", "source": "investment", "terms": terms,
                               "tax_treatment": account["tax_treatment"],
+                              "rmd_balance_minor": rmd_balance["value_minor"] if rmd_balance else None, "rmd_taken_minor": rmd_taken,
                               "payroll_monthly_minor": payroll, "personal_monthly_minor": personal})
         return found
 

@@ -176,7 +176,7 @@ ideally inside an encrypted 7-Zip whose password is shared separately.
      test case flagged `used_for_tuning` fails.
 - **Local-only guard** (`evals/guard.py`):
   - inference must use a loopback LM Studio server;
-  - the guard refuses the family GPU relay (a loopback address alone isn't enough if it is a relay) and any non-local
+  - the guard refuses the shared GPU relay (a loopback address alone isn't enough if it is a relay) and any non-local
     endpoint, with no fallback;
   - a process audit hook blocks every non-loopback connection;
   - models must already be installed, and a missing model gives an explicit skipped result.

@@ -18,17 +18,15 @@ const proposedAssets = (assets, investments = []) => [
   ...assets.filter(asset => asset.source === "statement" && asset.review_status === "proposed").map(value => ({kind: "asset", id: value.id, value})),
   // Investment statement values and purchase confirmations; the server names each one's review path.
   ...investments.map(value => ({kind: "asset", id: `${value.record_type}-${value.id}`, value}))];
-function reviewCount(queue, recurring, items, assets, warranties = [], taxTables = [], investments = [], taxTags = []) {
-  return queue.records.length + queue.links.length + queue.issues.length + recurring.obligations.filter(row => row.status === "proposed").length
-    + items.length + proposedAssets(assets, investments).length + warranties.length + taxTables.length + taxTags.length;
+// The badge and each group's count come from the server (/api/review/counts), uncapped, so they always agree.
+function showReviewCounts(counts) {
+  setNavCount($("nav-review-count"), counts.total, "need review");
+  if (counts.checkin != null) setNavCount($("nav-checkin-count"), counts.checkin, "to check in");
 }
 async function loadNavCounts() {
-  const [queue, recurring, items, assets, checkin, warranties, taxTables, investments, taxTags] = await Promise.all([tool("review_queue"), tool("get_recurring_obligations"),
-    api("/api/items/resolutions?status=proposed&limit=1000"), api("/api/assets"), api("/api/inventory/checkin").catch(() => null), api("/api/warranties?status=proposed"),
-    api("/api/tax-tables?status=proposed"), api("/api/investments/review"), api("/api/tax-tags?status=proposed")]);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables.tables, investments, taxTags.tags), "need review");
-  if (checkin) setNavCount($("nav-checkin-count"), checkin.lots.length + checkin.waiting, "to check in");
+  showReviewCounts(await api("/api/review/counts"));
 }
+let reviewCounts = null;
 
 function reviewKey(item) { return `${item.kind}:${item.id}`; }
 // Images that look like pages of one document (documents/grouping.py): combined only when the user says so.
@@ -61,13 +59,13 @@ async function loadReview(keep = true) {
   else loadGroupSuggestions().catch(error => notice(error, true));
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
-  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags;
+  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags, counts;
   try {
-    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}] = await Promise.all([
+    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}, counts] = await Promise.all([
       tool("review_queue"), tool("get_recurring_obligations"),
       api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
       api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed"), api("/api/investments/review"),
-      api("/api/tax-tags?status=proposed")]);
+      api("/api/tax-tags?status=proposed"), api("/api/review/counts")]);
   } catch (error) {
     if (load === reviewLoad) { $("review-status").textContent = ""; $("review-detail").replaceChildren(alertBox(`Couldn't load the review queue. ${error.message}`, {tone: "error", action: asyncButton("Retry", () => loadReview())})); }
     return;
@@ -83,11 +81,12 @@ async function loadReview(keep = true) {
                  ...items.map(value => ({kind: "item", id: value.id, value}))];
   const kept = keep && previous ? reviewItems.findIndex(item => reviewKey(item) === previous) : -1;
   reviewIndex = kept >= 0 ? kept : Math.min(reviewIndex, Math.max(0, reviewItems.length - 1));
-  $("review-status").textContent = reviewItems.length ? `${reviewItems.length} item${reviewItems.length === 1 ? "" : "s"} need you · checked ${new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : "";
+  reviewCounts = counts;
+  $("review-status").textContent = counts.total ? `${counts.total} item${counts.total === 1 ? "" : "s"} need you · checked ${new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : "";
   renderReviewQueue(catalog);
   renderReviewDetail();
   renderUnmatched(unmatched);
-  setNavCount($("nav-review-count"), reviewCount(queue, recurring, items, assets, warranties, taxTables, investments, taxTags), "need review");
+  showReviewCounts(counts);
 }
 function reviewTitle(item) {
   const value = item.value;
@@ -115,7 +114,9 @@ function renderReviewQueue(catalog) {
     const members = reviewItems.map((item, index) => [item, index]).filter(([item]) => item.kind === kind);
     if (!members.length) continue;
     const group = element("div", "", "review-group");
-    group.append(element("h2", `${label} (${members.length})`, "review-group-title"));
+    const count = reviewCounts?.groups[kind] ?? members.length;
+    group.append(element("h2", `${label} (${count})`, "review-group-title"));
+    if (count > members.length) group.append(element("p", `The first ${members.length} are listed; decide on them to see the rest.`, "muted small"));
     const list = element("ul", "", "review-list");
     for (const [item, index] of members) {
       const li = document.createElement("li"), button = element("button", reviewTitle(item), "review-entry"); button.type = "button";
@@ -226,8 +227,8 @@ function reviewParts(item) {
     const brackets = element("ul", "", "tax-brackets");
     for (const bracket of value.brackets) brackets.appendChild(element("li", `${bracket.display.rate} on taxable income over ${bracket.display.from}`));
     box.appendChild(brackets);
-    if (value.ss_rate_bp != null) box.appendChild(element("small", `Social Security ${value.ss_rate_bp / 100}% up to ${value.display.ss_wage_base_minor || "?"} · `
-      + `Medicare ${value.medicare_rate_bp / 100}%${value.additional_medicare_rate_bp ? ` + ${value.additional_medicare_rate_bp / 100}% over ${value.display.additional_medicare_threshold_minor}` : ""}`, "block"));
+    if (value.ss_rate_percent != null) box.appendChild(element("small", `Social Security ${value.ss_rate_percent}% up to ${value.display.ss_wage_base_minor || "?"} · `
+      + `Medicare ${value.medicare_rate_percent}%${value.additional_medicare_rate_bp ? ` + ${value.additional_medicare_rate_percent}% over ${value.display.additional_medicare_threshold_minor}` : ""}`, "block"));
     const sources = element("div", "", "review-side");
     sources.appendChild(element("span", "Quoted from", "figure-label"));
     for (const source of value.sources) sources.append(element("span", `“${source.quote}”`, "block"), element("small", source.url, "muted block mono"));

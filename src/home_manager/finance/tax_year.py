@@ -19,11 +19,14 @@ from decimal import ROUND_HALF_EVEN, Decimal
 import json
 import re
 
+from ..core import actor
 from ..core.money import format_minor, to_minor
+from ..core.trace import NULL
 from ..library.storage import now
 from .investments import Investments
-from .ledger import COUNTABLE
+from .ledger import COUNTABLE, clean_reason
 from .paystub import FICA_EXEMPT
+from .provenance import light
 from .tax_lots import realized
 from .tax_return import TIPPED_OCCUPATIONS, Job, ReturnInput, rate
 from .tax_tags import TaxTags
@@ -101,8 +104,22 @@ def year_to_date(stubs, lines_of, group, categories=None):
     return sum(amounts(lines_of[stub["id"]], "current_minor", group, categories) for stub in stubs), False
 
 
-def jobs(db, year, today):
-    """One job per employer from this year's confirmed stubs, projected to the year's end."""
+def record_job(recorder, field, stubs, gross_ytd, deducted, so_far, left, per_check, printed):
+    """jobs()'s steps for one of a job's figures: so far this year, less what isn't counted, plus the paydays left."""
+    where = "the latest stub's year to date" if printed else "the year's stubs added up"
+    if field in ("wages", "ss_wages", "medicare_wages"):
+        recorder.add(f"Gross pay so far ({where})", gross_ytd, CURRENCY)
+        recorder.add("Pre-tax deductions so far" if field == "wages" else "Pre-tax deductions Social Security and Medicare don't tax", -deducted, CURRENCY)
+    else:
+        recorder.add(f"Withheld so far ({where})", so_far, CURRENCY)
+    recorder.add(f"{left} payday{'s' if left != 1 else ''} left this year × {format_minor(per_check, CURRENCY)} (the latest paycheck)", left * per_check, CURRENCY)
+    for stub in stubs:
+        recorder.input(f"income_record:{stub['id']}", f"Pay stub · {stub['pay_date']}", stub["gross_pay_minor"] or 0, CURRENCY, light("income_record", stub["id"]))
+
+
+def jobs(db, year, today, recorder=NULL, only=None):
+    """One job per employer from this year's confirmed stubs, projected to the year's end. only: (job key, field) whose
+    steps a live recorder gets (finance/tax_traces.py)."""
     records = db.execute("SELECT r.*,coalesce(m.canonical_name,'Employer') AS employer FROM income_records r LEFT JOIN merchants m ON m.id=r.payer_merchant_id "
                          "WHERE r.review_status='verified' AND r.currency=? AND substr(r.pay_date,1,4)=? ORDER BY r.pay_date,r.id", (CURRENCY, str(year))).fetchall()
     by_employer: dict = {}
@@ -137,10 +154,16 @@ def jobs(db, year, today):
         # How much paychecks vary: the year's stubs' gross pay, low to high against the latest (at least 5%), for the range.
         grosses = [stub["gross_pay_minor"] for stub in stubs if stub["gross_pay_minor"]]
         spread_bp = max(SPREAD_FLOOR_BP, (max(grosses) - min(grosses)) * 10000 // gross_now if grosses and gross_now else 0)
+        if recorder.live and only and only[0] == f"employer-{key}":
+            field = only[1]
+            per = {"wages": "wages", "ss_wages": "fica", "medicare_wages": "fica", "federal_withheld": "federal", "state_withheld": "state",
+                   "medicare_withheld": "medicare"}[field]
+            so_far = {"federal_withheld": federal_ytd, "state_withheld": state_ytd, "medicare_withheld": medicare_ytd}.get(field, 0)
+            record_job(recorder, field, stubs, gross_ytd, pre_ytd if field == "wages" else exempt_ytd, so_far, len(coming), per_check[per], printed)
         found.append({"key": f"employer-{key}", "name": latest["employer"], "stubs": len(stubs), "last_pay_date": latest["pay_date"],
                       "pay_frequency": latest["pay_frequency"], "work_state": latest["work_state"], "paychecks_left": ahead,
                       "next_pay_date": next((payday.isoformat() for payday in coming if payday > today), None),
-                      "paychecks_projected": left, "ytd_printed": printed,
+                      "paychecks_projected": left, "paydays_without_stub": left - ahead, "ytd_printed": printed,
                       "per_check": per_check,
                       "values": {"wages": gross_ytd - pre_ytd + left * per_check["wages"], "ss_wages": gross_ytd - exempt_ytd + left * per_check["fica"],
                                  "medicare_wages": gross_ytd - exempt_ytd + left * per_check["fica"], "federal_withheld": federal_ytd + left * per_check["federal"],
@@ -155,8 +178,9 @@ def jobs(db, year, today):
 
 
 def balance_at(loan, day):
-    """A loan's balance on a day, from its recorded balance, yearly rate and monthly payment (month by month, as the forecast
-    pays loans down); None without a payment to project with."""
+    """A loan's balance on a day, from its recorded balance, yearly rate and monthly payment (month by month, with the
+    forecast's own step, forecast.loan_month); None without a payment to project with."""
+    from .forecast import loan_month  # forecast imports the ledger tools, which the tax year needn't load at import
     when = date.fromisoformat(loan["as_of"][:10])
     months = (day.year - when.year) * 12 + day.month - when.month
     balance, monthly = Decimal(loan["value_minor"]), Decimal(loan["annual_rate_bp"]) / 10000 / 12
@@ -166,7 +190,7 @@ def balance_at(loan, day):
     if not payment:
         return None
     for _ in range(abs(months)):
-        balance = max(Decimal(0), balance * (1 + monthly) - payment) if months > 0 else (balance + payment) / (1 + monthly)
+        balance = loan_month(balance, monthly, Decimal(payment))[0] if months > 0 else (balance + payment) / (1 + monthly)
     return int(balance.to_integral_value(ROUND_HALF_EVEN))
 
 
@@ -200,14 +224,15 @@ def hsa_coverage(total, year, birth_year):
     return "family", note
 
 
-def gather(store, year, household, today=None):
-    """Every return field the records give for the year, with its source: {"values": {...}, "sources": {...}, "jobs": [...], "businesses": [...]}"""
+def gather(store, year, household, today=None, recorder=NULL, only=None):
+    """Every return field the records give for the year, with its source: {"values": {...}, "sources": {...}, "jobs": [...], "businesses": [...]}.
+    only: (job key, field) whose steps a live recorder gets (jobs())."""
     today = today or date.today()
     pace = Decimal(12) / today.month if year == today.year else Decimal(1)  # Interest and dividends so far, projected to Dec 31.
     values, sources = {}, {}
     investments = Investments(store, today)
     with store.connection() as db:
-        found_jobs = jobs(db, year, today)
+        found_jobs = jobs(db, year, today, recorder, only)
         accounts = investments.rows(db, True)
         taxable = [account["id"] for account in accounts if account["tax_treatment"] == "taxable" and account["currency"] == CURRENCY]
         deferred = [account["id"] for account in accounts if account["tax_treatment"] in ("tax_deferred",) and account["currency"] == CURRENCY]
@@ -432,7 +457,19 @@ class TaxYears:
             row = db.execute("SELECT inputs_json FROM tax_years WHERE year=? AND unit=?", (year, unit)).fetchone()
         return json.loads(row["inputs_json"]) if row else {}
 
-    def save(self, year, inputs, unit="me"):
+    def spouse_names(self):
+        """The spouse named on your latest return (its typed people), so they can be chosen in who's here (core/actor.py)."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT inputs_json FROM tax_years WHERE unit='me' ORDER BY year DESC LIMIT 1").fetchone()
+        people = json.loads(row["inputs_json"]).get("people", []) if row else []
+        return [" ".join(person["name"].split()) for person in people if isinstance(person, dict) and str(person.get("name") or "").strip()]
+
+    def save(self, year, inputs, unit="me", gathered=None):
+        """Save the typed values. Each typed value that changed is kept in tax_input_changes beside the value the
+        records gave at the time (gathered: gather()'s result, when the caller has it), with the person and an optional
+        reason (inputs["reason"], not saved with the values)."""
+        inputs = dict(inputs)
+        reason = clean_reason(inputs.pop("reason", None))
         allowed = {"fields", "jobs", "extra_jobs", "businesses", "people", "students", "w4", "prior_year_tax", "zen_job", "zen_policy"}
         unknown = set(inputs) - allowed
         if unknown:
@@ -440,7 +477,49 @@ class TaxYears:
         for key in inputs.get("fields", {}):
             if key not in MONEY_FIELDS + COUNT_FIELDS + ("itemize", "state", "hsa_coverage", "tipped_occupation"):
                 raise ValueError(f"Unknown field {key}.")
+        before = self.inputs(year, unit)
         with self.store.connection() as db:
             db.execute("INSERT INTO tax_years(year,unit,inputs_json,updated_at) VALUES(?,?,?,?) ON CONFLICT(year,unit) DO UPDATE SET "
                        "inputs_json=excluded.inputs_json,updated_at=excluded.updated_at", (year, unit, json.dumps(inputs), now()))
+            for key, gathered_value, previous, typed in typed_changes(before, inputs, gathered):
+                db.execute("INSERT INTO tax_input_changes(year,unit,key,gathered_json,previous_json,typed_json,reason,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (year, unit, key, json.dumps(gathered_value), json.dumps(previous), json.dumps(typed), reason, actor.current(), now()))
         return self.inputs(year, unit)
+
+    def changes(self, year, unit="me", key=None):
+        """The history of typed values, newest first: what the records gave, what was typed before and now, who, why."""
+        with self.store.connection() as db:
+            rows = db.execute("SELECT * FROM tax_input_changes WHERE year=? AND unit=? AND (? IS NULL OR key=?) ORDER BY id DESC", (year, unit, key, key))
+            return [{**{name: row[name] for name in ("id", "year", "unit", "key", "reason", "actor", "created_at")},
+                     **{name: json.loads(row[f"{name}_json"]) if row[f"{name}_json"] is not None else None for name in ("gathered", "previous", "typed")}}
+                    for row in rows]
+
+
+def typed(text):
+    """A typed value as saved, with blank meaning "not typed" (None)."""
+    return None if text in (None, "") else text
+
+
+def typed_changes(before, after, gathered=None):
+    """[(key, gathered value, typed before, typed now)] for each typed return field and job field that changed. A job's
+    key is "job:<job key>:<field>". gathered values are the records' (cents for money), or None when not known."""
+    gathered = gathered or {}
+    found = []
+    old, new = before.get("fields", {}), after.get("fields", {})
+    for key in sorted(set(old) | set(new)):
+        if typed(old.get(key)) != typed(new.get(key)):
+            found.append((key, gathered.get("values", {}).get(key), typed(old.get(key)), typed(new.get(key))))
+    jobs = {job["key"]: job for job in gathered.get("jobs", [])}
+    old_jobs, new_jobs = before.get("jobs", {}), after.get("jobs", {})
+    for job_key in sorted(set(old_jobs) | set(new_jobs)):
+        was, now_typed = old_jobs.get(job_key, {}), new_jobs.get(job_key, {})
+        for field in sorted(set(was) | set(now_typed)):
+            if typed(was.get(field)) != typed(now_typed.get(field)):
+                found.append((f"job:{job_key}:{field}", jobs.get(job_key, {}).get("values", {}).get(field), typed(was.get(field)), typed(now_typed.get(field))))
+    return found
+
+
+def typed_over(gathered, inputs):
+    """Each typed value beside the value the records give (tax_year.merge keeps only the typed one): the return
+    page shows both. [{key, gathered, typed}]."""
+    return [{"key": key, "gathered": value, "typed": text} for key, value, _, text in typed_changes({}, inputs, gathered) if text is not None]

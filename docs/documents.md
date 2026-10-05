@@ -2,7 +2,7 @@
 
 How a file gets into the library, how it is read and turned into ledger records, how it is checked and reviewed, and
 how its text is searched. What the records mean for money is in [money](money.md). Every model runs locally: LM Studio
-on this PC, or on the family GPU computer ([family](family.md#family-gpu)).
+on this PC, or on the shared GPU computer ([family](family.md#shared-gpu)).
 
 The pipeline: capture immutable bytes → read (vision transcription, PDF text, CSV/XLSX rows) → classify → typed
 extraction in chunks → deterministic checks and the decision model → counted automatically or sent to Review → file
@@ -183,7 +183,7 @@ Code: `documents/receipt_service.py`, `documents/receipt_worker.py`, `models/vis
   - requests send the whole oriented preview, up to 16 MiB, with 8,192 output tokens and 15 minutes without socket
     activity;
   - outputs are limited to a 64 MiB preview, 4 MiB of JSON and 2 GiB of extraction artifacts in total.
-- **Requests.** Requests go only to a validated `http://127.0.0.1:PORT/v1` URL or the family GPU host on the tailnet.
+- **Requests.** Requests go only to a validated `http://127.0.0.1:PORT/v1` URL or the shared GPU host on the tailnet.
   They bypass proxies, reject redirects and offer the model no tools.
 
 Workers have resource limits, but they are not an OS security sandbox; see [open work](open-work.md). Synthetic tests
@@ -416,7 +416,7 @@ confidence.
 - **Size limit.** States over 24 KiB are refused, never truncated.
 - **Test connection** (`POST /api/decision-model-tests`) asks one fixed yes/no question about a made-up sentence, never
   document content.
-- **Family GPU.** With the LM Studio provider, the decision model is shared under the role `home-manager/decision`, and
+- **Shared GPU.** With the LM Studio provider, the decision model is shared under the role `home-manager/decision`, and
   the relay forwards `/v1/responses` for that role only. A System One server stays on this PC.
 
 **Calibration.** `calibration_temperature` (default 1.0) divides the log-probabilities before they are normalized.

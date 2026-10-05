@@ -114,6 +114,13 @@ def test_spending_anomalies_compare_with_the_three_earlier_periods(pantry):
     assert set(merchants) == {"HARDWARE STORE", "NEW GYM"}  # Coffee is new but under the minimum.
     assert (merchants["HARDWARE STORE"]["usual"]["display"], merchants["HARDWARE STORE"]["percent_above_usual"]) == ("30.00 USD", "300.0")
     assert merchants["NEW GYM"]["new"] and len(result["compared_with"]) == 3
+    # One definition of merchant spending: a receipt no statement line has replaced counts here as in top merchants.
+    buy("2026-09-15", "Corner Market", [("GV MILK", 6000, milk(), "1")])
+    tools = FinanceTools(store)
+    result = call_tool(tools, "detect_spending_anomalies", {"start": "2026-09-01", "end": "2026-09-30"})
+    top = {row["merchant"]: row["spending"] for row in call_tool(tools, "get_spending_by_category", {"start": "2026-09-01", "end": "2026-09-30"})["top_merchants"]}
+    flagged = {row["name"]: row["spent"] for row in result["anomalies"] if row["kind"] == "merchant"}
+    assert set(flagged) == {"HARDWARE STORE", "NEW GYM", "CORNER MARKET"} and all(flagged[name] == top[name] for name in flagged)
 
 
 def test_routing_limits_the_assistants_tools():

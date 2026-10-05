@@ -15,9 +15,11 @@ import uuid
 
 from pydantic import Field, field_validator
 
+from ..core import actor
 from ..core.categories import receipt_category
 from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
+from ..core.trace import NULL
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
 from . import paystub, splits
@@ -104,7 +106,18 @@ CORRECTABLE = {
     "bill": {"issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
              "provider": ("provider_merchant_id", "name", "Provider")},
     "income_record": {"pay_date": ("pay_date", "date", "Pay date"), "payer": ("payer_merchant_id", "name", "Payer or employer")},
+    "statement": {"period_start": ("period_start", "date", "Period start"), "period_end": ("period_end", "date", "Period end"),
+                  "issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
+                  "opening_balance": ("opening_balance_minor", "money", "Opening balance"),
+                  "closing_balance": ("closing_balance_minor", "money", "Closing balance"),
+                  "statement_balance": ("statement_balance_minor", "money", "Statement balance"),
+                  "minimum_payment": ("minimum_payment_minor", "money", "Minimum payment")},
 }
+TRANSACTION_TYPES = ("purchase", "refund", "payment", "transfer", "deposit", "fee", "interest", "withdrawal", "other")
+# A transaction's fields a person may correct when the import or the reading got them wrong (docs/money.md "Corrections"):
+# field -> (column, kind). The amount is entered positive, and its direction is a field of its own.
+TRANSACTION_CORRECTABLE = {"posted_date": ("posted_date", "date"), "amount": ("amount_minor", "amount"), "direction": ("amount_minor", "direction"),
+                           "merchant": ("merchant_id", "name"), "transaction_type": ("transaction_type", "type")}
 PENDING = f"(t.origin='extraction' AND t.review_status IN ('proposed','needs_review') OR t.review_status<>'rejected' AND {HELD})"
 # Transactions reconciliation may match: not rejected, and not waiting on their statement.
 MATCHABLE = f"t.review_status<>'rejected' AND NOT ({HELD})"
@@ -114,6 +127,14 @@ CARD_PAYMENT = re.compile(r"\b(PAYMENT|AUTOPAY|AUTO PAY|AUTOMATIC PAYMENT|PMT|TH
 REFUND = re.compile(r"\b(REFUND|RETURN|REVERSAL|CREDIT ADJ)\b")
 STORE_NOISE = re.compile(r"#\s*\d+|\b\d+\b|[^\w\s&]")
 LEGAL_SUFFIX = re.compile(r"\b(INC|LLC|LTD|CO|CORP|CORPORATION|COMPANY)\b")
+
+
+def clean_reason(text):
+    """A correction's optional reason: one line of up to 500 characters, or None."""
+    text = " ".join((text or "").split())
+    if len(text) > 500:
+        raise ValueError("Keep the reason under 500 characters.")
+    return text or None
 
 
 def normalize_name(name) -> str:
@@ -300,6 +321,39 @@ class Ledger:
         TaxTags(self.store).refresh(db, inserted)
         return inserted, duplicates
 
+    def add_manual_transaction(self, account_id, posted_date, description, amount, direction, category=None):
+        """A payment entered by hand (docs/money.md): it counts at once, with the person who entered it, and the
+        statement or import line for the same payment replaces it when it arrives (reconcile.replace_manual).
+        amount: positive text in the account's currency; direction: "out" (money leaves) or "in"."""
+        if direction not in ("out", "in"):
+            raise ValueError("Choose money out or money in.")
+        try:
+            day = date.fromisoformat(posted_date).isoformat()
+        except (TypeError, ValueError):
+            raise ValueError("Enter the date as YYYY-MM-DD.") from None
+        text = " ".join((description or "").split())
+        if not text or len(text) > 200:
+            raise ValueError("Describe the payment in up to 200 characters.")
+        with self.store.connection() as db:
+            account = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+            if account is None:
+                raise ValueError("Account not found.")
+            minor = to_minor(amount, account["currency"])
+            if minor <= 0:
+                raise ValueError("Enter an amount above zero; choose money out or in separately.")
+            signed = -minor if direction == "out" else minor
+            kind = classify_transaction(text, signed, account["account_type"])
+            transaction_id = db.execute(
+                "INSERT INTO transactions(account_id,posted_date,description_raw,amount_minor,currency,transaction_type,origin,review_status,review_source,"
+                "source_fingerprint,actor,created_at,updated_at) VALUES(?,?,?,?,?,?,'manual','verified','user',?,?,?,?)",
+                (account_id, day, text, signed, account["currency"], kind, f"manual:{uuid.uuid4().hex}", actor.current(), now(), now())).lastrowid
+            db.execute("UPDATE transactions SET merchant_id=? WHERE id=?", (self.merchant(db, text), transaction_id))
+            if category:
+                db.execute("UPDATE transactions SET category=?,category_source='user' WHERE id=?", (category_name(category), transaction_id))
+            else:
+                self.apply_rules(db, [transaction_id])
+        return self.record("transaction", transaction_id)
+
     # Publication of validated extraction ----------------------------------------
     # Each publication is one SQLite transaction. A record the user already verified or
     # rejected is never overwritten by a later extraction; unreviewed ones are replaced.
@@ -344,9 +398,10 @@ class Ledger:
                               "they were kept at the end of the list. Check them against the receipt."]
                     db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
-                db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json) VALUES(?,?,?,?,?,?,?,?)",
+                db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?)",
                                [(receipt_id, position, reward["kind"], reward["description"], reward["amount"], reward["expires"], reward["link"],
-                                 json.dumps(reward["locator"])) for position, reward in enumerate(record.get("rewards", []), 1)])
+                                 json.dumps(reward["locator"]), now(), now()) for position, reward in enumerate(record.get("rewards", []), 1)])
                 self.refresh_splits(db, receipt_id)
         return self._published("receipt", receipt_id, written, items=len(record["items"]), kept=kept)
 
@@ -413,12 +468,13 @@ class Ledger:
                 if earlier_item["category_source"] == "user":  # The user's own category outlives any reading.
                     category, category_source = earlier_item["category"], "user"
                 db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
-                           "category=?,category_source=?,review_status=? WHERE id=?", (*values, category, category_source if category else None, status, item_id))
+                           "category=?,category_source=?,review_status=?,updated_at=? WHERE id=?",
+                           (*values, category, category_source if category else None, status, now(), item_id))
                 db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
             else:
                 item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                     "taxed,category,category_source,review_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                     (receipt_id, position, *values, category, category_source if category else None, status)).lastrowid
+                                     "taxed,category,category_source,review_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     (receipt_id, position, *values, category, category_source if category else None, status, now(), now())).lastrowid
             self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
         return len(kept)
 
@@ -447,25 +503,43 @@ class Ledger:
                 self.refresh_splits(db, receipt)
             return
         db.execute("DELETE FROM category_splits WHERE receipt_id=?", (receipt_id,))
+        found = self.split_inputs(db, receipt_id)
+        if found is None:
+            return
+        receipt, items, charges, shared = found
+        for transaction_id, target, currency in charges:
+            shares = self.shares(receipt, items, target, currency, shared)
+            db.executemany("INSERT INTO category_splits(receipt_id,transaction_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?,?)",
+                           [(receipt_id, transaction_id, None if index is None else items[index]["id"], category, amount) for index, category, amount in shares])
+
+    @staticmethod
+    def split_inputs(db, receipt_id):
+        """(receipt, items, [(transaction id or None, target, currency)], shared part) for dividing a receipt by item
+        category, or None when it has no total or no items."""
         receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
-        items = [dict(row) for row in db.execute("SELECT id,line_total_minor,discount_minor,taxed,category FROM receipt_items "
+        items = [dict(row) for row in db.execute("SELECT id,description,line_total_minor,discount_minor,taxed,category FROM receipt_items "
                                                  "WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (receipt_id,))]
         if receipt is None or receipt["total_minor"] is None or not items:
-            return
+            return None
         charges = [(None, receipt["total_minor"], receipt["currency"])] + [(row["id"], -row["amount_minor"], row["currency"]) for row in db.execute(
             "SELECT t.id,t.amount_minor,t.currency FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
             "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
         shared = db.execute("SELECT share_minor,total_minor FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,)).fetchone()
-        for transaction_id, target, currency in charges:
-            if currency == receipt["currency"]:
-                shares = splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"], target, receipt["category"])
-            else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
-                shares = splits.scale(splits.allocate(items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"],
-                                                      receipt["total_minor"], receipt["category"]), target)
-            if shared:  # Each category keeps its proportion of this person's part.
-                shares = splits.scale(shares, charge_share(target, shared["share_minor"], shared["total_minor"]))
-            db.executemany("INSERT INTO category_splits(receipt_id,transaction_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?,?)",
-                           [(receipt_id, transaction_id, None if index is None else items[index]["id"], category, amount) for index, category, amount in shares])
+        return receipt, items, charges, shared
+
+    @staticmethod
+    def shares(receipt, items, target, currency, shared, recorder=NULL):
+        """One charge's (or the receipt's own) division by item category, summing to target. A live recorder gets the
+        last pass: the one whose rounding gives the stored shares (finance/traces.py split)."""
+        args = (items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"])
+        last = lambda final: recorder if final else NULL
+        if currency == receipt["currency"]:
+            shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency)
+        else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
+            shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"]), target, last(not shared), items, currency)
+        if shared:  # Each category keeps its proportion of this person's part.
+            shares = splits.scale(shares, charge_share(target, shared["share_minor"], shared["total_minor"]), recorder, items, currency)
+        return shares
 
     def set_item_category(self, receipt_id, position, category):
         """The user's category for one receipt item, remembered for the same item from the same seller."""
@@ -477,7 +551,7 @@ class Ledger:
                               "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.receipt_id=? AND i.position=?", (receipt_id, position)).fetchone()
             if item is None:
                 raise ValueError("Receipt item not found.")
-            db.execute("UPDATE receipt_items SET category=?,category_source='user' WHERE id=?", (category, item["id"]))
+            db.execute("UPDATE receipt_items SET category=?,category_source='user',updated_at=? WHERE id=?", (category, now(), item["id"]))
             db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,?,?) "
                        "ON CONFLICT(merchant_key,item_key) DO UPDATE SET category=excluded.category,updated_at=excluded.updated_at",
                        (normalize_name(item["merchant"]), normalize_name(item["description"]), category, now()))
@@ -531,6 +605,7 @@ class Ledger:
             if not written:
                 return self._published("statement", statement_id, False, account_id=account["id"])
             self.add_evidence(db, "statement", statement_id, source, record["locator"])
+            self.apply_corrections(db, "statement", statement_id)
             # Rows from an earlier extraction the user has not decided (unreviewed or accepted automatically) that no other source supports.
             # A row this reading finds again (same fingerprint) keeps its id, so its tags, links and category stay; it takes the new
             # reading's text. A row it no longer finds is removed, unless the user worked on it: then it stays and the statement waits in Review.
@@ -549,6 +624,7 @@ class Ledger:
             for transaction in set(missing) - set(kept):
                 self.remove_transaction(db, transaction)
             inserted, duplicates = self.insert_transactions(db, account, record["transactions"], "extraction", source, statement_id, status, refresh)
+            self.reapply_transaction_corrections(db, refresh)
             if kept:
                 issues = [*record["issues"], f"This reading no longer finds {len(kept)} transaction{'s' if len(kept) > 1 else ''} you worked on; "
                           "they were kept. Check them against the statement."]
@@ -557,9 +633,10 @@ class Ledger:
 
     @staticmethod
     def user_worked_on(db, transaction_id):
-        """Whether the user categorised, tagged or matched a transaction (a machine proposal does not count)."""
+        """Whether the user categorised, corrected, tagged or matched a transaction (a machine proposal does not count)."""
         return db.execute(
             "SELECT EXISTS(SELECT 1 FROM transactions WHERE id=:t AND category_source='user') "
+            "OR EXISTS(SELECT 1 FROM record_corrections WHERE record_type='transaction' AND record_id=:t) "
             "OR EXISTS(SELECT 1 FROM transaction_receipt_links WHERE transaction_id=:t AND review_status='verified') "
             "OR EXISTS(SELECT 1 FROM transaction_links WHERE :t IN (from_transaction_id,to_transaction_id) AND review_status='verified') "
             "OR EXISTS(SELECT 1 FROM bills WHERE payment_transaction_id=:t) "
@@ -603,10 +680,10 @@ class Ledger:
                 self.add_evidence(db, "income_record", income_id, source, record["locator"])
                 self.apply_corrections(db, "income_record", income_id)
                 db.execute("DELETE FROM income_lines WHERE income_record_id=?", (income_id,))
-                db.executemany("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json) "
-                               "VALUES(?,?,?,?,?,?,?,?)",
+                db.executemany("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json,"
+                               "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                                [(income_id, position, line["description"], line["line_group"], line["category"], line["current_minor"],
-                                 line["ytd_minor"], json.dumps(line["locator"])) for position, line in enumerate(record.get("lines", []), 1)])
+                                 line["ytd_minor"], json.dumps(line["locator"]), now(), now()) for position, line in enumerate(record.get("lines", []), 1)])
         return self._published("income_record", income_id, written, lines=len(record.get("lines", [])))
 
     # Deterministic CSV/XLSX import ---------------------------------------------
@@ -672,8 +749,8 @@ class Ledger:
             flagged = json.loads(row["validation_json"]) if "validation_json" in row.keys() else []
             if status == "verified" and flagged and not note:
                 note = "Counted despite: " + " ".join(flagged)
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES(?,?,?,?,?,?)",
-                       (record_type, record_id, row["review_status"], status, note[:1000], now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES(?,?,?,?,?,?,?)",
+                       (record_type, record_id, row["review_status"], status, note[:1000], now(), actor.current()))
         return {"record_type": record_type, "id": record_id, "review_status": status}
 
     def record(self, record_type, record_id):
@@ -723,7 +800,7 @@ class Ledger:
                 value["account"] = db.execute("SELECT display_name FROM accounts WHERE id=?", (value["account_id"],)).fetchone()[0]
             if record_type in ("transaction", "receipt"):
                 value["links"] = self.links(db, record_type, record_id)
-            if record_type in CORRECTABLE:
+            if record_type in CORRECTABLE or record_type == "transaction":
                 value["corrections"] = self.corrections(db, record_type, record_id)
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
@@ -743,13 +820,76 @@ class Ledger:
         """The user's own category for one transaction. Clearing it hands the row back to the user's rules."""
         category = category_name(category) if category else None
         with self.store.connection() as db:
-            if db.execute("UPDATE transactions SET category=?,category_source=?,category_rule_id=NULL,updated_at=? WHERE id=?",
-                          (category, "user" if category else None, now(), transaction_id)).rowcount == 0:
+            before = db.execute("SELECT category FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+            if before is None:
                 raise ValueError("Transaction not found.")
+            db.execute("UPDATE transactions SET category=?,category_source=?,category_rule_id=NULL,updated_at=? WHERE id=?",
+                       (category, "user" if category else None, now(), transaction_id))
             if category is None:
                 self.apply_rules(db, [transaction_id])
             row = db.execute("SELECT category,category_source FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+            if row["category"] != before["category"]:  # Kept with who changed it (provenance "override").
+                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,actor,created_at) VALUES('transaction',?,'category',?,?,?,?)",
+                           (transaction_id, row["category"], before["category"], actor.current(), now()))
         return {"id": transaction_id, "category": row["category"], "category_source": row["category_source"]}
+
+    def correct_transaction(self, transaction_id, changes, reason=None):
+        """Set a transaction's date, amount, direction, merchant or type when the import or the reading got it wrong. Kept
+        with the value it replaced, the person and an optional reason (record_corrections), and applied again when its
+        statement is read again (reapply_transaction_corrections). The review state is unchanged."""
+        unknown = set(changes) - set(TRANSACTION_CORRECTABLE)
+        if not changes or unknown:
+            raise ValueError("Choose fields a transaction allows: " + ", ".join(field.replace("_", " ") for field in TRANSACTION_CORRECTABLE) + ".")
+        with self.store.connection() as db:
+            if db.execute("SELECT 1 FROM transactions WHERE id=?", (transaction_id,)).fetchone() is None:
+                raise ValueError("Transaction not found.")
+            for field, text in changes.items():
+                row = db.execute("SELECT * FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+                if row["replaced_by"] is not None:
+                    raise ValueError("Its statement or import line replaced this entry; correct that line instead.")
+                value, stored = self._transaction_value(db, row, field, text)
+                db.execute(f"UPDATE transactions SET {TRANSACTION_CORRECTABLE[field][0]}=?,updated_at=? WHERE id=?", (value, now(), transaction_id))
+                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) VALUES('transaction',?,?,?,?,?,?,?)",
+                           (transaction_id, field, stored, self._transaction_text(db, row, field), clean_reason(reason), actor.current(), now()))
+        return self.record("transaction", transaction_id)
+
+    def _transaction_value(self, db, row, field, text):
+        """(column value, stored text) for one corrected transaction field, keeping what the other fields say."""
+        kind = TRANSACTION_CORRECTABLE[field][1]
+        text = " ".join(str(text or "").split())
+        if kind == "amount":
+            minor = to_minor(text, row["currency"])
+            if minor <= 0:
+                raise ValueError("Enter the amount as a positive number; its direction is corrected separately.")
+            return (-minor if row["amount_minor"] < 0 else minor), money(minor, row["currency"])["decimal"]
+        if kind == "direction":
+            if text not in ("out", "in"):
+                raise ValueError("Choose money out or money in.")
+            return (-abs(row["amount_minor"]) if text == "out" else abs(row["amount_minor"])), text
+        if kind == "type":
+            if text not in TRANSACTION_TYPES:
+                raise ValueError("Choose a type: " + ", ".join(TRANSACTION_TYPES) + ".")
+            return text, text
+        return self._correction_value(db, kind, field, text, currency=row["currency"])
+
+    def _transaction_text(self, db, row, field):
+        """A transaction field as it read before a correction."""
+        if field == "amount":
+            return money(abs(row["amount_minor"]), row["currency"])["decimal"]
+        if field == "direction":
+            return "out" if row["amount_minor"] < 0 else "in"
+        if field == "merchant":
+            return self._merchant_name(db, row["merchant_id"]) or row["description_raw"]
+        return row[TRANSACTION_CORRECTABLE[field][0]]
+
+    def reapply_transaction_corrections(self, db, transaction_ids):
+        """A re-read statement rewrites its lines' text and type: put back what a person corrected, in the order corrected."""
+        for transaction_id in transaction_ids:
+            for field, text in db.execute("SELECT field,value FROM record_corrections WHERE record_type='transaction' AND record_id=? AND field<>'category' "
+                                          "ORDER BY id", (transaction_id,)).fetchall():
+                row = db.execute("SELECT * FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+                value, _ = self._transaction_value(db, row, field, text)
+                db.execute(f"UPDATE transactions SET {TRANSACTION_CORRECTABLE[field][0]}=? WHERE id=?", (value, transaction_id))
 
     # Category rules -------------------------------------------------------------
     # Rules are the user's own decisions written once: "anything from COSTCO is groceries".
@@ -840,17 +980,35 @@ class Ledger:
         if amount_minor <= 0:
             raise ValueError("A budget must be more than zero.")
         with self.store.connection() as db:
+            before = db.execute("SELECT amount_minor FROM budgets WHERE category=? AND currency=?", (category, currency)).fetchone()
             db.execute("INSERT INTO budgets(category,currency,amount_minor,created_at,updated_at) VALUES(?,?,?,?,?) "
                        "ON CONFLICT(category,currency) DO UPDATE SET amount_minor=excluded.amount_minor,updated_at=excluded.updated_at",
                        (category, currency, amount_minor, now(), now()))
             row = db.execute("SELECT * FROM budgets WHERE category=? AND currency=?", (category, currency)).fetchone()
+            if before is None or before[0] != amount_minor:
+                self.budget_change(db, row["id"], category, currency, before[0] if before else None, amount_minor)
         return {**dict(row), "amount": money(row["amount_minor"], row["currency"])}
 
     def delete_budget(self, budget_id):
         with self.store.connection() as db:
-            if db.execute("DELETE FROM budgets WHERE id=?", (budget_id,)).rowcount == 0:
+            row = db.execute("SELECT * FROM budgets WHERE id=?", (budget_id,)).fetchone()
+            if row is None:
                 raise ValueError("Budget not found.")
+            db.execute("DELETE FROM budgets WHERE id=?", (budget_id,))
+            self.budget_change(db, budget_id, row["category"], row["currency"], row["amount_minor"], None)
         return {"id": budget_id, "deleted": True}
+
+    @staticmethod
+    def budget_change(db, budget_id, category, currency, previous, amount):
+        """A budget's history (budget_changes): from what to what (None: not set), who, when."""
+        db.execute("INSERT INTO budget_changes(budget_id,category,currency,previous_minor,amount_minor,actor,created_at) VALUES(?,?,?,?,?,?,?)",
+                   (budget_id, category, currency, previous, amount, actor.current(), now()))
+
+    def budget_history(self, category, currency):
+        with self.store.connection() as db:
+            rows = db.execute("SELECT * FROM budget_changes WHERE category=? AND currency=? ORDER BY id DESC", (category_name(category), currency_code(currency)))
+            return [{**dict(row), **{key: money(row[f"{key}_minor"], row["currency"]) if row[f"{key}_minor"] is not None else None
+                                     for key in ("previous", "amount")}} for row in rows]
 
     def review_history(self, record_type, record_id):
         with self.store.connection() as db:
@@ -914,19 +1072,23 @@ class Ledger:
                 if payment["currency"] != bill["currency"] or payment["amount_minor"] >= 0 or payment["review_status"] == "rejected":
                     raise ValueError("The paying transaction must be money out, in the bill's currency, and not rejected.")
             db.execute("UPDATE bills SET payment_status=?,payment_transaction_id=?,updated_at=? WHERE id=?", (status, transaction_id, now(), bill_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('bill_payment',?,?,?,?,?)",
-                       (bill_id, bill["payment_status"], status, (f"Paid by transaction {transaction_id}. " if transaction_id else "") + note[:900], now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('bill_payment',?,?,?,?,?,?)",
+                       (bill_id, bill["payment_status"], status, (f"Paid by transaction {transaction_id}. " if transaction_id else "") + note[:900], now(), actor.current()))
         return {"id": bill_id, "payment_status": status, "payment_transaction_id": transaction_id}
 
 
     # User corrections ---------------------------------------------------------
 
-    def _correction_value(self, db, kind, field, text, stored=False):
+    def _correction_value(self, db, kind, field, text, stored=False, currency=None):
         """Validate one entered value; returns (column value, stored text). stored re-applies a saved correction,
-        which may name a category retired since (LEGACY_CATEGORIES) until the re-sort replaces it."""
+        which may name a category retired since (LEGACY_CATEGORIES) until the re-sort replaces it. A money value is in
+        the record's currency, stored as its exact decimal text."""
         if text is None:
             return None, None
         text = " ".join(str(text).split())
+        if kind == "money":
+            minor = to_minor(text, currency)
+            return minor, money(minor, currency)["decimal"]
         if kind == "date":
             try:
                 if len(text) != 10:
@@ -949,9 +1111,10 @@ class Ledger:
             raise ValueError("Enter a business name with letters or digits.")
         return merchant, text
 
-    def correct(self, record_type, record_id, changes):
-        """Set fields the document did not print or the model misread. Kept with the model's value in history;
-        the record's review state is unchanged, and issues about the corrected fields are resolved."""
+    def correct(self, record_type, record_id, changes, reason=None):
+        """Set fields the document did not print or the model misread. Kept with the model's value in history, with the
+        person (core/actor.py) and an optional reason; the record's review state is unchanged, and issues about the
+        corrected fields are resolved."""
         fields = CORRECTABLE.get(record_type)
         if not fields:
             raise ValueError("This kind of record cannot be corrected here.")
@@ -966,13 +1129,15 @@ class Ledger:
             issues = json.loads(row["validation_json"])
             for field, text in changes.items():
                 column, kind, label = fields[field]
-                value, stored = self._correction_value(db, kind, field, text)
-                previous = self._merchant_name(db, row[column]) if kind == "name" else row[column]
+                value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
+                previous = (self._merchant_name(db, row[column]) if kind == "name" else
+                            money(row[column], row["currency"])["decimal"] if kind == "money" and row[column] is not None else row[column])
                 resolved = [issue for issue in issues if issue.startswith(label)]
                 issues = [issue for issue in issues if not issue.startswith(label)]
                 db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
-                correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,created_at) VALUES(?,?,?,?,?,?,?)",
-                                        (record_type, record_id, field, stored, previous, json.dumps(resolved), now())).lastrowid
+                correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
+                                        "VALUES(?,?,?,?,?,?,?,?,?)", (record_type, record_id, field, stored, previous, json.dumps(resolved),
+                                                                      clean_reason(reason), actor.current(), now())).lastrowid
             db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
             if record_type == "receipt" and receipt_category(changes.get("category")):
                 # The whole receipt's category is a shortcut for every item the user has not categorised one by one.
@@ -996,17 +1161,18 @@ class Ledger:
                             (record_type, record_id)).fetchall()
         if not latest:
             return
-        issues = json.loads(db.execute(f"SELECT validation_json FROM {table} WHERE id=?", (record_id,)).fetchone()[0])
+        stored_json, currency = db.execute(f"SELECT validation_json,currency FROM {table} WHERE id=?", (record_id,)).fetchone()
+        issues = json.loads(stored_json)
         for field, text in latest:
             column, kind, label = fields[field]
-            value, _ = self._correction_value(db, kind, field, text, stored=True)
+            value, _ = self._correction_value(db, kind, field, text, stored=True, currency=currency)
             db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (value, record_id))
             issues = [issue for issue in issues if not issue.startswith(label)]
         db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
 
     @staticmethod
     def corrections(db, record_type, record_id):
-        return [dict(row) for row in db.execute("SELECT field,value,previous,created_at FROM record_corrections WHERE record_type=? AND record_id=? ORDER BY id",
+        return [dict(row) for row in db.execute("SELECT field,value,previous,reason,actor,created_at FROM record_corrections WHERE record_type=? AND record_id=? ORDER BY id",
                                                 (record_type, record_id))]
 
     @staticmethod

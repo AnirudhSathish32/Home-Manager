@@ -201,6 +201,12 @@ class ItemLedger:
         values = [self.resolution(row[0]) for row in rows]
         return [{**value, "line": self.line(value["receipt_item_id"])} for value in values]
 
+    def resolution_count(self, status="proposed"):
+        """How many resolutions have this status, with no limit (the Review badge, app/manager.py review_counts)."""
+        with self.store.connection() as db:
+            return db.execute("SELECT count(*) FROM item_resolutions r JOIN receipt_items i ON i.id=r.receipt_item_id WHERE r.review_status=?",
+                              (status,)).fetchone()[0]
+
     def review(self, resolution_id, status, edits: ResolutionFields | None = None, today=None):
         """Approve (optionally with the user's corrections) or reject. Approval creates the product, alias and lot."""
         if status not in ("verified", "rejected"):

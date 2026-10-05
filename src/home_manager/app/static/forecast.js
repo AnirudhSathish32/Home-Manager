@@ -75,7 +75,7 @@ async function loadAssets() {
   for (const asset of assets) {
     const row = body.insertRow();
     cell(row, asset.name); cell(row, ASSET_KINDS[asset.kind] || asset.kind);
-    cell(row, asset.value.display).className = "numeric"; cell(row, asset.as_of);
+    const value = cell(row, ""); value.className = "numeric"; value.append(amount(asset.value, {signed: false})); cell(row, dateText(asset.as_of));
     cell(row, `${asset.annual_rate_percent}%`).className = "numeric";
     cell(row, asset.monthly_payment ? asset.monthly_payment.display : "—").className = "numeric";
     cell(row, asset.source === "manual" ? "Entered by you" : {verified: "Statement, confirmed", rejected: "Statement, rejected (not counted)"}[asset.review_status] || "Statement, awaiting review");
@@ -119,7 +119,7 @@ function forecastTable(result, columns) {
   const body = table.createTBody();
   for (const year of result.years) {
     const row = body.insertRow(); cell(row, year.year);
-    for (const [, value] of columns) cell(row, value(year)).className = "numeric";
+    for (const [, value] of columns) { const td = cell(row, ""); td.className = "numeric"; td.append(amount(value(year), {signed: false})); }
   }
   wrap.append(table); return wrap;
 }
@@ -128,7 +128,7 @@ function retirementFacts(result) {
   const plan = result.assumptions.retirement, rmd = result.assumptions.rmd_start, facts = [];
   if (plan) {
     const pay = result.starting_point.monthly_pay;
-    facts.push(["Retirement", `From ${plan.start_month}: ${pay.minor ? `take-home pay of ${pay.display} a month stops; ` : ""}`
+    facts.push(["Retirement", `From ${monthText(plan.start_month)}: ${pay.minor ? `take-home pay of ${pay.display} a month stops; ` : ""}`
       + (plan.mode === "fixed" ? `withdraw ${plan.monthly_amount} a month in today's dollars` : `withdraw enough to keep ${plan.cash_floor} in cash, in today's dollars`)
       + `; ${plan.tax_percent}% tax on tax-deferred withdrawals`]);
   }
@@ -137,7 +137,7 @@ function retirementFacts(result) {
 }
 function renderForecast(result) {
   const alerts = $("forecast-alerts"); alerts.replaceChildren();
-  if (result.first_month_cash_below_zero) alerts.append(alertBox(`Cash is projected to fall below zero in ${result.first_month_cash_below_zero}.`, {tone: "warning"}));
+  if (result.first_month_cash_below_zero) alerts.append(alertBox(`Cash is projected to fall below zero in ${monthText(result.first_month_cash_below_zero)}.`, {tone: "warning"}));
   if (result.notes.length) {
     const list = element("ul", "", "forecast-notes"); for (const note of result.notes) list.append(element("li", note));
     const box = alertBox("About these numbers", {tone: "info"}); box.querySelector(".alert-body").append(list); alerts.append(box);
@@ -145,7 +145,7 @@ function renderForecast(result) {
   const start = result.starting_point, facts = element("dl", "", "forecast-facts");
   const history = result.assumptions.history;
   for (const [label, value] of [["Cash in accounts", start.cash.display], ["Monthly income", start.monthly_income.display],
-      ["Averaged over", `${history.start} to ${history.end}`], ["Inflation", `${result.assumptions.inflation_percent}% a year`],
+      ["Averaged over", `${dateText(history.start)} to ${dateText(history.end)}`], ["Inflation", `${result.assumptions.inflation_percent}% a year`],
       ["Income growth", `${result.assumptions.income_growth_percent}% a year`], ...retirementFacts(result)]) facts.append(element("dt", label), element("dd", value));
   const spending = element("ul", "", "forecast-notes");
   for (const row of start.monthly_spending) spending.append(element("li", `${row.category}: ${row.amount.display} a month`));
@@ -159,7 +159,7 @@ function renderForecast(result) {
     // Contributions each month (from pay, and from your cash), and CDs or Treasuries paid out at maturity.
     const adds = [asset.monthly_from_pay ? `${asset.monthly_from_pay.display} a month from pay` : "", asset.monthly_from_you ? `${asset.monthly_from_you.display} a month from your cash` : ""].filter(Boolean);
     const li = element("li", `${asset.name} (${asset.kind_label}): ${asset.value.display}, growing ${asset.annual_rate_percent}% a year${adds.length ? `, plus ${adds.join(" and ")}` : ""}`);
-    for (const due of asset.maturing) li.append(element("small", `${due.name} ${due.to_cash ? "pays" : "renews at"} ${due.amount.display} in ${due.month}${due.to_cash ? " to cash" : ""}`, "muted block"));
+    for (const due of asset.maturing) li.append(element("small", `${due.name} ${due.to_cash ? "pays" : "renews at"} ${due.amount.display} in ${monthText(due.month)}${due.to_cash ? " to cash" : ""}`, "muted block"));
     investments.append(li);
   }
   $("forecast-start").replaceChildren(facts, element("h3", "Monthly spending by category"),
@@ -190,7 +190,7 @@ function renderForecast(result) {
 }
 async function loadForecast() {
   const load = ++forecastLoad;
-  if (!$("asset-as-of").value) $("asset-as-of").value = new Date().toISOString().slice(0, 10);
+  if (!$("asset-as-of").value) $("asset-as-of").value = todayIso();  // Local today: toISOString is UTC, a day ahead in the evening west of it.
   await loadAssets();
   const result = await api("/api/forecast", {method: "POST", body: JSON.stringify(forecastRequest())});
   if (load === forecastLoad) renderForecast(result);

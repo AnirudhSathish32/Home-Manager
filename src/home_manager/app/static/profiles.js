@@ -4,7 +4,28 @@
 let profilesKey = "", activeProfile = null, familyView = null, profileList = [], pendingMember = null;
 const KIND_LABELS = {individual: "Person", family: "Family"};
 
+// Who's here (core/actor.py): with one person the server knows it's them, so nothing is sent; with more, the choice is
+// remembered for this browser session only and must still be one of the profile's people.
+const WHO_KEY = "hm-who-is-here";
+function renderWho(people = []) {
+  let saved = null;
+  try { saved = sessionStorage.getItem(WHO_KEY); } catch { saved = null; }
+  whoIsHere = people.length > 1 && people.includes(saved) ? saved : null;
+  $("who-picker").hidden = people.length < 2;
+  const key = JSON.stringify(people);
+  if ($("who-select").dataset.people !== key) {
+    $("who-select").dataset.people = key;
+    $("who-select").replaceChildren(new Option("Choose…", ""), ...people.map(name => new Option(name, name)));
+  }
+  $("who-select").value = whoIsHere || "";
+}
+$("who-select").addEventListener("change", () => {
+  whoIsHere = $("who-select").value || null;
+  try { if (whoIsHere) sessionStorage.setItem(WHO_KEY, whoIsHere); else sessionStorage.removeItem(WHO_KEY); } catch { /* Kept for this page only. */ }
+});
+
 function renderProfiles(settings) {
+  renderWho(settings.people || []);
   profileList = settings.profiles || []; activeProfile = settings.profile; familyView = settings.family;
   // Polling calls this often; redraw only when something changed so half-typed forms survive.
   const key = JSON.stringify([profileList, activeProfile, familyView]);

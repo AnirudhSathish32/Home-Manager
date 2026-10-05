@@ -11,7 +11,9 @@ Exact integer and Decimal arithmetic only; amounts are minor units, rates basis 
 from decimal import ROUND_HALF_EVEN, Decimal
 import json
 
-from ..core.money import format_minor
+from ..core.money import format_minor, percent_text
+from ..core.trace import NULL
+from .tax_return import bracket_slices, bracket_tax, marginal
 
 GROUPS = (("earnings", "Earnings"), ("pre_tax", "Pre-tax deductions"), ("tax", "Taxes"), ("post_tax", "Post-tax deductions"),
           ("employer_paid", "Paid by your employer (not taken from your pay)"))
@@ -99,10 +101,11 @@ def taxable_wages(lines):
     return result
 
 
-def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_deductions=0, credits=0):
+def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_deductions=0, credits=0, recorder=NULL, currency="USD"):
     """One jurisdiction's income tax, bucket by bucket, for a year of paychecks like this one. The W-4 adjustments (the
     paycheck planner, finance/paycheck.py) add other income to the year's wages, add deductions beside the standard
-    deduction as a second 0% bucket, and take credits off the year's tax."""
+    deduction as a second 0% bucket, and take credits off the year's tax. A live recorder gets each bucket's tax a
+    paycheck, and the rounding of the year's tax over the paychecks."""
     annual = wages * paychecks + other_income
     standard = table["standard_deduction_minor"]
     deduction = standard + extra_deductions
@@ -113,15 +116,11 @@ def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_dedu
     if extra_deductions:
         buckets.append({"label": "Other deductions", "rate_bp": 0, "from_minor": standard, "to_minor": deduction,
                         "income_minor": max(0, min(annual, deduction) - standard), "tax_minor": 0})
-    exact = Decimal(0)
-    for index, bracket in enumerate(brackets):
-        start = bracket["from_minor"]
-        end = brackets[index + 1]["from_minor"] if index + 1 < len(brackets) else None
-        slice_ = max(0, min(taxable, end) - start) if end is not None else max(0, taxable - start)
-        tax = Decimal(slice_) * bracket["rate_bp"] / 10000
-        exact += tax
+    slices = bracket_slices(taxable, brackets)
+    exact = bracket_tax(taxable, brackets)
+    for bracket, end, slice_, tax in slices:
         # Bracket bounds are over taxable income; shown over wages, they start after the standard deduction.
-        buckets.append({"label": f"{Decimal(bracket['rate_bp']) / 100:g}%", "rate_bp": bracket["rate_bp"], "from_minor": deduction + start,
+        buckets.append({"label": f"{Decimal(bracket['rate_bp']) / 100:g}%", "rate_bp": bracket["rate_bp"], "from_minor": deduction + bracket["from_minor"],
                         "to_minor": deduction + end if end is not None else None, "income_minor": slice_, "tax_minor": rounded(tax)})
     for bucket in buckets:
         bucket["per_paycheck_income_minor"] = rounded(Decimal(bucket["income_minor"]) / paychecks)
@@ -129,15 +128,35 @@ def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_dedu
     before_credits = exact
     exact = max(Decimal(0), exact - credits)
     estimate = rounded(exact / paychecks)
-    top = next((bucket for bucket in reversed(buckets) if bucket["income_minor"] > 0), buckets[0])
+    if recorder.live:
+        steps = 0
+        for bucket in buckets:
+            if bucket["tax_minor"]:
+                recorder.add(f"{bucket['label']} on {format_minor(bucket['per_paycheck_income_minor'], currency)} a paycheck",
+                             bucket["per_paycheck_tax_minor"], currency)
+                steps += bucket["per_paycheck_tax_minor"]
+        if credits:
+            taken = rounded(min(Decimal(credits), before_credits) / paychecks)
+            recorder.add("Credits (W-4 Step 3), a paycheck's share", -taken, currency)
+            steps -= taken
+        recorder.round(estimate - steps, currency, note="Each bucket's tax a paycheck is rounded on its own; the year's tax over the paychecks is rounded once.")
+        recorder.rule({"name": f"{jurisdiction_name(code)} tax table", "source": "; ".join(str(source.get("url") or source) if isinstance(source, dict) else str(source)
+                                                                                         for source in json.loads(table.get("sources_json") or "[]")) or "Typed",
+                       "version": table.get("rule_version"), "tax_year": table.get("year"), "checked_on": None, "cpa_reviewed_on": None})
+    # The rate on the next dollar of wages: 0% while still inside the deductions, else the brackets' marginal rate.
+    top_rate = 0 if annual < deduction else marginal(taxable, brackets)
+    effective = rounded(exact * 10000 / annual) if annual else 0
     return {"jurisdiction": code, "name": jurisdiction_name(code), "status": "verified", "period_wages_minor": wages,
             "annual_wages_minor": annual, "standard_deduction_minor": standard,
             "standard_deduction_per_paycheck_minor": rounded(Decimal(standard) / paychecks), "taxable_minor": taxable,
             "other_income_minor": other_income, "extra_deductions_minor": extra_deductions,
             "tax_before_credits_minor": rounded(before_credits), "credits_minor": min(credits, rounded(before_credits)),
             "buckets": buckets, "annual_tax_minor": rounded(exact), "estimate_minor": estimate, "actual_minor": actual,
-            "difference_minor": None if actual is None else actual - estimate, "top_rate_bp": top["rate_bp"],
-            "effective_rate_bp": rounded(exact * 10000 / annual) if annual else 0,
+            "difference_minor": None if actual is None else actual - estimate,
+            # Withheld against the estimate in words and size, so the page shows it without arithmetic.
+            "difference_word": None if actual in (None, estimate) else "more" if actual > estimate else "less",
+            "difference_size_minor": None if actual is None else abs(actual - estimate), "top_rate_bp": top_rate, "top_rate_percent": percent_text(top_rate),
+            "effective_rate_bp": effective, "effective_rate_percent": percent_text(effective),
             "sources": json.loads(table["sources_json"])}
 
 
@@ -164,11 +183,28 @@ def fica(table, wages, ytd_wages, actual):
                      "estimate_minor": rounded(estimate), "actual_minor": actual.get("medicare")})
     for row in rows:
         row["difference_minor"] = None if row["actual_minor"] is None else row["actual_minor"] - row["estimate_minor"]
+        row["rate_percent"] = percent_text(row["rate_bp"])
+        if "additional_rate_bp" in row:
+            row["additional_rate_percent"] = percent_text(row["additional_rate_bp"])
     return rows
 
 
-def explain(record, lines, tables, filing_status):
-    """How this stub's taxes are figured. tables: {jurisdiction: tax_tables row} for the pay date's year, any status."""
+def record_fica(recorder, row, currency):
+    """One FICA row's steps (fica()): its rate on the wages under the limit, any additional Medicare, and the rounding."""
+    base = rounded(Decimal(row["wages_minor"]) * row["rate_bp"] / 10000)
+    recorder.add(f"{percent_text(row['rate_bp'])}% of {format_minor(row['wages_minor'], currency)}"
+                 + (" (the part under the year's wage base)" if row["category"] == "social_security" and row["limit_minor"] else ""), base, currency)
+    if row.get("additional_wages_minor"):
+        extra = rounded(Decimal(row["additional_wages_minor"]) * row["additional_rate_bp"] / 10000)
+        recorder.add(f"{row['additional_rate_percent']}% more on {format_minor(row['additional_wages_minor'], currency)} above the year's threshold",
+                     extra, currency)
+        base += extra
+    recorder.round(row["estimate_minor"] - base, currency, note="Worked out exactly, then rounded once to the cent.")
+
+
+def explain(record, lines, tables, filing_status, recorder=NULL, only=None):
+    """How this stub's taxes are figured. tables: {jurisdiction: tax_tables row} for the pay date's year, any status.
+    only: the jurisdiction ("US", a state) or FICA part (social_security, medicare) whose estimate a live recorder gets."""
     year = int(record["pay_date"][:4]) if record.get("pay_date") else None
     paychecks = record.get("pay_frequency")
     state = record.get("work_state")
@@ -198,10 +234,14 @@ def explain(record, lines, tables, filing_status):
             result["jurisdictions"].append({"jurisdiction": code, "name": name, "status": "unknown_frequency", "actual_minor": withheld,
                                             "message": "How often you're paid isn't printed, so a year of paychecks can't be worked out."})
             continue
-        result["jurisdictions"].append(income_tax(code, table, income_wages, paychecks, withheld))
+        result["jurisdictions"].append(income_tax(code, table, income_wages, paychecks, withheld, recorder=recorder if only == code else NULL,
+                                                  currency=record["currency"]))
     federal = tables.get("US")
     if federal and federal["status"] == "verified" and fica_wages is not None:
         result["fica"] = fica(federal, fica_wages, fica_ytd, actual)
+        for row in result["fica"]:
+            if recorder.live and row["category"] == only:
+                record_fica(recorder, row, record["currency"])
     if state in NO_WAGE_TAX:
         result["notes"].append(f"{jurisdiction_name(state)} has no state income tax on wages.")
     if any(line["line_group"] == "pre_tax" and line["category"] == "other" for line in lines):

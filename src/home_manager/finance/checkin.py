@@ -185,4 +185,5 @@ class CheckinService:
             except ValueError as exc:
                 outcomes.append({"lot_id": update["lot_id"], "status": "failed", "error": str(exc)})
         self.state(run_id, "succeeded", result)
-        return {"run_id": run_id, "outcomes": outcomes}
+        failed = [outcome for outcome in outcomes if outcome["status"] == "failed"]
+        return {"run_id": run_id, "outcomes": outcomes, "applied": len(outcomes) - len(failed), "failed": len(failed)}

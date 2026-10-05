@@ -121,8 +121,13 @@ def test_budgets_measure_counted_category_spending_and_pace(books):
     assert [(row["spent"]["display"], row["transactions"]) for row in result["unbudgeted"]] == [("25.00 USD", 1)]
     with store.connection() as db:
         db.execute("UPDATE transactions SET category='fun' WHERE description_raw='CINEMA'")
-    over = {row["category"]: row["status"] for row in call_tool(tools, "get_budgets", {"month": "2026-09", "as_of": "2026-09-10"})["budgets"]}
+    assert (groceries["meter_percent"], groceries["remaining_state"]) == ("75.0", "left")
+    over_rows = {row["category"]: row for row in call_tool(tools, "get_budgets", {"month": "2026-09", "as_of": "2026-09-10"})["budgets"]}
+    over = {category: row["status"] for category, row in over_rows.items()}
     assert over["fun"] == "over"
+    # 25.00 of 20.00: the meter is full, and the page says "5.00 USD over" from the server's own positive amount.
+    fun = over_rows["fun"]
+    assert (fun["percent_used"], fun["meter_percent"], fun["remaining_state"], fun["over"]["display"]) == ("125.0", "100", "over", "5.00 USD")
     past = {row["category"]: row["status"] for row in call_tool(tools, "get_budgets", {"month": "2026-09", "as_of": "2026-10-05"})["budgets"]}
     assert past == {"fun": "over", "groceries": "within"}
     future = call_tool(tools, "get_budgets", {"month": "2026-11", "as_of": "2026-10-05"})

@@ -83,6 +83,9 @@ def test_zen_is_within_a_dollar():
     close = year(withheld=1246500)
     zen = advise(close, [JOB], FEDERAL, {}, [], 2026, date(2026, 9, 30))
     assert zen["zen"] and zen["result_minor"] == 0 and zen["job"]["rest"]["field"] is None
+    assert zen["display"]["aim"] == "0.00 USD"  # The page's "your aim" text, from the server.
+    refund = advise(close, [JOB], FEDERAL, {}, [], 2026, date(2026, 9, 30), policy=TaxZenPolicy(strategy="small_refund", refund_minor=25000))
+    assert refund["display"]["aim"] == "a refund of 250.00 USD"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js isn't installed")
@@ -108,7 +111,9 @@ def test_a_planned_paycheck_at_tax_time():
 
 def test_advance_tax_quarters_for_income_without_withholding():
     assert [day.isoformat() for day in due_dates(2028)] == ["2028-04-17", "2028-06-15", "2028-09-15", "2029-01-15"]  # Apr 15, 2028 is a Saturday.
-    plan = advance_tax(2026, date(2026, 7, 1), 800000, [{"date": "2026-04-10", "amount_minor": 200000}], 720000, 800000)
+    payments = [{"date": "2026-04-10", "amount_minor": 200000}]
+    safe = safe_harbor.evaluate(2026, 800000, 0, 0, payments, today=date(2026, 7, 1))
+    plan = advance_tax(2026, date(2026, 7, 1), 800000, payments, safe)
     # Paid 2,000 by the April date; 6,000 left over the September and January dates. June's date has passed short of the safe harbor.
     assert [(row["quarter"], row["paid_minor"], row["pay_minor"]) for row in plan["quarters"]] == [(1, 200000, 0), (2, 0, 0), (3, 0, 300000), (4, 0, 300000)]
     assert plan["left_minor"] == 600000 and any("Form 2210" in note for note in plan["notes"])
@@ -138,6 +143,19 @@ def test_the_safe_harbor_by_its_own_rules():
     timed = safe_harbor.evaluate(2026, 1000000, 0, 0, [{"date": "2026-09-01", "amount_minor": 900000}], today=date(2026, 10, 1))
     assert timed["meets_required_payment"] and timed["underpaid_quarters"] == [1, 2] and timed["risk"] == "possible"
     assert any("Form 2210" in note for note in timed["notes"])
+
+
+def test_advance_tax_and_the_safe_harbor_agree_on_each_quarter():
+    # 10,000 of tax, 4,000 withheld evenly, 1,500 paid in June: the safe harbor needs 9,000, so estimated payments must reach
+    # 9,000 × q/4 less the withholding's q/4 by each date. Both views name the same underpaid quarters.
+    estimate_ = answer(1000000, 550000, estimated=150000)
+    payments = [{"date": "2026-06-10", "amount_minor": 150000}]
+    zen = advise(estimate_, [], FEDERAL, {}, payments, 2026, date(2026, 10, 1))
+    safe = zen["safe_harbor"]
+    assert [row["safe_by_now_minor"] for row in zen["advance"]["quarters"]] == [125000, 250000, 375000, 500000]
+    assert [row["safe_by_now_minor"] for row in zen["advance"]["quarters"]] == [row["estimated_needed_by_now_minor"] for row in safe["quarters"]]
+    assert zen["advance"]["safe_harbor_minor"] == safe["required_minor"] - 400000
+    assert safe["underpaid_quarters"] == [1, 2, 3] and any("quarter 3" in note for note in zen["advance"]["notes"])
 
 
 def test_the_aim_follows_the_policy():

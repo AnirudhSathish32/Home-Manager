@@ -1,6 +1,7 @@
 """Engine 2's runner (finance/engines/taxcalc.py): PSLmodels Tax-Calculator on one filing unit, in its own process.
 
-Reads {"year", "record"} as JSON on stdin and writes one JSON answer on stdout:
+Reads {"year", "record", "outputs"?, "policy"?} as JSON on stdin (outputs and policy: further names to read back, for the
+worksheet map; a name it doesn't know fails the run) and writes one JSON answer on stdout:
 - {"ok": true, "version", "last_known_year", "values": {output: dollars}, "policy": {parameter: dollars or rate}};
 - or {"ok": false, "code", "message"} (NOT_INSTALLED, YEAR or FAILED).
 The heavy imports (pandas, numba) stay out of the app's process, and a run that hangs is stopped by the caller's timeout.
@@ -42,8 +43,10 @@ def main():
         def law(name):
             value = calc.policy_param(name)
             return float(value[index]) if getattr(value, "ndim", 0) else float(value)
+        outputs = dict.fromkeys([*OUTPUTS, *request.get("outputs", ())])
+        policy = dict.fromkeys([*POLICY, *request.get("policy", ())])
         return answer({"ok": True, "version": __version__, "last_known_year": Policy.LAST_KNOWN_YEAR,
-                       "values": {name: float(calc.array(name)[0]) for name in OUTPUTS}, "policy": {name: law(name) for name in POLICY}})
+                       "values": {name: float(calc.array(name)[0]) for name in outputs}, "policy": {name: law(name) for name in policy}})
     except Exception as exc:  # Its own failure, reported to the caller rather than a traceback it can't read.
         return answer({"ok": False, "code": "FAILED", "message": f"{type(exc).__name__}: {exc}"[:300]})
 

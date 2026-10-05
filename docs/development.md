@@ -14,7 +14,7 @@ directly (`from ..core.money import format_minor`). `__main__.py` is the launche
 |---|---|
 | `core/` | Foundations with no domain knowledge: money, formats, folders, categories, paths and locks, the work queue (`jobs.py`), worker limits, the log, donation answers (`answers.py`). |
 | `library/` | The document store and its lifecycle: `storage.py` and `migrations/`, scanning and capture, the managed Library and filing, backups, shares, trash, the text index. |
-| `models/` | Model transport (`model_client.py`, `model_stream.py`), residency, decision models, vision settings, the family GPU relay, `http_server.py` (`GracefulHTTPServer`), web lookup connectors. |
+| `models/` | Model transport (`model_client.py`, `model_stream.py`), residency, decision models, vision settings, the shared GPU relay, `http_server.py` (`GracefulHTTPServer`), web lookup connectors. |
 | `documents/` | Reading documents into evidence and records: image and PDF readers, regions and image grouping, vision transcription, reasoning runs, typed extraction, the reviewer, donations. |
 | `finance/` | Ledger, reconciliation, splits, tools and the assistant, budgets and check-ins, the dashboard, forecast and charts, investments, lots and retirement, prices and FX, paychecks and scenarios, taxes (tags, year, return, engine, safe harbor, Tax Zen, withholding, family), the CPA pack, health checks. |
 | `finance/engines/` | Tax engine adapters: `opentax.py` (Engine 1), `taxcalc.py` and `taxcalc_run.py` (Engine 2, in its own process). |
@@ -25,7 +25,8 @@ directly (`from ..core.money import format_minor`). `__main__.py` is the launche
 Outside `src/`:
 - `tests/`: flat pytest modules, synthetic data only;
 - `evals/`: the eval suite ([evals](evals.md));
-- `scripts/`: `db_checks.py` and `loopback_stress.py`;
+- `scripts/`: `db_checks.py`, `loopback_stress.py` and `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
+  [taxes](taxes.md#the-engines-worksheets));
 - `docs/`.
 
 ## Architecture rules
@@ -99,7 +100,7 @@ amounts, merchant names, file names or document text. Use `log_failure` for fail
     `test_family_browser.py`, `test_home_browser.py`, `test_taxes_browser.py` and `test_whatif_browser.py`.
   - Some other test files also have browser cases: `test_employers`, `test_forecast`, `test_investments`,
     `test_receipt_counting`, `test_recurring_bills` and `test_share`.
-  - Layout checks are described in the `app-ux` skill.
+  - Layout checks are described in `docs/ui.md` "Verifying a layout".
 - **Decision models** (`test_decisions.py`) use the same synthetic server. Set `local_model["decide"]` to a function
   `(path, body) -> reply` that answers `/v1/responses` and `/v1/systemone`. Requests to those paths are kept in
   `local_model["decisions"]`, apart from chat requests.
@@ -195,7 +196,7 @@ profiles untouched.
 | Forecast and What If | Add an asset and a loan; open the forecast. Save a plan, follow it, and check plan vs actual. | [planning](planning.md) |
 | Taxes | Tag a business expense and an itemized deduction; open the year's estimate and Tax Zen. Build the CPA pack. | [taxes](taxes.md) |
 | Profiles, family, sharing | Add a second profile; make a family and check the family view and inbox; export a `.hmshare` and open it. | [family](family.md) |
-| Family GPU | Run `home-manager gpu-host serve`, `add-member`, and point another profile's Local models at it. | [family](family.md#family-gpu) |
+| Shared GPU | Run `home-manager gpu-host serve`, `add-member`, and point another profile's Local models at it. | [family](family.md#shared-gpu) |
 | Donations | Check a receipt on Donate documents and export the bundle; open the zip and confirm nothing else is inside. | [evals](evals.md#donating-documents) |
 | Backup and restore | **Back up** to another folder, then **Restore** into a new empty folder and switch to it. | [operations](operations.md#backups) |
 | Ledger health | `home-manager check-ledger` while the app runs; it should report 0 errors. | [operations](operations.md#ledger-health) |
@@ -241,7 +242,7 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 ## Schema map
 
 Each library holds one SQLite database, `inventory.sqlite3`, built by the forward-only scripts in
-`src/home_manager/library/migrations/` (001–060). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
+`src/home_manager/library/migrations/` (001–061). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
 `.sql` file is the source of truth for columns and constraints. A table that was later rebuilt is listed under the
 migration that first created it.
 
@@ -337,6 +338,12 @@ migration that first created it.
 | 058 | `tax_calculations` | `tax_calculations` | Each distinct return an engine worked out; never rewritten |
 | 059 | `form_1098` | | `tax_form_boxes.form` allows `1098` |
 | 060 | `tax_zen_evaluations` | `tax_zen_evaluations` | What Tax Zen said and why, added only when something changed; `seen_at` clears Home's notice |
+
+**Provenance (061)**
+
+| # | File | Tables added | Columns added / notes |
+|---|---|---|---|
+| 061 | `provenance` | `budget_changes`, `tax_input_changes`, `rule_sources`, `figure_snapshots` | `record_corrections` rebuilt to allow transaction, statement, investment valuation, tax form box, holding and budget, with `reason` and `actor`; `actor` on `review_events`, `family_assignments` and `transactions`; `transactions.replaced_by`; `created_at`/`updated_at` on `receipt_items`, `receipt_rewards`, `income_lines`, `tax_form_boxes` (filled from their record); `tax_tables.rule_version` ([ui](ui.md#whats-built)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

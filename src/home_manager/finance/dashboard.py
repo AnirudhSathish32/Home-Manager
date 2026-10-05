@@ -3,10 +3,12 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 
-from ..core.money import currency_code, money
+from ..core.money import currency_code
+from ..core.trace import NULL, figure, ref
 from ..library.storage import WORK_FILTERS, now
 from .investments import Investments
 from .ledger import COUNTABLE
+from .splits import rounded, share
 from .tools import AsOfInput, CompareInput, FinanceTools, PeriodInput, last_day, month_index, month_label, totals_view
 
 
@@ -45,19 +47,29 @@ def periods(month, months, today):
     return PeriodInput(start=month + "-01", end=end), PeriodInput(start=previous + "-01", end=previous_end), index
 
 
-def group_categories(categories, chosen):
-    """The five largest named categories, the rest as Other, then uncategorized; each with its share of gross spending."""
+def group_categories(categories, chosen, period=None, recorder=NULL, only=None):
+    """The five largest named categories, the rest as Other, then uncategorized; each with its share of gross spending:
+    `share_bp` (whole basis points summing to exactly 10,000, largest remainders first, so the donut closes) and `share`
+    (its percent text, which labels the same slice). The donut is drawn only when every group is spending (chartable).
+    period: the PeriodInput the categories are for, which gives Other its trace; a live recorder gets the categories
+    in Other (only="other") or in gross spending (only="gross"), each with its own trace (finance/traces.py)."""
     named = [row for row in categories if row["category"] != "uncategorized"]
     groups = [{**row, "members": [row["category"]]} for row in named[:5]]
+    shown = {"start": period.start, "end": period.end, "currency": chosen} if period else None
     if len(named) > 5:
         rest = named[5:]
-        groups.append({"category": "Other", "spending": money(sum(row["spending"]["minor"] for row in rest), chosen),
-                       "transactions": sum(row["transactions"] for row in rest), "members": [row["category"] for row in rest]})
+        groups.append({"category": "Other", "transactions": sum(row["transactions"] for row in rest), "members": [row["category"] for row in rest],
+                       "spending": figure(sum(row["spending"]["minor"] for row in rest), chosen, ref("spending.other", **shown) if shown else None)})
     groups += [{**row, "members": ["uncategorized"]} for row in categories if row["category"] == "uncategorized"]
     gross = sum(row["spending"]["minor"] for row in categories)
-    for row in groups:
-        row["share"] = str((Decimal(row["spending"]["minor"]) * 100 / gross).quantize(Decimal("0.1"), ROUND_HALF_EVEN)) if gross > 0 else "0.0"
-    return groups, gross
+    for row in named[5:] if only == "other" else categories if only == "gross" else []:
+        recorder.add(row["category"].capitalize(), row["spending"]["minor"], chosen, trace=row["spending"].get("trace"), count=row["transactions"])
+    chartable = gross > 0 and all(row["spending"]["minor"] >= 0 for row in groups)
+    points = rounded(share(10000, [row["spending"]["minor"] for row in groups]), 10000) if chartable else [0] * len(groups)
+    for row, bp in zip(groups, points):
+        row["share_bp"] = bp
+        row["share"] = str((Decimal(bp) / 100).quantize(Decimal("0.1"), ROUND_HALF_EVEN))
+    return groups, gross, chartable
 
 
 def dashboard(store, month, months=6, currency=None, home_currency=None, today=None):
@@ -84,7 +96,7 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
             bucket = totals_view(chosen, trend_totals[(label, chosen)]) if (label, chosen) in trend_totals else None
             series.append({"month": label, "start": label + "-01", "end": stop,
                            "partial": label == current and stop != last_day(item), "totals": bucket})
-        groups, gross = group_categories([row for row in tools.get_spending_by_category(period)["categories"] if row["currency"] == chosen], chosen)
+        groups, gross, chartable = group_categories([row for row in tools.get_spending_by_category(period)["categories"] if row["currency"] == chosen], chosen, period)
         unmatched = tools.get_unmatched_receipts(period)
         unmatched_total = pick(unmatched["by_currency"])
         queue = tools.review_queue()
@@ -96,9 +108,10 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
         coverage = [dict(row) for row in db.execute(f"SELECT a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions "
                      f"FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE {COUNTABLE} AND t.currency=? AND t.posted_date BETWEEN ? AND ? GROUP BY a.id",
                      (chosen, period.start, period.end))]
-        return {"loaded_at": now(), "month": month, "period": period.model_dump(), "previous_period": before.model_dump(),
+        found = {"loaded_at": now(), "month": month, "period": period.model_dump(), "previous_period": before.model_dump(),
                 "currency": chosen, "currencies": currencies, "totals": totals, "cashflow": flow, "comparison": comparison,
-                "series": series, "categories": groups, "gross": money(gross, chosen), "coverage": coverage,
+                "series": series, "categories": groups, "categories_chartable": chartable, "coverage": coverage,
+                "gross": figure(gross, chosen, ref("spending.gross", start=period.start, end=period.end, currency=chosen)),
                 "pending": pick(spending["pending_review"]), "excluded": spending["excluded_transfers_and_card_payments"],
                 "attention": {"unmatched": unmatched_total, "undated": sum(row["currency"] == chosen for row in unmatched["undated"]),
                               "records": len(queue["records"]), "links": len(queue["links"]), "issues": len(queue["issues"]), "ready": ready},
@@ -106,3 +119,9 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
                           "upcoming": [row for row in bills if row["due_date"] >= today.isoformat()][:3],
                           "overdue": [row for row in bills if row["due_date"] < today.isoformat()][:3], "total": len(bills)},
                 "maturities": maturities[:3], "maturities_total": len(maturities)}
+    return found
+
+
+def figures(found):
+    """The traceable figures Home shows (finance/traces.py shown)."""
+    return ([found["totals"]["net_spending"]] if found.get("totals") else []) + ([found["cashflow"]["net"]] if found.get("cashflow") else [])

@@ -153,7 +153,7 @@ async function loadCpaPacks(year) {
   const parts = [];
   if (rates.needed) {
     const state = !rates.enabled ? "Exchange-rate downloads are off in Settings, so foreign amounts stay unconverted."
-      : rates.downloaded ? `Foreign amounts are converted at ECB reference rates, downloaded through ${rates.last_rate_date}.`
+      : rates.downloaded ? `Foreign amounts are converted at ECB reference rates, downloaded through ${dateText(rates.last_rate_date)}.`
       : "Foreign amounts need ECB reference rates, which haven't been downloaded yet.";
     const line = element("p", state, "muted small");
     if (rates.enabled) line.append(" ", asyncButton("Refresh rates", async () => { await api("/api/rates/refresh", {method: "POST"}); notice("Exchange rates updated."); await loadCpaPacks(year); }, "small quiet"));
@@ -290,7 +290,7 @@ function zenPolicyForm(view) {
   const zen = view.zen, saved = view.inputs.zen_policy || {}, row = element("div", "", "forecast-row");
   const strategy = planSelect("taxes-zen-strategy", ZEN_STRATEGIES, zen.policy?.strategy || "precision");
   row.append(forecastField("Aim for", strategy));
-  const amountFor = {small_refund: ["refund", "Refund to aim for ($)", "refund_minor"], cash_retention: ["max_owed", "Most you'd owe in April ($)", "max_owed_minor"]}[strategy.value];
+  const amountFor = {small_refund: ["refund", "Refund to aim for (USD)", "refund_minor"], cash_retention: ["max_owed", "Most you'd owe in April (USD)", "max_owed_minor"]}[strategy.value];
   let typed = null;
   if (amountFor) { typed = taxInput("taxes-zen-amount", saved[amountFor[0]], zen.display?.[amountFor[2]] || "", "Whole dollars"); row.append(forecastField(amountFor[1], typed)); }
   const save = async () => {
@@ -307,8 +307,7 @@ function renderTaxZen(view) {
   if (zen?.status) title.append(statusBadge(ZEN_BADGES[zen.status]));
   if (!zen?.ready) { target.replaceChildren(...parts, element("p", zen?.note || "", "muted small")); return; }
   parts.push(zenPolicyForm(view));
-  const aim = zen.target_minor === 0 ? "$0" : zen.target_minor > 0 ? `a refund of ${zen.display.target_minor}` : `owing ${zen.display.target_minor}`;
-  if (zen.zen) parts.push(element("p", `You're Tax Zen for ${view.year}: the return comes out at your aim (${aim}).`, "taxes-zen-headline"));
+  if (zen.zen) parts.push(element("p", `You're Tax Zen for ${view.year}: the return comes out at your aim (${zen.display.aim}).`, "taxes-zen-headline"));
   else parts.push(element("p", zen.reason, "small"));
   // §23: the likely range, with the projected pay and interest moved down and up; and what changed since last time (§43).
   if (zen.range && zen.range.low_minor !== zen.range.high_minor) parts.push(element("p", `Likely between ${zen.range.display.low_minor} and `
@@ -328,7 +327,7 @@ function renderTaxZen(view) {
     const timing = payroll.delay_checks ? ` A W-4 handed in now takes effect after ${payroll.delay_checks === 1 ? "the next paycheck" : `the next ${payroll.delay_checks} paychecks`}`
       + `${payroll.next_pay_date ? ` (${dateText(payroll.next_pay_date)})` : ""}, so it changes ${job.paychecks_left} of the ${payroll.paychecks_left} left.` : "";
     parts.push(element("p", `Why: at today's withholding the year ends ${zen.result_minor >= 0 ? "with a refund of" : "owing"} ${zen.display.result_minor}; `
-      + `your aim is ${aim}, with ${job.paychecks_left} paychecks to change at ${job.name}.${timing}`, "small"));
+      + `your aim is ${zen.display.aim}, with ${job.paychecks_left} paychecks to change at ${job.name}.${timing}`, "small"));
     const rest = job.rest, entry = rest.field === "4(a)" ? "Step 4(a), other income" : "Step 4(b), deductions";
     const checked = part => part.checked ? " Checked: working the return out again with it ends the year there." : part.checked === false ? " It couldn't be checked against the return; treat it as approximate." : "";
     const extraLine = job.extra && element("p", "", job.primary === "extra" ? "taxes-zen-headline" : "small");
@@ -395,14 +394,14 @@ function renderTaxYear(view) {
   if (result.result_minor == null) { target.replaceChildren(emptyState(result.notes[0])); renderTaxInputs(view); return; }
   const headline = element("dl", "", "plan-headline");
   const zero = result.result_minor === 0;
-  for (const [label, value, big] of [[zero ? "Tax Zen" : result.result.refund ? "Refund" : "You'd owe", zero ? "0.00 USD" : result.result.display, true],
+  for (const [label, value, big] of [[zero ? "Tax Zen" : result.result.refund ? "Refund" : "You'd owe", result.result.display, true],
       ["Total tax", result.lines.find(line => line.key === "total_tax").display], ["Paid and credited", result.lines.find(line => line.key === "total_payments").display]]) {
     const dd = element("dd", "", big ? "plan-figure" : ""); dd.append(amount(value, {signed: false})); headline.append(element("dt", label), dd);
   }
   // Which engine slot worked it out (finance/tax_engine.py): "Engine 1", never an engine's own name.
   const engine = result.engine?.label || "the tax engine";
   const parts = [headline, element("p", `${view.year} · filing ${view.filing_status_name}`
-    + (result.marginal_bp != null ? ` · top federal bracket ${(result.marginal_bp / 100).toFixed(0)}%` : "") + ` · worked out by ${engine}. `
+    + (result.marginal_percent != null ? ` · top federal bracket ${result.marginal_percent}%` : "") + ` · worked out by ${engine}. `
     + "Withholding and pay are projected to Dec 31 from your pay stubs; change anything on the right.", "muted small")];
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows paystub-table");
   let section = null, body = null;
@@ -455,7 +454,7 @@ function renderTaxInputs(view) {
   // Jobs from pay stubs, and jobs typed in (a spouse's).
   for (const job of gathered.jobs) {
     const set = element("fieldset", "", "taxes-job"), jobTyped = view.inputs.jobs?.[job.key] || {};
-    const unrecorded = job.paychecks_projected - job.paychecks_left;
+    const unrecorded = job.paydays_without_stub;
     set.append(element("legend", job.name), element("p", `${VALUE_KINDS[job.kind] || VALUE_KINDS.record}: ${job.stubs} pay stub${job.stubs === 1 ? "" : "s"} through ${dateText(job.last_pay_date)}; `
       + (unrecorded ? `${unrecorded} payday${unrecorded === 1 ? "" : "s"} since then without a stub here, counted like the last one; ` : "")
       + `${job.paychecks_left} paycheck${job.paychecks_left === 1 ? "" : "s"} still ahead this year, ${job.per_check_display.federal} federal withheld from each.`

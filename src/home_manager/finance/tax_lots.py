@@ -11,6 +11,9 @@ gives a long-term gain. Shares sold with no lot to take them from are reported, 
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
+from ..core.money import format_minor
+from ..core.trace import NULL
+
 
 def shares(text):
     """A printed quantity as an exact positive Decimal, or None."""
@@ -106,8 +109,9 @@ def account_lots(db, account_id):
     return result
 
 
-def realized(db, account_ids, year):
-    """Realized gains in a tax year across accounts: proceeds, cost, and short- and long-term gains, plus shares sold with no lot."""
+def realized(db, account_ids, year, recorder=NULL, term=None, currency="USD"):
+    """Realized gains in a tax year across accounts: proceeds, cost, and short- and long-term gains, plus shares sold with no lot.
+    A live recorder gets each sale's gain of one term ("short" or "long"), lot by lot."""
     total = {"proceeds_minor": 0, "cost_minor": 0, "short_minor": 0, "long_minor": 0, "missing": []}
     for account_id in account_ids:
         for holding_id, found in account_lots(db, account_id).items():
@@ -117,5 +121,8 @@ def realized(db, account_ids, year):
                 total["proceeds_minor"] += sale["proceeds_minor"]
                 total["cost_minor"] += sale["cost_minor"]
                 total[f"{sale['term']}_minor"] += sale["gain_minor"]
+                if sale["term"] == term:
+                    recorder.add(f"{sale['shares']} shares sold {sale['disposed_date']}, bought {sale['acquired_date']}: {format_minor(sale['proceeds_minor'], currency)} "
+                                 f"for what cost {format_minor(sale['cost_minor'], currency)}", sale["gain_minor"], currency)
             total["missing"] += [{**gap, "account_id": account_id, "holding_id": holding_id} for gap in found["missing"] if gap["date"][:4] == str(year)]
     return total

@@ -14,6 +14,7 @@ gets no estimate: `unsupported` names what's outside it. Nothing is approximated
 in the engine's class only.
 """
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
 import json
@@ -22,8 +23,9 @@ import sqlite3
 from typing import Protocol
 
 from ..core.logs import log_failure
-from ..core.money import format_minor
+from ..core.money import format_minor, percent_text
 from ..library.storage import now
+from . import worksheet as worksheets
 from .tax_return import CURRENCY, ReturnInput, marginal, rate, state_return
 
 log = logging.getLogger(__name__)
@@ -85,6 +87,10 @@ class TaxContext:
 
 class TaxEngine(Protocol):
     name: str  # The implementation, for the records only; the app shows the slot's label.
+    # Return lines whose node may be `opaque` (the engine doesn't break them down), and how far a worksheet step may be
+    # off its op in cents (an engine working in float dollars rounds each value to the cent).
+    opaque_lines: frozenset[str]
+    tolerance_minor: int
 
     def version(self) -> dict: ...
 
@@ -93,6 +99,8 @@ class TaxEngine(Protocol):
     def capabilities(self) -> Capabilities: ...
 
     def calculate(self, value: ReturnInput, context: TaxContext, label: str) -> dict: ...
+
+    def worksheet(self, result: dict) -> dict: ...
 
 
 def first_engine():
@@ -134,6 +142,12 @@ def shown(slot, engine: TaxEngine):
     return {"slot": slot, "label": label_of(slot), "version": engine.version().get("version", "")}
 
 
+def pin_of(slot):
+    """The pinned SHA-256 of the engine in this slot: part of what a tax figure's trace hashes, so a changed engine marks
+    figures shown before it as stale (core/trace.py remember)."""
+    return ENGINES[slot_of(slot)]().version().get("pin_sha256")
+
+
 def readiness(slot=DEFAULT):
     """Whether the engine in this slot can run on this computer (Settings shows it before tax season)."""
     slot = slot_of(slot)
@@ -153,35 +167,127 @@ def payments(value: ReturnInput):
             "estimated": value.federal_estimated_paid}
 
 
-def completed(value: ReturnInput, lines, *, agi, taxable, tax, total_tax, refundable, refundable_lines, context, notes, slot_label, raw):
-    """An engine's return finished the same way for every engine: the payment lines, the refundable credits the engine
-    worked out ([(key, label, cents, how)]; the rest as "Other refundable credits"), the result and the simplified state
-    return. lines: the engine's lines so far ({key, label, amount_minor, how, section}, maybe `within`)."""
-    def line(key, label, amount, explained="", section=""):
-        lines.append({"key": key, "label": label, "amount_minor": amount, "how": explained, "section": section})
+class Lines(list):
+    """A return's lines as every engine shows them: {key, label, amount_minor, how, section, node, within?}. The income lines
+    from the input and the total-income reconciliation are shaped here once, so the engines can't drift apart.
+
+    `node` is the line's node in the engine's worksheet (finance/worksheet.py). A line the app or the adapter works out
+    itself (a value sent as is, a residual, a payment) gets its own `line:<key>` node, kept in `nodes`."""
+
+    def __init__(self):
+        super().__init__()
+        self.nodes: dict = {}
+
+    def add(self, key, label, amount, explained="", section="", within=0, node=None):
+        self.append({"key": key, "label": label, "amount_minor": amount, "how": explained, "section": section, "node": node,
+                     **({"within": within} if within else {})})
         return amount
+
+    def fact(self, key, label, amount, fields, cite=""):
+        """A node for a value sent as is: the ReturnInput fields it comes from, [field, sign] ("jobs.wages" adds up every
+        job's; "jobs.0.wages" is one job's)."""
+        name = f"line:{key}"
+        self.nodes[name] = worksheets.node(name, label, "fact", amount, cite=cite, source={"fields": [list(item) for item in fields]})
+        return name
+
+    def made(self, key, label, op, amount, inputs, signs=None, detail=None, cite=""):
+        """A node the adapter works out itself from other nodes (a residual line, a total)."""
+        name = f"line:{key}"
+        self.nodes[name] = worksheets.node(name, label, op, amount, inputs, cite, detail={**(detail or {}), **({"signs": signs} if signs else {})})
+        return name
+
+    def zero(self, key, label):
+        """A node for a line the engine didn't work out at all: nothing on this return."""
+        name = f"line:{key}"
+        self.nodes[name] = worksheets.node(name, f"{label}: none on this return", "constant", 0)
+        return name
+
+    def income(self, value: ReturnInput, capital, social_security, capital_how="", social_security_how="", dividends_how="", business_how="",
+               capital_node=None, social_security_node=None):
+        """The income section: what was sent, with the engine's capital gain or loss and taxable Social Security (and their
+        nodes in its worksheet)."""
+        jobs = len(value.jobs)
+        sent = (("wages", "Wages (every job's W-2 box 1)", sum(job.wages for job in value.jobs), f"{jobs} job{'s' if jobs != 1 else ''}", "jobs.wages"),
+                ("interest", "Taxable interest", value.interest, "", "interest"),
+                ("dividends", "Ordinary dividends", value.ordinary_dividends, dividends_how, "ordinary_dividends"))
+        for key, label, amount, explained, field in sent:
+            self.add(key, label, amount, explained, "income", node=self.fact(key, label, amount, [[field, 1]]))
+        self.add("capital", "Capital gain or loss", capital, capital_how, "income", node=capital_node or self.zero("capital", "Capital gain or loss"))
+        rest = (("distributions", "Taxable retirement distributions", value.retirement_distributions, "", "retirement_distributions"),
+                ("business", "Business profit or loss (Schedule C)", sum(business.income - business.expenses for business in value.businesses), business_how,
+                 "businesses.profit"),
+                ("unemployment", "Unemployment", value.unemployment, "", "unemployment"),
+                ("hsa_nonqualified", "HSA money not spent on medical care", value.hsa_nonqualified, "", "hsa_nonqualified"),
+                ("other_income", "Other income", value.other_income, "", "other_income"))
+        for key, label, amount, explained, field in rest:
+            self.add(key, label, amount, explained, "income", node=self.fact(key, label, amount, [[field, 1]]))
+        self.add("social_security", "Taxable Social Security benefits", social_security, social_security_how, "income",
+                 node=social_security_node or self.zero("social_security", "Taxable Social Security benefits"))
+
+    def total_income(self, total, node=None):
+        """The engine's total income (node: its node in the worksheet), with a line for what it counts beyond the lines above."""
+        income = [item for item in self if item["section"] == "income"]
+        counted = sum(item["amount_minor"] for item in income)
+        if counted != total:
+            residual = self.made("income_engine", "Other income as the engine counts it", "difference", total - counted,
+                                 [node, *(item["node"] for item in income)]) if node else None
+            self.add("income_engine", "Other income as the engine counts it", total - counted, "the engine's total income less the lines above", "income",
+                     node=residual)
+        self.add("total_income", "Total income", total, section="total", node=node)
+
+
+def payment_node(lines: Lines, value: ReturnInput, key, label, amount):
+    """A payment line's node: what the app added up (payments), from the return's inputs."""
+    if key == "withheld":
+        return lines.fact("pay_withheld", label, amount, [["jobs.federal_withheld", 1], ["other_federal_withholding", 1]])
+    if key == "estimated":
+        return lines.fact("pay_estimated", label, amount, [["federal_estimated_paid", 1]])
+    parts = []  # Additional Medicare tax paid: each job's Medicare withholding above 1.45% of its Medicare wages.
+    for index, job in enumerate(value.jobs):
+        above = job.medicare_withheld - rate(job.medicare_wages, MEDICARE_RATE_BP)
+        if above <= 0:
+            continue
+        stem = f"pay_additional_medicare~{index}"
+        withheld = lines.fact(f"{stem}.w", f"{job.name}: Medicare tax withheld", job.medicare_withheld, [[f"jobs.{index}.medicare_withheld", 1]])
+        wages = lines.fact(f"{stem}.m", f"{job.name}: Medicare wages", job.medicare_wages, [[f"jobs.{index}.medicare_wages", 1]])
+        employee = lines.made(f"{stem}.r", f"1.45% of {job.name}'s Medicare wages", "rate", rate(job.medicare_wages, MEDICARE_RATE_BP), [wages],
+                              detail={"num": MEDICARE_RATE_BP, "den": 10000, "rate": "1.45%", "round": "half-even"}, cite="26 U.S.C. § 3101(b)(1)")
+        parts.append(lines.made(stem, f"{job.name}: withheld above 1.45%", "difference", above, [withheld, employee]))
+    return lines.made("pay_additional_medicare", label, "sum", amount, parts)
+
+
+def completed(value: ReturnInput, lines, *, agi, taxable, tax, total_tax, refundable, refundable_lines, context, notes, slot_label, raw,
+              refundable_node=None):
+    """An engine's return finished the same way for every engine: the payment lines, the refundable credits the engine
+    worked out ([(key, label, cents, how, node)]; the rest as "Other refundable credits", from refundable_node), the result
+    and the simplified state return. lines: the engine's Lines so far; their own nodes go to raw["line_nodes"]."""
+    line = lines.add
     paid_now = payments(value)
     for key, label in PAYMENTS:
         if paid_now[key]:
-            line(f"pay_{key}", label, paid_now[key], section="payments")
-    listed = 0
-    for key, label, amount, explained in refundable_lines:
+            line(f"pay_{key}", label, paid_now[key], section="payments", node=payment_node(lines, value, key, label, paid_now[key]))
+    listed, nodes = 0, []
+    for key, label, amount, explained, node in refundable_lines:
         if amount:
-            listed += line(f"pay_{key}", label, amount, explained, "payments")
+            listed += line(f"pay_{key}", label, amount, explained, "payments", node=node)
+            nodes.append(node)
     if refundable - listed:
-        line("pay_other", "Other refundable credits", refundable - listed, "refundable adoption credit and others", "payments")
+        other = lines.made("pay_other", "Other refundable credits", "difference", refundable - listed, [refundable_node, *nodes]) if refundable_node else None
+        line("pay_other", "Other refundable credits", refundable - listed, "refundable adoption credit and others", "payments", node=other)
     paid = line("total_payments", "Total payments", sum(paid_now.values()) + refundable, section="total")
+    raw = {**raw, "line_nodes": lines.nodes}
     result = paid - total_tax
     state = state_return(value, agi, context.state_table)
     if state:
         state["note"] = state.get("note", "") + f" ({slot_label} has no full state return here.)"
     brackets = json.loads(context.federal["brackets_json"]) if context.federal and context.federal.get("status") == "verified" else None
+    top = marginal(taxable, brackets) if brackets else None
     return {"complete": True, "year": value.year, "filing_status": value.filing_status,
             "lines": [{**item, "display": format_minor(item["amount_minor"], CURRENCY)} for item in lines],
             "agi_minor": agi, "taxable_minor": taxable, "tax_minor": tax, "total_tax_minor": total_tax, "payments_minor": paid,
             "withheld_minor": paid_now["withheld"] + paid_now["additional_medicare"], "estimated_minor": value.federal_estimated_paid,
             "refundable_credits_minor": refundable, "result_minor": result, "result": {"refund": result > 0, "display": format_minor(abs(result), CURRENCY)},
-            "marginal_bp": marginal(taxable, brackets) if brackets else None, "missing": [], "needs": [], "notes": notes, "state": state, "raw": raw}
+            "marginal_bp": top, "marginal_percent": percent_text(top), "missing": [], "needs": [], "notes": notes, "state": state, "raw": raw}
 
 
 def not_covered(value: ReturnInput, reasons, unsupported):
@@ -216,6 +322,30 @@ def calculate(slot, value: ReturnInput, tables):
     result["engine"] = shown(slot, engine)
     result.setdefault("raw", {})["engine"] = engine.version()
     return result
+
+
+WORKSHEETS_KEPT = 8
+_worksheets: OrderedDict = OrderedDict()
+
+
+def worksheet(slot, value: ReturnInput):
+    """How the engine in this slot worked out this return, node by node ({node id: node}, finance/worksheet.py). Built only
+    when a trace asks: the return is worked out again (the engine's answer cache makes that cheap; the tax tables only
+    change the state return and the marginal rate, which have no nodes) and kept for the last few returns."""
+    slot = slot_of(slot)
+    engine: TaxEngine = ENGINES[slot]()
+    key = (slot, engine.version().get("pin_sha256"), hashlib.sha256(value.model_dump_json().encode()).hexdigest())
+    if key in _worksheets:
+        _worksheets.move_to_end(key)
+        return _worksheets[key]
+    result = calculate(slot, value, {})
+    if result.get("result_minor") is None:
+        raise ValueError((result.get("notes") or ["There's no estimate for this return."])[0])
+    nodes = engine.worksheet(result)
+    _worksheets[key] = nodes
+    while len(_worksheets) > WORKSHEETS_KEPT:
+        _worksheets.popitem(last=False)
+    return nodes
 
 
 def compare(first, second):
@@ -259,7 +389,7 @@ class TaxCalculations:
         engine = (result.get("raw") or {}).get("engine") or {}  # The implementation behind the slot.
         profile = value.model_dump_json()
         profile_hash = hashlib.sha256(profile.encode()).hexdigest()
-        raw = {key: item for key, item in (result.get("raw") or {}).items() if key not in ("proof", "engine")} or None
+        raw = {key: item for key, item in (result.get("raw") or {}).items() if key not in ("proof", "engine", "line_nodes")} or None
         shown = {key: item for key, item in result.items() if key not in ("raw", "comparison")}
         name, version = engine.get("name", "unknown"), str(engine.get("version", ""))
         try:

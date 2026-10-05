@@ -63,7 +63,7 @@ async function openSearch(params) {
               [lot.category, lot.bought_on && `bought ${dateText(lot.bought_on)}`, statusLabel(lot.status)].filter(Boolean).join(" · ")))));
   if (accounts.total) groups.push(searchGroup("Accounts", accounts.total, "#/accounts", accounts.items.map(account =>
     searchHit(homeLink(account.display_name, `#/transactions?${new URLSearchParams({account: account.id, period: "all"})}`), `${account.institution} · ${account.currency}`))));
-  const total = documents.total + transactions.total + inventory.total + accounts.total;
+  const total = found.total;
   $("search-status").textContent = total ? `${total} match${total === 1 ? "" : "es"} for “${found.query}”.` : "";
   $("search-results").replaceChildren(...(groups.length ? groups : [emptyState(`Nothing matches “${found.query}”. Try fewer or different words.`)]));
 }

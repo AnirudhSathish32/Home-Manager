@@ -14,6 +14,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from ..core import actor
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS
@@ -142,8 +143,8 @@ class Warranties:
             raise ValueError("Warranties you entered count already.")
         with self.store.connection() as db:
             db.execute("UPDATE warranties SET review_status=?,updated_at=? WHERE id=?", (status, now(), warranty_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('warranty',?,?,?,'',?)",
-                       (warranty_id, warranty["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('warranty',?,?,?,'',?,?)",
+                       (warranty_id, warranty["review_status"], status, now(), actor.current()))
         return self.get(warranty_id)
 
     def delete(self, warranty_id):

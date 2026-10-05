@@ -100,3 +100,9 @@ def convert_minor(amount: int, from_currency, rate: Decimal, to_currency) -> int
 def money(amount: int, currency) -> dict:
     """The exact views of one amount that callers may show: minor units, decimal text and display text."""
     return {"minor": amount, "currency": currency, "decimal": as_decimal_text(amount, currency), "display": format_minor(amount, currency)}
+
+
+def percent_text(bp):
+    """Basis points as exact percent text with no trailing zeros ("22", "5.19", "6.2"), or None: every `*_percent` field the
+    pages show beside a `*_bp` one, so the browser never divides or rounds a rate."""
+    return None if bp is None else f"{(Decimal(bp) / 100).normalize():f}"

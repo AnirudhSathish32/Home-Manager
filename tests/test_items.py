@@ -308,7 +308,8 @@ def test_free_text_checkin_is_staged_and_applies_only_on_confirmation(shop, loca
     assert [(row["lot_id"], row["event"], row["effective_on"]) for row in staged] == [(milk, "finished", "2026-09-22"), (rice, "still_have", None)]
     assert [row["lot_id"] for row in run["result"]["set_aside"]] == [999, milk] and run["result"]["not_understood"] == "the bread"
     assert items.lot(milk)["status"] == "in_stock"  # Nothing changed before confirmation.
-    assert service.apply(run_id, [milk], today=TODAY)["outcomes"] == [{"lot_id": milk, "status": "applied"}]
+    applied = service.apply(run_id, [milk], today=TODAY)
+    assert applied["outcomes"] == [{"lot_id": milk, "status": "applied"}] and (applied["applied"], applied["failed"]) == (1, 0)
     assert (items.lot(milk)["status"], items.lot(milk)["closed_on"]) == ("finished", "2026-09-22")
     assert items.lot(rice)["check_interval_days"] is None  # Not confirmed, not applied.
     assert items.lot_history(milk)[-1]["source"] == "checkin_text"
@@ -364,6 +365,23 @@ def test_receipts_to_identify_lists_unresolved_lines(shop):
     assert [(row["id"], row["lines"], row["unresolved"]) for row in items.receipts_to_identify()] == [(receipt_id, 2, 2)]
     items.propose(line_ids(items, receipt_id)[0], MILK, "search", "high")
     assert items.receipts_to_identify()[0]["unresolved"] == 1
+
+
+def test_the_review_badge_counts_every_proposal_beyond_the_listed_ones(tmp_path, shop):
+    # Bug 5 (docs/open-work.md "UI"): the badge and the queue used different list limits. Counts now come from one place.
+    store, ledger, items, docs = shop
+    receipt_id = receipt(ledger, docs["a.png"], [(f"ITEM {n}", None, 100 + n) for n in range(205)])
+    for line in line_ids(items, receipt_id):
+        items.propose(line, MILK, "search", "high")
+    managed = store.root
+    store.close()
+    app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
+    with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
+        client.put("/api/settings", json={"managed_directory": str(managed)})
+        counts = client.get("/api/review/counts").json()
+        listed = client.get("/api/items/resolutions", params={"status": "proposed"}).json()
+        assert (counts["groups"]["item"], len(listed)) == (205, 200)
+        assert counts["total"] == sum(counts["groups"].values()) and counts["checkin"] is not None
 
 
 def test_item_endpoints_and_assistant_inventory_tool(tmp_path, shop):

@@ -344,7 +344,10 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#pipeline-lanes")).to_contain_text("Reconciliation")
             playwright.expect(page.locator("#job-rows")).to_contain_text("Inbox capture")
             page.locator("#nav-settings").click()
-            page.locator("#backup-tab").click()
+            # Reached with the arrow keys, not a click, the Backup tab still loads its list.
+            page.locator("#checks-tab").click()
+            page.keyboard.press("ArrowRight")
+            playwright.expect(page.locator("#backup-tab")).to_be_focused()
             playwright.expect(page.locator("#backup-rows")).to_contain_text("No backups yet")
             page.keyboard.press("Control+j")
             playwright.expect(page.locator("#assistant-panel")).to_be_visible()

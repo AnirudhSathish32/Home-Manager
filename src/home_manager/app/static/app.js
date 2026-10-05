@@ -20,6 +20,8 @@ function wireTabs(ids) {
       tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1;
       $(tab.getAttribute("aria-controls")).hidden = !active;
     }
+    // However the tab was reached (click, arrow keys, Home/End or code), its panel can load: listen for "tabshow".
+    $(id).dispatchEvent(new CustomEvent("tabshow"));
   }
   ids.forEach((id, index) => {
     $(id).addEventListener("click", () => activate(id));
@@ -52,19 +54,26 @@ function apiError(status, detail) {
 }
 async function api(path, options = {}) {
   let response;
-  try { response = await fetch(path, {...options, headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"}}); }
+  // The person chosen in Who's here (profiles.js), so the server records changes and decisions under their name.
+  const headers = {"Authorization": `Bearer ${token}`, "Content-Type": "application/json", ...(whoIsHere ? {"X-HM-Actor": encodeURIComponent(whoIsHere)} : {})};
+  try { response = await fetch(path, {...options, headers}); }
   catch (error) { throw new ApiError("Home Manager isn't responding. It may have been closed; start it again from its launcher.", 0, String(error)); }
   let body = null;
   try { body = await response.json(); } catch { body = null; }
   if (!response.ok) throw apiError(response.status, body?.detail);
   return body;
 }
+let whoIsHere = null;  // Set by profiles.js renderWho from the profile's people.
 const anyBusy = () => busy.capture || busy.inference;
 function setBusy(settings) { busy = {capture: settings.capture_busy, inference: settings.inference_busy}; }
 function controls() {
   $("parse-all-receipts").disabled = !configured || busy.inference;
   for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "force-receipts", "auto-organize"]) $(id).disabled = busy.inference;
   $("scan-inbox").disabled = !configured || busy.capture;
+  // Work that runs on in the background stays unavailable until it finishes, so a second click can't start it twice.
+  $("recurring-scan").disabled = !configured || busy.inference;
+  $("backup-start").disabled = !configured || busy.capture;
+  $("share-export").disabled = !configured || anyBusy();
   for (const id of ["save-settings", "managed"]) $(id).disabled = anyBusy();
   document.querySelectorAll("[data-step]").forEach(button => { button.disabled = busy.inference; });
   if (typeof receiptControls === "function") receiptControls();
@@ -345,7 +354,7 @@ function saveSettingsForm(form, path, body, message) {
 saveSettingsForm("vision-form", "/api/vision-settings",
   () => ({base_url:$("vision-url").value.trim(), model:$("vision-model").value.trim(), organize_after_scan:$("auto-organize").checked}),
   "Local model settings saved. Start the model server before parsing; saving does not test the connection.");
-// Model computer: this PC's server, or a family member's GPU computer over Tailscale (models/gpu_host.py).
+// Model computer: this PC's server, or a shared GPU computer over Tailscale (models/gpu_host.py).
 function showModelProvider(provider) {
   const family = provider === "family_gpu";
   $("family-gpu-fields").hidden = $("test-model-computer").hidden = !family;
@@ -388,6 +397,7 @@ $("share-form").addEventListener("submit", async event => {
   event.preventDefault();
   const passphrase = $("share-passphrase").value;
   if (passphrase !== $("share-passphrase-again").value) { notice("The two passphrases differ.", true); return; }
+  busy.capture = true; controls();
   try {
     const {share_id} = await api("/api/shares", {method: "POST", body: JSON.stringify({destination: $("share-destination").value.trim(), passphrase, label: $("share-label").value.trim()})});
     $("share-passphrase").value = $("share-passphrase-again").value = "";
@@ -396,7 +406,7 @@ $("share-form").addEventListener("submit", async event => {
     do { await new Promise(resolve => setTimeout(resolve, 1000)); record = await api(`/api/shares/${share_id}`); } while (record.status === "running");
     if (record.status === "succeeded") notice(`Share file saved: ${record.result.path}. Send the file, and tell them the passphrase another way.`);
     else notice(`The share file was not created. ${record.error || ""}`, true);
-  } catch (error) { notice(error, true); }
+  } catch (error) { notice(error, true); busy.capture = false; controls(); }  // Otherwise the next poll's busy flags bring the button back.
 });
 $("session-form").addEventListener("submit", async event => {
   event.preventDefault();

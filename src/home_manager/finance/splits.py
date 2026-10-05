@@ -18,6 +18,8 @@ Shares are exact fractions until the end; largest-remainder rounding keeps the s
 from fractions import Fraction
 import math
 
+from ..core.trace import NULL
+
 DINING = "dining"
 
 
@@ -44,9 +46,22 @@ def item_amount(item):
     return total - abs(discount)
 
 
-def allocate(items, subtotal, tax, tip, target, fallback):
+def record(recorder, values, target, labels, currency):
+    """A live recorder (core/trace.py) gets each share rounded down, and the cents largest-remainder rounding handed out
+    as the rounding row, so the steps add up to target."""
+    if not recorder.live:
+        return
+    floors = [math.floor(value) for value in values]
+    for label, floor in zip(labels, floors):
+        recorder.add(label, floor, currency)
+    recorder.round(target - sum(floors), currency, method="largest_remainder",
+                   note="Each share is exact until the end, then rounded down; the cents left go one each to the largest remainders.")
+
+
+def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currency=None):
     """[(item index or None, category, minor units)] summing to target.
-    items: dicts with line_total_minor, discount_minor, taxed and category (None falls back to fallback)."""
+    items: dicts with line_total_minor, discount_minor, taxed and category (None falls back to fallback), and a
+    description for a live recorder's step labels."""
     fallback = fallback or "uncategorized"
     amounts = [Fraction(item_amount(item)) for item in items]
     extra = []  # (category, amount) that no item carries.
@@ -78,15 +93,27 @@ def allocate(items, subtotal, tax, tip, target, fallback):
     whole = rounded(values, target)
     rows = [(index, item.get("category") or fallback, whole[index]) for index, item in enumerate(items)]
     rows += [(None, category, whole[len(items) + index]) for index, (category, _) in enumerate(extra)]
+    if recorder.live:
+        record(recorder, values, target, [label(items, index, category) for index, category, _ in rows], currency)
     return rows
 
 
-def scale(rows, target):
+def label(items, index, category):
+    """A share's step label: the item and its category, or the category of an amount no item carries (a tip)."""
+    if index is None:
+        return f"{category.capitalize()}: an amount no item carries"
+    return f"{items[index].get('description') or 'Item ' + str(index + 1)} · {category}"
+
+
+def scale(rows, target, recorder=NULL, items=(), currency=None):
     """allocate()'s rows resized to sum exactly to target, each keeping its proportion (a person's part of a shared receipt)."""
     total = sum(amount for _, _, amount in rows)
     if not total:
         return rows
-    whole = rounded([Fraction(amount) * target / total for _, _, amount in rows], target)
+    values = [Fraction(amount) * target / total for _, _, amount in rows]
+    whole = rounded(values, target)
+    if recorder.live:
+        record(recorder, values, target, [label(items, index, category) for index, category, _ in rows], currency)
     return [(index, category, amount) for (index, category, _), amount in zip(rows, whole)]
 
 

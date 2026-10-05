@@ -11,7 +11,7 @@ What is built:
 - **Taxes:** pay stubs with a tax breakdown, tax tags, the year's return worked out by two open-source tax engines, Tax Zen (the W-4 that brings the year to $0), and a year-end CPA pack. See [taxes](docs/taxes.md).
 - **Household items:** inventory from receipt lines, run-out check-ins, returns, warranties. See [household](docs/household.md).
 - **Ask:** an assistant that answers from read-only tools. See [assistant](docs/assistant.md).
-- **Profiles, family and sharing:** a library per person, a family view and inbox, encrypted `.hmshare` exports, and a shared family GPU. See [family](docs/family.md).
+- **Profiles, family and sharing:** a library per person, a family view and inbox, encrypted `.hmshare` exports, and a shared GPU for family and testers. See [family](docs/family.md).
 
 ## Quick start (PowerShell)
 

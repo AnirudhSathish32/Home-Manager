@@ -7,18 +7,21 @@ from pathlib import Path
 import secrets
 import sqlite3
 from typing import Literal
+from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..core import actor
 from ..core.categories import FREQUENCIES, RECURRING_KINDS
 from ..core.folders import DocumentFolder
 from ..core.formats import IMAGES, extension
 from ..core.logs import attach_server, log_failure
 from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
+from ..finance import rules, traces
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
 from ..finance.health import check_ledger, summary
 from ..finance.investments import AccountInput as InvestmentAccountInput
@@ -38,6 +41,7 @@ from ..finance.investments import (
 from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
 from ..finance.paycheck import PaycheckInput
+from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
 from ..finance.scenarios import MAX_COMPARED, ScenarioInput, Scenarios
 from ..finance.tabular import ImportMapping
@@ -398,7 +402,40 @@ class QuestionInput(BaseModel):
 class CorrectionInput(BaseModel):
     """Field -> entered value (null clears it). Allowed fields depend on the record type."""
     model_config = ConfigDict(extra="forbid", strict=True)
-    changes: dict[str, str | None] = Field(min_length=1, max_length=5)
+    changes: dict[str, str | None] = Field(min_length=1, max_length=8)
+    reason: str | None = Field(default=None, max_length=500)  # Optional: why, kept with the correction.
+
+
+class ManualTransactionInput(BaseModel):
+    """A payment entered by hand: it counts at once, until its statement or import line replaces it."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    account_id: int
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    description: str = Field(min_length=1, max_length=200)
+    amount: str = Field(min_length=1, max_length=40)
+    direction: Literal["out", "in"] = "out"
+    category: str | None = Field(default=None, max_length=60)
+
+
+class ValueCorrectionInput(BaseModel):
+    """A value read from a document, set right: the amount as printed (in the record's currency) and why, optionally."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    value: str = Field(min_length=1, max_length=40)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class BoxCorrectionInput(ValueCorrectionInput):
+    form: str = Field(min_length=3, max_length=10)
+    box: str = Field(min_length=1, max_length=10)
+
+
+class HoldingCorrectionInput(BaseModel):
+    """A holding's yearly rate (percent), maturity date, or its value on one statement date (as_of); null clears a term."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    field: Literal["rate", "maturity_date", "value"]
+    value: str | None = Field(default=None, max_length=40)
+    as_of: str | None = Field(default=None, max_length=10)
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class DescriptionInput(BaseModel):
@@ -534,7 +571,17 @@ def create_app(control: Path | None = None, token: str | None = None,
         if request.url.path.startswith("/api/"):
             if not secrets.compare_digest(request.headers.get("authorization", ""), "Bearer " + session_token):
                 return JSONResponse({"detail": "Open the current launch link to unlock this session."}, status_code=401)
-        response = await call_next(request)
+        # Who's here (core/actor.py): checked against the profile's people and held for this request's writers. A profile
+        # with one person needs no choice: it is them.
+        people = manager().people()
+        try:
+            person = actor.checked(unquote(request.headers.get(actor.HEADER, "")), people)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+        if person is None and len(people) == 1:
+            person = people[0]
+        with actor.acting_as(person):
+            response = await call_next(request)
         response.headers.update({
             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
@@ -748,12 +795,14 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/dashboard")
     def home_dashboard(month: str = Query(pattern=r"^\d{4}-\d{2}$"), months: int = Query(6, ge=6, le=12),
                        currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
-        from ..finance.dashboard import dashboard
+        from ..finance.dashboard import dashboard, figures
         owner = manager()
         if owner.family:
             return owner.family_dashboard(month, months, currency)
         with owner.mutex:
-            found = dashboard(owner.require(False), month, months, currency, owner.household.home_currency)
+            library = owner.require(False)
+            found = dashboard(library, month, months, currency, owner.household.home_currency)
+            traces.shown(library, figures(found))  # Each says whether it changed since it was last shown.
         found["attention"]["tax"] = owner.tax_attention()  # Tax Zen got worse since the Taxes page last showed it (§42).
         return found
 
@@ -1016,14 +1065,19 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.get("/api/tax/year/{year}")
     def tax_year(year: int):
-        store()
-        return manager().tax_year(tax_year_value(year), seen=True)
+        # Its figures carry their trace refs, and the result is remembered as shown (finance/traces.py shown_tax).
+        return traces.shown_tax(store(), manager().tax_year(tax_year_value(year), seen=True))
 
     @app.put("/api/tax/year/{year}")
     def save_tax_year(year: int, value: dict):
-        store()
-        TaxYears(store()).save(tax_year_value(year), value)
-        return manager().tax_year(year, seen=True)
+        year = tax_year_value(year)
+        TaxYears(store()).save(year, value, gathered=manager().gathered_tax_year(year))
+        return traces.shown_tax(store(), manager().tax_year(year, seen=True))
+
+    @app.get("/api/tax/year/{year}/changes")
+    def tax_year_changes(year: int, key: str | None = None):
+        """What was typed over the records' values, newest first (tax_input_changes)."""
+        return TaxYears(store()).changes(tax_year_value(year), key=key)
 
     # The family's returns: who files together, and each return's estimate and Tax Zen (finance/tax_family.py).
     def family_only():
@@ -1034,12 +1088,12 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/tax/family/{year}")
     def family_tax(year: int):
         family_only()
-        return manager().family_tax(tax_year_value(year), seen=True)
+        return traces.shown_family_tax(store(), manager().family_tax(tax_year_value(year), seen=True))
 
     @app.put("/api/tax/family/{year}/{unit_id}")
     def save_family_tax(year: int, unit_id: int, value: dict):
         TaxYears(family_only()).save(tax_year_value(year), value, f"unit-{unit_id}")
-        return manager().family_tax(year, seen=True)
+        return traces.shown_family_tax(store(), manager().family_tax(year, seen=True))
 
     # The year-end CPA pack (finance/cpa_pack.py): built only on the user's request, kept under Reports, never overwritten.
     @app.get("/api/tax/cpa-packs")
@@ -1167,7 +1221,7 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.patch("/api/finance/records/{record_type}/{record_id}")
     def correct_record(record_type: RecordType, record_id: int, value: CorrectionInput):
         store()
-        return manager().correct_record(record_type, record_id, value.changes)
+        return manager().correct_record(record_type, record_id, value.changes, value.reason)
 
     @app.post("/api/finance/records/{record_type}/{record_id}/review")
     def review_record(record_type: RecordType, record_id: int, value: ReviewInput):
@@ -1268,6 +1322,63 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/investments/review")
     def investment_values_to_review():
         return Investments(store()).pending()
+
+    # Observability (docs/ui.md "Redesign: calculation observability"): how a figure was worked out, where a value came
+    # from, the rule sets figures rest on, and the history of changes.
+    @app.get("/api/traces/{ref:path}")
+    def figure_trace(ref: str):
+        return traces.trace(store(), ref, manager())
+
+    @app.get("/api/provenance/{record_type}/{record_id}")
+    def record_provenance(record_type: Literal["statement", "transaction", "receipt", "bill", "income_record", "investment_valuation", "tax_form", "holding"],
+                          record_id: int, field: str | None = Query(None, max_length=60)):
+        with store().connection() as db:
+            return provenance_for(db, record_type, record_id, field)
+
+    @app.get("/api/rule-sources")
+    def rule_sources():
+        return rules.sources(store())
+
+    @app.get("/api/finance/budgets/history")
+    def budget_history(category: str = Query(min_length=1, max_length=60), currency: str = Query(pattern=r"^[A-Za-z]{3}$")):
+        return manager().ledger.budget_history(category, currency)
+
+    @app.post("/api/finance/transactions", status_code=201)
+    def add_transaction(value: ManualTransactionInput):
+        store()
+        return manager().add_manual_transaction(value)
+
+    @app.post("/api/investments/valuations/{valuation_id}/correction")
+    def correct_valuation(valuation_id: int, value: ValueCorrectionInput):
+        return Investments(store()).correct_valuation(valuation_id, value.value, value.reason)
+
+    @app.post("/api/investments/tax-forms/{form_id}/boxes/correction")
+    def correct_tax_form_box(form_id: int, value: BoxCorrectionInput):
+        return Investments(store()).correct_tax_form_box(form_id, value.form, value.box, value.value, value.reason)
+
+    @app.post("/api/investments/holdings/{holding_id}/correction")
+    def correct_holding(holding_id: int, value: HoldingCorrectionInput):
+        return Investments(store()).correct_holding(holding_id, value.field, value.value, value.as_of, value.reason)
+
+    @app.get("/api/review/counts")
+    def review_counts():
+        """What waits in Review, counted once here for the sidebar badge, with no list limits: each group's count and the
+        total, and the inventory check-in's (lots to answer plus waiting), or null when it can't be worked out."""
+        library, owner = store(), manager()
+        queue = owner.tools.review_queue()
+        statement_assets = [asset for asset in Assets(library).list() if asset["source"] == "statement" and asset["review_status"] == "proposed"]
+        groups = {"issue": len(queue["issues"]), "link": len(queue["links"]), "record": len(queue["records"]),
+                  "asset": len(statement_assets) + len(Investments(library).pending()),
+                  "warranty": len(owner.warranties.warranties.list(status="proposed")),
+                  "tax_table": len(owner.tax_tables.tables.list("proposed")), "tax_tag": len(TaxTags(library).list("proposed")),
+                  "recurring": sum(row["status"] == "proposed" for row in owner.tools.get_recurring_obligations()["obligations"]),
+                  "item": owner.items.ledger.resolution_count("proposed")}
+        try:
+            found = owner.items.ledger.checkin(owner.household.checkin_weekday)
+            checkin = len(found["lots"]) + found["waiting"]
+        except (ValueError, sqlite3.Error):
+            checkin = None
+        return {"groups": groups, "total": sum(groups.values()), "checkin": checkin}
 
     @app.get("/api/investments/ibond-rates")
     def ibond_rates():
@@ -1568,7 +1679,7 @@ def create_app(control: Path | None = None, token: str | None = None,
         items = owner.items.ledger.inventory(text, include_closed=True, limit=200)
         words = text.lower().split()
         accounts = [account for account in owner.ledger.accounts() if all(word in f"{account['display_name']} {account['institution']}".lower() for word in words)]
-        return {"query": text,
+        return {"query": text, "total": library["total"] + transactions["total_matching"] + len(items) + len(accounts),
                 "documents": {"total": library["total"], "items": library["items"]},
                 "transactions": {"total": transactions["total_matching"], "items": transactions["transactions"]},
                 "inventory": {"total": len(items), "items": items[:limit]},

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Protocol
 
+from ..core.trace import NULL
 from .paycheck import step2_table
 from .paystub import income_tax
 
@@ -23,16 +24,19 @@ W4_DELAY_CHECKS = 1  # Paychecks that pass before a new W-4 changes withholding 
 class WithholdingEngine(Protocol):
     name: str
 
-    def per_check(self, federal, wages, checks, w4) -> int: ...
+    def per_check(self, federal, wages, checks, w4, recorder=NULL) -> int: ...
 
 
 class Pub15T:
     """IRS Publication 15-T, annual percentage method (finance/paystub.income_tax), for a 2020 or later W-4."""
     name = "pub15t"
 
-    def per_check(self, federal, wages, checks, w4):
+    def per_check(self, federal, wages, checks, w4, recorder=NULL):
+        """A live recorder gets the tax a paycheck bucket by bucket (paystub.income_tax) and the Step 4(c) extra."""
         table = step2_table(federal) if w4.get("step2") else federal
-        part = income_tax("US", table, wages, checks, None, w4.get("other_income", 0), w4.get("deductions", 0), w4.get("credits", 0))
+        part = income_tax("US", table, wages, checks, None, w4.get("other_income", 0), w4.get("deductions", 0), w4.get("credits", 0), recorder)
+        if w4.get("extra"):
+            recorder.add("Extra withholding a paycheck (W-4 Step 4(c))", w4["extra"], "USD")
         return part["estimate_minor"] + w4.get("extra", 0)
 
 

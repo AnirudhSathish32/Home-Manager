@@ -1,5 +1,6 @@
-"""Family GPU relay (models/gpu_host.py) and the client's Model computer setting, with synthetic data only."""
+"""Shared GPU relay (models/gpu_host.py) and the client's Model computer setting, with synthetic data only."""
 
+from datetime import date, timedelta
 import http.client
 import json
 import logging
@@ -85,6 +86,49 @@ def test_only_hashes_are_stored_and_tokens_can_be_revoked(relay):
     connection.close()
 
 
+def test_testers_tokens_work_until_they_expire(relay, monkeypatch):
+    token = add_member(relay["control"], "Friend", "tester")
+    member = load_host(relay["control"]).members["Friend"]
+    assert member.kind == "tester" and member.expires == date.today() + timedelta(days=gpu_host.TESTER_DAYS)
+    connection, response = call(relay["member"], "GET", "/v1/models", token=token)
+    assert response.status == 200
+    connection.close()
+    config = load_host(relay["control"])
+    config.members["Friend"].expires = date.today() - timedelta(days=1)
+    save_host(relay["control"], config)
+    connection, response = call(relay["member"], "GET", "/v1/models", token=token)
+    assert response.status == 401  # Expiry applies without restarting the relay.
+    connection.close()
+    with pytest.raises(ValueError):
+        add_member(relay["control"], "Friend", "tester", date.today() - timedelta(days=1))
+
+
+def test_hosts_saved_before_member_kinds_still_load(tmp_path):
+    (tmp_path / "gpu_host.json").write_text(json.dumps({"members": {"Mom": "a" * 64}}))
+    member = load_host(tmp_path).members["Mom"]
+    assert (member.token_sha256, member.kind, member.expires) == ("a" * 64, "family", None)
+
+
+def test_testers_wait_behind_the_family_without_starving():
+    scheduler = gpu_host.Scheduler(max_skips=1)
+    order = []
+    first = scheduler.acquire("a", "me", "vision")
+    threads = []
+    for member, tester in (("Friend", True), ("Friend 2", True), ("Mom", False), ("Dad", False)):
+        def run(member=member, tester=tester):
+            ticket = scheduler.acquire("a", member, "vision", poll=0.05, tester=tester)
+            order.append(member)
+            scheduler.release(ticket)
+        threads.append(threading.Thread(target=run))
+        threads[-1].start()
+        time.sleep(0.1)  # Queue in a known order.
+    scheduler.release(first)
+    for thread in threads:
+        thread.join(timeout=5)
+    # Mom goes ahead of both testers; having been skipped once, they may be skipped no more, so Dad waits.
+    assert order == ["Mom", "Friend", "Friend 2", "Dad"]
+
+
 @pytest.mark.parametrize("address, loopback", [("192.168.1.5", False), ("0.0.0.0", False), ("127.0.0.1", False),
                                                ("8.8.8.8", False), ("0.0.0.0", True), ("100.64.0.1", True)])
 def test_refuses_non_tailnet_binds(relay, address, loopback):
@@ -144,9 +188,9 @@ def test_the_owners_app_uses_loopback_without_a_token(relay):
     assert state["native"]["calls"] == [("unload", "synthetic-vision"), ("load", "synthetic-reasoning"), ("chat", "synthetic-reasoning")]
 
 
-def test_rejected_token_reads_as_a_family_gpu_problem(relay, monkeypatch):
+def test_rejected_token_reads_as_a_shared_gpu_problem(relay, monkeypatch):
     as_member(monkeypatch, relay, token="x" * 43)
-    with pytest.raises(ValueError, match="family GPU token was rejected"):
+    with pytest.raises(ValueError, match="shared GPU token was rejected"):
         request_completion(VisionConfig(base_url=relay["member"], model="home-manager/vision"), dict(MESSAGES))
 
 

@@ -24,6 +24,7 @@ import re
 import zipfile
 
 from ..core.money import EXPONENTS, MoneyError, convert_minor, currency_code, money
+from ..core.trace import NULL
 from ..library.storage import now
 from ..models.web_lookup import LookupFailed, https_get
 
@@ -214,13 +215,16 @@ class EcbRates:
                 raise FxError("Unknown rate id. Use a rate_id returned by lookup_exchange_rate.")
             return self._handle(conn, code, day, row)
 
-    def consolidate(self, rows, db=None):
+    def consolidate(self, rows, db=None, recorder=NULL):
         """USD total of (day, currency, minor) rows: USD as is, others converted line by line from the cache.
 
-        Rows that can't be converted are left out of the USD figure and listed, and the status says partial.
+        Rows that can't be converted are left out of the USD figure and listed, and the status says partial. A live
+        recorder gets the USD amounts as one step, and each converted line with its rate.
         """
         total, rates, unresolved, converted = 0, {}, {}, 0
         with self._db(db) as conn:
+            usd = sum(minor for _, currency, minor in rows if currency == REPORTING)
+            recorder.add("Amounts already in USD", usd, REPORTING)
             for day, currency, minor in rows:
                 if currency == REPORTING:
                     total += minor
@@ -234,6 +238,8 @@ class EcbRates:
                     continue
                 assert handle is not None
                 total += handle.convert(minor)
+                recorder.add(f"{money(minor, currency)['display']} on {day} at {handle.view()['usd_per_unit']} USD per {currency} (ECB, {handle.rate_date})",
+                             handle.convert(minor), REPORTING)
                 rates[handle.rate_id] = handle
                 converted += 1
         return {"usd": money(total, REPORTING), "status": "partial" if unresolved else "complete",

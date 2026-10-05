@@ -48,6 +48,7 @@ function pageContext() {
 }
 function renderAnswer(run) {
   const box = element("article", "", "assistant-turn");
+  if (run.id) box.dataset.run = run.id;  // Each answer is shown once: an earlier question is scrolled to, not added again.
   box.append(element("p", run.question, "assistant-question"));
   if (["queued", "running"].includes(run.status)) { box.append(element("p", "Looking through your records with the local model…", "muted small")); return box; }
   if (run.status !== "succeeded") { box.append(alertBox(run.error || `The question ${statusLabel(run.status).toLowerCase()}.`, {tone: "error"})); return box; }
@@ -89,7 +90,11 @@ async function loadAssistantHistory() {
   const runs = await api("/api/assistant-runs?limit=15");
   $("assistant-history").replaceChildren(...runs.map(run => {
     const li = document.createElement("li"), open = element("button", run.question, "link-button"); open.type = "button";
-    open.addEventListener("click", async () => $("assistant-log").append(renderAnswer({...run, ...(await api(`/api/assistant-runs/${run.id}`))})));
+    open.addEventListener("click", async () => {
+      let turn = [...$("assistant-log").children].find(node => node.dataset.run === String(run.id));
+      if (!turn) { turn = renderAnswer({...run, ...(await api(`/api/assistant-runs/${run.id}`))}); $("assistant-log").append(turn); }
+      turn.tabIndex = -1; turn.scrollIntoView({block: "nearest"}); turn.focus();
+    });
     li.append(open, element("small", `${new Date(run.created_at).toLocaleString()} · ${statusLabel(run.status)}`, "muted"));
     return li;
   }));
@@ -128,7 +133,7 @@ $("assistant-form").addEventListener("submit", async event => {
     $("assistant-question").value = "";
     let run;
     do { await new Promise(resolve => setTimeout(resolve, 1000)); run = await api(`/api/assistant-runs/${run_id}`); } while (["queued", "running"].includes(run.status));
-    const done = renderAnswer(run); turn.replaceWith(done); done.scrollIntoView({block: "end"});
+    const done = renderAnswer({id: run_id, ...run}); turn.replaceWith(done); done.scrollIntoView({block: "end"});
     loadAssistantHistory().catch(() => {});
   } catch (error) { turn.replaceWith(renderAnswer({question, status: "failed", error: error.message})); }
   finally { assistantBusy = false; $("assistant-ask").disabled = false; }

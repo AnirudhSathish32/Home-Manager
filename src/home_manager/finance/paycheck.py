@@ -20,8 +20,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..core.money import as_decimal_text, format_minor, to_minor
-from .paystub import FICA_EXEMPT, NO_WAGE_TAX, STATUS_NAMES, fica, income_tax, jurisdiction_name, rounded, taxable_wages, with_display
+from ..core.money import as_decimal_text, format_minor, percent_text, to_minor
+from ..core.trace import NULL
+from .paystub import FICA_EXEMPT, NO_WAGE_TAX, STATUS_NAMES, fica, income_tax, jurisdiction_name, record_fica, rounded, taxable_wages, with_display
 
 CURRENCY = "USD"  # Tax tables are in dollars.
 FREQUENCIES = {12: "monthly", 24: "twice a month", 26: "every two weeks", 52: "weekly"}
@@ -196,8 +197,32 @@ def segments(values):
     return result
 
 
-def calculate(value: PaycheckInput, tables):
-    """The paycheck, gross to net. tables: {jurisdiction: tax_tables row} for the year and filing status (any status)."""
+def record_net(recorder, groups):
+    """A regular paycheck's take-home pay (one with no bonus in it), line by line: its earnings, less each deduction and
+    tax. Social Security, Medicare and disability insurance are that paycheck's."""
+    signs = {"earnings": 1, "pre_tax": -1, "tax": -1, "post_tax": -1}
+    for group in groups:
+        for line in group["lines"] if group["group"] in signs else []:
+            if line["per_check_minor"]:
+                recorder.add(line["label"] or line["category"].replace("_", " ").capitalize(), signs[group["group"]] * line["per_check_minor"], CURRENCY)
+
+
+def record_monthly(recorder, schedule):
+    """The year's take-home pay a month: each run of like paychecks' share of a twelfth, rounded down, then the rounding."""
+    steps = 0
+    for segment in schedule:
+        count = segment["to_check"] - segment["from_check"] + 1
+        part = count * segment["net_minor"] // 12
+        recorder.add(f"Paychecks {segment['from_check']}–{segment['to_check']}: {count} × {format_minor(segment['net_minor'], CURRENCY)} ÷ 12", part, CURRENCY)
+        steps += part
+    return steps
+
+
+def calculate(value: PaycheckInput, tables, recorder=NULL, only="net"):
+    """The paycheck, gross to net. tables: {jurisdiction: tax_tables row} for the year and filing status (any status).
+    only: what a live recorder gets (finance/tax_traces.py): "net" (a regular paycheck's take-home pay, line by line),
+    "monthly" (the year's take-home pay a month), or a tax line's category (its amount a regular paycheck)."""
+    line_recorder = lambda category: recorder if only == category else NULL
     checks = value.pay_frequency
     notes = []
     # Earnings.
@@ -242,7 +267,9 @@ def calculate(value: PaycheckInput, tables):
         if value.federal_step2:
             used = step2_table(used)
         part = income_tax("US", used, income_wages, checks, None, cents(value.federal_other_income, "Other income"),
-                          cents(value.federal_deductions, "Deductions"), cents(value.federal_credits, "Credits"))
+                          cents(value.federal_deductions, "Deductions"), cents(value.federal_credits, "Credits"), line_recorder("federal_income_tax"))
+        if extra:
+            line_recorder("federal_income_tax").add("Extra withholding (W-4 Step 4(c))", extra, CURRENCY)
         part.update(table_deduction_minor=federal["standard_deduction_minor"], deduction_overridden=value.federal_deduction is not None,
                     extra_withholding_minor=extra, step2=value.federal_step2)
         if value.federal_step2:
@@ -272,7 +299,9 @@ def calculate(value: PaycheckInput, tables):
             complete = False
         if used is not None:
             state_credits = cents(value.state_credits, "State credits")
-            part = income_tax(state, used, state_wages, checks, None, credits=state_credits)
+            part = income_tax(state, used, state_wages, checks, None, credits=state_credits, recorder=line_recorder("state_income_tax"))
+            if state_extra:
+                line_recorder("state_income_tax").add("Extra state withholding", state_extra, CURRENCY)
             part.update(table_deduction_minor=table["standard_deduction_minor"] if table is not None and table["status"] == "verified" else None,
                         deduction_overridden=deduction is not None, extra_withholding_minor=state_extra, source=source)
             jurisdictions.append(part)
@@ -291,6 +320,9 @@ def calculate(value: PaycheckInput, tables):
     elif value.local_tax_amount is not None:
         amount = cents(value.local_tax_amount, "Local tax")
         taxes.append(row("local_tax", "", amount, amount * checks))
+    for line in taxes:
+        if line["category"] == "local_tax":
+            line_recorder("local_tax").add(line["how"] or "The local tax a paycheck, as you entered it", line["per_check_minor"], CURRENCY)
     # Post-tax deductions and what the employer pays, each paycheck.
     post_tax = []
     for line in value.post_tax:
@@ -355,7 +387,7 @@ def calculate(value: PaycheckInput, tables):
             under = wages if limit is None else max(0, min(wages, limit - before))
             amounts["state_disability"] = share(under, disability)
         return amounts
-    per_check, through = [], 0
+    per_check, through, throughs = [], 0, []
     for number in range(1, checks + 1):
         wages = fica_wages + bonus_fica.get(number, 0)
         amounts = variable(wages, through + wages)
@@ -364,8 +396,13 @@ def calculate(value: PaycheckInput, tables):
             without = variable(fica_wages, through + fica_wages)
             next(item for item in bonuses if item["check"] == number)["fica_minor"] = sum(amounts.values()) - sum(without.values())
         through += wages
+        throughs.append(through)
         per_check.append(amounts)
     typical = next((number for number in range(1, checks + 1) if number not in bonus_fica), 1)
+    if recorder.live and only in ("social_security", "medicare") and "fica" in rates:
+        record_fica(recorder, next(part for part in fica(federal, fica_wages, throughs[typical - 1], {}) if part["category"] == only), CURRENCY)
+    elif recorder.live and only == "state_disability" and disability is not None:
+        recorder.add(f"{Decimal(value.state_disability_percent or 0):g}% of this paycheck's wages under the year's limit", per_check[typical - 1]["state_disability"], CURRENCY)
     fica_rows = fica(federal, fica_wages, fica_wages, {}) if "fica" in rates else []
     for category in ("social_security", "medicare", "state_disability"):
         if per_check and category in per_check[0]:
@@ -445,6 +482,9 @@ def calculate(value: PaycheckInput, tables):
     top = {part["jurisdiction"]: part["top_rate_bp"] for part in jurisdictions if part.get("status") == "verified"}
     retirement = sum(line["per_check_minor"] for line in pre_tax + post_tax + employer if line["category"] in RETIREMENT + ("employer_match",))
     hsa = sum(line["per_check_minor"] for line in pre_tax + employer if line["category"] == "hsa")
+    rates = {"total_tax_bp": rounded(Decimal(totals["tax"]["annual_minor"]) * 10000 / annual_gross) if annual_gross else 0,
+             "take_home_bp": rounded(Decimal(net["annual_minor"]) * 10000 / annual_gross) if annual_gross else 0,
+             "federal_marginal_bp": top.get("US"), "state_marginal_bp": top.get(state) if state else None}
     result = {"year": value.year, "filing_status": value.filing_status, "filing_status_name": STATUS_NAMES[value.filing_status],
               "state": state, "state_name": jurisdiction_name(state) if state else None, "paychecks": checks, "frequency_name": FREQUENCIES[checks],
               "currency": CURRENCY, "complete": complete, "groups": groups,
@@ -455,12 +495,15 @@ def calculate(value: PaycheckInput, tables):
               "bonuses": [{key: item[key] for key in ("label", "month", "check", "gross_minor", "taxable_minor", "federal_minor", "state_minor", "local_minor",
                                                      "fica_minor", "match_minor", "net_minor", "retirement_minor", "hsa_minor")} for item in bonuses],
               "contributions": {"retirement_per_check_minor": retirement, "hsa_per_check_minor": hsa},
-              "rates": {"total_tax_bp": rounded(Decimal(totals["tax"]["annual_minor"]) * 10000 / annual_gross) if annual_gross else 0,
-                        "take_home_bp": rounded(Decimal(net["annual_minor"]) * 10000 / annual_gross) if annual_gross else 0,
-                        "federal_marginal_bp": top.get("US"), "state_marginal_bp": top.get(state) if state else None},
+              # Each rate in basis points and as the pages' percent text (core/money.py percent_text).
+              "rates": {**rates, **{key.replace("_bp", "_percent"): percent_text(bp) for key, bp in rates.items()}},
               "notes": notes}
     if not complete:
         notes.append("Net pay leaves out the taxes whose tables are missing, so it is too high until they are confirmed.")
+    if recorder.live and only == "net":
+        record_net(recorder, groups)
+    elif recorder.live and only == "monthly":
+        recorder.round(net["monthly_minor"] - record_monthly(recorder, schedule), CURRENCY, note="The year's take-home pay over twelve, rounded once.")
     return with_display(result, CURRENCY)
 
 

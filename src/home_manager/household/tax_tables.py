@@ -14,9 +14,10 @@ import uuid
 
 from pydantic import Field, ValidationError, model_validator
 
+from ..core import actor
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
-from ..core.money import MoneyError, decimals_in, format_minor, printed_decimal, to_minor
+from ..core.money import MoneyError, decimals_in, format_minor, percent_text, printed_decimal, to_minor
 from ..documents.receipt_schema import StrictModel
 from ..finance.paystub import NO_WAGE_TAX, jurisdiction_name
 from ..library.storage import now
@@ -130,6 +131,8 @@ class TaxTables:
         row["display"] = {key: format_minor(value, currency) for key, value in row.items() if key.endswith("_minor") and isinstance(value, int)}
         for bracket in row["brackets"]:
             bracket["display"] = {"from": format_minor(bracket["from_minor"], currency), "rate": f"{Decimal(bracket['rate_bp']) / 100:g}%"}
+        for key in [key for key in row if key.endswith("_rate_bp")]:
+            row[key.replace("_bp", "_percent")] = percent_text(row[key])
         return row
 
     def list(self, status=None):
@@ -145,11 +148,11 @@ class TaxTables:
                 raise ValueError("A table for this year is already waiting or confirmed.")
             table_id = db.execute(
                 "INSERT INTO tax_tables(jurisdiction,year,filing_status,currency,standard_deduction_minor,brackets_json,ss_rate_bp,ss_wage_base_minor,"
-                "medicare_rate_bp,additional_medicare_rate_bp,additional_medicare_threshold_minor,status,sources_json,run_id,created_at,updated_at) "
-                "VALUES(?,?,?,'USD',?,?,?,?,?,?,?,'proposed',?,?,?,?)",
+                "medicare_rate_bp,additional_medicare_rate_bp,additional_medicare_threshold_minor,status,sources_json,run_id,created_at,updated_at,rule_version) "
+                "VALUES(?,?,?,'USD',?,?,?,?,?,?,?,'proposed',?,?,?,?,?)",
                 (jurisdiction, year, filing_status, values["standard_deduction_minor"], json.dumps(values["brackets"]), values.get("ss_rate_bp"),
                  values.get("ss_wage_base_minor"), values.get("medicare_rate_bp"), values.get("additional_medicare_rate_bp"),
-                 values.get("additional_medicare_threshold_minor"), json.dumps(sources), run_id, now(), now())).lastrowid
+                 values.get("additional_medicare_threshold_minor"), json.dumps(sources), run_id, now(), now(), TAX_TABLE_VERSION)).lastrowid
         return self.get(table_id)
 
     def review(self, table_id, status):
@@ -160,8 +163,8 @@ class TaxTables:
             if row is None:
                 raise ValueError("Tax table not found.")
             db.execute("UPDATE tax_tables SET status=?,updated_at=? WHERE id=?", (status, now(), table_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('tax_table',?,?,?,'',?)",
-                       (table_id, row["status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('tax_table',?,?,?,'',?,?)",
+                       (table_id, row["status"], status, now(), actor.current()))
         return self.get(table_id)
 
 

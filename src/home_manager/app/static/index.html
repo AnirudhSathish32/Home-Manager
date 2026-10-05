@@ -62,6 +62,8 @@
       </div>
     </nav>
     <div class="sidebar-footer">
+      <!-- Who's here: the person changes and decisions are recorded under (core/actor.py). Shown when the profile has more than one. -->
+      <div id="who-picker" class="profile-picker" hidden><label for="who-select">Who's here</label><select id="who-select"></select></div>
       <div id="activity-indicator" class="activity-indicator" role="status" aria-live="polite" hidden></div>
       <nav class="nav" aria-label="System">
         <button id="nav-ask" class="nav-link nav-button" type="button" data-icon="message" aria-controls="assistant-panel" aria-expanded="false" aria-keyshortcuts="Control+J"><span class="nav-label">Ask</span></button>
@@ -573,6 +575,7 @@
           </div>
           <div id="group-pages" class="group-strip" hidden></div>
           <div id="source-image-panel" role="tabpanel" aria-labelledby="source-image-tab">
+            <div id="receipt-preview-error"></div>
             <iframe id="receipt-pdf" title="Preserved PDF document" hidden></iframe>
             <div class="image-scroll"><div id="receipt-image-frame"><img id="receipt-image" alt="Preserved document"><svg id="receipt-overlay" aria-label="Recognized text regions"></svg></div></div>
             <p class="muted small">Select a highlighted region to find the recorded rows that cite it.</p>
@@ -799,8 +802,8 @@
             <h2>Local models</h2>
             <form id="model-computer-form" class="form"><h3>Model computer</h3>
               <div class="field"><label for="model-provider">Where models run</label>
-                <select id="model-provider"><option value="local">This PC</option><option value="family_gpu">Family GPU (Tailscale)</option></select>
-                <small>A family GPU computer runs the models for you. Only page images and text prompts are sent to it; your documents and records stay on this computer.</small></div>
+                <select id="model-provider"><option value="local">This PC</option><option value="family_gpu">Shared GPU (Tailscale)</option></select>
+                <small>A shared GPU computer, run by a family member or a friend, runs the models for you. Only page images and text prompts are sent to it; your documents and records stay on this computer.</small></div>
               <div id="family-gpu-fields" hidden>
                 <div class="field"><label for="gpu-host-url">GPU computer address</label><input id="gpu-host-url" placeholder="http://100.101.102.103:8766/v1" autocomplete="off" spellcheck="false">
                   <small>Its Tailscale address, which its owner sees when they start the GPU host.</small></div>
@@ -853,7 +856,7 @@
           <div id="privacy-panel" role="tabpanel" aria-labelledby="privacy-tab" hidden>
             <h2>Privacy &amp; security</h2>
             <ul class="guarantees">
-              <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry. If you choose a family GPU computer, only page images and text prompts go to it over Tailscale.</li>
+              <li><strong>Everything stays on this computer.</strong> Home Manager listens only on 127.0.0.1, accepts model servers only at loopback addresses, and sends no telemetry. If you choose a shared GPU computer, only page images and text prompts go to it over Tailscale.</li>
               <li><strong>Evidence is immutable.</strong> Every captured file is preserved under its SHA-256 hash; a changed file becomes a new version.</li>
               <li><strong>Models propose, you decide.</strong> Model output stays proposed until you verify it, and totals come from exact arithmetic, never from a model.</li>
               <li><strong>The session is locked to its launch link.</strong> Other programs on this computer can't use the interface without it.</li>

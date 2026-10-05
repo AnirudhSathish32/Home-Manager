@@ -59,7 +59,7 @@ def test_reconciliation_links_receipts_transfers_refunds_and_detects_recurring(b
     ambiguous = receipt(ledger, docs["bill.png"], "Corner Market", "2026-09-18", 1200)
     target_return = receipt(ledger, docs["return.png"], "Target", "2026-09-19", -2599)
     summary = Reconciler(store).run()
-    assert summary == {"receipt_links": 2, "transfers": 2, "refunds": 1, "investment_transfers": 0, "recurring": 1, "open_issues": 1}
+    assert summary == {"manual_replaced": 0, "receipt_links": 2, "transfers": 2, "refunds": 1, "investment_transfers": 0, "recurring": 1, "open_issues": 1}
     with store.connection() as db:
         links = [dict(row) for row in db.execute("SELECT * FROM transaction_receipt_links ORDER BY receipt_id")]
         transfer_links = {(row[0], row[1]) for row in db.execute("SELECT from_transaction_id,to_transaction_id FROM transaction_links WHERE link_type='transfer'")}

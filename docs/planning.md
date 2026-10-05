@@ -74,10 +74,13 @@ several side by side.
     reaches cash. The tax is shown per year.
   - **Running out:** when the accounts can't meet a withdrawal, a note says when investments run out.
 - **RMDs.** With a birth year set in Settings, every December from the start year each tax-deferred account pays out at
-  least its end-of-last-year balance divided by the Uniform Lifetime divisor, after tax, into cash (see
+  least its required amount (`retirement.required`: its end-of-last-year balance over the Uniform Lifetime divisor),
+  less what was already withdrawn that year, after tax, into cash (see
   [Required minimum distributions](#required-minimum-distributions)). This happens with or without a retirement plan.
-  The year table shows "From investments", "Tax withheld" and "Required (RMD)" (the part taken only because it was
-  required).
+  This year's December starts from the same confirmed Dec 31 balance and confirmed withdrawals as the Investments page
+  (`Investments.rmd_basis`), never from an estimate, so the two agree; later years use the projected balance.
+  The year table shows "From investments", "Tax withheld" and "Required (RMD)" (the distribution taken only because it
+  was required, before tax).
 - **Pensions.** A pension is income, not an asset. It pays its monthly benefit from its start month, raised by its COLA
   each January. A tax-deferred pension is taxed at the retirement plan's flat rate (untaxed when no plan sets one). A
   What If can add pensions (`pensions`), and the family forecast adds every member's. Survivor benefits aren't
@@ -97,7 +100,7 @@ several side by side.
     cash/assets/loans.
 - **Tables.** Each chart has a per-year table view.
 - **Colors.** Charts use the validated categorical order blue `#2a78d6`, orange `#eb6834`, aqua `#1baf7a` on white
-  (chart rules: the `forecast-charts` skill).
+  (chart rules: `docs/ui.md` "Conventions").
 - **Family.** The family view's net worth comes from `/api/family/net-worth` ([family](family.md#families)).
 
 ### Assets and loans

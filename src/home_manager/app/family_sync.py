@@ -418,7 +418,8 @@ class FamilyFolder:
             finally:
                 for db in connections.values():
                     db.close()
-            self.data["adjustments"] = {"joint_accounts": joint, "transfers": transfers[:50], "transfer_count": len(transfers)}
+            self.data["adjustments"] = {"joint_accounts": joint, "transfers": transfers[:50], "transfer_count": len(transfers),
+                                         "transfers_not_listed": max(len(transfers) - 50, 0)}
 
     @staticmethod
     def _joint_accounts(present, connections, names):

@@ -21,13 +21,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..core.categories import FREQUENCY_MONTHS
+from ..core import actor
+from ..core.categories import FREQUENCY_MONTHS, monthly_equivalent
 from ..core.money import currency_code, money, to_minor
+from ..core.trace import NULL, ref
 from ..library.storage import now
 from .investments import Investments
 from .ledger import COUNTABLE
 from .reconcile import Reconciler, bill_payments
-from .retirement import HAS_RMD, divisor, rmd_start_age
+from .retirement import HAS_RMD, required, rmd_start_age
 from .tools import AccountInput, FinanceTools, PeriodInput, scope_of
 
 # Investment accounts live in finance/investments.py and join the forecast from there.
@@ -275,8 +277,8 @@ class Assets:
             raise ValueError("Only values read from statements are reviewed; values you enter count at once.")
         with self.store.connection() as db:
             db.execute("UPDATE assets SET review_status=?,updated_at=? WHERE id=?", (status, now(), asset_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES('asset',?,?,?,'',?)",
-                       (asset_id, asset["review_status"], status, now()))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('asset',?,?,?,'',?,?)",
+                       (asset_id, asset["review_status"], status, now(), actor.current()))
         return self.get(asset_id)
 
 
@@ -312,7 +314,8 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
             continue
         signed = -balance["minor"] if account["account_type"] == "credit_card" else balance["minor"]
         cash += signed
-        balances.append({"account": account["display_name"], "type": account["account_type"], "amount": money(signed, chosen), "as_of": balance["as_of"]})
+        balances.append({"account": account["display_name"], "account_id": account["id"], "type": account["account_type"], "amount": money(signed, chosen),
+                         "as_of": balance["as_of"]})
     categories = {category: total for (code, category), (total, _) in tools._category_totals(period.start, period.end, None).items() if code == chosen}
     scope, params = scope_of(period.start, period.end, None)
     refunds = sum(bucket["refunds"] for (_, code), bucket in tools._totals(period.start, period.end, None).items() if code == chosen)
@@ -362,13 +365,22 @@ def bill_amount(bill, month, start):
     """What a recurring bill costs in one projected month, before inflation: weekly bills spread evenly; others fall
     in their due months, counted on from the next due date (a date already past moves forward to the first projected month)."""
     if bill["frequency"] == "weekly":
-        return Decimal(bill["amount_minor"]) * 52 / 12
+        return monthly_equivalent(bill["amount_minor"], "weekly")
     every = FREQUENCY_MONTHS[bill["frequency"]]
     due = (bill["next_due"] or start + "-01")[:7]
     while due < start:
         due = month_add(due, every)
     steps = (int(month[:4]) - int(due[:4])) * 12 + int(month[5:7]) - int(due[5:7])
     return Decimal(bill["amount_minor"]) if steps >= 0 and steps % every == 0 else Decimal(0)
+
+
+def loan_month(balance, monthly_rate, payment):
+    """One month of a loan: the month's interest, rounded half-even to the minor unit, is added, then the payment (never
+    more than is owed) comes off. (new balance, paid). The forecast and the mortgage's Dec 31 balance (tax_year.balance_at)
+    both pay loans down with it."""
+    owed = balance + (balance * monthly_rate).quantize(Decimal(1), ROUND_HALF_EVEN)
+    paid = min(payment, owed)
+    return owed - paid, paid
 
 
 def available(holding):
@@ -388,11 +400,32 @@ def take(holding, amount):
         amount -= used
 
 
-def project(base, value: ForecastInput, today=None, birth_year=None):
+def record_month(recorder, figure, row, opening, spent, holdings, currency, previous_ref, cash_ref):
+    """project()'s steps for one month's cash (the month before, then each flow in and out) or net worth (cash, each
+    account and asset, less each loan)."""
+    if figure == "net_worth":
+        recorder.add("Cash", row["cash"], currency, trace=cash_ref)
+        for holding in holdings:
+            amount = minor(holding["balance"]) + sum(minor(piece["balance"]) for piece in holding["pieces"] if not piece["done"])
+            recorder.add(holding["name"], -amount if holding["kind"] == "loan" else amount, currency)
+        return
+    recorder.add("Cash at the end of the month before" if previous_ref else "Cash today: the latest statement balances", opening, currency, trace=previous_ref)
+    for label, amount in (("Income", row["income"]), *((f"Spending: {category}", -total) for category, total in sorted(spent.items())),
+                          ("Loan payments", -row["loan_payments"]), ("Saved into investments from cash", -row["invested_from_cash"]),
+                          ("One-off amounts", row["one_offs"]), ("CDs and Treasuries paid out", row["matured"]), ("Withdrawals after tax", row["withdrawals"]),
+                          ("Pensions", row["pension"]), ("Tax on pensions", -row["pension_tax"]), ("Education costs paid from cash", -(row["education"] - row["education_from_529"]))):
+        if amount:
+            recorder.add(label, amount, currency)
+    recorder.round(row["cash"] - opening - row["net_cash_flow"], currency,
+                   note="Cash is kept exactly from month to month and rounded to the cent only where it's shown.")
+
+
+def project(base, value: ForecastInput, today=None, birth_year=None, recorder=NULL, only=None):
     """Month-by-month projection from a baseline. Pure: the same inputs give the same output. With a birth year, tax-deferred
     accounts pay out their required minimum distributions each December (finance/retirement.py); with a retirement plan,
     pay and payroll contributions stop and withdrawals begin. Pensions are income from their start month (never a balance to
-    draw); 529 accounts pay only the planned education costs and are never drawn on for living costs."""
+    draw); 529 accounts pay only the planned education costs and are never drawn on for living costs. only: ("cash" or
+    "net_worth", month) whose steps a live recorder gets (finance/wealth_traces.py)."""
     today = today or date.today()
     currency = base["currency"]
     start = month_add(today.isoformat()[:7], 1)
@@ -426,7 +459,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                              "payroll": Decimal(asset.get("payroll_monthly_minor") or 0), "personal": Decimal(asset.get("personal_monthly_minor") or 0),
                              # Investment accounts can be drawn on in retirement; tax-deferred ones also have required distributions.
                              "investment": asset.get("source") == "investment", "tax": asset.get("tax_treatment"), "withdrawn": Decimal(0),
-                             "section": asset.get("section")})
+                             "section": asset.get("section"), "rmd_balance": asset.get("rmd_balance_minor"), "rmd_taken": asset.get("rmd_taken_minor", 0)})
         # Planned paychecks (What If): take-home pay a month, and where their contributions go: a linked investment account, or
         # a new planned one that starts empty.
         plans: list[dict] = []
@@ -451,7 +484,11 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                           "bonuses": {bonus.month_of_year: Decimal(to_minor(bonus.net, currency)) for bonus in pay_plan.yearly_bonuses}})
         set_amounts = sorted((item.from_month, item.category, Decimal(to_minor(item.monthly_amount, currency))) for item in value.category_amounts)
         for holding in holdings:
-            holding["year_start"] = available(holding)  # Its balance at the end of the year before, for required distributions.
+            # Its balance at the end of the year before, for required distributions. This year's is the confirmed one that
+            # /api/investments/rmd uses (finance/investments.py rmd_basis), less what was already taken; later years are projected.
+            holding["year_start"] = available(holding)
+            if start[:4] == today.isoformat()[:4] and holding.get("rmd_balance") is not None:
+                holding["year_start"], holding["withdrawn"] = Decimal(holding["rmd_balance"]), Decimal(holding["rmd_taken"])
         # A 529 is kept for education: never drawn on for living costs, only by planned education withdrawals.
         drawable = sorted((holding for holding in holdings if holding["investment"] and holding.get("section") != "education"),
                           key=lambda holding: WITHDRAWAL_ORDER.get(holding["tax"], len(WITHDRAWAL_ORDER)))
@@ -485,8 +522,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
         cut = value.cut_subscriptions_from
         cancelled = [bill for bill in base.get("bills", []) if bill.get("kind") == "subscription"]
         if cut and cancelled:
-            saving = sum((Decimal(bill["amount_minor"]) * 52 / 12 if bill["frequency"] == "weekly" else Decimal(bill["amount_minor"]) / FREQUENCY_MONTHS[bill["frequency"]]
-                          for bill in cancelled), Decimal(0))
+            saving = sum((monthly_equivalent(bill["amount_minor"], bill["frequency"]) for bill in cancelled), Decimal(0))
             notes.append(f"From {cut}, {len(cancelled)} confirmed {'subscription is' if len(cancelled) == 1 else 'subscriptions are'} cancelled, "
                          f"about {money(minor(saving), currency)['display']} a month in today's money; bills stay.")
         elif cut:
@@ -535,6 +571,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
             return delivered, taxed, max(needed, Decimal(0))
         for step in range(months):
             month = month_add(start, step)
+            opening = minor(cash)
             price *= inflation
             pay_level *= income_growth
             retired = plan is not None and month >= plan.start_month
@@ -565,9 +602,7 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                 if holding["kind"] == "loan":
                     if holding["balance"] <= 0:
                         continue
-                    owed = holding["balance"] + (holding["balance"] * holding["rate"]).quantize(one, ROUND_HALF_EVEN)
-                    paid = min(holding["payment"], owed)
-                    holding["balance"] = owed - paid
+                    holding["balance"], paid = loan_month(holding["balance"], holding["rate"], holding["payment"])
                     loan_paid += int(paid)
                     continue
                 # Nothing is paid in once retired: no pay, and money now flows out.
@@ -620,13 +655,13 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                 if missing > 0 and ran_out is None:
                     ran_out = month
             if first_rmd and month.endswith("-12") and int(month[:4]) >= first_rmd:
-                # Each tax-deferred account must have paid out its balance at the end of last year over the divisor for this age.
-                period = divisor(int(month[:4]) - birth_year)
+                # Each tax-deferred account must have paid out its year's required amount (finance/retirement.py required).
                 for holding in drawable:
-                    owed = holding["year_start"] / period - holding["withdrawn"] if holding["tax"] in HAS_RMD else Decimal(0)
+                    owed = (required(minor(holding["year_start"]), birth_year, int(month[:4])) - holding["withdrawn"]
+                            if holding["tax"] in HAS_RMD else Decimal(0))
                     if owed > 0:
                         got, taxed, _ = draw(owed * (one - tax), only=holding)
-                        forced += got
+                        forced += got + taxed  # The distribution itself, before the tax withheld from it.
                         withdrawn += got
                         withdrawal_tax += taxed
             cash += withdrawn
@@ -644,6 +679,8 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                          "cash": minor(cash),
                          "assets": asset_total, "loans": loan_total, "net_worth": worth,
                          "net_worth_today": minor(Decimal(worth) / price), "price_level": str(price.quantize(Decimal("0.000001")))})
+            if recorder.live and only and only[1] == month:
+                record_month(recorder, only[0], rows[-1], opening, spent, holdings, currency, only[2](month_add(month, -1)) if step else None, only[2](month))
         for holding in holdings:
             if holding["kind"] == "loan" and holding["balance"] > 0 and holding["payment"] <= holding["balance"] * holding["rate"]:
                 notes.append(f"{holding['name']}: the monthly payment does not cover the interest, so this loan never shrinks.")
@@ -699,6 +736,25 @@ def project(base, value: ForecastInput, today=None, birth_year=None):
                                           for asset in base["assets"]]}}
 
 
-def forecast(store, value: ForecastInput, today=None, birth_year=None):
+def month_ref(figure, value: ForecastInput, today, month):
+    """The trace of a projected month's cash or net worth: the forecast's own input (as JSON, defaults left out) and the
+    day it was worked out, so the trace re-runs exactly this forecast (finance/wealth_traces.py)."""
+    return ref(f"forecast.{figure}", input=value.model_dump_json(exclude_defaults=True), today=today.isoformat(), month=month)
+
+
+def add_refs(result, figure_ref):
+    """Each month's and each year's end cash and net worth given its trace ref. figure_ref(figure, month) -> ref."""
+    for row in result["months"]:
+        row["traces"] = {"cash": figure_ref("cash", row["month"]), "net_worth": figure_ref("net_worth", row["month"])}
+    for index, year in enumerate(result["years"]):
+        last = result["months"][min((index + 1) * 12, len(result["months"])) - 1]["month"]
+        year["traces"] = {"end_cash": figure_ref("cash", last), "end_net_worth": figure_ref("net_worth", last)}
+    return result
+
+
+def forecast(store, value: ForecastInput, today=None, birth_year=None, recorder=NULL, only=None):
+    """The forecast, with each month's and year's cash and net worth given its trace ref."""
+    today = today or date.today()
     base = baseline(FinanceTools(store), Assets(store), value.history_months, value.currency, today)
-    return project(base, value, today, birth_year)
+    result = project(base, value, today, birth_year, recorder, only)
+    return add_refs(result, lambda figure, month: month_ref(figure, value, today, month))

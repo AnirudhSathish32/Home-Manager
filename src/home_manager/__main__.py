@@ -10,7 +10,7 @@ from .app.api import create_app
 
 
 def main():
-    if sys.argv[1:2] == ["gpu-host"]:  # The family GPU relay: a separate process (models/gpu_host.py).
+    if sys.argv[1:2] == ["gpu-host"]:  # The shared GPU relay: a separate process (models/gpu_host.py).
         from .models.gpu_host import main as gpu_host
         gpu_host(sys.argv[2:])
         return

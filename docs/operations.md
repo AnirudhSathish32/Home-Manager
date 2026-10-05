@@ -78,8 +78,8 @@ More detail:
   Studio's "JIT models auto-evict". There is no `/api/v0` fallback, because v0 can't unload.
 - **Turning it off.** The setting **Keep one model loaded at a time** (on the model computer setting,
   `model_computer.json`) turns this off.
-- **Family GPU.** A family GPU computer manages residency for the requests it relays, so members skip this step
-  ([family](family.md#family-gpu)).
+- **Shared GPU.** A shared GPU computer manages residency for the requests it relays, so members skip this step
+  ([family](family.md#shared-gpu)).
 
 ### Web lookups
 
@@ -104,7 +104,7 @@ outbound requests are:
 | `home-manager [--port 8765] [--control-dir DIR]` | Starts the app on `127.0.0.1` and prints the session link and the log's path. The port must be between 1024 and 65535. |
 | `home-manager check-ledger [--control-dir DIR] [--library DIR]` | Read-only [ledger health](#ledger-health) report for every individual profile, or for one library folder. Safe while the app runs. Exits 1 if any error-level rule is broken. Also reports whether each tax engine can run. |
 | `home-manager index-documents [--rebuild] [--control-dir DIR] [--library DIR]` | Builds the [document search](documents.md#searching-document-text) index. The app indexes new readings by itself; `--rebuild` throws the index away and builds it again. It takes each library's lock, so close the app first. |
-| `home-manager gpu-host [--control-dir DIR] serve [--bind IP]` | Runs the [family GPU relay](family.md#family-gpu) on port 8766. `add-member NAME` prints the member's token once, `remove-member NAME` revokes it, and `members` lists them. |
+| `home-manager gpu-host [--control-dir DIR] serve [--bind IP]` | Runs the [shared GPU relay](family.md#shared-gpu) on port 8766. `add-member NAME [--tester] [--expires YYYY-MM-DD]` prints the member's token once (a tester's expires after 30 days by default), `remove-member NAME` revokes it, and `members` lists them with kind and expiry. |
 
 Stop the app with Ctrl+C. Each start makes a new session link, so a tab left open from an earlier run must be opened
 again from the new link.
@@ -131,8 +131,8 @@ The app creates everything below. Keep the settings folder and the library folde
 | `settings.json` | The library folder last opened. |
 | `profiles.json`, `profiles/<id>/household.json` | Profiles ([family](family.md#profiles)) and each profile's financial preferences. |
 | `vision.json`, `reasoning.json`, `reviewer.json`, `decision.json` | Model settings. Invalid saved settings fall back to defaults, which switch that model off. |
-| `model_computer.json`, `gpu_token.txt` | Whether models run on this PC or a family GPU computer, and the member token (never returned by the API). |
-| `gpu_host.json` | Only on a GPU host: its members and their token hashes. |
+| `model_computer.json`, `gpu_token.txt` | Whether models run on this PC or a shared GPU computer, and the member token (never returned by the API). |
+| `gpu_host.json` | Only on a GPU host: its members, their token hashes, and each one's kind (family or tester) and expiry. |
 | `logs/home-manager.log` (+ `.1`–`.5`) | The diagnostic log (see [Diagnostic log](#diagnostic-log)). |
 | `sessions/` | Temporary copies for an opened shared library; deleted at start. |
 | `.home-manager.lock` | One process per settings folder. |

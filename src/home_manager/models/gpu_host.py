@@ -1,4 +1,4 @@
-"""Family GPU relay: family members' model calls run on this computer's LM Studio.
+"""Shared GPU relay: family members' and testers' model calls run on this computer's LM Studio.
 
 A small process of its own (`home-manager gpu-host`), so it can run as a startup task.
 It listens on this computer's Tailscale address and on loopback, and forwards only
@@ -7,6 +7,8 @@ databases never leave their computers: requests carry rendered page images and t
 
 - Each member has a bearer token; only its SHA-256 is stored, so a token can be revoked.
   Tailscale already encrypts the traffic and identifies the device. Loopback needs no token.
+- Members are family or testers (friends outside the family). Testers' tokens expire, and
+  their requests wait behind the family's (docs/family.md "Shared GPU").
 - Members ask for a role (home-manager/vision, /reasoning, /reviewer). The roles map to
   the models set in this computer's own Home Manager settings, so models change centrally.
 - One queue for everyone, including this computer's own app: one request runs at a time,
@@ -16,6 +18,7 @@ databases never leave their computers: requests carry rendered page images and t
 """
 
 import argparse
+from datetime import date, timedelta
 import hashlib
 import hmac
 import http.client
@@ -31,6 +34,7 @@ import socket
 import subprocess
 import threading
 import time
+from typing import Literal
 from urllib.parse import quote, unquote, urlsplit
 
 from pydantic import Field, field_validator
@@ -53,17 +57,35 @@ MAX_SKIPS = 3
 KEEPALIVE_SECONDS = 15
 LOCAL_MEMBER = "This computer"
 MEMBER_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,60}$")
+TESTER_DAYS = 30
+
+
+class Member(StrictModel):
+    token_sha256: str
+    kind: Literal["family", "tester"] = "family"
+    expires: date | None = None  # Testers' tokens stop working after this day.
+
+    def expired(self, today=None):
+        return self.expires is not None and (today or date.today()) > self.expires
 
 
 class HostConfig(StrictModel):
     port: int = Field(default=PORT, ge=1024, le=65535)
     upstream: str = "http://127.0.0.1:1234/v1"  # LM Studio on this computer.
-    members: dict[str, str] = Field(default_factory=dict)  # name -> SHA-256 of the member's token
+    members: dict[str, Member] = Field(default_factory=dict)  # Only the SHA-256 of each token is kept.
 
     @field_validator("upstream")
     @classmethod
     def loopback(cls, value):
         return endpoint_url(value)
+
+    @field_validator("members", mode="before")
+    @classmethod
+    def plain_hashes(cls, value):
+        # Files written before kinds existed hold name -> hash: those are family members with no expiry.
+        if isinstance(value, dict):
+            return {name: {"token_sha256": saved} if isinstance(saved, str) else saved for name, saved in value.items()}
+        return value
 
 
 def _digest(token):
@@ -80,16 +102,27 @@ def save_host(control: Path, config: HostConfig):
     write_atomic(safe_path(control / HOST_FILE), config.model_dump_json(indent=2))
 
 
-def add_member(control: Path, name: str) -> str:
-    """Create (or replace) a member's token. Returns it once; only its hash is kept."""
+def add_member(control: Path, name: str, kind="family", expires: date | None = None) -> str:
+    """Create (or replace) a member's token. Returns it once; only its hash is kept.
+    A tester is someone outside the family trying the app: their token expires (TESTER_DAYS by default)."""
     name = name.strip()
     if not MEMBER_NAME.match(name):
         raise ValueError("Use a name of 1–60 characters.")
+    if kind == "tester" and expires is None:
+        expires = date.today() + timedelta(days=TESTER_DAYS)
+    if expires is not None and expires < date.today():
+        raise ValueError("The expiry date has already passed.")
     token = secrets.token_urlsafe(32)
     config = load_host(control)
-    config.members[name] = _digest(token)
+    config.members[name] = Member(token_sha256=_digest(token), kind=kind, expires=expires)
     save_host(control, config)
     return token
+
+
+def member_line(name, member: Member):
+    if member.expires is None:
+        return f"{name} ({member.kind})"
+    return f"{name} ({member.kind}, {'expired' if member.expired() else 'until'} {member.expires.isoformat()})"
 
 
 def remove_member(control: Path, name: str) -> bool:
@@ -125,13 +158,14 @@ def role_label(alias):
 
 
 class Ticket:
-    def __init__(self, model, member, role):
-        self.model, self.member, self.role = model, member, role
+    def __init__(self, model, member, role, tester=False):
+        self.model, self.member, self.role, self.tester = model, member, role, tester
         self.queued, self.started, self.skipped = time.monotonic(), None, 0
 
 
 class Scheduler:
-    """Single-flight FIFO across every client, grouped by model to minimise swaps."""
+    """Single-flight FIFO across every client, grouped by model to minimise swaps.
+    Testers' requests wait behind this computer's and the family's, but are never skipped more than max_skips times."""
 
     def __init__(self, max_skips=MAX_SKIPS):
         self.max_skips = max_skips
@@ -142,12 +176,13 @@ class Scheduler:
         oldest = self.waiting[0]
         if oldest.skipped >= self.max_skips:
             return oldest
-        return next((ticket for ticket in self.waiting if ticket.model == self.loaded), oldest)
+        ahead = [ticket for ticket in self.waiting if not ticket.tester] or self.waiting
+        return next((ticket for ticket in ahead if ticket.model == self.loaded), ahead[0])
 
-    def acquire(self, model, member, role, on_wait=None, poll=KEEPALIVE_SECONDS):
+    def acquire(self, model, member, role, on_wait=None, poll=KEEPALIVE_SECONDS, tester=False):
         """Wait for this request's turn. on_wait(position) runs between waits; if it raises
         (the client went away), the request leaves the queue and the error propagates."""
-        ticket = Ticket(model, member, role)
+        ticket = Ticket(model, member, role, tester)
         with self.condition:
             self.waiting.append(ticket)
         try:
@@ -202,9 +237,10 @@ class GpuHost:
         return VisionConfig(base_url=self.config.upstream, model=model)
 
     def authenticate(self, header, loopback):
-        """The member's name, or None. Members are re-read so a removed token stops working at once."""
+        """(name, Member) for a valid token, (name, None) for this computer, or None.
+        Members are re-read so a removed or expired token stops working at once."""
         if loopback:
-            return LOCAL_MEMBER
+            return LOCAL_MEMBER, None
         if not header or not header.startswith("Bearer "):
             return None
         digest = _digest(header[7:].strip())
@@ -212,7 +248,8 @@ class GpuHost:
             members = load_host(self.control).members
         except (OSError, ValueError):
             return None
-        return next((name for name, saved in members.items() if hmac.compare_digest(saved, digest)), None)
+        found = next(((name, saved) for name, saved in members.items() if hmac.compare_digest(saved.token_sha256, digest)), None)
+        return None if found is None or found[1].expired() else found
 
     def resolve(self, model, loopback):
         """(model ID to run, role alias) for a requested model, or an error message."""
@@ -250,7 +287,7 @@ class GpuHost:
             return 502, {"error": "LM Studio is not running on the GPU computer."}
         return 200, {**details, "id": model} if isinstance(details, dict) else details
 
-    def relay_chat(self, handler, member, body, path="/chat/completions"):
+    def relay_chat(self, handler, member, body, path="/chat/completions", tester=False):
         """Relay one request. /chat/completions streams; /responses (decision models only) is one JSON reply."""
         try:
             payload = json.loads(body)
@@ -277,7 +314,8 @@ class GpuHost:
         t0, usage = time.monotonic(), {}
         try:
             # A JSON reply can't carry keep-alive comments, so a queued decision request waits silently.
-            ticket = self.scheduler.acquire(target, member, role_label(alias), keepalive if streaming else None, self.keepalive_seconds)
+            ticket = self.scheduler.acquire(target, member, role_label(alias), keepalive if streaming else None,
+                                            self.keepalive_seconds, tester)
         except OSError:
             return  # The member disconnected while waiting.
         try:
@@ -377,10 +415,11 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(status, {"error": {"message": message}})
 
     def member(self):
-        name = self.host.authenticate(self.headers.get("Authorization"), self.loopback)
-        if name is None:
-            self.reply(401, {"error": "A valid family GPU token is required."})
-        return name
+        """(name, Member or None for this computer), or None after replying 401."""
+        found = self.host.authenticate(self.headers.get("Authorization"), self.loopback)
+        if found is None:
+            self.reply(401, {"error": "A valid shared GPU token is required. Tokens can be revoked or expire."})
+        return found
 
     def do_GET(self):
         if self.member() is None:
@@ -395,7 +434,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/status" and self.loopback:
             self.reply(200, self.host.status())
         else:
-            self.reply(404, {"error": "Not available on the family GPU computer."})
+            self.reply(404, {"error": "Not available on the shared GPU computer."})
 
     def do_POST(self):
         # Read the body before any reply: answering with it unread resets the connection on Windows,
@@ -407,17 +446,21 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return self.reply(413, {"error": "The request exceeds the 32 MiB limit."})
         body = self.rfile.read(int(length))
-        member = self.member()
-        if member is None:
+        found = self.member()
+        if found is None:
             return
         path = urlsplit(self.path).path
         if path not in ("/v1/chat/completions", "/v1/responses"):
-            return self.reply(404, {"error": "Not available on the family GPU computer."})
-        self.host.relay_chat(self, member, body, path.removeprefix("/v1"))
+            return self.reply(404, {"error": "Not available on the shared GPU computer."})
+        name, member = found
+        self.host.relay_chat(self, name, body, path.removeprefix("/v1"), tester=member is not None and member.kind == "tester")
 
 
 class RelayServer(GracefulHTTPServer):
     """Waits for each client to close before closing (models/http_server.py): replies are long event streams."""
+
+    gpu_host: GpuHost
+    loopback: bool
 
 
 def make_server(host: GpuHost, address: str, port: int, loopback: bool) -> RelayServer:
@@ -471,7 +514,7 @@ def serve(control: Path, bind=None):
     local = make_server(host, "127.0.0.1", port, loopback=True)
     threading.Thread(target=local.serve_forever, name="gpu-host-loopback", daemon=True).start()
     roles = role_models(host.control)
-    print(f"Family GPU host on http://{address}:{port}/v1 (and http://127.0.0.1:{port}/v1 for this computer).", flush=True)
+    print(f"Shared GPU host on http://{address}:{port}/v1 (and http://127.0.0.1:{port}/v1 for this computer).", flush=True)
     print(f"Forwarding to LM Studio at {host.config.upstream}. Members: {', '.join(host.config.members) or 'none yet'}.", flush=True)
     for alias, model in roles.items():
         print(f"  {role_label(alias)}: {model or 'not set'}", flush=True)
@@ -487,13 +530,17 @@ def serve(control: Path, bind=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="home-manager gpu-host",
-                                     description="Share this computer's LM Studio with family members over Tailscale.")
+                                     description="Share this computer's LM Studio with family members and testers over Tailscale.")
     parser.add_argument("--control-dir", type=Path, help="Settings location; default is %%LOCALAPPDATA%%/HomeManager on Windows.")
     commands = parser.add_subparsers(dest="command")
     run = commands.add_parser("serve", help="Run the relay (the default).")
     run.add_argument("--bind", help="This computer's Tailscale IPv4 address; found automatically when omitted.")
     add = commands.add_parser("add-member", help="Create a member's token (printed once).")
     add.add_argument("name")
+    add.add_argument("--tester", action="store_true",
+                     help=f"Someone outside the family: their token expires ({TESTER_DAYS} days unless --expires) "
+                          "and their requests wait behind the family's.")
+    add.add_argument("--expires", type=date.fromisoformat, help="Last day the token works (YYYY-MM-DD).")
     remove = commands.add_parser("remove-member", help="Revoke a member's token.")
     remove.add_argument("name")
     commands.add_parser("members", help="List members.")
@@ -503,13 +550,15 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     if args.command == "add-member":
         try:
-            token = add_member(control, args.name)
+            token = add_member(control, args.name, "tester" if args.tester else "family", args.expires)
         except ValueError as exc:
             parser.error(str(exc))
-        print(f"Token for {args.name.strip()} (shown once; give it to them privately):\n{token}")
+        member = load_host(control).members[args.name.strip()]
+        until = f", works until {member.expires.isoformat()}" if member.expires else ""
+        print(f"Token for {args.name.strip()} ({member.kind}{until}; shown once, give it to them privately):\n{token}")
     elif args.command == "remove-member":
         print("Removed." if remove_member(control, args.name) else "No member has that name.")
     elif args.command == "members":
-        print("\n".join(load_host(control).members) or "No members yet.")
+        print("\n".join(member_line(name, member) for name, member in load_host(control).members.items()) or "No members yet.")
     else:
         serve(control, getattr(args, "bind", None))
