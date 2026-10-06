@@ -10,7 +10,7 @@ import pytest
 
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
-from home_manager.app.family_sync import SNAPSHOT_EXTENSION, FamilyFolder
+from home_manager.app.family_sync import FamilyFolder
 from home_manager.app.manager import Manager
 from home_manager.finance.family import family_dashboard, family_net_worth
 from home_manager.finance.ledger import HouseholdConfig, Ledger
@@ -23,8 +23,9 @@ PASSPHRASE = "correct horse battery staple"
 TODAY = date(2026, 9, 25)
 
 
-def manager_at(path):
-    return Manager(path, ScanLimits(stability_seconds=0))
+def manager_at(path, hub=False):
+    """hub: this computer runs a family hub, on loopback with a free port (tests/test_family_hub.py)."""
+    return Manager(path, ScanLimits(stability_seconds=0), hub_port=0, hub_loopback=hub)
 
 
 def books(manager, name, rows_by_account):
@@ -97,20 +98,18 @@ def test_profiles_keep_separate_libraries_and_preferences(tmp_path):
 
 
 def test_family_across_two_computers_adds_members_and_counts_shared_money_once(tmp_path):
-    sync, outbox = tmp_path / "OneDrive", tmp_path / "outbox"
-    sync.mkdir(), outbox.mkdir()
-    mom = manager_at(tmp_path / "mom-pc")
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    mom = manager_at(tmp_path / "mom-pc", hub=True)
     dad = manager_at(tmp_path / "dad-pc")
     try:
         mom.configure(str(tmp_path / "mom-lib"))
         mom.rename_profile(mom.profile["id"], "Mom")
         books(mom, "mom", {("Shared Bank", "1234"): [("2026-09-02", "GROCERY", -4000), ("2026-09-03", "PAYROLL", 100000)],
                            ("Mom Card", "9999"): [("2026-09-05", "ZELLE TO DAD", -5000), ("2026-09-10", "BOOKS", -1500)]})
-        family = mom.create_family("The Smiths", str(tmp_path / "family"), str(sync), ["Dad"], my_profile=mom.profile["id"])
+        family = mom.create_family("The Smiths", str(tmp_path / "family"), ["Dad"], my_profile=mom.profile["id"])
         assert mom.profile["name"] == "Mom" and mom.profiles.get(mom.profile["id"])["family"]["local"] is True
-        folder = FamilyFolder(tmp_path / "family")
-        dad_member = next(member for member in folder.data["members"] if member["name"] == "Dad")
-        folder.close()
+        dad_member = next(member for member in mom.family_for(family["id"])[0].data["members"] if member["name"] == "Dad")
         invite = mom.invite_member(family["id"], dad_member["member_id"], str(outbox), PASSPHRASE)["path"]
         assert invite.endswith(".hminvite")
 
@@ -122,9 +121,7 @@ def test_family_across_two_computers_adds_members_and_counts_shared_money_once(t
         dad.join_family(invite, PASSPHRASE)
         dad.future.result(timeout=30)
         link = dad.profiles.get(dad.profile["id"])["family"]
-        assert link["published_at"] and not link["publish_error"], link["publish_error"]
-        snapshot = sync / link["family_id"] / (link["member_id"] + SNAPSHOT_EXTENSION)
-        assert snapshot.is_file() and b"HARDWARE" not in snapshot.read_bytes()  # Only ciphertext reaches the sync folder.
+        assert link["published_at"] and link["hub_state"] == "ok" and link["seq"] == 1, link["hub_error"]
 
         mom.switch_profile(family["id"])
         mom.future.result(timeout=30)
@@ -157,43 +154,19 @@ def test_family_across_two_computers_adds_members_and_counts_shared_money_once(t
         dad.close()
 
 
-def test_snapshot_from_another_family_is_refused(tmp_path):
-    sync = tmp_path / "sync"
-    sync.mkdir()
-    manager = manager_at(tmp_path / "control")
-    try:
-        manager.configure(str(tmp_path / "lib"))
-        family = manager.create_family("Ours", str(tmp_path / "family"), str(sync), ["Kid"])
-        folder = FamilyFolder(tmp_path / "family")
-        kid = folder.data["members"][0]
-        folder.close()
-        # A copy sealed with some other family's key, at this member's path.
-        link = {"family_id": json.loads((tmp_path / "family" / "family.json").read_text())["family_id"], "member_id": kid["member_id"],
-                "key": "A" * 43 + "=", "sync": str(sync)}
-        from home_manager.app.family_sync import publish
-        publish(manager.store, link, "Kid")
-        manager.switch_profile(family["id"])
-        manager.future.result(timeout=30)
-        member = manager.family.summary()["members"][0]
-        assert member["status"] == "failed" and "family key" in member["error"]
-    finally:
-        manager.close()
-
-
 def test_profile_and_family_api(tmp_path):
-    sync = tmp_path / "sync"
-    sync.mkdir()
     app = create_app(tmp_path / "control", "token", limits=ScanLimits(stability_seconds=0))
     headers = {"Authorization": "Bearer token"}
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         app.state.manager.configure(str(tmp_path / "mine"))
         created = client.post("/api/profiles", json={"name": "Sam", "folder": str(tmp_path / "sam")}, headers=headers)
         assert created.status_code == 201, created.text
-        family = client.post("/api/families", json={"name": "Us", "folder": str(tmp_path / "family"), "sync_folder": str(sync),
-                                                     "members": ["Grandma"]}, headers=headers).json()
+        family = client.post("/api/families", json={"name": "Us", "folder": str(tmp_path / "family"), "members": ["Grandma"]}, headers=headers).json()
         listed = client.get("/api/profiles", headers=headers).json()
         assert [profile["kind"] for profile in listed["profiles"]] == ["individual", "individual", "family"]
         assert all("key" not in json.dumps(profile) for profile in listed["profiles"])
+        # No Tailscale in tests: the hub says why it isn't listening, and an invite can't be made.
+        assert listed["hub_status"] == {"listening": False, "address": None, "reason": "Tailscale isn't running on this computer, so members' computers can't reach it."}
         members = FamilyFolder(tmp_path / "family")
         grandma = members.data["members"][0]["member_id"]
         members.close()

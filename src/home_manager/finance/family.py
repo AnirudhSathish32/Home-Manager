@@ -15,12 +15,14 @@ from ..core.trace import figure, ref
 from ..library.storage import Store, now
 from .dashboard import CURRENCIES_SQL, choose_currency, dashboard, group_categories, periods
 from .forecast import Assets, baseline
+from .ledger import normalize_name
 from .tools import AsOfInput, FinanceTools, percent_change
 
 
 class MemberStore:
     """A member's imported copy, opened read-only. Enough of Store for the finance read paths."""
     library_query = Store.library_query
+    document_version = Store.document_version  # The family view opens members' originals (Manager.family_original).
 
     def __init__(self, path):
         self.db_path = path
@@ -132,6 +134,160 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
     total.update(loaded_at=now(), currency=chosen, currencies=sorted(set(currencies) | {chosen}), members=breakdown,
                  maturities=maturities[:3], maturities_total=maturity_count)
     return total
+
+
+# The family ledger (docs/family.md "Family ledger"): finance tools run on every member's view copy and merged. -----------
+
+def _tag(rows, member):
+    return [{**row, "member_id": member["member_id"], "owner": member["name"]} for row in rows]
+
+
+def _keyed(rows, key):
+    """Rows from several members with the same key added together (money exactly, counts as integers), first-seen order."""
+    merged: dict = {}
+    for row in rows:
+        merged[key(row)] = add(merged.get(key(row)), row)
+    return list(merged.values())
+
+
+def _page(results, rows_key, args, sort):
+    """One page of rows merged from members who were each asked for the first offset+limit rows."""
+    rows = sorted((row for result in results for row in result[rows_key]), key=sort)
+    offset, limit = args.get("offset", 0), args.get("limit", 200)
+    return {rows_key: rows[offset:offset + limit], "total_matching": sum(result["total_matching"] for result in results), "offset": offset,
+            "limit": limit}
+
+
+def _transaction_sort(sort, order):
+    keys = {"date_desc": lambda row: (_desc(row["posted_date"]), order[row["member_id"]], -row["id"]),
+            "date_asc": lambda row: (row["posted_date"], order[row["member_id"]], row["id"]),
+            "amount_desc": lambda row: (-row["amount_minor"], order[row["member_id"]], -row["id"]),
+            "amount_asc": lambda row: (row["amount_minor"], order[row["member_id"]], row["id"]),
+            "description": lambda row: (normalize_name(row["description_raw"] or ""), order[row["member_id"]], row["id"])}
+    return keys.get(sort, keys["date_desc"])
+
+
+def _desc(text):
+    """A sort key that orders ISO dates newest first."""
+    return tuple(-ord(ch) for ch in text or "")
+
+
+def _merge_spending(results):
+    total = dict(results[0])
+    total["by_currency"] = _keyed([row for result in results for row in result["by_currency"]], lambda row: row["currency"])
+    for row in total["by_currency"]:
+        row["net_spending"] = money(row["net_spending"]["minor"], row["currency"])  # Members' traces don't add up to one.
+    total["pending_review"] = _keyed([row for result in results for row in result["pending_review"]], lambda row: row["currency"])
+    total["excluded_transfers_and_card_payments"] = sum(result["excluded_transfers_and_card_payments"] for result in results)
+    total["coverage"] = [row for result in results for row in result["coverage"]]
+    total["usd_total"] = None  # Each member's conversion uses their own rates; the family view shows each currency.
+    return total
+
+
+def _merge_compare(results):
+    rows = _keyed([row for result in results for row in result["categories"]], lambda row: (row["currency"], row["category"]))
+    for row in rows:
+        row["percent_change"] = percent_change(row["first"]["minor"], row["second"]["minor"])
+    rows.sort(key=lambda row: (row["currency"], -row["second"]["minor"], row["category"]))
+    return {**results[0], "categories": rows}
+
+
+def _merge_by_category(results):
+    categories = _keyed([row for result in results for row in result["categories"]], lambda row: (row["currency"], row["category"]))
+    for row in categories:
+        row["spending"] = money(row["spending"]["minor"], row["currency"])
+    merchants = _keyed([row for result in results for row in result["top_merchants"]], lambda row: (row["currency"], row["merchant"]))
+    return {**results[0], "categories": sorted(categories, key=lambda row: (row["currency"], -row["spending"]["minor"])),
+            "top_merchants": sorted(merchants, key=lambda row: -row["spending"]["minor"])[:20]}
+
+
+def _merge_recurring(results):
+    totals = _keyed([row for result in results for row in result["totals"]], lambda row: (row["currency"], row["kind"]))
+    for row in totals:
+        for key in ("monthly", "yearly"):
+            row[key] = money(row[key]["minor"], row["currency"])
+    obligations = sorted((row for result in results for row in result["obligations"]), key=lambda row: (row["next_due_date"] or "9999", row["merchant"]))
+    return {**results[0], "obligations": obligations, "totals": sorted(totals, key=lambda row: (row["currency"], row["kind"]))}
+
+
+# Tool -> (list keys whose rows are tagged with their owner, merge of the tagged results). Paged tools are asked for
+# offset+limit rows each, then sorted and cut together.
+FAMILY_TOOLS = {
+    "get_accounts": (("accounts",), lambda results, args, order: {"accounts": [row for result in results for row in result["accounts"]]}),
+    "get_categories": ((), lambda results, args, order: {"categories": sorted(
+        _keyed([row for result in results for row in result["categories"]], lambda row: row["category"]), key=lambda row: row["category"])}),
+    "get_transactions": (("transactions",), lambda results, args, order: _page(results, "transactions", args, _transaction_sort(args.get("sort"), order))),
+    "get_spending_items": (("items",), lambda results, args, order: {**_page(results, "items", args, lambda row: (
+        _desc(row["date"]), order[row["member_id"]], row["source"], -(row["transaction_id"] or 0), -(row["receipt_id"] or 0),
+        row["position"] is None, row["position"] or 0)), "notes": results[0]["notes"]}),
+    "get_spending": ((), lambda results, args, order: _merge_spending(results)),
+    "compare_categories": ((), lambda results, args, order: _merge_compare(results)),
+    "get_spending_by_category": ((), lambda results, args, order: _merge_by_category(results)),
+    "get_refunds": (("posted_credits", "refund_evidence"), lambda results, args, order: {
+        **results[0], **{key: [row for result in results for row in result[key]] for key in ("posted_credits", "refund_evidence")}}),
+    "get_upcoming_bills": (("bills",), lambda results, args, order: {
+        **results[0], "bills": sorted((row for result in results for row in result["bills"]), key=lambda row: (row["due_date"], row["provider"]))}),
+    "get_recurring_obligations": (("obligations",), lambda results, args, order: _merge_recurring(results)),
+}
+
+
+def _waiting(pending):
+    """(member id, record type, record id) -> the fields a sent correction is still waiting on (docs/family.md
+    "Family corrections"): the view copies already show the new value."""
+    found: dict = {}
+    for row in pending or []:
+        found.setdefault((row["member_id"], row["record_type"], row["record_id"]), []).append(row["field"])
+    return found
+
+
+def family_tool(members, name, arguments=None, pending=None):
+    """A finance tool across the family: run on each member's view copy (where a joint account already counts once and
+    transfers between members aren't spending), with list rows tagged member_id and owner and totals added exactly.
+    arguments may name one member ("member"): then only their copy is asked, as when a member's account is chosen.
+    pending: the family's unanswered corrections; transaction rows carry pending_fields for them."""
+    result = _family_tool(members, name, arguments)
+    waiting = _waiting(pending)
+    for row in result.get("transactions", []) + result.get("items", []):
+        transaction = row["id"] if name == "get_transactions" else row.get("transaction_id")
+        row["pending_fields"] = waiting.get((row["member_id"], "transaction", transaction), []) if transaction else []
+    return result
+
+
+def _family_tool(members, name, arguments=None):
+    from .tools import TOOLS
+    if name not in FAMILY_TOOLS:
+        raise ValueError("This isn't available in the family view. Open the person's own profile.")
+    arguments = dict(arguments or {})
+    only = arguments.pop("member", None)
+    paged = name in ("get_transactions", "get_spending_items")
+    model = TOOLS[name][0]
+    value = model.model_validate(arguments)
+    asked = value.model_copy(update={"offset": 0, "limit": value.offset + value.limit}) if paged else value
+    tagged_keys, merge = FAMILY_TOOLS[name]
+    chosen = [(member, store) for member, store in members if only in (None, member["member_id"])]
+    results, order = [], {member["member_id"]: index for index, (member, _) in enumerate(members)}
+    for member, store in chosen:
+        result = getattr(FinanceTools(store), TOOLS[name][1])(asked)
+        for key in tagged_keys:
+            result[key] = _tag(result[key], member)
+        if name in ("get_spending", "get_accounts"):
+            for row in result.get("coverage", []):
+                row["display_name"] = f"{member['name']} · {row['display_name']}"
+        results.append(result)
+    if not results:
+        raise ValueError("Family member not found.")
+    return merge(results, value.model_dump(), order)
+
+
+def family_record(members, member_id, record_type, record_id, pending=None):
+    """One record from a member's view copy, for the family ledger's drawer, tagged with its owner and the fields a
+    correction is still waiting on."""
+    from .ledger import Ledger
+    for member, store in members:
+        if member["member_id"] == member_id:
+            return {**Ledger(store).record(record_type, record_id), "member_id": member_id, "owner": member["name"],
+                    "pending_fields": _waiting(pending).get((member_id, record_type, record_id), [])}
+    raise ValueError("Family member not found.")
 
 
 def family_net_worth(members, currency=None, history_months=3, today=None):

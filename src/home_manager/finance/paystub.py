@@ -32,6 +32,9 @@ STATE_NAMES = {"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas
                "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming"}
 # States with no wage income tax: nothing to look up.
 NO_WAGE_TAX = frozenset({"AK", "FL", "NV", "NH", "SD", "TN", "TX", "WA", "WY"})
+# IRC §3102(f)(1): an employer withholds Additional Medicare tax on wages above $200,000 in the year, whatever the filing
+# status. The tax table's threshold by filing status ($250,000 joint) is the return's (Form 8959), not payroll's.
+ADDITIONAL_MEDICARE_WITHHOLDING = 20_000_000
 
 
 def jurisdiction_name(code):
@@ -161,8 +164,9 @@ def income_tax(code, table, wages, paychecks, actual, other_income=0, extra_dedu
 
 
 def fica(table, wages, ytd_wages, actual):
-    """Social Security (up to the year's wage base) and Medicare (plus the additional rate above its threshold) on
-    this paycheck's FICA wages; year-to-date wages decide how much of the paycheck is still under each limit."""
+    """Social Security (up to the year's wage base) and Medicare (plus the additional rate on wages above the $200,000
+    withholding threshold) on this paycheck's FICA wages; year-to-date wages decide how much of the paycheck is still
+    under each limit."""
     before = None if ytd_wages is None else max(0, ytd_wages - wages)
     rows = []
     base = table.get("ss_wage_base_minor")
@@ -173,9 +177,9 @@ def fica(table, wages, ytd_wages, actual):
                      "actual_minor": actual.get("social_security")})
     if table.get("medicare_rate_bp") is not None:
         estimate = Decimal(wages) * table["medicare_rate_bp"] / 10000
-        threshold, extra_rate = table.get("additional_medicare_threshold_minor"), table.get("additional_medicare_rate_bp")
+        threshold, extra_rate = ADDITIONAL_MEDICARE_WITHHOLDING, table.get("additional_medicare_rate_bp")
         above = 0
-        if threshold is not None and extra_rate and before is not None:
+        if extra_rate and before is not None:
             above = max(0, before + wages - max(threshold, before))
             estimate += Decimal(above) * extra_rate / 10000
         rows.append({"name": "Medicare", "category": "medicare", "rate_bp": table["medicare_rate_bp"], "wages_minor": wages,
@@ -196,8 +200,8 @@ def record_fica(recorder, row, currency):
                  + (" (the part under the year's wage base)" if row["category"] == "social_security" and row["limit_minor"] else ""), base, currency)
     if row.get("additional_wages_minor"):
         extra = rounded(Decimal(row["additional_wages_minor"]) * row["additional_rate_bp"] / 10000)
-        recorder.add(f"{row['additional_rate_percent']}% more on {format_minor(row['additional_wages_minor'], currency)} above the year's threshold",
-                     extra, currency)
+        recorder.add(f"{row['additional_rate_percent']}% more on {format_minor(row['additional_wages_minor'], currency)} above "
+                     f"{format_minor(row['limit_minor'], currency)} (IRC §3102(f): withheld above this for any filing status)", extra, currency)
         base += extra
     recorder.round(row["estimate_minor"] - base, currency, note="Worked out exactly, then rounded once to the cent.")
 

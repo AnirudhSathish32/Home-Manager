@@ -24,7 +24,7 @@ CATEGORIES = ("produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "
 FIRST_CHECK_DAYS = {"produce": 7, "dairy & eggs": 7, "meat & seafood": 7, "bakery": 7}
 DEFAULT_FIRST_CHECK_DAYS = 28
 BASE_INTERVAL_DAYS, MAX_INTERVAL_DAYS = 7, 182
-LOT_EVENTS = ("still_have", "finished", "thrown_out", "reopened", "opened")
+LOT_EVENTS = ("still_have", "finished", "thrown_out", "reopened", "opened", "returned")
 LOT_STATE = ("status", "closed_on", "closed_precision_days", "next_check_on", "check_interval_days", "opened_on")
 # Food and drink are not tracked as opened or returnable; everything else is (docs/household.md "Opened items and return windows").
 FOOD = ("produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages")
@@ -249,6 +249,8 @@ class ItemLedger:
                           (fields.name, key, fields.brand, fields.size_text, fields.category, int(fields.consumable), fields.barcode, now(), now())).lastrowid
 
     def _add_lot(self, db, line, product_id, fields, today):
+        if (line["line_total_minor"] or 0) < 0:
+            return None  # A returned line brings nothing home; it may close the lot that bought it (propose_returns).
         bought = line["purchase_date"] or today.isoformat()
         existing = db.execute("SELECT id FROM inventory_lots WHERE receipt_id=? AND position=?", (line["receipt_id"], line["position"])).fetchone()
         if existing:  # A re-approved line (after re-extraction) changes the lot's product, never adds a second lot.
@@ -363,7 +365,7 @@ class ItemLedger:
     def update_lot(self, lot_id, event, effective_on=None, precision_days=0, source="manual", today=None):
         """Apply the user's answer: still have it, finished, thrown out, or reopened. Applies directly; no review."""
         if event not in LOT_EVENTS:
-            raise ValueError("Choose still have it, opened, finished, thrown out or reopen.")
+            raise ValueError("Choose still have it, opened, finished, thrown out, returned or reopen.")
         today = today or date.today()
         effective = iso_day(effective_on) if effective_on else today
         if effective > today:
@@ -411,6 +413,71 @@ class ItemLedger:
     @staticmethod
     def _set(db, lot_id, change):
         db.execute(f"UPDATE inventory_lots SET {','.join(f'{key}=?' for key in change)},updated_at=? WHERE id=?", (*change.values(), now(), lot_id))
+
+    # Returned items (docs/household.md "Returned items") ----------------------------
+
+    @staticmethod
+    def return_candidates(db, line):
+        """In-stock lots a returned receipt line may have closed: bought from the same seller on or before the return, by
+        the same printed product code, the same printed text, or the product that text was identified as."""
+        text = normalize_text(line["description"])
+        alias = db.execute("SELECT product_id FROM item_aliases WHERE merchant_id=? AND normalized_text=?", (line["merchant_id"], text)).fetchone()
+        rows = db.execute("SELECT l.id,l.product_id,i.product_code,i.description FROM inventory_lots l JOIN receipts r ON r.id=l.receipt_id "
+                          "LEFT JOIN receipt_items i ON i.receipt_id=l.receipt_id AND i.position=l.position "
+                          "WHERE l.status='in_stock' AND r.merchant_id=? AND r.review_status<>'rejected' AND r.id<>? "
+                          "AND (l.bought_on IS NULL OR ? IS NULL OR l.bought_on<=?) ORDER BY l.bought_on DESC,l.id DESC",
+                          (line["merchant_id"], line["receipt_id"], line["purchase_date"], line["purchase_date"])).fetchall()
+        return [row["id"] for row in rows if line["product_code"] and row["product_code"] == line["product_code"]
+                or row["description"] and normalize_text(row["description"]) == text or alias and row["product_id"] == alias[0]]
+
+    def propose_returns(self, db):
+        """A proposal for each returned line (a negative line on a receipt that counts) not proposed before, naming the lots
+        it may have closed. Lines with no matching lot are left alone. Returns how many were proposed."""
+        lines = db.execute("SELECT i.id FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id WHERE i.line_total_minor<0 "
+                           "AND i.review_status<>'rejected' AND r.review_status='verified' AND r.merchant_id IS NOT NULL "
+                           "AND NOT EXISTS(SELECT 1 FROM lot_returns x WHERE x.receipt_item_id=i.id)").fetchall()
+        proposed = 0
+        for (item_id,) in lines:
+            candidates = self.return_candidates(db, self._line(db, item_id))
+            if candidates:
+                db.execute("INSERT INTO lot_returns(receipt_item_id,lot_ids_json,status,created_at,updated_at) VALUES(?,?,'proposed',?,?)",
+                           (item_id, json.dumps(candidates), now(), now()))
+                proposed += 1
+        return proposed
+
+    def return_proposals(self):
+        """Open proposals, each with its returned line and the in-stock lots it may have closed."""
+        with self.store.connection() as db:
+            found = []
+            for row in db.execute("SELECT * FROM lot_returns WHERE status='proposed' ORDER BY receipt_item_id").fetchall():
+                line = self._line(db, row["receipt_item_id"])
+                lots = [dict(lot) for lot in db.execute(
+                    "SELECT l.id,l.bought_on,l.cost_minor,l.currency,p.name,p.brand,p.size_text FROM inventory_lots l JOIN products p ON p.id=l.product_id "
+                    f"WHERE l.status='in_stock' AND l.id IN ({','.join('?' * len(json.loads(row['lot_ids_json'])))}) ORDER BY l.bought_on DESC,l.id DESC",
+                    json.loads(row["lot_ids_json"]))]
+                if lots:
+                    found.append({"receipt_item_id": row["receipt_item_id"], "receipt_id": line["receipt_id"], "description": line["description"],
+                                  "merchant": line["merchant"], "returned_on": line["purchase_date"], "lots": lots})
+            return found
+
+    def review_return(self, receipt_item_id, lot_id=None, today=None):
+        """Confirm which lot a returned line closed (it becomes 'returned', undoable like any answer), or say none did."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM lot_returns WHERE receipt_item_id=?", (receipt_item_id,)).fetchone()
+            if row is None or row["status"] != "proposed":
+                raise ValueError("This returned item was already answered.")
+            if lot_id is not None and lot_id not in json.loads(row["lot_ids_json"]):
+                raise ValueError("Choose one of the listed items.")
+            returned_on = self._line(db, receipt_item_id)["purchase_date"]
+        if lot_id is not None:
+            today = today or date.today()
+            lot = self.lot(lot_id)
+            day = returned_on if returned_on and returned_on <= today.isoformat() and (not lot["bought_on"] or returned_on >= lot["bought_on"]) else None
+            self.update_lot(lot_id, "returned", day, source="approval", today=today)
+        with self.store.connection() as db:
+            db.execute("UPDATE lot_returns SET status=?,lot_id=?,updated_at=? WHERE receipt_item_id=?",
+                       ("verified" if lot_id is not None else "rejected", lot_id, now(), receipt_item_id))
+        return {"receipt_item_id": receipt_item_id, "lot_id": lot_id}
 
     # Weekly check-in --------------------------------------------------------------
 

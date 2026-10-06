@@ -133,7 +133,7 @@ def test_the_family_files_a_joint_return(tmp_path):
         paid(manager, "dad", 20000)
         manager.configure_household(manager.household.model_copy(update={"birth_year": 1978}))
         manager.switch_profile(mom)
-        family = manager.create_family("The Smiths", str(tmp_path / "family"), str(tmp_path), ["Dad"], my_profile=mom)
+        family = manager.create_family("The Smiths", str(tmp_path / "family"), ["Dad"], my_profile=mom)
         folder = FamilyFolder(tmp_path / "family")
         dad_member = next(member["member_id"] for member in folder.data["members"] if member["name"] == "Dad")
         folder.close()

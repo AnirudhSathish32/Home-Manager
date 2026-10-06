@@ -41,9 +41,10 @@ def rounded(values, target):
 
 
 def item_amount(item):
+    """The line less its discount; a returned (negative) line's discount makes the refund smaller."""
     total = item.get("line_total_minor") or 0
-    discount = item.get("discount_minor") or 0
-    return total - abs(discount)
+    discount = abs(item.get("discount_minor") or 0)
+    return total + discount if total < 0 else total - discount
 
 
 def record(recorder, values, target, labels, currency):

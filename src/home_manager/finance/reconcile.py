@@ -16,6 +16,7 @@ import json
 from ..core import actor
 from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS, RECURRING_KINDS, suggested_kind
 from ..core.trace import NULL
+from ..household.items import ItemLedger
 from ..library.storage import now
 from .fx import REPORTING, EcbRates, FxError
 from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRANSACTION_CATEGORY, Ledger, classify_transaction, name_tokens, normalize_name
@@ -166,6 +167,8 @@ class Reconciler:
                 TaxTags(self.ledger.store).refresh(db)
                 # Every charge's item-category shares follow its current receipt link (restored or rejected ones included).
                 self.ledger.refresh_splits(db)
+                # A returned line may have closed a household lot: asked on the Inventory page (docs/household.md "Returned items").
+                ItemLedger(self.store).propose_returns(db)
         except Exception as exc:
             with self.store.connection() as db:  # Only the error class: messages could echo document text.
                 db.execute("UPDATE reconciliation_runs SET status='failed',error=?,finished_at=? WHERE id=?", (type(exc).__name__, now(), run_id))

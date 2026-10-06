@@ -94,12 +94,12 @@ def spending_other(store, ref_text, params):
 
 
 def spending_gross(store, ref_text, params):
-    """Home's gross spending (dashboard.group_categories): every category, before refunds."""
+    """Home's category spending (dashboard.group_categories): every category, each net of its refunds."""
     period, currency, categories = _categories(store, params)
     recorder = Recorder()
     _, gross, _ = group_categories(categories, currency, period, recorder, "gross")
     return build(ref_text, f"Spending by category, {period.start} to {period.end}", gross, currency,
-                 "Every category's counted spending added together, before refunds: the whole the category shares are of.", recorder)
+                 "Every category's counted spending added together, each after its refunds: the whole the category shares are of.", recorder)
 
 
 def spending_usd(store, ref_text, params):

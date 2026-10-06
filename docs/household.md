@@ -139,6 +139,20 @@ and drink are not tracked.
 
 A non-food lot that is in stock and unopened is *returnable* until the purchase date plus the window's days.
 
+## Returned items
+
+A line on a return receipt (a negative line, [money](money.md#returns)) brings nothing home: identifying it never
+creates a lot. It may instead close the lot that bought it (`household/items.py`, migration 063).
+- **Proposed** by each reconciliation pass (`ItemLedger.propose_returns`), for a returned line on an approved receipt.
+  The candidates are in-stock lots from the same seller, bought on or before the return, with the same printed product
+  code, the same printed text, or the product that text was identified as. A line with no candidate is left alone and
+  tried again on the next pass. The proposal is kept in `lot_returns`.
+- **Asked on the Inventory page** under **Returned items**: "Yes, … went back" (or which of several), or "Not this
+  item" / "None of these". Each line is asked once (`POST /api/inventory/returned/{receipt_item_id}`).
+- **Confirming** closes the lot as `returned` on the return's date (lot event `returned`, source `approval`). Like any
+  answer it can be undone from the lot's Actions menu. A returned lot leaves the check-in questions and the return
+  windows.
+
 ## Warranties
 
 Warranties apply to durable items (products not marked as running out), migration 025.

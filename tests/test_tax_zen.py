@@ -110,7 +110,12 @@ def test_a_planned_paycheck_at_tax_time():
 
 
 def test_advance_tax_quarters_for_income_without_withholding():
-    assert [day.isoformat() for day in due_dates(2028)] == ["2028-04-17", "2028-06-15", "2028-09-15", "2029-01-15"]  # Apr 15, 2028 is a Saturday.
+    # Apr 15, 2028 is a Saturday and Emancipation Day (Sunday the 16th) is observed Monday the 17th; Jan 15, 2029 is
+    # Martin Luther King Jr. Day. 2023 was the same: April 18 and January 16, 2024 (IRC §7503).
+    assert [day.isoformat() for day in due_dates(2028)] == ["2028-04-18", "2028-06-15", "2028-09-15", "2029-01-16"]
+    assert [day.isoformat() for day in due_dates(2023)] == ["2023-04-18", "2023-06-15", "2023-09-15", "2024-01-16"]
+    assert [day.isoformat() for day in due_dates(2026)] == ["2026-04-15", "2026-06-15", "2026-09-15", "2027-01-15"]
+    assert date(2027, 12, 31) in safe_harbor.legal_holidays(2027) | safe_harbor.legal_holidays(2028)  # New Year's Day 2028, a Saturday.
     payments = [{"date": "2026-04-10", "amount_minor": 200000}]
     safe = safe_harbor.evaluate(2026, 800000, 0, 0, payments, today=date(2026, 7, 1))
     plan = advance_tax(2026, date(2026, 7, 1), 800000, payments, safe)

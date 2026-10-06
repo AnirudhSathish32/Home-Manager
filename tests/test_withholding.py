@@ -79,6 +79,17 @@ def test_social_security_stops_at_the_wage_base(tables):
     assert (social["wages_minor"], social["estimate_minor"]) == (195500, 12121)
 
 
+def test_additional_medicare_is_withheld_above_200000_whatever_the_filing_status(tables):
+    # The joint return's threshold is $250,000 (Form 8959), but payroll withholds the extra 0.9% on wages above $200,000
+    # (IRC §3102(f)(1)): this $10,000 paycheck brings the year to $210,000, all of it above.
+    store, service = tables
+    table = service.propose("US", 2026, "married_joint", {**FEDERAL, "additional_medicare_threshold_minor": 25000000}, [])
+    service.review(table["id"], "verified")
+    lines = [line("earnings", "regular_pay", 1000000, 21000000), line("tax", "medicare", 23500)]
+    medicare = explain(RECORD, lines, service.for_year(2026, ["US"], "married_joint"), "married_joint")["fica"][1]
+    assert (medicare["additional_wages_minor"], medicare["limit_minor"], medicare["estimate_minor"], medicare["difference_minor"]) == (1000000, 20000000, 23500, 0)
+
+
 def test_a_missing_or_unconfirmed_table_is_said_so(tables):
     store, service = tables
     service.propose("GA", 2026, "single", GEORGIA, [])

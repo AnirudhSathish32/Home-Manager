@@ -397,7 +397,8 @@ $("copy-receipt-text").addEventListener("click", async () => {
 });
 
 const RECORD_FIELDS = {
-  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
+  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"],
+            ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
   statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
   bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Amount due", "amount_due_minor"]],
@@ -406,10 +407,13 @@ const RECORD_FIELDS = {
 };
 const PAY_FREQUENCIES = {52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"};
 // Fields the user may correct, by the key shown above -> the correction field the server accepts.
-const CORRECTABLE = {receipt: {merchant: "merchant", location: "location", purchase_date: "purchase_date", category: "category"},
+const CORRECTABLE = {receipt: {merchant: "merchant", location: "location", purchase_date: "purchase_date", category: "category", direction: "direction"},
                      bill: {merchant: "provider", issue_date: "issue_date", due_date: "due_date"},
                      income_record: {merchant: "payer", pay_date: "pay_date"}};
 const isDateField = field => field.endsWith("_date");
+// A receipt is a sale or a return (docs/money.md "Returns"); an exchange is a return whose lines also buy something.
+const DIRECTIONS = {sale: "Sale", return: "Return"};
+const directionText = record => record.sale_label === "Exchange" ? "Exchange" : DIRECTIONS[record.direction] || record.direction;
 function decisionPanel(check, extractedType) {
   // Advisory only: shown beside the record, never used to approve, reject or file it.
   // Extractions from before decision models carry Laya's result in the same shape, without a model.
@@ -698,7 +702,7 @@ async function renderLedgerRecord(target, type, id, kept) {
   const heading = element("div", "", "ledger-record-heading");
   // Exception-based review: records that passed every automatic check need no action; only flagged ones ask.
   const automatic = record.review_status === "verified" && record.review_source === "automatic";
-  heading.append(element("strong", ledgerTitle(type, record)), statusBadge(automatic ? "checked" : record.review_status));
+  heading.append(element("strong", ledgerTitle(type, record)), ...saleBadges(record), statusBadge(automatic ? "checked" : record.review_status));
   const choices = automatic ? [["Not right? Reject", "rejected"]]
     : record.review_status === "verified" ? [["Undo verification", "needs_review"]]
     : record.review_status === "rejected" ? [["Undo rejection", "needs_review"]]
@@ -732,7 +736,7 @@ async function renderLedgerRecord(target, type, id, kept) {
     if (spread.length) value.append(...spread.map(name => element("span", categoryLabel(name === "uncategorized" ? null : name), "category-tag")));
     else if (shown == null) value.appendChild(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
     else value.appendChild(record.display[field] ? amount(shown, {signed: false})
-      : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown)
+      : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
     const metric = document.createElement("div"); metric.append(element("small", label), value);
     if (fixable && entered.has(correctable[field])) metric.appendChild(element("small", "Entered by you", "muted"));
@@ -879,6 +883,11 @@ async function editRecord(target, type, record) {
       for (const name of categories) input.add(new Option(categoryLabel(name), name));
       input.value = record[field] || "";
       input.setAttribute("aria-describedby", "correct-category-hint");
+    } else if (field === "direction") {
+      input = document.createElement("select");
+      for (const [value, text] of Object.entries(DIRECTIONS)) input.add(new Option(text, value));
+      input.value = record.direction || "sale";
+      input.setAttribute("aria-describedby", "correct-direction-hint");
     } else {
       input = document.createElement("input");
       input.type = isDateField(field) ? "date" : "text"; input.value = record[field] || ""; input.maxLength = field === "location" ? 60 : 120;
@@ -890,6 +899,7 @@ async function editRecord(target, type, record) {
     const box = element("div", "", "field"); const caption = element("label", allItems ? "Category for all items" : label); caption.htmlFor = input.id;
     box.append(caption, input); form.appendChild(box); inputs[field] = input;
     if (allItems) box.appendChild(element("small", "Sets every item you haven't chosen yourself; change single items in the table.", "muted block")).id = "correct-category-hint";
+    if (field === "direction") box.appendChild(element("small", "A return gives money back: its amounts count as a refund.", "muted block")).id = "correct-direction-hint";
   }
   const error = element("p", "", "error-text"); error.setAttribute("role", "alert");
   const actions = element("div", "", "button-row");

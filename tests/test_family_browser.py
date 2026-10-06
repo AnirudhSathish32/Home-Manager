@@ -48,8 +48,7 @@ def test_profile_switch_family_view_and_settings(tmp_path):
         manager.switch_profile(sam["id"])
         spend(manager, "sam", [(month + "-01", "Books", -2400)])
         manager.switch_profile(alex)
-        (tmp_path / "sync").mkdir()
-        family = manager.create_family("The Parks", str(tmp_path / "family"), str(tmp_path / "sync"), ["Jo"], my_profile=alex)
+        family = manager.create_family("The Parks", str(tmp_path / "family"), ["Jo"], my_profile=alex)
         from home_manager.app.family_sync import FamilyFolder
         folder = FamilyFolder(tmp_path / "family")
         jo = folder.data["members"][0]["member_id"]
@@ -77,10 +76,7 @@ def test_profile_switch_family_view_and_settings(tmp_path):
             playwright.expect(page.locator("#family-members")).to_contain_text("Alex")
             playwright.expect(page.locator("#home-content .home-metric").first).to_contain_text("149.00")
             playwright.expect(page.locator("#family-net-worth")).to_be_visible()
-            playwright.expect(page.locator("#nav-transactions")).to_be_hidden()
-            playwright.expect(page.locator("#home-content a[href^='#/transactions']")).to_have_count(0)
-            page.goto(f"http://127.0.0.1:{port}/#/transactions")
-            playwright.expect(page).to_have_url(f"http://127.0.0.1:{port}/#/home")
+            playwright.expect(page.locator("#nav-investments")).to_be_hidden()  # Only the family ledger's pages join the family view.
             playwright.expect(page.locator("#home-content")).to_contain_text("1 document uploaded to the family is waiting")
             page.get_by_role("link", name="Choose who they're for").click()
             row = page.locator("#family-routing .routing-row")
@@ -110,10 +106,40 @@ def test_profile_switch_family_view_and_settings(tmp_path):
                 path = Path(os.environ["FAMILY_SCREENSHOT"])
                 path.parent.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(path), full_page=True)
+            # The family ledger: everyone's charges, each with its owner.
+            page.locator("#nav-transactions").click()
+            page.locator("#tx-view").select_option("charges")
+            page.locator("#tx-period").select_option("all")
+            playwright.expect(page.locator("#charge-table th.owner-col")).to_be_visible()
+            books = page.locator("#tx-rows tr").filter(has_text="Books")
+            playwright.expect(books).to_contain_text("Jo")
+            playwright.expect(page.locator("#tx-rows tr").filter(has_text="Groceries")).to_contain_text("Alex")
+            # A correction while Jo's library is busy waits in the family's outbox, tagged until her copy answers.
+            from home_manager.library.storage import Store
+            held = Store(tmp_path / "sam")
+            try:
+                books.get_by_role("button", name="Books").click()
+                page.locator("#family-fix-category").fill("Reading")
+                page.get_by_role("button", name="Send correction").click()
+                playwright.expect(page.locator("#toasts")).to_contain_text("Sent to Jo")
+                playwright.expect(page.locator("#tx-drawer-body")).to_contain_text("Waiting for Jo")
+                playwright.expect(books).to_contain_text("Waiting for Jo")
+                playwright.expect(books).to_contain_text("reading")
+            finally:
+                held.close()
+            for width in (390, 1440):
+                page.set_viewport_size({"width": width, "height": 1000})
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            if os.environ.get("FAMILY_SCREENSHOT"):
+                page.screenshot(path=str(Path(os.environ["FAMILY_SCREENSHOT"]).with_name("family-ledger.png")), full_page=True)
+            page.locator("#close-tx-drawer").click()
             page.locator("#nav-settings").click()
             page.locator("#profiles-tab").click()
             playwright.expect(page.locator("#family-section")).to_contain_text("The Parks: members")
             playwright.expect(page.locator("#family-section")).to_contain_text("This computer · Sam")
+            # No Tailscale in tests: the hub says why members' computers can't reach this one.
+            playwright.expect(page.locator("#family-section")).to_contain_text("Members on other computers can't send copies yet")
             playwright.expect(page.locator("#family-form")).to_be_hidden()
             if os.environ.get("FAMILY_SCREENSHOT"):
                 page.screenshot(path=str(Path(os.environ["FAMILY_SCREENSHOT"]).with_name("family-settings.png")), full_page=True)

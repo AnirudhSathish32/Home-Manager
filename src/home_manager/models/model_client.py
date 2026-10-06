@@ -21,6 +21,7 @@ from urllib.parse import quote, urlsplit
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..library.storage import now
+from .http_server import TAILNET
 from .model_stream import IDLE_SECONDS, read_completion
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,6 @@ DEFAULT_TEMPERATURE = 0.1
 UNENFORCED_SCHEMA = "Reply with one JSON object and nothing else. It must match this JSON schema:\n"
 # Listing fields that change without the model bytes changing.
 VOLATILE_METADATA = {"created", "object", "state", "loaded_context_length"}
-TAILNET = ipaddress.ip_network("100.64.0.0/10")
 TS_NET_HOST = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$")
 REMOTE_OFFLINE = "The shared GPU computer is offline or not on Tailscale. Check that Tailscale is connected on both computers and the GPU host is running."
 # host:port -> bearer token for a shared GPU computer. Set by the app from its control

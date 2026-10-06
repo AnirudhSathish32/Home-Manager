@@ -259,7 +259,7 @@ def test_the_decisions_task_scores_label_probabilities_and_reports_calibration(t
 def test_a_dry_task_run_lists_every_task_and_calls_no_model(tmp_path, local_model):
     said = []
     assert run_tasks(config_for(local_model), out=tmp_path, network_guard=False, echo=said.append, dry_run=True) is None
-    assert said[0].startswith("Dry run: transcription (34), identify (20), describe (24)") and local_model["requests"] == []
+    assert said[0].startswith("Dry run: transcription (36), identify (20), describe (24)") and local_model["requests"] == []
     with pytest.raises(ValueError, match="Unknown tasks"):
         run_tasks(config_for(local_model), ["nope"], out=tmp_path, network_guard=False, dry_run=True)
 

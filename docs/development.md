@@ -242,7 +242,7 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 ## Schema map
 
 Each library holds one SQLite database, `inventory.sqlite3`, built by the forward-only scripts in
-`src/home_manager/library/migrations/` (001–061). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
+`src/home_manager/library/migrations/` (001–064). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
 `.sql` file is the source of truth for columns and constraints. A table that was later rebuilt is listed under the
 migration that first created it.
 
@@ -344,6 +344,19 @@ migration that first created it.
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
 | 061 | `provenance` | `budget_changes`, `tax_input_changes`, `rule_sources`, `figure_snapshots` | `record_corrections` rebuilt to allow transaction, statement, investment valuation, tax form box, holding and budget, with `reason` and `actor`; `actor` on `review_events`, `family_assignments` and `transactions`; `transactions.replaced_by`; `created_at`/`updated_at` on `receipt_items`, `receipt_rewards`, `income_lines`, `tax_form_boxes` (filled from their record); `tax_tables.rule_version` ([ui](ui.md#whats-built)) |
+
+**Family (062)**
+
+| # | File | Tables added | Columns added / notes |
+|---|---|---|---|
+| 062 | `family_corrections` | `family_corrections` | `sent` rows in a family's own library, `received` rows in a member's; `reconciliation_issues` rebuilt to allow the `kept_mine` and `took_family` resolutions of a `family_correction` question ([family](family.md#family-corrections)) |
+
+**Returns and cleanup (063–064)**
+
+| # | File | Tables added | Columns added / notes |
+|---|---|---|---|
+| 063 | `returned_lots` | `lot_returns` (a returned receipt line's proposed lots and the answer) | `inventory_lots` and `lot_events` rebuilt to allow `returned` ([household](household.md#returned-items)) |
+| 064 | `dead_columns` | | Drops the 2026-09-30 audit's dead columns: `jobs.year`/`month`, `occurrences.folder_year`/`folder_month` (and index `occurrences_root`), `investment_events.reverses_event_id` (table rebuilt) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

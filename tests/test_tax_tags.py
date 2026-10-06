@@ -140,5 +140,32 @@ def test_tax_tag_endpoints(tmp_path):
         assert client.post("/api/tax-tags", json={"target_type": "transaction", "target_id": 1, "kind": "itemized", "line": "medical"}).status_code == 400
         assert client.get("/api/tax-tags", params={"status": "proposed"}).json() == {"tags": []}
         assert client.get("/api/tax-tags/on/transaction/1").json() == {"tag": None}
+        assert client.get("/api/tax-tags/on/receipt/1").json() == client.get("/api/tax-tags/on/receipt_item/1").json() == {"tag": None}
+        assert client.get("/api/tax-tags/on/account/1").status_code == 422
         assert client.get("/api/tax/write-offs/2026").json()["lines"] == []
         assert client.delete(f"/api/tax/rules/{rule.json()['id']}").json()["deleted"]
+        # Rename and archive (no screen yet: docs/open-work.md "UI redesign" 7).
+        assert client.put(f"/api/tax/businesses/{business['id']}", json={"name": "  Design   work "}).json() == {"id": business["id"], "name": "Design work"}
+        assert client.put(f"/api/tax/businesses/{business['id']}", json={"name": " "}).status_code == 400
+        assert client.put("/api/tax/businesses/999", json={"name": "Elsewhere"}).status_code == 400
+        assert client.delete(f"/api/tax/businesses/{business['id']}").json() == {"id": business["id"], "archived": True}
+        assert client.get("/api/tax/setup").json()["businesses"] == []
+        assert client.delete("/api/tax/businesses/999").status_code == 400
+
+
+def test_an_archived_business_takes_no_new_work_but_keeps_its_own(books):
+    store, ledger, tags, add, docs = books
+    business = tags.add_business("Contract work")
+    [paid] = add(("2026-03-02", "ADOBE CREATIVE", -5999))
+    [other] = add(("2026-03-09", "FIGMA", -1500))
+    tags.tag("transaction", paid, "business_expense", "office", business["id"])
+    tags.archive_business(business["id"])
+    # Its tags keep counting, and the item it's on can keep it (changing the amount, say).
+    assert any(line["kind"] == "business_expense" for line in tags.year(2026, "USD")["lines"])
+    assert tags.tag("transaction", paid, "business_expense", "office", business["id"], amount="50.00")["amount_minor"] == 5000
+    assert tags.on("transaction", paid)["business_id"] == business["id"]
+    with pytest.raises(ValueError, match="archived"):
+        tags.tag("transaction", other, "business_expense", "office", business["id"])
+    with pytest.raises(ValueError, match="archived"):
+        tags.add_rule("figma", "business_expense", "office", business["id"])
+    assert tags.on("transaction", other) is None

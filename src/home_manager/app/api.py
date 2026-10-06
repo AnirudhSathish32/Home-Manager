@@ -10,8 +10,9 @@ from typing import Literal
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core import actor
@@ -39,7 +40,7 @@ from ..finance.investments import (
     WithdrawalKind,
 )
 from ..finance.item_categories import ItemCategorizer
-from ..finance.ledger import ACCOUNT_TYPES, PAYMENT_STATES, HouseholdConfig
+from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig
 from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
@@ -126,7 +127,6 @@ class FamilyInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(min_length=1, max_length=60)
     folder: str = Field(min_length=1, max_length=4096)
-    sync_folder: str = Field(min_length=1, max_length=4096)
     members: list[str] = Field(default_factory=list, max_length=20)
     my_profile: str | None = Field(default=None, max_length=40)
 
@@ -152,7 +152,6 @@ class JoinInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     invite_file: str = Field(min_length=1, max_length=4096)
     passphrase: str = Field(min_length=1, max_length=1024)
-    sync_folder: str | None = Field(default=None, min_length=1, max_length=4096)
 
 
 class PublishingInput(BaseModel):
@@ -270,13 +269,6 @@ class LinkReviewInput(BaseModel):
     status: Literal["verified", "rejected"]
 
 
-class BillPaymentInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    status: Literal[*PAYMENT_STATES]
-    transaction_id: int | None = None
-    note: str = Field(default="", max_length=1000)
-
-
 class ObligationReviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     status: Literal[*OBLIGATION_DECISIONS]
@@ -291,9 +283,11 @@ class ObligationKindInput(BaseModel):
 
 
 class IssueResolutionInput(BaseModel):
-    """Answer an ambiguous match: the chosen transaction, or null to leave the record unmatched."""
+    """Answer an ambiguous match: the chosen transaction, or null to leave the record unmatched. A conflicting family
+    correction is answered with family: "mine" (keep this person's value) or "family" (use the family's)."""
     model_config = ConfigDict(extra="forbid", strict=True)
-    transaction_id: int | None
+    transaction_id: int | None = None
+    family: Literal["mine", "family"] | None = None
 
 
 class FolderInput(BaseModel):
@@ -333,6 +327,11 @@ class LotEventInput(BaseModel):
     event: Literal[*LOT_EVENTS]
     effective_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     precision_days: int = Field(default=0, ge=0, le=7)
+
+
+class LotReturnInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    lot_id: int | None = None  # The lot the returned line closed; None says it closed none of them.
 
 
 class CheckinAnswerInput(BaseModel):
@@ -636,7 +635,7 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.get("/api/profiles")
     def profiles():
         view = manager().settings()
-        return {"active": view["profile"], "profiles": view["profiles"], "family": view["family"]}
+        return {"active": view["profile"], "profiles": view["profiles"], "family": view["family"], "hub_status": view["hub_status"]}
 
     @app.post("/api/profiles", status_code=201)
     def create_profile(value: ProfileInput):
@@ -656,7 +655,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.post("/api/families", status_code=201)
     def create_family(value: FamilyInput):
-        return manager().create_family(value.name, value.folder, value.sync_folder, value.members, value.my_profile)
+        return manager().create_family(value.name, value.folder, value.members, value.my_profile)
 
     @app.post("/api/families/{profile_id}/members", status_code=201)
     def add_member(profile_id: str, value: MemberInput):
@@ -694,7 +693,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.post("/api/family-membership", status_code=201)
     def join_family(value: JoinInput):
-        return manager().join_family(value.invite_file, value.passphrase, value.sync_folder)
+        return manager().join_family(value.invite_file, value.passphrase)
 
     @app.put("/api/family-membership")
     def family_publishing(value: PublishingInput):
@@ -890,12 +889,7 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.post("/api/finance/issues/{issue_id}/resolve")
     def resolve_issue(issue_id: int, value: IssueResolutionInput):
         store()
-        return manager().reconciler.resolve_issue(issue_id, value.transaction_id)
-
-    @app.post("/api/finance/bills/{bill_id}/payment")
-    def bill_payment(bill_id: int, value: BillPaymentInput):
-        store()
-        return manager().ledger.set_bill_payment(bill_id, value.status, value.transaction_id, value.note)
+        return manager().resolve_issue(issue_id, value.transaction_id, value.family)
 
     @app.post("/api/finance/recurring/scan", status_code=202)
     def recurring_scan():
@@ -938,12 +932,18 @@ def create_app(control: Path | None = None, token: str | None = None,
         return manager().start_item_categories()
 
     @app.post("/api/finance/tools/{name}")
-    def finance_tool(name: ToolName, arguments: dict | None = None):
+    def finance_tool(name: ToolName, arguments: dict | None = None, members: bool = False):
+        # members: the family ledger pages ask across every member's copy, merged (finance/family.py family_tool). Without
+        # it a family profile's tools read the family's own library, its inbox (Review, Home).
+        if members and manager().family:
+            return manager().family_finance_tool(name, arguments)
         store()
         return call_tool(manager().tools, name, arguments)
 
     @app.get("/api/finance/records/{record_type}/{record_id}")
-    def finance_record(record_type: RecordType, record_id: int):
+    def finance_record(record_type: RecordType, record_id: int, member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$")):
+        if member and manager().family:  # The family ledger's drawer: a member's record from their copy.
+            return manager().family_record(member, record_type, record_id)
         store()
         if record_type == "income_record":  # With how its taxes were figured.
             return manager().paystub(record_id)
@@ -1219,9 +1219,15 @@ def create_app(control: Path | None = None, token: str | None = None,
         return manager().tax_tables.tables.review(table_id, value.status)
 
     @app.patch("/api/finance/records/{record_type}/{record_id}")
-    def correct_record(record_type: RecordType, record_id: int, value: CorrectionInput):
-        store()
+    def correct_record(record_type: RecordType, record_id: int, value: CorrectionInput, member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$")):
+        if member and manager().family:  # The family ledger: the change travels to the member (finance/family_corrections.py).
+            return {"record": manager().correct_family_record(member, record_type, record_id, value.changes)}
+        store()  # Otherwise this profile's own records (in the family view, the family's inbox).
         return manager().correct_record(record_type, record_id, value.changes, value.reason)
+
+    @app.post("/api/finance/family-corrections/{key}/reject")
+    def reject_family_correction(key: str = PathParam(pattern=r"^[0-9a-f]{32}$")):
+        return manager().reject_family_correction(key)
 
     @app.post("/api/finance/records/{record_type}/{record_id}/review")
     def review_record(record_type: RecordType, record_id: int, value: ReviewInput):
@@ -1640,6 +1646,16 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().checkins.apply(run_id, value.lot_ids)
 
+    @app.get("/api/inventory/returned")
+    def returned_items():
+        store()
+        return manager().items.ledger.return_proposals()
+
+    @app.post("/api/inventory/returned/{receipt_item_id}")
+    def review_returned(receipt_item_id: int, value: LotReturnInput):
+        store()
+        return manager().items.ledger.review_return(receipt_item_id, value.lot_id)
+
     @app.get("/api/inventory/receipts-to-identify")
     def receipts_to_identify(limit: int = Query(20, ge=1, le=100)):
         store()
@@ -1814,15 +1830,22 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.get("/api/documents/{document_id}/preview")
     @app.get("/api/documents/{document_id}/image")
-    def receipt_image(document_id: int, blob_hash: str | None = Query(None, pattern=r"^[a-f0-9]{64}$")):
+    def receipt_image(document_id: int, blob_hash: str | None = Query(None, pattern=r"^[a-f0-9]{64}$"),
+                      member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$")):
+        def media(relative_path):
+            suffix = extension(relative_path)
+            if suffix not in IMAGES | {".pdf"}:
+                raise HTTPException(400, "Only PNG/JPEG and PDF previews are available.")
+            return "application/pdf" if suffix == ".pdf" else "image/png" if suffix == ".png" else "image/jpeg"
+
+        if member:  # The family view: a member's document, from the family computer (Manager.family_original).
+            media_type, chunks = manager().family_original(member, document_id, blob_hash, media)
+            return StreamingResponse(chunks, media_type=media_type)
         document, selected = store().document_version(document_id, blob_hash)
-        suffix = extension(document["relative_path"])
-        if suffix not in IMAGES | {".pdf"}:
-            raise HTTPException(400, "Only PNG/JPEG and PDF previews are available.")
+        media_type = media(document["relative_path"])
         path = store().blob_path(selected["hash"])
         if digest_file(path) != selected["hash"]:
             raise HTTPException(409, "Preserved document failed its integrity check.")
-        media_type = "application/pdf" if suffix == ".pdf" else "image/png" if suffix == ".png" else "image/jpeg"
         return FileResponse(path, media_type=media_type)
 
     return app

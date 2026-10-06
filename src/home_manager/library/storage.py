@@ -261,7 +261,7 @@ class Store:
         """A capture job for Library/Inbox, or for a watched source folder (root) whose files are copied, never moved."""
         job = uuid.uuid4().hex
         with self.connection() as db:
-            db.execute("INSERT INTO jobs(id,source_root,year,month,status,created_at,updated_at,error) VALUES (?, ?, NULL, NULL, 'queued', ?, ?, NULL)",
+            db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at,error) VALUES (?, ?, 'queued', ?, ?, NULL)",
                        (job, path_key(root or self.library.inbox), now(), now()))
         return job
 
@@ -393,10 +393,10 @@ class Store:
                                (item["hash"], stamp, item["job_id"], item["relative_path"], occurrence))
             else:
                 status = "duplicate" if duplicate else "captured"
-                cursor = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,folder_year,"
-                                    "folder_month,current_hash,first_seen,last_seen,last_job) VALUES(?,?,?,?,?,?,?,?,?)",
+                cursor = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,"
+                                    "current_hash,first_seen,last_seen,last_job) VALUES(?,?,?,?,?,?,?)",
                                     (item["source_root"], path_key(item["relative_path"]), item["relative_path"],
-                                     item["folder_year"], item["folder_month"], item["hash"], stamp, stamp, item["job_id"]))
+                                     item["hash"], stamp, stamp, item["job_id"]))
                 occurrence = cursor.lastrowid
                 if duplicate:  # The same bytes at another path: one reading, and a visible link between the two.
                     for other in db.execute("SELECT id FROM occurrences WHERE current_hash=? AND id<>?", (item["hash"], occurrence)).fetchall():
@@ -555,6 +555,10 @@ class Store:
                 "(SELECT group_concat(categories,'') FROM (SELECT ','||coalesce((SELECT group_concat(category) FROM (SELECT DISTINCT s.category FROM category_splits s "
                 "WHERE s.receipt_id=r.id AND s.transaction_id IS NULL AND s.amount_minor<>0)),coalesce(r.category,'uncategorized'))||',' AS categories FROM receipts r "
                 "WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment)) AS receipt_categories,"
+                # A receipt that gives money back or also buys: its tag (finance/ledger.py SALE_LABEL_SQL, docs/money.md "Returns").
+                "(SELECT CASE WHEN EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor<0) "
+                "AND EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor>0) THEN 'Exchange' WHEN r.total_minor<0 THEN 'Return' END "
+                "FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS sale_label,"
                 # Reconciliation of the record published from this version: a receipt's match to a
                 # transaction, or a bill's payment state. NULL where reconciliation does not apply.
                 "coalesce((SELECT state FROM (SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "

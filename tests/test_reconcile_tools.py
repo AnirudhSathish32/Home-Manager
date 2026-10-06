@@ -142,7 +142,8 @@ def test_spending_tools_are_exact_exclude_transfers_and_pending_model_rows(books
     assert call_tool(tools, "get_account_balance", {"account_id": checking["id"]})["balance"] is None
     ledger.set_category(tools.get_transactions(TransactionsInput(query="grocery"))["transactions"][0]["id"], "Groceries")
     categories = call_tool(tools, "get_spending_by_category", {"start": "2026-09-01", "end": "2026-09-30"})["categories"]
-    assert {(row["category"], row["spending"]["decimal"]) for row in categories} == {("groceries", "120.12"), ("uncategorized", "77.77")}
+    # Categories are net of refunds: 33.33 + 44.44 less the 11.11 books refund, so they add up to net spending.
+    assert {(row["category"], row["spending"]["decimal"]) for row in categories} == {("groceries", "120.12"), ("uncategorized", "66.66")}
     assert_ledger_healthy(store)
     with pytest.raises(ValueError):
         call_tool(tools, "get_spending", {"start": "2026-09-30", "end": "2026-09-01"})

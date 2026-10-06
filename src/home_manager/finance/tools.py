@@ -61,6 +61,7 @@ INFLOW = "t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','othe
 # A spending-items row: one receipt item, a tip or other amount no item carries, or a whole charge or receipt.
 ROW_KIND = "CASE WHEN s.id IS NULL THEN 'charge' WHEN s.receipt_item_id IS NULL THEN 'extra' ELSE 'item' END"
 RECEIPT_NOTE = ("Spending counts card and bank lines plus approved receipts that no line has replaced yet (from_receipts, receipts). "
+                "Refunds likewise count approved return receipts until their credit posts (refunds_from_receipts, return_receipts). "
                 "When a statement line matches a receipt, the line counts instead, never both.")
 PENDING_NOTE = "pending_review holds extracted lines awaiting review and statement lines waiting for you to reconcile their statement; they are not counted yet."
 USD_NOTE = ("Each currency is totalled separately. usd_total, present when another currency is involved, adds them in USD: card and bank "
@@ -252,7 +253,8 @@ def totals_view(currency, bucket):
     """from_receipts is the part of spending that only receipts show so far; the rest is card and bank lines."""
     return {"currency": currency, "spending": money(bucket["spending"], currency), "refunds": money(bucket["refunds"], currency),
             "net_spending": money(bucket["spending"] - bucket["refunds"], currency), "transactions": bucket["transactions"],
-            "from_receipts": money(bucket["from_receipts"], currency), "receipts": bucket["receipts"]}
+            "from_receipts": money(bucket["from_receipts"], currency), "receipts": bucket["receipts"],
+            "refunds_from_receipts": money(bucket["refunds_from_receipts"], currency), "return_receipts": bucket["return_receipts"]}
 
 
 class FinanceTools(ItemAnalysisTools):
@@ -332,7 +334,7 @@ class FinanceTools(ItemAnalysisTools):
             spending = f"t.transaction_type IN ({SPENDING_TYPES},'refund')"
             inflow = "(t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other'))"
             clauses.append({"spending": spending, "inflow": inflow, "cashflow": f"({spending} OR {inflow})",
-                            "categories": f"t.transaction_type IN ({SPENDING_TYPES})"}[value.metric])
+                            "categories": spending}[value.metric])
         if value.transaction_types:
             clauses.append(f"t.transaction_type IN ({','.join('?' * len(value.transaction_types))})")
             params += value.transaction_types
@@ -364,13 +366,16 @@ class FinanceTools(ItemAnalysisTools):
 
     def _totals(self, start, end, account_id, by_month=False, recorder=NULL):
         """Counted spending and refunds keyed by (month or None, currency). Spending includes receipts no card or
-        bank line has replaced yet (also reported as from_receipts), unless one account is asked for. A live recorder
-        (core/trace.py) gets each currency's steps and every line counted, from the same conditions."""
+        bank line has replaced yet (also reported as from_receipts), and refunds include return receipts no credit has
+        replaced yet (refunds_from_receipts), unless one account is asked for. A live recorder (core/trace.py) gets each
+        currency's steps and every line counted, from the same conditions."""
         scope, params = scope_of(start, end, account_id)
         month = "substr(t.posted_date,1,7)" if by_month else "NULL"
-        totals = defaultdict(lambda: {"spending": 0, "refunds": 0, "transactions": 0, "from_receipts": 0, "receipts": 0})
-        # A charge matched to a shared receipt counts this person's part of it (TRANSACTION_SPENT); refunds count as posted.
-        charged = f"CASE WHEN t.transaction_type='refund' THEN t.amount_minor ELSE -{TRANSACTION_SPENT} END"
+        totals = defaultdict(lambda: {"spending": 0, "refunds": 0, "transactions": 0, "from_receipts": 0, "receipts": 0,
+                                      "refunds_from_receipts": 0, "return_receipts": 0})
+        # A charge or refund matched to a shared receipt counts this person's part of it (TRANSACTION_SPENT): money out
+        # is negative here, a refund positive.
+        charged = f"-{TRANSACTION_SPENT}"
         for row in self.query(f"SELECT {month} AS month,t.currency,t.transaction_type='refund' AS refund,sum({charged}) AS total,count(*) AS count "
                               f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') GROUP BY 1,2,3", params):
             bucket = totals[(row["month"], row["currency"])]
@@ -381,12 +386,17 @@ class FinanceTools(ItemAnalysisTools):
             bucket["transactions"] += row["count"]
         if account_id is None:
             month = "substr(r.purchase_date,1,7)" if by_month else "NULL"
-            for row in self.query(f"SELECT {month} AS month,r.currency,sum({RECEIPT_SPENT}) AS total,count(*) AS count FROM receipts r "
-                                  f"WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end)):
+            for row in self.query(f"SELECT {month} AS month,r.currency,r.total_minor<0 AS refund,sum({RECEIPT_SPENT}) AS total,count(*) AS count FROM receipts r "
+                                  f"WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2,3", (start, end)):
                 bucket = totals[(row["month"], row["currency"])]
-                bucket["spending"] += row["total"]
-                bucket["from_receipts"] += row["total"]
-                bucket["receipts"] += row["count"]
+                if row["refund"]:  # A return receipt: money back until the card or bank credit replaces it.
+                    bucket["refunds"] -= row["total"]
+                    bucket["refunds_from_receipts"] -= row["total"]
+                    bucket["return_receipts"] += row["count"]
+                else:
+                    bucket["spending"] += row["total"]
+                    bucket["from_receipts"] += row["total"]
+                    bucket["receipts"] += row["count"]
         if recorder.live and not by_month:
             self._record_totals(start, end, account_id, charged, totals, recorder)
         return totals
@@ -399,7 +409,10 @@ class FinanceTools(ItemAnalysisTools):
             recorder.step("Card and bank charges", "+", charges, currency, count=bucket["transactions"])
             if account_id is None:
                 recorder.step("Receipts no card or bank charge has replaced", "+", bucket["from_receipts"], currency, count=bucket["receipts"])
-            recorder.step("Refunds", "−", bucket["refunds"], currency)
+            recorder.step("Refunds", "−", bucket["refunds"] - bucket["refunds_from_receipts"], currency)
+            if account_id is None and bucket["return_receipts"]:
+                recorder.step("Return receipts no card or bank credit has replaced", "−", bucket["refunds_from_receipts"], currency,
+                              count=bucket["return_receipts"])
         for row in self.query(f"SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name,t.currency,t.transaction_type,"
                               f"{charged} AS amount,t.origin,t.review_status,t.review_source FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
                               f"WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') ORDER BY t.posted_date,t.id", params):
@@ -411,8 +424,9 @@ class FinanceTools(ItemAnalysisTools):
             for row in self.query(f"SELECT r.id,r.purchase_date,coalesce(m.canonical_name,'Unknown merchant') AS name,r.currency,{RECEIPT_SPENT} AS amount,"
                                   f"r.review_status,r.review_source FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id "
                                   f"WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? ORDER BY r.purchase_date,r.id", (start, end)):
-                recorder.input(f"receipt:{row['id']}", f"Receipt · {row['name']} · {row['purchase_date']}", row["amount"], row["currency"],
-                               light("receipt", row["id"]), verification_of(row))
+                refund = row["amount"] < 0
+                recorder.input(f"receipt:{row['id']}", f"{'Return receipt' if refund else 'Receipt'} · {row['name']} · {row['purchase_date']}",
+                               -row["amount"] if refund else row["amount"], row["currency"], light("receipt", row["id"]), verification_of(row))
 
     def _pending(self, scope, params, by_month=False):
         month = "substr(t.posted_date,1,7)" if by_month else "NULL"
@@ -432,8 +446,8 @@ class FinanceTools(ItemAnalysisTools):
         """(date, currency, net spending) of every counted non-USD line _totals adds up, one per charge, refund or receipt.
         A line is dated by its transaction date when it has one, else its posted date."""
         scope, params = scope_of(start, end, account_id)
-        rows = self.query(f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,CASE WHEN t.transaction_type='refund' THEN -t.amount_minor "
-                          f"ELSE {TRANSACTION_SPENT} END AS net FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.currency<>? "
+        rows = self.query(f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,{TRANSACTION_SPENT} AS net "
+                          f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.currency<>? "
                           f"AND t.transaction_type IN ({SPENDING_TYPES},'refund')", [*params, REPORTING])
         if account_id is None:
             rows += self.query(f"SELECT r.purchase_date AS day,r.currency,{RECEIPT_SPENT} AS net FROM receipts r WHERE {STANDALONE_RECEIPT} "
@@ -480,14 +494,15 @@ class FinanceTools(ItemAnalysisTools):
                           "Months with no rows have no totals.", "Each currency is totalled separately; no conversion was applied."]}
 
     def _category_totals(self, start, end, account_id, recorder=NULL, only=None):
-        """(currency, category) -> (spending, count), with receipts no line has replaced unless one account is asked for.
+        """(currency, category) -> (spending net of refunds, count), with receipts no line has replaced unless one account is asked for.
         A charge or receipt with categorised items is divided by item category (finance/splits.py); count is the
         number of charges and receipts with spending in the category. A live recorder gets the steps and lines of one
         (currency, category), only (finance/traces.py spending_category)."""
         scope, params = scope_of(start, end, account_id)
         totals = defaultdict(lambda: [0, 0])
         rows = self.query(f"SELECT t.currency,{SPLIT_CATEGORY} AS category,sum({SPLIT_SPENT}) AS total,count(DISTINCT t.id) AS count "
-                          f"FROM transactions t {TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)
+                          f"FROM transactions t {TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') "
+                          "GROUP BY 1,2", params)
         if account_id is None:
             rows += self.query(f"SELECT r.currency,{RECEIPT_SPLIT_CATEGORY} AS category,sum({RECEIPT_SPLIT_SPENT}) AS total,count(DISTINCT r.id) AS count "
                                f"FROM receipts r {RECEIPT_SPLITS} WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ? GROUP BY 1,2", (start, end))
@@ -504,15 +519,15 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         charges = self.query(f"SELECT t.id,t.posted_date AS day,coalesce(m.canonical_name,t.description_raw) AS name,sum({SPLIT_SPENT}) AS amount,"
                              f"count(s.id) AS parts,t.origin,t.review_status,t.review_source FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
-                             f"{TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES}) AND t.currency=? "
+                             f"{TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') AND t.currency=? "
                              f"AND {SPLIT_CATEGORY}=? GROUP BY t.id ORDER BY t.posted_date,t.id", [*params, currency, category])
         receipts = [] if account_id is not None else self.query(
             f"SELECT r.id,r.purchase_date AS day,coalesce(m.canonical_name,'Unknown merchant') AS name,sum({RECEIPT_SPLIT_SPENT}) AS amount,count(s.id) AS parts,"
             f"r.review_status,r.review_source FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id {RECEIPT_SPLITS} WHERE {STANDALONE_RECEIPT} "
             f"AND r.purchase_date BETWEEN ? AND ? AND r.currency=? AND {RECEIPT_SPLIT_CATEGORY}=? GROUP BY r.id ORDER BY r.purchase_date,r.id", (start, end, currency, category))
-        recorder.add("Card and bank charges in the category", sum(row["amount"] for row in charges), currency, count=len(charges))
+        recorder.add("Card and bank charges in the category, less refunds", sum(row["amount"] for row in charges), currency, count=len(charges))
         if account_id is None:
-            recorder.add("Receipts no card or bank charge has replaced", sum(row["amount"] for row in receipts), currency, count=len(receipts))
+            recorder.add("Receipts no card or bank line has replaced (returns negative)", sum(row["amount"] for row in receipts), currency, count=len(receipts))
         for kind, rows in (("transaction", charges), ("receipt", receipts)):
             for row in rows:
                 # A charge or receipt divided by item category counts only its items' share here (finance/splits.py).
@@ -528,7 +543,7 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         merchants = defaultdict(lambda: [0, 0])
         rows = self.query(f"SELECT t.currency,coalesce(m.canonical_name,t.description_raw) AS name,-{TRANSACTION_SPENT} AS amount_minor FROM transactions t "
-                          f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES})", params)
+                          f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund')", params)
         if account_id is None:
             rows += self.query(f"SELECT r.currency,coalesce(m.canonical_name,'UNKNOWN') AS name,-{RECEIPT_SPENT} AS amount_minor FROM receipts r "
                                f"LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT} AND r.purchase_date BETWEEN ? AND ?", (start, end))
@@ -569,7 +584,7 @@ class FinanceTools(ItemAnalysisTools):
                 f"t.currency,a.display_name AS account,t.category_source,CASE WHEN {linked} IS NOT NULL THEN 'reconciled' ELSE 'statement' END AS status,"
                 f"(SELECT document_id FROM receipts WHERE id={linked}) AS receipt_document_id "
                 f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id {TRANSACTION_SPLITS} "
-                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES}){charge_scope}")
+                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES},'refund'){charge_scope}")
         params = [*params, *([value.account_id] if value.account_id is not None else [])]
         if value.account_id is None:
             rows += (f" UNION ALL SELECT 'receipt',NULL,r.id,r.purchase_date,coalesce(m.canonical_name,'Unknown merchant'),r.description,{ROW_KIND},i.position,i.description,"
@@ -601,7 +616,7 @@ class FinanceTools(ItemAnalysisTools):
             row["line_total"] = money(row["line_total_minor"], row["currency"]) if row["line_total_minor"] is not None else None
         return {"items": found, "total_matching": total, "offset": value.offset, "limit": value.limit,
                 "notes": ["amount is the item's share of what was paid, including its part of tax and receipt-wide discounts; "
-                          "rows for one charge or receipt add up to it exactly.",
+                          "rows for one charge or receipt add up to it exactly. A refund or a returned item is negative.",
                           "kind: item (one receipt item), extra (a tip or an amount no item carries) or charge (a whole charge or receipt without items).",
                           RECEIPT_NOTE]}
 
@@ -697,7 +712,7 @@ class FinanceTools(ItemAnalysisTools):
         return {"month": value.month, "period": {"start": start, "end": end}, "days": days, "elapsed_days": elapsed, "budgets": rows,
                 "unbudgeted": [{"currency": currency, "spent": money(total, currency), "transactions": count}
                                for currency, (total, count) in sorted(unbudgeted.items())],
-                "notes": ["Spent is the month's counted spending in the category before refunds, the same figure as By category.",
+                "notes": ["Spent is the month's counted spending in the category after refunds, the same figure as By category.",
                           "recurring_due is what confirmed recurring bills in the category still expect this month; projected is spent plus that.",
                           "Extracted transactions awaiting review are not counted until verified."]}
 
@@ -857,8 +872,11 @@ class FinanceTools(ItemAnalysisTools):
                               "WHERE r.total_minor<0 AND r.review_status<>'rejected'")
         return {"posted_credits": [{**row, "amount": money(row["amount_minor"], row["currency"])} for row in credits],
                 "refund_evidence": [{**row, "amount": money(-row["total_minor"], row["currency"]),
-                                     "settlement": "posted_credit_found" if row["credit_transaction_id"] else "evidence_only_not_settled"} for row in evidence],
-                "notes": ["Refund documents do not count as settled until a matching posted credit is linked."]}
+                                     "settlement": "posted_credit_found" if row["credit_transaction_id"] else
+                                     "counted_from_receipt" if row["review_status"] == "verified" and row["purchase_date"] else "evidence_only_not_settled"}
+                                    for row in evidence],
+                "notes": ["An approved return receipt counts as a refund on its own (counted_from_receipt) until a matching posted credit "
+                          "replaces it (posted_credit_found); one awaiting review is not counted yet."]}
 
     def get_unmatched_receipts(self, value):
         """Receipts in the period that no card or bank transaction matches yet. Approved ones count as spending
@@ -877,7 +895,8 @@ class FinanceTools(ItemAnalysisTools):
                               "reason": "several_possible_charges" if row["issue_id"] else "no_matching_charge"} for row in dated],
                 "undated": [summaries[receipt_id] for receipt_id in undated],
                 "by_currency": [{"currency": row["currency"], "total": money(row["total"], row["currency"]), "receipts": row["count"]} for row in totals],
-                "notes": ["Approved unmatched receipts count as spending on their own; when a card or bank line matches one, the line counts instead.",
+                "notes": ["Approved unmatched receipts count as spending on their own (a return, with a negative total, as a refund); "
+                          "when a card or bank line matches one, the line counts instead.",
                           "Receipts without a purchase date cannot be placed in a period and are listed separately."]}
 
     # Document text ----------------------------------------------------------------
@@ -970,7 +989,7 @@ class FinanceTools(ItemAnalysisTools):
             link["match_signals"] = link["match_method"].split("+")
             link["from"] = summaries["transaction"].get(link["from_id"])
             link["to"] = summaries["receipt" if link["kind"] == "receipt" else "transaction"].get(link["to_id"])
-        for issue in issues:
+        for issue in issues:  # A family_correction question lists the family's changes in detail["corrections"].
             del issue["detail_json"]
             issue["record"] = summaries.get(issue["record_type"], {}).get(issue["record_id"])
             issue["candidates"] = [summaries["transaction"][candidate] for candidate in issue["detail"]["candidate_transaction_ids"] if candidate in summaries["transaction"]]

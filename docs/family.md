@@ -8,11 +8,11 @@ Ground rules:
 - **Each member runs the app on their own PC.**
 - **Only model calls leave a member's machine** (rendered page images and text prompts, sent to the shared GPU).
 - **Documents and databases stay local.** The exceptions are the encrypted family snapshot and family deliveries
-  described below, which only ever travel as ciphertext.
+  described below, which only ever travel as ciphertext, over Tailscale, to and from the family computer's hub.
 
-Code: `app/profiles.py`, `app/family_sync.py`, `finance/family.py`, `finance/family_routing.py`, `library/share.py`,
-`models/gpu_host.py`. Tests use two control folders that share one sync folder (`--control-dir A` and `B`) to act as two
-PCs.
+Code: `app/profiles.py`, `app/family_sync.py`, `app/family_hub.py`, `app/family_client.py`, `finance/family.py`,
+`finance/family_routing.py`, `library/share.py`, `models/gpu_host.py`. Tests use two control folders
+(`--control-dir A` and `B`) to act as two PCs, with the family computer's hub on loopback (`tests/test_family_hub.py`).
 
 ## Profiles
 
@@ -27,7 +27,8 @@ PCs.
 - **Removing a profile** only forgets it. Its folder stays on disk, and adding the same folder again brings it back (a
   family folder comes back as the family).
 - **Not access control.** Profiles separate libraries but don't restrict who can open them: anyone at the computer can
-  switch. Families exchange only encrypted database copies through a folder, never through a network listener.
+  switch. Families exchange only encrypted database copies and deliveries, through the family hub (below), which
+  listens only on the family computer's Tailscale address.
 
 ## Families
 
@@ -38,20 +39,60 @@ PCs.
   individual profile uses, added in minor units per currency.
 - **Members on this computer:** the family copies their library's database directly (read-only) whenever it changes.
 - **Members on their own computer:**
-  - **Joining.** The family owner creates an encrypted **invite** (`.hminvite`, passphrase-protected; it carries the
-    family key). The member chooses **Join a family** in their own profile.
-  - **Publishing.** From then on their app writes `<sync folder>\<family id>\<member id>.hmfamily` after changes, at
-    most every ten minutes, or at once with **Share now**.
-    - The file is their database only (no documents or images), taken with SQLite's backup API.
-    - It is encrypted with the family's random 32-byte key (AES-256-GCM, the same chunked format as shares).
-    - It is written to a temporary name and then renamed, so a half-synced file is never read.
-  - **The sync folder** can be any folder both computers see, such as a shared OneDrive folder. Only ciphertext is
-    written there.
-  - **Importing.** The family computer checks every minute and imports a new copy through a `.importing` file. It
-    imports only after decryption, family and member checks, a schema upgrade if the member's app is older, and
-    SQLite's integrity check.
-  - **Refusals.** A copy from a newer app version, the wrong family or a different key is refused, and the member's
-    status says why.
+  - **Joining.** The family owner creates an encrypted **invite** (`.hminvite` version 2, passphrase-protected). It
+    carries the family key, the hub's Tailscale address and a new token for that member; a new invite replaces the
+    member's previous token. The member chooses **Join a family** in their own profile. An invite from before the hub
+    (version 1) is refused with "Ask the family computer for a new invite", and a membership made with one shows
+    **Re-join needed**.
+  - **Sending copies.** From then on their app seals a copy after changes, at most every ten minutes, or at once with
+    **Share now**, and sends it to the hub.
+    - The copy is their database only (no documents or images), taken with SQLite's backup API.
+    - It is encrypted with the family's random 32-byte key (AES-256-GCM, the same chunked format as shares). Its sealed
+      header carries a `seq` that rises with every copy.
+    - It is sealed into `<settings folder>\family\<family id>\outbox\copy.hmfamily` first and sent from there, so it
+      waits while the family computer is off; a newer copy replaces an unsent one.
+  - **Status.** Settings shows "Synced <time>", or "Waiting for the family computer · last synced <time>" while it
+    can't be reached (the app backs off from one minute, doubling to 30), or the hub's reason when it refused.
+  - **Importing.** The hub stages the upload in `<family folder>\incoming\`, then installs it through a `.importing`
+    file. It installs only after decryption, family and member checks, a `seq` above the last accepted one, a schema
+    upgrade if the member's app is older, and SQLite's integrity check.
+  - **Refusals.** A copy from a newer app version, the wrong family or member, a different key or an old `seq` is
+    refused, and the member's status says why. After a re-join the member's numbering restarts; the hub's refusal
+    names its last `seq` and the member's next copy is numbered above it.
+- **The family hub** (`app/family_hub.py`) runs inside the app on the computer holding the family folder, whichever
+  profile is open, on port 8767. The app holds each family folder open for it while it listens.
+  - It listens only on this computer's Tailscale address (`models/http_server.py` `check_bind`, shared with the GPU
+    relay), never on 0.0.0.0, a LAN address or loopback. Without Tailscale it doesn't listen, Settings says why, and
+    invites can't be made; the app tries again every minute.
+  - Every route needs the member's bearer token. Only its SHA-256 is kept, in `family.json`, compared with
+    `hmac.compare_digest`; a token works only for its own family and member, and removing a member or making them a new
+    invite ends the old token at once. GPU relay tokens and hub tokens are separate.
+  - Routes: `GET /v1/ping`; `PUT /v1/families/{fid}/members/{mid}/copy`; `GET …/deliveries`; `GET` and `DELETE`
+    `…/deliveries/{key}`; `POST …/blobs/missing`; `PUT …/blobs/{hash}`. Bodies are streamed to disk in 1 MiB chunks (a
+    copy at most 4 GiB, a document at most 1 GiB), never logged; the log has member, route, status and time only.
+- **Members' documents.** After each copy the hub accepts, the member's app asks which documents its records cite
+  (receipts, statements, bills, pay stubs, assets, tax forms, investment documents and their evidence links) the
+  family doesn't hold, and sends each one sealed with the family key (`.hmblob`, its header naming the family, member
+  and hash). If that is cut short, it carries on at the next sync.
+  - The hub decrypts each upload to check that it hashes to its name, then keeps the sealed bytes at
+    `<family folder>\blobs\<hh>\<hash>.hmblob`: encrypted at rest, content-addressed (a repeat changes nothing), with no
+    cap on the total. Settings shows the total next to the hub's address.
+  - **Opening an original from the family view** (`/api/documents/{id}/image?member=<member id>`) works while the
+    member's app is stopped. A member on this computer is read from their library folder; anyone else from the
+    family's copy, decrypted as it streams.
+- **Security** (reviewed and approved 2026-10-05):
+  - **Exposure.** Its own port, the Tailscale address only, and no route into the main app, which stays on 127.0.0.1.
+    Shared-GPU testers are kept off it by the tailnet policy in [Shared GPU](#shared-gpu).
+  - **Confidentiality and integrity.** Every copy, delivery and document is sealed with the family key (AES-256-GCM,
+    `library/share.py`), inside Tailscale's WireGuard. A stolen token alone can't read or forge one.
+  - **Replay.** A copy's `seq` must rise; documents are content-addressed; deliveries and corrections have unique keys
+    and apply once.
+  - **Limits.** Bodies are streamed to disk with per-copy and per-document caps; paths follow a fixed grammar (ids and
+    hex hashes only); no body is logged.
+  - **Not covered:** a compromised family computer; a member's computer compromised while it holds the family key;
+    `members\*.sqlite3`, which sit decrypted on the family computer. A stolen token can't read anything, but it can
+    acknowledge (and so delete) a member's waiting deliveries; the member's computer keeps the token in its settings
+    folder.
 - **Counted once.** The family works on its own adjusted copies (`<family folder>\view\`).
   - **Shared accounts.** An account two members both recorded (same institution, type and last four digits) counts for
     the member listed first. The other copy leaves out its transactions, statements and the receipts matched to them.
@@ -66,7 +107,8 @@ PCs.
   reading and Review like anyone's.
   - Nothing recorded there counts in any total until it is routed. Family totals still come only from members'
     libraries.
-  - While the family is open, Home, Review, Receipts & statements, Documents, Processing and Settings are available.
+  - While the family is open, Home, Review, Receipts & statements, Documents, Processing, Settings and the family
+    ledger (below) are available.
 - **Who is it for?** Review lists every family record with a **For** choice: one person, or *Shared by the family* for
   receipts. Statements and pay stubs belong to one person.
   - The app suggests an owner when exactly one member has an account ending in the card digits printed on a receipt
@@ -80,20 +122,64 @@ PCs.
   - The person whose card paid has the full charge on their statement. When it is matched to the shared receipt, it
     too counts only their part, and Transactions notes "Shared expense · your part … counted".
   - Across the family, the parts add up to the purchase, counted once.
+  - **A shared return** ([money](money.md#returns)) is divided the same way, in negative parts. Each person's refund is
+    their part: the card holder's credit, matched to the return receipt, counts their part, and everyone else's return
+    receipt counts theirs. A shared purchase and its shared return net to zero for each person.
+  - A refund credit is never paired with another member's payment as money sent between members.
 - **Delivery.** The record, the document and the person's part travel together, encrypted with the family key (migration
   035).
   - **A person on the family's computer:** their library is updated straight away.
-  - **A person on their own computer:** a file waits in `<sync folder>\<family id>\to-<member id>\`, and their app
-    imports it within a minute of their profile being open.
+  - **A person on their own computer:** a file waits in `<family folder>\outbox\to-<member id>\` until their app pulls
+    it from the hub (within a minute of their profile being open), applies it and acknowledges it, which deletes it.
+  - **A person on the family's computer whose library was busy** gets the same file, and imports it from the family
+    folder directly when their profile is next open.
     - The import never re-reads the document with a model (`Store.import_document`); it files the document from the
       confirmed record.
     - Delivered records count, since the family confirmed them, but the person can still reject one in their own
       Review.
   - **Changes.** Sending the same record again (to a new person, or with a different split) replaces what each person
     has. Anyone no longer on it gets a withdrawal, which rejects their copy.
-- **Not included yet** ([open work](open-work.md)):
-  - A shared recurring bill's payments still count in full for whoever paid.
-  - Records corrected in the family library after they were sent need **Send** again to update people's copies.
+  - **After Send**, a delivered record is the person's own: correct it from the family ledger ([Family
+    corrections](#family-corrections)), not in the family's inbox.
+- **Not included yet** ([open work](open-work.md)): a shared recurring bill's payments still count in full for whoever
+  paid.
+
+## Family ledger
+
+- **Transactions, Spending & budgets, Bills & recurring and Accounts** show every member's records in the family view,
+  each row with its **Owner** (`finance/family.py` `family_tool`).
+  - Each page asks the same finance tool a person's own page asks (`POST /api/finance/tools/{name}?members=true`), once
+    per member's view copy, so a joint account counts once and transfers between members aren't spending.
+  - List rows are merged and tagged `member_id` and `owner`; a page of transactions is the same slice of the merged list
+    (each member is asked for offset + limit rows). Totals are added exactly in minor units per currency, so they match
+    Home's family figures.
+  - Without `members=true` a family profile's tools read its own library, the inbox, as Review and Home expect.
+- **Accounts** in a filter are `<member id>:<account id>`, since ids are only unique within one library.
+- **Drawers and originals.** A record opens from its owner's copy (`GET /api/finance/records/{type}/{id}?member=`), and
+  its documents open from the family computer ([Families](#families), "Members' documents").
+- **Read-only parts.** Budgets, category rules, item categories, recurring-payment decisions and the recurring scan are
+  each person's own and aren't shown. Spending shows each currency; the USD total isn't (each member converts with
+  their own rates).
+
+## Family corrections
+
+- **Sending.** In the family ledger's transaction drawer, **Send correction** changes a member's category, merchant or
+  date (`PATCH /api/finance/records/{type}/{id}?member=`, `Manager.correct_family_record`). Receipts, bills, pay stubs
+  and statements take the same fields as a person's own correction, through the API.
+  - The value is checked with the person's own correction rules against the family's view of the record; a value that
+    already matches is refused.
+  - The family keeps a `sent` row in its own library (`family_corrections`, migration 062) and sends a delivery.
+    A member on this computer whose library isn't open gets it straight away; anyone else pulls it from the hub.
+  - The family view shows the new value at once, tagged **Waiting for <member>**, until the member's next copy answers
+    (its sealed header lists each received correction's status).
+- **On the member's computer** (`finance/family_corrections.py` `apply_correction`), each key applies once:
+  - the field still reads what the family saw: it is corrected, with the actor "Family · <who>" and the reason "Family
+    correction", and the record's history shows "changed by family (<who>)" with **Reject**;
+  - it already reads the new value: nothing changes, and it counts as applied;
+  - the member changed it since: a Review question, "Your family changed something you changed too", answered **Use
+    family's** or **Keep mine** (resolutions `took_family` and `kept_mine`).
+- **Reject** (`POST /api/finance/family-corrections/{key}/reject`) puts the previous value back under the member's own
+  name. The family isn't notified; the record shows the member's value in the family view once their next copy arrives.
 
 ## Sharing a library
 
@@ -181,7 +267,7 @@ needs no family, and the GPU computer never sees their library, only the model c
 
   `tag:gpu` is the tag on the GPU computer, and the port is the one in `gpu_host.json`. The default allow-all rule
   (`"src": ["*"]`) also covers shared users, so narrow it to `autogroup:member` first. Then a tester can't reach any
-  other port or computer, including the family hub when it exists.
+  other port or computer, including the family hub (port 8767).
 - **Their side** is the same as a family member's, below.
 
 **On a member's computer.** In Settings → Local models, choose "Model computer: Shared GPU (Tailscale)" and enter the

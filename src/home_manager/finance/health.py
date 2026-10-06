@@ -127,9 +127,10 @@ def links(db):
 
 
 def uncounted_receipts(db):
-    """A verified receipt stops counting once matched, so its charge must count instead (ledger.STANDALONE_RECEIPT, COUNTABLE)."""
+    """A verified receipt (a sale or a return) stops counting once matched, so its charge or credit must count instead
+    (ledger.STANDALONE_RECEIPT, COUNTABLE)."""
     return [problem("receipt_uncounted", "receipt", row[0]) for row in db.execute(
-        f"SELECT r.id FROM receipts r WHERE r.review_status='verified' AND r.total_minor>0 AND r.purchase_date IS NOT NULL AND NOT ({STANDALONE_RECEIPT}) "
+        f"SELECT r.id FROM receipts r WHERE r.review_status='verified' AND r.total_minor<>0 AND r.purchase_date IS NOT NULL AND NOT ({STANDALONE_RECEIPT}) "
         f"AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
         f"WHERE l.receipt_id=r.id AND l.review_status<>'rejected' AND {COUNTABLE})")]
 

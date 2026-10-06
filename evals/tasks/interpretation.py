@@ -24,7 +24,7 @@ US_DATE = re.compile(r"\b(\d{2})/(\d{2})/\d{4}\b")
 def cases():
     out = []
     for document in documents():
-        if document["document_type"] != "receipt":
+        if document["document_type"] != "receipt" or "return" in document["tags"]:  # A return's answers are signed, its print is not.
             continue
         fields, exponent = document["fields"], EXPONENTS[document["fields"]["currency"]]
         unclear = [match for line in document["lines"] for match in US_DATE.findall(line) if int(match[1]) <= 12]

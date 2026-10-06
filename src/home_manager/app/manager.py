@@ -16,8 +16,10 @@ from pathlib import Path
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 
+from ..core import actor
 from ..core.formats import SUPPORTED, extension
 from ..core.jobs import QUEUES, Cancelled, Work
 from ..core.logs import log_failure
@@ -55,7 +57,10 @@ from ..models.decisions import DecisionConfig, check_decision_model
 from ..models.model_client import check_connection, is_remote, set_token
 from ..models.vision import ROLE_ALIASES, ModelComputer, VisionConfig
 from ..models.web_lookup import https_get
-from .family_sync import FAMILY_MARKER, FamilyFolder, changed_since, publish, read_deliveries, read_invite, sync_folder, write_delivery, write_invite
+from .family_client import HubError, list_deliveries, pending_copy, pull_deliveries, push_documents, seal_pending, upload_pending
+from .family_hub import PORT as HUB_PORT
+from .family_hub import Hub
+from .family_sync import FAMILY_MARKER, FamilyFolder, changed_since, read_deliveries, read_invite, write_delivery, write_invite
 from .profiles import Profiles, public
 
 # Settings attribute -> (file name, model). Invalid saved settings fall back to
@@ -72,6 +77,7 @@ LEGACY_HOUSEHOLD = "household.json"
 FAMILY_READ_ONLY = "The family view is read-only. Switch to a member's profile to change records."
 PUBLISH_EVERY_SECONDS = 600  # A member's changed library is published to the family at most this often.
 FAMILY_TICKS = 20  # Inbox-monitor ticks (3 s each) between family checks.
+HUB_BACKOFF_SECONDS = (60, 1800)  # While the family computer can't be reached: first wait, doubling up to the last.
 SOURCE_TICKS = 10  # Inbox-monitor ticks between looks at watched folders, which can be large.
 
 
@@ -79,6 +85,16 @@ def default_control_dir() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "HomeManager"
     return Path.home() / ".local" / "share" / "home-manager"
+
+
+def apply_family_delivery(store, delivery, document):
+    """One delivery from the family: a family correction (finance/family_corrections.py), or a routed record
+    (finance/family_routing.py)."""
+    if delivery.get("type") == "correction":
+        from ..finance.family_corrections import apply_correction
+        return apply_correction(store, delivery)
+    from ..finance.family_routing import apply_delivery
+    return apply_delivery(store, delivery, document)
 
 
 def _settle(source, target):
@@ -89,7 +105,7 @@ def _settle(source, target):
 
 
 class Manager:
-    def __init__(self, control: Path, limits: ScanLimits | None = None):
+    def __init__(self, control: Path, limits: ScanLimits | None = None, hub_port=HUB_PORT, hub_loopback=False):
         self.control = safe_path(control)
         self.lock = DirectoryLock(self.control)
         self.settings_file = safe_path(self.control / "settings.json")
@@ -121,6 +137,10 @@ class Manager:
         self.profile = None  # The active profile record.
         self.family = None  # The open FamilyFolder while a family profile is active.
         self.family_ticks = 0
+        # The family hub (app/family_hub.py): listens while this computer holds a family folder, whichever profile is open.
+        # hub_loopback is for tests only. hub_retry is this member's backoff while the family computer can't be reached.
+        self.hub = Hub(hub_port, hub_loopback)
+        self.hub_retry = {"profile": None, "failures": 0, "next": 0.0}
         self.household = HouseholdConfig()
         self.startup_error = None
         self.limits = limits or ScanLimits()
@@ -130,6 +150,7 @@ class Manager:
         self.source_seen: dict[tuple[str, int], tuple] = {}
         self.source_candidate: dict[tuple[str, int], tuple] = {}
         self.source_ticks = 0
+        self.refresh_hub()  # Before a family view opens, so it shares the hub's open folder.
         try:
             active = self.profiles.active() or self.migrate_settings()
             if active:
@@ -303,6 +324,7 @@ class Manager:
         return {"profile": public(self.profile) if self.profile else None, "profiles": [public(item) for item in self.profiles.all()],
                 "people": self.people(),
                 "family": self.family.summary() if self.family else None,
+                "hub_status": self.hub.status(),  # Where the family hub listens, or why it can't (app/family_hub.py).
                 "managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
                 "session": {key: value for key, value in self.session.items() if key != "home"} if self.session else None,
                 "session_opening": self.session_opening,
@@ -374,11 +396,13 @@ class Manager:
             if profile["kind"] == "family":
                 # The family's own library is its inbox: documents uploaded to the family, each then routed to a person or
                 # shared (finance/family_routing.py). Family totals still come only from members' copies.
-                family = FamilyFolder(Path(profile["folder"]))
+                held = self.hub.folder(profile["folder"])
+                family = held or FamilyFolder(Path(profile["folder"]))
                 try:
                     self.open_library(validate_managed(str(family.root / "library"), self.control), persist=False)
                 except BaseException:
-                    family.close()
+                    if not held:
+                        family.close()
                     raise
                 self.leave_family()
                 self.family = family
@@ -406,9 +430,11 @@ class Manager:
             if (folder / FAMILY_MARKER).is_file():  # A family folder removed from this computer's list comes back as the family.
                 family = FamilyFolder(folder)
                 try:
-                    return public(self.profiles.add(family.data["name"], "family", folder))
+                    added = public(self.profiles.add(family.data["name"], "family", folder))
                 finally:
                     family.close()
+                self.refresh_hub()
+                return added
             if folder.exists() and any(folder.iterdir()) and not (folder / ".home-manager-store").exists():
                 raise PathError("Choose an empty folder or an existing Home Manager library for the new profile.")
             return public(self.profiles.add(name, "individual", folder))
@@ -424,7 +450,9 @@ class Manager:
     def remove_profile(self, profile_id):
         """Forget a profile on this computer. Its folder, library and records stay on disk."""
         with self.mutex:
-            return public(self.profiles.remove(profile_id))
+            removed = public(self.profiles.remove(profile_id))
+            self.refresh_hub()
+            return removed
 
     def close_library(self):
         """Close the open library, leaving no store (a family profile holds none). Called under self.mutex with no work running."""
@@ -439,28 +467,42 @@ class Manager:
     def leave_family(self):
         with self.mutex:
             if self.family:
-                self.family.close()
+                if self.hub.folder(self.family.root) is not self.family:
+                    self.family.close()
                 self.family = None
 
     # Families -----------------------------------------------------------------
 
+    def refresh_hub(self):
+        """Hold every family folder on this computer open for the hub and listen, or record why the hub can't listen
+        (no family, no Tailscale) and let the folders go. Called at start, when families change and every family check."""
+        with self.mutex:
+            roots = [profile["folder"] for profile in self.profiles.all() if profile["kind"] == "family"]
+            self.hub.hold(roots, self.family)
+            if not self.hub.start()["listening"]:
+                self.hub.hold([], self.family)  # Nothing to serve: other code may open the folders itself.
+            return self.hub.status()
+
     def family_for(self, profile_id):
-        """The family folder of a family profile: the open one, or opened for this call (the caller closes it)."""
+        """The family folder of a family profile: the open one (the family view's or the hub's), or opened for this call
+        (the caller closes it)."""
         profile = self.profiles.get(profile_id)
         if profile["kind"] != "family":
             raise ValueError("That profile is not a family.")
         if self.family and self.profile and self.profile["id"] == profile_id:
             return self.family, False
+        held = self.hub.folder(profile["folder"])
+        if held:
+            return held, False
         return FamilyFolder(Path(profile["folder"])), True
 
-    def create_family(self, name, folder_value, sync_value, members=(), my_profile=None):
+    def create_family(self, name, folder_value, members=(), my_profile=None):
         """A family profile with its members. Nothing switches; open the family from the profile menu."""
         with self.mutex:
             folder = validate_managed(folder_value, self.control)
             if self.profiles.by_folder(folder):
                 raise PathError("Another profile already uses that folder.")
-            sync = sync_folder(sync_value)
-            family = FamilyFolder.create(folder, name, sync)
+            family = FamilyFolder.create(folder, name)
             try:
                 for member in members:
                     family.add_member(member, "remote")
@@ -469,6 +511,7 @@ class Manager:
                     self.link_local(family, family.add_member(self.profiles.get(my_profile)["name"], "local", my_profile)["member_id"], my_profile)
             finally:
                 family.close()
+            self.refresh_hub()
             return public(profile)
 
     def add_family_member(self, family_id, name):
@@ -505,11 +548,11 @@ class Manager:
         if profile.get("family") and profile["family"]["family_id"] != family.data["family_id"]:
             raise ValueError(f"{profile['name']} already belongs to another family.")
         member = family.member(member_id)
-        member.update(source="local", profile_id=profile_id, signature=None)
+        member.update(source="local", profile_id=profile_id, signature=None, token_sha256=None)
         family.save()
-        # The key and sync folder let this profile import what the family sends it when the family can't open its library.
+        # The key and family folder let this profile import what the family left for it when the family couldn't open its library.
         self.profiles.update(profile_id, family={"family_id": family.data["family_id"], "family_name": family.data["name"],
-                                                 "member_id": member_id, "local": True, "key": family.data["key"], "sync": family.data["sync"]})
+                                                 "member_id": member_id, "local": True, "key": family.data["key"], "folder": str(family.root)})
         if self.profile and self.profile["id"] == profile_id:
             self.profile = self.profiles.get(profile_id)
 
@@ -531,23 +574,27 @@ class Manager:
                     family.close()
 
     def invite_member(self, family_id, member_id, destination_value, passphrase):
-        """An encrypted invite for a member's own computer. It carries the family key; the passphrase travels separately."""
+        """An encrypted invite for a member's own computer. It carries the family key, the hub's Tailscale address and a new
+        token for this member (their previous invite stops working); the passphrase travels separately."""
         with self.mutex:
             destination = separate_folder(destination_value, self.control, (self.store.root,) if self.store else ())
+            hub = self.refresh_hub()
+            if not hub["listening"]:
+                raise ValueError(f"Members' computers can't reach this one yet. {hub['reason']}")
             family, temporary = self.family_for(family_id)
             try:
                 member = family.member(member_id)
-                path = write_invite(family.data, member, destination, passphrase)
                 if member["source"] != "remote":
                     member.update(source="remote", profile_id=None, signature=None)
                     family.save()
+                path = write_invite(family.data, member, destination, passphrase, hub["address"], family.new_token(member_id))
                 return {"path": str(path)}
             finally:
                 if temporary:
                     family.close()
 
-    def join_family(self, invite_value, passphrase, sync_value=None):
-        """Link the active individual profile to a family from its invite, then publish a first copy."""
+    def join_family(self, invite_value, passphrase):
+        """Link the active individual profile to a family from its invite, then send a first copy."""
         with self.mutex:
             if self.session:
                 raise RuntimeError("End the shared-library session before joining a family.")
@@ -555,10 +602,12 @@ class Manager:
                 raise ValueError("Open your own profile before joining a family.")
             from ..core.paths import local_absolute
             invite = read_invite(local_absolute(invite_value), passphrase)
-            sync = sync_folder(sync_value or invite.get("sync_hint"))
             link = {"family_id": invite["family_id"], "family_name": str(invite.get("family_name") or "Family")[:60], "member_id": invite["member_id"],
-                    "key": invite["key"], "sync": str(sync), "publishing": True, "published_at": None, "publish_error": None, "local": False}
+                    "key": invite["key"], "hub": invite["hub"], "token": invite["token"], "seq": 0, "publishing": True, "published_at": None,
+                    "last_sync": None, "hub_state": "waiting", "hub_error": None, "local": False}
+            pending_copy(self.control, link).unlink(missing_ok=True)  # A copy left from an earlier membership.
             self.profile = self.profiles.update(self.profile["id"], family=link)
+            self.hub_retry = {"profile": self.profile["id"], "failures": 0, "next": 0.0}
             self.start_family_publish()
             return public(self.profile)
 
@@ -566,6 +615,9 @@ class Manager:
         with self.mutex:
             if not self.profile or not self.profile.get("family"):
                 raise ValueError("This profile is not in a family.")
+            link = self.profile["family"]
+            if not link.get("local"):
+                pending_copy(self.control, link).unlink(missing_ok=True)  # An unsent copy never goes now.
             self.profile = self.profiles.update(self.profile["id"], family=None)
             return public(self.profile)
 
@@ -578,27 +630,88 @@ class Manager:
             return public(self.profile)
 
     def start_family_publish(self):
+        """Share now: seal a fresh copy and send it, after taking in what the family sent."""
         with self.mutex:
             link = (self.profile or {}).get("family")
             if self.session or not self.store or not link or link.get("local"):
                 raise ValueError("This profile does not publish to a family.")
-            profile_id, store, name, born = self.profile["id"], self.store, self.profile["name"], self.household.birth_year
+            if not link.get("hub"):
+                raise ValueError("Re-join your family: ask the family computer for a new invite.")
+            self.hub_retry["next"] = 0.0
+            return self.start_family_sync(reseal=True)
 
-            def run(work):
+    def update_link(self, profile_id, update):
+        """Merge changes into a profile's family link (if it still has one)."""
+        with self.mutex:
+            current = self.profiles.get(profile_id)
+            if current.get("family"):
+                profile = self.profiles.update(profile_id, family={**current["family"], **update})
+                if self.profile and self.profile["id"] == profile_id:
+                    self.profile = profile
+                return profile["family"]
+            return None
+
+    def hub_result(self, profile_id, error=None):
+        """Record how the last contact with the family computer went, and when to try again."""
+        retry = self.hub_retry if self.hub_retry["profile"] == profile_id else {"profile": profile_id, "failures": 0, "next": 0.0}
+        if error is None:
+            retry.update(failures=0, next=0.0)
+            update = {"hub_state": "ok", "hub_error": None, "last_sync": now()}
+        else:
+            retry["failures"] += 1
+            first, longest = HUB_BACKOFF_SECONDS
+            retry["next"] = time.monotonic() + min(first * 2 ** (retry["failures"] - 1), longest)
+            update = {"hub_state": error.state, "hub_error": str(error)}
+        self.hub_retry = retry
+        self.update_link(profile_id, update)
+
+    def start_family_sync(self, reseal=False):
+        """Take in what the family sent (from the hub), then send this library's copy: a fresh one when reseal, otherwise one
+        still waiting. Called under self.mutex."""
+        link, store, control = self.profile["family"], self.store, self.control
+        profile_id, name, born = self.profile["id"], self.profile["name"], self.household.birth_year
+
+        def seal(current):
+            try:
+                return self.update_link(profile_id, seal_pending(store, control, current, name, born)) or current
+            except (ValueError, OSError) as exc:
+                log_failure(log, "family copy", exc)
+                raise HubError("waiting", "Your copy couldn't be prepared. Details are in the Home Manager log.") from None
+
+        def run(work):
+            current = link
+            try:
+                unreachable = None
+                try:  # First, so the copy includes what the family sent.
+                    if pull_deliveries(store, current, lambda delivery, document: apply_family_delivery(store, delivery, document), work=work):
+                        Reconciler(store).run("import")  # Records arriving from outside, like an import.
+                except HubError as exc:
+                    unreachable = exc
+                if reseal:
+                    current = seal(current)  # Sealed even while the hub can't be reached: it waits in the outbox.
+                if unreachable:
+                    raise unreachable
                 try:
-                    published = publish(store, link, name, born)
-                    update = {"published_at": published, "publish_error": None}
-                except (ValueError, OSError) as exc:
-                    update = {"publish_error": str(exc) if isinstance(exc, ValueError) else "The sync folder could not be written."}
-                with self.mutex:
-                    current = self.profiles.get(profile_id)
-                    if current.get("family"):
-                        profile = self.profiles.update(profile_id, family={**current["family"], **update})
-                        if self.profile and self.profile["id"] == profile_id:
-                            self.profile = profile
+                    sent = upload_pending(control, current)
+                except HubError as exc:
+                    if exc.last_seq is None:
+                        raise
+                    # The family already has a copy numbered this high (this profile re-joined): number a fresh one above it.
+                    current = seal(self.update_link(profile_id, {"seq": exc.last_seq}) or current)
+                    sent = upload_pending(control, current)
+                # Then the documents the copy's records cite, so originals open in the family view. documents_due keeps
+                # this for the next sync if it is cut short.
+                if sent or current.get("documents_due"):
+                    current = self.update_link(profile_id, {"documents_due": True}) or current
+                    push_documents(store, current, work)
+                    self.update_link(profile_id, {"documents_due": False})
+            except HubError as exc:
+                self.hub_result(profile_id, exc)
+                return
+            self.hub_result(profile_id)
 
-            self.future = self.submit("capture", "family_publish", "Sharing your totals with your family", run)
-            return {"started": True}
+        self.future = self.submit("capture", "family_sync", "Syncing with your family", run)
+        return {"started": True}
 
     def start_family_refresh(self):
         with self.mutex:
@@ -610,8 +723,11 @@ class Manager:
             return {"started": True}
 
     def check_family(self):
-        """Every minute: a family view picks up new member copies; a member imports what the family sent them, and publishes a
-        changed library at most every ten minutes."""
+        """Every minute: the hub starts listening if it couldn't before (Tailscale started since); a family view picks up its
+        members on this computer; a member on this computer imports what the family left for them; a member elsewhere asks the
+        hub for deliveries and sends a changed copy at most every ten minutes, backing off while the hub can't be reached."""
+        if not self.hub.status()["listening"]:
+            self.refresh_hub()
         with self.mutex:
             if self.session or self.busy("capture"):
                 return
@@ -619,16 +735,45 @@ class Manager:
                 self.start_family_refresh()
                 return
             link = (self.profile or {}).get("family")
-            if self.store and link and link.get("key") and link.get("sync") and read_deliveries(link):
-                self.start_family_import()
+            if not self.store or not link:
                 return
-            if not self.store or not link or link.get("local") or not link.get("publishing", True):
+            if link.get("local"):
+                root = self.local_family_root(link)
+                if root and read_deliveries(root, link):
+                    self.start_family_import()
+                return
+            profile_id = self.profile["id"]
+            waiting = self.hub_retry["profile"] == profile_id and time.monotonic() < self.hub_retry["next"]
+            if not link.get("hub") or waiting:
                 return
             last = link.get("published_at")
-            if last and (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() < PUBLISH_EVERY_SECONDS:
-                return
-            if changed_since(self.store, last):
-                self.start_family_publish()
+            due = link.get("publishing", True) and (not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+                                                     >= PUBLISH_EVERY_SECONDS) and changed_since(self.store, last)
+            unsent = link.get("publishing", True) and (pending_copy(self.control, link).is_file() or bool(link.get("documents_due")))
+        try:
+            keys = list_deliveries(link)  # Outside the lock: the family computer may be slow to answer.
+        except HubError as exc:
+            self.hub_result(profile_id, exc)
+            return
+        self.hub_result(profile_id)
+        with self.mutex:
+            if (keys or due or unsent) and self.profile and self.profile["id"] == profile_id and not self.busy("capture"):
+                self.start_family_sync(reseal=due)
+
+    def local_family_root(self, link):
+        """The family folder of a member on this computer: from the link, or (for links made before the hub) the family
+        profile with this family's id."""
+        if link.get("folder"):
+            return Path(link["folder"])
+        for profile in self.profiles.all():
+            if profile["kind"] != "family":
+                continue
+            try:
+                if json.loads((safe_path(Path(profile["folder"])) / "family.json").read_text(encoding="utf-8"))["family_id"] == link["family_id"]:
+                    return Path(profile["folder"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return None
 
     # Family inbox: routing and delivery (finance/family_routing.py) ------------------------------
 
@@ -666,7 +811,7 @@ class Manager:
 
     def start_family_delivery(self):
         """Deliver every confirmed assignment: straight into the library of a person on this computer, otherwise as an
-        encrypted file in their folder in the sync folder. Then refresh the family view."""
+        encrypted file in the family's outbox, which their computer pulls from the hub. Then refresh the family view."""
         with self.mutex:
             family, store = self.family, self.store
             folders = {item["id"]: item["folder"] for item in self.profiles.all() if item["kind"] == "individual"}
@@ -702,9 +847,9 @@ class Manager:
                             target.close()
                         applied = True
                     except (ValueError, OSError):
-                        applied = False  # Locked or unavailable: it waits in the sync folder for their profile instead.
+                        applied = False  # Locked or unavailable: it waits in the family's outbox for their profile instead.
                 if not applied:
-                    write_delivery(family.data["family_id"], family.data["key"], family.data["sync"], member_id, delivery,
+                    write_delivery(family.root, family.data["family_id"], family.data["key"], member_id, delivery,
                                    document if action == "record" else None)
                 results[member_id] = "delivered" if action == "record" else "retracted"
             routing.mark_delivered(record_type, record_id, results)
@@ -712,18 +857,19 @@ class Manager:
         family.refresh(folders_now, work)
 
     def start_family_import(self):
-        """Import what the family sent this profile: records it routed here or shared with this person."""
-        from ..finance.family_routing import apply_delivery
+        """Import what the family left in its folder for this profile, a member on this computer: records it routed here or
+        shared with this person while this profile's library was open."""
         from ..finance.reconcile import Reconciler
         with self.mutex:
             link, store = self.profile["family"], self.store
+            root = self.local_family_root(link)
 
             def run(work):
                 imported = 0
-                for path, delivery, document in read_deliveries(link):
+                for path, delivery, document in read_deliveries(root, link) if root else []:
                     work.check()
                     try:
-                        apply_delivery(store, delivery, document)
+                        apply_family_delivery(store, delivery, document)
                         imported += 1
                     except (ValueError, OSError):
                         continue  # Left in place; the next check tries again.
@@ -749,6 +895,138 @@ class Manager:
                 return {"family_empty": True, "family": family.summary(), "routing_waiting": waiting}
             return {**family_dashboard(members, month, months, currency, self.household.home_currency), "family": family.summary(),
                     "routing_waiting": waiting}
+
+    def family_finance_tool(self, name, arguments=None):
+        """The family ledger: a finance tool across members' copies (finance/family.py family_tool), with the fields of
+        each row a correction is still waiting on."""
+        from ..finance.family import family_tool
+        family = self.family
+        if not family:
+            raise ValueError("Open a family profile first.")
+        with family.mutex:
+            return family_tool(self.family_members(), name, arguments, family.pending_corrections())
+
+    def family_record(self, member_id, record_type, record_id):
+        from ..finance.family import family_record
+        family = self.family
+        if not family:
+            raise ValueError("Open a family profile first.")
+        with family.mutex:
+            return family_record(self.family_members(), member_id, record_type, record_id, family.pending_corrections())
+
+    def correct_family_record(self, member_id, record_type, record_id, changes):
+        """A change made in the family ledger to a member's record (finance/family_corrections.py). Each field is checked
+        with a person's own correction's rules against the family's view of the record, kept as a 'sent' row, and sent:
+        straight into the library of a member on this computer whose profile isn't open, otherwise as a delivery their
+        computer pulls from the hub. The family view shows it at once, tagged until the member's copy answers."""
+        from ..finance.family import MemberStore
+        from ..finance.family_corrections import apply_correction, checked_value, current_text, same
+        with self.mutex:
+            family, store = self.family, self.store
+            if not family or not store:
+                raise ValueError("Open a family profile first.")
+            member = family.member(member_id)
+            view = family.view_dir / f"{member_id}.sqlite3"
+            if not view.exists():
+                raise ValueError(f"{member['name']}'s records haven't reached the family computer yet.")
+            if not changes:
+                raise ValueError("Choose a field to change.")
+            who = actor.current() or family.data["name"]
+            sends = []
+            with family.mutex, MemberStore(view).connection() as db:
+                for field, value in changes.items():
+                    previous = current_text(db, record_type, record_id, field)
+                    checked = checked_value(db, record_type, record_id, field, value)
+                    if not same(record_type, field, previous, checked):
+                        sends.append({"type": "correction", "key": uuid.uuid4().hex, "member_id": member_id, "record_type": record_type,
+                                      "record_id": record_id, "field": field, "value": checked, "previous": previous, "actor": who})
+            if not sends:
+                raise ValueError("That's what the record already says.")
+            folder = next((item["folder"] for item in self.profiles.all() if item["id"] == member.get("profile_id")), None) \
+                if member["source"] == "local" else None
+            with store.connection() as db:
+                for item in sends:
+                    db.execute("INSERT INTO family_corrections(key,direction,member_id,record_type,record_id,field,value,previous,actor,status,created_at,updated_at) "
+                               "VALUES(?,'sent',?,?,?,?,?,?,?,'pending',?,?)",
+                               (item["key"], member_id, record_type, record_id, item["field"], item["value"], item["previous"], who, now(), now()))
+            for item in sends:
+                applied = None
+                if folder:  # A person on this computer: their library is closed while the family is open, so apply it now.
+                    try:
+                        target = Store(Path(folder))
+                        try:
+                            applied = apply_correction(target, item)
+                        finally:
+                            target.close()
+                    except (ValueError, OSError):
+                        applied = None  # Locked or unavailable: it waits in the family's outbox instead.
+                if applied:
+                    family.acknowledge(member_id, {item["key"]: applied})
+                else:
+                    write_delivery(family.root, family.data["family_id"], family.data["key"], member_id, item)
+            if folder:
+                family.refresh({item["id"]: item["folder"] for item in self.profiles.all() if item["kind"] == "individual"})
+            with family.mutex:
+                family.rebuild_views()
+            return self.family_record(member_id, record_type, record_id)
+
+    def reject_family_correction(self, key):
+        """The member undoes a correction the family made to their record (finance/family_corrections.py)."""
+        from ..finance.family_corrections import reject_correction
+        with self.mutex:
+            store = self.require(False)
+        return reject_correction(store, key)
+
+    def resolve_issue(self, issue_id, transaction_id=None, family_choice=None):
+        """Answer a Review question: a family correction that conflicts ("Keep mine" or "Use family's"), or an ambiguous match."""
+        from ..finance.family_corrections import resolve_conflict
+        with self.mutex:
+            store = self.require(False)
+        with store.connection() as db:
+            row = db.execute("SELECT issue_type FROM reconciliation_issues WHERE id=?", (issue_id,)).fetchone()
+        if row and row["issue_type"] == "family_correction":
+            if family_choice not in ("mine", "family"):
+                raise ValueError("Choose Keep mine or Use family's.")
+            return resolve_conflict(store, issue_id, family_choice == "family")
+        return self.reconciler.resolve_issue(issue_id, transaction_id)
+
+    def family_original(self, member_id, document_id, blob_hash=None, media=lambda relative_path: None):
+        """A member's preserved document, for the family view: (media(relative path), chunks); media may refuse the file
+        type before anything is opened. It opens while the member's app is stopped: a member on this computer is read from
+        their library folder, any other from the documents their computer sent (stored encrypted, decrypted as it streams)."""
+        from ..finance.family import MemberStore
+        from ..library.storage import digest_file
+        with self.mutex:
+            family = self.family
+            if not family:
+                raise ValueError("Open a family profile first.")
+            member = family.member(member_id)
+            view = family.view_dir / f"{member_id}.sqlite3"
+            if not view.exists():
+                raise ValueError(f"{member['name']}'s records haven't reached the family computer yet.")
+            document, version = MemberStore(view).document_version(document_id, blob_hash)
+            digest, media_type = version["hash"], media(document["relative_path"])
+            folder = next((item["folder"] for item in self.profiles.all() if item["id"] == member.get("profile_id")), None) \
+                if member["source"] == "local" else None
+        local = safe_path(Path(folder) / "originals" / digest[:2] / (digest + ".blob")) if folder else None
+        if local is not None and local.is_file():
+            if digest_file(local) != digest:
+                raise RuntimeError("Preserved document failed its integrity check.")
+
+            def from_library():
+                with open(local, "rb") as source:
+                    while chunk := source.read(1024 * 1024):
+                        yield chunk
+            return media_type, from_library()
+        raw, reader = family.open_blob(digest)
+
+        def from_family():
+            try:
+                while chunk := reader.read(1024 * 1024):
+                    yield chunk
+            finally:
+                raw.close()
+        return media_type, from_family()
 
     def family_net_worth(self, currency=None):
         from ..finance.family import family_net_worth
@@ -1912,6 +2190,7 @@ class Manager:
         if self.store:
             self.store.close()
         self.leave_family()
+        self.hub.stop()
         if self.session:
             shutil.rmtree(self.sessions / self.session["id"], ignore_errors=True)
         self.lock.close()

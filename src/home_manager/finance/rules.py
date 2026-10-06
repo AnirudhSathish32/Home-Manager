@@ -4,7 +4,7 @@ Each constant set a calculation uses (tax brackets come from confirmed tax table
 listed here with a version, the tax year it's for (None: not tied to one year), the source it was taken from, the day it
 was checked against that source (None: no check is recorded), and when a CPA reviewed it (None: not reviewed, shown as a
 plain fact, not a warning). values_sha256 is the digest of the values as written: changing a value without a new
-version fails tests/test_rules.py, so a figure's rule card never names a version whose values changed under it.
+version fails tests/test_provenance.py, so a figure's rule card never names a version whose values changed under it.
 
 sync() writes the current versions into rule_sources, keeping older versions there for figures worked out before.
 """
@@ -50,6 +50,11 @@ def _safe_harbor():
             "no_penalty_below_minor": NO_PENALTY_BELOW}
 
 
+def _additional_medicare():
+    from .paystub import ADDITIONAL_MEDICARE_WITHHOLDING
+    return {"withholding_threshold_minor": ADDITIONAL_MEDICARE_WITHHOLDING}
+
+
 def _tax_table_lookup():
     from ..household.tax_tables import TAX_TABLE_VERSION
     return {"procedure": TAX_TABLE_VERSION}
@@ -79,6 +84,10 @@ RULES = {
     "aotc": {"version": "1", "name": "American opportunity credit", "tax_year": None,
              "source": "IRC §25A(b)(1): 100% of the first $2,000 and 25% of the next $2,000", "checked_on": None,
              "values": _aotc, "values_sha256": "8886b3e7fb0b4f870b35e86a031ad265a9adb469b7fdee494ff1032a89b602b9"},
+    "additional_medicare_withholding": {"version": "1", "name": "Additional Medicare withholding", "tax_year": None,
+                                        "source": "IRC §3102(f)(1): withheld on wages above $200,000, whatever the filing status",
+                                        "checked_on": None, "values": _additional_medicare,
+                                        "values_sha256": "5b8713032e4d106816e65867c7456e1c083f0d24555c0c4ae3fff24aa7504f60"},
     "safe_harbor": {"version": "2026-1", "name": "Estimated tax safe harbor", "tax_year": None,
                     "source": "IRC §6654(d)(1)(B), (C) and (e)(1)", "checked_on": None, "values": _safe_harbor,
                     "values_sha256": "b4e7e90d925c52d790874b8d0c035aba02bef268c202ccd0ea56abddffe9b8bc"},

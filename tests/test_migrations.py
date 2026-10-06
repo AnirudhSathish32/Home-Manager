@@ -67,8 +67,8 @@ def receipt_with_lines(store):
     with store.connection() as db:
         db.execute("INSERT INTO blobs VALUES(?,1,?)", (digest, stamp))
         db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed',?,?)", (stamp, stamp))
-        db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,folder_year,folder_month,current_hash,first_seen,last_seen,last_job) "
-                   "VALUES('root','r.png','r.png',0,0,?,?,?,'job')", (digest, stamp, stamp))
+        db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                   "VALUES('root','r.png','r.png',?,?,?,'job')", (digest, stamp, stamp))
         db.execute("INSERT INTO receipts(document_id,blob_hash,currency,review_status,created_at,updated_at) VALUES(1,?,'USD','verified',?,?)", (digest, stamp, stamp))
         db.execute("INSERT INTO receipt_items(receipt_id,position,description,review_status) VALUES(1,1,'MILK','verified')")
         db.execute("INSERT INTO receipt_rewards(receipt_id,position,kind,description,locator_json) VALUES(1,1,'earned','points','{}')")
@@ -195,6 +195,39 @@ def test_056_makes_pensions_income_and_keeps_values_and_forms():
             db.execute("INSERT INTO price_quotes(source,symbol,currency,as_of,price,fetched_at) VALUES('elsewhere','BTC','USD','2026-10-01','1','t')")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("INSERT INTO ibond_rates(period_start,fixed_bp,inflation_semiannual_bp) VALUES('2026-11-15',0,0)")
+    finally:
+        db.close()
+
+
+def test_064_drops_the_dead_columns_and_keeps_the_rows():
+    """The 2026-09-30 audit's dead columns (docs/development.md "Database checks") go; the rows and what links to them stay."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 64:
+                db.executescript(script.read_text())
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", ("a" * 64,))
+        db.execute("INSERT INTO jobs(id,source_root,year,month,status,created_at,updated_at) VALUES('job','root',2026,9,'completed','t','t')")
+        db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,folder_year,folder_month,current_hash,first_seen,last_seen,last_job) "
+                   "VALUES('root','r.png','r.png',2026,9,?,'t','t','job')", ("a" * 64,))
+        account = db.execute("INSERT INTO investment_accounts(kind,name,currency,source,created_at,updated_at) VALUES('brokerage','B','USD','manual','t','t')").lastrowid
+        first = db.execute("INSERT INTO investment_events(account_id,event_date,event_type,amount_minor,document_id,review_status,created_at) "
+                           "VALUES(?,'2026-09-01','dividend',500,1,'verified','t')", (account,)).lastrowid
+        db.execute("INSERT INTO investment_events(account_id,event_date,event_type,amount_minor,reverses_event_id,review_status,created_at) "
+                   "VALUES(?,'2026-09-02','dividend',-500,?,'verified','t')", (account, first))
+        db.commit()
+        storage.apply_migrations(db, 63)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+
+        def columns(table):
+            return {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        assert not {"year", "month"} & columns("jobs") and not {"folder_year", "folder_month"} & columns("occurrences")
+        assert "reverses_event_id" not in columns("investment_events")
+        assert db.execute("SELECT count(*) FROM investment_events WHERE account_id=?", (account,)).fetchone()[0] == 2
+        assert db.execute("SELECT document_id FROM investment_events WHERE id=?", (first,)).fetchone()[0] == 1
+        assert db.execute("SELECT strict FROM pragma_table_list WHERE name='investment_events'").fetchone()[0] == 1
+        assert {"investment_events_account", "investment_events_confirmation", "investment_events_source"} <= \
+            {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='investment_events'")}
     finally:
         db.close()
 

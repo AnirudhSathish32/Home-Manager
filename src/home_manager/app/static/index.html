@@ -42,7 +42,7 @@
       <a id="nav-search" class="nav-link nav-search-link" href="#/search" data-route="search" data-icon="search"><span class="nav-label">Search</span></a>
       <a id="nav-home" class="nav-link" href="#/home" data-route="home" data-icon="home"><span class="nav-label">Home</span></a>
       <a id="nav-review" class="nav-link" href="#/review" data-route="review" data-icon="list-checks"><span class="nav-label">Review</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
-      <p class="nav-group">Money</p>
+      <p class="nav-group nav-group-money">Money</p>
       <a id="nav-transactions" class="nav-link" href="#/transactions" data-route="transactions" data-icon="wallet"><span class="nav-label">Transactions</span></a>
       <a id="nav-receipts" class="nav-link" href="#/receipts" data-route="receipts" data-icon="paperclip"><span class="nav-label">Receipts &amp; statements</span></a>
       <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">Spending &amp; budgets</span></a>
@@ -392,7 +392,7 @@
         <section id="review-detail" class="panel review-detail" tabindex="-1" aria-live="polite"></section>
       </div>
       <section class="panel" id="review-unmatched-panel"><h2>Receipts with no matching charge</h2>
-        <p class="muted small">Approved receipts count as spending on their own. When a card or bank charge matches one, the charge counts instead, never both.</p>
+        <p class="muted small">Approved receipts count as spending on their own, and approved return receipts as refunds. When a card or bank line matches one, the line counts instead, never both.</p>
         <ul id="review-unmatched" class="finance-list"></ul><p id="review-unmatched-note" class="muted small"></p></section>
     </section>
 
@@ -419,10 +419,10 @@
       </div>
       <p id="tx-summary" class="muted small" aria-live="polite"></p>
       <p id="item-backfill" class="callout" hidden></p>
-      <div id="item-table" class="table-wrap"><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Item</th><th scope="col">Account</th>
+      <div id="item-table" class="table-wrap"><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col" class="owner-col">Owner</th><th scope="col">Item</th><th scope="col">Account</th>
         <th scope="col">Category</th><th scope="col">Status</th><th scope="col" class="numeric">Paid</th></tr></thead>
         <tbody id="item-rows"></tbody></table></div>
-      <div id="charge-table" class="table-wrap" hidden><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col">Description</th><th scope="col">Account</th>
+      <div id="charge-table" class="table-wrap" hidden><table class="data-table"><thead><tr><th scope="col" class="col-date">Date</th><th scope="col" class="owner-col">Owner</th><th scope="col">Description</th><th scope="col">Account</th>
         <th scope="col">Category</th><th scope="col"><span class="visually-hidden">Receipt</span></th><th scope="col">Status</th><th scope="col" class="numeric">Amount</th></tr></thead>
         <tbody id="tx-rows"></tbody></table></div>
       <div class="pager"><button id="tx-prev" type="button">Previous</button><span id="tx-page"></span><button id="tx-next" type="button">Next</button></div>
@@ -435,8 +435,8 @@
           <label class="inline-field">Compare to <select id="spend-compare"><option value="previous">Previous month</option><option value="last_year">Same month last year</option></select></label></div></header>
       <div id="spend-error"></div>
       <section class="panel"><div id="spend-figures" class="figure-row"></div><p id="spend-coverage" class="muted small"></p></section>
-      <section class="panel" id="budget-panel"><h2>Budgets</h2>
-        <p class="muted small">A monthly limit per category. Spent is the month's counted spending in the category before refunds.</p>
+      <section class="panel personal-only" id="budget-panel"><h2>Budgets</h2>
+        <p class="muted small">A monthly limit per category. Spent is the month's counted spending in the category, less its refunds.</p>
         <div id="budget-rows" class="budget-rows"></div>
         <form id="budget-form" class="inline-form">
           <label class="inline-field">Category <input id="budget-category" list="category-options" required maxlength="60" autocomplete="off"></label>
@@ -453,7 +453,7 @@
             <tbody id="spend-merchants"></tbody></table></div></section>
         <section class="panel"><h2>Refunds</h2><ul id="spend-refunds" class="finance-list"></ul></section>
       </div>
-      <section class="panel" id="rules-panel"><h2>Category rules</h2>
+      <section class="panel personal-only" id="rules-panel"><h2>Category rules</h2>
         <p class="muted small">Transactions whose merchant or description contain every word get the category, now and when new ones arrive. The most specific rule wins; a category you set by hand on a transaction is never changed.</p>
         <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Words</th><th scope="col">Category</th><th scope="col">Account</th><th scope="col" class="numeric">Transactions</th>
           <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rule-rows"></tbody></table></div>
@@ -474,9 +474,9 @@
       <section class="panel"><h2>Subscriptions</h2><div id="subscription-summary"></div></section>
       <section class="panel"><h2>Recurring payments</h2>
         <p class="muted small">Proposed from a steady cadence of payments, a bill payment, a statement payee the local model reads as a service, or a contract's payment terms. Each is a proposal until you confirm it. Call the ones that matter most bills and the rest subscriptions; both count in your spending and forecast.</p>
-        <p><button type="button" id="recurring-scan" class="small">Look for recurring bills</button>
+        <p class="personal-only"><button type="button" id="recurring-scan" class="small">Look for recurring bills</button>
           <span class="muted small">Asks the local model about statement payees it hasn't seen yet.</span></p>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="numeric">Expected</th><th scope="col">Every</th><th scope="col">Next about</th>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Merchant</th><th scope="col" class="owner-col">Owner</th><th scope="col" class="numeric">Expected</th><th scope="col">Every</th><th scope="col">Next about</th>
           <th scope="col">Counts as</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
     </section>
 
@@ -490,6 +490,9 @@
     <section id="inventory-panel" class="page" data-page="inventory" aria-labelledby="inventory-title" hidden>
       <header class="page-header"><div><h1 id="inventory-title" tabindex="-1">Inventory</h1>
         <p class="page-subtitle">Household items from receipt lines you approved. Your answers apply at once; nothing here needs review.</p></div></header>
+      <section class="panel" id="returned-panel" aria-labelledby="returned-title" hidden><h2 id="returned-title">Returned items</h2>
+        <p class="muted small">A return receipt lists these. Confirm which item went back and it leaves your inventory.</p>
+        <ul id="returned-content" class="checkin-list"></ul></section>
       <section class="panel" id="checkin-panel"><h2>Weekly check-in</h2><div id="checkin-content"></div>
         <form id="checkin-text-form" class="form checkin-text">
           <div class="field"><label for="checkin-text">Or answer in your own words</label>
@@ -762,9 +765,7 @@
               <p class="muted small">A family profile adds up its members' spending, cash flow, bills and net worth. It keeps no records of its own: each person's records stay in their own profile, on their own computer.</p>
               <div class="field"><label for="family-name">Family name</label><input id="family-name" required maxlength="60" autocomplete="off" placeholder="The Smiths"></div>
               <div class="field"><label for="family-folder">Family folder</label><input id="family-folder" required placeholder="C:\Household\Family" autocomplete="off" spellcheck="false">
-                <small>A new, empty local folder on this computer for the family's copies of each member's totals.</small></div>
-              <div class="field"><label for="family-sync">Sync folder</label><input id="family-sync" required placeholder="C:\Users\you\OneDrive\Home Manager family" autocomplete="off" spellcheck="false">
-                <small>An existing folder every member's computer can see, such as a shared OneDrive or Google Drive folder. Only encrypted files are written there.</small></div>
+                <small>A new, empty local folder on this computer for the family's copies of each member's totals. Members on other computers send their copies here over Tailscale.</small></div>
               <div class="field"><label for="family-members-input">Members</label><textarea id="family-members-input" rows="3" maxlength="1200" placeholder="One name per line"></textarea>
                 <small>People who use Home Manager on their own computer. You can add more later.</small></div>
               <label class="check-field"><input id="family-include-me" type="checkbox" checked> <span id="family-include-me-label">Include this profile</span></label>
@@ -924,7 +925,7 @@
 <dialog id="invite-dialog" aria-labelledby="invite-title">
   <form id="invite-form">
     <h2 id="invite-title">Invite</h2>
-    <p class="muted small">Creates one encrypted invite file for this person's own computer. It contains the family key, so give the passphrase another way, such as a phone call.</p>
+    <p class="muted small">Creates one encrypted invite file for this person's own computer. It contains the family key and this computer's Tailscale address, so give the passphrase another way, such as a phone call. A new invite replaces their previous one.</p>
     <div class="field"><label for="invite-destination">Save the invite in this folder</label><input id="invite-destination" required placeholder="C:\Users\you\Desktop" autocomplete="off" spellcheck="false"></div>
     <div class="field"><label for="invite-passphrase">Passphrase</label><input id="invite-passphrase" type="password" required minlength="12" autocomplete="new-password">
       <small>At least 12 characters. Four unrelated words are easy to say and hard to guess.</small></div>
@@ -936,7 +937,7 @@
 <dialog id="local-member-dialog" aria-labelledby="local-member-title">
   <form id="local-member-form">
     <h2 id="local-member-title">Set up on this computer</h2>
-    <p class="muted small">The family reads this person's profile directly on this computer. Nothing is written to the sync folder.</p>
+    <p class="muted small">The family reads this person's profile directly on this computer. Nothing is sent over the network.</p>
     <div class="field"><label for="local-member-profile">Profile</label><select id="local-member-profile"></select></div>
     <div id="local-member-folder-field" class="field"><label for="local-member-folder">Library folder for the new profile</label>
       <input id="local-member-folder" placeholder="C:\Household\Sam" autocomplete="off" spellcheck="false"></div>

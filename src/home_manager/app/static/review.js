@@ -3,7 +3,8 @@
 // Left: groups with counts. Right: what the item is, why it needs you, the evidence and the decision.
 // Keys: J/K move, V confirms, R rejects; a decision advances to the next item.
 const ISSUE_KINDS = {ambiguous_receipt_match: "Which charge is this receipt?", ambiguous_transfer: "Which account received this transfer?",
-                     ambiguous_refund: "Which purchase was refunded?", ambiguous_investment_transfer: "Which payment went into this investment?"};
+                     ambiguous_refund: "Which purchase was refunded?", ambiguous_investment_transfer: "Which payment went into this investment?",
+                     family_correction: "Your family changed something you changed too"};
 const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "Is this a transfer between your accounts?", refund: "Is this a refund of that purchase?"};
 const ITEM_CATEGORIES = ["produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages", "household cleaning",
                          "paper & disposables", "personal care", "health", "baby", "pet", "home maintenance", "other"];
@@ -92,7 +93,7 @@ function reviewTitle(item) {
   const value = item.value;
   if (item.kind === "issue") return ISSUE_KINDS[value.issue_type] || statusLabel(value.issue_type);
   if (item.kind === "link") return describe(value.to);
-  if (item.kind === "record") return `${RECORD_KINDS[value.record_type]}: ${value.summary?.name || "name not found"}`;
+  if (item.kind === "record") return `${value.summary?.sale_label || RECORD_KINDS[value.record_type]}: ${value.summary?.name || "name not found"}`;
   if (item.kind === "recurring") return `${value.merchant} · ${value.expected_amount.display} ${value.frequency}`;
   if (item.kind === "asset") return value.name;
   if (item.kind === "warranty") return `Warranty: ${[value.brand, value.name].filter(Boolean).join(" ")}`;
@@ -149,8 +150,9 @@ async function thumbnail(documentId) {
 }
 function summaryBlock(label, summary, {link = true} = {}) {
   const box = element("div", "", "review-side");
-  box.append(element("span", label, "figure-label"), element("strong", summary?.name || summary?.description || RECORD_KINDS[summary?.record_type] || "Record", "block"));
-  // Only a transaction's sign means money in or out; a receipt or bill total is shown as printed.
+  box.append(element("span", label, "figure-label"), element("strong", summary?.name || summary?.description || RECORD_KINDS[summary?.record_type] || "Record", "block"),
+             ...saleBadges(summary));
+  // Only a transaction's sign means money in or out; a receipt or bill total is shown as printed (a return's is negative).
   if (summary?.amount) box.append(amount(summary.amount, {signed: summary.record_type === "transaction"}));
   box.append(element("span", [summary?.date && dateText(summary.date), summary?.account].filter(Boolean).join(" · "), "muted small block"));
   if (link && summary?.document_id) box.append(homeLink("Open document", `#/documents/${summary.document_id}`));
@@ -174,6 +176,19 @@ function decide(path, body, message, undo = null) {
 }
 function reviewParts(item) {
   const value = item.value;
+  if (item.kind === "issue" && value.issue_type === "family_correction") {
+    // docs/family.md "Family corrections": the family's change arrived after this person changed the same field.
+    const path = `/api/finance/issues/${value.id}/resolve`;
+    const changes = element("ul", "", "review-issues");
+    for (const change of value.detail.corrections) {
+      changes.append(element("li", `${change.field.replaceAll("_", " ")}: yours is ${change.current ?? "empty"}; ${change.actor.replace(/^Family · /, "")} `
+                                   + `changed it from ${change.previous ?? "empty"} to ${change.value ?? "empty"}.`));
+    }
+    return {why: "Your family corrected this record, but you had already changed the same field. Choose which to keep.",
+            evidence: [changes, summaryBlock(RECORD_KINDS[value.record_type] || "Record", value.record)], document: value.record?.document_id,
+            confirm: decide(path, {family: "family"}, "Used your family's change."), confirmLabel: "Use family's",
+            reject: decide(path, {family: "mine"}, "Kept yours."), rejectLabel: "Keep mine"};
+  }
   if (item.kind === "issue") {
     const path = `/api/finance/issues/${value.id}/resolve`;
     const candidates = element("div", "", "review-candidates");
@@ -374,14 +389,16 @@ async function renderReviewDetail(focus = false) {
 function renderUnmatched(unmatched) {
   const rows = [...unmatched.receipts, ...unmatched.undated].map(receipt => {
     const li = element("li", "", "review-item");
-    li.append(element("strong", receipt.name || "Receipt"), element("span", describe(receipt, {named: false}), "block"));
+    li.append(element("strong", receipt.name || "Receipt"), ...saleBadges(receipt), element("span", describe(receipt, {named: false}), "block"));
     li.append(element("small", receipt.reason === "several_possible_charges" ? "Several possible charges: answer it in Questions above." :
                                receipt.date ? "No matching card or bank charge yet." : "No purchase date: add one with Edit details.", "muted block"));
     li.append(homeLink("Open document", `#/documents/${receipt.document_id}`));
     return li;
   });
   $("review-unmatched").replaceChildren(...(rows.length ? rows : [element("li", "Every dated receipt matches a charge.", "muted")]));
-  $("review-unmatched-note").textContent = unmatched.by_currency.map(row => `${row.total.display} in ${row.receipts} receipt${row.receipts === 1 ? "" : "s"}`).join("; ");
+  const returns = [...unmatched.receipts, ...unmatched.undated].some(receipt => receipt.sale_label);
+  $("review-unmatched-note").textContent = unmatched.by_currency.map(row => `${row.total.display} in ${row.receipts} receipt${row.receipts === 1 ? "" : "s"}`).join("; ")
+    + (returns ? " (returns are money back and subtract)" : "");
 }
 document.addEventListener("keydown", event => {
   if (currentRoute?.name !== "review" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;

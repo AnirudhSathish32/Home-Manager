@@ -118,8 +118,13 @@ legend { font-size: var(--text-sm); font-weight: 600; padding: 0 var(--space-1);
 .profile-picker select { width: 100%; }
 #nav-profile { display: none; }
 /* A family profile's own library is only its inbox: Home, Review, the documents it received, Processing and Settings apply. */
-.family-mode .nav-link:not([data-route="home"]):not([data-route="settings"]):not([data-route="review"]):not([data-route="receipts"]):not([data-route="documents"]):not([data-route="processing"]):not([data-route="whatif"]):not([data-route="taxes"]):not(#nav-profile),
-.family-mode .nav-group, .family-mode .global-search { display: none; }
+/* Transactions, Spending, Bills and Accounts show the family ledger: every member's records, each with its owner. */
+.family-mode .nav-link:not([data-route="home"]):not([data-route="settings"]):not([data-route="review"]):not([data-route="receipts"]):not([data-route="documents"]):not([data-route="processing"]):not([data-route="whatif"]):not([data-route="taxes"]):not([data-route="transactions"]):not([data-route="spending"]):not([data-route="bills"]):not([data-route="accounts"]):not(#nav-profile),
+.family-mode .nav-group:not(.nav-group-money), .family-mode .global-search { display: none; }
+.owner-col { display: none; }
+.family-mode .owner-col { display: table-cell; }
+/* Per-person tools (budgets, rules, item categories, recurring scans) belong in each person's own profile. */
+.family-mode .personal-only { display: none; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-group { margin: var(--space-3) 0 var(--space-1); padding: 0 var(--space-2); font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
 .nav-link, .nav-sublink {
@@ -182,6 +187,9 @@ main:focus { outline: none; }
 .status-badge[data-tone="danger"] { color: var(--danger); background: var(--danger-subtle); }
 .status-badge[data-tone="info"] { color: var(--info); background: var(--info-subtle); }
 .status-badge[data-status="rejected"] { text-decoration: line-through; }
+/* A receipt's Return or Exchange tag keeps its own width; in a table cell it sits under the amount. */
+span.sale-tag { display: inline-flex; align-self: flex-start; }
+div.sale-tag { margin-top: var(--space-1); }
 .empty-state { padding: var(--space-8) var(--space-4); text-align: center; color: var(--text-muted); }
 .item-warning { color: var(--warning); }
 .amount { white-space: nowrap; }

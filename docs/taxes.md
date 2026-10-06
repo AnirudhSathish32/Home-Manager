@@ -117,7 +117,8 @@ and a line:
   rules, and the businesses.
 - Schedule C has no line yet for cost of goods sold, depreciation (line 13), home office (line 30) or vehicle mileage.
 
-**API:** `GET /api/tax/setup` · `POST /api/tax/businesses`, `PUT|DELETE /api/tax/businesses/{id}` (delete archives) ·
+**API:** `GET /api/tax/setup` · `POST /api/tax/businesses`, `PUT|DELETE /api/tax/businesses/{id}` (delete archives: its tags keep counting and the
+items and rules that have it keep it, but no new tag or rule can use it) ·
 `GET /api/tax-tags?status=&year=&kind=&receipt_id=`, `GET /api/tax-tags/on/{type}/{id}`, `POST /api/tax-tags` ·
 `POST /api/tax-tags/{id}/not-a-write-off`, `POST /api/tax-tags/{id}/review` · `GET|POST /api/tax/rules`,
 `PUT|DELETE /api/tax/rules/{id}` · `GET /api/tax/write-offs/{year}`.
@@ -198,7 +199,8 @@ dividends before the 1099-DIV arrives, and which tuition is for whom.
 for non-itemizers, or itemized), the senior, tips and overtime deductions, QBI, tax, credits, other taxes
 (self-employment, Additional Medicare, net investment income tax and the rest), then payments.
 - Each line says how it was worked out and cites the rule it follows.
-- **Payments** are added up by the app: withholding (every job, plus 1099 box 4), Additional Medicare withheld above
+- **Payments** are added up by the app: withholding (every job, plus box 4 of each 1099-INT, 1099-DIV and 1099-R),
+  Additional Medicare withheld above
   1.45% (§3101(b)(1)), estimated tax paid, and refundable credits. The result is the refund, or the amount owed.
 - **State (simplified):** federal AGI less the state's deduction (or yours), taxed on the state's brackets, less state
   credits, then compared with state withholding and estimated payments.
@@ -435,29 +437,54 @@ formula and parameters in the pinned corpus.
   returns none is.
 
 **Engine 2.** Tax-Calculator reports named outputs with no graph. Its functions also overwrite their own intermediate
-values: a credit is limited to the tax in place, and the standard deduction becomes 0 once it itemizes.
-- **The map.** `finance/engines/taxcalc_map.json` writes a formula for each output whose final value follows from other
-  final values: AGI and the income before it, the Social Security worksheet, capital gains, self-employment tax and its
-  deductible half, adjustments, the standard deduction, taxable income, credits used, NIIT, Additional Medicare tax,
-  other taxes and refundable credits.
+values: a credit is limited to the tax in place, and the standard deduction becomes 0 once it itemizes (and the itemized
+parts 0 when it doesn't).
+- **The map.** `finance/engines/taxcalc_map.json` writes a formula for every output, from other final values, record
+  inputs and the law:
+  - income: AGI and the income before it, the Social Security worksheet, capital gains, self-employment tax and its
+    deductible half, adjustments, earned income;
+  - deductions: the standard deduction, each itemized part (the SALT cap and its phase-down, the charity floor and
+    ceilings) and the 2026 2/37 reduction, the Schedule 1-A deductions (tips, overtime, car-loan interest, seniors),
+    personal exemptions and the QBI deduction (Form 8995 and 8995-A's phase-in and income cap);
+  - tax: the rate schedule, the Schedule D / qualified dividends worksheet (`dwks*`), and the AMT (Form 6251 Parts I–III);
+  - credits: each nonrefundable credit in Schedule 3's order, each up to the tax still left (the outputs Tax-Calculator
+    limits in place are written as the amount before the limit, then the smaller of it and what's left); the care
+    credit's stepped rate; the AOTC and lifetime learning credit with their phase-out shares; the child and
+    other-dependent credits; the EITC (parameters read by the number of children); the ACTC (Part II-A and II-B); the
+    refundable AOTC; and the reform-only refundable credits as zero.
 - **Formulas.** They're written as readable text (`max(0 - Capital_loss_limitation, p22250 + p23250)`) and compiled to
   the shared expression language. A name is an output, a record input, a part, or a law parameter.
+  - `param_types` calls a parameter a rate (`x * SeniorDed_prt` is a rate step, the rate kept in the step's detail), a
+    count, or a rate in basis points (for the care credit's rate arithmetic). Other parameters are dollars.
+  - `param_index` reads a parameter by a record field instead of filing status (the EITC's by children).
+  - `muldiv(a, b, c)` is a × b ÷ c rounded half-even (money × count ÷ money is a count: a share in thousandths);
+    `steps_floor` and `steps_ceil` count whole steps of a parameter's size; `schedule(x)` is the year's rate schedule,
+    rounded once as Tax-Calculator works it in floats; `usd(n)` is dollars inside a product.
+  - Formulas cover current law. Terms inert under it (a haircut of 0, a cap of 9e99, a reform-only switch) are left out:
+    if a law change activates one, the run check below turns the output opaque and the conformance test fails.
 - **Extra values.** `taxcalc_run.py` reads back the extra outputs and parameters the map names. They're part of the
   answer cache's key.
 - **Checked every run.** Each formula is re-run over the engine's own values and must give its value within 2 cents
   (float dollars rounded to cents). One that doesn't is `opaque` with the reason.
 - **Pinned.** The map is pinned to the release and the SHA-256 of its law file. A different one isn't used: every
   output is then `opaque`.
-- **What stays opaque** (`TaxCalculatorEngine.opaque_lines`): the tax from the rate schedules and the capital gains
-  worksheet (`taxbc`), the AMT, itemized deductions, the senior and QBI deductions, the dependent care and education
-  credits (limited in place), and the EITC, ACTC and refundable AOTC.
+- **Credits are claimed.** Tax-Calculator models how many people across a population claim the EITC and the additional
+  child tax credit (`eitc_claim_prob_scale`, `actc_claim_prob_scale`). A one-household run always gets the same random
+  draw (0.76), so it dropped any EITC below about 74% of its maximum and any ACTC below about 69%. The runner sets both
+  scales so a return claims what it qualifies for (fixed 2026-10-05). Engine 2 estimates saved in the tax history
+  before then may be missing one of these credits.
+- **What stays opaque** (`TaxCalculatorEngine.opaque_lines`): nothing, under current law (since 2026-10-05).
   - The Tax Table's tax, which the adapter works out itself, is shown as nodes: the row's middle, the year's rate
     schedule on it, rounded to the dollar.
   - So are the HSA limit and the non-itemizer's charitable limit.
+  - The choice to itemize is the engine's (it works the tax both ways and keeps the lower); it's said in the itemized
+    deductions' note, not a node.
+  - No profile reaches the AMT, so it's checked on a record with AMT preferences added (`tests/test_engine_worksheets.py`).
 - **Upkeep.** When the pinned release or its law file changes:
   1. Run `python scripts/taxcalc_map_skeleton.py <output>` for each output's inputs and parameters (read from
-     `calcfunctions.py`, never run).
-  2. Check each formula against the new code.
+     `calcfunctions.py`, never run). It doesn't say which parameters are rates or read by children: check
+     `param_types` and `param_index` against the code.
+  2. Check each formula against the new code, and that the terms left out are still inert.
   3. Update `law_sha256`.
 
 **Conformance** (`tests/test_engine_worksheets.py`) runs every registered engine on the synthetic returns in
@@ -599,8 +626,9 @@ choose another.
     confirmed.
 
 **Advance tax (1040-ES)**
-- **Due dates:** Apr 15, Jun 15, Sep 15 and Jan 15, moved to the next weekday when they fall on a weekend (not yet for
-  holidays).
+- **Due dates:** Apr 15, Jun 15, Sep 15 and Jan 15, moved to the next day that isn't a weekend or a legal holiday in
+  the District of Columbia (IRC §7503; `safe_harbor.legal_holidays`): DC Emancipation Day can move April's (Apr 18 in
+  2023 and 2028) and Martin Luther King Jr. Day January's (Jan 16, 2024 and 2029).
 - **What's needed:** the total tax less withholding and refundable credits.
 - **Paid so far:** tagged federal estimated payments dated Feb 1 to Jan 31. Each counts for the first quarter due on or
   after its date.
@@ -752,7 +780,9 @@ The page explains the stub's withholding (`finance/paystub.py`) as an estimate b
   A bar chart splits the year's wages into the buckets, with a table of each bucket's wages and tax per year and per
   paycheck.
 - **FICA.** Social Security is charged at its rate up to the year's wage base; year-to-date wages decide how much of
-  this paycheck is still under it. Medicare is charged at its rate, plus the additional rate above its threshold.
+  this paycheck is still under it. Medicare is charged at its rate, plus the additional rate on wages above $200,000
+  for the year: payroll withholds it there whatever the filing status (IRC §3102(f)(1); rule
+  `additional_medicare_withholding`). The table's filing-status threshold ($250,000 joint) is the return's.
 - **Why they differ.** Payroll uses IRS Publication 15-T and your W-4 (extra withholding, credits, other income). Tax
   Zen's withholding engine works the same paychecks the way payroll does.
 - **Filing status** is a household setting (Settings › Financial preferences), Single by default.
@@ -784,16 +814,15 @@ itself, where it may differ from the law. They are worth an accountant's look.
   pay periods + 4(a)); subtract the standard deduction and 4(b); apply the brackets; subtract Step 3; divide by
   periods; add 4(c). Step 2 halves the standard deduction and every bracket start.
 - **Not done:** whole-dollar rounding between steps, and the pre-2020 W-4 (allowances).
-- **Additional Medicare.** Payroll must start Additional Medicare withholding at **$200,000 regardless of filing
-  status**. The pay stub explanation uses the threshold from the filing-status table, so an MFJ table would give
-  $250,000.
+- **Additional Medicare.** The pay stub and the planner withhold it on wages above **$200,000 regardless of filing
+  status**, as payroll must. The return then reconciles it against the filing-status threshold (Form 8959).
 - **Supplemental wages:** 22% flat, and 37% above $1M of the year's supplemental wages. The state supplemental rate is
   typed.
 - **Pre-tax treatment.** A 401(k) lowers income-tax wages only. Health, dental, vision, HSA and FSA also lower FICA
   wages. An unnamed "other" pre-tax line lowers income-tax wages only. Roth 401(k) is post-tax.
 
 **Estimated tax and the safe harbor** (`tax_zen.py`, `safe_harbor.py`)
-- Due dates aren't shifted for holidays (e.g. DC Emancipation Day).
+- Due dates move past weekends and DC legal holidays (federal holidays and Emancipation Day), each with its observed day.
 - No annualized-income installment method (Form 2210 Schedule AI).
 - Withholding is treated as paid evenly through the year.
 
@@ -801,7 +830,7 @@ itself, where it may differ from the law. They are worth an accountant's look.
 exemptions unless typed as credits, no multi-state or part-year returns, no reciprocity, and no local income tax.
 
 **Gathering**
-- 1099-R box 4 withholding isn't gathered.
+- Federal tax withheld (box 4) is gathered from each confirmed 1099-INT, 1099-DIV and 1099-R.
 - Retirement distributions aren't split into IRA and pension.
 - The capital loss carryover isn't split short/long-term, and the excess isn't carried to next year automatically.
 
@@ -822,8 +851,7 @@ conversions and no state tax.
 (the engine supports them).
 
 **Questions for the CPA** (highest impact first)
-1. MFS/QSS and 1099-R withholding: gaps that affect common returns.
-2. The Additional Medicare withholding threshold ($200k payroll vs the filing-status threshold).
-3. Tax lots: wash-sale and specific-identification needs for the taxpayer's situation.
-4. The simplified state return against the state's real rules for the taxpayer.
-5. A check of the confirmed yearly withholding tables against the Revenue Procedure.
+1. MFS/QSS: a gap that affects common returns.
+2. Tax lots: wash-sale and specific-identification needs for the taxpayer's situation.
+3. The simplified state return against the state's real rules for the taxpayer.
+4. A check of the confirmed yearly withholding tables against the Revenue Procedure.

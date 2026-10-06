@@ -63,14 +63,48 @@ posted dates, purchase date and due date. A statement spanning two months is fou
 
 ## What counts
 
-- **Receipts count on their own.** An approved receipt (verified automatically or by you) with a positive total and
-  a purchase date counts as spending (`STANDALONE_RECEIPT`). Receipts have no account, so they appear only in
-  household-wide totals, never in a single account's. A refund receipt stays as evidence until a posted credit
-  settles it.
+- **Receipts count on their own.** An approved receipt (verified automatically or by you) with a purchase date counts
+  (`STANDALONE_RECEIPT`): a sale as spending, a return (a negative total, [Returns](#returns)) as a refund. Receipts
+  have no account, so they appear only in household-wide totals, never in a single account's.
 - **A matched charge replaces its receipt.** Once a card or bank line is linked to the receipt (proposed or
-  confirmed, and not rejected), the line counts and the receipt stops counting. Never both.
-- **Totals show the split.** Spending results carry `from_receipts` and `receipts`: the part that so far only receipts
-  show.
+  confirmed, and not rejected), the line counts and the receipt stops counting. Never both. A return receipt is
+  replaced the same way by its card or bank credit.
+- **Totals show the split.** Spending results carry `from_receipts` and `receipts`, and `refunds_from_receipts` and
+  `return_receipts`: the parts that so far only receipts show.
+
+## Returns
+
+A return receipt gives money back. It is recorded with negative amounts: its total, subtotal, tax and returned lines.
+- **Reading.** The model only reports what is printed, with a citation (`documents/extraction.py`):
+  - `return_marker`, a summary field: the printed words saying money goes back (REFUND, RETURN, MERCHANDISE CREDIT,
+    CREDIT TO VISA), never a return policy;
+  - `returned` on each item: an item brought back.
+- **Signs are decided in code** (`extraction.sign_return`), so `REFUND TOTAL 27.00` printed without a minus sign
+  still reads as money back:
+  - a returned line is negative;
+  - a whole return (a marker, every line returned, or a printed negative total) makes every unsigned amount negative;
+  - an exchange (lines bought and returned) takes the sign that makes its arithmetic hold (subtotal, tax and tip make
+    the total; the lines make the subtotal), trying the marker's direction first. If neither sign holds, it needs
+    review.
+- **Checked against the print** (`ledger.says_return`). These need review, with an issue starting "Sale or return":
+  - a marker whose cited line has no refund word;
+  - a total line that says refund or return when nothing was marked.
+- **Fixing a missed return.** The receipt's **Sale or return** correction (`direction`: `sale` or `return`) sets the
+  signs of its amounts and, unless it is an exchange, its lines. Like any correction it outlives reading the document
+  again, and the family can send it ([family](family.md#family-corrections)).
+- **Counting.** A verified return counts as a refund on its own until a card or bank credit replaces it, as a sale
+  counts until its charge does. The credit is matched to the return receipt by amount (`reconcile.receipts`), and to
+  the purchase it refunds by merchant (`reconcile.refunds`). `get_refunds` lists each return receipt as
+  `counted_from_receipt`, `posted_credit_found` or `evidence_only_not_settled` (not approved yet).
+- **Categories are net of refunds.** By category, budgets, top merchants, the category drilldown and the forecast count
+  refunds against the category they came from. That is the return receipt's item categories, else the category of the
+  purchase the credit refunds (`TRANSACTION_CATEGORY`), else uncategorized. A returned line's discount makes the refund
+  smaller (`splits.item_amount`).
+- **Shared returns.** A return the family shared counts each person's part, like the purchase (docs/family.md "Sharing a
+  cost"). The card holder's credit counts their part (`CHARGE_SHARE`, worked on magnitudes so SQLite and
+  `ledger.charge_share` round a refund the same way), and everyone else's return receipt counts theirs.
+- **The page.** A receipt shows a **Return** or **Exchange** tag (`sale_label`). Returned items are asked about on the
+  Inventory page ([household](household.md#returned-items)).
 
 ## Manual transactions
 
@@ -250,7 +284,7 @@ category you set by hand hands the row back to the rules. Rules are applied:
 
 **Budgets.** `budgets(category, currency, amount_minor)` holds one monthly amount per category and currency.
 `get_budgets(month)` returns, for each budget:
-- what was spent (the same counted category spending as By category), what remains and the percent used;
+- what was spent (the same counted category spending as By category, net of refunds), what remains and the percent used;
 - the pace for the current month: `over` when spending exceeds the budget, `ahead` when the share spent is above the
   share of the month elapsed, otherwise `on_track`;
 - what confirmed recurring bills in that category still expect this month (`recurring_due`), and the projected
@@ -433,8 +467,10 @@ spending changing, and what needs attention. Every total links to the records be
   - The current month is marked partial.
   - A month with no records shows a gap, not a zero bar. A month that nets to zero shows an explicit zero marker.
   - Each bar opens that month's transactions.
-- **Spending by category.** A donut of gross spending before refunds. Refunds are shown beside it to explain the gap
-  to net spending.
+- **Spending by category.** A donut of each category's spending after its refunds ([Returns](#returns)). The refunds
+  are noted beside it with net spending.
+  - A category whose refunds outweigh its spending in the month (a negative slice) can't be drawn, so the table shows
+    the amounts instead.
   - It shows the top five categories, Other and Uncategorized, which is never folded into Other. Uncategorized is gray.
   - Every chart has a text summary and a **View data table** control (chart rules: `docs/ui.md` "Conventions").
 - **Needs attention.** Separate rows, never added into one total:

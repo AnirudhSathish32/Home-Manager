@@ -280,11 +280,12 @@ kept in a "Technical details" disclosure.
 
 ## Decisions
 
-1. **Accent color:** ink blue for interaction; green means only money in or verified.
+1. **Accent color:** one accent for interaction (cobalt from the redesign, `design-system/home-manager/MASTER.md`);
+   green means only money in or verified. An exceeded budget is amber, never red (2026-10-06).
 2. **Money parts:** no backend change. The UI splits the server's `display` text lexically.
 3. **Review** shows display summaries (merchant, amount, date, account, document) for every item, never bare ids.
-4. **Accounts** shows per-account balances with "as of" dates only, with no total across accounts. It stays a top-level
-   page.
+4. **Accounts** shows per-account balances with "as of" dates. It stays a top-level page. Since 2026-10-06, Today shows
+   **Cash** and **Net worth** across all accounts (`worth.today`), with the date range and stale accounts flagged.
 5. **The document page** is a route, not a modal. Lists use a non-modal drawer where a detail view is needed.
 
 ## Redesign: calculation observability
@@ -293,8 +294,8 @@ Approved 2026-10-04. The backend is built: the trace contract with a trace for e
 corrections with who and why, the rule registry, stale detection and manual transactions (see "What's built" under
 "Trace contract"). The screens and components aren't built yet. The work items left, in build order, are in
 [open work](open-work.md#ui-redesign). The session process (phases, per-screen hand-offs, screenshots on synthetic
-data) is in the `ui-redesign` skill. This design replaces the 2026-09-30 "Household ledger" restyle proposal: the
-visual direction is chosen afresh in Phase 0. Some of that proposal's round-one ideas carry over here: one
+data) is in the `ui-redesign` skill. This design replaces the 2026-09-30 "Household ledger" restyle proposal. Phase 0
+chose the visual direction (C · Family, 2026-10-06), recorded in `design-system/home-manager/MASTER.md`. Some of that proposal's round-one ideas carry over here: one
 loading/error/empty helper, one action vocabulary, Needs attention first on Home, and the Read and Record steps in the
 document page's record header.
 
@@ -462,7 +463,7 @@ Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves 
 - **Kept as they are:**
   - Review's two panes with J/K/V/R.
   - The document page's source beside the record.
-  - Accounts without a cross-account total.
+  - Accounts as per-account balances (the cross-account Cash and Net worth figures live on Today).
   - The pay-stub tax explanation and the Taxes input kinds, which already work this way.
 
 ### Number display

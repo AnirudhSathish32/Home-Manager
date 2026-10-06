@@ -316,11 +316,9 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
         cash += signed
         balances.append({"account": account["display_name"], "account_id": account["id"], "type": account["account_type"], "amount": money(signed, chosen),
                          "as_of": balance["as_of"]})
+    # Categories are net of refunds already (docs/money.md "Returns").
     categories = {category: total for (code, category), (total, _) in tools._category_totals(period.start, period.end, None).items() if code == chosen}
     scope, params = scope_of(period.start, period.end, None)
-    refunds = sum(bucket["refunds"] for (_, code), bucket in tools._totals(period.start, period.end, None).items() if code == chosen)
-    if refunds:
-        categories["refunds"] = -refunds
     # Confirmed recurring bills are projected on their own schedule, so their past payments leave the category averages.
     bills = []
     with tools.connection() as db:

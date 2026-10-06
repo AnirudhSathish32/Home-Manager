@@ -131,12 +131,14 @@ class Profiles:
 
 
 def public(profile):
-    """What the interface may show: never the family key."""
+    """What the interface may show: never the family key or the hub token."""
     view = {key: profile.get(key) for key in ("id", "name", "kind", "folder", "created_at")}
     link = profile.get("family")
     if link:
-        view["family"] = {key: link.get(key) for key in ("family_id", "family_name", "member_id", "sync", "publishing", "published_at",
-                                                          "publish_error", "local")}
+        view["family"] = {key: link.get(key) for key in ("family_id", "family_name", "member_id", "hub", "publishing", "published_at",
+                                                          "last_sync", "hub_state", "hub_error", "local")}
+        # A link from before the hub named a sync folder instead: the member needs a new invite.
+        view["family"]["rejoin"] = not link.get("local") and not link.get("hub")
     return view
 
 

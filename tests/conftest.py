@@ -39,6 +39,14 @@ def assert_ledger_healthy(store):
     assert errors == []
 
 
+@pytest.fixture(autouse=True)
+def no_tailnet(monkeypatch):
+    """Tests never listen on this computer's real Tailscale address: the family hub stays off unless a test builds a
+    Manager with hub_loopback=True (tests/test_family_hub.py)."""
+    from home_manager.app import family_hub
+    monkeypatch.setattr(family_hub, "tailnet_address", lambda: None)
+
+
 @pytest.fixture
 def local_model():
     state, stop = start_model_server()

@@ -55,9 +55,8 @@ function documentState(doc) {
   return {proposed: "needs_review", needs_review: "needs_review", verified: "recorded", rejected: "rejected"}[doc.ledger_status] || doc.ledger_status;
 }
 function matchText(doc) {
-  // B9: a receipt's match to a card or bank charge, or a bill's payment state (docs/documents.md "Browsing the library").
+  // B9: a receipt's match to a card or bank charge (docs/documents.md "Browsing the library").
   if (!doc.reconciliation_status || doc.deleted_at) return "";
-  if (doc.folder === "Bills") return {matched: "Paid", unmatched: "Marked unpaid"}[doc.reconciliation_status] || "";
   return {matched: "Matched to a charge", proposed: "Match proposed", ambiguous: "Several possible charges", unmatched: "No matching charge yet"}[doc.reconciliation_status] || "";
 }
 function documentStateBadge(doc) {
@@ -277,6 +276,7 @@ function renderDocuments(data) {
     cell(row, "").appendChild(doc.document_date ? dateDisplay(doc.document_date) : element("span", "—", "muted"));
     const value = cell(row, ""); value.className = "numeric";
     if (doc.ledger_amount) value.appendChild(amount(doc.ledger_amount, {signed: false}));
+    value.append(...saleBadges(doc, {block: true}));  // Return or Exchange: the amount is money back.
     const state = cell(row, ""); state.appendChild(documentStateBadge(doc));
     const matched = matchText(doc);
     if (matched) state.appendChild(element("small", matched, `match-state muted${doc.reconciliation_status === "ambiguous" ? " item-warning" : ""}`));

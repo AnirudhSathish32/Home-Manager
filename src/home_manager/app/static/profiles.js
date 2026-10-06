@@ -1,7 +1,7 @@
 "use strict";
 // Profiles and families: the sidebar switcher and Settings → Profiles & family.
 // Each person's profile is its own library; a family profile adds its members up (app/family_sync.py).
-let profilesKey = "", activeProfile = null, familyView = null, profileList = [], pendingMember = null;
+let profilesKey = "", activeProfile = null, familyView = null, profileList = [], pendingMember = null, hubStatus = null;
 const KIND_LABELS = {individual: "Person", family: "Family"};
 
 // Who's here (core/actor.py): with one person the server knows it's them, so nothing is sent; with more, the choice is
@@ -26,9 +26,9 @@ $("who-select").addEventListener("change", () => {
 
 function renderProfiles(settings) {
   renderWho(settings.people || []);
-  profileList = settings.profiles || []; activeProfile = settings.profile; familyView = settings.family;
+  profileList = settings.profiles || []; activeProfile = settings.profile; familyView = settings.family; hubStatus = settings.hub_status || null;
   // Polling calls this often; redraw only when something changed so half-typed forms survive.
-  const key = JSON.stringify([profileList, activeProfile, familyView]);
+  const key = JSON.stringify([profileList, activeProfile, familyView, hubStatus]);
   if (key === profilesKey) return;
   profilesKey = key;
   renderProfileSwitch(); renderProfileRows(); renderFamilySection();
@@ -131,8 +131,8 @@ $("family-form").addEventListener("submit", async event => {
   const includeMe = $("family-include-me").checked && activeProfile?.kind === "individual";
   try {
     const family = await api("/api/families", {method: "POST", body: JSON.stringify({name: $("family-name").value.trim(), folder: $("family-folder").value.trim(),
-      sync_folder: $("family-sync").value.trim(), members, my_profile: includeMe ? activeProfile.id : null})});
-    for (const id of ["family-name", "family-folder", "family-sync", "family-members-input"]) $(id).value = "";
+      members, my_profile: includeMe ? activeProfile.id : null})});
+    for (const id of ["family-name", "family-folder", "family-members-input"]) $(id).value = "";
     profilesKey = ""; await loadSettings();
     if (await confirmAction({title: `Open ${family.name} now?`, confirmLabel: "Open family view",
         message: "From the family view you can invite each member or set them up on this computer. You can switch back to your own profile from the Profile menu at any time."}))
@@ -152,7 +152,11 @@ function renderFamilySection() {
 
 function familyMembersSection(family) {
   const heading = element("h2", `${family.name}: members`);
-  const intro = element("p", `Members on other computers share through ${family.sync}. The family view checks for new copies every minute; each person's records stay in their own profile.`, "muted small");
+  const intro = element("p", "Members on other computers send their copies to this computer over Tailscale while Home Manager is open here. Each person's records stay in their own profile.", "muted small");
+  // Where the family hub listens (app/family_hub.py), or why members' computers can't reach it yet.
+  const hub = hubStatus?.listening
+    ? element("p", `Members' computers reach this one at ${hubStatus.address}. Documents from members: ${sizeText(family.documents_bytes || 0)}, stored encrypted.`, "small")
+    : alertBox(`Members on other computers can't send copies yet. ${hubStatus?.reason || ""}`.trim(), {tone: "warning"});
   const rows = family.members.map(member => {
     const row = document.createElement("tr");
     const profile = profileList.find(item => item.id === member.profile_id);
@@ -189,15 +193,29 @@ function familyMembersSection(family) {
     } catch (error) { notice(error, true); }
   });
   const actions = element("div", "", "button-row"); actions.append(update);
-  return [heading, intro, wrap, actions, form];
+  return [heading, intro, hub, wrap, actions, form];
+}
+
+// The member's line about the family hub: synced, waiting for the family computer, or refused.
+function syncStatus(link) {
+  const last = link.last_sync ? ` · last synced ${asOfText(link.last_sync)}` : "";
+  if (link.hub_state === "refused") return alertBox(`The family computer refused this profile's copy. ${link.hub_error || ""}`.trim(), {tone: "error"});
+  if (link.hub_state === "ok") return element("p", `Synced ${asOfText(link.last_sync)}.`, "small");
+  const why = link.hub_error ? ` ${link.hub_error}` : "";
+  return alertBox(`Waiting for the family computer${last}.${why} Your copy is kept and sent when it's back.`, {tone: "info"});
 }
 
 function membershipSection(profile) {
   const link = profile.family, heading = element("h2", `Your family: ${link.family_name}`);
-  if (link.local) return [heading, element("p", `${link.family_name} reads this profile directly on this computer. Nothing is written to a sync folder.`, "muted small")];
-  const parts = [heading, element("p", `This profile shares an encrypted copy of its records (no documents or images) with ${link.family_name} through ${link.sync}. Only computers with the family's key can read it.`, "muted small")];
-  parts.push(link.publish_error ? alertBox(`The last share didn't finish. ${link.publish_error}`, {tone: "error"})
-    : element("p", link.published_at ? `Last shared ${asOfText(link.published_at)}.` : "Not shared yet.", "small"));
+  if (link.local) return [heading, element("p", `${link.family_name} reads this profile directly on this computer. Nothing is sent over the network.`, "muted small")];
+  if (link.rejoin) {
+    // A membership from before the hub: it named a sync folder, which is no longer used.
+    return [heading, alertBox(`Re-join needed. ${link.family_name} now shares over Tailscale. Ask the family computer for a new invite, then open it below.`, {tone: "warning"}),
+      ...joinSection()];
+  }
+  const parts = [heading, element("p", `This profile sends an encrypted copy of its records (no documents or images) to ${link.family_name}'s computer over Tailscale. Only computers with the family's key can read it.`, "muted small")];
+  parts.push(syncStatus(link));
+  if (link.published_at) parts.push(element("p", `Last copy made ${asOfText(link.published_at)}.`, "muted small"));
   const auto = element("label", "", "check-field"), box = element("input"); box.type = "checkbox"; box.checked = link.publishing !== false;
   auto.append(box, document.createTextNode(" Share changes automatically (at most every 10 minutes)"));
   box.addEventListener("change", async () => {
@@ -212,7 +230,7 @@ function membershipSection(profile) {
   const leave = element("button", "Leave family", "danger"); leave.type = "button";
   leave.addEventListener("click", async () => {
     if (!await confirmAction({title: `Leave ${link.family_name}?`, danger: true, confirmLabel: "Leave family",
-        message: "This profile stops sharing. The copy already in the sync folder stays until the family removes you; ask them to. Your own records are not changed."})) return;
+        message: "This profile stops sharing. The copy the family computer already has stays until the family removes you; ask them to. Your own records are not changed."})) return;
     try { await api("/api/family-membership", {method: "DELETE"}); profilesKey = ""; await loadSettings(); notice(`You left ${link.family_name}.`); }
     catch (error) { notice(error, true); }
   });
@@ -225,22 +243,21 @@ function joinSection() {
   const form = element("form", "", "form");
   form.append(element("h3", "Join a family"), element("p", "Open the invite file someone in your family sent you. This profile then shares an encrypted copy of its records with the family; you can stop at any time.", "muted small"));
   const fields = [["join-invite", "Invite file", "text", "C:\\Users\\you\\Downloads\\The Smiths - You.hminvite", true],
-                  ["join-passphrase", "Passphrase", "password", "", true],
-                  ["join-sync", "Sync folder on this computer", "text", "Leave empty to use the folder named in the invite", false]];
+                  ["join-passphrase", "Passphrase", "password", "", true]];
   for (const [id, text, type, placeholder, required] of fields) {
     const field = element("div", "", "field"), label = element("label", text), input = element("input");
     input.id = id; input.type = type; input.placeholder = placeholder; input.required = required; input.autocomplete = "off"; input.spellcheck = false; label.htmlFor = id;
     field.append(label, input);
-    if (id === "join-sync") field.append(element("small", "The shared folder as it appears on this computer, such as your OneDrive copy of it."));
     form.append(field);
   }
+  form.append(element("p", "Both computers need Tailscale connected. Your copy waits on this computer whenever the family computer is off.", "muted small"));
   const join = element("button", "Join family", "primary"); join.type = "submit";
   const row = element("div", "", "button-row"); row.append(join); form.append(row);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     try {
       const profile = await api("/api/family-membership", {method: "POST", body: JSON.stringify({invite_file: $("join-invite").value.trim(),
-        passphrase: $("join-passphrase").value, sync_folder: $("join-sync").value.trim() || null})});
+        passphrase: $("join-passphrase").value})});
       $("join-passphrase").value = "";
       profilesKey = ""; await loadSettings(); notice(`You joined ${profile.family.family_name}. Your first share is on its way.`);
     } catch (error) { $("join-passphrase").value = ""; notice(error, true); }
@@ -351,7 +368,7 @@ $("local-member-form").addEventListener("submit", async event => {
 
 async function removeMember(member) {
   if (!await confirmAction({title: `Remove ${member.name} from ${familyView.name}?`, danger: true, confirmLabel: "Remove from family",
-      message: `${member.name}'s totals leave the family view. Their own profile and records are not changed. Delete their file from the sync folder too if they won't share again.`})) return;
+      message: `${member.name}'s totals leave the family view. Their own profile and records are not changed, and their invite stops working.`})) return;
   try { await api(`/api/families/${activeProfile.id}/members/${member.member_id}`, {method: "DELETE"}); profilesKey = ""; await loadSettings(); if (currentRoute?.name === "home") await loadHome(); }
   catch (error) { notice(error, true); }
 }

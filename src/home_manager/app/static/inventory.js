@@ -121,16 +121,38 @@ function renderReading(run) {
   $("checkin-reading").replaceChildren(...nodes);
 }
 
+// Returned items (docs/household.md "Returned items"): a returned receipt line and the in-stock items it may have been.
+function renderReturned(proposals) {
+  $("returned-panel").hidden = !proposals.length;
+  $("returned-content").replaceChildren(...proposals.map(proposal => {
+    const li = element("li", "", "checkin-row"), name = element("div", "", "checkin-name");
+    name.append(element("strong", proposal.description),
+      element("small", `Returned${proposal.merchant ? ` to ${proposal.merchant}` : ""}${proposal.returned_on ? ` on ${dateText(proposal.returned_on)}` : ""}`, "muted block"));
+    const buttons = element("div", "", "checkin-buttons"); buttons.setAttribute("role", "group"); buttons.setAttribute("aria-label", `Which item went back: ${proposal.description}`);
+    const answer = (lotId, message) => async () => {
+      await api(`/api/inventory/returned/${proposal.receipt_item_id}`, {method: "POST", body: JSON.stringify({lot_id: lotId})});
+      notice(message); await afterInventoryChange();
+    };
+    for (const lot of proposal.lots) {
+      const label = proposal.lots.length === 1 ? `Yes, ${productName(lot)} went back` : `${productName(lot)}, bought ${lot.bought_on ? dateText(lot.bought_on) : "on an unknown date"}`;
+      buttons.append(asyncButton(label, answer(lot.id, `${productName(lot)} is marked returned. Undo it from its Actions menu.`), "small"));
+    }
+    buttons.append(asyncButton(proposal.lots.length === 1 ? "Not this item" : "None of these", answer(null, "Kept in your inventory."), "small quiet"));
+    li.append(name, buttons); return li;
+  }));
+}
+
 // Inventory page.
 async function loadInventory() {
   if (!configured) { $("inventory-groups").replaceChildren(emptyState("Set up your library to track household items.")); return; }
   const load = ++inventoryLoad, query = new URLSearchParams({limit: 1000});
   if ($("inventory-search").value.trim()) query.set("query", $("inventory-search").value.trim());
   if ($("inventory-closed").checked) query.set("include_closed", "true");
-  const [lots, checkin, receipts, policies] = await Promise.all([api(`/api/inventory?${query}`), api("/api/inventory/checkin"),
-    api("/api/inventory/receipts-to-identify"), api("/api/return-policies")]);
+  const [lots, checkin, receipts, policies, returned] = await Promise.all([api(`/api/inventory?${query}`), api("/api/inventory/checkin"),
+    api("/api/inventory/receipts-to-identify"), api("/api/return-policies"), api("/api/inventory/returned")]);
   if (load !== inventoryLoad) return;
   renderPolicies(policies);
+  renderReturned(returned);
   inventoryCheckin = checkin;
   renderCheckin($("checkin-content"), checkin);
   $("checkin-text-form").hidden = !checkin.lots.length;

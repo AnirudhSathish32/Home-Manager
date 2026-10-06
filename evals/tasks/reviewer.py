@@ -72,7 +72,8 @@ def plant(found, kind, document):
 
 
 def cases():
-    receipts = [document for document in documents() if document["document_type"] == "receipt" and len(document["rows"]) >= 2]
+    # A return's answers are signed and its print is not, so the planted amounts would not be printed.
+    receipts = [document for document in documents() if document["document_type"] == "receipt" and len(document["rows"]) >= 2 and "return" not in document["tags"]]
     out = []
     for index, document in enumerate(receipts):
         kind = PLANTS[index % len(PLANTS)]

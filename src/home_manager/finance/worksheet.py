@@ -19,6 +19,7 @@ reconcile (`reconciles`): the trace says so, and the conformance test fails.
 """
 
 from decimal import Decimal
+from fractions import Fraction
 
 from ..core.money import format_minor
 
@@ -26,6 +27,7 @@ CURRENCY = "USD"
 OPS = frozenset({"sum", "difference", "min", "max", "multiply", "rate", "round", "steps", "lookup", "fact", "law", "constant", "opaque"})
 LEAVES = frozenset({"fact", "law", "constant", "opaque"})
 LABEL_MOST = 140
+INACTIVE_MINOR = 10 ** 15  # A law threshold this high (Tax-Calculator writes 9e99) is a row that never applies.
 
 
 class Unsupported(Exception):
@@ -78,16 +80,20 @@ def div_round(n, d, mode):
     raise Unsupported(f"rounding mode {mode}")
 
 
-def bracket_tax(amount, table):
-    """Tax on an amount over a rate table [{from_minor, num, den}], each slice rounded half-up (OpenTax's `brackets`)."""
-    tax = 0
+def bracket_tax(amount, table, once=False):
+    """Tax on an amount over a rate table [{from_minor, num, den}]: each slice rounded half-up (OpenTax's `brackets`), or
+    with `once` the exact sum rounded half-even once (Tax-Calculator, which works the schedule in floats)."""
+    tax, exact = 0, Fraction(0)
     for index, row in enumerate(table):
         lower = row["from_minor"]
         if amount <= lower:
             break
         upper = table[index + 1]["from_minor"] if index + 1 < len(table) else amount
-        tax += div_round((min(amount, upper) - lower) * row["num"], row["den"], "half-up")
-    return tax
+        if once:
+            exact += Fraction((min(amount, upper) - lower) * row["num"], row["den"])
+        else:
+            tax += div_round((min(amount, upper) - lower) * row["num"], row["den"], "half-up")
+    return div_round(exact.numerator, exact.denominator, "half-even") if once else tax
 
 
 def percent(num, den):
@@ -129,7 +135,7 @@ def expected(item, nodes):
     if op == "steps":
         return div_round(values[0], detail["unit_minor"], detail.get("round", "floor"))
     if op == "lookup":
-        return bracket_tax(values[0], detail["table"])
+        return bracket_tax(values[0], detail["table"], detail.get("round") == "once")
     return None
 
 
@@ -222,6 +228,44 @@ class Evaluator:
             raise Unsupported(f"{self.rule_id} reads {kind} {name}, which the engine didn't report")
         return self.values[name]
 
+    # Law read into a step's detail (a rate, a step's size, a rate table): no leaf of its own, so the step still reconciles.
+    def law_source(self, name):
+        """A parameter's source: its name, the year and filing status, and anything else it was read by (a number of children)."""
+        return {"parameter": name, **self.law, **(self.params.get(name) or {}).get("source", {})}
+
+    def spec(self, name, kind):
+        found = self.params.get(name)
+        if not found or found.get("type") != kind:
+            raise Unsupported(f"{self.rule_id} has no {kind} parameter {name}")
+        return found
+
+    def rate_of(self, expr):
+        """(num, den, law detail) of a `mulRate`: its rate as written, or a rate parameter of the law."""
+        if "rateParam" not in expr:
+            return int(expr["rate"]["num"]), int(expr["rate"]["den"]), {}
+        found = self.spec(expr["rateParam"], "rate")
+        return int(found["num"]), int(found["den"]), {"parameter": expr["rateParam"], "source": self.law_source(expr["rateParam"])}
+
+    def unit_of(self, expr):
+        if "unitParam" not in expr:
+            return int(expr["unitCents"]), {}
+        return int(self.spec(expr["unitParam"], "money")["value"]), {"parameter": expr["unitParam"], "source": self.law_source(expr["unitParam"])}
+
+    def table_of(self, expr):
+        """A rate table as written, or built from the law's rates and the thresholds between them (an inactive row's threshold,
+        1e13 dollars or more, ends the table)."""
+        if "table" in expr:
+            return [{"from_minor": int(row["threshold"]), "num": int(row["rate"]["num"]), "den": int(row["rate"]["den"]),
+                     "rate": percent(int(row["rate"]["num"]), int(row["rate"]["den"]))} for row in expr["table"]], {}
+        table = []
+        for number_, name in enumerate(expr["rates"]):
+            start = 0 if number_ == 0 else int(self.spec(expr["thresholds"][number_ - 1], "money")["value"])
+            if start >= INACTIVE_MINOR:
+                break
+            rate = self.spec(name, "rate")
+            table.append({"from_minor": start, "num": int(rate["num"]), "den": int(rate["den"]), "rate": percent(int(rate["num"]), int(rate["den"]))})
+        return table, {"parameters": [*expr["rates"][:len(table)], *expr["thresholds"][:len(table) - 1]], "source": self.law_source(expr["rates"][0])}
+
     def emit(self, expr, path, own, when):
         """The expression's value; a money or count value gets a node (own: the id for this node, else `<rule>~<path>`).
         when: the conditions behind the branches taken to get here, kept until a node takes them."""
@@ -241,11 +285,13 @@ class Evaluator:
             if not spec:
                 raise Unsupported(f"{self.rule_id} has no parameter {expr['name']}")
             value_kind, value = typed(spec)
+            if value_kind == "rate":
+                raise Unsupported(f"{self.rule_id}: the rate {expr['name']} is only read as `amount × rate`")
             found = Result(value_kind, value, when=when)
             if value_kind in ("money", "int"):
                 found.ref = f"law:{self.rule_id}:{expr['name']}"
                 self.nodes[found.ref] = node(found.ref, f"{self.title}: {spaced(expr['name'])}", "law", value if value_kind == "money" else None,
-                                             cite=self.cite, source={"parameter": expr["name"], **self.law}, count=None if value_kind == "money" else value)
+                                             cite=self.cite, source=self.law_source(expr["name"]), count=None if value_kind == "money" else value)
             return found
         if kind == "if":
             truth, text = self.condition(expr["cond"])
@@ -270,9 +316,9 @@ class Evaluator:
             return self.made(key, self.expression(expr), op, Result(parts[0].kind, value), parts, when, own)
         if kind == "max0":
             part = self.emit(expr["arg"], path + ".0", None, [])
-            zero = Result("money", 0)
+            zero = Result(part.kind, 0)  # A count stays a count (a number of children, not below none).
             zero.ref = self.constant(zero)
-            return self.made(key, self.expression(expr), "max", Result("money", max(part.value, 0)), [part, zero], when, own)
+            return self.made(key, self.expression(expr), "max", Result(part.kind, max(part.value, 0)), [part, zero], when, own)
         if kind == "clamp":
             value, low, high = (self.emit(item, f"{path}.{number_}", None, []) for number_, item in enumerate((expr["value"], expr["lo"], expr["hi"])))
             raised = self.made(f"{self.rule_id}~{path.strip('.') or '0'}.lo", f"{self.describe(expr['value'])}, at least {self.describe(expr['lo'])}", "max",
@@ -280,30 +326,33 @@ class Evaluator:
             return self.made(key, self.expression(expr), "min", Result("money", min(raised.value, high.value)), [raised, high], when, own)
         if kind == "mulRate":
             base = self.emit(expr["base"], path + ".0", None, [])
-            num, den = int(expr["rate"]["num"]), int(expr["rate"]["den"])
+            num, den, law = self.rate_of(expr)
             return self.made(key, self.expression(expr), "rate", Result("money", div_round(base.value * num, den, expr["round"])),
-                             [base], when, own, {"num": num, "den": den, "rate": percent(num, den), "round": expr["round"]})
+                             [base], when, own, {"num": num, "den": den, "rate": percent(num, den), "round": expr["round"], **law})
         if kind == "mulInt":
             base, count = self.emit(expr["base"], path + ".0", None, []), self.emit(expr["count"], path + ".1", None, [])
-            return self.made(key, self.expression(expr), "multiply", Result("money", base.value * count.value), [base, count], when, own)
+            return self.made(key, self.expression(expr), "multiply", Result(base.kind, base.value * count.value), [base, count], when, own)
         if kind == "mulDiv":
             a, b, c = (self.emit(item, f"{path}.{number_}", None, []) for number_, item in enumerate((expr["a"], expr["b"], expr["c"])))
-            return self.made(key, self.expression(expr), "multiply", Result("money", div_round(a.value * b.value, c.value, expr["round"])), [a, b, c], when, own,
-                             {"divide": True, "round": expr["round"]})
+            # money × count ÷ money is a count (a share in thousandths); anything else keeps money.
+            result_kind = "int" if (a.kind, b.kind, c.kind) == ("money", "int", "money") else "money"
+            return self.made(key, self.expression(expr), "multiply", Result(result_kind, div_round(a.value * b.value, c.value, expr["round"])), [a, b, c],
+                             when, own, {"divide": True, "round": expr["round"]})
         if kind == "roundToDollar":
             part = self.emit(expr["value"], path + ".0", None, [])
             return self.made(key, self.expression(expr), "round", Result("money", div_round(part.value, 100, expr["mode"]) * 100), [part], when, own,
                              {"round": expr["mode"]})
         if kind == "stepUnits":
             part = self.emit(expr["value"], path + ".0", None, [])
-            unit = int(expr["unitCents"])
+            unit, law = self.unit_of(expr)
             return self.made(key, self.expression(expr), "steps", Result("int", div_round(part.value, unit, expr["mode"])), [part], when, own,
-                             {"unit_minor": unit, "round": expr["mode"]})
+                             {"unit_minor": unit, "round": expr["mode"], **law})
         if kind == "brackets":
             base = self.emit(expr["base"], path + ".0", None, [])
-            table = [{"from_minor": int(row["threshold"]), "num": int(row["rate"]["num"]), "den": int(row["rate"]["den"]),
-                      "rate": percent(int(row["rate"]["num"]), int(row["rate"]["den"]))} for row in expr["table"]]
-            return self.made(key, self.expression(expr), "lookup", Result("money", bracket_tax(base.value, table)), [base], when, own, {"table": table})
+            table, law = self.table_of(expr)
+            once = expr.get("round") == "once"
+            return self.made(key, self.expression(expr), "lookup", Result("money", bracket_tax(base.value, table, once)), [base], when, own,
+                             {"table": table, **({"round": "once"} if once else {}), **law})
         if kind == "unsupported":
             raise Unsupported(expr.get("reason") or f"{self.rule_id} isn't modeled")
         raise Unsupported(f"{self.rule_id}: unknown expression {kind}")
@@ -400,7 +449,12 @@ class Evaluator:
         if kind == "clamp":
             return f"{inner(expr['value'])}, between {inner(expr['lo'])} and {inner(expr['hi'])}"
         if kind == "mulRate":
-            return f"{percent(int(expr['rate']['num']), int(expr['rate']['den']))} of {inner(expr['base'])}"
+            if "rateParam" in expr:
+                found = self.params.get(expr["rateParam"]) or {}
+                rate = f"{spaced(expr['rateParam'])} ({percent(int(found['num']), int(found['den']))})" if found.get("type") == "rate" else spaced(expr["rateParam"])
+            else:
+                rate = percent(int(expr["rate"]["num"]), int(expr["rate"]["den"]))
+            return f"{rate} of {inner(expr['base'])}"
         if kind == "mulInt":
             return f"{inner(expr['base'])} × {inner(expr['count'])}"
         if kind == "mulDiv":
@@ -408,7 +462,8 @@ class Evaluator:
         if kind == "roundToDollar":
             return f"{inner(expr['value'])}, rounded to the dollar"
         if kind == "stepUnits":
-            return f"{inner(expr['value'])} in whole steps of {shown(int(expr['unitCents']))}"
+            unit = (self.params.get(expr["unitParam"]) or {}).get("value") if "unitParam" in expr else expr["unitCents"]
+            return f"{inner(expr['value'])} in whole steps of {shown(int(unit)) if unit is not None else spaced(expr['unitParam'])}"
         if kind == "brackets":
             return f"tax on {inner(expr['base'])} from the rate table"
         if kind in ("if", "match"):

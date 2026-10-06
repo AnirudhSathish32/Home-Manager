@@ -30,7 +30,7 @@ LINE_FIELDS = {"interest": "interest", "dividends": "ordinary_dividends", "distr
 # Return inputs a tax form's box gives (tax_year.gather), when the form is here.
 FORM_BOXES = {"interest": (("1099-INT", "1"), ("1099-INT", "3")), "us_obligation_interest": (("1099-INT", "3"),),
               "ordinary_dividends": (("1099-DIV", "1a"),), "qualified_dividends": (("1099-DIV", "1b"),), "tax_exempt_interest": (("1099-INT", "8"),),
-              "retirement_distributions": (("1099-R", "2a"),), "other_federal_withholding": (("1099-INT", "4"), ("1099-DIV", "4")),
+              "retirement_distributions": (("1099-R", "2a"),), "other_federal_withholding": (("1099-INT", "4"), ("1099-DIV", "4"), ("1099-R", "4")),
               "mortgage_interest": (("1098", "1"),), "property_tax": (("1098", "10"),)}
 
 

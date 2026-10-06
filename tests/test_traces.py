@@ -240,11 +240,14 @@ def test_the_return_and_tax_zen_trace_to_the_engines_lines_and_the_records(tmp_p
         inbox_scan(store, {"int.png": b"synthetic 1099-INT"})
         source = {"document_id": documents_by_name(store)["int.png"]["id"], "blob_hash": documents_by_name(store)["int.png"]["current_hash"], "run_id": "f"}
         form = investments.publish_tax_form({"institution": "Ally", "last_four": None, "tax_year": year, "currency": "USD", "issues": [],
-                                             "boxes": [{"form": "1099-INT", "box": "1", "label": "Interest income", "amount_minor": 4200, "locator": {}}]}, source)
+                                             "boxes": [{"form": "1099-INT", "box": "1", "label": "Interest income", "amount_minor": 4200, "locator": {}},
+                                                       {"form": "1099-INT", "box": "4", "label": "Federal income tax withheld", "amount_minor": 600, "locator": {}}]}, source)
         investments.review_tax_form(form["id"], "verified")
         view = client.get(f"/api/tax/year/{year}").json()
         interest = trace_of(view["gathered"]["traces"]["interest"])
         assert interest["reconciles"] and interest["steps"][0]["label"] == "Ally 1099-INT box 1" and interest["steps"][0]["value"]["minor"] == 4200
+        withheld = trace_of(view["gathered"]["traces"]["other_federal_withholding"])  # Traced to the form's box, not left as a source line.
+        assert withheld["reconciles"] and [step["label"] for step in withheld["steps"]] == ["Ally 1099-INT box 4"]
         names = check_every_ref(trace_of, view)
         assert {"tax.result", "tax.line", "tax.field", "tax.job", "tax.safe_harbor", "taxzen.w4", "taxzen.w4_year_end"} <= names
 
@@ -420,7 +423,7 @@ def test_family_figures_trace_to_each_members_own(tmp_path):
         paid(manager, "dad", 20000)
         manager.configure_household(manager.household.model_copy(update={"birth_year": 1955}))
         manager.switch_profile(mom)
-        family = manager.create_family("The Smiths", str(tmp_path / "family"), str(tmp_path), ["Dad"], my_profile=mom)
+        family = manager.create_family("The Smiths", str(tmp_path / "family"), ["Dad"], my_profile=mom)
         folder = FamilyFolder(tmp_path / "family")
         members = {member["name"]: member["member_id"] for member in folder.data["members"]}
         folder.close()

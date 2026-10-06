@@ -129,6 +129,17 @@ def loan(store, name, owed, rate_bp, payment):
                    "VALUES(?,'loan',?,'USD','2026-09-30',?,?,'manual','verified','t','t')", (name, owed, rate_bp, payment))
 
 
+def test_federal_tax_withheld_on_1099s_includes_retirement_distributions(store):
+    # Box 4 is federal tax withheld on a 1099-INT, a 1099-DIV and a 1099-R alike: all of it is paid already.
+    inbox_scan(store, {"1099r.pdf": b"1099-R", "1099int.pdf": b"1099-INT"})
+    docs = documents_by_name(store)
+    form(store, docs["1099r.pdf"], [("1", 2000000), ("2a", 2000000), ("4", 400000)], "1099-R")
+    form(store, docs["1099int.pdf"], [("1", 50000), ("4", 1200)], "1099-INT")
+    gathered = gather(store, 2026, HouseholdConfig(), TODAY)
+    assert gathered["values"]["other_federal_withholding"] == 401200
+    assert gathered["sources"]["other_federal_withholding"] == "1099-INT and 1099-R box 4"
+
+
 def test_a_1098_and_the_mortgage_fill_the_average_balance(store):
     inbox_scan(store, {"1098.pdf": b"1098"})
     form(store, documents_by_name(store)["1098.pdf"], [("1", 1200000), ("2", 30000000), ("10", 400000)])

@@ -1,4 +1,4 @@
-"""The HTTP server base for the GPU host relay (and the tests' synthetic model server).
+"""The HTTP server base for the GPU host relay, the family hub (and the tests' synthetic model server).
 
 After a reply, the server waits for the client to close the connection before closing its own end. On Windows, closing a
 socket (or sending FIN with shutdown) while a multi-segment reply is still in flight sometimes loses a segment: the
@@ -12,11 +12,51 @@ two minutes (WinError 10048). See docs/development.md, "Windows loopback resets"
 """
 
 from http.server import ThreadingHTTPServer
+import ipaddress
+import shutil
 import socket
 import struct
+import subprocess
 
 CLOSE_WAIT_SECONDS = 10  # A client that never closes is cut off after this.
 ABORT = struct.pack("hh", 1, 0)  # SO_LINGER on with a zero timeout: close() sends a reset.
+TAILNET = ipaddress.ip_network("100.64.0.0/10")  # Tailscale's address range (CGNAT space).
+
+
+def check_bind(address: str, loopback: bool, what="This server"):
+    """Allow loopback (127.0.0.1 only) or a Tailscale address (100.64.0.0/10), and nothing else: never 0.0.0.0 or a
+    LAN address. Shared by the GPU relay and the family hub (docs/family.md "Families", "Security")."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        raise ValueError(f"{address} is not an IP address.") from None
+    if loopback and address != "127.0.0.1":
+        raise ValueError("The loopback listener binds to 127.0.0.1 only.")
+    if not loopback and ip not in TAILNET:
+        raise ValueError(f"{what} listens only on a Tailscale address (100.64.0.0/10), not {address}.")
+
+
+def tailnet_address():
+    """This computer's Tailscale IPv4 address, or None."""
+    candidates = []
+    try:
+        candidates = [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    command = shutil.which("tailscale")
+    if command:
+        try:
+            output = subprocess.run([command, "ip", "-4"], capture_output=True, text=True, timeout=5).stdout
+            candidates += output.split()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for value in candidates:
+        try:
+            if ipaddress.ip_address(value) in TAILNET:
+                return value
+        except ValueError:
+            continue
+    return None
 
 
 class GracefulHTTPServer(ThreadingHTTPServer):

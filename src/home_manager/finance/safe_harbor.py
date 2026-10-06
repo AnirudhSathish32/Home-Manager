@@ -23,13 +23,32 @@ NO_PENALTY_BELOW = 100_000  # §6654(e)(1): less than $1,000 owed.
 
 
 def due_dates(year):
-    """1040-ES due dates for a tax year: Apr 15, Jun 15, Sep 15 and Jan 15, moved to the next weekday when on a weekend."""
+    """1040-ES due dates for a tax year: Apr 15, Jun 15, Sep 15 and Jan 15, moved to the next day that isn't a weekend or a
+    legal holiday in the District of Columbia (IRC §7503): Emancipation Day can move April's, Martin Luther King Jr. Day
+    January's."""
+    holidays = legal_holidays(year) | legal_holidays(year + 1)
     dates = []
     for day in (date(year, 4, 15), date(year, 6, 15), date(year, 9, 15), date(year + 1, 1, 15)):
-        while day.weekday() >= 5:
+        while day.weekday() >= 5 or day in holidays:
             day += timedelta(days=1)
         dates.append(day)
     return dates
+
+
+def legal_holidays(year):
+    """The days off for federal holidays (5 U.S.C. §6103) and DC Emancipation Day (Apr 16) in a year: a fixed-date holiday on
+    a Saturday is observed the Friday before, on a Sunday the Monday after."""
+    def nth(month, weekday, n):  # The nth weekday (Monday 0) of the month; n=-1 for the last.
+        if n > 0:
+            first = date(year, month, 1)
+            return first + timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+        last = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+        return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+    def observed(day):
+        return day - timedelta(days=1) if day.weekday() == 5 else day + timedelta(days=1) if day.weekday() == 6 else day
+    fixed = (date(year, 1, 1), date(year, 4, 16), date(year, 6, 19), date(year, 7, 4), date(year, 11, 11), date(year, 12, 25))
+    return {observed(day) for day in fixed} | {nth(1, 0, 3), nth(2, 0, 3), nth(5, 0, -1), nth(9, 0, 1), nth(10, 0, 2), nth(11, 3, 4)}
 
 
 def required_payment(total_tax, prior, recorder=NULL, total_trace=None):

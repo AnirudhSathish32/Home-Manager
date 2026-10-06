@@ -238,7 +238,7 @@ class Collector:
             usd, basis, handle = self.usd(t["amount_minor"], t["currency"], t["day"], what)
             spent = None
             if t["transaction_type"] in spending_types:
-                net = -t["amount_minor"] if t["transaction_type"] == "refund" else t["spent"]
+                net = t["spent"]  # A refund is negative: this person's part of it when shared.
                 spent = net if t["currency"] == REPORTING else (handle.convert(net) if handle else None)
                 spent_total += spent or 0
             link, note = links.get(t["id"]), ""

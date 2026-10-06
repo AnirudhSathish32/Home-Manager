@@ -24,7 +24,7 @@ from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
-from ..finance.ledger import Ledger, normalize_name
+from ..finance.ledger import Ledger, normalize_name, says_return
 from ..finance.reconcile import Reconciler, due_after
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
@@ -38,7 +38,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v16"
+EXTRACTION_VERSION = "typed-extraction-v17"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -50,7 +50,7 @@ CODE_TEXT = 2000  # Characters of a decoded QR code or barcode shown to the rewa
 PESOS, PESO_CODES = re.compile(r"\bpesos?\b", re.IGNORECASE), {"MXN", "PHP"}
 PESOS_NOTE = "The document says pesos without a currency code, and pesos can be Mexican (MXN) or Philippine (PHP); choose the currency."
 HEADERS = {
-    "receipt": ("merchant", "purchase_date", "currency", "subtotal", "tax", "tip", "total", "card_last_four"),
+    "receipt": ("merchant", "purchase_date", "currency", "subtotal", "tax", "tip", "total", "card_last_four", "return_marker"),
     "bank_statement": ("institution", "account_reference", "period_start", "period_end", "opening_balance", "closing_balance", "currency"),
     "credit_card_statement": ("issuer", "account_reference", "period_start", "period_end", "previous_balance", "payments", "credits",
                               "purchases", "fees", "interest", "statement_balance", "minimum_payment", "due_date", "currency"),
@@ -88,11 +88,14 @@ DATES = {"purchase_date", "period_start", "period_end", "due_date", "issue_date"
 # Identity names must share a word with their citation; they feed filenames and merchants.
 NAMES = {"merchant", "institution", "issuer", "provider", "payer_or_employer", "employer"}
 # Identifying fields that may be dropped (with a review note) rather than fail a document.
-DROPPABLE = NAMES | DATES | {"document_date", "currency", "account_reference", "card_last_four", "document_name", "pay_frequency", "work_state"}
+DROPPABLE = NAMES | DATES | {"document_date", "currency", "account_reference", "card_last_four", "document_name", "pay_frequency", "work_state",
+                             "return_marker"}
 EMPLOYER_RULE = ("the employer is the company that employs the person, never a payroll provider (ADP, Paychex, Gusto, Workday, "
                  "Paylocity, Rippling), a bank or a benefits administrator")
 LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits, such as VISA ****1234 or ACCT XXXX1234; "
-                      "missing when it was paid in cash or no card number is printed)",
+                      "missing when it was paid in cash or no card number is printed; return_marker: the printed words showing money "
+                      "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
+                      "missing for an ordinary sale, and never a return policy)",
 "bank_statement": "bank statement", "credit_card_statement": "credit card statement",
           "bill": "bill or invoice",
           "paystub": f"pay stub (payer_or_employer: {EMPLOYER_RULE}; pay_frequency: the printed pay frequency such as Biweekly or "
@@ -203,6 +206,8 @@ class Item(StrictModel):
     line_total: str | None = Field(max_length=50)
     discount: str | None = Field(max_length=50)
     taxed: bool | None = Field(description="true or false from the tax code printed beside the item, null when none is printed.")
+    returned: bool | None = Field(default=None, description="true for an item brought back for a refund (marked RETURN or REFUND, or "
+                                                            "printed negative), otherwise false.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
 
 
@@ -297,7 +302,7 @@ class Reward(StrictModel):
 
 
 # Optional summary fields: a model that leaves them out reads them as missing.
-OPTIONAL_FIELDS = {"card_last_four"}
+OPTIONAL_FIELDS = {"card_last_four", "return_marker"}
 HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", __base__=StrictModel,
                                     **{name: (Value, Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
                                        for name in fields})
@@ -667,6 +672,57 @@ def locator(*evidence_lists):
     return {"line_ids": list(dict.fromkeys(cite.line_id for cite in citations)), "quotes": [cite.quote for cite in citations][:40]}
 
 
+RECEIPT_AMOUNTS = ("subtotal_minor", "tax_minor", "tip_minor", "total_minor")
+
+
+def receipt_checks(amounts, items):
+    """(passed, failed) arithmetic checks of a receipt: subtotal, tax and tip make the total; items make the subtotal."""
+    passed = failed = 0
+    if amounts["subtotal_minor"] is not None and amounts["tax_minor"] is not None and amounts["total_minor"] is not None:
+        ok = amounts["subtotal_minor"] + amounts["tax_minor"] + (amounts["tip_minor"] or 0) == amounts["total_minor"]
+        passed, failed = passed + ok, failed + (not ok)
+    lines = [item["line_total_minor"] for item in items]
+    if lines and None not in lines and amounts["subtotal_minor"] is not None and not any(item["discount_minor"] for item in items):
+        ok = sum(lines) == amounts["subtotal_minor"]
+        passed, failed = passed + ok, failed + (not ok)
+    return passed, failed
+
+
+def sign_return(record, marker, issues):
+    """Signs of a return or exchange receipt, decided in code from what was printed and cited (docs/money.md "Returns").
+    Returned lines are already negative. A whole return makes every unsigned amount money back; an exchange (lines
+    bought and returned) takes the sign that makes its arithmetic hold, trying the printed marker's direction first."""
+    record.pop("return_marker", None)
+    marked = marker.status == "proposed"
+    if marked and not says_return(" ".join(cite.quote for cite in marker.evidence)):
+        issues.append(f"Sale or return: “{marker.value}” does not read like a refund or return; check whether this receipt is a return.")
+        marked = False
+    items = record["items"]
+    lines = [item["line_total_minor"] for item in items if item["line_total_minor"] is not None]
+    returned, sold = any(line < 0 for line in lines), any(line > 0 for line in lines)
+    negative_total = (record["total_minor"] or 0) < 0
+    if not (marked or returned or negative_total):
+        record["sale_type"] = "sale"
+        return
+    if not (returned and sold):  # A whole return: every unsigned amount is money back.
+        for item in items:
+            if item["line_total_minor"] is not None and item["line_total_minor"] > 0:
+                item["line_total_minor"] = -item["line_total_minor"]
+        for name in RECEIPT_AMOUNTS:
+            if record[name] is not None and record[name] > 0:
+                record[name] = -record[name]
+        record["sale_type"] = "return"
+        return
+    record["sale_type"] = "exchange"
+    for sign in (-1, 1) if marked or negative_total else (1, -1):
+        trial = {name: sign * record[name] if record[name] is not None and record[name] > 0 else record[name] for name in RECEIPT_AMOUNTS}
+        passed, failed = receipt_checks(trial, items)
+        if passed and not failed:
+            record.update(trial)
+            return
+    issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
+
+
 def normalize(kind, header, rows, currency):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
@@ -709,11 +765,16 @@ def normalize(kind, header, rows, currency):
         return None if any(value is None for value in values) else sum(values)
 
     if kind == "receipt":
-        record["items"] = [{"description": " ".join(row.description.split()), "product_code": row.product_code, "quantity": row.quantity,
-                            "unit_price_minor": money(row.unit_price, f"Item {index} unit price"),
-                            "line_total_minor": money(row.line_total, f"Item {index} line total"),
-                            "discount_minor": money(row.discount, f"Item {index} discount"), "taxed": row.taxed, "locator": locator(row.evidence)}
-                           for index, row in enumerate(rows, 1)]
+        record["items"] = []
+        for index, row in enumerate(rows, 1):
+            line = money(row.line_total, f"Item {index} line total")
+            # A returned line is money back: negative whether or not its minus sign was printed (docs/money.md "Returns").
+            if line is not None and row.returned and line > 0:
+                line = -line
+            record["items"].append({"description": " ".join(row.description.split()), "product_code": row.product_code, "quantity": row.quantity,
+                                    "unit_price_minor": money(row.unit_price, f"Item {index} unit price"), "line_total_minor": line,
+                                    "discount_minor": money(row.discount, f"Item {index} discount"), "taxed": row.taxed, "locator": locator(row.evidence)})
+        sign_return(record, fields["return_marker"], issues)
         charged = total([record["subtotal_minor"], record["tax_minor"], record["tip_minor"] or 0])
         if charged is not None and record["total_minor"] is not None:
             if charged != record["total_minor"]:
@@ -1152,7 +1213,9 @@ class ExtractionService:
                          "them into one row citing both lines, use the product name as description, the number beside it as product_code, "
                          "and the price as line_total. Department headings alone (GROCERY, HEALTH AND BEAUTY) are not items. taxed: "
                          "many receipts print a tax code beside each price (such as A or E, T or N, X, F): true when the code marks the item "
-                         "taxed, false when it marks it untaxed or tax-exempt, null when no code is printed or its meaning is unclear.")
+                         "taxed, false when it marks it untaxed or tax-exempt, null when no code is printed or its meaning is unclear. "
+                         "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "
+                         "printed negative), false for an item bought. Copy its line_total as printed.")
             for part in chunks(lines):
                 work.check()
                 rows.extend(getattr(ask(config, work, schema, f"List every {row_label} printed in these lines of a {LABELS[kind]}, in order, "
@@ -1313,6 +1376,8 @@ class ExtractionService:
         if kind == "receipt":  # A return policy printed on the receipt; found in code, not by the model.
             record["return_days_printed"], record["return_policy_quote"] = printed_return_days(line.text for line in lines)
             record["rewards"] = rewards or []
+            if record.get("sale_type") == "sale" and any(TOTAL_LINE.search(line.text) and says_return(line.text) for line in lines):
+                issues.append("Sale or return: a total line says refund or return, so this may be a return; check the total's sign.")
         issues.extend(notes)  # Dropped identifying fields need a person to check them.
         issues.extend(review_reasons(kind, record, decision, issues))
         if record_notes:

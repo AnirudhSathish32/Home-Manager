@@ -2,6 +2,21 @@
 // Money pages (docs/money.md "Money pages"): Transactions, Spending & budgets, Bills & recurring, Accounts.
 // Every figure comes from a deterministic server tool as exact display text; the browser does no money arithmetic.
 const tool = (name, args = {}) => api(`/api/finance/tools/${name}`, {method: "POST", body: JSON.stringify(args)});
+// The ledger pages (Transactions, Spending, Bills, Accounts): in the family view, every member's records, each row with
+// its owner (docs/family.md "Family ledger"); otherwise this profile's own.
+const ledgerTool = (name, args = {}) => familyMode
+  ? api(`/api/finance/tools/${name}?members=true`, {method: "POST", body: JSON.stringify(args)}) : tool(name, args);
+// A record in the drawer: in the family view it's read from its owner's copy.
+const recordUrl = (type, id, member) => `/api/finance/records/${type}/${id}${member ? `?member=${member}` : ""}`;
+// In the family view an account is "<member id>:<account id>": ids are only unique within one person's library.
+const accountOption = account => familyMode ? new Option(`${account.owner} · ${account.display_name}`, `${account.member_id}:${account.id}`)
+  : new Option(account.display_name, account.id);
+function accountArgs(args, value) {
+  if (!value) return args;
+  if (familyMode) { const [member, id] = value.split(":"); return Object.assign(args, {member, account_id: Number(id)}); }
+  return Object.assign(args, {account_id: Number(value)});
+}
+function ownerCell(tr, row) { if (familyMode) cell(tr, row.owner || "").className = "owner-col"; }
 const pad = value => String(value).padStart(2, "0");
 function isoDay(day) { return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`; }
 function todayIso() { return isoDay(new Date()); }
@@ -27,7 +42,7 @@ function tableMessage(target, columns, message) {
 }
 let categoryCache = null;
 async function loadCategoryOptions() {
-  categoryCache = (await tool("get_categories")).categories.map(row => row.category);
+  categoryCache = (await ledgerTool("get_categories")).categories.map(row => row.category);
   $("category-options").replaceChildren(...categoryCache.map(name => new Option(name)));
   return categoryCache;
 }
@@ -50,10 +65,10 @@ const TX_FIELDS = {view: "tx-view", q: "tx-search", start: "tx-from", end: "tx-t
 const itemView = () => $("tx-view").value !== "charges";
 let txParams = new URLSearchParams(), txLoad = 0;
 async function loadTransactionOptions() {
-  const [{accounts}, categories] = await Promise.all([tool("get_accounts"), loadCategoryOptions()]);
+  const [{accounts}, categories] = await Promise.all([ledgerTool("get_accounts"), loadCategoryOptions()]);
   for (const [id, label] of [["tx-account", "All accounts"], ["rule-account", "Any account"]]) {
     const chosen = $(id).value;
-    $(id).replaceChildren(new Option(label, ""), ...accounts.map(account => new Option(account.display_name, account.id)));
+    $(id).replaceChildren(new Option(label, ""), ...accounts.map(accountOption));
     $(id).value = chosen;
   }
   const chosen = $("tx-category").value;
@@ -96,7 +111,7 @@ function transactionQuery() {
   if ($("tx-from").value) args.start = $("tx-from").value;
   if ($("tx-to").value) args.end = $("tx-to").value;
   if ($("tx-search").value.trim()) args.query = $("tx-search").value.trim();
-  if ($("tx-account").value) args.account_id = Number($("tx-account").value);
+  accountArgs(args, $("tx-account").value);
   if ($("tx-category").value) args.category = $("tx-category").value;
   if ($("tx-type").value) args.transaction_types = $("tx-type").value.split(",");
   if ($("tx-receipt").value) args.has_receipt = $("tx-receipt").value === "true";
@@ -127,7 +142,7 @@ async function loadTransactions() {
   if (items) return loadItems();
   const load = ++txLoad, args = transactionQuery();
   let result;
-  try { result = await tool("get_transactions", args); }
+  try { result = await ledgerTool("get_transactions", args); }
   catch (error) { if (load === txLoad) tableMessage($("tx-rows"), 7, `Couldn't load transactions. ${error.message}`); throw error; }
   if (load !== txLoad) return;
   const rows = result.transactions, first = result.total_matching ? args.offset + 1 : 0;
@@ -142,8 +157,9 @@ async function loadTransactions() {
 function transactionRow(row) {
   const tr = document.createElement("tr"); tr.className = "clickable-row";
   cell(tr, "").appendChild(dateDisplay(row.posted_date));
+  ownerCell(tr, row);
   const described = cell(tr, ""), open = element("button", row.merchant || row.description_raw, "link-button");
-  open.type = "button"; open.addEventListener("click", () => openTransaction(row.id));
+  open.type = "button"; open.addEventListener("click", () => openTransaction(row.id, row.member_id));
   described.append(open);
   if (row.merchant && row.merchant !== row.description_raw) described.append(element("small", row.description_raw, "muted block"));
   cell(tr, row.account);
@@ -151,16 +167,34 @@ function transactionRow(row) {
   if (!row.category) category.className = "muted";
   else if (row.category_source === "rule") category.title = "Set by a category rule";
   const evidence = cell(tr, ""); evidence.className = "receipt-cell";
-  if (row.receipt_document_id) evidence.appendChild(receiptLink(row));
+  if (row.receipt_document_id) evidence.appendChild(familyMode ? originalButton(icon("paperclip"), row.member_id, row.receipt_document_id, "Open the matched receipt") : receiptLink(row));
   const status = cell(tr, "");
   if (!row.counted) status.append(statusBadge(row.review_status));
+  if (row.pending_fields?.length) status.append(element("small", `Waiting for ${row.owner}`, "muted block pending-tag"));
   if (["transfer", "payment"].includes(row.transaction_type)) status.append(element("small", "Not spending", "muted block"));
   // A charge for a cost the family shared: the bank shows all of it, this profile counts its own part.
   if (row.shared_part) status.append(element("small", `Shared expense · your part ${row.shared_part.display} counted`, "muted block"));
   const value = cell(tr, ""); value.className = "numeric"; value.appendChild(amount(row.amount));
   if (["transfer", "payment"].includes(row.transaction_type)) value.classList.add("muted");
-  tr.addEventListener("click", event => { if (!event.target.closest("a, button")) openTransaction(row.id); });
+  tr.addEventListener("click", event => { if (!event.target.closest("a, button")) openTransaction(row.id, row.member_id); });
   return tr;
+}
+// A member's original, from the family computer (it opens while their app is stopped): fetched with this session's token,
+// then shown in a new tab.
+function originalButton(content, member, documentId, label) {
+  const button = element("button", "", "link-button"); button.type = "button"; button.append(content);
+  if (label) { button.title = label; button.setAttribute("aria-label", label); }
+  button.addEventListener("click", async () => {
+    const view = window.open("", "_blank");
+    try {
+      const response = await fetch(`/api/documents/${documentId}/image?member=${member}`, {headers: {"Authorization": `Bearer ${token}`}});
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "The document couldn't be opened.");
+      const url = URL.createObjectURL(await response.blob());
+      if (view) view.location = url; else window.location.assign(url);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (error) { if (view) view.close(); notice(error, true); }
+  });
+  return button;
 }
 // Items: every counted charge and receipt, one row per item with its share of what was paid (docs/money.md).
 function itemQuery() {
@@ -168,7 +202,7 @@ function itemQuery() {
   if ($("tx-from").value) args.start = $("tx-from").value;
   if ($("tx-to").value) args.end = $("tx-to").value;
   if ($("tx-search").value.trim()) args.query = $("tx-search").value.trim();
-  if ($("tx-account").value) args.account_id = Number($("tx-account").value);
+  accountArgs(args, $("tx-account").value);
   if ($("tx-category").value) args.category = $("tx-category").value;
   // A drill-down from Home or Spending: its category group and currency (items are spending, so the metric is implied).
   const {categories, currency} = transactionQuery();
@@ -179,10 +213,10 @@ function itemQuery() {
 async function loadItems() {
   const load = ++txLoad, args = itemQuery();
   let result, categories;
-  try { [result, categories] = await Promise.all([tool("get_spending_items", args), receiptCategories()]); }
+  try { [result, categories] = await Promise.all([ledgerTool("get_spending_items", args), receiptCategories()]); }
   catch (error) { if (load === txLoad) tableMessage($("item-rows"), 6, `Couldn't load spending. ${error.message}`); throw error; }
   if (load !== txLoad) return;
-  showItemBackfill().catch(() => {});
+  if (!familyMode) showItemBackfill().catch(() => {});
   const rows = result.items, first = result.total_matching ? args.offset + 1 : 0;
   $("tx-summary").replaceChildren(document.createTextNode(`${result.total_matching.toLocaleString()} items · ${describeFilters(args)}. `));
   if ([...txParams].some(([key]) => !["period", "view"].includes(key))) $("tx-summary").append(homeLink("Clear filters", "#/transactions"));
@@ -207,18 +241,22 @@ async function showItemBackfill() {
 function itemRow(row, categories) {
   const tr = document.createElement("tr");
   cell(tr, "").appendChild(dateDisplay(row.date));
+  ownerCell(tr, row);
   const described = cell(tr, "");
   const name = row.kind === "item" ? row.item : row.kind === "extra" ? (row.category === "dining" ? "Tip" : "Other charges") : row.merchant;
   if (row.source === "transaction") {
-    const open = element("button", name, "link-button"); open.type = "button"; open.addEventListener("click", () => openTransaction(row.transaction_id));
+    const open = element("button", name, "link-button"); open.type = "button"; open.addEventListener("click", () => openTransaction(row.transaction_id, row.member_id));
     described.append(open);
-  } else described.append(row.receipt_document_id ? homeLink(name, `#/documents/${row.receipt_document_id}`) : document.createTextNode(name));
+  } else if (row.receipt_document_id && familyMode) described.append(originalButton(document.createTextNode(name), row.member_id, row.receipt_document_id));
+  else described.append(row.receipt_document_id ? homeLink(name, `#/documents/${row.receipt_document_id}`) : document.createTextNode(name));
   const detail = [row.kind === "charge" ? (row.merchant !== row.description ? row.description : "") : row.merchant,
                   row.line_total && row.line_total.display !== row.amount.display ? `price ${row.line_total.display}` : ""].filter(Boolean).join(" · ");
   if (detail) described.append(element("small", detail, "muted block"));
   cell(tr, row.account || "Receipt");
   const category = cell(tr, "");
-  if (row.kind === "item") {
+  if (familyMode) {
+    category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category);  // Changed in the person's own profile.
+  } else if (row.kind === "item") {
     category.append(itemCategorySelect(row.receipt_id, {item: row.item, position: row.position, category: row.category, category_source: row.item_category_source},
                                        categories, () => loadTransactions()));
   } else if (row.source === "transaction") {
@@ -227,7 +265,8 @@ function itemRow(row, categories) {
     category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category);
     if (row.kind === "extra") category.title = "Tax, tip or amounts the receipt doesn't list by item";
   }
-  cell(tr, "").append(statusBadge(row.status));
+  const status = cell(tr, ""); status.append(statusBadge(row.status));
+  if (row.pending_fields?.length) status.append(element("small", `Waiting for ${row.owner}`, "muted block pending-tag"));
   const value = cell(tr, ""); value.className = "numeric"; value.appendChild(amount(row.amount, {signed: false}));
   return tr;
 }
@@ -254,9 +293,9 @@ function chargeCategorySelect(row) {
 function receiptLink(row) {
   // Opens the receipt matched to this transaction; a proposed match says so until it is confirmed.
   const link = element("a", "", "receipt-link"); link.href = `#/documents/${row.receipt_document_id}`;
-  const proposed = row.receipt_link_status === "proposed";
-  link.append(icon("paperclip"), element("span", proposed ? "Receipt (proposed)" : "Receipt", "visually-hidden-narrow"));
-  link.title = proposed ? "Matched receipt, awaiting your confirmation in Review" : "Matched receipt";
+  const proposed = row.receipt_link_status === "proposed", kind = row.transaction_type === "refund" ? "Return receipt" : "Receipt";
+  link.append(icon("paperclip"), element("span", proposed ? `${kind} (proposed)` : kind, "visually-hidden-narrow"));
+  link.title = `Matched ${kind.toLowerCase()}${proposed ? ", awaiting your confirmation in Review" : ""}`;
   return link;
 }
 for (const id of Object.values(TX_FIELDS)) $(id).addEventListener(id === "tx-search" ? "search" : "change", () => txChanged());
@@ -278,7 +317,8 @@ function ruleWords(record) {
   // A starting suggestion only: the server normalizes the words the same way it matches them.
   return (record.merchant || record.description_raw || "").toUpperCase().replace(/#\s*\d+|\b\d+\b|[^\w\s&]/g, " ").split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
 }
-async function openTransaction(id) {
+async function openTransaction(id, member = null) {
+  if (familyMode) return openFamilyTransaction(id, member);
   const [record, {tag: taxTag}] = await Promise.all([api(`/api/finance/records/transaction/${id}`), api(`/api/tax-tags/on/transaction/${id}`).catch(() => ({tag: null}))]);
   await loadCategoryOptions().catch(() => {});
   const body = $("tx-drawer-body");
@@ -345,6 +385,17 @@ async function openTransaction(id) {
   if (!evidence.children.length) evidence.append(element("li", "No linked receipt or source document.", "muted"));
   const history = element("ul", "", "finance-list");
   for (const event of record.review_history) history.append(element("li", `${new Date(event.created_at).toLocaleString()}: ${statusLabel(event.previous_status)} → ${statusLabel(event.new_status)}${event.note ? ` · ${event.note}` : ""}`));
+  // Changes the family made here (docs/family.md "Family corrections"): each can be rejected, which puts the value back.
+  for (const change of record.family_corrections || []) {
+    const li = element("li", `${new Date(change.created_at).toLocaleString()}: ${change.field.replaceAll("_", " ")} changed by ${change.actor.replace(/^Family · /, "family (")}${change.actor.startsWith("Family · ") ? ")" : ""}`
+                            + ` from ${change.previous ?? "nothing"} to ${change.value ?? "nothing"}`);
+    if (change.status === "applied") li.append(document.createTextNode(" "), asyncButton("Reject", async () => {
+      await api(`/api/finance/family-corrections/${change.key}/reject`, {method: "POST", body: "{}"});
+      notice(`Put back ${change.previous ?? "the earlier value"}.`); await Promise.all([openTransaction(id), loadTransactions()]);
+    }, "small quiet"));
+    else li.append(element("small", ` · ${statusLabel(change.status)}`, "muted"));
+    history.append(li);
+  }
   if (!history.children.length) history.append(element("li", "No decisions yet.", "muted"));
   const details = element("details", "", "technical-detail");
   details.append(element("summary", "Details"), element("p", `Type: ${statusLabel(record.transaction_type)} · Origin: ${record.origin} · Currency: ${record.currency}`, "small"),
@@ -366,6 +417,58 @@ async function openTransaction(id) {
                               tags: taxTag ? [taxTag] : [], words: ruleWords(record), onDone: () => openTransaction(id)});
   body.replaceChildren(...sections, drawerSection("Category", form), drawerSection("Taxes", taxes), drawerSection("Evidence", evidence),
                        drawerSection("History", history), details);
+  if (!$("tx-drawer").open) $("tx-drawer").showModal();
+}
+// The family ledger's drawer: a member's transaction as their latest copy has it, with its evidence opening from the
+// family computer.
+async function openFamilyTransaction(id, member) {
+  const record = await api(recordUrl("transaction", id, member));
+  $("tx-drawer-title").textContent = record.merchant || record.description_raw;
+  const head = element("div", "", "drawer-head");
+  const big = amount(record.display.amount_minor); big.classList.add("drawer-amount");
+  head.append(big, element("p", `${record.owner} · ${dateText(record.posted_date)} · ${record.account}`, "muted"));
+  if (record.merchant) head.append(element("p", record.description_raw, "muted small"));
+  const state = element("div", "", "drawer-status");
+  state.append(statusBadge(record.review_status));
+  if (record.pending_fields.length) state.append(element("span", ` Waiting for ${record.owner}: ${record.pending_fields.map(field => field.replaceAll("_", " ")).join(", ")}`, "muted small"));
+  // A correction travels to the person and applies in their own records (docs/family.md "Family corrections").
+  const form = element("form", "", "form family-correction");
+  const fields = [["category", "Category", record.category || "", "text"], ["merchant", "Merchant", record.merchant || record.description_raw, "text"],
+                  ["posted_date", "Date", record.posted_date, "date"]];
+  for (const [field, label, value, type] of fields) {
+    const wrap = element("div", "", "field"), name = element("label", label), input = element("input");
+    input.id = `family-fix-${field}`; input.type = type; input.value = value; input.maxLength = 120; input.dataset.field = field; input.dataset.original = value;
+    if (field === "category") input.setAttribute("list", "category-options");
+    name.htmlFor = input.id; wrap.append(name, input);
+    if (record.pending_fields.includes(field)) wrap.append(element("small", `Waiting for ${record.owner}`, "muted"));
+    form.append(wrap);
+  }
+  const save = element("button", "Send correction", "small primary"); save.type = "submit";
+  form.append(save, element("small", `${record.owner} sees it in their own records, marked as changed by the family, and can reject it.`, "muted block"));
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const changes = {};
+    for (const input of form.querySelectorAll("input[data-field]")) if (input.value.trim() !== input.dataset.original) changes[input.dataset.field] = input.value.trim() || null;
+    if (!Object.keys(changes).length) { notice("Change a field first.", true); return; }
+    save.disabled = true;
+    try {
+      await api(recordUrl("transaction", id, member), {method: "PATCH", body: JSON.stringify({changes})});
+      notice(`Sent to ${record.owner}.`);
+      await Promise.all([openFamilyTransaction(id, member), loadTransactions()]);
+    } catch (error) { notice(error, true); } finally { save.disabled = false; }
+  });
+  const evidence = element("ul", "", "finance-list");
+  for (const item of record.evidence) {
+    const li = document.createElement("li");
+    li.append(originalButton(document.createTextNode(item.relative_path), member, item.document_id));
+    evidence.append(li);
+  }
+  if (!evidence.children.length) evidence.append(element("li", "No linked receipt or source document.", "muted"));
+  const history = element("ul", "", "finance-list");
+  for (const event of record.review_history) history.append(element("li", `${new Date(event.created_at).toLocaleString()}: ${statusLabel(event.previous_status)} → ${statusLabel(event.new_status)}${event.note ? ` · ${event.note}` : ""}`));
+  if (!history.children.length) history.append(element("li", "No decisions yet.", "muted"));
+  $("tx-drawer-body").replaceChildren(head, state, drawerSection("Correct", form), drawerSection("Evidence", evidence), drawerSection("History", history),
+    element("p", `${record.owner}'s records stay in their own profile; this is their latest copy.`, "muted small"));
   if (!$("tx-drawer").open) $("tx-drawer").showModal();
 }
 $("close-tx-drawer").addEventListener("click", () => $("tx-drawer").close());
@@ -406,9 +509,11 @@ async function loadSpending() {
   $("spend-error").replaceChildren();
   let data;
   try {
-    data = await Promise.all([tool("get_spending", period), tool("compare_categories", {first: monthRange(compareMonth), second: period}),
-      tool("get_spending_by_category", period), tool("get_refunds"), tool("get_budgets", {month, as_of: todayIso()}),
-      api("/api/finance/category-rules"), loadTransactionOptions()]);
+    // Budgets and rules are each person's own: the family view adds up spending only.
+    data = await Promise.all([ledgerTool("get_spending", period), ledgerTool("compare_categories", {first: monthRange(compareMonth), second: period}),
+      ledgerTool("get_spending_by_category", period), ledgerTool("get_refunds"),
+      familyMode ? {budgets: [], unbudgeted: [], days: 0, elapsed_days: 0} : tool("get_budgets", {month, as_of: todayIso()}),
+      familyMode ? [] : api("/api/finance/category-rules"), loadTransactionOptions()]);
   } catch (error) {
     if (load === spendLoad) $("spend-error").replaceChildren(alertBox(`Couldn't load spending. ${error.message}`, {tone: "error", action: asyncButton("Retry", loadSpending)}));
     return;
@@ -475,9 +580,9 @@ async function loadSpending() {
   if (merchants.length) $("spend-merchants").replaceChildren(...merchants); else tableMessage($("spend-merchants"), 3, "No merchants this month.");
   const inMonth = value => value && value >= period.start && value <= period.end;
   const refundItems = [...refunds.posted_credits.filter(row => inMonth(row.posted_date)).map(row => {
-    const li = element("li", `${dateText(row.posted_date)} · ${row.description_raw}`); li.append(amount(row.amount), element("small", row.purchase_id ? "Linked to its purchase" : "Credit posted", "muted block")); return li; }),
+    const li = element("li", `${row.owner ? `${row.owner} · ` : ""}${dateText(row.posted_date)} · ${row.description_raw}`); li.append(amount(row.amount), element("small", row.purchase_id ? "Linked to its purchase" : "Credit posted", "muted block")); return li; }),
     ...refunds.refund_evidence.filter(row => !row.purchase_date || inMonth(row.purchase_date)).map(row => {
-      const li = element("li", `${row.merchant || "Refund receipt"}${row.purchase_date ? ` · ${dateText(row.purchase_date)}` : ""}`); li.append(amount(row.amount), statusBadge(row.settlement)); return li; })];
+      const li = element("li", `${row.owner ? `${row.owner} · ` : ""}${row.merchant || "Return receipt"}${row.purchase_date ? ` · ${dateText(row.purchase_date)}` : ""}`); li.append(amount(row.amount), statusBadge(row.settlement)); return li; })];
   $("spend-refunds").replaceChildren(...(refundItems.length ? refundItems : [element("li", "No refunds this month.", "muted")]));
   // Rules.
   const ruleRows = rules.map(rule => {
@@ -519,7 +624,7 @@ $("rule-form").addEventListener("submit", async event => {
 
 async function loadBills() {
   if (!configured) return;
-  const [upcoming, recurring] = await Promise.all([tool("get_upcoming_bills", {as_of: todayIso(), days: 120}), tool("get_recurring_obligations")]);
+  const [upcoming, recurring] = await Promise.all([ledgerTool("get_upcoming_bills", {as_of: todayIso(), days: 120}), ledgerTool("get_recurring_obligations")]);
   // The server groups each bill (overdue, this_week, later).
   const groups = [["Overdue, no payment found yet", "overdue"], ["Due in the next 7 days", "this_week"], ["Later", "later"]]
     .map(([title, key]) => [title, upcoming.bills.filter(bill => bill.group === key)]);
@@ -532,7 +637,7 @@ async function loadBills() {
     for (const bill of bills) {
       const li = element("li", "", "bill-row");
       const main = element("div", "", "bill-main");
-      main.append(element("strong", bill.provider), element("span", ` due ${dateText(bill.due_date)} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`
+      main.append(element("strong", bill.owner ? `${bill.provider} · ${bill.owner}` : bill.provider), element("span", ` due ${dateText(bill.due_date)} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`
                                                              + (bill.kind === "subscription" ? " · Subscription" : ""), "muted"));
       li.append(main, amount(bill.amount_due, {signed: false}), statusBadge(bill.payment_state));
       if (bill.last_paid_date) li.append(element("small", `Last paid ${dateText(bill.last_paid_date)}`, "muted block"));
@@ -548,7 +653,7 @@ async function loadBills() {
     const list = element("ul", "", "finance-list");
     for (const row of subscriptions) {
       const li = element("li", "", "bill-row"), main = element("div", "", "bill-main");
-      main.append(element("strong", row.merchant), element("span", ` ${FREQUENCY_LABELS[row.frequency] || row.frequency}`, "muted"));
+      main.append(element("strong", row.owner ? `${row.merchant} · ${row.owner}` : row.merchant), element("span", ` ${FREQUENCY_LABELS[row.frequency] || row.frequency}`, "muted"));
       li.append(main, amount(row.expected_amount, {signed: false})); list.append(li);
     }
     summary.push(list);
@@ -568,13 +673,17 @@ async function loadBills() {
     .catch(error => { notice(error, true); return loadBills(); });
   const rows = recurring.obligations.map(row => {
     const tr = document.createElement("tr");
-    cell(tr, row.merchant); cell(tr, "").append(amount(row.expected_amount, {signed: false})); tr.lastChild.className = "numeric";
+    cell(tr, row.merchant); ownerCell(tr, row); cell(tr, "").append(amount(row.expected_amount, {signed: false})); tr.lastChild.className = "numeric";
     cell(tr, {weekly: "week", monthly: "month", quarterly: "quarter", semiannual: "6 months", annual: "year"}[row.frequency] || row.frequency); cell(tr, row.next_due_date ? dateText(row.next_due_date) : "—");
-    const kind = kindSelect(row.kind, value => setKind(row, value));
-    kind.setAttribute("aria-label", `${row.merchant} counts as`); kind.className = "kind-select";
-    cell(tr, "").append(kind);
+    if (familyMode) cell(tr, RECURRING_KIND_LABELS[row.kind] || row.kind);  // Decided in the person's own profile.
+    else {
+      const kind = kindSelect(row.kind, value => setKind(row, value));
+      kind.setAttribute("aria-label", `${row.merchant} counts as`); kind.className = "kind-select";
+      cell(tr, "").append(kind);
+    }
     cell(tr, "").append(statusBadge(row.status));
     const actions = cell(tr, "");
+    if (familyMode) return tr;
     if (row.status === "proposed") actions.append(asyncButton("Confirm", () => decide(row, "verified"), "small primary"), asyncButton("Not recurring", () => decide(row, "rejected")));
     // Only a confirmed payment can end, and ending it is asked first: it leaves bills, budgets and the forecast.
     else if (row.status === "verified") actions.append(asyncButton("Ended", async () => {
@@ -598,7 +707,7 @@ $("recurring-scan").addEventListener("click", () => {
 const ACCOUNT_GROUPS = [["Cash", ["checking", "savings"]], ["Credit cards", ["credit_card"]], ["Investments", ["brokerage"]], ["Loans", ["loan"]], ["Other", ["other"]]];
 async function loadAccounts() {
   if (!configured) return;
-  const {accounts} = await tool("get_accounts");
+  const {accounts} = await ledgerTool("get_accounts");
   const groups = [];
   for (const [title, types] of ACCOUNT_GROUPS) {
     const members = accounts.filter(account => types.includes(account.account_type));
@@ -608,7 +717,7 @@ async function loadAccounts() {
     for (const account of members) {
       const li = element("li", "", "account-row");
       const name = element("div", "", "account-name");
-      name.append(element("strong", account.display_name), element("small", `${account.institution}${account.account_last_four ? ` ··${account.account_last_four}` : ""} · ${account.currency}`, "muted block"));
+      name.append(element("strong", account.display_name), element("small", `${account.owner ? `${account.owner} · ` : ""}${account.institution}${account.account_last_four ? ` ··${account.account_last_four}` : ""} · ${account.currency}`, "muted block"));
       const balance = element("div", "", "account-balance");
       if (account.balance) {
         balance.append(element("span", account.balance.meaning === "amount owed" ? "Amount owed" : "Statement balance", "figure-label"), amount(account.balance.display, {signed: false}),
@@ -617,7 +726,7 @@ async function loadAccounts() {
       } else balance.append(element("small", "No statement balance yet. Balances aren't estimated from partial transaction history.", "muted"));
       const coverage = element("div", "", "account-coverage");
       coverage.append(element("small", account.coverage.transactions ? `${account.coverage.transactions} counted transactions, ${dateText(account.coverage.first)} – ${dateText(account.coverage.last)}` : "No counted transactions yet.", "muted"),
-                      homeLink("View transactions", txHref({account: account.id, period: "all"})));
+                      homeLink("View transactions", txHref({account: familyMode ? `${account.member_id}:${account.id}` : account.id, period: "all"})));
       li.append(name, balance, coverage); list.append(li);
     }
     panel.append(list); groups.push(panel);

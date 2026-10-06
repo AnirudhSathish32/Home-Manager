@@ -23,15 +23,11 @@ import hashlib
 import hmac
 import http.client
 from http.server import BaseHTTPRequestHandler
-import ipaddress
 import json
 import logging
 from pathlib import Path
 import re
 import secrets
-import shutil
-import socket
-import subprocess
 import threading
 import time
 from typing import Literal
@@ -42,8 +38,8 @@ from pydantic import Field, field_validator
 from ..core.jobs import Work
 from ..core.paths import safe_path, write_atomic
 from ..documents.receipt_schema import StrictModel
-from .http_server import GracefulHTTPServer
-from .model_client import TAILNET, ModelHTTPError, get_json
+from .http_server import GracefulHTTPServer, check_bind, tailnet_address
+from .model_client import ModelHTTPError, get_json
 from .model_stream import IDLE_SECONDS
 from .residency import MANAGED_MARKER, ensure_loaded
 from .vision import ROLE_ALIASES, VisionConfig, endpoint_url
@@ -465,40 +461,10 @@ class RelayServer(GracefulHTTPServer):
 
 def make_server(host: GpuHost, address: str, port: int, loopback: bool) -> RelayServer:
     """Bind to loopback, or to a Tailscale address (100.64.0.0/10) and nothing else."""
-    try:
-        ip = ipaddress.ip_address(address)
-    except ValueError:
-        raise ValueError(f"{address} is not an IP address.") from None
-    if loopback and address != "127.0.0.1":
-        raise ValueError("The loopback listener binds to 127.0.0.1 only.")
-    if not loopback and ip not in TAILNET:
-        raise ValueError(f"The GPU host listens only on a Tailscale address (100.64.0.0/10), not {address}.")
+    check_bind(address, loopback, "The GPU host")
     server = RelayServer((address, port), Handler)
     server.gpu_host, server.loopback = host, loopback
     return server
-
-
-def tailnet_address():
-    """This computer's Tailscale IPv4 address, or None."""
-    candidates = []
-    try:
-        candidates = [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
-    except OSError:
-        pass
-    command = shutil.which("tailscale")
-    if command:
-        try:
-            output = subprocess.run([command, "ip", "-4"], capture_output=True, text=True, timeout=5).stdout
-            candidates += output.split()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    for value in candidates:
-        try:
-            if ipaddress.ip_address(value) in TAILNET:
-                return value
-        except ValueError:
-            continue
-    return None
 
 
 def serve(control: Path, bind=None):

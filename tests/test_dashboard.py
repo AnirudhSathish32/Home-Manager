@@ -18,12 +18,13 @@ def test_dashboard_totals_categories_series_and_drilldowns(books):
         ("2026-09-02", "PAYROLL", 20000), ("2026-09-26", "FUTURE SHOP", -9900)])
     with store.connection() as db:
         db.execute("UPDATE transactions SET transaction_type='refund' WHERE id=?", (ids[3],))
-        db.execute("UPDATE transactions SET category='groceries' WHERE id=?", (ids[2],))
+        db.execute("UPDATE transactions SET category='groceries' WHERE id IN (?,?)", (ids[2], ids[3]))
     pending = add(store, ledger, account, docs["export.csv"], [("2026-09-10", "PENDING", -500)], origin="extraction")
     receipt(ledger, docs["receipt.png"], "Unmatched cafe", "2026-09-10", 2500)
     result = dashboard(store, "2026-09", today=date(2026, 9, 25))
     assert result["totals"]["net_spending"]["minor"] == 4000
-    assert result["gross"]["minor"] == 5000
+    # Categories are net of refunds (docs/money.md "Returns"): groceries is the 50.00 shop less its 10.00 refund.
+    assert result["gross"]["minor"] == 4000
     assert result["cashflow"]["inflow"]["minor"] == 20000
     assert result["cashflow"]["net"]["minor"] == 16000
     assert result["comparison"]["first"]["minor"] == 2000
@@ -36,7 +37,7 @@ def test_dashboard_totals_categories_series_and_drilldowns(books):
     category = result["categories"][0]
     assert (category["category"], category["share"]) == ("groceries", "100.0")
     rows = FinanceTools(store).get_transactions(TransactionsInput(start="2026-09-01", end="2026-09-25", currency="USD", metric="categories", categories=category["members"]))
-    assert [row["id"] for row in rows["transactions"]] == [ids[2]]
+    assert sorted(row["id"] for row in rows["transactions"]) == [ids[2], ids[3]]  # The category's drilldown lists its refund too.
     assert pending[0] not in [row["id"] for row in rows["transactions"]]
 
 

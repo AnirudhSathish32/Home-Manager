@@ -32,7 +32,7 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 |---|---|---|---|---|---|
 | 1 | Transcribe an image or scanned PDF page (vision) | `models/vision.py` `transcribe`, `documents/pdf_reader.py` | `{full_text}` | non-blank; `[unreadable]` markers flagged | `transcription` |
 | 2 | Classify the document | `documents/extraction.py` (classify step) | `Classification` (enum) | Pydantic, one correction turn; the decision model's shadow opinion | documents suite |
-| 3–4 | Header fields and rows (items, transactions, pay lines, trades, tax boxes) | `documents/extraction.py` | `HEADER_MODELS[kind]`, `ROWS[kind]` | `verify`: exact citations, amounts and names supported | documents suite |
+| 3–4 | Header fields and rows (items, transactions, pay lines, trades, tax boxes) | `documents/extraction.py` | `HEADER_MODELS[kind]`, `ROWS[kind]` | `verify`: exact citations, amounts and names supported; a receipt's `return_marker` and `returned` lines set its signs in code (`sign_return`) | documents suite |
 | 5 | Seller and location | `extraction.identify` | `ReceiptIdentity` | `name_supported`, seller shape | `identify` |
 | 6 | Description, category, recurrence, item categories | `extraction.describe_purchase`, `finance/item_categories.py` | `PurchaseDescription` | description shape; item list length must match | `describe` |
 | 7 | Rewards and offers | `extraction.rewards` | `Rewards` | amounts and links must be in their quote | `rewards` |
@@ -63,7 +63,9 @@ All model calls go through one transport, `request_completion` (`models/model_cl
   retries, so first-try validity is measured.
 - **Two suites** (`evals/`, flat layout):
   - **Documents suite** (`python -m evals.run`): whole documents end to end through the real pipeline. It runs on the
-    40-case synthetic corpus (`evals/synthetic.py`) or on the private corpus.
+    42-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
+    exchange printed without minus signs) have negative answers, so they measure `return_marker`, `returned` and the
+    sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out.
   - **Task suite** (`python -m evals.tasks`): every other model task, with cases generated in code from fixed data and
     seeds. The web agents run against recorded synthetic pages (`evals/tasks/web.py`), with no network.
 - **Results.** Each run writes `run.json` (the config and model metadata, including quantization and context length),

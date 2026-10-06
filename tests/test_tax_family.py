@@ -73,7 +73,7 @@ def test_the_family_computes_a_couples_joint_return(tmp_path):
         paid(manager, "dad", 20000)
         manager.configure_household(manager.household.model_copy(update={"birth_year": 1955}))
         manager.switch_profile(mom)
-        family = manager.create_family("The Smiths", str(tmp_path / "family"), str(tmp_path), ["Dad"], my_profile=mom)
+        family = manager.create_family("The Smiths", str(tmp_path / "family"), ["Dad"], my_profile=mom)
         folder = FamilyFolder(tmp_path / "family")
         members = {member["name"]: member["member_id"] for member in folder.data["members"]}
         folder.close()

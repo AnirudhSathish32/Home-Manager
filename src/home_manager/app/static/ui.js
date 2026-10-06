@@ -76,6 +76,9 @@ const STATUS = {
   payment_found: ["Payment found", "positive", "check"], due: ["Due", "neutral", "clock"], overdue: ["Overdue · no payment found", "danger", "alert"],
   past_due_no_payment_found: ["Past due · no payment found", "danger", "alert"],
   posted_credit_found: ["Credit posted", "positive", "check"], evidence_only_not_settled: ["Refund not yet posted", "warning", "clock"],
+  counted_from_receipt: ["Counted from the receipt", "info", "file"],
+  // A receipt that gives money back, or that both buys and returns (docs/money.md "Returns"); the server sends sale_label.
+  return: ["Return", "info", null], exchange: ["Exchange", "info", null],
   // Document summary states (docs/documents.md "Browsing the library").
   not_read: ["Not read yet", "neutral", null], read: ["Read, not recorded", "neutral", "file"], recorded: ["Recorded", "positive", "check-circle"],
   // Budgets, bills and inventory.
@@ -83,7 +86,7 @@ const STATUS = {
   within: ["Within budget", "positive", "check"], not_started: ["Not started", "neutral", "clock"],
   over_plan: ["Over plan", "danger", "octagon"], within_plan: ["Within plan", "positive", "check"],
   past_due_unpaid: ["Past due · marked unpaid", "danger", "alert"], paid: ["Paid", "positive", "check"],
-  in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], ended: ["Ended", "neutral", "slash"],
+  in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], returned: ["Returned", "neutral", "slash"], ended: ["Ended", "neutral", "slash"],
   // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.
   reconciled: ["Reconciled", "positive", "check-circle"], receipt: ["Receipt only", "info", "file"], statement: ["Statement only", "neutral", null],
   // Investment accounts: a statement value waiting for the user, or an account left out of totals.
@@ -131,6 +134,12 @@ function setStatusBadge(target, status, prefix = "") {
   return target;
 }
 function statusBadge(status, prefix = "") { return setStatusBadge(document.createElement("span"), status, prefix); }
+// A receipt's Return or Exchange tag from the server's sale_label, or nothing for a sale. Wrapped so the tag keeps its
+// own width in a stretching column; block puts it on its own line (under an amount in a table cell).
+function saleBadges(record, {block = false} = {}) {
+  if (!record?.sale_label) return [];
+  const wrap = element(block ? "div" : "span", "", "sale-tag"); wrap.append(statusBadge(record.sale_label.toLowerCase())); return [wrap];
+}
 
 // Money: the server supplies exact display text such as "-1,234.56 USD". This only rearranges that text
 // (sign, symbol); it never parses a number or does arithmetic.

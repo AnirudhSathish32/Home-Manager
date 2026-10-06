@@ -40,14 +40,19 @@ HELD = "t.origin='extraction' AND EXISTS(SELECT 1 FROM statements s WHERE s.id=t
 # rows only after the user verifies them; statement lines once their statement is reconciled.
 # Everything else is reported as pending review.
 COUNTABLE = f"t.review_status<>'rejected' AND (t.origin<>'extraction' OR t.review_status='verified') AND NOT ({HELD})"
-# A receipt counts on its own, as spending, until a card or bank line that is not rejected replaces it.
-# Refund receipts (negative totals) stay evidence until a posted credit settles them.
-STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor>0 AND r.purchase_date IS NOT NULL AND NOT EXISTS("
+# A receipt counts on its own until a card or bank line that is not rejected replaces it: a sale as spending, a
+# return (a negative total) as a refund, the same way (docs/money.md "Returns").
+STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor<>0 AND r.purchase_date IS NOT NULL AND NOT EXISTS("
                       "SELECT 1 FROM transaction_receipt_links l JOIN transactions lt ON lt.id=l.transaction_id "
                       "WHERE l.receipt_id=r.id AND l.review_status<>'rejected' AND lt.review_status<>'rejected')")
-# A transaction's category: its own (set by the user or a rule), else its matched receipt's.
+# A transaction's category: its own (set by the user or a rule), else its matched receipt's; a refund with neither takes
+# the category of the purchase it refunds (docs/money.md "Returns").
 TRANSACTION_CATEGORY = ("coalesce(t.category,(SELECT r.category FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id "
-                        "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' AND r.category IS NOT NULL ORDER BY l.id LIMIT 1),'uncategorized')")
+                        "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' AND r.category IS NOT NULL ORDER BY l.id LIMIT 1),"
+                        "(SELECT coalesce(pt.category,(SELECT pr.category FROM transaction_receipt_links pl JOIN receipts pr ON pr.id=pl.receipt_id "
+                        "WHERE pl.transaction_id=pt.id AND pl.review_status<>'rejected' AND pr.category IS NOT NULL ORDER BY pl.id LIMIT 1)) "
+                        "FROM transaction_links pk JOIN transactions pt ON pt.id=pk.from_transaction_id WHERE t.transaction_type='refund' "
+                        "AND pk.link_type='refund' AND pk.to_transaction_id=t.id AND pk.review_status<>'rejected' ORDER BY pk.id LIMIT 1),'uncategorized')")
 # Item categories (finance/splits.py). A charge with a matched, itemised receipt is divided by that receipt's item
 # categories, unless the user chose the charge's category themselves; that choice covers the whole charge.
 CHARGE_SPLITS = ("s.transaction_id=t.id AND coalesce(t.category_source,'')<>'user' AND s.receipt_id=(SELECT l.receipt_id FROM "
@@ -60,7 +65,9 @@ SPLIT_CATEGORY = f"coalesce(s.category,{TRANSACTION_CATEGORY})"
 # and so does the card charge matched to it: the same fraction of what the card was charged (charge_share below).
 RECEIPT_SHARE = "(SELECT x.share_minor FROM record_shares x WHERE x.record_type='receipt' AND x.record_id=r.id)"
 RECEIPT_SPENT = f"coalesce({RECEIPT_SHARE},r.total_minor)"
-CHARGE_SHARE = ("(SELECT CASE WHEN -t.amount_minor=x.total_minor THEN x.share_minor ELSE (-t.amount_minor*x.share_minor+x.total_minor/2)/x.total_minor END "
+# Worked on magnitudes, then signed, so SQLite (which truncates) and charge_share (which floors) agree on a refund's share.
+CHARGE_SHARE = ("(SELECT CASE WHEN -t.amount_minor=x.total_minor THEN x.share_minor ELSE (abs(t.amount_minor*x.share_minor)+abs(x.total_minor)/2)/abs(x.total_minor)"
+                "*(CASE WHEN (-t.amount_minor*x.share_minor<0)=(x.total_minor<0) THEN 1 ELSE -1 END) END "
                 "FROM transaction_receipt_links l JOIN record_shares x ON x.record_type='receipt' AND x.record_id=l.receipt_id "
                 "WHERE l.transaction_id=t.id AND l.review_status<>'rejected' ORDER BY l.id LIMIT 1)")
 TRANSACTION_SPENT = f"coalesce({CHARGE_SHARE},-t.amount_minor)"
@@ -73,8 +80,31 @@ RECEIPT_SPLIT_SPENT = f"coalesce(s.amount_minor,{RECEIPT_SPENT})"
 
 def charge_share(charged, share, total):
     """The part of a charge a person carries for a shared receipt: all of their share when the charge is the receipt's
-    total, otherwise the same fraction of the charge, rounded half up. The same rule as CHARGE_SHARE."""
-    return share if charged == total else (charged * share + total // 2) // total
+    total, otherwise the same fraction of the charge, its size rounded half up. The same rule as CHARGE_SHARE; a refund's
+    amounts are negative."""
+    if charged == total:
+        return share
+    sign = 1 if (charged * share < 0) == (total < 0) else -1
+    return sign * ((abs(charged * share) + abs(total) // 2) // abs(total))
+
+
+def receipt_direction(row):
+    """'return' for a receipt that gives money back (a negative total), otherwise 'sale'."""
+    return "return" if (row["total_minor"] or 0) < 0 else "sale"
+
+
+def sale_label(total, lines):
+    """The tag a receipt shows: Exchange when it has lines both bought and returned, Return when it gives money back,
+    otherwise None."""
+    lines = [line for line in lines if line]
+    if any(line < 0 for line in lines) and any(line > 0 for line in lines):
+        return "Exchange"
+    return "Return" if (total or 0) < 0 or (lines and all(line < 0 for line in lines)) else None
+
+
+SALE_LABEL_SQL = ("CASE WHEN EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor<0) "
+                  "AND EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor>0) THEN 'Exchange' "
+                  "WHEN r.total_minor<0 THEN 'Return' END")
 
 
 def in_categories(count):
@@ -89,7 +119,7 @@ SUMMARY_QUERIES = {
                    "t.amount_minor,t.currency,t.transaction_type,t.review_status,a.display_name AS account,t.source_document_id AS document_id "
                    "FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id WHERE t.id IN ({ids})",
     "receipt": "SELECT r.id,r.purchase_date AS date,m.canonical_name AS name,r.total_minor AS amount_minor,r.currency,r.review_status,"
-               "NULL AS account,r.document_id FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id IN ({ids})",
+               f"NULL AS account,r.document_id,{SALE_LABEL_SQL} AS sale_label FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id IN ({{ids}})",
     "statement": "SELECT s.id,s.period_end AS date,a.institution AS name,coalesce(s.closing_balance_minor,s.statement_balance_minor) AS amount_minor,"
                  "s.currency,s.review_status,a.display_name AS account,s.document_id FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.id IN ({ids})",
     "bill": "SELECT b.id,coalesce(b.due_date,b.issue_date) AS date,m.canonical_name AS name,b.amount_due_minor AS amount_minor,b.currency,"
@@ -102,7 +132,9 @@ SUMMARY_CHUNK = 500  # Bound on bound parameters per query.
 # Fields the user may correct: record type -> field -> (column, kind, label used in validation issues).
 CORRECTABLE = {
     "receipt": {"purchase_date": ("purchase_date", "date", "Purchase date"), "merchant": ("merchant_id", "name", "Merchant"),
-                "location": ("location", "text", "Location"), "category": ("category", "category", "Category")},
+                "location": ("location", "text", "Location"), "category": ("category", "category", "Category"),
+                # sale or return: the signs of the receipt's amounts (docs/money.md "Returns").
+                "direction": ("total_minor", "sale_type", "Sale or return")},
     "bill": {"issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
              "provider": ("provider_merchant_id", "name", "Provider")},
     "income_record": {"pay_date": ("pay_date", "date", "Pay date"), "payer": ("payer_merchant_id", "name", "Payer or employer")},
@@ -125,6 +157,15 @@ MATCHABLE = f"t.review_status<>'rejected' AND NOT ({HELD})"
 TRANSFER = re.compile(r"\b(TRANSFER|XFER|TRNSFR)\b")
 CARD_PAYMENT = re.compile(r"\b(PAYMENT|AUTOPAY|AUTO PAY|AUTOMATIC PAYMENT|PMT|THANK YOU)\b")
 REFUND = re.compile(r"\b(REFUND|RETURN|REVERSAL|CREDIT ADJ)\b")
+# A receipt line saying money goes back to the customer (docs/money.md "Returns"); a return policy line never does.
+RETURN_WORDS = re.compile(r"\b(REFUNDS?|REFUNDED|RETURNS?|RETURNED|REVERSAL|CREDIT ADJ|MERCHANDISE CREDIT|STORE CREDIT|EXCHANGE|CREDIT TO)\b")
+RETURN_POLICY = re.compile(r"\b(POLICY|POLICIES|WITHIN|DAYS?|RECEIPT REQUIRED)\b")
+
+
+def says_return(text):
+    """Whether printed text marks a refund or return, not a return policy."""
+    text = (text or "").upper()
+    return bool(RETURN_WORDS.search(text)) and not RETURN_POLICY.search(text)
 STORE_NOISE = re.compile(r"#\s*\d+|\b\d+\b|[^\w\s&]")
 LEGAL_SUFFIX = re.compile(r"\b(INC|LLC|LTD|CO|CORP|CORPORATION|COMPANY)\b")
 
@@ -391,12 +432,13 @@ class Ledger:
             kept = 0
             if written:
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
-                self.apply_corrections(db, "receipt", receipt_id)
                 kept = self._replace_items(db, receipt_id, record, source, status)
                 if kept:
                     issues = [*record["issues"], f"This reading no longer finds {kept} item{'s' if kept > 1 else ''} you worked on; "
                               "they were kept at the end of the list. Check them against the receipt."]
                     db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
+                # After the items: a sale-or-return correction signs them as well as the totals.
+                self.apply_corrections(db, "receipt", receipt_id)
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
                                "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -779,6 +821,9 @@ class Ledger:
                     reward = dict(reward)
                     reward["line_ids"] = json.loads(reward.pop("locator_json")).get("line_ids", [])
                     value["rewards"].append(reward)
+                # Sale or return, as a correction sets it, and the tag the page shows (docs/money.md "Returns").
+                value["direction"] = receipt_direction(row)
+                value["sale_label"] = sale_label(row["total_minor"], [item["line_total_minor"] for item in value["items"]])
                 value["reconciled"] = db.execute("SELECT 1 FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
                                                  "AND l.review_status<>'rejected' AND t.review_status<>'rejected'", (record_id,)).fetchone() is not None
             if record_type == "transaction":
@@ -802,6 +847,10 @@ class Ledger:
                 value["links"] = self.links(db, record_type, record_id)
             if record_type in CORRECTABLE or record_type == "transaction":
                 value["corrections"] = self.corrections(db, record_type, record_id)
+                # Changes the family made to this record, each of which this person can reject (finance/family_corrections.py).
+                value["family_corrections"] = [dict(row) for row in db.execute(
+                    "SELECT key,field,value,previous,actor,status,created_at FROM family_corrections WHERE direction='received' AND record_type=? "
+                    "AND record_id=? ORDER BY created_at", (record_type, record_id))]
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
             for row in value.get(key, [])[:500]:
@@ -1086,6 +1135,10 @@ class Ledger:
         if text is None:
             return None, None
         text = " ".join(str(text).split())
+        if kind == "sale_type":
+            if text.lower() not in ("sale", "return"):
+                raise ValueError("Choose sale or return.")
+            return text.lower(), text.lower()
         if kind == "money":
             minor = to_minor(text, currency)
             return minor, money(minor, currency)["decimal"]
@@ -1131,10 +1184,14 @@ class Ledger:
                 column, kind, label = fields[field]
                 value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
                 previous = (self._merchant_name(db, row[column]) if kind == "name" else
-                            money(row[column], row["currency"])["decimal"] if kind == "money" and row[column] is not None else row[column])
+                            money(row[column], row["currency"])["decimal"] if kind == "money" and row[column] is not None else
+                            receipt_direction(row) if kind == "sale_type" else row[column])
                 resolved = [issue for issue in issues if issue.startswith(label)]
                 issues = [issue for issue in issues if not issue.startswith(label)]
-                db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
+                if kind == "sale_type":
+                    self.set_receipt_direction(db, record_id, value)
+                else:
+                    db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
                 correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
                                         "VALUES(?,?,?,?,?,?,?,?,?)", (record_type, record_id, field, stored, previous, json.dumps(resolved),
                                                                       clean_reason(reason), actor.current(), now())).lastrowid
@@ -1166,9 +1223,26 @@ class Ledger:
         for field, text in latest:
             column, kind, label = fields[field]
             value, _ = self._correction_value(db, kind, field, text, stored=True, currency=currency)
-            db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (value, record_id))
+            if kind == "sale_type":
+                self.set_receipt_direction(db, record_id, value)
+            else:
+                db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (value, record_id))
             issues = [issue for issue in issues if not issue.startswith(label)]
         db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
+
+    @staticmethod
+    def set_receipt_direction(db, receipt_id, direction):
+        """Make a receipt a sale (amounts positive) or a return (negative), with its family share. An exchange's lines
+        (some bought, some returned) keep their signs; a receipt whose lines all agree flips them too."""
+        sign = -1 if direction == "return" else 1
+        db.execute("UPDATE receipts SET subtotal_minor=?*abs(subtotal_minor),tax_minor=?*abs(tax_minor),tip_minor=?*abs(tip_minor),"
+                   "total_minor=?*abs(total_minor),updated_at=? WHERE id=?", (sign, sign, sign, sign, now(), receipt_id))
+        signs = {row[0] for row in db.execute("SELECT DISTINCT line_total_minor<0 FROM receipt_items WHERE receipt_id=? AND line_total_minor<>0",
+                                              (receipt_id,))}
+        if len(signs) <= 1:
+            db.execute("UPDATE receipt_items SET line_total_minor=?*abs(line_total_minor),updated_at=? WHERE receipt_id=?", (sign, now(), receipt_id))
+        db.execute("UPDATE record_shares SET share_minor=?*abs(share_minor),total_minor=?*abs(total_minor) WHERE record_type='receipt' AND record_id=?",
+                   (sign, sign, receipt_id))
 
     @staticmethod
     def corrections(db, record_type, record_id):

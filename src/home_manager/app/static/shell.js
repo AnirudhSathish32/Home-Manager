@@ -44,7 +44,9 @@ function parseRoute() {
 }
 // A family profile's own library is only its inbox: uploads are read, reviewed and routed to people from these pages.
 // Everything else (transactions, budgets, bills, inventory) belongs to each person's profile.
-const FAMILY_ROUTES = ["home", "settings", "review", "receipts", "documents", "document", "processing", "whatif", "taxes"];
+// The family ledger pages (transactions, spending, bills, accounts) read every member's copy (finance.js ledgerTool).
+const FAMILY_ROUTES = ["home", "settings", "review", "receipts", "documents", "document", "processing", "whatif", "taxes",
+                       "transactions", "spending", "bills", "accounts"];
 function showRoute(moveFocus) {
   const route = parseRoute(), previous = currentRoute?.name;
   if (familyMode && !FAMILY_ROUTES.includes(route.name)) { location.replace("#/home"); return; }

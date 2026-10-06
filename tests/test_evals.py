@@ -267,11 +267,11 @@ def test_a_dry_run_checks_everything_and_writes_nothing(tmp_path, local_model):
     create_synthetic(corpus.root)
     said = []
     assert run(corpus, config_for(local_model), repeat=3, network_guard=False, echo=said.append, dry_run=True) is None
-    assert said[0].startswith("Dry run: 40 test cases x 1 candidates x 3 repeats = 120 documents.")
+    assert said[0].startswith("Dry run: 42 test cases x 1 candidates x 3 repeats = 126 documents.")
     assert local_model["requests"] == [] and not (corpus.root / "results").exists()
     said.clear()
     run(corpus, config_for(local_model), network_guard=False, echo=said.append, dry_run=True, compare_schema=True)
-    assert said[0].startswith("Dry run: 40 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
+    assert said[0].startswith("Dry run: 42 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
 
 
 def test_a_model_that_cannot_load_is_one_load_failure_per_case(tmp_path, local_model, monkeypatch):
@@ -311,9 +311,9 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
     created = create_synthetic(tmp_path / "synthetic")
     corpus = Corpus(tmp_path / "synthetic")
     cases = corpus.cases(split="test")
-    assert len(created) == len(set(created)) == len(cases) == 40
+    assert len(created) == len(set(created)) == len(cases) == 42
     assert {kind: sum(case.info.document_type == kind for case in cases) for kind in ROWS} == {
-        "receipt": 22, "bank_statement": 6, "credit_card_statement": 5, "paystub": 7}
+        "receipt": 24, "bank_statement": 6, "credit_card_statement": 5, "paystub": 7}
     assert {tag for case in cases for tag in case.info.tags} == set(TAGS)  # Every edge is tested at least once.
     assert all(case.answers().rows_complete for case in cases)
     assert {case.original.suffix for case in cases} == {".png", ".pdf"} and max(case.info.pages for case in cases) >= 6

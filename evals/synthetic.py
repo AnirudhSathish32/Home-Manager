@@ -1,4 +1,4 @@
-"""A synthetic corpus: 40 invented receipts, bank and card statements and pay stubs with known answers.
+"""A synthetic corpus: 42 invented receipts, bank and card statements and pay stubs with known answers.
 
   python -m evals.synthetic OUT_FOLDER
 
@@ -8,7 +8,7 @@ end to end against a local model before running the private corpus. Every case i
 Most cases are drawn as images (read by the vision model); some are PDFs with a text layer (read without it). The
 documents are generated from a fixed seed, so the same corpus comes out every time. Each case's tags name the edge it
 tests (corpus.TAGS): long and multi-page documents, other currencies, a prompt-injection line, an invoice-looking
-receipt, a receipt without items, repeated rows, other date formats, faded print, and year-to-date columns.
+receipt, a receipt without items, repeated rows, other date formats, faded print, year-to-date columns, and returns.
 Every answer is consistent with the printed text: items add up to the subtotal, subtotal, tax and tip to the total,
 transactions to the closing balance, and pay lines to gross and net pay.
 """
@@ -73,24 +73,26 @@ def case(document_type, lines, fields, rows, tags=(), source="png", faded=False)
 
 
 def receipt(rng, shop, *, count=None, items=None, charge=None, currency="USD", exponent=2, symbol="", tax_rate=825, tip=None,
-            date_style="iso", header=(), footer=("Thank you",), tags=(), source="png", faded=False):
-    """A receipt; with items=[] and a charge, one that prints only its total (a parking ticket)."""
+            date_style="iso", header=(), footer=("Thank you",), returned=(), tags=(), source="png", faded=False):
+    """A receipt; with items=[] and a charge, one that prints only its total (a parking ticket). returned names items brought
+    back: printed RETURN without a minus sign, with the money back as negative answers (docs/money.md "Returns")."""
     printed, name, kind = shop
     chosen = items if items is not None else [rng.choice(ITEMS[kind]) for _ in range(count or rng.randint(2, 5))]
     if exponent == 0:
         chosen = [(description, price * 3) for description, price in chosen]  # Yen prices are whole numbers, not cents.
+    chosen = [(description, -price if description in returned else price) for description, price in chosen]
     day = random_day(rng)
     subtotal = sum(price for _, price in chosen) if chosen else charge
-    tax = (subtotal * tax_rate + 5000) // 10000 if tax_rate else None
+    tax = (abs(subtotal) * tax_rate + 5000) // 10000 * (-1 if subtotal < 0 else 1) if tax_rate else None
     if tip is None and kind in TIPPED and not tags:
         tip = rng.choice([None, (subtotal * 18 + 50) // 100])
     total = subtotal + (tax or 0) + (tip or 0)
     lines = [printed, *header, ("Date " if rng.random() < .5 else "") + printed_date(day, date_style), f"Currency {currency}"]
-    lines += [f"{description} {symbol}{money(price, exponent)}" for description, price in chosen]
-    lines += [f"Subtotal {symbol}{money(subtotal, exponent)}"] if chosen else []
-    lines += [f"Sales tax {symbol}{money(tax, exponent)}"] if tax is not None else []
+    lines += [f"{'RETURN ' if price < 0 else ''}{description} {symbol}{money(abs(price), exponent)}" for description, price in chosen]
+    lines += [f"Subtotal {symbol}{money(abs(subtotal), exponent)}"] if chosen else []
+    lines += [f"Sales tax {symbol}{money(abs(tax), exponent)}"] if tax is not None else []
     lines += [f"Tip {symbol}{money(tip, exponent)}"] if tip else []
-    lines += [f"Total {currency} {symbol}{money(total, exponent)}", *footer]
+    lines += [f"{'Refund total' if total < 0 else 'Total'} {currency} {symbol}{money(abs(total), exponent)}", *footer]
     fields = {"merchant": name, "purchase_date": day.isoformat(), "currency": currency, "subtotal_minor": subtotal if chosen else None,
               "tax_minor": tax, "tip_minor": tip or None, "total_minor": total}
     rows = [{"description": description, "line_total_minor": price} for description, price in chosen]
@@ -218,6 +220,10 @@ def documents():
             paystub(rng, "MAPLE LEAF FOODS LTD", "Maple Leaf Foods", currency="CAD", tags=["non_usd"]),
             paystub(rng, "EXAMPLE WIDGETS LLC", "Example Widgets", date_style="us", tags=["date_format"]),
             paystub(rng, "CONTOSO ENGINEERING", "Contoso Engineering", ytd=True, totals=True, tags=["ytd"], source="pdf")]
+    # Last, so every earlier document stays as it was: a whole return and an exchange (one item back, one bought).
+    hardware, electronics = SHOPS[1], SHOPS[8]
+    out += [receipt(rng, hardware, items=[("DRILL BIT SET", 2400)], returned={"DRILL BIT SET"}, footer=("Refund to VISA ****4821",), tags=["return"]),
+            receipt(rng, electronics, items=[("WIRELESS MOUSE", 2999), ("USB-C CABLE", 1499)], returned={"WIRELESS MOUSE"}, tags=["return"])]
     for document in out:
         assert all(set(row) == set(ROWS[document["document_type"]][1]) for row in document["rows"])
     return out

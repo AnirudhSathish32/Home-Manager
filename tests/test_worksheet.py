@@ -70,6 +70,49 @@ def test_a_rule_becomes_steps_with_the_branch_it_took():
                                "fact:children": worksheet.node("fact:children", "Children", "fact", None, count=2)}) == []
 
 
+def test_a_rate_table_rounded_once_is_the_exact_sum():
+    # Tax-Calculator works the schedule in floats: three slices of x.5 cents round once, not each half-up.
+    table = [{"from_minor": 0, "num": 1, "den": 2}, {"from_minor": 1, "num": 1, "den": 2}, {"from_minor": 2, "num": 1, "den": 2}]
+    assert worksheet.bracket_tax(3, table) == 3 and worksheet.bracket_tax(3, table, once=True) == 2  # 1.5 → 2 (half-even)
+    assert worksheet.reconciles(worksheet.node("t", "T", "lookup", 2, ["a"], detail={"table": table, "round": "once"}),
+                                {"a": worksheet.node("a", "A", "fact", 3)})
+
+
+LAW = {"SeniorDed_prt": {"type": "rate", "num": "6", "den": "100"}, "Step": {"type": "money", "value": "100000"},
+       "II_rt1": {"type": "rate", "num": "10", "den": "100"}, "II_rt2": {"type": "rate", "num": "12", "den": "100"},
+       "II_rt3": {"type": "rate", "num": "22", "den": "100"}, "II_brk1": {"type": "money", "value": "1240000"},
+       "II_brk2": {"type": "money", "value": "900000000000000000000"},
+       "EITC_c": {"type": "money", "value": "430000", "source": {"read_by": "EIC", "at": 1}}}
+
+
+def test_law_read_into_a_step_rates_step_sizes_and_rate_tables():
+    values = {"wages": ("money", 2000000), "children": ("int", 3)}
+    # A rate parameter: the step carries it as detail, so it still reconciles from its one input.
+    found, nodes = evaluate({"kind": "mulRate", "base": fact("wages"), "rateParam": "SeniorDed_prt", "round": "half-even"}, values, LAW)
+    top = nodes["rule.x"]
+    assert found.value == 120000 and top["op"] == "rate" and top["detail"]["parameter"] == "SeniorDed_prt"
+    assert top["detail"]["source"] == {"parameter": "SeniorDed_prt", "year": 2026, "filing_status": "single"} and top["label"] == "The credit"
+    # Whole steps of a money parameter, rounded up.
+    found, nodes = evaluate({"kind": "stepUnits", "value": fact("wages"), "unitParam": "Step", "mode": "ceil"}, {"wages": ("money", 2000001)}, LAW)
+    assert found.value == 21 and found.kind == "int" and nodes["rule.x"]["detail"]["unit_minor"] == 100000
+    # The rate schedule from the law: the inactive row (9e18 dollars) ends it, and it's rounded once.
+    schedule = {"kind": "brackets", "base": fact("wages"), "rates": ["II_rt1", "II_rt2", "II_rt3"], "thresholds": ["II_brk1", "II_brk2"], "round": "once"}
+    found, nodes = evaluate(schedule, values, LAW)
+    assert found.value == 124000 + (2000000 - 1240000) * 12 // 100 and len(nodes["rule.x"]["detail"]["table"]) == 2
+    assert nodes["rule.x"]["detail"]["round"] == "once"
+    # money × count ÷ money is a count: a share in thousandths.
+    share = {"kind": "mulDiv", "a": fact("wages"), "b": {"kind": "int", "value": "1000"}, "c": money(3000000), "round": "half-even"}
+    found, _ = evaluate(share, values, LAW)
+    assert (found.kind, found.value) == ("int", 667)
+    # Not below zero keeps a count a count; a parameter read by something other than filing status says by what.
+    found, nodes = evaluate({"kind": "max0", "arg": {"kind": "sub", "left": fact("children"), "right": {"kind": "int", "value": "5"}}}, values, LAW)
+    assert (found.kind, found.value) == ("int", 0) and nodes["rule.x"]["count"] == 0
+    _, nodes = evaluate({"kind": "param", "name": "EITC_c"}, values, LAW)
+    assert nodes["law:rule.x:EITC_c"]["source"] == {"parameter": "EITC_c", "year": 2026, "filing_status": "single", "read_by": "EIC", "at": 1}
+    with pytest.raises(Unsupported):  # A rate is only read as amount × rate.
+        evaluate({"kind": "param", "name": "SeniorDed_prt"}, values, LAW)
+
+
 def test_conditions_stop_where_the_engine_stops_and_enums_read_as_words():
     # The engine never reads a fact after the part of an `or` that decides it, so a fact it didn't report is fine there.
     formula = {"kind": "if", "cond": {"kind": "or", "args": [{"kind": "cmp", "op": "eq", "left": fact("status"), "right": {"kind": "enum", "value": "mfj"}},

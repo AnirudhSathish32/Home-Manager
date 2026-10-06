@@ -114,12 +114,12 @@ function categoryColor(name) {
   categoryColors.set(name, chosen); return chosen;
 }
 function homeCategories(data) {
-  const panel = homePanel("Spending by category", `${monthText(data.month)} · Before refunds`);
+  const panel = homePanel("Spending by category", `${monthText(data.month)} · After refunds`);
   const href = row => financeHref(data, {metric: "categories", categories: JSON.stringify(row.members)});
   if (!data.categories_chartable) {
     panel.append(emptyState(data.categories.length ? "Category totals include adjustments. See the exact amounts in the table below." : "No category spending recorded for this period."));
   } else {
-    const svg = chartNode("svg", {viewBox: "0 0 260 230", class: "home-donut", role: "group", "aria-label": `Category spending before refunds: ${data.gross.display}`});
+    const svg = chartNode("svg", {viewBox: "0 0 260 230", class: "home-donut", role: "group", "aria-label": `Category spending after refunds: ${data.gross.display}`});
     let offset = 0;
     for (const row of data.categories) {
       const share = row.share_bp;  // The server's share (basis points summing to 10,000) is the slice's length.

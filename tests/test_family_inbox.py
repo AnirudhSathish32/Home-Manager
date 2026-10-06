@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
-from home_manager.app.family_sync import FamilyFolder, read_deliveries
+from home_manager.app.family_sync import read_deliveries
 from home_manager.app.manager import Manager
 from home_manager.finance.family import family_dashboard
 from home_manager.finance.ledger import Ledger
@@ -93,9 +93,9 @@ def test_import_document_preserves_the_file_without_model_work(tmp_path):
 
 
 def test_upload_to_the_family_route_share_and_retract(tmp_path):
-    sync, outbox = tmp_path / "sync", tmp_path / "outbox"
-    sync.mkdir(), outbox.mkdir()
-    mom = Manager(tmp_path / "mom-pc", ScanLimits(stability_seconds=0))
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    mom = Manager(tmp_path / "mom-pc", ScanLimits(stability_seconds=0), hub_port=0, hub_loopback=True)
     dad = Manager(tmp_path / "dad-pc", ScanLimits(stability_seconds=0))
     try:
         mom.configure(str(tmp_path / "mom-lib"))
@@ -103,10 +103,9 @@ def test_upload_to_the_family_route_share_and_retract(tmp_path):
         inbox_scan(mom.store, {"mom.csv": b"mom,amount\n"})
         Ledger(mom.store).create_account("Chase", "credit_card", "USD", last_four="1234")  # Mom's card: receipts paid with it are hers.
         mom_profile = mom.profile["id"]
-        family = mom.create_family("The Smiths", str(tmp_path / "family"), str(sync), ["Dad"], my_profile=mom_profile)
-        folder = FamilyFolder(tmp_path / "family")
+        family = mom.create_family("The Smiths", str(tmp_path / "family"), ["Dad"], my_profile=mom_profile)
+        folder = mom.family_for(family["id"])[0]  # Held open by the hub.
         dad_id, mom_id = (member["member_id"] for member in folder.data["members"])
-        folder.close()
         invite = mom.invite_member(family["id"], dad_id, str(outbox), PASSPHRASE)["path"]
         dad.configure(str(tmp_path / "dad-lib"))
         dad.rename_profile(dad.profile["id"], "Dad")
@@ -129,7 +128,7 @@ def test_upload_to_the_family_route_share_and_retract(tmp_path):
         mom.assign_family_record("receipt", receipt, "shared", [mom_id, dad_id])
         mom.future.result(timeout=30)
         assert mom.family_routing()["records"] == []  # Nothing waits once it is sent.
-        # Mom is on this computer: her library got her part straight away. Dad's waits in his folder of the sync folder.
+        # Mom is on this computer: her library got her part straight away. Dad's waits in the family's outbox for his computer.
         mine = Store(tmp_path / "mom-lib")
         try:
             assert spending(mine)[0] == 2500  # 50.01 shared by two: Dad (listed first) 25.01, Mom 25.00.
@@ -137,14 +136,14 @@ def test_upload_to_the_family_route_share_and_retract(tmp_path):
         finally:
             mine.close()
         link = dad.profiles.get(dad.profile["id"])["family"]
-        assert len(read_deliveries(link)) == 1
-        assert b"BANANAS" not in next((sync / link["family_id"] / f"to-{dad_id}").iterdir()).read_bytes()  # Encrypted.
-        dad.check_family()
+        assert len(read_deliveries(tmp_path / "family", link)) == 1
+        assert b"BANANAS" not in next((tmp_path / "family" / "outbox" / f"to-{dad_id}").iterdir()).read_bytes()  # Encrypted.
+        dad.check_family()  # Asks the hub, pulls the delivery, applies it and acknowledges it.
         dad.future.result(timeout=30)
         # 25.01 of 50.01, divided in the items' proportions (25.00 groceries, 25.01 household supplies).
         assert spending(dad.store) == (2501, {"groceries": 1250, "household supplies": 1251})
         assert_ledger_healthy(dad.store)
-        assert read_deliveries(link) == []
+        assert read_deliveries(tmp_path / "family", link) == []
         dad.start_family_publish()
         dad.future.result(timeout=30)
 

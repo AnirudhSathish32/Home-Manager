@@ -135,7 +135,7 @@ SOURCES = {"MARS": ["filing_status"], "XTOT": ["qualifying_children", "other_dep
            "e03400": ["other_adjustments"], "e17500": ["medical"], "e18400": ["state_local_tax"], "e18500": ["property_tax"], "e19200": ["mortgage_interest"],
            "e19800": ["charity"], "e20100": ["charity_noncash"], "e32800": ["dependent_care_expenses"], "e87521": ["students.expenses"],
            "e87530": ["students.expenses"], "p08000": ["other_credits"], "tip_income": ["qualified_tips"], "overtime_income": ["qualified_overtime"]}
-INT_FIELDS = frozenset({"RECID", "FLPDYR", "MARS", "XTOT", "n24", "nu18", "EIC", "f2441", "age_head", "age_spouse"})
+INT_FIELDS = frozenset({"RECID", "FLPDYR", "MARS", "XTOT", "n24", "nu18", "nu06", "EIC", "f2441", "age_head", "age_spouse", "PT_SSTB_income", "f6251"})
 
 
 def record_for(value: ReturnInput, sources: dict | None = None):
@@ -201,14 +201,15 @@ def record_for(value: ReturnInput, sources: dict | None = None):
     return record, notes
 
 
-def evaluate(record, year, outputs=(), policy=()):
+def evaluate(record, year, outputs=(), policy=(), index=None):
     """The runner's JSON answer for this record and year (cached by both), with the extra outputs and law parameters the
-    worksheet map reads."""
-    key = hashlib.sha256(json.dumps([record, year, list(outputs), list(policy)], sort_keys=True).encode()).hexdigest()
+    worksheet map reads. index: {parameter: record field} for a parameter read by something other than filing status
+    (the EITC's by the number of qualifying children)."""
+    key = hashlib.sha256(json.dumps([record, year, list(outputs), list(policy), index or {}], sort_keys=True).encode()).hexdigest()
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
-    request = {"year": year, "record": record, "outputs": list(outputs), "policy": list(policy)}
+    request = {"year": year, "record": record, "outputs": list(outputs), "policy": list(policy), "index": index or {}}
     try:
         done = subprocess.run([sys.executable, "-I", str(RUNNER)], input=json.dumps(request).encode(), capture_output=True,
                               timeout=TIMEOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0)
@@ -258,13 +259,17 @@ _map: dict = {}
 
 def worksheet_map():
     """taxcalc_map.json with each formula compiled to the worksheet's expression language (finance/worksheet.py), and the
-    outputs and law parameters it reads beyond what every run reads back (OUTPUTS and POLICY in taxcalc_run.py)."""
+    outputs and law parameters it reads beyond what every run reads back (OUTPUTS and POLICY in taxcalc_run.py).
+    param_types: a parameter is money unless named a "rate" (a share: `amount * RATE`), "int" (a count or age) or "bp" (a
+    rate as whole basis points, for rate arithmetic). param_index: a parameter read by a record field, not filing status."""
     if not _map:
         from .taxcalc_run import OUTPUTS, POLICY
         found = json.loads(MAP.read_text(encoding="utf-8"))
+        found["types"] = {**{name: "rate" for name in SCHEDULE_RATES}, **found.get("param_types", {})}
+        found["index"] = found.get("param_index", {})
         outputs, read = set(found["nodes"]) | set(found["opaque"]), set()
         for spec in found["nodes"].values():
-            spec["compiled"] = compile_formula(spec["formula"], outputs, found["facts"], found["parts"], read)
+            spec["compiled"] = compile_formula(spec["formula"], outputs, found["facts"], found["parts"], read, found["types"])
             spec["reads"] = sorted(name for name in names_in(spec["formula"], found["parts"]) if name in outputs or name in found["facts"])
         found["policy"] = sorted(read)
         found["extra_outputs"] = sorted(outputs - set(OUTPUTS))
@@ -273,12 +278,20 @@ def worksheet_map():
     return _map
 
 
+# schedule(x): the year's ordinary rate schedule, its rates and the thresholds between them (Tax-Calculator's SchXYZ).
+SCHEDULE_RATES = tuple(f"II_rt{n}" for n in range(1, 9))
+SCHEDULE_THRESHOLDS = tuple(f"II_brk{n}" for n in range(1, 8))
+
+
 def names_in(text, parts):
     found = set()
     for item in ast.walk(ast.parse(text, mode="eval")):
-        if isinstance(item, ast.Name):
+        if isinstance(item, ast.Name) and item.id not in FUNCTIONS:
             found |= names_in(parts[item.id], parts) if item.id in parts else {item.id}
     return found
+
+
+FUNCTIONS = frozenset({"min", "max", "max0", "if_", "int", "usd", "muldiv", "steps_floor", "steps_ceil", "schedule"})
 
 
 def fraction(literal):
@@ -288,11 +301,19 @@ def fraction(literal):
     return {"num": str(int(value.scaleb(places))), "den": str(10 ** places)}
 
 
-def compile_formula(text, outputs, facts, parts, read):
-    """A map formula as an expression: + and − add and take away, `x * 0.5` is a rate (rounded half-even, as cents),
-    `x * y` a product with a count, min/max/max0, `if_(condition, then, else)`, comparisons with and/or/not, `int(n)` a
-    count; any other number is dollars. A name is an output (a rule), a record input (a fact), a part (its formula) or else
-    a law parameter (read collects those)."""
+def compile_formula(text, outputs, facts, parts, read, types=None):
+    """A map formula as an expression: + and − add and take away, `x * 0.5` is a rate (rounded half-even, as cents), as is
+    `x * RATE` with a rate parameter (types), `x * y` a product with a count, min/max/max0, `if_(condition, then, else)`,
+    comparisons with and/or/not, `int(n)` a count, `usd(n)` dollars in a product (`usd(1000) * steps`, where a bare number
+    would be a rate); any other number is dollars. Further functions: `muldiv(a, b, c)`
+    (a × b ÷ c, half-even; money × count ÷ money is a count), `steps_floor(x, UNIT)` and `steps_ceil(x, UNIT)` (x in whole
+    steps of a money parameter or a number of dollars), and `schedule(x)` (the ordinary rate schedule, rounded once). A name
+    is an output (a rule), a record input (a fact), a part (its formula) or else a law parameter (read collects those)."""
+    types = types or {}
+
+    def rate_param(item):
+        return isinstance(item, ast.Name) and types.get(item.id) == "rate" and item.id not in parts
+
     def walk(item):
         if isinstance(item, ast.BinOp) and isinstance(item.op, ast.Add):
             left, right = walk(item.left), walk(item.right)
@@ -304,6 +325,10 @@ def compile_formula(text, outputs, facts, parts, read):
                 if isinstance(item.left, ast.Constant) else (None, None)
             if literal is not None:
                 return {"kind": "mulRate", "base": walk(other), "rate": fraction(literal.value), "round": "half-even"}
+            rate, other = (item.right, item.left) if rate_param(item.right) else (item.left, item.right) if rate_param(item.left) else (None, None)
+            if rate is not None:
+                read.add(rate.id)
+                return {"kind": "mulRate", "base": walk(other), "rateParam": rate.id, "round": "half-even"}
             return {"kind": "mulInt", "base": walk(item.left), "count": walk(item.right)}
         if isinstance(item, ast.UnaryOp) and isinstance(item.op, ast.USub):
             return {"kind": "sub", "left": {"kind": "money", "cents": "0"}, "right": walk(item.operand)}
@@ -324,6 +349,20 @@ def compile_formula(text, outputs, facts, parts, read):
                 return {"kind": "if", "cond": walk(args[0]), "then": walk(args[1]), "else": walk(args[2])}
             if name == "int":
                 return {"kind": "int", "value": str(int(args[0].value))}
+            if name == "usd":  # A dollar amount where a bare number would read as a rate: `usd(1000) * steps`.
+                return {"kind": "money", "cents": str(int(Decimal(repr(args[0].value)) * 100))}
+            if name == "muldiv":
+                return {"kind": "mulDiv", "a": walk(args[0]), "b": walk(args[1]), "c": walk(args[2]), "round": "half-even"}
+            if name in ("steps_floor", "steps_ceil"):
+                found = {"kind": "stepUnits", "value": walk(args[0]), "mode": "floor" if name == "steps_floor" else "ceil"}
+                unit = args[1]
+                if isinstance(unit, ast.Constant):
+                    return {**found, "unitCents": str(int(Decimal(repr(unit.value)) * 100))}
+                read.add(unit.id)
+                return {**found, "unitParam": unit.id}
+            if name == "schedule":
+                read.update(SCHEDULE_RATES + SCHEDULE_THRESHOLDS)
+                return {"kind": "brackets", "base": walk(args[0]), "rates": list(SCHEDULE_RATES), "thresholds": list(SCHEDULE_THRESHOLDS), "round": "once"}
         if isinstance(item, ast.Constant) and isinstance(item.value, int | float):
             return {"kind": "money", "cents": str(int(Decimal(repr(item.value)) * 100))}
         if isinstance(item, ast.Name):
@@ -337,6 +376,22 @@ def compile_formula(text, outputs, facts, parts, read):
             return {"kind": "param", "name": item.id}
         raise ValueError(f"The worksheet map can't read {ast.unparse(item)} in {text}.")
     return walk(ast.parse(text, mode="eval").body)
+
+
+def law_param(value, kind, field, record):
+    """A law parameter for the worksheet (finance/worksheet.py params): money as cents, a rate as its exact fraction, a count,
+    or a rate in whole basis points; read by a record field (field) when it isn't read by filing status."""
+    if kind == "rate":
+        found = {"type": "rate", **fraction(value)}
+    elif kind == "int":
+        found = {"type": "int", "value": str(int(round(value)))}
+    elif kind == "bp":
+        found = {"type": "int", "value": str(int((Decimal(str(value)) * 10000).to_integral_value(ROUND_HALF_EVEN)))}
+    else:
+        found = {"type": "money", "value": str(cents(value))}
+    if field:
+        found["source"] = {"read_by": field, "at": record.get(field, 0)}
+    return found
 
 
 def map_worksheet(raw, year, status, tolerance):
@@ -361,7 +416,8 @@ def map_worksheet(raw, year, status, tolerance):
     typed |= {name: ("money", amount) for name, amount in amounts.items()}
     refs = {name: name for name in amounts} | {name: f"fact:{name}" for name in found["facts"]}
     labels = {**found["facts"], **found["opaque"], **{name: spec["label"] for name, spec in found["nodes"].items()}}
-    params = {name: {"type": "money", "value": str(cents(value))} for name, value in (raw.get("policy") or {}).items() if name in found["policy"]}
+    params = {name: law_param(value, found["types"].get(name, "money"), found["index"].get(name), record)
+              for name, value in (raw.get("policy") or {}).items() if name in found["policy"]}
     law = {"year": year, "filing_status": status}
     for name, label in found["opaque"].items():
         if name in amounts:
@@ -388,9 +444,9 @@ def map_worksheet(raw, year, status, tolerance):
 
 class TaxCalculatorEngine:
     name = "taxcalc"  # For the records only: the page shows the slot's label (finance/tax_engine.py).
-    # Lines it gives without steps (docs/taxes.md "The tax engines"): its outputs overwrite their own intermediate values
-    # (a credit is limited to the tax in place), or the worksheet behind them isn't mapped yet.
-    opaque_lines = frozenset({"tax", "amt", "deduction", "senior", "qbi", "credit_dependent_care", "credit_education", "pay_eitc", "pay_actc", "pay_aotc"})
+    # Lines it gives without steps: none. Every output is written out in taxcalc_map.json under current law, and one whose
+    # formula stops reproducing the engine (a law change) turns opaque and fails the conformance test (docs/taxes.md "The tax engines").
+    opaque_lines: frozenset = frozenset()
     tolerance_minor = 2  # It works in float dollars: each output is rounded to the cent.
 
     def version(self):
@@ -428,7 +484,8 @@ class TaxCalculatorEngine:
         record, notes = record_for(value, sources)
         mapped = worksheet_map()
         try:
-            answer = evaluate(record, value.year, mapped["extra_outputs"], mapped["extra_policy"])
+            answer = evaluate(record, value.year, mapped["extra_outputs"], mapped["extra_policy"],
+                              {name: field for name, field in mapped["index"].items() if name in mapped["policy"]})
         except EngineFailed as exc:
             return self.empty(value, [f"{label} {exc}"])
         if not answer.get("ok"):

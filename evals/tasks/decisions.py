@@ -47,7 +47,7 @@ def cases():
         out.append(make_case(NAME, {"kind": "classify", "text": "\n".join(document["lines"][:40])},
                              {"label": document["document_type"]}, ["classify", document["document_type"], *document["tags"]]))
     for document in documents():
-        if document["document_type"] != "receipt":
+        if document["document_type"] != "receipt" or "return" in document["tags"]:  # A return's answers are signed, its print is not.
             continue
         for claim, quotes, true in claims(document):
             out.append(make_case(NAME, {"kind": "support", "claim": claim, "quotes": quotes}, {"label": "true" if true else "false"},

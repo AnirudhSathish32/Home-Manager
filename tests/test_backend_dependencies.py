@@ -286,9 +286,17 @@ def test_new_endpoints_are_typed_and_wired(tmp_path, local_model):
         test = client.post("/api/model-connection-tests", json={"base_url": local_model["config"].base_url, "model": "synthetic-reasoning"}).json()
         assert test["model_listed"] is True
         assert client.post("/api/model-connection-tests", json={"base_url": "http://example.com/v1", "model": "x"}).status_code == 422
-        assert client.post("/api/finance/issues/1/resolve", json={}).status_code == 422
+        # Settings with no screen yet (docs/open-work.md "UI redesign" 7): saved, read back, and checked like the rest.
+        assert client.put("/api/reviewer-settings", json={"provider": "decision"}).json()["provider"] == "decision"
+        assert client.get("/api/settings").json()["reviewer"]["provider"] == "decision"
+        assert client.put("/api/reviewer-settings", json={"provider": "chat", "base_url": "http://example.com/v1", "model": "x"}).status_code == 422
+        decision = client.post("/api/decision-model-tests", json={"provider": "lmstudio", "base_url": local_model["config"].base_url, "model": "synthetic-reasoning"})
+        assert decision.status_code == 200 and decision.json()["reachable"] is True
+        assert client.post("/api/decision-model-tests", json={"provider": "telepathy"}).status_code == 422
+        assert client.post("/api/finance/issues/1/resolve", json={"family": "theirs"}).status_code == 422
+        assert client.post("/api/finance/issues/1/resolve", json={}).status_code == 400  # A family conflict is answered without a transaction.
         assert client.post("/api/finance/issues/1/resolve", json={"transaction_id": None}).status_code == 400
-        assert client.post("/api/finance/bills/1/payment", json={"status": "settled"}).status_code == 422
+        assert client.post("/api/finance/bills/1/payment", json={"status": "paid"}).status_code == 404  # Retired: bills aren't payment-tracked.
         assert client.post("/api/finance/recurring/1/review", json={"status": "verified"}).status_code == 400
         assert client.post("/api/finance/recurring/1/review", json={"status": "verified", "kind": "luxury"}).status_code == 422
         assert client.post("/api/finance/recurring/1/kind", json={"kind": "luxury"}).status_code == 422

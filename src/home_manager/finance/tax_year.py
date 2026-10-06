@@ -289,9 +289,10 @@ def gather(store, year, household, today=None, recorder=NULL, only=None):
     sources["retirement_distributions"] = "1099-R box 2a" if ("1099-R", "2a") in forms else "Withdrawals from tax-deferred accounts so far"
     if household.birth_year and distributions and year - household.birth_year < 59:
         values["early_distributions"], sources["early_distributions"] = distributions, "Taken before 59½ (from your birth year); enter 0 if an exception applies"
-    if ("1099-INT", "4") in forms or ("1099-DIV", "4") in forms:
-        values["other_federal_withholding"] = forms.get(("1099-INT", "4"), 0) + forms.get(("1099-DIV", "4"), 0)
-        sources["other_federal_withholding"] = "1099 box 4"
+    withheld = [form for form in ("1099-INT", "1099-DIV", "1099-R") if (form, "4") in forms]  # Box 4 on each: federal tax withheld.
+    if withheld:
+        values["other_federal_withholding"] = sum(forms[(form, "4")] for form in withheld)
+        sources["other_federal_withholding"] = " and ".join(withheld) + " box 4"
     # Tax tags: businesses, adjustments, itemized deductions, credit spending, tax paid ahead.
     tagged = TaxTags(store).year(year, CURRENCY)
     businesses: dict = {}

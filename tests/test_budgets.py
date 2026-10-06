@@ -114,14 +114,15 @@ def test_budgets_measure_counted_category_spending_and_pace(books):
     rows = {row["category"]: row for row in result["budgets"]}
     assert (result["days"], result["elapsed_days"]) == (30, 10)
     groceries = rows["groceries"]
+    # Spent is after refunds: 200 + 100 less the 50 grocer refund (docs/money.md "Returns").
     assert (groceries["spent"]["display"], groceries["remaining"]["display"], groceries["percent_used"], groceries["transactions"]) == (
-        "300.00 USD", "100.00 USD", "75.0", 2)
-    assert groceries["status"] == "ahead_of_pace"  # 75% spent after a third of the month.
+        "250.00 USD", "150.00 USD", "62.5", 3)
+    assert groceries["status"] == "ahead_of_pace"  # 62.5% spent after a third of the month.
     assert rows["fun"]["spent"]["minor"] == 0 and rows["fun"]["status"] == "on_track"
     assert [(row["spent"]["display"], row["transactions"]) for row in result["unbudgeted"]] == [("25.00 USD", 1)]
     with store.connection() as db:
         db.execute("UPDATE transactions SET category='fun' WHERE description_raw='CINEMA'")
-    assert (groceries["meter_percent"], groceries["remaining_state"]) == ("75.0", "left")
+    assert (groceries["meter_percent"], groceries["remaining_state"]) == ("62.5", "left")
     over_rows = {row["category"]: row for row in call_tool(tools, "get_budgets", {"month": "2026-09", "as_of": "2026-09-10"})["budgets"]}
     over = {category: row["status"] for category, row in over_rows.items()}
     assert over["fun"] == "over"

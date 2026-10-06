@@ -80,7 +80,7 @@ def test_inbox_capture_before_move_and_recovery_after_move(library, monkeypatch)
     scan(store)
     doc = store.documents()["items"][0]
     assert doc["source_kind"] == "inbox" and doc["folder"] == "Inbox"
-    assert doc["folder_year"] == doc["folder_month"] == 0
+    assert "folder_year" not in doc and "folder_month" not in doc  # Folder dates left the capture model (migration 064).
     assert store.blob_path(doc["current_hash"]).read_bytes() == content
     class SimulatedCrash(BaseException):
         pass

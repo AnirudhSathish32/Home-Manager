@@ -74,9 +74,16 @@ class TaxTags:
                 raise ValueError("Business not found.")
         return {"id": business_id, "archived": True}
 
-    def _business(self, db, business_id):
-        if business_id is not None and db.execute("SELECT 1 FROM businesses WHERE id=?", (business_id,)).fetchone() is None:
+    def _business(self, db, business_id, keep=None):
+        """A business new work can go to: one that exists and isn't archived (keep: the one the item or rule already has,
+        which it may keep)."""
+        if business_id is None:
+            return
+        row = db.execute("SELECT archived_at FROM businesses WHERE id=?", (business_id,)).fetchone()
+        if row is None:
             raise ValueError("Business not found.")
+        if row["archived_at"] and business_id != keep:
+            raise ValueError("That business is archived. Choose another, or add it again.")
 
     # Items -------------------------------------------------------------------------
 
@@ -128,8 +135,9 @@ class TaxTags:
         """Your own tag: it counts at once, and no rule changes it."""
         check(kind, line, business_id)
         with self.store.connection() as db:
-            self._business(db, business_id)
             target = self.target(db, target_type, target_id)
+            current = db.execute(f"SELECT business_id FROM tax_tags WHERE {target_type}_id=?", (target_id,)).fetchone()  # target_type checked above.
+            self._business(db, business_id, current["business_id"] if current else None)
             value = target["amount_minor"] if amount is None else to_minor(amount, target["currency"])
             if value < 0:
                 raise ValueError("Enter the amount that counts, zero or more.")
@@ -212,12 +220,12 @@ class TaxTags:
         names = labels()
         return [{**dict(row), "kind_label": KINDS[row["kind"]], "line_label": names[row["kind"]].get(row["line"], row["line"])} for row in rows]
 
-    def _rule_values(self, db, pattern, kind, line, business_id, account_id):
+    def _rule_values(self, db, pattern, kind, line, business_id, account_id, keep=None):
         key = normalize_name(pattern)
         if not key:
             raise ValueError("Enter the words the rule matches, such as ADOBE.")
         check(kind, line, business_id)
-        self._business(db, business_id)
+        self._business(db, business_id, keep)
         if account_id is not None and db.execute("SELECT 1 FROM accounts WHERE id=?", (account_id,)).fetchone() is None:
             raise ValueError("Account not found.")
         return {"pattern": key, "kind": kind, "line": line, "business_id": business_id, "account_id": account_id}
@@ -234,7 +242,8 @@ class TaxTags:
 
     def update_rule(self, rule_id, pattern, kind, line, business_id=None, account_id=None):
         with self.store.connection() as db:
-            values = self._rule_values(db, pattern, kind, line, business_id, account_id)
+            current = db.execute("SELECT business_id FROM tax_rules WHERE id=?", (rule_id,)).fetchone()
+            values = self._rule_values(db, pattern, kind, line, business_id, account_id, current["business_id"] if current else None)
             if db.execute("SELECT 1 FROM tax_rules WHERE pattern=? AND coalesce(account_id,0)=coalesce(?,0) AND id<>?", (values["pattern"], account_id, rule_id)).fetchone():
                 raise ValueError("Another tax rule already uses these words.")
             if db.execute(f"UPDATE tax_rules SET {','.join(f'{key}=?' for key in values)},updated_at=? WHERE id=?", (*values.values(), now(), rule_id)).rowcount == 0:

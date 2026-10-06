@@ -17,7 +17,7 @@ python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.tom
 
 Edit `evals\models.toml` to list your LM Studio model IDs. Each candidate pairs a vision model with a reasoning model.
 
-The synthetic corpus is the same every time (a fixed seed): 22 receipts, 6 bank statements, 5 card statements and 7 pay stubs. 34 are images read by the vision model, and 6 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
+The synthetic corpus is the same every time (a fixed seed): 24 receipts, 6 bank statements, 5 card statements and 7 pay stubs. 36 are images read by the vision model, and 6 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
 
 | Tag | What it tests |
 |---|---|
@@ -31,6 +31,7 @@ The synthetic corpus is the same every time (a fixed seed): 22 receipts, 6 bank 
 | `date_format` | Dates printed 08/14/2026 or 14 Aug 2026 |
 | `faded` | Grey, speckled, slightly tilted print |
 | `ytd` | Pay stubs with a year-to-date column |
+| `return` | A return and an exchange printed without minus signs: the answers are negative (money back) |
 
 Generate it into an empty folder: `evals.synthetic` adds to a folder and never deletes.
 

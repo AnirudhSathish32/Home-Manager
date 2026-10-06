@@ -183,6 +183,20 @@ def test_2026_law_the_old_hand_written_return_lacked(slot):
     matches(tipped, {"other_deductions": -700000, "taxable_income": 6000000 - 1610000 - 700000})
 
 
+@needs_engine_2
+@pytest.mark.parametrize("name, key", [("EITC_PHASEOUT", "pay_eitc"), ("ACTC_LOW", "pay_actc")])
+def test_engine_2_claims_a_credit_the_return_qualifies_for(name, key):
+    # Tax-Calculator's population claim probabilities, against the one draw a single record gets (0.76), dropped any EITC
+    # below ~74% of its maximum and ACTC below ~69%: a return claims it (taxcalc_run.py).
+    value = getattr(tax_returns, name)
+    second = amounts(tax_engine.calculate("engine_2", value, {})).get(key, 0)
+    assert second != 0, key
+    if shutil.which("node"):
+        # Engine 1 reads the EIC Table's $50 rows; Engine 2 works the formula: up to half a row at the phase-out rate apart.
+        first = amounts(tax_engine.calculate("engine_1", value, {})).get(key, 0)
+        assert abs(abs(first) - abs(second)) <= 500, (key, first, second)
+
+
 @needs_node
 @needs_engine_2
 def test_the_second_engine_checks_the_first_line_by_line():
