@@ -42,8 +42,17 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
 | `--chart` | `#3B6FDB` | `#6F96F0` | single-series bars, share and budget meter fill |
 | `--chart-track` | `#E4EBFA` | `#26324D` | meter track |
 
-`--info` is `--accent`. Categorical chart colors stay the validated palette in `home.js` `CHART_COLORS` and
-`finance/charts.py`, moved into tokens in Phase 1.
+`--info` is `--accent`, and `--neutral-subtle` is `--surface-sunken`. Added in Phase 1a:
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--on-danger` | `#FFFFFF` | `#12141A` | text on `--danger` (destructive buttons) |
+| `--danger-hover` | `#912018` | `#F59D8C` | destructive button hover |
+| `--paper` | `#FFFFFF` | `#FFFFFF` | behind document images, paper-white in both themes |
+| `--backdrop` | `rgb(16 24 40 / 40%)` | `rgb(0 0 0 / 60%)` | dialog backdrop |
+| `--chart-cat-1..6` | `#2a78d6 #eb6834 #1baf7a #eda100 #e87ba4 #008300` | same, slot 6 `#4CB04C` | categorical series (the validated palette) |
+| `--chart-seq-1..10` | `#86b6ef` … `#0d366b` | same | sequential ramp (tax buckets) |
+| `--chart-grid` / `--chart-baseline` | `--border` / `--border-strong` | same | chart gridlines and zero line |
 
 **Checked contrast** (WCAG; text ≥ 4.5:1, meter fill against track ≥ 3:1):
 - Light: text/canvas 14.4; secondary/surface 7.3; muted/canvas 5.0; muted/sunken 4.6; accent/surface 5.9;
@@ -51,6 +60,16 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
   warning/warning-subtle 5.2; danger/danger-subtle 5.6; chart/track 3.9; warning/track 5.0.
 - Dark: text/canvas 15.6; muted/surface 5.7; muted/sunken 5.1; accent/surface 7.1; on-accent/accent 7.7;
   positive/surface 8.4; warning/warning-subtle 7.8; danger/danger-subtle 6.4; chart/track 4.4; warning/track 6.5.
+- Phase 1a (checked 2026-10-10):
+  - on-danger/danger is 6.6 light and 7.2 dark; on danger-hover it's 8.7 light and 8.8 dark.
+  - secondary/sunken (table headers) is 6.3 light and 7.7 dark.
+  - Over-budget meter (warning on warning-subtle) is 5.2 light and 7.8 dark.
+  - `--chart-cat-1..6` on surface, dark: 3.9, 5.3, 6.1, 7.9, 6.3, 6.2 (all ≥ 3:1).
+  - `--chart-cat-1..6` on surface, light: 4.4, 3.2, 2.8, 2.2, 2.7, 5.0. Slots 3–5 are under 3:1, as they were before
+    Phase 1. The always-visible legend, the end labels and the table view relieve it.
+  - `--chart-seq-1..10` on surface, light: 2.1 → 12.0.
+  - `--chart-seq-1..10` on surface, dark: 8.1 → 1.4. Steps 8–10 are under 3:1. Labels sit outside the bars and the
+    table has every value. **Open:** a ramp reversed for dark.
 
 **Meaning is fixed** (docs/ui.md "Conventions"):
 - Accent means interactive.
@@ -139,6 +158,16 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
   inputs unchanged".
 - **Source text:** mono 11.5px on `--surface-sunken`, scrolling inside its own box. The highlighted line is
   `--warning-subtle` with a 1px `--warning` outline.
+
+## Deviations built in Phase 1a
+
+- **Panel padding** is 16/20 (`--space-4 --space-5`), not 16/18, and **main padding** is 24/32, not 28/32. Both
+  values stay on the spacing scale.
+- **The nav count badge** is a warning pill only with `.attention` (Review, Inbox, Unfiled). The check-in count stays a
+  neutral pill, because amber means it needs you.
+- **Links in running text** keep a thin underline (40% accent, full accent on hover). Accent against body text is
+  under 3:1, so color alone can't mark a link (WCAG 1.4.1). Text-link buttons underline only on hover.
+- **The selected nav item's** focus ring is `--text`, because an accent ring on an accent fill is invisible.
 
 ## Decided for later screens (record here, build in Phase 2)
 

@@ -7,6 +7,7 @@ This folder holds the redesign's visual decisions. Start here when you pick the 
 | `MASTER.md` | **The approved design system** (direction C · Family). Tokens, type, spacing, components, and decisions for later screens. It wins over the preview. |
 | `phase0-directions.html` | The Phase 0 preview: the three directions (A · Ledger, B · Household book, C · Family) on Today and Transactions, light and dark, synthetic data. Open it in a browser. It loads fonts from Google Fonts, so it's a throwaway page outside the app's CSP. Also published at https://claude.ai/artifact/55gpu4BBFRmHy7nLUkSE7e. |
 | `pages/<page>.md` | Not created yet. Each Phase 2 screen session adds one. |
+| `phase1a-plan.md` | The Phase 1a hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what 1a covers. |
 
 ## Phase 0 (done 2026-10-06)
 
@@ -43,9 +44,31 @@ This folder holds the redesign's visual decisions. Start here when you pick the 
 **How you like to work:** you want to be asked for input at each step rather than handed defaults. Use
 AskUserQuestion with previews for real choices.
 
-## Next: Phase 1 foundation
+## Phase 1a (done 2026-10-10)
 
-Wait for the weekly usage reset; this is the heavy phase. The work list is docs/open-work.md "UI redesign" 5.
+Built from `phase1a-plan.md`:
+- tokens in light and dark;
+- a Settings › Appearance switch (System / Light / Dark, saved per browser);
+- Plus Jakarta Sans (variable) and JetBrains Mono, self-hosted;
+- chart and meter colors as tokens, with over budget amber, not red;
+- the base components;
+- the shell, restyled, with a top bar and menu sheet under 820px.
+
+docs/ui.md "Design system" describes it, and `tests/test_style_tokens.py` and `tests/test_shell_browser.py` check it.
+
+**Left open for you to decide:**
+- In dark, `--chart-seq-8..10` (the tax-bucket ramp's darkest steps) are under 3:1 on `--surface`. MASTER.md
+  "Color tokens" has the ratios. The labels sit outside the bars and the table carries every value, but a ramp
+  reversed for dark would read better.
+- Light `--chart-cat-3..5` are under 3:1, as they always were. That's the validated palette, relieved by the legend
+  and the table.
+
+## Next: Phase 1b
+
+**1b** (`pageState()`, `trace.js`, the `ui_v2_screens` flag, `tests/test_ui_parity.py`) gets its own planning session.
+Steps 1, 2, 6 and 7 below still apply to it. Steps 3–5 were 1a.
+
+The work list is docs/open-work.md "UI redesign" 5.
 
 1. Load the `ui-redesign` skill in **plan mode** and read what it lists: CLAUDE.md, docs/ui.md "Screen rules", this
    MASTER.md, and the Pro Max SKILL.md.

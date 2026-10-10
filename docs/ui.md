@@ -38,8 +38,9 @@ pages, the design system, accessibility and money display.
 - **Keyboard.** Every control is reachable in visual order. Review keeps J/K, V and R, and shortcuts never fire inside
   inputs. The focus ring is visible.
 - **Links read from documents** are shown as text, never as live links.
-- **Charts** each have a text summary and a **View data table** control. Categorical colors come from the palette in
-  `home.js` (`CHART_COLORS`) and `finance/charts.py`.
+- **Charts** each have a text summary and a **View data table** control. Colors come from the `--chart-*` tokens:
+  categorical slots `--chart-cat-1..6` (`home.js` `categorySlot()` gives a category its `cat-N` class), the
+  sequential ramp `--chart-seq-1..10`, and the `c-*` classes on the server's SVG (`finance/charts.py`).
 
 ### Verifying a layout
 
@@ -130,8 +131,10 @@ scroll position.
 
 ### Settings
 
-Settings is a page with tabs: **Library folder**, **Profiles & family**, **Financial preferences**, **Local models**,
-**Independent checks**, **Backup & restore**, **Sharing**, **Privacy & security**.
+Settings is a page with tabs: **Library folder**, **Profiles & family**, **Financial preferences**, **Appearance**,
+**Local models**, **Independent checks**, **Backup & restore**, **Sharing**, **Privacy & security**.
+- **Appearance.** Theme: System (the default, following Windows), Light or Dark. The choice is saved in this browser
+  (`localStorage["home-manager-theme"]`, `theme.js`); with storage blocked it falls back to System.
 - **Library folder.** Changing it switches libraries, so it asks for confirmation.
 - **Local models.** Each model has **Test connection** (`POST /api/model-connection-tests`: lists the served models,
   loads nothing, sends no content). The model computer setting (this PC or a shared GPU) is here too.
@@ -150,54 +153,54 @@ Settings is a page with tabs: **Library folder**, **Profiles & family**, **Finan
 - **One primary button per region.**
 - **A calm default.** Healthy states are quiet (no "Succeeded" badges everywhere), and exceptions stand out.
 
-**Tokens** (CSS custom properties at the top of `style.css`):
-
-| Token | Value | Use |
-|---|---|---|
-| `--canvas` | `#F6F7F9` | app background |
-| `--surface` | `#FFFFFF` | content regions, tables, drawer |
-| `--surface-sunken` | `#EFF1F4` | table header, evidence background, code |
-| `--border` | `#E1E4E8` | default dividers |
-| `--border-strong` | `#C9CED6` | inputs, focusable outlines |
-| `--text` | `#1A1F26` | primary text and amounts |
-| `--text-secondary` | `#4D5663` | labels, metadata |
-| `--text-muted` | `#6B7480` | tertiary text (≥4.5:1 on surface) |
-| `--accent` | `#2B5A8A` (ink blue) | primary buttons, links, selected nav, focus |
-| `--accent-subtle` | `#E8EFF7` | selected row, nav hover |
-| `--positive` | `#1E6B45` | money in, verified |
-| `--positive-subtle` | `#E4F2EA` | verified badge background |
-| `--warning` | `#8A5A00` | needs review, stale, partial |
-| `--warning-subtle` | `#FDF1D8` | |
-| `--danger` | `#A33A2E` | failed, past due, destructive |
-| `--danger-subtle` | `#FBE9E6` | |
-| `--info` | `#2B5A8A` | proposed, running (shares the accent hue) |
+**Tokens** are CSS custom properties at the top of `style.css`, in three blocks: light `:root`, then dark under
+`prefers-color-scheme: dark` (unless Light was chosen) and again under `:root[data-theme="dark"]` (Dark chosen in
+Settings › Appearance). The values, light and dark, and their checked contrast are in
+`design-system/home-manager/MASTER.md` "Color tokens" (direction C · Family). No color appears outside the token
+blocks, and `tests/test_style_tokens.py` enforces it. Beyond MASTER's table:
+- `--info` is `--accent`, and `--neutral-subtle` is `--surface-sunken`.
+- `--on-accent` and `--on-danger` are the text on accent and danger fills, `--danger-hover` the danger button's hover.
+- `--paper` stays white in both themes, behind document images (`#receipt-image-frame`, `.donate-frame`).
+- `--backdrop` is the dialog backdrop.
+- `--chart`, `--chart-track`, `--chart-grid`, `--chart-baseline`, `--chart-cat-1..6` and `--chart-seq-1..10` color
+  the charts and meters ("Conventions").
 
 - **Money colors.** Money out uses the default text color with a `−` sign. Money in uses `--positive` with a `+` sign.
-  Transfers are muted, with the ⇄ icon. **Red never means spending.** Red is for errors, past-due bills and
-  destructive actions.
-- **Typography.** The system stack: `"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`. Monospace is
-  `"Cascadia Mono", Consolas, ui-monospace`. Every amount, date and count column uses
+  The sign sits in a fixed-width slot (`.amount .sign`) so magnitudes line up. Transfers are muted, with the ⇄ icon.
+  **Red never means spending**, including an exceeded budget: the meter is amber with "Over by …" and the ⚠ icon. Red
+  is for errors, past-due bills and destructive actions.
+- **Typography.** Plus Jakarta Sans (variable, 200–800) for UI and figures, and JetBrains Mono 400/500 for code and
+  source lines. Both are self-hosted woff2 in `app/static/fonts/` under the SIL OFL 1.1, with the license files beside
+  them, and the CSP is unchanged (`font-src` falls back to `'self'`). The fallbacks are `"Segoe UI Variable Text",
+  "Segoe UI", system-ui` and `"Cascadia Mono", Consolas, ui-monospace`. Every amount, date and count column uses
   `font-variant-numeric: tabular-nums`.
 
 | Token | Size / line height | Weight | Use |
 |---|---|---|---|
-| `--text-xs` | 12 / 16 | 400–600 | badges, table meta |
-| `--text-sm` | 13 / 18 | 400 | table body (compact), secondary |
-| `--text-md` | 14 / 20 | 400 | body default |
-| `--text-lg` | 16 / 24 | 600 | panel headings |
-| `--text-xl` | 20 / 28 | 600 | page titles |
-| `--figure-lg` | 28 / 34 | 600 | the one headline figure per page |
+| `--text-xs` | 12 / 16 | 500–600 | badges, table meta, nav group labels |
+| `--text-sm` | 13 / 18 | 400–550 | table body, secondary, buttons |
+| `--text-md` | 14 / 20 | 400 | body default, nav |
+| `--text-lg` | 15 / 22 | 600 | section headings (h2, h3) |
+| `--text-xl` | 26 / 32 | 700, −0.02em | page titles (h1) |
+| `--figure-lg` | 28 / 34 | 700 | headline figures |
+| `--figure-xl` | 30 / 34 | 700 | the answer at the top of a breakdown |
 
 - **Spacing** uses a 4px base: `--space-1..8` = 4, 8, 12, 16, 20, 24, 32, 48.
-- **Radii:** `--radius-sm` 4px (inputs, buttons, badges), `--radius-md` 6px (panels, drawer, popovers), `--radius-lg`
-  10px (dialogs). There are no pill shapes except count badges.
+- **Radii:** `--radius-sm` 6px (inputs, buttons), `--radius-md` 10px (nav items, table wrap, alerts, menus, toasts),
+  `--radius-lg` 14px (panels, dialogs). `--radius-pill` is only for chips (`.chip`), status badges and count badges.
+- **Links** in running text keep a thin underline, because accent against body text is under 3:1. Text-link buttons
+  (`button.link-button`) underline only on hover.
+- **Tables** sit in `.table-wrap` (`--surface`, `--border`, `--radius-md`). Inside a panel, dialog, disclosure or pane
+  the wrap drops its box, so regions never nest.
 - **Elevation.** Nothing in the page flow has a shadow. `--shadow-overlay` is used only for the drawer, popovers, menus
   and dialogs.
 - **Controls:** `--control-sm` 28px (tables, toolbars), `--control-md` 32px (default), `--control-lg` 36px (the page's
   primary action). Table rows are 32px (compact) or 40px (comfortable), with sticky 12px semibold headers.
-- **Layout.** The sidebar is 232px and collapses to an icon rail below 1280px. Content is at most 1600px wide, the
-  drawer 520px, and a form column 720px.
-- **Motion.** 120ms ease-out for hover and focus, 180ms for the drawer. Everything is disabled under
+- **Layout.** The sidebar is 220px and collapses to a 64px icon rail below 1280px. Below 820px it becomes a sticky top
+  bar (brand and a **Menu** button, at most 56px high), and the menu opens the sidebar's contents as a sheet under it.
+  The selected nav item is an `--accent` fill with `--on-accent` text. Content is at most 1600px wide, the drawer
+  520px, and a form column 720px.
+- **Motion.** 120ms ease-out for hover and focus, 180ms (`--motion-panel`) for the drawer and the menu sheet. Everything is disabled under
   `prefers-reduced-motion`. The only looping animation is the running-job indicator.
 - **Components** are vanilla factory functions in `ui.js` that return DOM nodes: `element()`, `cell()`,
   `statusBadge()`, `amount()`, `dateText()`, `asyncButton()`, `alertBox()`, `emptyState()`, menus, dialogs and toasts.
@@ -240,7 +243,11 @@ kept in a "Technical details" disclosure.
   - <kbd>F6</kbd> cycles between the sidebar, main and drawer regions.
   - Dialogs use native `<dialog>`, set an initial focus, and return focus to the trigger on close.
   - Shortcuts are never required and never fire inside inputs.
-- **Focus:** a 2px `--accent` outline with a 2px offset on every interactive element.
+- **Narrow menu.** Under 820px, `#nav-toggle` carries `aria-expanded` and `aria-controls="sidebar-sheet"`. Opening it
+  focuses the first nav link. <kbd>Esc</kbd> closes the sheet and returns focus to the toggle, and a route change or a
+  click outside also closes it. Focus order is the skip link, the brand, the toggle, the sheet, then main.
+- **Focus:** a 2px `--accent` outline with a 2px offset on every interactive element. On the selected nav item (an
+  accent fill) the ring is `--text`.
 - **Contrast.** Every text token is at least 4.5:1 on `--surface` and `--canvas`. Badge text is at least 4.5:1 on
   subtle backgrounds. Non-text UI (input borders, focus) is at least 3:1.
 - **Never color alone.** Every status has an icon and text. Amounts carry a `+`/`−` sign, and money in or out is also

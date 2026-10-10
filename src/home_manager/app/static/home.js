@@ -1,8 +1,8 @@
 "use strict";
 let homeLoad = 0, homeMonths = 6;
-// Categorical slots 1–6 of the validated chart palette (docs/ui.md "Conventions"); the legend and table view relieve the contrast warning.
-const CHART_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"];
-const categoryColors = new Map();
+// Categorical slots 1–6 of the validated chart palette, colored by the --chart-cat-* tokens (docs/ui.md "Conventions").
+const CHART_SLOTS = ["cat-1", "cat-2", "cat-3", "cat-4", "cat-5", "cat-6"];
+const categorySlots = new Map();
 function localMonth() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -72,7 +72,7 @@ function homeTrend(data) {
     const high = Math.max(0, ...values), low = Math.min(0, ...values), span = high - low || 1;
     const y = value => 28 + (high - value) / span * 185, zero = y(0), step = 560 / data.series.length;
     const svg = chartNode("svg", {viewBox: "0 0 620 260", class: "home-trend", role: "group", "aria-label": `Monthly net spending in ${data.currency}; details available in the data table`});
-    svg.append(chartNode("line", {x1: 40, x2: 604, y1: zero, y2: zero, stroke: "#C9CED6"}));
+    svg.append(chartNode("line", {x1: 40, x2: 604, y1: zero, y2: zero, class: "chart-axis"}));
     svg.append(chartNode("text", {x: 6, y: zero + 4, class: "chart-label"}, "0"));
     const highest = data.series.find(row => row.totals?.net_spending.minor === high);
     if (high > 0) svg.append(chartNode("text", {x: 40, y: 16, class: "chart-label"}, highest.totals.net_spending.display));
@@ -84,7 +84,7 @@ function homeTrend(data) {
       if (row.totals) {
         const link = chartNode("a", {href: financeHref(data, {start: row.start, end: row.end, metric: "spending"}), "aria-label": label, tabindex: "0"});
         const rect = chartNode("rect", {x, y: Math.min(y(value), zero) - (value === 0 ? 1 : 0), width: step - 12,
-          height: Math.max(2, Math.abs(y(value) - zero)), rx: 3, fill: row.partial ? "#dbe8f8" : "#2a78d6", stroke: "#2a78d6", "stroke-width": 2});
+          height: Math.max(2, Math.abs(y(value) - zero)), rx: 3, class: row.partial ? "chart-bar partial" : "chart-bar", "stroke-width": 2});
         if (row.partial) rect.setAttribute("stroke-dasharray", "4 3");
         link.append(chartNode("title", {}, `${label}; spent ${row.totals.spending.display}; refunds ${row.totals.refunds.display}; ${row.totals.transactions} transactions`), rect);
         svg.append(link);
@@ -101,17 +101,18 @@ function homeTrend(data) {
     row.totals ? money(row.totals.spending) : "No data", money(row.totals?.refunds), money(row.totals?.net_spending), String(row.totals?.transactions ?? "—")])));
   return panel;
 }
-function categoryColor(name) {
-  if (name === "uncategorized") return "#6B7480";
-  if (categoryColors.has(name)) return categoryColors.get(name);
+// A category's chart slot (cat-1..6); the colors are the --chart-cat-* tokens in style.css.
+function categorySlot(name) {
+  if (name === "uncategorized") return "cat-none";
+  if (categorySlots.has(name)) return categorySlots.get(name);
   let hash = 0; for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  let chosen = CHART_COLORS[hash % CHART_COLORS.length];
-  const used = new Set(categoryColors.values());
-  for (let i = 0; i < CHART_COLORS.length; i++) {
-    const color = CHART_COLORS[(hash + i) % CHART_COLORS.length];
-    if (!used.has(color)) { chosen = color; break; }
+  let chosen = CHART_SLOTS[hash % CHART_SLOTS.length];
+  const used = new Set(categorySlots.values());
+  for (let i = 0; i < CHART_SLOTS.length; i++) {
+    const slot = CHART_SLOTS[(hash + i) % CHART_SLOTS.length];
+    if (!used.has(slot)) { chosen = slot; break; }
   }
-  categoryColors.set(name, chosen); return chosen;
+  categorySlots.set(name, chosen); return chosen;
 }
 function homeCategories(data) {
   const panel = homePanel("Spending by category", `${monthText(data.month)} · After refunds`);
@@ -125,7 +126,7 @@ function homeCategories(data) {
       const share = row.share_bp;  // The server's share (basis points summing to 10,000) is the slice's length.
       const link = chartNode("a", {href: href(row), tabindex: "0", "aria-label": `${row.category}: ${row.spending.display}, ${row.share}%`});
       link.append(chartNode("title", {}, `${row.category}: ${row.spending.display} (${row.share}%)`),
-        chartNode("circle", {cx: 130, cy: 110, r: 78, fill: "none", stroke: categoryColor(row.category), "stroke-width": 27,
+        chartNode("circle", {cx: 130, cy: 110, r: 78, fill: "none", class: categorySlot(row.category), "stroke-width": 27,
           pathLength: 10000, "stroke-dasharray": `${share} ${10000 - share}`, "stroke-dashoffset": -offset, transform: "rotate(-90 130 110)"}));
       svg.append(link); offset += share;
     }
@@ -135,7 +136,7 @@ function homeCategories(data) {
     const legend = element("ul", "", "home-legend");
     for (const row of data.categories) {
       const item = document.createElement("li"), swatch = chartNode("svg", {viewBox: "0 0 12 12", class: "chart-swatch", "aria-hidden": "true"});
-      swatch.append(chartNode("circle", {cx: 6, cy: 6, r: 5, fill: categoryColor(row.category)}));
+      swatch.append(chartNode("circle", {cx: 6, cy: 6, r: 5, class: categorySlot(row.category)}));
       const link = homeLink(row.category, href(row));
       item.append(swatch, link, element("span", `${row.spending.display} · ${row.share}%`, "numeric")); legend.append(item);
     }

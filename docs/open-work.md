@@ -131,16 +131,13 @@ The design is in [ui](ui.md#redesign-calculation-observability). The items below
 one or two per session. Paths are under `src/home_manager/`. Each item is done when its test passes; remove it from
 this list once it's built. Items 1–4 (the backend: correct numbers, traces, provenance, and every engine line traced,
 Engine 2's included) are built: ui.md "Trace contract", "What's built"; taxes.md "The engines' worksheets". Phase 0
-is done: direction C · Family, in `design-system/home-manager/MASTER.md`. Phase 1 is next; its starting steps, the
-Phase 0 record and the preview page are in `design-system/home-manager/README.md`.
+is done: direction C · Family, in `design-system/home-manager/MASTER.md`. Phase 1a (tokens in light and dark, the
+theme switch, self-hosted fonts, chart colors as tokens, base components, and the shell with a top bar under 820px)
+is built: ui.md "Design system". Phase 1b is next; the steps are in `design-system/home-manager/README.md`.
 
-**5. Design and components.**
-- **Phase 1 foundation** (tokens, fonts and components as in MASTER.md):
-  - tokens and a dark theme;
-  - self-hosted fonts;
-  - one `pageState()` loading/error/empty helper. Today Bills and Accounts have no error handling, Investments can stick
-    on "Loading…", and Forecast and Taxes fall back to a toast;
-  - fix the hard-coded chart hex values.
+**5. Design and components (Phase 1b).**
+- **One `pageState()` loading/error/empty helper.** Today Bills and Accounts have no error handling, Investments can
+  stick on "Loading…", and Forecast and Taxes fall back to a toast.
 - **The components** in `app/static/trace.js`.
 - **The `ui_v2_screens` flag** and `tests/test_ui_parity.py`.
 

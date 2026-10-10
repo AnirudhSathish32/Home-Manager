@@ -62,7 +62,10 @@ from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "style.css": "text/css"}
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "theme.js": "text/javascript", "style.css": "text/css",
+          # Self-hosted fonts (OFL; the license files sit beside them and aren't served).
+          "fonts/PlusJakartaSans-Variable.woff2": "font/woff2", "fonts/JetBrainsMono-Regular.woff2": "font/woff2",
+          "fonts/JetBrainsMono-Medium.woff2": "font/woff2"}
 
 
 class SettingsInput(BaseModel):

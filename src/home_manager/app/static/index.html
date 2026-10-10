@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Home Manager</title>
+  <script src="/theme.js"></script>
+  <link rel="preload" href="/fonts/PlusJakartaSans-Variable.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <script src="/ui.js" defer></script>
   <script src="/app.js" defer></script>
@@ -29,6 +32,9 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
+    <!-- Under 820px the sidebar is a top bar; this opens its contents as a sheet (docs/ui.md "Accessibility"). -->
+    <button id="nav-toggle" class="icon-button quiet" type="button" aria-expanded="false" aria-controls="sidebar-sheet" hidden><span class="visually-hidden">Menu</span></button>
+    <div id="sidebar-sheet" class="sidebar-sheet">
     <div id="profile-switch" class="profile-switch" hidden>
       <div class="profile-picker"><label for="profile-select">Profile</label><select id="profile-select"></select></div>
       <!-- The collapsed sidebar has no room for the menu: an icon opens Settings → Profiles & family instead. -->
@@ -71,6 +77,7 @@
         <a id="nav-donate" class="nav-link" href="#/donate" data-route="donate" data-icon="gift"><span class="nav-label">Donate documents</span></a>
         <a id="nav-settings" class="nav-link" href="#/settings" data-route="settings" data-icon="settings"><span class="nav-label">Settings</span></a>
       </nav>
+    </div>
     </div>
   </aside>
   <main id="main" tabindex="-1">
@@ -733,6 +740,7 @@
           <button id="directories-tab" type="button" role="tab" aria-selected="true" aria-controls="directories-panel">Library folder</button>
           <button id="profiles-tab" type="button" role="tab" aria-selected="false" aria-controls="profiles-panel" tabindex="-1">Profiles &amp; family</button>
           <button id="preferences-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences-panel" tabindex="-1">Financial preferences</button>
+          <button id="appearance-tab" type="button" role="tab" aria-selected="false" aria-controls="appearance-panel" tabindex="-1">Appearance</button>
           <button id="model-tab" type="button" role="tab" aria-selected="false" aria-controls="model-panel" tabindex="-1">Local models</button>
           <button id="checks-tab" type="button" role="tab" aria-selected="false" aria-controls="checks-panel" tabindex="-1">Independent checks</button>
           <button id="backup-tab" type="button" role="tab" aria-selected="false" aria-controls="backup-panel" tabindex="-1">Backup &amp; restore</button>
@@ -798,6 +806,15 @@
               <small class="field-note">Names each receipt line's product with your local model (and web search, if a search key is set). Every result waits for you in Review.</small>
               <div class="button-row"><button id="save-household" class="primary" type="submit">Save preferences</button></div>
             </form>
+          </div>
+          <div id="appearance-panel" role="tabpanel" aria-labelledby="appearance-tab" hidden>
+            <h2>Appearance</h2>
+            <fieldset class="theme-choice"><legend>Theme</legend>
+              <label class="check-field"><input id="theme-system" type="radio" name="theme" value="system"> System</label>
+              <label class="check-field"><input id="theme-light" type="radio" name="theme" value="light"> Light</label>
+              <label class="check-field"><input id="theme-dark" type="radio" name="theme" value="dark"> Dark</label>
+            </fieldset>
+            <small>Saved in this browser. System follows Windows.</small>
           </div>
           <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
             <h2>Local models</h2>

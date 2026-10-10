@@ -32,7 +32,7 @@ home-manager = "home_manager.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"home_manager.app" = ["static/*"]
+"home_manager.app" = ["static/*", "static/fonts/*"]
 "home_manager.library" = ["migrations/*.sql"]
 # The pinned OpenTax engine (docs/taxes.md "The tax engines"): unmodified from npm, run as a separate Node process.
 "home_manager" = ["vendor/NOTICES.md", "vendor/opentax/*"]

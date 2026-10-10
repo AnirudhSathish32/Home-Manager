@@ -4,6 +4,10 @@ Follows the app's chart rules: one y-axis, 2px lines, hairline solid gridlines, 
 two or more series plus direct end labels (with leader lines when they would collide), text in
 text colors never series colors, and a hover target per point whose tooltip lists every series.
 Every value is also in the forecast's table view. All text is XML-escaped.
+
+Colors come from the app's tokens: every mark carries a `c-*` class that style.css colors with its `--chart-*` and text
+tokens, so the charts follow the light and dark themes (docs/ui.md "Design system"). The SVG is inlined into the
+page (forecast.js forecastSvg), which lets that CSS reach it.
 """
 
 from decimal import Decimal
@@ -11,10 +15,18 @@ from xml.sax.saxutils import escape
 
 from ..core.money import EXPONENTS
 
-# Validated categorical order (light surface #FFFFFF): blue, orange, aqua. Aqua sits below 3:1
-# contrast, which the always-visible end labels and the table view relieve.
-SERIES = ("#2a78d6", "#eb6834", "#1baf7a")
-GRID, BASELINE, TEXT, MUTED, SURFACE = "#E1E4E8", "#C9CED6", "#1A1F26", "#4D5663", "#FFFFFF"
+# Validated categorical order (--chart-cat-1..3): blue, orange, aqua. Aqua sits below 3:1 contrast on the light
+# surface, which the always-visible end labels and the table view relieve.
+SERIES = 3
+GRID, BASELINE, TEXT, MUTED, SURFACE, LEADER = "c-grid", "c-baseline", "c-text", "c-muted", "c-surface", "c-leader"
+
+
+def line_class(index):
+    return f"c-line-{index + 1}"
+
+
+def dot_class(index):
+    return f"c-dot-{index + 1}"
 WIDTH, HEIGHT = 720, 320
 LEFT, RIGHT, TOP, BOTTOM = 64, 132, 40, 36
 LABEL_GAP = 16
@@ -59,7 +71,7 @@ def nice_ticks(low, high, count=5):
 
 def line_chart(title, subtitle, labels, series, currency):
     """labels: x labels (years); series: [{"name", "short" (end label), "values": [minor units]}], at most three."""
-    if not series or len(series) > len(SERIES) or any(len(item["values"]) != len(labels) for item in series) or not labels:
+    if not series or len(series) > SERIES or any(len(item["values"]) != len(labels) for item in series) or not labels:
         raise ValueError("A chart needs one to three series with one value per label.")
     values = [[major(value, currency) for value in item["values"]] for item in series]
     ticks = nice_ticks(min(min(row) for row in values), max(max(row) for row in values))
@@ -75,23 +87,23 @@ def line_chart(title, subtitle, labels, series, currency):
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="t d" class="forecast-chart" '
            f'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">',
            f'<title id="t">{escape(title)}</title><desc id="d">{escape(subtitle)}. Values by year are in the table below the chart.</desc>',
-           f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{SURFACE}"/>']
+           f'<rect width="{WIDTH}" height="{HEIGHT}" class="{SURFACE}"/>']
     # Legend (always, for two or more series): a short line key beside plain text.
     if len(series) > 1:
         position = LEFT
         for index, item in enumerate(series):
-            out.append(f'<line x1="{position}" y1="14" x2="{position + 16}" y2="14" stroke="{SERIES[index]}" stroke-width="2" stroke-linecap="round"/>'
-                       f'<text x="{position + 22}" y="18" fill="{TEXT}">{escape(item["name"])}</text>')
+            out.append(f'<line x1="{position}" y1="14" x2="{position + 16}" y2="14" class="{line_class(index)}" stroke-width="2" stroke-linecap="round"/>'
+                       f'<text x="{position + 22}" y="18" class="{TEXT}">{escape(item["name"])}</text>')
             position += 30 + 7 * len(item["name"])
     for tick in ticks:
-        out.append(f'<line x1="{LEFT}" x2="{WIDTH - RIGHT}" y1="{y(tick):.1f}" y2="{y(tick):.1f}" stroke="{BASELINE if tick == 0 else GRID}" stroke-width="1"/>'
-                   f'<text x="{LEFT - 8}" y="{y(tick) + 4:.1f}" text-anchor="end" fill="{MUTED}">{compact(tick)}</text>')
+        out.append(f'<line x1="{LEFT}" x2="{WIDTH - RIGHT}" y1="{y(tick):.1f}" y2="{y(tick):.1f}" class="{BASELINE if tick == 0 else GRID}" stroke-width="1"/>'
+                   f'<text x="{LEFT - 8}" y="{y(tick) + 4:.1f}" text-anchor="end" class="{MUTED}">{compact(tick)}</text>')
     step = max(1, -(-len(labels) // 8))
     for index in range(0, len(labels), step):
-        out.append(f'<text x="{x(index):.1f}" y="{HEIGHT - 12}" text-anchor="middle" fill="{MUTED}">{escape(labels[index])}</text>')
+        out.append(f'<text x="{x(index):.1f}" y="{HEIGHT - 12}" text-anchor="middle" class="{MUTED}">{escape(labels[index])}</text>')
     for index, row in enumerate(values):
         points = " ".join(f"{x(i):.1f},{y(value):.1f}" for i, value in enumerate(row))
-        out.append(f'<polyline points="{points}" fill="none" stroke="{SERIES[index]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+        out.append(f'<polyline points="{points}" fill="none" class="{line_class(index)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
     # End markers with a surface ring, then end labels; collisions get leader lines, never stacking on the mark.
     ends = sorted(((y(row[-1]), index, row[-1]) for index, row in enumerate(values)), key=lambda item: item[0])
     placed = []
@@ -99,10 +111,10 @@ def line_chart(title, subtitle, labels, series, currency):
         label_y = max(mark_y, placed[-1] + LABEL_GAP) if placed else mark_y
         placed.append(label_y)
         end_x = x(len(labels) - 1)
-        out.append(f'<circle cx="{end_x:.1f}" cy="{mark_y:.1f}" r="4" fill="{SERIES[index]}" stroke="{SURFACE}" stroke-width="2"/>')
+        out.append(f'<circle cx="{end_x:.1f}" cy="{mark_y:.1f}" r="4" class="{dot_class(index)}" stroke-width="2"/>')
         if abs(label_y - mark_y) > 0.5:
-            out.append(f'<line x1="{end_x + 6:.1f}" y1="{mark_y:.1f}" x2="{end_x + 14:.1f}" y2="{label_y:.1f}" stroke="{MUTED}" stroke-width="1"/>')
-        out.append(f'<text x="{end_x + 16:.1f}" y="{label_y + 4:.1f}" fill="{TEXT}">{compact(value)} {escape(series[index].get("short", series[index]["name"]))}</text>')
+            out.append(f'<line x1="{end_x + 6:.1f}" y1="{mark_y:.1f}" x2="{end_x + 14:.1f}" y2="{label_y:.1f}" class="{LEADER}" stroke-width="1"/>')
+        out.append(f'<text x="{end_x + 16:.1f}" y="{label_y + 4:.1f}" class="{TEXT}">{compact(value)} {escape(series[index].get("short", series[index]["name"]))}</text>')
     # Hover layer: one full-height target per point; its tooltip lists every series at that point.
     band = plot_w / max(len(labels) - 1, 1)
     for i, label in enumerate(labels):
@@ -113,10 +125,11 @@ def line_chart(title, subtitle, labels, series, currency):
     return "".join(out)
 
 
-# Tax buckets: rates are ordered magnitudes, so one hue light to dark (sequential blue from step 250, which clears
-# 2:1 on white); the untaxed standard deduction is neutral gray. Every value is also in the page's table.
-BUCKET_BLUES = ("#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b")
-UNTAXED = "#C9CED6"
+# Tax buckets: rates are ordered magnitudes, so one hue light to dark (the sequential blue ramp --chart-seq-1..10,
+# from step 250, which clears 2:1 on white); the untaxed standard deduction is neutral gray. Every value is also in
+# the page's table.
+BUCKET_STEPS = 10
+UNTAXED = "c-untaxed"
 BAR_TOP, BAR_HEIGHT, BUCKET_HEIGHT = 30, 34, 116
 BUCKET_WIDTH = 520  # The record pane's width, so labels render near their true 12px size.
 
@@ -131,13 +144,13 @@ def tax_buckets_svg(title, buckets, currency, paychecks):
     width = BUCKET_WIDTH - 32
     whole = sum(bucket["income_minor"] for bucket in shown)
     taxed = [bucket for bucket in shown if bucket["rate_bp"] > 0]
-    colors = {id(bucket): BUCKET_BLUES[min(len(BUCKET_BLUES) - 1, index * max(1, (len(BUCKET_BLUES) - 1) // max(1, len(taxed) - 1)))]
+    colors = {id(bucket): f"c-seq-{min(BUCKET_STEPS - 1, index * max(1, (BUCKET_STEPS - 1) // max(1, len(taxed) - 1))) + 1}"
               for index, bucket in enumerate(taxed)}
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BUCKET_WIDTH} {BUCKET_HEIGHT}" role="img" aria-labelledby="bt bd" class="tax-buckets" '
            f'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">',
            f'<title id="bt">{escape(title)}</title><desc id="bd">A year of wages split into tax buckets; each bucket\'s income and tax, '
            f'for the year and per paycheck, are in the table below the chart.</desc>',
-           f'<rect width="{BUCKET_WIDTH}" height="{BUCKET_HEIGHT}" fill="{SURFACE}"/>']
+           f'<rect width="{BUCKET_WIDTH}" height="{BUCKET_HEIGHT}" class="{SURFACE}"/>']
     position = 16.0
     for bucket in shown:
         span = width * bucket["income_minor"] / whole
@@ -147,16 +160,16 @@ def tax_buckets_svg(title, buckets, currency, paychecks):
                f"{full(major(bucket['tax_minor'], currency), currency)} tax\nPer paycheck ({paychecks} a year): "
                f"{full(major(bucket['per_paycheck_income_minor'], currency), currency)} of wages, "
                f"{full(major(bucket['per_paycheck_tax_minor'], currency), currency)} tax")
-        out.append(f'<rect x="{position:.1f}" y="{BAR_TOP}" width="{drawn:.1f}" height="{BAR_HEIGHT}" fill="{fill}" class="hover-target">'
+        out.append(f'<rect x="{position:.1f}" y="{BAR_TOP}" width="{drawn:.1f}" height="{BAR_HEIGHT}" class="{fill} hover-target">'
                    f'<title>{escape(tip)}</title></rect>')
         middle = position + drawn / 2
         name = "0%" if bucket["rate_bp"] == 0 else bucket["label"]
         income = compact(major(bucket["income_minor"], currency))
         tax = "deduction" if bucket["rate_bp"] == 0 else f"{compact(major(bucket['tax_minor'], currency))} tax"
         if drawn >= 7 * max(len(name), len(income), len(tax)) + 4:  # Narrow buckets are labelled in the table and on hover only.
-            out.append(f'<text x="{middle:.1f}" y="{BAR_TOP - 8}" text-anchor="middle" fill="{TEXT}">{escape(name)}</text>'
-                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 18}" text-anchor="middle" fill="{TEXT}">{escape(income)}</text>'
-                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 34}" text-anchor="middle" fill="{MUTED}">{escape(tax)}</text>')
+            out.append(f'<text x="{middle:.1f}" y="{BAR_TOP - 8}" text-anchor="middle" class="{TEXT}">{escape(name)}</text>'
+                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 18}" text-anchor="middle" class="{TEXT}">{escape(income)}</text>'
+                       f'<text x="{middle:.1f}" y="{BAR_TOP + BAR_HEIGHT + 34}" text-anchor="middle" class="{MUTED}">{escape(tax)}</text>')
         position += span
     out.append("</svg>")
     return "".join(out)

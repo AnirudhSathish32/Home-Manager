@@ -33,7 +33,30 @@ for (const link of document.querySelectorAll(".nav-link[data-icon]")) {
   link.title = link.querySelector(".nav-label").textContent;  // Tooltip when the sidebar collapses to icons.
 }
 $("close-receipt").prepend(icon("arrow-left"));
-wireTabs(["directories-tab", "profiles-tab", "preferences-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
+wireTabs(["directories-tab", "profiles-tab", "preferences-tab", "appearance-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
+
+// Settings › Appearance: System, Light or Dark, saved in this browser (theme.js).
+const themeChoice = $(`theme-${storedTheme()}`) || $("theme-system");
+themeChoice.checked = true;
+for (const radio of document.querySelectorAll('input[name="theme"]')) radio.addEventListener("change", () => setTheme(radio.value));
+
+// Under 820px the sidebar is a top bar and the menu button opens its contents as a sheet (docs/ui.md "Accessibility").
+const shell = document.querySelector(".app-shell"), navToggle = $("nav-toggle");
+navToggle.prepend(icon("menu"));
+navToggle.hidden = false;
+function setNavOpen(open, returnFocus = false) {
+  shell.classList.toggle("nav-open", open);
+  navToggle.setAttribute("aria-expanded", String(open));
+  if (open) [...$("sidebar-sheet").querySelectorAll(".nav-link")].find(link => link.getClientRects().length)?.focus();
+  else if (returnFocus) navToggle.focus();
+}
+navToggle.addEventListener("click", () => setNavOpen(!shell.classList.contains("nav-open")));
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && shell.classList.contains("nav-open")) { event.preventDefault(); setNavOpen(false, true); }
+});
+document.addEventListener("click", event => {
+  if (shell.classList.contains("nav-open") && !event.target.closest(".sidebar")) setNavOpen(false);
+});
 
 function parseRoute() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
@@ -79,5 +102,5 @@ document.addEventListener("keydown", event => {
   if (document.querySelector("dialog[open]") || event.target.closest("input, select, textarea, .menu")) return;
   leaveDocument();
 });
-window.addEventListener("hashchange", () => showRoute(true));
+window.addEventListener("hashchange", () => { setNavOpen(false); showRoute(true); });
 showRoute(false);

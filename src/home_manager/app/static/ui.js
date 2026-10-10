@@ -40,6 +40,7 @@ const ICONS = {
   bank: ["M3 22h18", "M6 18v-7", "M10 18v-7", "M14 18v-7", "M18 18v-7", "m12 2 8 5H4z"],
   package: ["M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z", "M12 22V12", "m3.3 7 8.7 5 8.7-5"],
   users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0", "M22 21v-2a4 4 0 0 0-3-3.87", "M16 3.13a4 4 0 0 1 0 7.75"],
+  menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
   paperclip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -155,7 +156,10 @@ function amount(value, {signed = true} = {}) {
   const sign = minus ? "−" : signed && !zero ? "+" : "";
   if (signed) { span.dataset.direction = direction; span.appendChild(element("span", direction === "out" ? "money out " : direction === "in" ? "money in " : "", "visually-hidden")); }
   const symbol = currency === homeCurrency ? CURRENCY_SYMBOLS[currency] : "";
-  span.appendChild(document.createTextNode(symbol ? `${sign}${symbol}${magnitude}` : `${sign}${magnitude} ${currency}`));
+  // A fixed-width sign slot keeps magnitudes aligned in a column (MASTER.md "Components": table).
+  if (signed) span.appendChild(element("span", sign, "sign"));
+  else if (sign) span.appendChild(document.createTextNode(sign));
+  span.appendChild(document.createTextNode(symbol ? `${symbol}${magnitude}` : `${magnitude} ${currency}`));
   span.title = text;
   return span;
 }
