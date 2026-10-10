@@ -8,17 +8,18 @@ const SOURCE_LABELS = {manual: "Entered by you", statement: "Statement", ledger_
 const TERM_CLASSES = [["cd", "CD"], ["treasury_bill", "Treasury bill"], ["treasury_note", "Treasury note"], ["treasury_bond", "Treasury bond"],
                       ["i_bond", "I bond"], ["bond", "Bond"]];
 
-async function loadInvestments(params = new URLSearchParams(location.hash.split("?")[1] || "")) {
-  if (!configured) { $("investments-groups").replaceChildren(emptyState("Set up your library to track investments.")); return; }
+function loadInvestments(params = new URLSearchParams(location.hash.split("?")[1] || "")) {
+  return pageState($("investments-state"), () => renderInvestments(params), {loading: "Loading investments …", what: "investments", needsLibrary: true,
+                                                                              content: [$("investments-summary"), $("investments-groups")]});
+}
+async function renderInvestments(params) {
   const load = ++investmentsLoad, archived = $("investments-archived").checked;
-  $("investments-status").textContent = "Loading…";
   const [kinds, summary] = await Promise.all([investmentKinds.length ? investmentKinds : api("/api/investment-kinds"),
                                               api(`/api/investments${archived ? "?include_archived=true" : ""}`)]);
   if (load !== investmentsLoad) return;
   investmentKinds = kinds;
   fillKindSelect($("investment-kind"), kinds);
   if (!$("investment-as-of").value) $("investment-as-of").value = todayIso();
-  $("investments-status").textContent = "";
   renderInvestmentSummary(summary);
   renderInvestmentGroups(summary);
   const selected = Number(params.get("account"));

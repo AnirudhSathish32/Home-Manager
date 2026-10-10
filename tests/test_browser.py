@@ -52,6 +52,11 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
             playwright.expect(page.locator("#app-alert")).to_contain_text("Choose where Home Manager keeps its library")
+            # Without a library a page says so (ui.js pageState) instead of showing empty tables.
+            page.locator("#nav-accounts").click()
+            playwright.expect(page.locator("#accounts-state")).to_contain_text("Set up your library to see accounts.")
+            playwright.expect(page.locator("#accounts-state").get_by_role("link", name="Open Settings")).to_be_visible()
+            playwright.expect(page.locator("#account-groups")).to_be_hidden()
             page.locator("#nav-settings").click()
             playwright.expect(page.get_by_role("tab", name="Library folder", exact=True)).to_have_attribute("aria-selected", "true")
             playwright.expect(page.locator("#limits")).to_contain_text("Capture limits")

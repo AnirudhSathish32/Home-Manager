@@ -6,14 +6,15 @@ const ROUTES = {
   review: {title: "Review", show: () => loadReview()},
   transactions: {title: "Transactions", show: route => configured ? openTransactions(route.params) : null},
   spending: {title: "Spending & budgets", show: route => configured ? openSpending(route.params) : null},
+  // Bills, Accounts, Forecast, Taxes and Investments show their own "Set up your library" state (ui.js pageState).
   bills: {title: "Bills & recurring", show: () => loadBills()},
   accounts: {title: "Accounts", show: () => loadAccounts()},
   inventory: {title: "Inventory", show: route => { if (route.params.has("q")) $("inventory-search").value = route.params.get("q"); return loadInventory(); }},
   // Old links (#/finances?section=…) forward to the page that now holds that section.
   finances: {title: "Finances", nav: "transactions", show: route => openFinanceRoute(route.params)},
-  forecast: {title: "Forecast", show: () => configured ? loadForecast() : null},
+  forecast: {title: "Forecast", show: () => loadForecast()},
   whatif: {title: "What If", show: route => configured ? loadWhatIf(route.params) : null},
-  taxes: {title: "Taxes", show: () => configured ? loadTaxes() : null},
+  taxes: {title: "Taxes", show: () => loadTaxes()},
   investments: {title: "Investments", show: route => loadInvestments(route.params)},
   documents: {title: "Documents", show: route => showLibrary("documents", route)},
   // Receipts and statements: the money store, on the same library page with its own folders.
@@ -25,6 +26,9 @@ const ROUTES = {
   // #/donate lists checks and documents; #/donate/ID is one check beside its original.
   donate: {title: "Donate documents", show: route => configured ? openDonate(route) : null},
 };
+const V2_SCREENS = {};  // route → {title, show}. Each Phase 2 screen registers itself here (docs/ui.md "Migration").
+// Routes this profile shows redesigned (HouseholdConfig.ui_v2_screens), filled by app.js loadSettings.
+let uiV2Screens = [];
 const DEFAULT_ROUTE = "home";
 let currentRoute = null, listScroll = 0, openedFromList = false;
 
@@ -78,7 +82,9 @@ function showRoute(moveFocus) {
   if (previous === "document" && route.name !== "document") closeReceipt();
   if (route.name === "document") openedFromList = lists.includes(previous) || (previous === "document" && openedFromList);
   currentRoute = route;
-  for (const section of document.querySelectorAll("[data-page]")) section.hidden = section.dataset.page !== page;
+  // A redesigned screen is a data-ui="v2" section for the same page, shown when this profile turned it on.
+  const v2 = uiV2Screens.includes(route.name) && V2_SCREENS[route.name], ui = v2 ? "v2" : "v1";
+  for (const section of document.querySelectorAll("[data-page]")) section.hidden = !(section.dataset.page === page && (section.dataset.ui || "v1") === ui);
   // A document belongs to the store its list was opened from.
   const nav = route.name === "document" && libraryScope === "money" ? "receipts" : ROUTES[route.name].nav || route.name;
   for (const link of document.querySelectorAll(".nav-link[data-route]")) {
@@ -89,8 +95,30 @@ function showRoute(moveFocus) {
   if (lists.includes(route.name) && previous === "document") requestAnimationFrame(() => window.scrollTo(0, listScroll));
   else if (moveFocus) window.scrollTo(0, 0);
   // Move focus to the new page's heading so keyboard and screen-reader users land on the content.
-  if (moveFocus) document.querySelector(`[data-page="${page}"] h1`)?.focus({preventScroll: true});
-  Promise.resolve().then(() => ROUTES[route.name].show(route)).catch(error => notice(error, true));
+  if (moveFocus) document.querySelector(`[data-page="${page}"]:not([hidden]) h1`)?.focus({preventScroll: true});
+  Promise.resolve().then(() => (v2 || ROUTES[route.name]).show(route)).catch(error => notice(error, true));
+}
+
+// Settings › Appearance › New screens: one checkbox per redesigned screen, saved for this profile.
+function renderUiV2Choices() {
+  const list = $("ui-v2-list"), entries = Object.entries(V2_SCREENS);
+  // Saved with the profile's household settings, so like the household form it needs an open profile.
+  $("ui-v2-choice").disabled = !configured && !familyMode;
+  if (!entries.length) { list.replaceChildren(emptyState("No redesigned screens are ready yet.")); return; }
+  list.replaceChildren(...entries.map(([name, screen]) => {
+    const label = element("label", "", "check-field"), box = document.createElement("input");
+    box.type = "checkbox"; box.id = `ui-v2-${name}`; box.checked = uiV2Screens.includes(name);
+    box.addEventListener("change", async () => {
+      const routes = entries.map(([key]) => key).filter(key => key === name ? box.checked : uiV2Screens.includes(key));
+      try {
+        await api("/api/ui-screens", {method: "PUT", body: JSON.stringify({routes})});
+        notice("Saved."); uiV2Screens = routes;
+        if (currentRoute?.name === name) showRoute(false);
+      } catch (error) { box.checked = !box.checked; notice(error, true); }
+    });
+    label.append(box, ` ${screen.title}`);
+    return label;
+  }));
 }
 function leaveDocument() {
   // Back to the list the document was opened from, keeping filters, page and scroll position.

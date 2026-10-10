@@ -124,7 +124,10 @@ function taxReceiptSection(record, onDone) {
 
 // The Taxes page: the year's return, estimated; tagged write-offs and payments; tax rules; businesses.
 function taxYear() { return Number(currentRoute?.params?.get?.("year")) || new Date().getFullYear(); }
-async function loadTaxes() {
+function loadTaxes() {
+  return pageState($("taxes-state"), renderTaxes, {loading: "Loading this year's taxes …", what: "this year's taxes", needsLibrary: true, content: [$("taxes-body")]});
+}
+async function renderTaxes() {
   const year = taxYear();
   const select = $("taxes-year");
   if (!select.options.length) {

@@ -42,6 +42,14 @@ const ICONS = {
   users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0", "M22 21v-2a4 4 0 0 0-3-3.87", "M16 3.13a4 4 0 0 1 0 7.75"],
   menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
   paperclip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
+  // Provenance and trace marks (trace.js, docs/ui.md "Observability components").
+  refresh: ["M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16", "M8 16H3v5"],
+  user: ["M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2", "M12 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0"],
+  "scan-text": ["M3 7V5a2 2 0 0 1 2-2h2", "M17 3h2a2 2 0 0 1 2 2v2", "M21 17v2a2 2 0 0 1-2 2h-2", "M7 21H5a2 2 0 0 1-2-2v-2", "M7 8h8", "M7 12h10", "M7 16h6"],
+  upload: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m17 8-5-5-5 5", "M12 3v12"],
+  calculator: ["M6 2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M8 6h8", "M16 14v4", "M16 10h.01", "M12 10h.01", "M8 10h.01", "M12 14h.01", "M8 14h.01", "M12 18h.01", "M8 18h.01"],
+  pencil: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
+  "book-open": ["M12 7v14", "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"],
 };
 const SVG = "http://www.w3.org/2000/svg";
 function icon(name, className = "icon") {
@@ -109,6 +117,12 @@ const STATUS = {
   tax_zen: ["Tax Zen", "positive", "check-circle"], tax_watch: ["Close · watch it", "info", "clock"], tax_at_risk: ["On track · could turn", "warning", "clock"],
   tax_action: ["Change recommended", "warning", "alert"], tax_review: ["Check the return first", "warning", "alert"],
   tax_insufficient: ["Not enough to go on", "neutral", "clock"], tax_unsupported: ["Not covered", "neutral", "slash"],
+  // A traced figure (trace.js): not yet confirmed, or its inputs changed since it was last shown.
+  unconfirmed: ["Unconfirmed", "warning", "alert"], stale: ["Changed", "warning", "refresh"],
+  // Where an input came from (docs/ui.md "Trace contract"); provenanceBadge() replaces the label with the server's details.
+  prov_manual: ["Entered", "neutral", "user"], prov_extracted: ["Read by model", "info", "scan-text"], prov_imported: ["Imported", "neutral", "upload"],
+  prov_computed: ["Worked out", "neutral", "calculator"], prov_override: ["Changed by hand", "info", "pencil"], prov_rule: ["Rule", "neutral", "book-open"],
+  prov_rate: ["Exchange rate", "neutral", "trend"],
 };
 // How often a recurring bill is paid, as shown to people.
 const FREQUENCY_LABELS = {weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", semiannual: "Every 6 months", annual: "Yearly"};
@@ -128,13 +142,14 @@ function categoryLabel(category) {
 function statusLabel(status) {
   return STATUS[status]?.[0] || String(status || "").replaceAll("_", " ").replace(/^./, character => character.toUpperCase());
 }
-function setStatusBadge(target, status, prefix = "") {
+// label replaces the status's own words and keeps its tone and icon (provenance badges carry the server's details).
+function setStatusBadge(target, status, prefix = "", label = null) {
   const [, tone = "neutral", glyph = null] = STATUS[status] || [];
   target.className = "status-badge"; target.dataset.status = status || ""; target.dataset.tone = tone;
-  target.replaceChildren(...(glyph ? [icon(glyph, status === "running" ? "icon spin" : "icon")] : []), document.createTextNode(prefix + statusLabel(status)));
+  target.replaceChildren(...(glyph ? [icon(glyph, status === "running" ? "icon spin" : "icon")] : []), document.createTextNode(prefix + (label ?? statusLabel(status))));
   return target;
 }
-function statusBadge(status, prefix = "") { return setStatusBadge(document.createElement("span"), status, prefix); }
+function statusBadge(status, prefix = "", label = null) { return setStatusBadge(document.createElement("span"), status, prefix, label); }
 // A receipt's Return or Exchange tag from the server's sale_label, or nothing for a sale. Wrapped so the tag keeps its
 // own width in a stretching column; block puts it on its own line (under an amount in a table cell).
 function saleBadges(record, {block = false} = {}) {
@@ -198,6 +213,49 @@ function alertBox(message, {tone = "info", action = null, detail = ""} = {}) {
   if (action) body.appendChild(action);
   box.appendChild(body);
   return box;
+}
+// A page's loading, error and no-library states in its state host (docs/ui.md "Design system"). load is async; content
+// lists the page's own regions, hidden on an error or without a library. Returns load()'s value, or undefined when it
+// failed or a newer call took over. Empty data stays each page's own emptyState().
+async function pageState(host, load, {loading = "Loading …", what = "this page", content = [], needsLibrary = false} = {}) {
+  const generation = String(Number(host.dataset.generation || 0) + 1);
+  host.dataset.generation = generation; host.tabIndex = -1;
+  const current = () => host.dataset.generation === generation;
+  const region = host.closest("[data-page]") || host.parentElement;
+  const showContent = shown => { for (const node of content) if (node) node.hidden = !shown; };
+  if (needsLibrary && !configured) {
+    host.replaceChildren(emptyState(`Set up your library to see ${what}.`, homeLink("Open Settings", "#/settings")));
+    showContent(false); region?.removeAttribute("aria-busy");
+    return undefined;
+  }
+  region?.setAttribute("aria-busy", "true");
+  const timer = setTimeout(() => {
+    if (!current()) return;
+    const line = element("p", "", "page-loading"); line.setAttribute("role", "status");
+    line.append(icon("loader", "icon spin"), document.createTextNode(loading));
+    host.replaceChildren(line);
+  }, 300);
+  try {
+    const value = await load();
+    clearTimeout(timer);
+    if (!current()) return undefined;
+    host.replaceChildren(); showContent(true); region?.removeAttribute("aria-busy");
+    return value;
+  } catch (error) {
+    clearTimeout(timer);
+    if (!current()) return undefined;
+    region?.removeAttribute("aria-busy"); showContent(false);
+    const retry = element("button", "Retry", "secondary"); retry.type = "button";
+    retry.addEventListener("click", async () => {
+      host.focus();
+      await pageState(host, load, {loading, what, content, needsLibrary});
+      // Loaded: the emptied host is hidden, so focus moves on to the region's heading instead of dropping to the page.
+      if (!host.hasChildNodes() && [host, document.body].includes(document.activeElement)) region?.querySelector('h1[tabindex="-1"], h2[tabindex="-1"]')?.focus();
+    });
+    // Shown here, not re-thrown, so the shell's toast doesn't repeat it.
+    host.replaceChildren(alertBox(`Couldn't load ${what}. ${error?.message || error}`, {tone: "error", detail: error?.detail || "", action: retry}));
+    return undefined;
+  }
 }
 function technicalDetail(detail) {
   const box = element("details", "", "technical-detail");

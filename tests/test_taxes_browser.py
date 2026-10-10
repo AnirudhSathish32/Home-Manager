@@ -93,6 +93,17 @@ def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
             page.locator("#taxes-zen-strategy").select_option("cash_retention")
             playwright.expect(page.locator("#taxes-zen-amount")).to_be_visible()
             playwright.expect(zen).to_contain_text("your aim is owing 599.00 USD")
+            # A failed load shows on the page (ui.js pageState), not as a toast, and the year can still be changed.
+            page.route("**/api/tax/year/*", lambda route: route.fulfill(status=503, content_type="application/json", body='{"detail":"Test unavailable"}'))
+            page.locator("#taxes-year").select_option(str(today.year - 1))
+            playwright.expect(page.locator("#taxes-state").get_by_role("alert")).to_contain_text("Couldn't load this year's taxes.")
+            playwright.expect(page.locator("#taxes-body")).to_be_hidden()
+            playwright.expect(page.locator("#taxes-year")).to_be_enabled()
+            playwright.expect(page.locator('.toast[data-tone="error"]')).to_have_count(0)
+            page.unroute("**/api/tax/year/*")
+            page.locator("#taxes-year").select_option(str(today.year))
+            playwright.expect(page.locator("#taxes-state")).to_be_empty()
+            playwright.expect(zen).to_contain_text("Tax Zen")
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 900})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width

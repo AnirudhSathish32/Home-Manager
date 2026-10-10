@@ -622,8 +622,11 @@ $("rule-form").addEventListener("submit", async event => {
 
 // Bills & recurring -----------------------------------------------------------------------------------------------
 
-async function loadBills() {
-  if (!configured) return;
+function loadBills() {
+  return pageState($("bills-state"), renderBills, {loading: "Loading bills …", what: "bills", needsLibrary: true,
+                                                    content: [...$("bills-panel").querySelectorAll(":scope > section.panel")]});
+}
+async function renderBills() {
   const [upcoming, recurring] = await Promise.all([ledgerTool("get_upcoming_bills", {as_of: todayIso(), days: 120}), ledgerTool("get_recurring_obligations")]);
   // The server groups each bill (overdue, this_week, later).
   const groups = [["Overdue, no payment found yet", "overdue"], ["Due in the next 7 days", "this_week"], ["Later", "later"]]
@@ -705,8 +708,10 @@ $("recurring-scan").addEventListener("click", () => {
 // Accounts -----------------------------------------------------------------------------------------------
 
 const ACCOUNT_GROUPS = [["Cash", ["checking", "savings"]], ["Credit cards", ["credit_card"]], ["Investments", ["brokerage"]], ["Loans", ["loan"]], ["Other", ["other"]]];
-async function loadAccounts() {
-  if (!configured) return;
+function loadAccounts() {
+  return pageState($("accounts-state"), renderAccounts, {loading: "Loading accounts …", what: "accounts", needsLibrary: true, content: [$("account-groups")]});
+}
+async function renderAccounts() {
   const {accounts} = await ledgerTool("get_accounts");
   const groups = [];
   for (const [title, types] of ACCOUNT_GROUPS) {

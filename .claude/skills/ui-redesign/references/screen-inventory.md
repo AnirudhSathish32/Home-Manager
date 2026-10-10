@@ -29,7 +29,14 @@ path says otherwise.
 ## Shared helpers (reuse, don't re-create)
 - `ui.js` has `icon()`, `amount()`, `dateText()`, `dateDisplay()`, `statusBadge()`/`setStatusBadge()` with the `STATUS` map,
   `emptyState()`, `alertBox()`, `technicalDetail()`, `toast()`, `menu()`, `confirmAction()`, `kindSelect()` and
-  `categoryLabel()`.
+  `categoryLabel()`. `pageState(host, load, {loading, what, content, needsLibrary})` gives a page its loading, error
+  (with Retry) and no-library states in a `.page-state` host after its header; `setStatusBadge()`/`statusBadge()` take
+  an optional 4th `label` that keeps the status's tone and icon.
+- `trace.js` (docs/ui.md "Observability components"): `figure(fig, {size})` for any traced figure, the shared breakdown
+  panel (`openBreakdown(ref, opener)`, `drillBreakdown`, `backBreakdown`, `closeBreakdown`; `<aside id="breakdown">`),
+  `provenanceBadge(prov)` and `ruleCard(rule)`. A v2 screen registers in `shell.js` `V2_SCREENS` and adds its
+  `(route, v1 route)` pair to `MIGRATED` in `tests/test_ui_parity.py`, whose `check_figures()` and `v1_amounts()` it
+  reuses.
 - DOM factories: `element()` and `cell()` in `app.js`, `homeLink()` in `home.js`, and `asyncButton()` in `finance.js`.
 - Icons come from `icons.svg` through `icon(name)`.
 - Charts: `CHART_COLORS` in `home.js` and the server-drawn SVG in `src/home_manager/finance/charts.py`.

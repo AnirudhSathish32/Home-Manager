@@ -159,7 +159,7 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
 - **Source text:** mono 11.5px on `--surface-sunken`, scrolling inside its own box. The highlighted line is
   `--warning-subtle` with a 1px `--warning` outline.
 
-## Deviations built in Phase 1a
+## Deviations built in Phase 1
 
 - **Panel padding** is 16/20 (`--space-4 --space-5`), not 16/18, and **main padding** is 24/32, not 28/32. Both
   values stay on the spacing scale.
@@ -168,6 +168,9 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
 - **Links in running text** keep a thin underline (40% accent, full accent on hover). Accent against body text is
   under 3:1, so color alone can't mark a link (WCAG 1.4.1). Text-link buttons underline only on hover.
 - **The selected nav item's** focus ring is `--text`, because an accent ring on an accent fill is invisible.
+- **The breakdown panel at 900–1179px** floats over the page's right edge (360px, `--shadow-overlay`, non-modal)
+  instead of sitting below the content, because one shared panel placed after a long page is unreachable (Phase 1b).
+  It is a column beside the page from 1180px and a bottom sheet up to 70vh below 900px, as above.
 
 ## Decided for later screens (record here, build in Phase 2)
 

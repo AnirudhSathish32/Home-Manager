@@ -12,7 +12,7 @@ LIGHT = ":root {"
 SYSTEM_DARK = ':root:not([data-theme="light"]) {'
 CHOSEN_DARK = ':root[data-theme="dark"] {'
 # Tokens that don't change with the theme: sizes, fonts, motion, and the paper behind document images.
-THEME_INDEPENDENT = {"--paper", "--font", "--font-mono", "--content-max", "--sidebar-width", "--motion-fast", "--motion-panel"}
+THEME_INDEPENDENT = {"--paper", "--font", "--font-mono", "--content-max", "--sidebar-width", "--panel-width", "--motion-fast", "--motion-panel"}
 THEME_INDEPENDENT_PREFIXES = ("--text-xs", "--text-sm", "--text-md", "--text-lg", "--text-xl", "--figure-", "--space-", "--radius-", "--control-")
 
 

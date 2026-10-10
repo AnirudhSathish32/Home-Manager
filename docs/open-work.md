@@ -133,17 +133,17 @@ this list once it's built. Items 1–4 (the backend: correct numbers, traces, pr
 Engine 2's included) are built: ui.md "Trace contract", "What's built"; taxes.md "The engines' worksheets". Phase 0
 is done: direction C · Family, in `design-system/home-manager/MASTER.md`. Phase 1a (tokens in light and dark, the
 theme switch, self-hosted fonts, chart colors as tokens, base components, and the shell with a top bar under 820px)
-is built: ui.md "Design system". Phase 1b is next; the steps are in `design-system/home-manager/README.md`.
-
-**5. Design and components (Phase 1b).**
-- **One `pageState()` loading/error/empty helper.** Today Bills and Accounts have no error handling, Investments can
-  stick on "Loading…", and Forecast and Taxes fall back to a toast.
-- **The components** in `app/static/trace.js`.
-- **The `ui_v2_screens` flag** and `tests/test_ui_parity.py`.
+is built: ui.md "Design system". Phase 1b (item 5: `pageState()` on five pages, the `trace.js` components, the
+`ui_v2_screens` flag and `tests/test_ui_parity.py`) is built: ui.md "Design system", "Observability components",
+"Migration". Phase 2 Taxes is next; see `design-system/home-manager/README.md`.
 
 **6. Screens, one per session.** Taxes → Today → To check and the document page (with Correct) → This month,
 Transactions (Add, Import), Bills, Accounts (Import) → Investments, Forecast, What If → Inventory (Item insights) →
 Processing (Data health), Settings (Independent checks editable, Donate) → Search, Ask.
+
+The To check and document page session also builds the remaining components in ui.md "Observability components":
+`confirmCorrect()`, `sourceViewer()` and `historyList()`. It plans a correction-preview endpoint for Correct (none
+exists yet), and pulls `receipt.js`'s `highlightEvidence()` out of its global `receipt` state for `sourceViewer()`.
 
 Today's session starts from what the user asked for in Phase 0 (MASTER.md "Decided for later screens"):
 - **Budgets in the breakdown style:** category lines with a budget meter (from `get_budgets`) instead of a running

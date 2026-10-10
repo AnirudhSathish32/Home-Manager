@@ -199,11 +199,18 @@ blocks, and `tests/test_style_tokens.py` enforces it. Beyond MASTER's table:
 - **Layout.** The sidebar is 220px and collapses to a 64px icon rail below 1280px. Below 820px it becomes a sticky top
   bar (brand and a **Menu** button, at most 56px high), and the menu opens the sidebar's contents as a sheet under it.
   The selected nav item is an `--accent` fill with `--on-accent` text. Content is at most 1600px wide, the drawer
-  520px, and a form column 720px.
+  520px, a form column 720px, and the breakdown panel `--panel-width` (360px, the same in both themes).
 - **Motion.** 120ms ease-out for hover and focus, 180ms (`--motion-panel`) for the drawer and the menu sheet. Everything is disabled under
   `prefers-reduced-motion`. The only looping animation is the running-job indicator.
 - **Components** are vanilla factory functions in `ui.js` that return DOM nodes: `element()`, `cell()`,
   `statusBadge()`, `amount()`, `dateText()`, `asyncButton()`, `alertBox()`, `emptyState()`, menus, dialogs and toasts.
+  `pageState(host, load, {loading, what, content, needsLibrary})` gives a page its loading, error and no-library
+  states in a `.page-state` host after its header: nothing for 300 ms, then a muted "Loading …" line with a spinner
+  (`role=status`, `aria-busy` on the page); an error is an `alertBox` (`role=alert`) with Technical details and Retry,
+  shown in place of the shell's toast; without a library, "Set up your library to see …" with Open Settings. `content`
+  is hidden on an error or without a library. A newer call wins over an older one. Retry keeps focus on the host while
+  it loads, then moves it to the page heading. Empty data stays each page's own `emptyState()`. Bills, Accounts,
+  Investments, Forecast and Taxes use it (Taxes hides `#taxes-body`, so the year select stays usable).
   This matches the strict CSP (`script-src 'self'; style-src 'self'`): no inline scripts or styles, no CDN fonts,
   scripts or chart libraries. Icons come from the vendored `icons.svg` (a Lucide subset, ISC license).
 - **Charts** are inline SVG with a data-table fallback. Home draws its own; the forecast's are drawn by the server
@@ -436,6 +443,21 @@ Every number on screen can be explained. These rules override visual or layout p
 ### Observability components
 
 These are vanilla factories in `app/static/trace.js`, loaded after `ui.js`. They use tokens only and are CSP-safe.
+`figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` are built (Phase 1b), and no page uses them yet: Taxes v2
+is the first. `tests/test_trace_components_browser.py` mounts them in the real app with the synthetic dashboard's
+traces. `confirmCorrect`, `sourceViewer` and `historyList` come with the To check and document page session.
+
+- **`figure(fig, {size})`** is a `button.figure-button` (`data-figure-ref`, `data-figure-display`, `aria-controls`,
+  `aria-expanded`) around `amount()`, flagged `unconfirmed` when the figure's verification is `needs_review`, partial
+  or unverified, and `stale` when it changed. A `.figure-tile` holding the open figure gets the accent border and ring.
+- **The breakdown panel** is one `<aside id="breakdown">` after `</main>`: a 360px column beside the page from
+  1180px, the same panel floating over the page's right edge (`--shadow-overlay`, z-index 30) at 900–1179px, and a
+  bottom sheet up to 70vh below 900px. Opening moves focus to its title; a step or input with a trace drills in as a
+  breadcrumb; Esc goes back one level, then closes and returns focus to the figure. Its fetch goes through
+  `pageState`, so a failed trace shows its own error with Retry (and Close).
+- **Provenance labels** are `STATUS` entries `prov_manual`, `prov_extracted`, `prov_imported`, `prov_computed`,
+  `prov_override`, `prov_rule` and `prov_rate` (plus `unconfirmed` and `stale`); `statusBadge()`'s 4th argument puts the
+  server's details in the label and keeps the tone and icon.
 
 | Component | Behaviour |
 |---|---|
@@ -483,9 +505,16 @@ Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves 
 
 ### Migration
 
-- `ui_v2_screens` in `/api/settings` selects the new loader per route; the old loader stays until its screen passes.
-  Old and new screens may coexist, since the app isn't in daily use yet.
+- **The flag** is `HouseholdConfig.ui_v2_screens`, a per-profile list of route names (lower-case letters, at most
+  32), sent in `/api/settings` and set with `PUT /api/ui-screens` `{routes}` or Settings › Appearance › New screens
+  (one checkbox per registered screen). The Preferences form sends the list back, so saving it keeps the flag. The old
+  loader stays until its screen passes. Old and new screens may coexist, since the app isn't in daily use yet.
+- **A v2 screen** registers itself in `shell.js` `V2_SCREENS` (`route → {title, show}`) and is a `data-ui="v2"`
+  section with the same `data-page` as the old one. `showRoute` shows the v2 section and calls its `show` when the
+  route is on the list; sections without `data-ui` are v1.
 - `tests/test_ui_parity.py` (browser, synthetic seed) checks that every figure on a new screen has a ref, that it
-  equals its trace's result, and that it matches the old screen's values.
+  equals its trace's result and reconciles (`check_figures`), and that it matches the old screen's values
+  (`v1_amounts`). Each Phase 2 session adds its `(route, v1 route)` pair to `MIGRATED`. The harness's self-test also
+  checks that it fails on a seeded mismatch.
 - **Passing tests are enough** to delete an old screen; no separate sign-off.
 - Phase 0's visual directions are shown as browser pages.

@@ -9,11 +9,11 @@ from datetime import date
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Annotated, Literal
 import unicodedata
 import uuid
 
-from pydantic import Field, field_validator
+from pydantic import Field, StringConstraints, field_validator
 
 from ..core import actor
 from ..core.categories import receipt_category
@@ -226,6 +226,9 @@ def fingerprints(account_id, rows):
         seen[key] += 1
 
 
+UiRoute = Annotated[str, StringConstraints(pattern=r"^[a-z]+$", max_length=32)]  # A page's route name, as in shell.js ROUTES.
+
+
 class HouseholdConfig(StrictModel):
     """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it.
     checkin_weekday is the day of the weekly household check-in: Monday 0 … Sunday 6."""
@@ -239,6 +242,8 @@ class HouseholdConfig(StrictModel):
     rescan_hours: int = Field(default=6, ge=1, le=168)  # Full rescan of each watched folder, catching changes the watcher missed.
     tax_engine: Literal["engine_1"] = "engine_1"  # The engine slot that works out the year's return (finance/tax_engine.py).
     tax_engine_compare: bool = True  # Also work it out with another engine that can run here (Engine 2), and show where they differ.
+    # Routes that show their redesigned screen (docs/ui.md "Migration").
+    ui_v2_screens: list[UiRoute] = Field(default_factory=list, max_length=32)
 
     @field_validator("tax_engine", mode="before")
     @classmethod

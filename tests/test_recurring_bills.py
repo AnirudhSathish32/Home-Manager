@@ -334,3 +334,61 @@ def test_browser_confirms_a_proposed_bill_with_its_frequency(tmp_path):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
+def test_browser_bills_shows_loading_and_a_retryable_error(tmp_path):
+    """ui.js pageState: a slow load says so after 300 ms; a failed one shows the error with Retry, and no toast."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_app(tmp_path / "control", "bills-state", port, ScanLimits(stability_seconds=0))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        app.state.manager.configure(str(tmp_path / "managed"))
+        with playwright.sync_playwright() as driver:
+            browser = driver.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            failures = []
+            page.on("pageerror", lambda error: failures.append(str(error)))
+            page.goto(f"http://127.0.0.1:{port}/#token=bills-state")
+            playwright.expect(page.locator("#home-panel")).to_be_visible()
+            # A slow response (delayed in the page): nothing for 300 ms, then the loading line, then the bills.
+            page.evaluate("""() => { const original = window.fetch;
+              window.fetch = (url, options) => String(url).includes("get_upcoming_bills")
+                ? new Promise(resolve => setTimeout(resolve, 1500)).then(() => { window.fetch = original; return original(url, options); })
+                : original(url, options); }""")
+            page.locator("#nav-bills").click()
+            state = page.locator("#bills-state")
+            playwright.expect(state.get_by_role("status")).to_contain_text("Loading bills")
+            playwright.expect(page.locator("#bills-panel")).to_have_attribute("aria-busy", "true")
+            playwright.expect(state).to_be_empty()
+            playwright.expect(page.locator("#bill-groups")).to_contain_text("No confirmed recurring payments due soon")
+            assert page.locator("#bills-panel").get_attribute("aria-busy") is None
+            # A failed request: the alert, its details and Retry; the panels are hidden and no toast repeats it.
+            page.route("**/api/finance/tools/get_upcoming_bills", lambda route: route.abort())
+            page.locator("#nav-home").click()
+            page.locator("#nav-bills").click()
+            alert = state.get_by_role("alert")
+            playwright.expect(alert).to_contain_text("Couldn't load bills.")
+            playwright.expect(alert.locator("summary")).to_have_text("Technical details")
+            playwright.expect(page.locator("#bill-groups")).to_be_hidden()
+            playwright.expect(page.locator('.toast[data-tone="error"]')).to_have_count(0)
+            page.unroute("**/api/finance/tools/get_upcoming_bills")
+            alert.get_by_role("button", name="Retry").click()
+            playwright.expect(state).to_be_empty()
+            playwright.expect(page.locator("#bill-groups")).to_be_visible()
+            # Focus waited on the state host while it loaded, then moved to the page heading once the host emptied.
+            playwright.expect(page.locator("#bills-title")).to_be_focused()
+            assert not failures
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

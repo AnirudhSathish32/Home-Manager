@@ -188,7 +188,10 @@ function renderForecast(result) {
     return card;
   }));
 }
-async function loadForecast() {
+function loadForecast() {
+  return pageState($("forecast-state"), runForecast, {loading: "Loading the forecast …", what: "the forecast", needsLibrary: true, content: [$("forecast-charts")]});
+}
+async function runForecast() {
   const load = ++forecastLoad;
   if (!$("asset-as-of").value) $("asset-as-of").value = todayIso();  // Local today: toISOString is UTC, a day ahead in the evening west of it.
   await loadAssets();
@@ -197,5 +200,5 @@ async function loadForecast() {
 }
 $("forecast-form").addEventListener("submit", event => {
   event.preventDefault();
-  loadForecast().catch(error => notice(error, true));
+  loadForecast();  // pageState shows any error.
 });

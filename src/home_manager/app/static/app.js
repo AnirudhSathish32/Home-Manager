@@ -212,6 +212,11 @@ async function loadSettings() {
   // The second opinion is offered once another engine can run here.
   $("tax-compare-field").hidden = !seconds.some(item => item.ready);
   $("tax-compare").checked = settings.household.tax_engine_compare !== false;
+  // Redesigned screens this profile shows (shell.js V2_SCREENS); a change re-routes the page that's open.
+  const screens = settings.household?.ui_v2_screens || [];
+  const changed = [...screens.filter(name => !uiV2Screens.includes(name)), ...uiV2Screens.filter(name => !screens.includes(name))];
+  uiV2Screens = screens; renderUiV2Choices();
+  if (currentRoute && changed.includes(currentRoute.name)) showRoute(false);
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
@@ -420,7 +425,7 @@ saveSettingsForm("household-form", "/api/household-settings", () => ({home_curre
                                                              filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null,
                                                              fetch_exchange_rates: $("fetch-rates").checked,
                                                              fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value),
-                                                             tax_engine_compare: $("tax-compare").checked}),
+                                                             tax_engine_compare: $("tax-compare").checked, ui_v2_screens: uiV2Screens}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

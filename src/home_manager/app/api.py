@@ -40,7 +40,7 @@ from ..finance.investments import (
     WithdrawalKind,
 )
 from ..finance.item_categories import ItemCategorizer
-from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig
+from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig, UiRoute
 from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
@@ -62,7 +62,7 @@ from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "theme.js": "text/javascript", "style.css": "text/css",
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "theme.js": "text/javascript", "style.css": "text/css",
           # Self-hosted fonts (OFL; the license files sit beside them and aren't served).
           "fonts/PlusJakartaSans-Variable.woff2": "font/woff2", "fonts/JetBrainsMono-Regular.woff2": "font/woff2",
           "fonts/JetBrainsMono-Medium.woff2": "font/woff2"}
@@ -71,6 +71,12 @@ STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text
 class SettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     managed_directory: str = Field(min_length=1, max_length=4096)
+
+
+class UiScreensInput(BaseModel):
+    """The routes that show their redesigned screen (docs/ui.md "Migration")."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    routes: list[UiRoute] = Field(max_length=32)
 
 
 class SourceInput(BaseModel):
@@ -793,6 +799,11 @@ def create_app(control: Path | None = None, token: str | None = None,
     @app.put("/api/household-settings")
     def household_settings(value: HouseholdConfig):
         return manager().configure_household(value)
+
+    @app.put("/api/ui-screens")
+    def ui_screens(value: UiScreensInput):
+        owner = manager()
+        return owner.configure_household(owner.household.model_copy(update={"ui_v2_screens": value.routes}))
 
     @app.get("/api/dashboard")
     def home_dashboard(month: str = Query(pattern=r"^\d{4}-\d{2}$"), months: int = Query(6, ge=6, le=12),

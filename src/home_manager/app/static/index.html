@@ -25,6 +25,7 @@
   <script src="/investments.js" defer></script>
   <script src="/profiles.js" defer></script>
   <script src="/donate.js" defer></script>
+  <script src="/trace.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -98,6 +99,7 @@
     <section id="forecast-panel" class="page" data-page="forecast" aria-labelledby="forecast-title" hidden>
       <header class="page-header"><div><h1 id="forecast-title" tabindex="-1">Forecast</h1>
         <p class="page-subtitle">Projected from your balances, recent income and spending, and the assets below. Calculated exactly; the same inputs always give the same result.</p></div></header>
+      <div id="forecast-state" class="page-state"></div>
       <div id="forecast-alerts"></div>
       <section class="panel"><h2>Assumptions</h2>
         <form id="forecast-form" class="form forecast-form">
@@ -165,6 +167,9 @@
       <header class="page-header"><div><h1 id="taxes-title" tabindex="-1">Taxes</h1>
         <p class="page-subtitle">Write-offs, business income and tax paid ahead, tagged on your transactions and receipts. They feed this year's tax estimate.</p></div>
         <div class="page-actions"><label class="inline-field">Tax year <select id="taxes-year"></select></label></div></header>
+      <div id="taxes-state" class="page-state"></div>
+      <!-- Hidden as one by pageState (ui.js) on an error, so the year select above stays usable. -->
+      <div id="taxes-body" class="page-body">
       <section id="taxes-family-panel" class="panel" aria-labelledby="taxes-family-title" hidden><h2 id="taxes-family-title">Returns in this family</h2>
         <p class="muted small">A married couple filing jointly is one return; everyone else files their own. The family is Tax Zen when every return is.
           Write-offs and tax rules are kept in each person's own profile.</p>
@@ -191,6 +196,7 @@
         <ul id="taxes-businesses" class="finance-list"></ul>
         <form id="taxes-business-form" class="inline"><div class="field"><label for="taxes-business-name">Add a business</label><input id="taxes-business-name" maxlength="60" placeholder="Contract work"></div>
           <button type="submit">Add</button></form></section>
+      </div>
     </section>
 
     <section id="whatif-panel" class="page" data-page="whatif" aria-labelledby="whatif-title" hidden>
@@ -342,6 +348,7 @@
       <header class="page-header"><div><h1 id="investments-title" tabindex="-1">Investments</h1>
         <p class="page-subtitle">Retirement, pensions, health savings, savings, CDs, Treasuries, I bonds, brokerage, crypto and 529 accounts. Values come from your statements, purchase confirmations and what you enter; crypto market prices only if you turn them on in Settings.</p></div>
         <div class="page-actions"><label class="compact-check"><input id="investments-archived" type="checkbox"> Show removed accounts</label></div></header>
+      <div id="investments-state" class="page-state"></div>
       <p id="investments-status" class="muted small" role="status"></p>
       <div id="investments-summary" class="investment-summary"></div>
       <div id="investments-rmd"></div>
@@ -476,6 +483,7 @@
     <section id="bills-panel" class="page" data-page="bills" aria-labelledby="bills-title" hidden>
       <header class="page-header"><div><h1 id="bills-title" tabindex="-1">Bills &amp; recurring</h1>
         <p class="page-subtitle">Recurring bills and subscriptions, when they are next due, and whether a payment was found.</p></div></header>
+      <div id="bills-state" class="page-state"></div>
       <section class="panel"><h2>Upcoming</h2><div id="bill-groups"></div>
         <p class="muted small">Confirmed recurring payments only. Each matched payment moves a bill to its next due date; “no payment found” only reflects imported transactions. The amount is the average of the last three payments.</p></section>
       <section class="panel"><h2>Subscriptions</h2><div id="subscription-summary"></div></section>
@@ -490,6 +498,7 @@
     <section id="accounts-panel" class="page" data-page="accounts" aria-labelledby="accounts-title" hidden>
       <header class="page-header"><div><h1 id="accounts-title" tabindex="-1">Accounts</h1>
         <p class="page-subtitle">Balances come from statements and show their dates. They are not added up: statements from different days don't make a meaningful total.</p></div></header>
+      <div id="accounts-state" class="page-state"></div>
       <div id="account-groups"></div>
       <p class="muted small">To add transactions, drop a bank or card export (CSV or XLSX) into the Inbox, then choose Import transactions on it in Documents.</p>
     </section>
@@ -815,6 +824,8 @@
               <label class="check-field"><input id="theme-dark" type="radio" name="theme" value="dark"> Dark</label>
             </fieldset>
             <small>Saved in this browser. System follows Windows.</small>
+            <fieldset id="ui-v2-choice" class="theme-choice"><legend>New screens</legend><div id="ui-v2-list"></div></fieldset>
+            <small>Redesigned screens that are ready to try. Saved for this profile.</small>
           </div>
           <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
             <h2>Local models</h2>
@@ -921,6 +932,8 @@
       </div>
     </section>
   </main>
+  <!-- How a figure is worked out (trace.js); beside the page, floating, or a bottom sheet by width. -->
+  <aside id="breakdown" class="breakdown-panel" aria-labelledby="breakdown-title" hidden><div id="breakdown-state" class="page-state"></div><div id="breakdown-body"></div></aside>
   <aside id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
     <header class="assistant-header"><h2 id="assistant-title" tabindex="-1">Ask about your household</h2>
       <button id="close-assistant" class="icon-button quiet" type="button" aria-label="Close the assistant"></button></header>

@@ -8,6 +8,7 @@ This folder holds the redesign's visual decisions. Start here when you pick the 
 | `phase0-directions.html` | The Phase 0 preview: the three directions (A · Ledger, B · Household book, C · Family) on Today and Transactions, light and dark, synthetic data. Open it in a browser. It loads fonts from Google Fonts, so it's a throwaway page outside the app's CSP. Also published at https://claude.ai/artifact/55gpu4BBFRmHy7nLUkSE7e. |
 | `pages/<page>.md` | Not created yet. Each Phase 2 screen session adds one. |
 | `phase1a-plan.md` | The Phase 1a hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what 1a covers. |
+| `phase1b-plan.md` | The Phase 1b hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what 1b covers. |
 
 ## Phase 0 (done 2026-10-06)
 
@@ -63,12 +64,32 @@ docs/ui.md "Design system" describes it, and `tests/test_style_tokens.py` and `t
 - Light `--chart-cat-3..5` are under 3:1, as they always were. That's the validated palette, relieved by the legend
   and the table.
 
-## Next: Phase 1b
+## Phase 1b (done 2026-10-10)
 
-**1b** (`pageState()`, `trace.js`, the `ui_v2_screens` flag, `tests/test_ui_parity.py`) gets its own planning session.
-Steps 1, 2, 6 and 7 below still apply to it. Steps 3–5 were 1a.
+Built from `phase1b-plan.md`:
+- `pageState()` in `ui.js`, on Bills, Accounts, Investments, Forecast and Taxes: a delayed "Loading …" line, the error
+  with Retry instead of a toast, and "Set up your library" without one;
+- the `ui_v2_screens` flag: per profile, `PUT /api/ui-screens`, a Settings › Appearance › New screens checklist, and the
+  `V2_SCREENS` registry with `data-ui="v2"` sections in `shell.js`;
+- `trace.js`: `figure()`, the breakdown panel (beside the page from 1180px, floating at 900–1179, a bottom sheet
+  below), `provenanceBadge()` and `ruleCard()`;
+- `tests/test_ui_parity.py` (the harness, with `MIGRATED` empty) and `tests/test_trace_components_browser.py`.
 
-The work list is docs/open-work.md "UI redesign" 5.
+docs/ui.md "Design system", "Observability components" and "Migration" describe it. Before and after screenshots of
+the six touched routes are identical once loaded.
+
+**Left open for you to decide:**
+- A breakdown's answer and running column use `amount()` signed, as the plan says. A figure the server sends as a
+  positive spending amount (gross spending, a category) therefore reads "+149.00 USD" in green, the money-in color.
+  Taxes v2, the first real user, should decide whether such figures show unsigned.
+
+## Next: Phase 2, Taxes
+
+Plan the Taxes v2 screen in a fresh session (the `ui-redesign` skill, plan mode). It is the first screen behind the
+flag: it registers in `V2_SCREENS`, adds a `data-ui="v2"` Taxes section, uses `figure()` and the breakdown panel, and
+adds `("taxes", "taxes")` to `MIGRATED` in `tests/test_ui_parity.py`.
+
+The steps below were the original Phase 1 outline, kept for reference; 3–5 were 1a and 6 was 1b.
 
 1. Load the `ui-redesign` skill in **plan mode** and read what it lists: CLAUDE.md, docs/ui.md "Screen rules", this
    MASTER.md, and the Pro Max SKILL.md.
@@ -96,4 +117,4 @@ Then Phase 2 screens in this order: Taxes → Today → To check and the documen
 - Synthetic data only. Never touch `P:\Finances`, `%LOCALAPPDATA%\HomeManager` or `P:\EvalCorpus`.
 - No framework, no build step, no inline styles or scripts (strict CSP), and tokens only.
 - Use Edit/Write for changes. No `cd …;` compound commands; run commands from the project root.
-- Nothing from this redesign is committed yet. It sits with the rest of the uncommitted work on `reorganize-packages`.
+- Phases 0 and 1a are committed on `reorganize-packages`; Phase 1b is not committed yet.
