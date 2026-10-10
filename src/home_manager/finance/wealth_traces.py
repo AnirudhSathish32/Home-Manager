@@ -189,10 +189,19 @@ def forecast_month(store, ref_text, params, context, figure):
                  "Cash, plus every account and asset as projected, less what's owed on loans.", recorder)
 
 
+def worth_totals(base):
+    """Cash, assets, loans and net worth in minor units from forecast.baseline(): the sum worth_today traces and Today shows."""
+    totals = {"cash": sum(row["amount"]["minor"] for row in base["balances"]),
+              "assets": sum(asset["value_minor"] for asset in base["assets"] if asset["kind"] != "loan"),
+              "loans": sum(asset["value_minor"] for asset in base["assets"] if asset["kind"] == "loan")}
+    totals["net_worth"] = totals["cash"] + totals["assets"] - totals["loans"]
+    return totals
+
+
 def worth_today(store, ref_text, params):
     """Today's cash, assets, loans or net worth in one currency (forecast.baseline, as the family net worth adds it up):
     cash is each account's latest statement balance (a card's counts as owed), assets and loans the verified ones."""
-    from .forecast import Assets, baseline
+    from .forecast import STALE_DAYS, Assets, balance_dates, baseline
     from .tools import FinanceTools
     which, currency = params.get("figure", "net_worth"), params.get("currency") or None
     try:
@@ -202,16 +211,16 @@ def worth_today(store, ref_text, params):
     base = baseline(FinanceTools(store), Assets(store), history, currency)
     currency, recorder = base["currency"], Recorder()
     figure_ref = lambda name: ref("worth.today", figure=name, currency=currency, history_months=history, member=params.get("member"))
-    cash = sum(row["amount"]["minor"] for row in base["balances"])
     assets = [asset for asset in base["assets"] if asset["kind"] != "loan"]
     loans = [asset for asset in base["assets"] if asset["kind"] == "loan"]
-    totals = {"cash": cash, "assets": sum(asset["value_minor"] for asset in assets), "loans": sum(asset["value_minor"] for asset in loans)}
-    totals["net_worth"] = totals["cash"] + totals["assets"] - totals["loans"]
+    totals = worth_totals(base)
     if which not in totals:
         raise ValueError("Choose cash, assets, loans or net_worth.")
     if which == "cash":
+        stale = {row["account_id"] for row in balance_dates(base["balances"])["stale"]}
         for row in base["balances"]:
-            recorder.add(f"{row['account']} · {row['as_of']}", row["amount"]["minor"], currency,
+            old = f" · over {STALE_DAYS} days old" if row["account_id"] in stale else ""
+            recorder.add(f"{row['account']} · {row['as_of']}{old}", row["amount"]["minor"], currency,
                          trace=ref("account.balance", account_id=row["account_id"], member=params.get("member")))
     elif which in ("assets", "loans"):
         for asset in assets if which == "assets" else loans:

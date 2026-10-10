@@ -161,14 +161,16 @@ function saleBadges(record, {block = false} = {}) {
 // (sign, symbol); it never parses a number or does arithmetic.
 const CURRENCY_SYMBOLS = {USD: "$", CAD: "$", AUD: "$", NZD: "$", MXN: "$", EUR: "€", GBP: "£", INR: "₹", JPY: "¥"};
 let homeCurrency = "";
-function amount(value, {signed = true} = {}) {
+// magnitude: no sign glyph at all (not even "−") and no direction; the label beside it says which way (a tax figure).
+function amount(value, {signed = true, magnitude: unsigned = false} = {}) {
   const text = typeof value === "string" ? value : value?.display;
   const span = element("span", "", "amount");
   const match = /^(-)?([\d,]+(?:\.\d+)?) ([A-Z]{3})$/.exec(text || "");
   if (!match) { span.textContent = text ?? "—"; return span; }
   const [, minus, magnitude, currency] = match, zero = /^[0,.]+$/.test(magnitude);
   const direction = minus ? "out" : zero ? "zero" : "in";
-  const sign = minus ? "−" : signed && !zero ? "+" : "";
+  if (unsigned) signed = false;
+  const sign = unsigned ? "" : minus ? "−" : signed && !zero ? "+" : "";
   if (signed) { span.dataset.direction = direction; span.appendChild(element("span", direction === "out" ? "money out " : direction === "in" ? "money in " : "", "visually-hidden")); }
   const symbol = currency === homeCurrency ? CURRENCY_SYMBOLS[currency] : "";
   // A fixed-width sign slot keeps magnitudes aligned in a column (MASTER.md "Components": table).

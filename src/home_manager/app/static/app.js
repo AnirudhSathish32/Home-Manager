@@ -10,6 +10,9 @@ const token = sessionStorage.getItem("home-manager-token") || "";
 // familyMode: a family profile is open. It has no library of its own; only Home and Settings apply.
 let savedManaged = "", savedDecision = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
 const pageSize = 100;
+// Redesigned screens: route → {title, show}. Each Phase 2 screen registers itself here from its own script, which loads
+// before shell.js routes the first page (docs/ui.md "Migration").
+const V2_SCREENS = {};
 function element(tag, text = "", className = "") {
   const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
 }
@@ -215,7 +218,7 @@ async function loadSettings() {
   // Redesigned screens this profile shows (shell.js V2_SCREENS); a change re-routes the page that's open.
   const screens = settings.household?.ui_v2_screens || [];
   const changed = [...screens.filter(name => !uiV2Screens.includes(name)), ...uiV2Screens.filter(name => !screens.includes(name))];
-  uiV2Screens = screens; renderUiV2Choices();
+  uiV2Screens = screens; renderUiV2Choices(); setHomeNavLabel();
   if (currentRoute && changed.includes(currentRoute.name)) showRoute(false);
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
@@ -326,7 +329,7 @@ async function poll() {
         await refresh();
         if (currentRoute?.name === "processing") await loadProcessing();
       }
-      if (wasBusy && !anyBusy() && currentRoute?.name === "home") await loadHome();
+      if (wasBusy && !anyBusy() && currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : loadHome());
       // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
       if ((wasBusy && !anyBusy()) || !reconcileChecked) { reconcileChecked = true; await loadReconcilePrompt(); }
       if (typeof pollReceipt === "function") await pollReceipt();

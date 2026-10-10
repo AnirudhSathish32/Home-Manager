@@ -15,11 +15,17 @@ import uvicorn
 
 from conftest import inbox_scan
 from home_manager.app.api import create_app
+from home_manager.finance.engines.opentax import YEARS
 from home_manager.library.scanner import ScanLimits
 from test_reconcile_tools import add
+from test_taxes_browser import seed_tax_year
 
 # (route, v1 route) for each screen moved to its redesign; the v2 route opens with the flag on, the v1 one with it off.
-MIGRATED: list[tuple[str, str]] = []
+# Taxes works out this year's return, so it runs only while Engine 1 covers this year (test_taxes_browser.this_year_covered).
+MIGRATED = [pytest.param("taxes", "taxes", marks=pytest.mark.skipif(date.today().year not in YEARS, reason="Engine 1 doesn't cover this year")),
+            pytest.param("home", "home")]
+# Figures a v2 screen shows that the old one never did (by ref prefix): checked against their trace only.
+NEW_ON_V2 = {"home": ("worth.today", "budget.remaining", "budget.projected")}
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 
@@ -52,6 +58,7 @@ def seeded_server(tmp_path, token):
             db.execute("UPDATE transactions SET category='groceries' WHERE id=?", (ids[0],))
             db.execute("UPDATE transactions SET category='dining' WHERE id=?", (ids[1],))
         manager.ledger.set_budget("groceries", "USD", "100.00")
+        seed_tax_year(manager, manager.store, manager.ledger)  # This year's taxes, for the Taxes screen.
         yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
@@ -96,8 +103,17 @@ def check_figures(page, base, token):
 
 
 def v1_amounts(page):
-    """The server display text of every amount an old screen shows, for "matches the old screen"."""
-    return set(page.locator(".amount[title]").evaluate_all("nodes => nodes.map(node => node.title)"))
+    """The server display text of every amount an old screen shows, and the screen's text, for "matches the old screen"
+    (old screens write some amounts inside sentences, such as Tax Zen's)."""
+    titles = set(page.locator(".amount[title]").evaluate_all("nodes => nodes.map(node => node.title)"))
+    return titles, page.locator("[data-page]:not([hidden])").inner_text()
+
+
+def shown_before(display, old):
+    """Whether the old screen showed this amount: as an amount, or in its text. A tax figure shows unsigned on both (its
+    label gives the direction), so its magnitude counts."""
+    titles, text = old
+    return any(value in titles or value in text for value in (display, display.removeprefix("-")))
 
 
 def open_route(page, route):
@@ -127,7 +143,7 @@ def test_harness_passes_real_figures_and_fails_a_seeded_mismatch(tmp_path):
 
 
 @browser_test
-@pytest.mark.parametrize("route,v1_route", MIGRATED or [pytest.param(None, None, marks=pytest.mark.skip(reason="No screen is migrated yet"))])
+@pytest.mark.parametrize("route,v1_route", MIGRATED)
 def test_migrated_screen_matches_its_traces_and_the_old_screen(tmp_path, route, v1_route):
     playwright = pytest.importorskip("playwright.sync_api")
     with seeded_server(tmp_path, "parity-test") as base, playwright.sync_playwright() as driver:
@@ -139,13 +155,16 @@ def test_migrated_screen_matches_its_traces_and_the_old_screen(tmp_path, route, 
         assert page.request.put(f"{base}/api/ui-screens", data={"routes": []}, headers=headers).ok
         page.goto(f"{base}/#token=parity-test")
         open_route(page, v1_route)
+        page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)  # Slow pages (the tax engine) load first.
         old = v1_amounts(page)
         assert page.request.put(f"{base}/api/ui-screens", data={"routes": [route]}, headers=headers).ok
         page.reload()
         open_route(page, route)
         playwright.expect(page.locator('[data-page][data-ui="v2"]:not([hidden])')).to_be_visible()
+        page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)
+        page.wait_for_selector('[data-page][data-ui="v2"]:not([hidden]) [data-figure-ref]')
         shown = check_figures(page, base, "parity-test")
-        missing = [display for _, display in shown if display not in old]
+        missing = [display for ref, display in shown if not ref.startswith(NEW_ON_V2.get(route, ())) and not shown_before(display, old)]
         assert not missing, missing
         assert not failures, failures
         browser.close()

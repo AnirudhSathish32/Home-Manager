@@ -723,9 +723,10 @@ class FinanceTools(ItemAnalysisTools):
                           "UNION ALL SELECT category,0 FROM category_rules) GROUP BY 1 ORDER BY 1")
         return {"categories": rows}
 
-    def calculate_cashflow(self, value, recorder=NULL):
+    def calculate_cashflow(self, value, recorder=NULL, only=None):
         """Money in (deposits, interest and other credits) less net spending, per currency. A live recorder gets each
-        currency's two steps and every credit counted (finance/traces.py cashflow_net)."""
+        currency's two steps and every credit counted (finance/traces.py cashflow_net); only="inflow" leaves out the net
+        spending step, for money in alone (cashflow_in)."""
         scope, params = scope_of(value.start, value.end, value.account_id)
         outflow = {currency: bucket["spending"] - bucket["refunds"] for (_, currency), bucket in self._totals(value.start, value.end, value.account_id).items()}
         credits = self.query(f"SELECT t.currency,sum(t.amount_minor) AS total,count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} "
@@ -737,12 +738,14 @@ class FinanceTools(ItemAnalysisTools):
         for row in result:
             shown = {"start": value.start, "end": value.end, "currency": row["currency"], "account_id": value.account_id}
             row["outflow"]["trace"], row["net"]["trace"] = ref("spending.net", **shown), ref("cashflow.net", **shown)
+            row["inflow"]["trace"] = ref("cashflow.in", **shown)
         if recorder.live:
             counts = {row["currency"]: row["count"] for row in credits}
             for row in result:
                 currency = row["currency"]
                 recorder.step("Money in: deposits, interest and other credits", "+", inflow.get(currency, 0), currency, count=counts.get(currency, 0))
-                recorder.add("Net spending", -outflow.get(currency, 0), currency, trace=row["outflow"]["trace"])
+                if only != "inflow":
+                    recorder.add("Net spending", -outflow.get(currency, 0), currency, trace=row["outflow"]["trace"])
             for line in self.query(f"SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name,t.currency,t.amount_minor,t.origin,"
                                    f"t.review_status,t.review_source FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
                                    f"WHERE {COUNTABLE} AND {scope} AND {INFLOW} ORDER BY t.posted_date,t.id", params):

@@ -17,6 +17,7 @@ from home_manager.core.trace import Recorder
 from home_manager.finance import tax_engine
 from home_manager.finance.dashboard import dashboard
 from home_manager.finance.engines import opentax
+from home_manager.finance.forecast import AssetInput, Assets
 from home_manager.finance.fx import EcbRates
 from home_manager.finance.investments import AccountInput as InvestmentAccountInput
 from home_manager.finance.investments import HoldingInput, Investments, LotInput
@@ -131,6 +132,34 @@ def test_cash_flow_budgets_recurring_bills_and_balances_trace(books):
     balance = tools.get_account_balance(AccountInput(account_id=checking["id"]))["balance"]
     found = same(trace(store, balance["trace"]), balance)
     assert found["verification"]["state"] == "unverified"  # Read by a model, and not reviewed yet.
+
+
+def test_todays_money_in_cash_and_net_worth_trace_and_flag_old_balances(books):
+    store, ledger, docs = books
+    today = date.today()
+    day = lambda back: date.fromordinal(today.toordinal() - back).isoformat()
+    checking = ledger.create_account("First Local Bank", "checking", "USD", last_four="4821")
+    card = ledger.create_account("Card Co", "credit_card", "USD", last_four="7314")
+    add(store, ledger, checking, docs["export.csv"], [(today.isoformat(), "PAYROLL ACME", 300000), (today.isoformat(), "GROCER", -5000)])
+    with store.connection() as db:
+        for account, doc, end, closing in ((checking, docs["bank.pdf"], day(5), 841230), (card, docs["statement.pdf"], day(40), 12345)):
+            db.execute("INSERT INTO statements(account_id,document_id,blob_hash,statement_type,period_end,closing_balance_minor,currency,review_status,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?,?,'USD','verified','t','t')", (account["id"], doc["id"], doc["current_hash"],
+                                                                        "credit_card" if account is card else "bank", end, closing))
+    Assets(store).add(AssetInput(name="Honda", kind="vehicle", value="18000", currency="USD", as_of=day(1)))
+    Assets(store).add(AssetInput(name="Car loan", kind="loan", value="6000", currency="USD", as_of=day(1)))
+    found = dashboard(store, today.isoformat()[:7], today=today)
+    money_in = same(trace(store, found["cashflow"]["inflow"]["trace"]), found["cashflow"]["inflow"])
+    assert money_in["result"]["minor"] == 300000 and [step["label"] for step in money_in["steps"]] == ["Money in: deposits, interest and other credits"]
+    cash = same(trace(store, found["worth"]["cash"]["trace"]), found["worth"]["cash"])
+    assert cash["result"]["minor"] == 841230 - 12345
+    labels = sorted(step["label"] for step in cash["steps"])
+    assert labels[0].startswith("Card Co") and labels[0].endswith(f" · {day(40)} · over 35 days old")
+    assert labels[1].startswith("First Local Bank") and labels[1].endswith(f" · {day(5)}")
+    worth = same(trace(store, found["worth"]["net_worth"]["trace"]), found["worth"]["net_worth"])
+    assert worth["result"]["minor"] == 841230 - 12345 + 1800000 - 600000
+    dates = found["worth"]["dates"]
+    assert (dates["first"], dates["last"], [(row["account_id"], row["as_of"]) for row in dates["stale"]]) == (day(40), day(5), [(card["id"], day(40))])
 
 
 def test_homes_category_groups_and_usd_total_trace(books):
@@ -250,6 +279,17 @@ def test_the_return_and_tax_zen_trace_to_the_engines_lines_and_the_records(tmp_p
         assert withheld["reconciles"] and [step["label"] for step in withheld["steps"]] == ["Ally 1099-INT box 4"]
         names = check_every_ref(trace_of, view)
         assert {"tax.result", "tax.line", "tax.field", "tax.job", "tax.safe_harbor", "taxzen.w4", "taxzen.w4_year_end"} <= names
+        # The full figures the Taxes page shows (tax_traces.refs): each one's display is its trace's result, and it adds up.
+        shown = {fig["trace"]: fig for fig in every_figure(view)}
+        assert {"tax.result", "tax.line", "tax.field", "tax.job", "tax.safe_harbor", "taxzen.w4", "taxzen.w4_year_end"} <= {text.partition("?")[0] for text in shown}
+        assert all(line["figure"]["trace"] == line["trace"] for line in view["return"]["lines"])
+        for text, fig in shown.items():
+            found = trace_of(text)
+            assert found["reconciles"] and found["result"]["display"] == fig["display"], (text, found["result"], fig["display"])
+        # Each pay stub, oldest first, with its document: record values for the Jobs tab.
+        stubs = view["gathered"]["jobs"][0]["stub_list"]
+        assert [item["pay_date"] for item in stubs] == [f"{year}-01-09", f"{year}-01-23"] and stubs[0]["document_id"] == docs["stub1.png"]["id"]
+        assert (stubs[0]["gross"]["minor"], stubs[0]["net"]["minor"], stubs[0]["federal"]["minor"]) == (400000, 280000, 45000) and set(stubs[0]) == {"income_id", "document_id", "pay_date", "gross", "net", "federal"}
 
         # The paycheck planner, What If's plans and plan against actual: every figure traces.
         planned = client.post("/api/paycheck", json=TOM).json()
@@ -272,6 +312,8 @@ def test_the_engines_own_steps_trace_down_to_the_return_inputs_and_the_law(tmp_p
         view = client.put(f"/api/tax/year/{year}", json={"extra_jobs": [{"name": "Job", "wages": "94770", "federal_withheld": "12463.36"}],
                                                          "fields": {"interest": "1200"}}).json()
         trace_of = lambda text: client.get(f"/api/traces/{quote(text, safe='')}").json()
+        # A typed value keeps its records figure, untraced: the field's trace ends at what was typed.
+        assert view["gathered"]["figures"]["interest"]["trace"] is None and view["gathered"]["figures"]["interest"]["minor"] == view["gathered"]["values"]["interest"]
         lines = {line["key"]: line for line in view["return"]["lines"]}
         # The tax line is the engine's own step (the Tax Table), and every step below it adds up, down to the return's inputs.
         tax = trace_of(lines["tax"]["trace"])
@@ -319,6 +361,18 @@ def every_ref(value):
     elif isinstance(value, list):
         for item in value:
             yield from every_ref(item)
+
+
+def every_figure(value):
+    """Every figure (a money view with a trace ref) in a response."""
+    if isinstance(value, dict):
+        if isinstance(value.get("trace"), str) and "display" in value:
+            yield value
+        for item in value.values():
+            yield from every_figure(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from every_figure(item)
 
 
 def check_every_ref(trace_of, response, most=400):
@@ -440,7 +494,9 @@ def test_family_figures_trace_to_each_members_own(tmp_path):
         assert wages["inputs_page"]["total"] == 1  # Worked out on that member's own copy, from their pay stub.
         home = manager.family_dashboard(f"{year}-01", 6, "USD")
         names = check_every_ref(trace_of, home)
-        assert {"family.spending.net", "family.cashflow.net", "spending.net"} <= names
+        assert {"family.spending.net", "family.cashflow.net", "family.cashflow.in", "cashflow.in", "spending.net"} <= names
+        money_in = trace_of(home["cashflow"]["inflow"]["trace"])
+        assert money_in["reconciles"] and money_in["result"]["minor"] == home["cashflow"]["inflow"]["minor"] == 200000
         spending = trace_of(home["totals"]["net_spending"]["trace"])
         assert sorted(step["label"] for step in spending["steps"]) == ["Dad", "Mom"] and "member=" in spending["steps"][0]["trace"]
         assert "family.worth.today" in check_every_ref(trace_of, manager.family_net_worth("USD"))
@@ -449,13 +505,13 @@ def test_family_figures_trace_to_each_members_own(tmp_path):
 
 
 def test_every_traced_name_is_registered():
-    assert {"spending.net", "cashflow.net", "spending.category", "spending.other", "spending.gross", "spending.usd", "split.receipt", "split.charge",
+    assert {"spending.net", "cashflow.net", "cashflow.in", "spending.category", "spending.other", "spending.gross", "spending.usd", "split.receipt", "split.charge",
             "budget.remaining", "budget.projected", "recurring.total", "bill.expected", "account.balance", "tax.tags", "investments.value",
             "investments.total", "investments.holding", "investments.lot_gain"} <= set(TRACES)
     assert {"tax.result", "tax.line", "tax.node", "tax.field", "tax.job", "tax.safe_harbor", "taxzen.advance", "taxzen.extra", "paystub.tax",
             "paycheck.net", "investments.rmd", "investments.rmd_left", "forecast.cash", "forecast.net_worth", "taxzen.range", "taxzen.cushion",
             "taxzen.state", "taxzen.w4", "taxzen.w4_year_end", "paycheck.line", "taxzen.paycheck", "taxzen.plan", "plan.actual",
-            "family.spending.net", "family.cashflow.net", "family.spending.category", "family.spending.other", "family.spending.gross",
+            "family.spending.net", "family.cashflow.net", "family.cashflow.in", "family.spending.category", "family.spending.other", "family.spending.gross",
             "family.worth.today"} <= set(CONTEXT_TRACES)
     assert "worth.today" in TRACES
     with pytest.raises(ValueError, match="only in the app"):

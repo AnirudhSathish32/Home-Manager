@@ -37,7 +37,7 @@ function sinceText(day) {
 async function afterInventoryChange() {
   loadNavCounts().catch(() => {});
   if (currentRoute?.name === "inventory") await loadInventory();
-  else if (currentRoute?.name === "home") await renderHomeExtras();
+  else if (currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : renderHomeExtras());
 }
 async function answerLot(lot, answer, source = "checkin") {
   await api(`/api/inventory/lots/${lot.id}/checkin-answer`, {method: "POST", body: JSON.stringify({answer, source})});

@@ -9,6 +9,13 @@ The Taxes page (`static/taxes.js`) is where the year's taxes come together:
   ([planning](planning.md#what-if)).
 - **The CPA pack:** one Excel workbook for the year, to hand to an accountant.
 
+The redesigned page (`static/taxes_v2.js`, behind the `ui_v2_screens` flag; [ui](ui.md#pages)) puts these in six tabs:
+This year (where the year ends, what to do, the return line by line), Built from (each input beside what the records
+give), Write-offs, Jobs & pay stubs, CPA pack, and Rules & sources. Every amount on it is a traced figure: the server
+adds a `figure` to each return line and Tax Zen amount, and `figures` to the records' values and each job's year
+figures (`finance/tax_traces.py` `refs`). A value typed over keeps its records figure untraced, since its trace ends at
+what was typed.
+
 Pay stubs, the Jobs folders and the paycheck tax tables are in [Jobs and pay stubs](#jobs-and-pay-stubs). Investment
 tax forms and lots are in [planning](planning.md#tax-lots-gains-and-tax-forms).
 
@@ -715,6 +722,10 @@ no tool that writes files.
 Code: `library/managed_library.py`, `documents/extraction.py`, `finance/paystub.py`, `household/tax_tables.py`,
 `finance/charts.py`; pages `receipt.js`, `library.js`, `review.js`. Tests: `tests/test_employers.py`,
 `tests/test_withholding.py`.
+
+The Taxes page's Jobs & pay stubs tab (v2) lists each job's confirmed stubs for the year from `tax_year.jobs()`
+`stub_list`: oldest first, each with its `income_id`, `document_id`, pay date, and gross, net and federal withheld as
+record values, the pay date linking to the stub's document.
 
 ### Folders
 

@@ -64,6 +64,17 @@ def cashflow_net(store, ref_text, params):
                  "aren't money in or out.", recorder.only(currency))
 
 
+def cashflow_in(store, ref_text, params):
+    """Money in (tools.calculate_cashflow's inflow): deposits, interest and other credits."""
+    start, end, currency, account_id = _period(params)
+    recorder = Recorder()
+    rows = FinanceTools(store).calculate_cashflow(PeriodInput(start=start, end=end, account_id=account_id), recorder, "inflow")["by_currency"]
+    row = next((item for item in rows if item["currency"] == currency), None)
+    return build(ref_text, f"Money in, {start} to {end}", row["inflow"]["minor"] if row else 0, currency,
+                 "Deposits, interest and other money in. Transfers between your own accounts and card payments aren't money in.",
+                 recorder.only(currency))
+
+
 def spending_category(store, ref_text, params):
     """One category's counted spending (tools._category_totals), refunds not taken off."""
     start, end, currency, account_id = _period(params)
@@ -222,7 +233,7 @@ def tax_tags(store, ref_text, params):
 
 
 TRACES = {
-    "spending.net": spending_net, "tax.tags": tax_tags, "cashflow.net": cashflow_net, "spending.category": spending_category, "spending.other": spending_other,
+    "spending.net": spending_net, "tax.tags": tax_tags, "cashflow.net": cashflow_net, "cashflow.in": cashflow_in, "spending.category": spending_category, "spending.other": spending_other,
     "spending.gross": spending_gross, "spending.usd": spending_usd,
     "split.receipt": lambda store, text, params: split(store, text, params, False),
     "split.charge": lambda store, text, params: split(store, text, params, True),
@@ -280,7 +291,7 @@ def family_other(store, ref_text, params, context):
                  "Every named category after the family's five largest, each added up across members.", recorder)
 
 
-FAMILY_TRACES = {f"family.{name}": family_sum for name in ("spending.net", "cashflow.net", "spending.category", "spending.gross", "worth.today")}
+FAMILY_TRACES = {f"family.{name}": family_sum for name in ("spending.net", "cashflow.net", "cashflow.in", "spending.category", "spending.gross", "worth.today")}
 FAMILY_TRACES["family.spending.other"] = family_other
 # Figures worked out with the app's settings and tables as well as the store (finance/tax_traces.py, finance/wealth_traces.py).
 CONTEXT_TRACES = {**TAX_TRACES, **WEALTH_CONTEXT_TRACES, **FAMILY_TRACES}

@@ -682,27 +682,43 @@ def refs(view, unit=None):
         estimate["result_figure"] = figure(estimate["result_minor"], CURRENCY, ref("tax.result", **where))
         for line in estimate["lines"]:
             line["trace"] = line_ref(where, line["key"])
-    view["gathered"]["traces"] = {key: ref("tax.field", **where, key=key) for key in view["gathered"]["values"] if key in MONEY_FIELDS}
-    for job in view["gathered"]["jobs"]:
+            line["figure"] = figure(line["amount_minor"], CURRENCY, line["trace"])
+    # The records' values as figures. A value typed over keeps its records figure untraced: its trace ends at what was typed.
+    gathered, inputs = view["gathered"], view["inputs"]
+    gathered["traces"] = {key: ref("tax.field", **where, key=key) for key in gathered["values"] if key in MONEY_FIELDS}
+    typed = {key for key, text in (inputs.get("fields") or {}).items() if text not in (None, "")}
+    gathered["figures"] = {key: figure(gathered["values"][key] or 0, CURRENCY, None if key in typed else trace) for key, trace in gathered["traces"].items()}
+    for job in gathered["jobs"]:
         job["traces"] = {field: ref("tax.job", **where, job=job["key"], field=field) for field in JOB_FIELDS}
+        job_typed = (inputs.get("jobs") or {}).get(job["key"], {})
+        job["figures"] = {field: figure(job["values"][field], CURRENCY, None if job_typed.get(field) not in (None, "") else trace)
+                          for field, trace in job["traces"].items()}
     if zen.get("ready"):
         zen["safe_harbor"]["trace"] = ref("tax.safe_harbor", **where)
+        zen["safe_harbor"]["figure"] = figure(zen["safe_harbor"]["required_minor"], CURRENCY, zen["safe_harbor"]["trace"])
         if zen.get("advance"):
             zen["advance"]["trace"] = ref("taxzen.advance", **where)
+            zen["advance"]["figure"] = figure(zen["advance"]["needed_minor"], CURRENCY, zen["advance"]["trace"])
         if zen.get("range"):
             zen["range"]["traces"] = {end: ref("taxzen.range", **where, end=end) for end in ("low", "high")}
+            zen["range"]["figures"] = {end: figure(zen["range"][f"{end}_minor"], CURRENCY, trace) for end, trace in zen["range"]["traces"].items()}
         if zen.get("cushion"):
             zen["cushion"]["trace"] = ref("taxzen.cushion", **where)
+            zen["cushion"]["figure"] = figure(zen["cushion"]["per_check_minor"], CURRENCY, zen["cushion"]["trace"])
         if (zen.get("state") or {}).get("per_check_minor") is not None:
             zen["state"]["trace"] = ref("taxzen.state", **where)
+            zen["state"]["figure"] = figure(zen["state"]["per_check_minor"], CURRENCY, zen["state"]["trace"])
         job = zen.get("job") or {}
         if job.get("extra"):
             job["extra"]["trace"] = ref("taxzen.extra", **where)
+            job["extra"]["figure"] = figure(job["extra"]["per_check_minor"], CURRENCY, job["extra"]["trace"])
         for name in ("rest", "january", "step3"):
             if (job.get(name) or {}).get("per_check") is not None:
                 job[name]["traces"] = {"per_check": ref("taxzen.w4", **where, part=name)}
+                job[name]["figures"] = {"per_check": figure(job[name]["per_check"], CURRENCY, job[name]["traces"]["per_check"])}
                 if job[name].get("year_end_minor") is not None:
                     job[name]["traces"]["year_end"] = ref("taxzen.w4_year_end", **where, part=name)
+                    job[name]["figures"]["year_end"] = figure(job[name]["year_end_minor"], CURRENCY, job[name]["traces"]["year_end"])
     return view
 
 

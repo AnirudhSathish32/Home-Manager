@@ -463,6 +463,13 @@ spending changing, and what needs attention. Every total links to the records be
     month. Completed months are compared as full months.
   - If the previous figure is zero or missing, both amounts are shown without a percentage.
   - Comparison text is neutral, with a direction marker: more spending is not called bad.
+  - Money in is traced on its own (`cashflow.in`: the money-in step and every credit counted, without net spending).
+- **Cash and Net worth** (Today v2, [ui](ui.md#pages)). The dashboard also returns `worth`: Cash (each account's latest
+  statement balance, a card's counting as owed) and Net worth (cash plus confirmed assets, less loans), added up by
+  `wealth_traces.worth_totals` exactly as their `worth.today` trace does, from the same snapshot. `worth.dates` gives
+  the balances' first and last dates and the ones more than 35 days old (`forecast.STALE_DAYS`, `balance_dates`); the
+  Cash trace labels those steps "over 35 days old". The family's come from `/api/family/net-worth`, whose `dates`
+  carry each stale balance's member.
 - **Spending over time.** Monthly net-spending bars: six months by default, twelve as an option.
   - The current month is marked partial.
   - A month with no records shows a gap, not a zero bar. A month that nets to zero shows an explicit zero marker.

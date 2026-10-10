@@ -14,9 +14,10 @@ from ..core.money import money
 from ..core.trace import figure, ref
 from ..library.storage import Store, now
 from .dashboard import CURRENCIES_SQL, choose_currency, dashboard, group_categories, periods
-from .forecast import Assets, baseline
+from .forecast import Assets, balance_dates, baseline
 from .ledger import normalize_name
 from .tools import AsOfInput, FinanceTools, percent_change
+from .wealth_traces import worth_totals
 
 
 class MemberStore:
@@ -94,6 +95,7 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
             own["totals"]["net_spending"]["trace"] = ref("spending.net", **mine)
         if own["cashflow"]:
             own["cashflow"]["net"]["trace"], own["cashflow"]["outflow"]["trace"] = ref("cashflow.net", **mine), ref("spending.net", **mine)
+            own["cashflow"]["inflow"]["trace"] = ref("cashflow.in", **mine)
         breakdown.append({"member_id": member["member_id"], "name": member["name"], "as_of": member.get("as_of"), **own, "series": data["series"]})
         for row in data["coverage"]:
             row["display_name"] = f"{member['name']} · {row['display_name']}"
@@ -126,6 +128,8 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
     if total["cashflow"]:
         total["cashflow"]["net"] = figure(total["cashflow"]["net"]["minor"], chosen, ref("family.cashflow.net", **shown))
         total["cashflow"]["outflow"] = figure(total["cashflow"]["outflow"]["minor"], chosen, ref("family.spending.net", **shown))
+        total["cashflow"]["inflow"] = figure(total["cashflow"]["inflow"]["minor"], chosen, ref("family.cashflow.in", **shown))
+    total.pop("worth", None)  # The first member's; the family's comes from family_net_worth.
     bills.sort(key=lambda bill: (bill["due_date"], bill["provider"]))
     as_of = today.isoformat()
     total["bills"].update(upcoming=[bill for bill in bills if bill["due_date"] >= as_of][:3],
@@ -292,20 +296,18 @@ def family_record(members, member_id, record_type, record_id, pending=None):
 
 def family_net_worth(members, currency=None, history_months=3, today=None):
     """Today's cash, assets, loans and net worth per member in one currency, and their sum."""
-    rows, chosen = [], currency
+    rows, chosen, balances = [], currency, []
     if not chosen:
         chosen = choose_currency(member_currencies([store for _, store in members]))
     for member, store in members:
         base = baseline(FinanceTools(store), Assets(store), history_months, chosen, today)
-        assets = sum(asset["value_minor"] for asset in base["assets"] if asset["kind"] != "loan")
-        loans = sum(asset["value_minor"] for asset in base["assets"] if asset["kind"] == "loan")
-        rows.append({"member_id": member["member_id"], "name": member["name"], "cash": base["cash"], "assets": assets, "loans": loans,
-                     "net_worth": base["cash"] + assets - loans, "notes": base["notes"]})
+        balances += [{**row, "member": member["name"]} for row in base["balances"]]
+        rows.append({"member_id": member["member_id"], "name": member["name"], **worth_totals(base), "notes": base["notes"]})
     # Each member's figure traces on their copy (worth.today with member); the family's adds them up.
     worth = lambda key, **more: ref("worth.today", figure=key, currency=chosen, history_months=history_months, **more)
     view = lambda row: {**row, **{key: figure(row[key], chosen, worth(key, member=row["member_id"])) for key in ("cash", "assets", "loans", "net_worth")}}
     total = {key: sum(row[key] for row in rows) for key in ("cash", "assets", "loans", "net_worth")}
-    return {"currency": chosen, "members": [view(row) for row in rows],
+    return {"currency": chosen, "members": [view(row) for row in rows], "dates": balance_dates(balances, today),
             "total": {key: figure(value, chosen, "family." + worth(key)) for key, value in total.items()},
             "notes": ["Cash is each account's latest statement balance (card balances count as owed). Assets and loans are the ones "
                       "each member verified. A joint account is counted once."]}

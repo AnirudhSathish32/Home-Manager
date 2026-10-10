@@ -6,10 +6,12 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from ..core.money import currency_code
 from ..core.trace import NULL, figure, ref
 from ..library.storage import WORK_FILTERS, now
+from .forecast import Assets, balance_dates, baseline
 from .investments import Investments
 from .ledger import COUNTABLE
 from .splits import rounded, share
 from .tools import AsOfInput, CompareInput, FinanceTools, PeriodInput, last_day, month_index, month_label, totals_view
+from .wealth_traces import worth_totals
 
 
 class SnapshotStore:
@@ -79,7 +81,8 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
     end = period.end
     with store.connection() as db:
         db.execute("BEGIN")
-        tools = FinanceTools(SnapshotStore(store, db))
+        snap = SnapshotStore(store, db)
+        tools = FinanceTools(snap)
         currencies = sorted({row[0] for row in db.execute(CURRENCIES_SQL)})
         chosen = choose_currency(currencies, currency, home_currency)
         currencies = sorted(set(currencies) | {chosen})
@@ -104,7 +107,11 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
         bill_result = tools.get_upcoming_bills(AsOfInput(as_of=today.isoformat(), days=30))
         bills = [row for row in bill_result["bills"] if row["currency"] == chosen]
         # CDs and Treasuries coming due, or matured and waiting for an answer (docs/planning.md "Purchase confirmations, estimates and maturities").
-        maturities = Investments(SnapshotStore(store, db), today).maturities(currency=chosen)
+        maturities = Investments(snap, today).maturities(currency=chosen)
+        # Today's Cash and Net worth, added up as their trace does (wealth_traces.worth_today).
+        base = baseline(tools, Assets(snap), 3, chosen, today)
+        worth = worth_totals(base)
+        worth_ref = lambda name: ref("worth.today", figure=name, currency=chosen, history_months=3)
         coverage = [dict(row) for row in db.execute(f"SELECT a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions "
                      f"FROM transactions t JOIN accounts a ON a.id=t.account_id WHERE {COUNTABLE} AND t.currency=? AND t.posted_date BETWEEN ? AND ? GROUP BY a.id",
                      (chosen, period.start, period.end))]
@@ -118,10 +125,15 @@ def dashboard(store, month, months=6, currency=None, home_currency=None, today=N
                 "bills": {"as_of": today.isoformat(), "until": (today + timedelta(days=30)).isoformat(),
                           "upcoming": [row for row in bills if row["due_date"] >= today.isoformat()][:3],
                           "overdue": [row for row in bills if row["due_date"] < today.isoformat()][:3], "total": len(bills)},
-                "maturities": maturities[:3], "maturities_total": len(maturities)}
+                "maturities": maturities[:3], "maturities_total": len(maturities),
+                "worth": {"cash": figure(worth["cash"], chosen, worth_ref("cash")), "net_worth": figure(worth["net_worth"], chosen, worth_ref("net_worth")),
+                          "dates": balance_dates(base["balances"], today), "notes": base["notes"]}}
     return found
 
 
 def figures(found):
-    """The traceable figures Home shows (finance/traces.py shown)."""
-    return ([found["totals"]["net_spending"]] if found.get("totals") else []) + ([found["cashflow"]["net"]] if found.get("cashflow") else [])
+    """The traceable figures Home and Today show (finance/traces.py shown)."""
+    flow = found.get("cashflow")
+    worth = found.get("worth")
+    return (([found["totals"]["net_spending"]] if found.get("totals") else []) + ([flow["net"], flow["inflow"]] if flow else [])
+            + ([worth["cash"], worth["net_worth"]] if worth else []))

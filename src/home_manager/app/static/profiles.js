@@ -369,6 +369,6 @@ $("local-member-form").addEventListener("submit", async event => {
 async function removeMember(member) {
   if (!await confirmAction({title: `Remove ${member.name} from ${familyView.name}?`, danger: true, confirmLabel: "Remove from family",
       message: `${member.name}'s totals leave the family view. Their own profile and records are not changed, and their invite stops working.`})) return;
-  try { await api(`/api/families/${activeProfile.id}/members/${member.member_id}`, {method: "DELETE"}); profilesKey = ""; await loadSettings(); if (currentRoute?.name === "home") await loadHome(); }
+  try { await api(`/api/families/${activeProfile.id}/members/${member.member_id}`, {method: "DELETE"}); profilesKey = ""; await loadSettings(); if (currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : loadHome()); }
   catch (error) { notice(error, true); }
 }

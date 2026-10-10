@@ -16,7 +16,17 @@
       "Bash(./.venv/Scripts/python.exe -m pytest *)",
       "PowerShell(.\\.venv\\Scripts\\python.exe -m pytest *)",
       "PowerShell(python -m mypy *)",
-      "PowerShell(git diff *)"
+      "PowerShell(git diff *)",
+      "PowerShell(.\\.venv\\Scripts\\mypy.exe *)",
+      "PowerShell(.venv/Scripts/mypy.exe *)",
+      "Bash(.venv/Scripts/mypy.exe *)",
+      "PowerShell(.\\.venv\\Scripts\\ruff.exe check *)",
+      "PowerShell(.venv/Scripts/ruff.exe check *)",
+      "Bash(.venv/Scripts/ruff.exe check *)",
+      "PowerShell(git status)",
+      "PowerShell(git status *)",
+      "PowerShell(git show *)",
+      "PowerShell(git log *)"
     ]
   }
 }

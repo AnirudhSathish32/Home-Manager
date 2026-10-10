@@ -26,7 +26,7 @@ const ROUTES = {
   // #/donate lists checks and documents; #/donate/ID is one check beside its original.
   donate: {title: "Donate documents", show: route => configured ? openDonate(route) : null},
 };
-const V2_SCREENS = {};  // route → {title, show}. Each Phase 2 screen registers itself here (docs/ui.md "Migration").
+// V2_SCREENS (app.js): route → {title, show}, filled by each Phase 2 screen's script.
 // Routes this profile shows redesigned (HouseholdConfig.ui_v2_screens), filled by app.js loadSettings.
 let uiV2Screens = [];
 const DEFAULT_ROUTE = "home";
@@ -90,7 +90,7 @@ function showRoute(moveFocus) {
   for (const link of document.querySelectorAll(".nav-link[data-route]")) {
     if (link.dataset.route === nav) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   }
-  document.title = `${ROUTES[route.name].title} · Home Manager`;
+  document.title = `${(v2 || ROUTES[route.name]).title} · Home Manager`;
   // Returning from a document restores the list where the user left it.
   if (lists.includes(route.name) && previous === "document") requestAnimationFrame(() => window.scrollTo(0, listScroll));
   else if (moveFocus) window.scrollTo(0, 0);
@@ -99,6 +99,11 @@ function showRoute(moveFocus) {
   Promise.resolve().then(() => (v2 || ROUTES[route.name]).show(route)).catch(error => notice(error, true));
 }
 
+// The sidebar calls the home route "Today" only while the redesigned Today is on (today_v2.js).
+function setHomeNavLabel() {
+  const label = uiV2Screens.includes("home") ? "Today" : "Home";
+  $("nav-home").querySelector(".nav-label").textContent = label; $("nav-home").title = label;
+}
 // Settings › Appearance › New screens: one checkbox per redesigned screen, saved for this profile.
 function renderUiV2Choices() {
   const list = $("ui-v2-list"), entries = Object.entries(V2_SCREENS);
@@ -112,7 +117,7 @@ function renderUiV2Choices() {
       const routes = entries.map(([key]) => key).filter(key => key === name ? box.checked : uiV2Screens.includes(key));
       try {
         await api("/api/ui-screens", {method: "PUT", body: JSON.stringify({routes})});
-        notice("Saved."); uiV2Screens = routes;
+        notice("Saved."); uiV2Screens = routes; setHomeNavLabel();
         if (currentRoute?.name === name) showRoute(false);
       } catch (error) { box.checked = !box.checked; notice(error, true); }
     });

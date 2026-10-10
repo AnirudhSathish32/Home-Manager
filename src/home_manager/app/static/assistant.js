@@ -42,7 +42,8 @@ function pageContext() {
   if (!currentRoute) return null;
   const title = ROUTES[currentRoute.name]?.title || currentRoute.name;
   const params = [...currentRoute.params].filter(([key]) => !["token", "section"].includes(key)).map(([key, value]) => `${key} ${value}`);
-  if (currentRoute.name === "home" && $("home-month").value) params.push(`month ${$("home-month").value}`);
+  const homeMonth = $(uiV2Screens.includes("home") ? "today-month" : "home-month").value;  // Today v2 has its own (today_v2.js).
+  if (currentRoute.name === "home" && homeMonth && !params.some(item => item.startsWith("month"))) params.push(`month ${homeMonth}`);
   if (currentRoute.name === "spending" && $("spend-month").value && !params.some(item => item.startsWith("month"))) params.push(`month ${$("spend-month").value}`);
   return [title, ...params].join(" · ").slice(0, 300);
 }

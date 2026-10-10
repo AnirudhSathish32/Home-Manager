@@ -57,13 +57,14 @@ function homeMetric(label, value, note, href) {
   panel.append(element("h2", label), figure, element("p", note, "muted small"));
   return panel;
 }
-function homeTrend(data) {
+// reload: what the 6/12 buttons run after setting homeMonths (v1 Home, or Today v2's reloadToday).
+function homeTrend(data, reload = loadHome) {
   const panel = homePanel("Spending over time", `Monthly net spending · ${data.currency}. Gaps mean no recorded spending transactions.`);
   const controls = element("div", "", "home-range"); controls.setAttribute("role", "group"); controls.setAttribute("aria-label", "Trend period");
   for (const months of [6, 12]) {
     const button = element("button", `${months} months`); button.type = "button";
     button.setAttribute("aria-pressed", String(months === homeMonths));
-    button.addEventListener("click", () => { homeMonths = months; loadHome(); }); controls.append(button);
+    button.addEventListener("click", () => { homeMonths = months; reload(); }); controls.append(button);
   }
   panel.append(controls);
   const values = data.series.filter(row => row.totals).map(row => row.totals.net_spending.minor);
@@ -271,8 +272,13 @@ async function renderNetWorth(currency) {
   if (!target) return;
   const worth = await api(`/api/family/net-worth?${new URLSearchParams({currency})}`);
   if (!worth || !$("family-members")) return;
-  const panel = homePanel("Net worth today", `${worth.currency} · statement balances plus verified assets, less loans`);
+  const panel = familyWorthPanel(worth);
   panel.id = "family-net-worth";
+  $("family-members").after(panel);
+}
+// The family's net worth today, each person's row and the family's (Home and Today v2).
+function familyWorthPanel(worth) {
+  const panel = homePanel("Net worth today", `${worth.currency} · statement balances plus verified assets, less loans`);
   const figure = element("p", "", "home-figure");
   figure.append(amount(worth.total.net_worth, {signed: false}));
   panel.append(figure, familyTable(["Person", "Cash", "Assets", "Loans", "Net worth"], [...worth.members.map(row => [
@@ -280,7 +286,7 @@ async function renderNetWorth(currency) {
     ["Family", amount(worth.total.cash, {signed: false}), amount(worth.total.assets, {signed: false}), amount(worth.total.loans, {signed: false}),
      amount(worth.total.net_worth, {signed: false})]], [1, 2, 3, 4]));
   panel.append(element("p", worth.notes.join(" "), "muted small"));
-  $("family-members").after(panel);
+  return panel;
 }
 async function renderHomeExtras(month = $("home-month").value) {
   const target = $("home-extras");

@@ -471,6 +471,101 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 #taxes-return tbody th { white-space: normal; position: static; }
 #taxes-alerts:not(:empty) { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
 @media (max-width: 1100px) { .taxes-layout { grid-template-columns: minmax(0, 1fr); } }
+/* Taxes v2 (taxes_v2.js; design-system/home-manager/pages/taxes.md): tiles, one tinted "What to do" region, the return as
+   a table; Built from as a section list beside rows; a sticky save bar. Tokens only. */
+.taxes2-tabpanel > h2, .taxes2-tabpanel > * + h2 { margin: var(--space-5) 0 var(--space-3); }
+.taxes2-tabpanel > h2:first-child { margin-top: var(--space-2); }
+.taxes2-alerts { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
+.taxes2-answer { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-4); }
+.taxes2-answer .figure-tile { min-width: 0; overflow-wrap: anywhere; }
+.taxes2-answer .figure-label, .taxes2-answer .figure-sub { margin: 0; }
+.taxes2-meta { margin: var(--space-2) 0 var(--space-4); }
+.taxes2-advice { display: flex; flex-direction: column; gap: var(--space-2); }
+.taxes2-advice > * { margin: 0; }
+.taxes2-advice-head { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+.taxes2-advice-head h2 { margin: 0; }
+.taxes2-aim { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-end; margin-left: auto; }
+.taxes2-aim .field { min-width: 0; }
+.taxes2-aim select, .taxes2-aim input { width: auto; max-width: 100%; }
+.taxes2-advice-lead { font-size: var(--text-md); font-weight: 600; }
+.taxes2-advice details > summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+.taxes2-advice details > :not(summary) { margin: var(--space-2) 0 0; }
+.taxes2-advance h3 { margin: 0 0 var(--space-2); font-size: var(--text-md); }
+.taxes2-return tbody th { white-space: normal; position: static; }
+.taxes2-return tbody th[scope="row"] { background: transparent; color: var(--text); font-size: var(--text-sm); font-weight: 400; }
+.taxes2-return td { font-variant-numeric: tabular-nums; }
+.taxes2-return th.taxes2-group { padding-top: var(--space-4); font-weight: 600; text-align: left; }
+.taxes2-return tr.total th, .taxes2-return tr.total td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+.taxes2-about { margin-top: var(--space-4); }
+.taxes2-about > summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+.taxes2-family { margin-bottom: var(--space-5); }
+.taxes2-family .taxes2-family-zen { font-size: var(--text-lg); }
+.taxes2-family td .small { margin-right: var(--space-1); }
+/* Built from: the section list beside one section's rows (Box · From records · Yours). */
+.taxes2-built { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.taxes2-sections .nav-count { margin-left: auto; }
+.taxes2-sections [role="tab"] { display: flex; width: 100%; gap: var(--space-2); }
+#taxes2-section { display: none; margin-bottom: var(--space-3); }
+.taxes2-built-intro { margin: 0 0 var(--space-3); }
+.taxes2-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-2); }
+.taxes2-section-head h2, .taxes2-section-head h3 { margin: 0; overflow-wrap: anywhere; }
+.taxes2-job-name { margin: var(--space-4) 0 var(--space-1); }
+.taxes2-secpanel > .taxes2-job-name:first-of-type { margin-top: var(--space-2); }
+.taxes2-rows { display: grid; grid-template-columns: minmax(0, 1fr); margin-bottom: var(--space-4); }
+.taxes2-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 160px; gap: var(--space-3); align-items: center; padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.taxes2-row-head { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 600; padding-top: 0; }
+.taxes2-box { min-width: 0; overflow-wrap: anywhere; }
+.taxes2-box .value-kind { font-size: var(--text-xs); color: var(--text-muted); }
+.taxes2-box .value-kind-to_enter { color: var(--warning); }
+.taxes2-box .value-kind-typed { color: var(--accent); }
+.taxes2-records { text-align: right; font-variant-numeric: tabular-nums; min-width: 0; }
+.taxes2-yours input, .taxes2-yours select { width: 100%; min-width: 0; }
+.taxes2-extra-job, .taxes2-business { margin-top: var(--space-4); }
+.taxes2-business-form { align-items: flex-end; }
+.taxes2-rename { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
+.taxes2-savebar { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2);
+  margin-top: var(--space-4); padding: var(--space-3) var(--space-4); background: var(--surface); border-top: 1px solid var(--border); }
+.taxes2-savebar-count { margin-right: auto; color: var(--text-secondary); }
+.taxes2-savebar .alert { flex: 1 1 100%; }
+/* Jobs & pay stubs: one tinted region per job. */
+.taxes2-job + .taxes2-job { margin-top: var(--space-4); }
+.taxes2-job > h2 { margin-bottom: var(--space-1); overflow-wrap: anywhere; }
+.taxes2-job h3 { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-md); }
+.taxes2-job-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-6); }
+.taxes2-job-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-2); }
+.taxes2-job-facts dt { color: var(--text-secondary); }
+.taxes2-job-facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.taxes2-w4 .forecast-row { margin-top: var(--space-2); }
+.taxes2-suggests { margin-top: var(--space-3); }
+/* Rules & sources. */
+.taxes2-table-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.taxes2-table-name { font-weight: 600; min-width: 80px; }
+.taxes2-sources { display: flex; flex-direction: column; gap: var(--space-3); }
+.rule-card dd { overflow-wrap: anywhere; }
+@media (max-width: 899px) {
+  .taxes2-built { grid-template-columns: minmax(0, 1fr); }
+  .taxes2-built .taxes2-sections { display: none; }  /* Beats the shared .settings-nav rule further down. */
+  #taxes2-section { display: block; width: 100%; }
+  .taxes2-job-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+@media (max-width: 799px) {
+  .taxes2-row { grid-template-columns: minmax(0, 1fr) 160px; }
+  .taxes2-row .taxes2-box { grid-column: 1 / -1; }
+  .taxes2-row-head .taxes2-records { grid-column: 1; }
+  .taxes2-row-head > span:first-child { display: none; }
+}
+@media (max-width: 599px) {
+  .taxes2-row, .taxes2-row-head { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+  .taxes2-row-head { display: none; }
+  .taxes2-records { text-align: left; }
+  .taxes2-aim { margin-left: 0; }
+  /* The answer stays a tile; total tax and what's paid become one line each. */
+  .taxes2-answer { gap: var(--space-2); }
+  .taxes2-answer .figure-tile:not(:first-child) { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-4); }
+  .taxes2-answer .figure-tile:not(:first-child) .figure-label { font-size: var(--text-sm); }
+  .taxes2-answer .figure-tile:not(:first-child) .figure-button[data-size="lg"] { font-size: var(--text-lg); }
+  .taxes2-answer .figure-tile:not(:first-child) .figure-sub { display: none; }
+}
 .scenario-bar { display: flex; gap: var(--space-3); align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--space-4); }
 .scenario-bar .field { min-width: min(280px, 100%); }
 .scenario-form { max-width: none; margin-bottom: 0; }
@@ -566,6 +661,61 @@ button.quiet { border-color: transparent; background: transparent; color: var(--
 .home-card svg a:focus { outline: 3px solid var(--accent); outline-offset: 3px; }
 @media (max-width: 900px) { .home-charts, .home-bottom { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .home-metrics { grid-template-columns: 1fr; } .home-figure { font-size: 28px; } .home-legend li { grid-template-columns: 12px minmax(0, 1fr); } .home-legend .numeric { grid-column: 2; text-align: left; } }
+/* Today v2 (today_v2.js; design-system/home-manager/pages/today.md). Tokens only. */
+/* .page-body's gap spaces the page's parts; an empty part takes no room. */
+.today-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); }
+#today-status:empty, #today-charts:empty, #today-family:empty { display: none; }
+.today-tiles .figure-tile { min-width: 0; overflow-wrap: anywhere; }
+.today-tiles .figure-label, .today-tiles .figure-sub { margin: 0; }
+.today-tiles .figure-sub + .figure-sub { margin-top: var(--space-1); }
+.today-main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.today-main.no-aside { grid-template-columns: minmax(0, 1fr); }
+.today-main.no-aside #today-budgets { display: none; }
+.today-col, #today-dated { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+#today-dated:empty { display: none; }
+.today-region { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-5); min-width: 0; }
+.today-region > h2 { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-3); font-size: var(--text-lg); }
+.today-region > h2 .nav-count { margin-left: 0; }
+.today-day { margin-left: auto; font-size: var(--text-sm); font-weight: 400; }
+.needs-list { display: flex; flex-direction: column; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.needs-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.needs-row + .needs-row:not(.attention) { border-top: 1px solid var(--border); border-radius: 0; }
+.needs-row.attention { background: var(--warning-subtle); }
+.needs-icon { width: 20px; height: 20px; color: var(--text-muted); }
+.needs-row.attention .needs-icon { color: var(--warning); }
+.needs-row strong { display: block; font-size: var(--text-md); font-weight: 600; }
+.needs-row small { display: block; }
+.needs-action { color: var(--accent); font-weight: 550; text-decoration: none; white-space: nowrap; }
+.needs-action:hover { text-decoration: underline; }
+.dated-list { margin: 0; padding: 0; list-style: none; }
+.dated-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; align-items: baseline; gap: var(--space-3); padding: var(--space-2) 0; overflow-wrap: anywhere; }
+.dated-row + .dated-row { border-top: 1px solid var(--border); }
+.dated-row small { display: block; }
+.dated-when, .dated-amount { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.dated-amount { text-align: right; white-space: nowrap; }
+.today-footer { display: block; margin-top: var(--space-3); }
+.today-budget { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) 0; }
+.today-budget + .today-budget { border-top: 1px solid var(--border); }
+.today-budget-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); overflow-wrap: anywhere; }
+.today-budget-left { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.today-budget-left.over { color: var(--warning); font-weight: 600; }
+#today-family { display: grid; gap: var(--space-4); }
+.today-about > summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+@media (max-width: 1099px) {
+  .today-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .today-main { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+  /* One column: Needs you, the budgets, then the dated sections. */
+  .today-col { display: contents; }
+  #today-needs { order: 1; } #today-budgets { order: 2; } #today-dated { order: 3; }
+}
+@media (max-width: 599px) {
+  .today-tiles { gap: var(--space-2); }
+  .today-tiles .figure-tile { padding: var(--space-3) var(--space-4); }
+  .today-tiles .figure-button[data-size="lg"] { font-size: var(--text-lg); }
+  .today-tiles .figure-sub + .figure-sub { display: none; }
+  .dated-row { grid-template-columns: 72px minmax(0, 1fr); }
+  .dated-amount { grid-column: 2; text-align: left; }
+}
 .finance-list { margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); }
 .finance-list li { padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
 .finance-list li:last-child { border-bottom: 0; }
@@ -670,10 +820,10 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 
 /* ---- Settings ------------------------------------------------------------------ */
 .settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--space-6); align-items: start; }
-.settings-nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: var(--space-6); }
-.settings-nav [role="tab"] { justify-content: flex-start; border: 0; background: transparent; color: var(--text-secondary); font-weight: 500; }
-.settings-nav [role="tab"]:hover { background: var(--surface-sunken); }
-.settings-nav [role="tab"][aria-selected="true"] { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
+.settings-nav, .taxes2-sections { display: flex; flex-direction: column; gap: 2px; position: sticky; top: var(--space-6); }
+.settings-nav [role="tab"], .taxes2-sections [role="tab"] { justify-content: flex-start; border: 0; background: transparent; color: var(--text-secondary); font-weight: 500; }
+.settings-nav [role="tab"]:hover, .taxes2-sections [role="tab"]:hover { background: var(--surface-sunken); }
+.settings-nav [role="tab"][aria-selected="true"], .taxes2-sections [role="tab"][aria-selected="true"] { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
 .settings-content { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-5) var(--space-6); }
 .settings-content [role="tabpanel"] > h2 { margin-bottom: var(--space-4); }
 .settings-content [role="tabpanel"] > p { max-width: 720px; }

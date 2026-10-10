@@ -3,13 +3,15 @@
 // it, where each input came from, and the rule it followed. Vanilla factories; the server sends every amount and date.
 
 // A figure from the API (the money() views plus trace and verification). Without a trace ref it is a plain amount().
-function figure(fig, {size = "lg"} = {}) {
-  if (!fig?.trace) return amount(fig);
+// signed/magnitude go to amount(), and the breakdown it opens shows its answer the same way.
+function figure(fig, {size = "lg", signed = true, magnitude = false} = {}) {
+  if (!fig?.trace) return amount(fig, {signed, magnitude});
   const button = element("button", "", "figure-button"); button.type = "button";
   button.dataset.figureRef = fig.trace; button.dataset.figureDisplay = fig.display; button.dataset.size = size;
+  button.dataset.signed = String(signed); button.dataset.magnitude = String(magnitude);
   button.setAttribute("aria-controls", "breakdown"); button.setAttribute("aria-expanded", "false");
-  button.setAttribute("aria-label", `${fig.display}, show how it's worked out`);
-  button.append(amount(fig));
+  button.setAttribute("aria-label", `${magnitude ? fig.display.replace(/^-/, "") : fig.display}, show how it's worked out`);
+  button.append(amount(fig, {signed, magnitude}));
   const flag = status => { const span = element("span", "", ""); setStatusBadge(span, status); span.classList.add("figure-flag"); return span; };
   if (fig.verification === "needs_review" || ["unverified", "partial"].includes(fig.verification?.state)) button.append(flag("unconfirmed"));
   if (fig.stale === true) button.append(flag("stale"));
@@ -18,10 +20,12 @@ function figure(fig, {size = "lg"} = {}) {
 }
 
 // The breakdown panel: one shared, non-modal <aside id="breakdown">. Computed steps and inputs open as breadcrumbs.
-const breakdown = {stack: [], opener: null, labels: new Map()};
+// sign: how the opener shows its figure; the answer, Running and "Sums to" follow it, drilled traces too.
+const breakdown = {stack: [], opener: null, labels: new Map(), sign: {signed: true, magnitude: false}};
 function openBreakdown(ref, opener) {
   if (breakdown.opener && breakdown.opener !== opener) breakdown.opener.setAttribute("aria-expanded", "false");
   breakdown.stack = [ref]; breakdown.opener = opener;
+  breakdown.sign = {signed: opener?.dataset.signed !== "false", magnitude: opener?.dataset.magnitude === "true"};
   opener?.setAttribute("aria-expanded", "true");
   $("breakdown").hidden = false; document.querySelector(".app-shell").classList.add("breakdown-open");
   return renderBreakdown();
@@ -84,7 +88,7 @@ function breakdownHeader(trace) {
     header.append(nav);
   }
   const title = element("h2", trace.label); title.id = "breakdown-title"; title.tabIndex = -1;
-  const answer = element("p", "", "breakdown-answer"); answer.append(amount(trace.result));
+  const answer = element("p", "", "breakdown-answer"); answer.append(amount(trace.result, breakdown.sign));
   header.append(title, answer);
   if (trace.formula) header.append(element("p", trace.formula, "breakdown-formula"));
   return header;
@@ -104,7 +108,7 @@ function breakdownSteps(trace) {
     if (step.count != null) label.append(element("span", ` · ${step.count} ${step.count === 1 ? "line" : "lines"}`, "muted"));
     const value = tr.insertCell(); value.className = "numeric";
     value.append(element("span", step.op, "sign"), amount(step.value, {signed: false}));
-    const running = tr.insertCell(); running.className = "numeric"; running.append(amount(step.running));
+    const running = tr.insertCell(); running.className = "numeric"; running.append(amount(step.running, breakdown.sign));
   }
   if (trace.rounding?.adjustment) {
     const tr = body.insertRow(), label = tr.insertCell();
@@ -114,7 +118,7 @@ function breakdownSteps(trace) {
     tr.insertCell();
   }
   const foot = table.createTFoot().insertRow(), sums = foot.insertCell(); sums.colSpan = 3;
-  if (trace.reconciles) { sums.className = "breakdown-sums"; sums.append(icon("check"), "Sums to ", amount(trace.result)); }
+  if (trace.reconciles) { sums.className = "breakdown-sums"; sums.append(icon("check"), "Sums to ", amount(trace.result, breakdown.sign)); }
   else sums.append(alertBox("These steps don't add up to the figure. This is a bug; please report it.", {tone: "warning"}));
   wrap.append(table);
   return wrap;

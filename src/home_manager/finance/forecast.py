@@ -13,7 +13,7 @@ monthly payment until repaid. Account balances are cash: income adds to it, spen
 payments and one-off expenses take from it.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 import json
 import re
@@ -41,6 +41,8 @@ WITHDRAWAL_ORDER = {"taxable": 0, "tax_deferred": 1, "tax_free": 2, "hsa": 3}
 # left flat until the user chooses a rate. Loans have no default interest rate.
 DEFAULT_RATE_BP = {"vehicle": -1500}
 MAX_YEARS = 100
+# A statement balance older than this is flagged as old on Today's Cash (docs/money.md "Home").
+STALE_DAYS = 35
 MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 PERCENT = r"^-?\d{1,3}(\.\d{1,2})?$"
 
@@ -357,6 +359,15 @@ def baseline(tools: FinanceTools, assets: Assets, history_months, currency=None,
             "monthly_income": Decimal(income) / history_months,
             "monthly_spending": {category: Decimal(total) / history_months for category, total in sorted(categories.items())},
             "bills": bills, "assets": [asset for asset in held if asset["currency"] == chosen], "notes": notes}
+
+
+def balance_dates(balances, today=None):
+    """The span of baseline()'s statement balances (first and last as_of) and the ones over STALE_DAYS old. A balance
+    tagged with its family member keeps the tag."""
+    cutoff = ((today or date.today()) - timedelta(days=STALE_DAYS)).isoformat()
+    dates = sorted(row["as_of"] for row in balances)
+    return {"first": dates[0] if dates else None, "last": dates[-1] if dates else None,
+            "stale": [{key: row[key] for key in ("account", "account_id", "as_of", "member") if key in row} for row in balances if row["as_of"] < cutoff]}
 
 
 def bill_amount(bill, month, start):

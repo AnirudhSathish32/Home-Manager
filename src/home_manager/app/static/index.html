@@ -19,6 +19,7 @@
   <script src="/processing.js" defer></script>
   <script src="/assistant.js" defer></script>
   <script src="/home.js" defer></script>
+  <script src="/today_v2.js" defer></script>
   <script src="/forecast.js" defer></script>
   <script src="/whatif.js" defer></script>
   <script src="/taxes.js" defer></script>
@@ -26,6 +27,7 @@
   <script src="/profiles.js" defer></script>
   <script src="/donate.js" defer></script>
   <script src="/trace.js" defer></script>
+  <script src="/taxes_v2.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -94,6 +96,24 @@
       <p id="home-status" class="muted small" role="status"></p>
       <div id="home-error" role="alert"></div>
       <div id="home-content"></div>
+    </section>
+
+    <!-- Today, redesigned (today_v2.js; docs/ui.md "Pages"), behind the ui_v2_screens flag. -->
+    <section id="today-panel" class="page" data-page="home" data-ui="v2" aria-labelledby="today-title" hidden>
+      <header class="page-header"><div><h1 id="today-title" tabindex="-1">Today</h1><p id="today-subtitle" class="page-subtitle"></p></div>
+        <div class="page-actions"><label class="inline-field">Month <input id="today-month" type="month"></label>
+          <label class="inline-field">Currency <select id="today-currency" aria-label="Today's currency"></select></label>
+          <button id="today-refresh" type="button">Refresh</button></div></header>
+      <div id="today-state" class="page-state"></div>
+      <div id="today-body" class="page-body">
+        <p id="today-status" class="muted small" role="status"></p>
+        <div id="today-tiles" class="today-tiles"></div>
+        <div id="today-main" class="today-main">
+          <div class="today-col"><section id="today-needs" class="today-region" aria-labelledby="today-needs-title"></section><div id="today-dated"></div></div>
+          <section id="today-budgets" class="today-region" aria-labelledby="today-budgets-title"></section>
+        </div>
+        <div id="today-charts"></div><div id="today-family"></div><details id="today-about" class="today-about"></details>
+      </div>
     </section>
 
     <section id="forecast-panel" class="page" data-page="forecast" aria-labelledby="forecast-title" hidden>
@@ -196,6 +216,33 @@
         <ul id="taxes-businesses" class="finance-list"></ul>
         <form id="taxes-business-form" class="inline"><div class="field"><label for="taxes-business-name">Add a business</label><input id="taxes-business-name" maxlength="60" placeholder="Contract work"></div>
           <button type="submit">Add</button></form></section>
+      </div>
+    </section>
+
+    <!-- Taxes, redesigned (taxes_v2.js; docs/ui.md "Pages"): six tabs over one tax year, behind the ui_v2_screens flag. -->
+    <section id="taxes2-panel" class="page" data-page="taxes" data-ui="v2" aria-labelledby="taxes2-title" hidden>
+      <header class="page-header"><div><h1 id="taxes2-title" tabindex="-1">Taxes</h1>
+        <p class="page-subtitle">Where the tax year ends, why, and what to change.</p></div>
+        <div class="page-actions"><label class="inline-field">Tax year <select id="taxes2-year"></select></label>
+          <label id="taxes2-unit-field" class="inline-field" hidden>Return <select id="taxes2-unit"></select></label></div></header>
+      <div id="taxes2-state" class="page-state"></div>
+      <!-- Hidden as one by pageState (ui.js) on an error, so the year select above stays usable. -->
+      <div id="taxes2-body" class="page-body">
+        <div id="taxes2-tabs" class="tabs taxes2-tabs" role="tablist" aria-label="Taxes sections">
+          <button type="button" id="taxes2-tab-year" role="tab" aria-controls="taxes2-year-panel" aria-selected="true">This year</button>
+          <button type="button" id="taxes2-tab-built" role="tab" aria-controls="taxes2-built-panel" aria-selected="false" tabindex="-1">Built from</button>
+          <button type="button" id="taxes2-tab-writeoffs" role="tab" aria-controls="taxes2-writeoffs-panel" aria-selected="false" tabindex="-1">Write-offs</button>
+          <button type="button" id="taxes2-tab-jobs" role="tab" aria-controls="taxes2-jobs-panel" aria-selected="false" tabindex="-1">Jobs &amp; pay stubs</button>
+          <button type="button" id="taxes2-tab-pack" role="tab" aria-controls="taxes2-pack-panel" aria-selected="false" tabindex="-1">CPA pack</button>
+          <button type="button" id="taxes2-tab-rules" role="tab" aria-controls="taxes2-rules-panel" aria-selected="false" tabindex="-1">Rules &amp; sources</button>
+        </div>
+        <p id="taxes2-family-note" class="muted small" hidden>Write-offs and tax rules are kept in each person's own profile.</p>
+        <section id="taxes2-year-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-year"></section>
+        <section id="taxes2-built-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-built" hidden></section>
+        <section id="taxes2-writeoffs-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-writeoffs" hidden></section>
+        <section id="taxes2-jobs-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-jobs" hidden></section>
+        <section id="taxes2-pack-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-pack" hidden></section>
+        <section id="taxes2-rules-panel" class="taxes2-tabpanel" role="tabpanel" aria-labelledby="taxes2-tab-rules" hidden></section>
       </div>
     </section>
 

@@ -53,8 +53,9 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             page.goto(f"{base}/#/settings")
             page.locator("#appearance-tab").click()
             playwright.expect(page.locator("#theme-system")).to_be_checked()
-            # New screens: none is registered yet (shell.js V2_SCREENS), so the list says so.
-            playwright.expect(page.locator("#ui-v2-list")).to_contain_text("No redesigned screens are ready yet.")
+            # New screens: one checkbox per registered screen (app.js V2_SCREENS), off until chosen.
+            playwright.expect(page.locator("#ui-v2-taxes")).not_to_be_checked()
+            playwright.expect(page.locator("#ui-v2-list")).to_contain_text("Taxes")
             playwright.expect(page.locator("#ui-v2-choice")).to_be_enabled()
             page.locator("#theme-dark").check()
             playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")

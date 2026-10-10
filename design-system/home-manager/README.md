@@ -6,9 +6,11 @@ This folder holds the redesign's visual decisions. Start here when you pick the 
 |---|---|
 | `MASTER.md` | **The approved design system** (direction C · Family). Tokens, type, spacing, components, and decisions for later screens. It wins over the preview. |
 | `phase0-directions.html` | The Phase 0 preview: the three directions (A · Ledger, B · Household book, C · Family) on Today and Transactions, light and dark, synthetic data. Open it in a browser. It loads fonts from Google Fonts, so it's a throwaway page outside the app's CSP. Also published at https://claude.ai/artifact/55gpu4BBFRmHy7nLUkSE7e. |
-| `pages/<page>.md` | Not created yet. Each Phase 2 screen session adds one. |
+| `pages/<page>.md` | One per Phase 2 screen: `pages/taxes.md`, `pages/today.md`. |
 | `phase1a-plan.md` | The Phase 1a hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what 1a covers. |
 | `phase1b-plan.md` | The Phase 1b hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what 1b covers. |
+| `phase2-taxes-plan.md` | The Phase 2 Taxes hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what it covers. |
+| `phase2-today-plan.md` | The Phase 2 Today hand-off (2026-10-10), **built 2026-10-10**. Kept as the record of what it covers; `pages/today.md` has the page's design. |
 
 ## Phase 0 (done 2026-10-06)
 
@@ -40,7 +42,7 @@ This folder holds the redesign's visual decisions. Start here when you pick the 
    - Accounts over 35 days old are flagged stale in the breakdown, with a "Some balances are old" note under the
      figure.
    - This replaced the old "no total across accounts" decision (docs/ui.md "Decisions" 4).
-3. **Your own layout notes** for the other Today sections are still to come. Today's session must ask you for them.
+3. **Your own layout notes** for the other Today sections were given when Today was planned (below).
 
 **How you like to work:** you want to be asked for input at each step rather than handed defaults. Use
 AskUserQuestion with previews for real choices.
@@ -78,16 +80,74 @@ Built from `phase1b-plan.md`:
 docs/ui.md "Design system", "Observability components" and "Migration" describe it. Before and after screenshots of
 the six touched routes are identical once loaded.
 
-**Left open for you to decide:**
-- A breakdown's answer and running column use `amount()` signed, as the plan says. A figure the server sends as a
-  positive spending amount (gross spending, a category) therefore reads "+149.00 USD" in green, the money-in color.
-  Taxes v2, the first real user, should decide whether such figures show unsigned.
+**Resolved in Phase 2 Taxes:** a breakdown's answer and running column used `amount()` signed, so a positive spending
+figure read "+149.00 USD" in green. Now `figure()` takes `signed`/`magnitude` and the breakdown follows its opener;
+tax figures show unsigned with the label giving the direction. Home and other callers keep the signed default until
+their own screen decides.
 
-## Next: Phase 2, Taxes
+## Phase 2, Taxes (done 2026-10-10)
 
-Plan the Taxes v2 screen in a fresh session (the `ui-redesign` skill, plan mode). It is the first screen behind the
-flag: it registers in `V2_SCREENS`, adds a `data-ui="v2"` Taxes section, uses `figure()` and the breakdown panel, and
-adds `("taxes", "taxes")` to `MIGRATED` in `tests/test_ui_parity.py`.
+Built from `phase2-taxes-plan.md`; `pages/taxes.md` has the page's design. `taxes_v2.js` is behind the flag
+(`V2_SCREENS.taxes`, `("taxes", "taxes")` in `MIGRATED`), and v1 stays until Phase 3. Tests:
+`tests/test_taxes_v2_browser.py`, the parity run, `tests/test_traces.py` (the full figures, `stub_list`).
+
+**Where the build differs from the plan, and why:**
+- `V2_SCREENS` moved from `shell.js` to `app.js`: `taxes_v2.js` loads before `shell.js` (as planned), so the registry
+  has to exist first.
+- The tab panels are `#taxes2-<tab>-panel`, not `#taxes2-<tab>`: `#taxes2-year` is the year select.
+- Built from's sections each have their own panel (`#taxes2-secpanel-<key>`) inside `#taxes2-section-body`, because
+  `wireTabs` hides each tab's own panel.
+- A records value you typed over shows its records figure untraced: its trace ends at the typed value, so pairing them
+  would fail `check_figures`.
+- The parity check counts a figure's unsigned form as shown on v1 (v1 writes the result as "4,921.84 USD", the figure
+  is "-4,921.84 USD").
+- The likely range shows unsigned only when both ends fall the same way; a range crossing $0 keeps its signs.
+- Under 600px, Total tax and Paid and credited become one-line tiles, so "What to do" sits higher, as the 390 sketch.
+
+**Your decisions (planning):**
+- Six tabs, all this session: This year, Built from, Write-offs, Jobs & pay stubs, CPA pack, Rules & sources.
+- The server sends full figures for the lines, the records' values, the jobs and Tax Zen.
+- Tax figures show unsigned, with the label giving the direction. This resolves the Phase 1b sign item.
+- This year shows the answer tiles, then "What to do", then the return.
+- Built from is a section list beside rows, with a sticky save bar.
+- W-4 entries are on Jobs & pay stubs.
+- v1 stays until Phase 3.
+
+## Phase 2, Today (done 2026-10-10)
+
+Built from `phase2-today-plan.md`; `pages/today.md` has the page's design. `today_v2.js` is behind the flag
+(`V2_SCREENS.home`, `("home", "home")` in `MIGRATED` with `NEW_ON_V2` for the figures v1 never showed), and v1 Home
+stays until Phase 3. Tests: `tests/test_today_v2_browser.py` (personal and family), the parity run,
+`tests/test_traces.py` (Money in, Cash, Net worth, the old-balance flag). `ui_shots.py` now seeds statement
+balances (one stale), a car and its loan, a confirmed rent and two earlier months.
+
+**Where the build differs from the plan, and why:**
+- An over-budget row's badge is the warning badge relabelled "Over budget": `statusBadge("over")` is the danger
+  (red) tone, and MASTER.md says over is amber, never red.
+- `/api/dashboard` keeps `worth` off the family dashboard (it would be the first member's); the family tiles use
+  `/api/family/net-worth`, which now also adds up with `worth_totals`.
+- `balance_dates` keeps a balance's `member` tag, so the family's stale list says whose it is.
+- The sidebar label also switches when the screen is toggled in Settings › Appearance, not only on load
+  (`setHomeNavLabel` in `shell.js`).
+- `today_v2.js` had to be added to the static file allowlist in `app/api.py`.
+- Tile, column and section spacing comes from `.page-body`'s gap; empty parts take no room.
+- `budgets.unbudgeted` is a list by currency, so the footer finds the shown currency's row.
+
+**Your layout notes (planning):**
+- Needs you first, in two columns: the tiles, then Needs you and the dated sections on the left beside the budgets on
+  the right.
+- Both charts kept.
+- Four tiles: Cash, Net worth, Spent and Money in.
+- Bills, CDs and Treasuries coming due, Weekly check-in, Return windows and Warranties as separate small sections,
+  each hidden when empty.
+- The family view built in the same session.
+- At 390, the tiles come before Needs you.
+- The name "Today" shows only when v2 is on.
+
+**Backend additions (additive):**
+- the `cashflow.in` trace;
+- Cash and Net worth on the personal dashboard;
+- the 35-day stale rule (`balance_dates`).
 
 The steps below were the original Phase 1 outline, kept for reference; 3–5 were 1a and 6 was 1b.
 
@@ -117,4 +177,8 @@ Then Phase 2 screens in this order: Taxes → Today → To check and the documen
 - Synthetic data only. Never touch `P:\Finances`, `%LOCALAPPDATA%\HomeManager` or `P:\EvalCorpus`.
 - No framework, no build step, no inline styles or scripts (strict CSP), and tokens only.
 - Use Edit/Write for changes. No `cd …;` compound commands; run commands from the project root.
-- Phases 0 and 1a are committed on `reorganize-packages`; Phase 1b is not committed yet.
+- Phases 0, 1a and 1b are committed on `reorganize-packages`; Phase 2 Taxes and Today are not committed yet.
+
+## Next: Phase 2, To check and the document page
+
+Plan it with the `ui-redesign` skill in plan mode (docs/open-work.md "UI redesign" 6).

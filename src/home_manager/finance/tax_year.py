@@ -20,7 +20,7 @@ import json
 import re
 
 from ..core import actor
-from ..core.money import format_minor, to_minor
+from ..core.money import format_minor, money, to_minor
 from ..core.trace import NULL
 from ..library.storage import now
 from .investments import Investments
@@ -173,7 +173,12 @@ def jobs(db, year, today, recorder=NULL, only=None):
                       "projected": {"wages": left * per_check["wages"], "ss_wages": left * per_check["fica"], "medicare_wages": left * per_check["fica"],
                                     "federal_withheld": left * per_check["federal"], "state_withheld": left * per_check["state"],
                                     "medicare_withheld": left * per_check["medicare"]},
-                      "spread_bp": spread_bp})
+                      "spread_bp": spread_bp,
+                      # Each stub, oldest first, for the Taxes page's pay-stub table: record values, sourced by the document link.
+                      "stub_list": [{"income_id": stub["id"], "document_id": stub["document_id"], "pay_date": stub["pay_date"],
+                                     "gross": money(stub["gross_pay_minor"] or 0, CURRENCY), "net": money(stub["net_pay_minor"] or 0, CURRENCY),
+                                     "federal": money(amounts(lines_of[stub["id"]], "current_minor", "tax", ("federal_income_tax",)), CURRENCY)}
+                                    for stub in stubs]})
     return found
 
 

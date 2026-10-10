@@ -26,6 +26,28 @@ from test_withholding import FEDERAL, confirmed
 this_year_covered = pytest.mark.skipif(date.today().year not in YEARS, reason=f"Engine 1 covers {sorted(YEARS)} only; re-pin it for this year")
 
 
+def seed_tax_year(manager, store, ledger):
+    """This year's synthetic taxes: a 1985 birth year, the confirmed federal table, one biweekly pay stub and 20,000 of
+    interest nobody withholds on, so Tax Zen recommends a W-4 change. False (and nothing seeded) when Engine 1 doesn't
+    cover this year."""
+    today = date.today()
+    if today.year not in YEARS:
+        return False
+    manager.configure_household(manager.household.model_copy(update={"birth_year": 1985}))  # The tax engine's age facts.
+    confirmed(TaxTables(store), "US", FEDERAL)
+    inbox_scan(store, {"stub.png": b"stub", "tax-export.csv": b"date,amount\n"})
+    docs = documents_by_name(store)
+    stub(store, docs["stub.png"], f"{today.year}-01-02", 47936, 270671)
+    with store.connection() as db:
+        db.execute("UPDATE income_records SET pay_frequency=26")
+    account = ledger.create_account("Savings", "savings", "USD")
+    with store.connection() as db:  # 20,000 of interest nobody withholds on.
+        ledger.insert_transactions(db, account, [{"posted_date": f"{today.year}-01-05", "description": "INTEREST PAID", "amount_minor": 2000000, "currency": "USD",
+                                                  "locator": {"rows": [1]}}], "import",
+                                   {"document_id": docs["tax-export.csv"]["id"], "blob_hash": docs["tax-export.csv"]["current_hash"], "source_key": "import:test"})
+    return True
+
+
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 @this_year_covered
 def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
@@ -45,20 +67,8 @@ def test_tax_zen_tells_what_to_put_on_the_w4(tmp_path):
         assert server.started
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
-        manager.configure_household(manager.household.model_copy(update={"birth_year": 1985}))  # The tax engine's age facts.
-        store, ledger = manager.store, manager.ledger
-        confirmed(TaxTables(store), "US", FEDERAL)
-        inbox_scan(store, {"stub.png": b"stub", "export.csv": b"date,amount\n"})
-        docs = documents_by_name(store)
+        assert seed_tax_year(manager, manager.store, manager.ledger)
         today = date.today()
-        stub(store, docs["stub.png"], f"{today.year}-01-02", 47936, 270671)
-        with store.connection() as db:
-            db.execute("UPDATE income_records SET pay_frequency=26")
-        account = ledger.create_account("Savings", "savings", "USD")
-        with store.connection() as db:  # 20,000 of interest nobody withholds on.
-            ledger.insert_transactions(db, account, [{"posted_date": f"{today.year}-01-05", "description": "INTEREST PAID", "amount_minor": 2000000, "currency": "USD",
-                                                      "locator": {"rows": [1]}}], "import",
-                                       {"document_id": docs["export.csv"]["id"], "blob_hash": docs["export.csv"]["current_hash"], "source_key": "import:test"})
         with playwright.sync_playwright() as driver:
             browser = driver.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 900})

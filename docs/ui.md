@@ -69,7 +69,7 @@ Routes are in `ROUTES` in `shell.js`.
 | `#/bills` | Bills & recurring | [money](money.md#recurring-bills) |
 | `#/accounts` | Accounts | [money](money.md#money-pages) |
 | `#/investments` | Investments | [planning](planning.md#investments) |
-| `#/taxes` | Taxes | [taxes](taxes.md) |
+| `#/taxes` | Taxes (v2 with the flag: `?year=&tab=year\|built\|writeoffs\|jobs\|pack\|rules&section=&unit=`) | [taxes](taxes.md) |
 | `#/forecast` | Forecast | [planning](planning.md#forecast) |
 | `#/whatif` | What If | [planning](planning.md#what-if) |
 | `#/inventory` | Inventory | [household](household.md#the-inventory-page) |
@@ -81,6 +81,23 @@ Routes are in `ROUTES` in `shell.js`.
 - **Family view.** In the family view, only Home, Review, Receipts & statements, Documents, the document page,
   Processing, Settings, What If and Taxes are offered (`FAMILY_ROUTES`).
 - **Old links.** `#/finances?…` links redirect to the money pages.
+- **Taxes v2** (`taxes_v2.js`, behind `ui_v2_screens`; design in `design-system/home-manager/pages/taxes.md`) has six
+  tabs: **This year** (three answer tiles, one "What to do" region with Tax Zen's one action and "Other ways", then the
+  return line by line), **Built from** (a section list beside rows of Box · From records · Yours), **Write-offs**,
+  **Jobs & pay stubs** (each job's year figures, its W-4 on file and its pay stubs), **CPA pack** and **Rules &
+  sources** (tax rules, the year's tax tables, every rule set as a `ruleCard`). Built from and Jobs edit one draft with
+  a sticky save bar; a year or return change asks before discarding it. Tabs draw when first shown, and the URL keeps
+  the year, tab, section and family return (`history.replaceState`). The family view hides Write-offs, CPA pack and
+  Rules & sources, and shows its returns above This year with a Return select.
+- **Today v2** (`today_v2.js`, behind `ui_v2_screens`; design in `design-system/home-manager/pages/today.md`) is the
+  home route redesigned; the h1, the tab title and the sidebar label say Today only while it is on. Four figure tiles
+  (Cash with its balances' date range and an "old" flag past 35 days, Net worth, Spent in the month, Money in with net
+  cash flow), then **Needs you** (attention rows first, each with one action; rows with a count of 0 are left out)
+  with the dated sections under it (Bills, CDs and Treasuries coming due, Weekly check-in, Return windows closing,
+  Warranties ending soon, each only when it has rows) beside the month's **budgets** (amber meters, "Over by" or
+  "left"), then v1's trend and donut, and "What these numbers cover" folded. Under 1100px it is one column (Needs you,
+  budgets, dated sections) and tiles go 2×2. The family view drops the budgets, check-in, returns and warranties and
+  adds "Each person", the family's net worth and "Counted once". The URL keeps `?month=&currency=&months=`.
 - **Ask.** The Ask panel opens from anywhere ([assistant](assistant.md#the-ask-panel)).
 
 ### Review
@@ -269,7 +286,8 @@ kept in a "Technical details" disclosure.
 
 - **No money arithmetic in the browser.** It never sums, subtracts, converts or rounds; totals come only from server
   tools. `amount()` takes the sign from the leading `-` of the server's `decimal`, and shows the server's `display`
-  text without it. That is lexical, not arithmetic.
+  text without it. That is lexical, not arithmetic. `amount(value, {magnitude: true})` adds no sign glyph at all (not
+  even `−`) and no direction, for figures whose label says which way (tax figures).
 - **No other figures worked out in the browser either.** The server returns them ready to show:
   - percents as `*_percent` text beside each `*_bp` (`core/money.py` `percent_text`);
   - Home's category shares as `share_bp` (whole basis points summing to 10,000, so the donut closes) with
@@ -300,6 +318,7 @@ kept in a "Technical details" disclosure.
 3. **Review** shows display summaries (merchant, amount, date, account, document) for every item, never bare ids.
 4. **Accounts** shows per-account balances with "as of" dates. It stays a top-level page. Since 2026-10-06, Today shows
    **Cash** and **Net worth** across all accounts (`worth.today`), with the date range and stale accounts flagged.
+   This reverses the earlier "no balances on Home" for Today v2 (built 2026-10-10); v1 Home still shows none.
 5. **The document page** is a route, not a modal. Lists use a non-modal drawer where a detail view is needed.
 
 ## Redesign: calculation observability
@@ -385,7 +404,8 @@ Every number on screen can be explained. These rules override visual or layout p
   so a breakdown opens the next one down. Figures worked out with the app's settings, tables or engine (tax and some
   wealth figures) are built with the Manager as context (`CONTEXT_TRACES`). `tests/test_traces.py` checks every one:
   `reconciles`, and that the trace's result is the figure shown. Traced figures:
-  - **Ledger and spending** (`finance/traces.py`): `spending.net`, `cashflow.net`, `spending.category`, Home's
+  - **Ledger and spending** (`finance/traces.py`): `spending.net`, `cashflow.net`, `cashflow.in` (money in alone),
+    `spending.category`, Home's
     `spending.other` and `spending.gross`, `spending.usd` (each converted line with its ECB rate), `split.receipt` and
     `split.charge` (largest-remainder cents as the rounding row), `budget.remaining`, `budget.projected`,
     `recurring.total` (a month or a year), `bill.expected` (the last three payments averaged) and `account.balance`.
@@ -408,7 +428,7 @@ Every number on screen can be explained. These rules override visual or layout p
     `investments.rmd_left`, `worth.today` (cash, assets, loans, net worth), and `forecast.cash` and
     `forecast.net_worth` for every month and year's end of the Forecast and of each What If plan (the ref holds the
     input, or the plan, and the day it was worked out).
-  - **Family** (`finance/traces.py`): `family.spending.net`, `family.cashflow.net`, `family.spending.category`,
+  - **Family** (`finance/traces.py`): `family.spending.net`, `family.cashflow.net`, `family.cashflow.in`, `family.spending.category`,
     `family.spending.gross`, `family.spending.other` and `family.worth.today` add up each member's own figure. Any ref
     with `member=<id>` runs the same calculation on that member's read-only copy.
 - **Review state.** A breakdown takes its inputs as correct: figures don't carry whether an input still waits in Review
@@ -443,13 +463,17 @@ Every number on screen can be explained. These rules override visual or layout p
 ### Observability components
 
 These are vanilla factories in `app/static/trace.js`, loaded after `ui.js`. They use tokens only and are CSP-safe.
-`figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` are built (Phase 1b), and no page uses them yet: Taxes v2
-is the first. `tests/test_trace_components_browser.py` mounts them in the real app with the synthetic dashboard's
-traces. `confirmCorrect`, `sourceViewer` and `historyList` come with the To check and document page session.
+`figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` are built (Phase 1b). Taxes v2 is their first user.
+`tests/test_trace_components_browser.py` mounts them in the real app with the synthetic dashboard's traces.
+`confirmCorrect`, `sourceViewer` and `historyList` come with the To check and document page session.
 
-- **`figure(fig, {size})`** is a `button.figure-button` (`data-figure-ref`, `data-figure-display`, `aria-controls`,
-  `aria-expanded`) around `amount()`, flagged `unconfirmed` when the figure's verification is `needs_review`, partial
-  or unverified, and `stale` when it changed. A `.figure-tile` holding the open figure gets the accent border and ring.
+- **`figure(fig, {size, signed, magnitude})`** is a `button.figure-button` (`data-figure-ref`, `data-figure-display`,
+  `data-signed`, `data-magnitude`, `aria-controls`, `aria-expanded`) around `amount()`, flagged `unconfirmed` when the
+  figure's verification is `needs_review`, partial or unverified, and `stale` when it changed. A `.figure-tile` holding
+  the open figure gets the accent border and ring. `signed` and `magnitude` go to `amount()`; a tax figure uses
+  `magnitude` and its label gives the direction ("Refund", green with `+`; "You'd owe", text color with no sign).
+- **The breakdown follows its opener's sign:** its answer, the Running column and "Sums to" use the opener's `signed`
+  and `magnitude` (drilled traces keep them). Step values keep their `op` glyph.
 - **The breakdown panel** is one `<aside id="breakdown">` after `</main>`: a 360px column beside the page from
   1180px, the same panel floating over the page's right edge (`--shadow-overlay`, z-index 30) at 900–1179px, and a
   bottom sheet up to 70vh below 900px. Opening moves focus to its title; a step or input with a trace drills in as a
@@ -509,12 +533,18 @@ Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves 
   32), sent in `/api/settings` and set with `PUT /api/ui-screens` `{routes}` or Settings › Appearance › New screens
   (one checkbox per registered screen). The Preferences form sends the list back, so saving it keeps the flag. The old
   loader stays until its screen passes. Old and new screens may coexist, since the app isn't in daily use yet.
-- **A v2 screen** registers itself in `shell.js` `V2_SCREENS` (`route → {title, show}`) and is a `data-ui="v2"`
-  section with the same `data-page` as the old one. `showRoute` shows the v2 section and calls its `show` when the
-  route is on the list; sections without `data-ui` are v1.
-- `tests/test_ui_parity.py` (browser, synthetic seed) checks that every figure on a new screen has a ref, that it
-  equals its trace's result and reconciles (`check_figures`), and that it matches the old screen's values
-  (`v1_amounts`). Each Phase 2 session adds its `(route, v1 route)` pair to `MIGRATED`. The harness's self-test also
-  checks that it fails on a seeded mismatch.
+- **A v2 screen** registers itself in `V2_SCREENS` (`route → {title, show}`, declared in `app.js` so a screen's script
+  can register before `shell.js` routes the first page) and is a `data-ui="v2"` section with the same `data-page` as
+  the old one. `showRoute` shows the v2 section and calls its `show` when the route is on the list; sections without
+  `data-ui` are v1. Registered: `taxes` (`taxes_v2.js`), `home` (`today_v2.js`).
+- `tests/test_ui_parity.py` (browser, synthetic seed, with `seed_tax_year` from `test_taxes_browser.py`) checks that
+  every figure on a new screen has a ref, that it equals its trace's result and reconciles (`check_figures`), and that
+  it matches the old screen's values (`v1_amounts`: the old screen's `.amount` titles and its text, since old screens
+  write some amounts inside sentences; a figure's unsigned form counts too). Each Phase 2 session adds its
+  `(route, v1 route)` pair to `MIGRATED`; it has `("taxes", "taxes")`, skipped when Engine 1 doesn't cover this year,
+  and `("home", "home")`. `NEW_ON_V2` lists ref prefixes a v2 screen shows that the old one never did (Today's
+  `worth.today`, `budget.remaining`, `budget.projected`); those are checked against their trace only.
+  The harness's self-test also checks that it fails on a seeded mismatch. The parity run sees a screen's first tab
+  only; the screen's own browser test checks the other tabs' figures.
 - **Passing tests are enough** to delete an old screen; no separate sign-off.
 - Phase 0's visual directions are shown as browser pages.

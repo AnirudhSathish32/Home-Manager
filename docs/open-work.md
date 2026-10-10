@@ -135,9 +135,12 @@ is done: direction C · Family, in `design-system/home-manager/MASTER.md`. Phase
 theme switch, self-hosted fonts, chart colors as tokens, base components, and the shell with a top bar under 820px)
 is built: ui.md "Design system". Phase 1b (item 5: `pageState()` on five pages, the `trace.js` components, the
 `ui_v2_screens` flag and `tests/test_ui_parity.py`) is built: ui.md "Design system", "Observability components",
-"Migration". Phase 2 Taxes is next; see `design-system/home-manager/README.md`.
+"Migration". Phase 2 Taxes is built (2026-10-10): `taxes_v2.js` behind the flag, ui.md "Pages"; its v1 loader goes in
+item 8. Phase 2 Today is built (2026-10-10): `today_v2.js` behind the flag, ui.md "Pages"; its v1 loader (`home.js`
+`renderHome`, `renderHomeExtras`) goes in item 8. To check and the document page is next; see
+`design-system/home-manager/README.md`.
 
-**6. Screens, one per session.** Taxes → Today → To check and the document page (with Correct) → This month,
+**6. Screens, one per session.** To check and the document page (with Correct) → This month,
 Transactions (Add, Import), Bills, Accounts (Import) → Investments, Forecast, What If → Inventory (Item insights) →
 Processing (Data health), Settings (Independent checks editable, Donate) → Search, Ask.
 
@@ -145,16 +148,8 @@ The To check and document page session also builds the remaining components in u
 `confirmCorrect()`, `sourceViewer()` and `historyList()`. It plans a correction-preview endpoint for Correct (none
 exists yet), and pulls `receipt.js`'s `highlightEvidence()` out of its global `receipt` state for `sourceViewer()`.
 
-Today's session starts from what the user asked for in Phase 0 (MASTER.md "Decided for later screens"):
-- **Budgets in the breakdown style:** category lines with a budget meter (from `get_budgets`) instead of a running
-  total. The meter is amber when ahead of pace or over, never red.
-- **Cash and Net worth** side by side (`worth.today`). Cash adds up every account's latest statement balance, shows the
-  date range, and flags accounts over 35 days old as stale.
-- The rest of the Phase 0 mock-up (October figures, weekly chart, Coming up) was a placeholder. Ask the user for their
-  layout notes on the remaining sections.
-
 **7. Surface backend-only features.** Give a screen to `GET /api/finance/health`, `PUT /api/reviewer-settings`,
-`POST /api/decision-model-tests`, `PUT/DELETE /api/tax/businesses/{id}`, and `GET /api/tax-tags/on/{receipt|receipt_item}`.
+`POST /api/decision-model-tests`, and `GET /api/tax-tags/on/{receipt|receipt_item}`.
 Each is tested at the API already; the bill payment endpoint was removed.
 
 **8. Cleanup.** Remove the old loaders, the duplicate helpers (`asyncButton`/`actionButton`, the five table builders)

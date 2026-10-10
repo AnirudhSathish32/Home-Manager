@@ -169,5 +169,20 @@ def test_breakdown_edge_cases_provenance_and_rule_card(tmp_path):
         for width in (390, 1000, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width
+
+        # magnitude (a tax figure: the label says which way): no sign glyph on the figure, and its breakdown follows it.
+        owed = {**trace, "ref": "owed", "result": {"display": "-4,921.84 USD"}, "reconciles": True, "stale": False,
+                "steps": [{"n": 1, "label": "Total tax", "op": "−", "value": {"display": "4,921.84 USD"}, "running": {"display": "-4,921.84 USD"}, "trace": None, "count": None}],
+                "rounding": None, "inputs": [], "inputs_page": {"total": 0, "shown": 0}}
+        page.route("**/api/traces/owed", lambda route: route.fulfill(status=200, content_type="application/json", json=owed))
+        page.evaluate("""() => document.getElementById("parity-fixture").replaceChildren(figure({display: "-4,921.84 USD", trace: "owed"}, {magnitude: true}))""")
+        button = page.locator('#parity-fixture [data-figure-ref="owed"]')
+        expect(button).to_contain_text("4,921.84")
+        expect(button).to_have_attribute("data-magnitude", "true")
+        button.click()
+        expect(panel.locator(".breakdown-answer")).to_contain_text("4,921.84")
+        for text in (button.inner_text(), panel.locator(".breakdown-answer").inner_text(), panel.locator(".breakdown-steps tfoot").inner_text(),
+                     panel.locator(".breakdown-steps tbody td:last-child").inner_text()):
+            assert not any(glyph in text for glyph in "+−-"), text
         assert not failures, failures
         browser.close()
