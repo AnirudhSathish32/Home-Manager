@@ -464,8 +464,8 @@ async function loadExtraction(state, parseId) {
   if (check) target.appendChild(decisionPanel(check, run.document_type));
 }
 // A file holding several receipts (docs/documents.md): pick one, confirm the split once, or change it.
-function segmentLines(segment) {
-  const lines = (receipt?.result?.lines || []).filter(line => line.text.trim());
+function segmentLines(segment, lines = receipt?.result?.lines) {
+  lines = (lines || []).filter(line => line.text.trim());
   const first = lines.findIndex(line => line.id === segment.first_line_id), last = lines.findIndex(line => line.id === segment.last_line_id);
   return first < 0 || last < first ? [] : lines.slice(first, last + 1);
 }
@@ -528,14 +528,15 @@ function ledgerTitle(type, record) {
   const parts = [record.merchant || record.institution, record.location, record.description].filter(Boolean);
   return parts.length ? parts.join(" - ") : RECORD_LABELS[type].replace(/^./, character => character.toUpperCase());
 }
-function sourceButton(lineIds) {
+// find: how the row's source lines are shown; the document page v2 passes its source viewer's (document_v2.js).
+function sourceButton(lineIds, find = highlightEvidence) {
   const button = element("button", "Find", "source-link"); button.type = "button";
   button.setAttribute("aria-label", "Find this row in the transcription");
-  button.addEventListener("click", () => highlightEvidence(lineIds));
+  button.addEventListener("click", () => find(lineIds));
   return button;
 }
 const REWARD_KINDS = {earned: "Earned", redeemed: "Redeemed", balance: "Balance", offer: "Offer", survey: "Survey", membership: "Member savings"};
-function rewardsList(rewards) {
+function rewardsList(rewards, find = highlightEvidence) {
   // Rewards, perks and offers printed on the receipt or in its QR codes. Links are shown as text, never opened:
   // they come from a document, not from Home Manager.
   const section = element("section", "", "receipt-rewards");
@@ -546,7 +547,7 @@ function rewardsList(rewards) {
     if (reward.amount_text) li.append(document.createTextNode(` · ${reward.amount_text}`));
     if (reward.expires_on) li.append(element("small", ` · ${reward.expires_on < todayIso() ? "expired" : "expires"} ${dateText(reward.expires_on)}`, "muted"));
     if (reward.link) li.append(element("small", reward.link, "muted block mono"));
-    if (reward.line_ids?.length) li.append(sourceButton(reward.line_ids));
+    if (reward.line_ids?.length) li.append(sourceButton(reward.line_ids, find));
     list.append(li);
   }
   section.append(element("h3", "Rewards & offers"), list);
@@ -578,7 +579,7 @@ function itemCategorySelect(receiptId, row, categories, onSaved) {
   });
   return select;
 }
-function ledgerRows(record, categories = [], onSaved = null) {
+function ledgerRows(record, categories = [], onSaved = null, find = highlightEvidence) {
   // Items or transactions exactly as recorded, each linked to its source line. Receipt items carry their own category
   // and their share of what was paid (the price with its part of tax and receipt-wide discounts).
   const rows = record.items || record.transactions || [];
@@ -610,7 +611,7 @@ function ledgerRows(record, categories = [], onSaved = null) {
       if (index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
                                                         : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     });
-    const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids)); tr.appendChild(source);
+    const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids, find)); tr.appendChild(source);
     body.appendChild(tr);
   }
   wrap.appendChild(table);
@@ -754,16 +755,16 @@ async function renderLedgerRecord(target, type, id, kept) {
 }
 
 // Pay stubs (docs/taxes.md "Jobs and pay stubs"): gross to net, then how the taxes were figured. Every amount is the server's text.
-function paystubRow(body, cells, className = "", lineIds = null) {
+function paystubRow(body, cells, className = "", lineIds = null, find = highlightEvidence) {
   const tr = body.insertRow(); if (className) tr.className = className;
   cells.forEach((value, index) => {
     const td = tr.appendChild(element(index ? "td" : "th", index ? "" : value, index ? "numeric" : ""));
     if (!index) td.scope = "row"; else td.appendChild(amount(value || "—", {signed: false}));
   });
-  const source = tr.insertCell(); if (lineIds?.length) source.appendChild(sourceButton(lineIds));
+  const source = tr.insertCell(); if (lineIds?.length) source.appendChild(sourceButton(lineIds, find));
   if (lineIds?.length) tr.dataset.lines = lineIds.join(" ");
 }
-function paystubBreakdown(record) {
+function paystubBreakdown(record, find = highlightEvidence) {
   const {groups, checks} = record.breakdown;
   if (!record.lines.length) return [element("p", "The stub's individual lines weren't read, so only its totals are shown.", "muted")];
   const section = element("section", "", "paystub-breakdown");
@@ -777,7 +778,7 @@ function paystubBreakdown(record) {
   for (const group of groups) {
     body = table.appendChild(document.createElement("tbody"));
     const title = body.insertRow().appendChild(element("th", group.title, "paystub-group")); title.colSpan = 4; title.scope = "rowgroup";
-    for (const line of group.lines) paystubRow(body, [line.description, line.display.current_minor, line.display.ytd_minor], "", line.line_ids);
+    for (const line of group.lines) paystubRow(body, [line.description, line.display.current_minor, line.display.ytd_minor], "", line.line_ids, find);
     if (group.group === "earnings") paystubRow(body, ["Gross pay", record.display.gross_pay_minor, record.display.gross_pay_ytd_minor], "paystub-total");
     if (group.group === "pre_tax") total("pre_tax", "Total pre-tax deductions");
     if (group.group === "tax") {

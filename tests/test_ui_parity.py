@@ -3,7 +3,7 @@
 Every figure a v2 screen shows must carry a trace ref, equal its trace's result, reconcile, and match a value the old
 screen showed. Each Phase 2 session adds its (route, v1 route) pair to MIGRATED."""
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 import os
 import socket
 import threading
@@ -16,16 +16,22 @@ import uvicorn
 from conftest import inbox_scan
 from home_manager.app.api import create_app
 from home_manager.finance.engines.opentax import YEARS
+from home_manager.finance.reconcile import Reconciler
+from home_manager.finance.tools import FinanceTools
 from home_manager.library.scanner import ScanLimits
+from seed_wealth import seed_investments
 from test_reconcile_tools import add
 from test_taxes_browser import seed_tax_year
 
 # (route, v1 route) for each screen moved to its redesign; the v2 route opens with the flag on, the v1 one with it off.
 # Taxes works out this year's return, so it runs only while Engine 1 covers this year (test_taxes_browser.this_year_covered).
 MIGRATED = [pytest.param("taxes", "taxes", marks=pytest.mark.skipif(date.today().year not in YEARS, reason="Engine 1 doesn't cover this year")),
-            pytest.param("home", "home")]
-# Figures a v2 screen shows that the old one never did (by ref prefix): checked against their trace only.
-NEW_ON_V2 = {"home": ("worth.today", "budget.remaining", "budget.projected")}
+            pytest.param("home", "home"), pytest.param("spending", "spending"), pytest.param("bills", "bills"), pytest.param("accounts", "accounts"),
+            pytest.param("investments", "investments"), pytest.param("forecast", "forecast")]
+# Figures a v2 screen shows that the old one never did (by ref prefix): checked against their trace only. The old
+# Forecast showed its end cash and net worth only inside folded tables.
+NEW_ON_V2 = {"home": ("worth.today", "budget.remaining", "budget.projected"), "spending": ("budget.remaining", "budget.projected"),
+             "forecast": ("forecast.cash", "forecast.net_worth")}
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 
@@ -48,17 +54,31 @@ def seeded_server(tmp_path, token):
         assert server.started
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
-        inbox_scan(manager.store, {"spending.csv": b"Date,Description,Amount\n"})
-        doc = manager.store.documents()["items"][0]
+        inbox_scan(manager.store, {"spending.csv": b"Date,Description,Amount\n", "statement.pdf": b"synthetic statement"})
+        docs = {doc["relative_path"].rsplit("/", 1)[-1]: doc for doc in manager.store.documents()["items"]}
+        doc, statement = docs["spending.csv"], docs["statement.pdf"]
         account = manager.ledger.create_account("Household checking", "checking", "USD")
         month = date.today().isoformat()[:7]
+        # And a monthly water bill from three earlier payments, confirmed below, for Bills.
+        earlier = [date.today().replace(day=1)]
+        for _ in range(3):
+            earlier.append((earlier[-1] - timedelta(days=1)).replace(day=1))
         ids = add(manager.store, manager.ledger, account, doc, [(month + "-01", "Groceries", -12500),
-                  (month + "-01", "Cafe", -2400), (month + "-01", "PAYROLL", 300000)])
+                  (month + "-01", "Cafe", -2400), (month + "-01", "PAYROLL", 300000)]
+                  + [(day.isoformat()[:8] + "03", "CITY WATER", -4000) for day in earlier[1:]])
+        Reconciler(manager.store).run()
         with manager.store.connection() as db:
-            db.execute("UPDATE transactions SET category='groceries' WHERE id=?", (ids[0],))
-            db.execute("UPDATE transactions SET category='dining' WHERE id=?", (ids[1],))
+            db.execute("UPDATE transactions SET category='groceries',category_source='user' WHERE id=?", (ids[0],))
+            db.execute("UPDATE transactions SET category='dining',category_source='user' WHERE id=?", (ids[1],))
+            # A statement balance, for Accounts.
+            db.execute("INSERT INTO statements(account_id,document_id,blob_hash,statement_type,period_end,closing_balance_minor,currency,review_status,"
+                       "created_at,updated_at) VALUES(?,?,?,'bank',?,841230,'USD','verified','t','t')",
+                       (account["id"], statement["id"], statement["current_hash"], (date.today() - timedelta(days=5)).isoformat()))
+        water = next(row for row in FinanceTools(manager.store).get_recurring_obligations()["obligations"] if row["merchant"].startswith("CITY WATER"))
+        Reconciler(manager.store).review_obligation(water["id"], "verified")
         manager.ledger.set_budget("groceries", "USD", "100.00")
         seed_tax_year(manager, manager.store, manager.ledger)  # This year's taxes, for the Taxes screen.
+        seed_investments(manager, full=False)  # A 401(k) and a CD account, for Investments (and Today's net worth).
         yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True

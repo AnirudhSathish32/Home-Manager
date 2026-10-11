@@ -187,3 +187,397 @@ function ruleCard(rule) {
   section.append(list);
   return section;
 }
+
+// A document's latest reading ({doc, run, result}; result is null while it's unread), cached until clearReadings().
+// The newest reading that finished is used, else the newest; one still running isn't cached.
+const readings = new Map();
+function clearReadings() { readings.clear(); }
+async function loadReading(documentId, digest = null) {
+  const key = `${documentId}:${digest || ""}`;
+  if (readings.has(key)) return readings.get(key);
+  const doc = await api(`/api/documents/${documentId}`);
+  const runs = await api(`/api/documents/${documentId}/receipt-runs?blob_hash=${digest || doc.current_hash}`);
+  const chosen = runs.find(run => run.status === "succeeded") || runs[0];
+  const run = chosen ? await api(`/api/receipt-runs/${chosen.id}`) : null;
+  const reading = {doc, run, result: run?.result || null};
+  if (!PENDING_RUN.includes(run?.status)) readings.set(key, reading);
+  return reading;
+}
+
+// The source beside the record (docs/ui.md "Layout" rule 2): the preserved image or PDF with its read regions, and the
+// text read from it as a list of lines. highlight(ids) lights the cited lines; a region click or Enter on a line tells
+// onRegionClick's callbacks which lines it is. Document text is always set as text, links included.
+let sourceViewerCount = 0;
+function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
+  const n = ++sourceViewerCount, idOf = name => `sv${n}-${name}`;
+  const state = {doc, reading, runId, digest: digest || doc.current_hash, url: null, generation: 0, callbacks: []};
+  const el = element("section", "", "source-viewer"); el.setAttribute("aria-label", "Source document");
+  const toolbar = element("div", "", "sv-toolbar"), tabs = element("div", "", "tabs sv-tabs");
+  tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Source view");
+  const pageField = element("label", "Page ", "inline-field sv-page"), pageSelect = document.createElement("select");
+  pageField.append(pageSelect); pageField.hidden = true;
+  const preserved = element("span", "Original preserved", "status-badge"); preserved.dataset.tone = "neutral";
+  const imagePanel = element("div", "", "sv-panel sv-image"), textPanel = element("div", "", "sv-panel sv-text");
+  const tabFor = (label, name, panel) => {
+    const tab = element("button", label); tab.type = "button"; tab.id = idOf(`${name}-tab`); tab.setAttribute("role", "tab");
+    panel.id = idOf(name); panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", tab.id); tab.setAttribute("aria-controls", panel.id);
+    return tab;
+  };
+  const imageTab = tabFor("Image", "image", imagePanel), textTab = tabFor("Text", "text", textPanel);
+  const select = name => {
+    for (const [tab, panel, key] of [[imageTab, imagePanel, "image"], [textTab, textPanel, "text"]]) {
+      tab.setAttribute("aria-selected", String(key === name)); tab.tabIndex = key === name ? 0 : -1; panel.hidden = key !== name;
+    }
+  };
+  for (const tab of [imageTab, textTab]) {
+    tab.addEventListener("click", () => select(tab === imageTab ? "image" : "text"));
+    tab.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      // Two tabs: the arrows switch to the other one; Home and End go to the first and last.
+      const next = event.key === "Home" ? imageTab : event.key === "End" ? textTab : tab === imageTab ? textTab : imageTab;
+      select(next === imageTab ? "image" : "text"); next.focus();
+    });
+  }
+  tabs.append(imageTab, textTab); toolbar.append(tabs, pageField, preserved);
+
+  const alert = element("div", "", "sv-alert");
+  let pdf = element("iframe", "", "sv-pdf"); pdf.title = "Preserved PDF document"; pdf.hidden = true;
+  const scroll = element("div", "", "sv-scroll"), frame = element("div", "", "sv-frame"), image = element("img", "", "sv-img");
+  image.alt = "Preserved document";
+  // The regions are for the mouse; the list of lines is their keyboard equivalent.
+  const overlay = document.createElementNS(SVG, "svg"); overlay.setAttribute("class", "sv-overlay"); overlay.setAttribute("aria-hidden", "true");
+  frame.append(image, overlay); scroll.append(frame);
+  imagePanel.append(alert, pdf, scroll, element("p", "Select a highlighted region to find the recorded rows that cite it.", "muted small sv-hint"));
+  const lines = element("ol", "", "sv-lines"); lines.setAttribute("aria-label", "Text read from the document");
+  const copy = element("button", "Copy text", "small sv-copy"); copy.type = "button";
+  textPanel.append(lines, copy);
+  const extras = element("details", "", "sv-extras"), issues = element("ul", "", "sv-issues"), codes = element("div", "", "sv-codes");
+  extras.append(element("summary", "Reading notes & codes"), issues, element("h3", "QR codes and barcodes"), codes);
+  el.append(toolbar, imagePanel, textPanel, extras);
+  select("image");
+
+  const textLines = () => state.reading?.result?.lines || [];
+  const tell = (blockId, lineIds) => { for (const callback of state.callbacks) callback({blockId, lineIds}); };
+  function showPdf(url) {
+    // A fresh frame given its source before it is inserted adds no browser history entry (receipt.js showPdf).
+    const fresh = element("iframe", "", "sv-pdf"); fresh.title = pdf.title; fresh.hidden = !url;
+    if (url) fresh.src = url;
+    pdf.replaceWith(fresh); pdf = fresh;
+  }
+  async function showImage(path) {
+    const generation = ++state.generation;
+    alert.replaceChildren();
+    try {
+      const response = await fetch(path, {headers: {"Authorization": `Bearer ${token}`}});
+      if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || "Could not retrieve image."); }
+      const blob = await response.blob();
+      if (generation !== state.generation) return;
+      if (state.url) URL.revokeObjectURL(state.url);
+      state.url = URL.createObjectURL(blob);
+      const isPdf = blob.type === "application/pdf";
+      showPdf(isPdf ? state.url : null); scroll.hidden = isPdf;
+      if (!isPdf) image.src = state.url;
+    } catch (error) {
+      // The error stands alone: no empty frame or broken image beside it.
+      if (generation === state.generation) { alert.replaceChildren(alertBox(`The preview couldn't be shown: ${error.message}`, {tone: "error"})); scroll.hidden = true; showPdf(null); }
+    }
+  }
+  function focusLine(item) {
+    for (const other of lines.children) other.tabIndex = other === item ? 0 : -1;
+    item.focus();
+  }
+  function render() {
+    const result = state.reading?.result;
+    lines.replaceChildren(); issues.replaceChildren(); codes.replaceChildren(); overlay.replaceChildren();
+    pageField.hidden = true; pageSelect.replaceChildren();
+    if (!result) lines.append(element("li", "Not read yet. The text appears here once the document is read.", "muted sv-empty"));
+    textLines().forEach((line, index) => {
+      const item = element("li", line.text || " ", "sv-line"); item.dataset.lineId = line.id; item.tabIndex = index ? -1 : 0;
+      lines.append(item);
+    });
+    copy.disabled = !result;
+    if (result?.pages) {
+      pageSelect.append(...result.pages.map(page => new Option(`${page.number} of ${result.pages.length} · ${page.method}`, String(page.number))));
+      pageField.hidden = result.pages.length < 2;
+    }
+    for (const issue of result?.issues || []) if (issue.code !== "interpretation_pending") issues.append(element("li", issue.message));
+    if (result && !result.codes?.length) codes.append(element("p", "No code decoded. A QR code may be absent or unreadable; check the image.", "muted small"));
+    for (const code of result?.codes || []) {
+      const card = element("div", "", "receipt-field");
+      const bytes = element("details"); bytes.append(element("summary", "Exact payload bytes (base64)"), element("pre", code.bytes_base64));
+      const find = element("button", "Highlight code", "small"); find.type = "button";
+      find.addEventListener("click", () => highlight([code.id]));
+      card.append(element("strong", `${code.format} · ${code.valid ? "decoded" : "decode error"}`), element("pre", code.text || "No text representation"), bytes, find);
+      codes.append(card);
+    }
+    if (result && result.transcription_method !== "pdf_pages") {
+      overlay.setAttribute("viewBox", `0 0 ${result.width} ${result.height}`);
+      for (const block of [...(result.blocks || []), ...(result.codes || [])]) {
+        const polygon = document.createElementNS(SVG, "polygon");
+        polygon.setAttribute("points", block.polygon.map(pair => pair.join(",")).join(" ")); polygon.dataset.evidenceId = block.id;
+        const title = document.createElementNS(SVG, "title"); title.textContent = block.text; polygon.append(title);
+        polygon.addEventListener("click", () => {
+          highlight([block.id]);
+          tell(block.id, textLines().filter(line => (line.block_ids || []).includes(block.id)).map(line => line.id));
+        });
+        overlay.append(polygon);
+      }
+    }
+    const path = result && state.runId && result.transcription_method !== "pdf_pages" ? `/api/receipt-runs/${state.runId}/preview`
+      : `/api/documents/${state.doc.id}/preview?blob_hash=${state.digest}`;
+    return showImage(path);
+  }
+  function highlight(ids) {
+    const result = state.reading?.result;
+    if (!result || !ids?.length) return;
+    const wanted = new Set(ids);
+    let first = null;
+    for (const item of lines.children) {
+      const selected = wanted.has(item.dataset.lineId);
+      item.classList.toggle("selected", selected);
+      if (selected && !first) first = item;
+    }
+    if (first) {
+      for (const other of lines.children) other.tabIndex = other === first ? 0 : -1;
+      lines.scrollTop = Math.max(0, first.offsetTop - lines.clientHeight / 3);
+    }
+    if (["vision_model", "pdf_pages"].includes(result.transcription_method) && !ids.some(id => id.startsWith("code-"))) { select("text"); return; }
+    select("image");
+    for (const line of result.lines) if (wanted.has(line.id)) for (const id of line.block_ids || []) wanted.add(id);
+    for (const polygon of overlay.children) polygon.classList.toggle("selected", wanted.has(polygon.dataset.evidenceId));
+  }
+  lines.addEventListener("keydown", event => {
+    const item = event.target.closest(".sv-line");
+    if (!item) return;
+    const all = [...lines.querySelectorAll(".sv-line")], index = all.indexOf(item);
+    const moves = {ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: all.length - 1};
+    if (event.key in moves) { event.preventDefault(); const next = all[Math.max(0, Math.min(all.length - 1, moves[event.key]))]; if (next) focusLine(next); }
+    else if (event.key === "Enter") { event.preventDefault(); highlight([item.dataset.lineId]); tell(null, [item.dataset.lineId]); }
+  });
+  lines.addEventListener("click", event => { const item = event.target.closest(".sv-line"); if (item) focusLine(item); });
+  pageSelect.addEventListener("change", () => {
+    const first = textLines().find(line => line.id.startsWith(`page-${pageSelect.value}-`));
+    if (first) highlight([first.id]);
+  });
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(textLines().map(line => line.text).join("\n")); copy.textContent = "Copied"; }
+    catch { notice("Copying isn't available here. Select the text and press Ctrl+C.", true); }
+  });
+  render();
+  return {
+    el, highlight,
+    onRegionClick(callback) { state.callbacks.push(callback); },
+    update(reading, nextRunId = state.runId) { state.reading = reading; state.runId = nextRunId; return render(); },
+    showDocument(id) { select("image"); return showImage(`/api/documents/${id}/preview`); },
+    destroy() { state.generation++; state.callbacks = []; if (state.url) URL.revokeObjectURL(state.url); state.url = null; },
+  };
+}
+
+// Confirm, Reject and Correct for one record (docs/ui.md "Observability components"). Correct opens a form whose preview
+// shows what saving would change (the correction-preview endpoint) before anything is saved; a save or decision can be
+// undone for 8 seconds. decision: false offers Correct only (a statement's row).
+let confirmCorrectCount = 0;
+const SALE_TYPES = {sale: "Sale", return: "Return"}, DIRECTION_WORDS = {out: "Money out", in: "Money in"};
+function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, correctable = [], reviewPath = null, confirmBody = {status: "verified"},
+                         rejectBody = {status: "rejected"}, undoBody = {status: "needs_review"}, labels = {}, onChange = () => {}, preview = true,
+                         member = null, decision = true, onClose = null, showState = true} = {}) {
+  const n = ++confirmCorrectCount, idOf = name => `cc${n}-${name}`;
+  const record = `/api/finance/records/${recordType}/${recordId}`, path = reviewPath || `${record}/review`;
+  const words = {confirm: "Confirm", reject: "Reject", correct: "Correct…", ...labels};
+  const el = element("div", "", "confirm-correct");
+  const actions = element("div", "", "cc-actions"); actions.setAttribute("role", "group"); actions.setAttribute("aria-label", "Decision");
+  const stateLine = element("div", "", "cc-state");
+  const form = element("form", "", "cc-form"); form.id = idOf("form"); form.hidden = true; form.noValidate = true;
+  el.append(actions, stateLine, form);
+  const button = (label, className = "") => { const node = element("button", label, className); node.type = "button"; return node; };
+  const automatic = reviewStatus === "verified" && reviewSource === "automatic";
+  let confirmButton = null, rejectButton = null, correctButton = null;
+  const failed = error => stateLine.replaceChildren(alertBox(error.message || String(error), {tone: "error"}));
+  async function decide(body, message, undo) {
+    stateLine.replaceChildren();
+    for (const node of actions.querySelectorAll("button")) node.disabled = true;
+    try { await api(path, {method: "POST", body: JSON.stringify(body)}); }
+    catch (error) { failed(error); for (const node of actions.querySelectorAll("button")) node.disabled = false; return; }
+    if (undo) undoToast(message, () => api(path, {method: "POST", body: JSON.stringify(undo)}));
+    else notice(message);
+    await onChange();
+  }
+  function undoToast(message, undo) {
+    const item = toast(message, {timeout: 8000}), again = button("Undo", "small");
+    again.addEventListener("click", async () => {
+      again.disabled = true;
+      try { await undo(); item.remove(); notice("Undone."); await onChange(); } catch (error) { notice(error, true); again.disabled = false; }
+    });
+    item.querySelector(".toast-body").append(again);
+  }
+  // showState: false where the record's status badge already shows beside its title (the document page).
+  const status = name => { if (showState) stateLine.append(statusBadge(name)); };
+  if (decision) {
+    if (["needs_review", "proposed"].includes(reviewStatus)) {
+      confirmButton = button(words.confirm, "primary"); rejectButton = button(words.reject);
+      confirmButton.addEventListener("click", () => decide(confirmBody, "Confirmed.", {...undoBody}));
+      rejectButton.addEventListener("click", () => decide(rejectBody, "Rejected. It no longer counts.", {...undoBody}));
+      actions.append(confirmButton, rejectButton);
+    } else if (automatic) {
+      status("checked");
+      rejectButton = button("Not right? Reject");
+      rejectButton.addEventListener("click", () => decide(rejectBody, "Rejected. It no longer counts.", {status: "verified"}));
+      actions.append(rejectButton);
+    } else if (reviewStatus === "verified") {
+      status("verified");
+      const undo = button("Undo verification"); undo.addEventListener("click", () => decide(undoBody, "Back to needs review."));
+      actions.append(undo);
+    } else if (reviewStatus === "rejected") {
+      status("rejected");
+      const undo = button("Undo rejection"); undo.addEventListener("click", () => decide(undoBody, "Back to needs review."));
+      actions.append(undo);
+    }
+  }
+  const fields = {};
+  if (correctable.length && reviewStatus !== "rejected") {
+    correctButton = button(words.correct);
+    correctButton.setAttribute("aria-expanded", "false"); correctButton.setAttribute("aria-controls", form.id);
+    correctButton.addEventListener("click", () => form.hidden ? openCorrect() : close());
+    actions.append(correctButton);
+    for (const item of correctable) {
+      const box = element("div", "", "field"), caption = element("label", item.label);
+      let input;
+      if (item.options) {
+        input = document.createElement("select");
+        if (item.kind === "category" && !item.value) input.add(new Option("Not set", ""));
+        const text = item.kind === "category" ? categoryLabel : item.kind === "sale_type" ? value => SALE_TYPES[value] || value
+          : item.kind === "direction" ? value => DIRECTION_WORDS[value] || value : statusLabel;
+        for (const option of item.options) input.add(new Option(text(option), option));
+      } else {
+        input = document.createElement("input");
+        input.type = item.kind === "date" ? "date" : "text";
+        if (["money", "amount"].includes(item.kind)) input.inputMode = "decimal";
+        input.maxLength = item.kind === "text" ? 60 : 120;
+      }
+      input.value = item.value ?? ""; input.id = idOf(item.field); caption.htmlFor = input.id;
+      box.append(caption, input); form.append(box); fields[item.field] = input;
+    }
+    const reasonBox = element("div", "", "field"), reasonLabel = element("label", "Why (optional)"), reason = document.createElement("input");
+    reason.id = idOf("reason"); reason.maxLength = 500; reasonLabel.htmlFor = reason.id;
+    const hint = element("small", "Kept with the change.", "muted"); hint.id = idOf("reason-hint"); reason.setAttribute("aria-describedby", hint.id);
+    reasonBox.append(reasonLabel, reason, hint);
+    const previewBox = element("div", "", "cc-preview"); previewBox.setAttribute("role", "status"); previewBox.setAttribute("aria-live", "polite");
+    const error = element("p", "", "error-text"); error.setAttribute("role", "alert");
+    const save = element("button", "Save", "primary"); save.type = "submit";
+    const cancel = button("Cancel"); cancel.addEventListener("click", () => close());
+    const row = element("div", "", "button-row"); row.append(save, cancel);
+    form.append(reasonBox, previewBox, error, row);
+    const changes = () => Object.fromEntries(correctable.filter(item => fields[item.field].value.trim() !== (item.value ?? ""))
+      .map(item => [item.field, fields[item.field].value.trim() || null]));
+    let sequence = 0, timer = null, shown = null;
+    const showPreview = async () => {
+      const wanted = changes(), mine = ++sequence;
+      error.textContent = ""; save.disabled = false; shown = null;
+      if (!preview || !Object.keys(wanted).length) { previewBox.replaceChildren(); return; }
+      const slow = setTimeout(() => { if (mine === sequence) previewBox.replaceChildren(element("p", "Working out what changes …", "muted small")); }, 300);
+      try {
+        const found = await api(`${record}/correction-preview`, {method: "POST", body: JSON.stringify({changes: wanted})});
+        if (mine !== sequence) return;
+        shown = found; previewBox.replaceChildren(...previewParts(found));
+        save.scrollIntoView({block: "nearest"});  // The preview pushed it down; Save stays in view.
+      } catch (failure) {
+        if (mine !== sequence) return;
+        if (failure.status === 400) { previewBox.replaceChildren(); error.textContent = failure.message; save.disabled = true; }
+        else previewBox.replaceChildren(element("p", "Couldn't work out the preview. You can still save.", "muted small"));
+      } finally { clearTimeout(slow); }
+    };
+    form.addEventListener("input", event => {
+      if (event.target === reason) return;
+      clearTimeout(timer); timer = setTimeout(showPreview, 450);
+    });
+    form.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const wanted = changes();
+      if (!Object.keys(wanted).length) { close(); return; }
+      save.disabled = true; error.textContent = "";
+      try {
+        const saved = await api(`${record}${member ? `?member=${member}` : ""}`, {method: "PATCH", body: JSON.stringify({changes: wanted, reason: reason.value.trim() || null})});
+        const moved = shown?.figures?.length;
+        close(false);
+        const message = moved ? `Saved. ${moved} ${moved === 1 ? "total" : "totals"} changed.` : "Saved.";
+        if (saved.correction_ids?.length) undoToast(message, () => api(`${record}/corrections/undo`, {method: "POST", body: JSON.stringify({ids: saved.correction_ids})}));
+        else notice(message);
+        await onChange();
+      } catch (failure) { error.textContent = failure.message; save.disabled = false; }
+    });
+  }
+  function openCorrect(field = null) {
+    if (!correctButton) return;
+    form.hidden = false; correctButton.setAttribute("aria-expanded", "true"); el.classList.add("cc-open");
+    (fields[field] || Object.values(fields)[0])?.focus();
+  }
+  function close(focus = true) {
+    if (!correctButton || form.hidden) return;
+    form.hidden = true; correctButton.setAttribute("aria-expanded", "false"); el.classList.remove("cc-open");
+    for (const item of correctable) fields[item.field].value = item.value ?? "";
+    form.querySelector(".cc-preview").replaceChildren(); form.querySelector(".error-text").textContent = "";
+    if (focus) correctButton.focus();
+    onClose?.();
+  }
+  return {el, confirmButton, rejectButton, correctButton, openCorrect, close};
+}
+// What a correction would change, from the preview: each moved total as before → after (after is a plain amount: its
+// breakdown would open today's figure, not the corrected one), then what stays, the match, the review state and notes.
+function previewParts(found) {
+  const parts = [];
+  if (found.figures.length) {
+    const list = element("ul", "", "cc-preview-list");
+    for (const item of found.figures) {
+      const row = element("li", "", "cc-preview-row");
+      const arrow = element("span", "→", "cc-arrow"); arrow.setAttribute("aria-hidden", "true");
+      const delta = element("span", "", "cc-delta"); if (item.difference) delta.append(amount(item.difference));
+      row.append(element("span", item.label, "cc-label"), item.before ? figure(item.before, {size: "inline", signed: false}) : element("span", "—"),
+                 arrow, element("span", " becomes ", "visually-hidden"), item.after ? amount(item.after, {signed: false}) : element("span", "—"), delta);
+      list.append(row);
+    }
+    parts.push(list);
+  } else if (!found.notes.length) parts.push(element("p", "No totals change.", "muted small"));
+  if (found.unchanged_count) parts.push(element("p", `${found.unchanged_count} other ${found.unchanged_count === 1 ? "total stays" : "totals stay"} the same.`, "muted small"));
+  if (found.matching?.changed) {
+    const name = side => side.map(link => link.counterpart?.name || "a record").join(", ");
+    parts.push(element("p", found.matching.after.length ? `It will be matched to ${name(found.matching.after)}.` : `It will no longer be matched to ${name(found.matching.before)}.`, "small"));
+  }
+  if (found.review.automatic && found.review.after === "verified") parts.push(element("p", "It will count automatically: every check passes.", "small"));
+  else if (found.issues.remaining.length && found.review.after === "needs_review") parts.push(element("p", `Still needs you: ${found.issues.remaining[0]}`, "small"));
+  for (const note of found.notes) parts.push(element("p", note, "muted small"));
+  return parts;
+}
+
+// A record's history (newest first): who changed which field from what to what and why, and review decisions.
+function loadHistory(type, id) { return api(`/api/finance/records/${type}/${id}/history`).then(found => found.entries); }
+function historyValue(entry, value) {
+  if (value == null || value === "") return "empty";
+  if (entry.value_kind === "date") return dateText(value);
+  if (entry.value_kind === "category") return categoryLabel(value);
+  if (entry.value_kind === "sale_type") return SALE_TYPES[value] || value;
+  if (entry.value_kind === "direction") return DIRECTION_WORDS[value] || value;
+  return value;
+}
+function historyList(entries, {field = null, empty = "No changes yet. Corrections and review decisions appear here."} = {}) {
+  const shown = field ? entries.filter(entry => entry.field === field) : entries;
+  if (!shown.length) return emptyState(empty);
+  const list = element("ol", "", "history-list");
+  for (const entry of shown) {
+    const row = element("li", "", "history-row"); row.dataset.kind = entry.kind;
+    const when = dateDisplay(entry.at); when.classList.add("history-when");
+    const what = element("p", "", "history-what");
+    if (entry.kind === "review") what.append(statusBadge(entry.from_status), element("span", " → ", "history-arrow"), statusBadge(entry.to_status));
+    else {
+      what.append(`${entry.row ? `${entry.row.label} · ` : ""}${entry.label}: `, element("span", historyValue(entry, entry.from), "history-from"),
+                  element("span", " → ", "history-arrow"), element("span", historyValue(entry, entry.to), "history-to"));
+      if (entry.kind === "family") what.append(element("span", ` · from the family, ${statusLabel(entry.status).toLowerCase()}`, "muted"));
+    }
+    row.append(when, element("span", entry.who, "history-who"), what);
+    const why = entry.reason || entry.note;
+    if (why) row.append(element("p", why, "history-why muted"));
+    list.append(row);
+  }
+  return list;
+}

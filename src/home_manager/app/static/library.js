@@ -329,6 +329,7 @@ $("restore-selected").addEventListener("click", () => restoreDocuments([...selec
 async function afterLibraryChange() {
   selection.clear(); await loadDocuments(); renderSelection();
   if (receipt) await refreshInspectorDoc();
+  if (doc2) await refreshDocumentV2();
 }
 async function eachDocument(docs, request) {
   // Applies one action per document; reports every failure instead of stopping at the first. Each request's own
@@ -364,6 +365,7 @@ $("description-form").addEventListener("submit", async event => {
     $("description-dialog").close();
     await loadDocuments();
     if (receipt?.doc.id === updated.id) renameInspector(updated);
+    if (doc2?.doc?.id === updated.id) renameDocumentV2(updated);
     notice(updated.description_source === "user" ? "Description saved." : "Your description was removed; the AI's description is used.");
   } catch (error) { $("description-error").textContent = error.message; }
 });
@@ -431,9 +433,10 @@ $("confirm-library-action").addEventListener("click", async () => {
 });
 
 const MAP_KEYS = ["date", "description", "amount", "debit", "credit"];
-let importDoc = null;
-async function openImport(doc) {
-  importDoc = doc;
+let importDoc = null, importDone = null;
+// onDone runs after the rows are imported (the Money screens reload; money_v2.js importPicker).
+async function openImport(doc, {onDone = null} = {}) {
+  importDoc = doc; importDone = onDone;
   $("import-document").textContent = doc.relative_path;
   const select = $("import-account"); select.replaceChildren(new Option("New account…", ""));
   const accounts = await api("/api/finance/accounts");
@@ -497,5 +500,6 @@ $("confirm-import").addEventListener("click", async () => {
     $("import-dialog").close();
     notice(`Imported ${result.inserted} new transactions; ${result.duplicates} were already recorded and ${result.rejected} rows were not importable.`);
     loadNavCounts().catch(() => {});
+    if (importDone) Promise.resolve(importDone(result)).catch(error => notice(error, true));
   } catch (error) { $("import-status").textContent = error.message; $("confirm-import").disabled = false; }
 });

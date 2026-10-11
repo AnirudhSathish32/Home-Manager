@@ -486,12 +486,13 @@ class Investments:
     def ibond_limits(self, db):
         """Calendar years whose electronic I bond purchases here pass the $10,000 a person may buy (a profile is one person).
         Purchases waiting for review count too, so the warning comes before they are confirmed; rejected ones don't."""
-        rows = db.execute("SELECT substr(h.issue_date,1,4) AS year,a.currency,sum(h.principal_minor) AS total FROM holdings h "
+        rows = db.execute("SELECT substr(h.issue_date,1,4) AS year,a.currency,sum(h.principal_minor) AS total,min(h.account_id) AS account_id FROM holdings h "
                           "JOIN investment_accounts a ON a.id=h.account_id LEFT JOIN investment_confirmations c ON c.id=h.confirmation_id "
                           "WHERE h.instrument_class='i_bond' AND h.principal_minor IS NOT NULL AND h.issue_date IS NOT NULL "
                           "AND coalesce(c.review_status,'verified')<>'rejected' AND a.currency='USD' GROUP BY 1,2 HAVING sum(h.principal_minor)>? ORDER BY 1",
                           (IBOND_YEARLY_LIMIT_MINOR,)).fetchall()
-        return [{"year": int(row["year"]), "total": money(row["total"], row["currency"]), "limit": money(IBOND_YEARLY_LIMIT_MINOR, row["currency"]),
+        # account_id: the first account holding that year's I bonds, for the page's "Open account".
+        return [{"year": int(row["year"]), "account_id": row["account_id"], "total": money(row["total"], row["currency"]), "limit": money(IBOND_YEARLY_LIMIT_MINOR, row["currency"]),
                  "message": f"I bonds bought in {row['year']} add up to {format_minor(row['total'], row['currency'])}, more than the "
                             f"{format_minor(IBOND_YEARLY_LIMIT_MINOR, row['currency'])} a person may buy electronically in a year. Check the "
                             "amounts, or whether some belong to someone else's profile."} for row in rows]

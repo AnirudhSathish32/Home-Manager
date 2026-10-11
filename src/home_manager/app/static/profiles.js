@@ -274,7 +274,7 @@ async function loadFamilyRouting() {
   if (!data.records.length) { list.replaceChildren(element("li", "Everything uploaded to the family has been sent to someone.", "muted small")); return; }
   list.replaceChildren(...data.records.map(record => routingRow(record, data.people)));
 }
-function routingRow(record, people) {
+function routingRow(record, people, onSent = loadFamilyRouting, idPrefix = "route") {
   const row = element("li", "", "routing-row"), what = element("div", "", "routing-what"), key = `${record.record_type}-${record.id}`;
   const title = element("strong", `${RECORD_KINDS?.[record.record_type] || statusLabel(record.record_type)} · ${record.name || "Name not found"}`);
   const facts = element("span", "", "small");
@@ -283,7 +283,7 @@ function routingRow(record, people) {
   what.append(title, facts, element("small", suggested ? `Suggested: ${suggested.name} · ${record.suggested.reason}` : record.suggested?.reason || "", "muted"));
   if (record.document_id) what.append(homeLink("Open the document", `#/documents/${record.document_id}`, "small"));
   const form = element("form", "", "routing-decision"), field = element("div", "", "field"), label = element("label", "For"), select = element("select");
-  select.id = `route-${key}`; label.htmlFor = select.id; select.required = true;
+  select.id = `${idPrefix}-${key}`; label.htmlFor = select.id; select.required = true;
   select.append(new Option("Choose…", ""), ...people.map(person => new Option(person.name, person.member_id)));
   if (record.shareable) select.append(new Option("Shared by the family", "shared"));
   select.value = suggested ? suggested.member_id : "";
@@ -308,7 +308,7 @@ function routingRow(record, people) {
       notice(shared ? `Shared: ${result.shares.map(part => `${part.name} ${part.share?.display || ""}`).join(" · ")}. Each person's profile gets the document and their part.`
                     : `Sent to ${result.shares[0]?.name}.`);
       busy.capture = true;
-      await loadFamilyRouting();
+      await onSent();
     } catch (error) { send.disabled = false; notice(error, true); }
   });
   row.append(what, form);

@@ -65,6 +65,8 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
   - secondary/sunken (table headers) is 6.3 light and 7.7 dark.
   - Over-budget meter (warning on warning-subtle) is 5.2 light and 7.8 dark.
   - `--chart-cat-1..6` on surface, dark: 3.9, 5.3, 6.1, 7.9, 6.3, 6.2 (all ≥ 3:1).
+- Phase 2, document page (checked 2026-10-10): text/warning-subtle (a selected source line) is 13.7 light and 12.9 dark.
+- Phase 2, To check (checked 2026-10-10): accent/accent-subtle (the selected queue row) is 6.2 dark (5.1 light, above).
   - `--chart-cat-1..6` on surface, light: 4.4, 3.2, 2.8, 2.2, 2.7, 5.0. Slots 3–5 are under 3:1, as they were before
     Phase 1. The always-visible legend, the end labels and the table view relieve it.
   - `--chart-seq-1..10` on surface, light: 2.1 → 12.0.

@@ -16,7 +16,7 @@ import uuid
 from pydantic import Field, StringConstraints, field_validator
 
 from ..core import actor
-from ..core.categories import receipt_category
+from ..core.categories import RECEIPT_CATEGORIES, receipt_category
 from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..core.trace import NULL
@@ -150,6 +150,19 @@ TRANSACTION_TYPES = ("purchase", "refund", "payment", "transfer", "deposit", "fe
 # field -> (column, kind). The amount is entered positive, and its direction is a field of its own.
 TRANSACTION_CORRECTABLE = {"posted_date": ("posted_date", "date"), "amount": ("amount_minor", "amount"), "direction": ("amount_minor", "direction"),
                            "merchant": ("merchant_id", "name"), "transaction_type": ("transaction_type", "type")}
+# What a transaction's fields are called in its history and Correct form; category is set on its own (set_category).
+TRANSACTION_LABELS = {"posted_date": "Date", "amount": "Amount", "direction": "Money in or out", "merchant": "Merchant",
+                      "transaction_type": "Type", "category": "Category"}
+# The review note when a correction clears a record's last issue; with no actor, the history shows it as automatic.
+AUTO_VERIFIED_NOTE = "Every automatic check passes after your correction."
+UNDO_REASON = "Undid a change"
+
+
+def field_labels(record_type):
+    """What a record type's correctable fields are called."""
+    if record_type == "transaction":
+        return TRANSACTION_LABELS
+    return {field: label for field, (_, _, label) in CORRECTABLE.get(record_type, {}).items()}
 PENDING = f"(t.origin='extraction' AND t.review_status IN ('proposed','needs_review') OR t.review_status<>'rejected' AND {HELD})"
 # Transactions reconciliation may match: not rejected, and not waiting on their statement.
 MATCHABLE = f"t.review_status<>'rejected' AND NOT ({HELD})"
@@ -850,6 +863,10 @@ class Ledger:
                 value["account"] = db.execute("SELECT display_name FROM accounts WHERE id=?", (value["account_id"],)).fetchone()[0]
             if record_type in ("transaction", "receipt"):
                 value["links"] = self.links(db, record_type, record_id)
+            # What the Correct form offers, with the text a correction takes (docs/money.md "Corrections").
+            value["correctable"] = self.correctable(db, record_type, row)
+            for line in value.get("transactions", [])[:500]:
+                line["correctable"] = self.correctable(db, "transaction", line)
             if record_type in CORRECTABLE or record_type == "transaction":
                 value["corrections"] = self.corrections(db, record_type, record_id)
                 # Changes the family made to this record, each of which this person can reject (finance/family_corrections.py).
@@ -895,17 +912,23 @@ class Ledger:
         if not changes or unknown:
             raise ValueError("Choose fields a transaction allows: " + ", ".join(field.replace("_", " ") for field in TRANSACTION_CORRECTABLE) + ".")
         with self.store.connection() as db:
-            if db.execute("SELECT 1 FROM transactions WHERE id=?", (transaction_id,)).fetchone() is None:
-                raise ValueError("Transaction not found.")
-            for field, text in changes.items():
-                row = db.execute("SELECT * FROM transactions WHERE id=?", (transaction_id,)).fetchone()
-                if row["replaced_by"] is not None:
-                    raise ValueError("Its statement or import line replaced this entry; correct that line instead.")
-                value, stored = self._transaction_value(db, row, field, text)
-                db.execute(f"UPDATE transactions SET {TRANSACTION_CORRECTABLE[field][0]}=?,updated_at=? WHERE id=?", (value, now(), transaction_id))
-                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) VALUES('transaction',?,?,?,?,?,?,?)",
-                           (transaction_id, field, stored, self._transaction_text(db, row, field), clean_reason(reason), actor.current(), now()))
-        return self.record("transaction", transaction_id)
+            ids = self._apply_transaction_correction(db, transaction_id, changes, reason)
+        return {**self.record("transaction", transaction_id), "correction_ids": ids}
+
+    def _apply_transaction_correction(self, db, transaction_id, changes, reason):
+        """Write a transaction's corrected fields and their history rows; returns the rows' ids."""
+        if db.execute("SELECT 1 FROM transactions WHERE id=?", (transaction_id,)).fetchone() is None:
+            raise ValueError("Transaction not found.")
+        ids = []
+        for field, text in changes.items():
+            row = db.execute("SELECT * FROM transactions WHERE id=?", (transaction_id,)).fetchone()
+            if row["replaced_by"] is not None:
+                raise ValueError("Its statement or import line replaced this entry; correct that line instead.")
+            value, stored = self._transaction_value(db, row, field, text)
+            db.execute(f"UPDATE transactions SET {TRANSACTION_CORRECTABLE[field][0]}=?,updated_at=? WHERE id=?", (value, now(), transaction_id))
+            ids.append(db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) VALUES('transaction',?,?,?,?,?,?,?)",
+                                  (transaction_id, field, stored, self._transaction_text(db, row, field), clean_reason(reason), actor.current(), now())).lastrowid)
+        return ids
 
     def _transaction_value(self, db, row, field, text):
         """(column value, stored text) for one corrected transaction field, keeping what the other fields say."""
@@ -1179,40 +1202,162 @@ class Ledger:
         unknown = set(changes) - set(fields)
         if not changes or unknown:
             raise ValueError("Choose fields this record allows: " + ", ".join(field.replace("_", " ") for field in fields) + ".")
-        table = RECORD_TABLES[record_type]
         with self.store.connection() as db:
-            row = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
-            if row is None:
-                raise ValueError("Financial record not found.")
-            issues = json.loads(row["validation_json"])
-            for field, text in changes.items():
-                column, kind, label = fields[field]
-                value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
-                previous = (self._merchant_name(db, row[column]) if kind == "name" else
-                            money(row[column], row["currency"])["decimal"] if kind == "money" and row[column] is not None else
-                            receipt_direction(row) if kind == "sale_type" else row[column])
-                resolved = [issue for issue in issues if issue.startswith(label)]
-                issues = [issue for issue in issues if not issue.startswith(label)]
-                if kind == "sale_type":
-                    self.set_receipt_direction(db, record_id, value)
-                else:
-                    db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
-                correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
-                                        "VALUES(?,?,?,?,?,?,?,?,?)", (record_type, record_id, field, stored, previous, json.dumps(resolved),
-                                                                      clean_reason(reason), actor.current(), now())).lastrowid
-            db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
-            if record_type == "receipt" and receipt_category(changes.get("category")):
-                # The whole receipt's category is a shortcut for every item the user has not categorised one by one.
-                db.execute("UPDATE receipt_items SET category=?,category_source='receipt' WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
-                           (receipt_category(changes["category"]), record_id))
-            if record_type == "receipt":
-                self.refresh_splits(db, record_id)
-            if not issues and row["review_status"] == "needs_review" and row["review_source"] != "user":
+            ids = self._apply_correction(db, record_type, record_id, changes, reason)
+            table = RECORD_TABLES[record_type]
+            row = db.execute(f"SELECT validation_json,review_status,review_source FROM {table} WHERE id=?", (record_id,)).fetchone()
+            if not json.loads(row["validation_json"]) and row["review_status"] == "needs_review" and row["review_source"] != "user":
                 db.execute(f"UPDATE {table} SET review_status='verified',review_source='automatic' WHERE id=?", (record_id,))
                 db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES(?,?,'needs_review','verified',?,?)",
-                           (record_type, record_id, "Every automatic check passes after your correction.", now()))
-            self.add_evidence(db, record_type, record_id, {"document_id": row["document_id"], "blob_hash": row["blob_hash"],
-                                                           "source_key": f"user:correction:{correction}"}, {"entered_by_user": sorted(changes)})
+                           (record_type, record_id, AUTO_VERIFIED_NOTE, now()))
+        # The new history rows, so the change can be undone (undo_corrections).
+        return {**self.record(record_type, record_id), "correction_ids": ids}
+
+    def _apply_correction(self, db, record_type, record_id, changes, reason):
+        """Write a record's corrected fields and their history rows; returns the rows' ids. Issues about the corrected
+        fields are resolved; the review state is left to the caller."""
+        fields, table = CORRECTABLE[record_type], RECORD_TABLES[record_type]
+        row = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
+        if row is None:
+            raise ValueError("Financial record not found.")
+        issues, ids = json.loads(row["validation_json"]), []
+        for field, text in changes.items():
+            column, kind, label = fields[field]
+            value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
+            current = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
+            previous = self._field_text(db, current, kind, column)
+            resolved = [issue for issue in issues if issue.startswith(label)]
+            issues = [issue for issue in issues if not issue.startswith(label)]
+            if kind == "sale_type":
+                self.set_receipt_direction(db, record_id, value)
+            else:
+                db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
+            ids.append(db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
+                                  "VALUES(?,?,?,?,?,?,?,?,?)", (record_type, record_id, field, stored, previous, json.dumps(resolved),
+                                                                clean_reason(reason), actor.current(), now())).lastrowid)
+        db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
+        if record_type == "receipt" and receipt_category(changes.get("category")):
+            # The whole receipt's category is a shortcut for every item the user has not categorised one by one.
+            db.execute("UPDATE receipt_items SET category=?,category_source='receipt' WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
+                       (receipt_category(changes["category"]), record_id))
+        if record_type == "receipt":
+            self.refresh_splits(db, record_id)
+        self.add_evidence(db, record_type, record_id, {"document_id": row["document_id"], "blob_hash": row["blob_hash"],
+                                                       "source_key": f"user:correction:{ids[-1]}"}, {"entered_by_user": sorted(changes)})
+        return ids
+
+    def _field_text(self, db, row, kind, column):
+        """A correctable field as a correction enters it: the merchant's name, a money decimal, sale or return, or the value."""
+        if kind == "name":
+            return self._merchant_name(db, row[column])
+        if kind == "money":
+            return money(row[column], row["currency"])["decimal"] if row[column] is not None else None
+        if kind == "sale_type":
+            return receipt_direction(row)
+        return row[column]
+
+    def correctable(self, db, record_type, row):
+        """The fields a person may correct on one record, each with the text a correction takes (docs/money.md
+        "Corrections"): [{field, label, kind, value, shown_as, options?}]. shown_as is the record row the field corrects."""
+        if record_type == "transaction":
+            fields = [(field, TRANSACTION_LABELS[field], kind, self._transaction_text(db, row, field)) for field, (_, kind) in TRANSACTION_CORRECTABLE.items()]
+        else:
+            fields = [(field, label, kind, self._field_text(db, row, kind, column)) for field, (column, kind, label) in CORRECTABLE.get(record_type, {}).items()]
+        options = {"category": RECEIPT_CATEGORIES, "sale_type": ("sale", "return"), "direction": ("out", "in"), "type": TRANSACTION_TYPES}
+        found = []
+        for field, label, kind, value in fields:
+            item = {"field": field, "label": label, "kind": kind, "value": value, "shown_as": "merchant" if field in ("provider", "payer") else field}
+            if kind in options:
+                item["options"] = list(options[kind])
+            found.append(item)
+        return found
+
+    def history(self, record_type, record_id):
+        """A record's changes, newest first (docs/money.md "Corrections"): corrections (a statement's rows' too), review
+        decisions and corrections received from the family. A correction is undoable while it is its field's latest."""
+        if record_type not in RECORD_TABLES:
+            raise ValueError("Unknown financial record type.")
+        with self.store.connection() as db:
+            row = db.execute(f"SELECT * FROM {RECORD_TABLES[record_type]} WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                raise ValueError("Financial record not found.")
+            currency = row["currency"]
+            targets = [(record_type, record_id, None)]
+            if record_type == "statement":
+                for line in db.execute("SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name FROM transactions t "
+                                       "LEFT JOIN merchants m ON m.id=t.merchant_id WHERE t.statement_id=? ORDER BY t.posted_date,t.id", (record_id,)):
+                    targets.append(("transaction", line["id"], {"type": "transaction", "id": line["id"], "label": f"{line['name']} · {line['posted_date']}"}))
+            entries = []
+            for kind, target, shown_row in targets:
+                labels = field_labels(kind)
+                kinds = ({field: value_kind for field, (_, value_kind) in TRANSACTION_CORRECTABLE.items()} | {"category": "category"} if kind == "transaction"
+                         else {field: value_kind for field, (_, value_kind, _) in CORRECTABLE.get(kind, {}).items()})
+                latest = dict(db.execute("SELECT field,max(id) FROM record_corrections WHERE record_type=? AND record_id=? GROUP BY field", (kind, target)).fetchall())
+                for item in db.execute("SELECT * FROM record_corrections WHERE record_type=? AND record_id=?", (kind, target)):
+                    value_kind = kinds.get(item["field"], "text")
+                    shown = (lambda text: format_minor(to_minor(text, currency), currency) if text is not None else None) if value_kind in ("money", "amount") else (lambda text: text)
+                    entries.append({"kind": "correction", "id": item["id"], "at": item["created_at"], "who": item["actor"] or "Home Manager",
+                                    "field": item["field"], "label": labels.get(item["field"], item["field"].replace("_", " ").capitalize()),
+                                    "value_kind": value_kind, "from": shown(item["previous"]), "to": shown(item["value"]), "reason": item["reason"],
+                                    "resolved_issues": json.loads(item["resolved_issues_json"]),
+                                    "undoable": latest.get(item["field"]) == item["id"] and (kind != "transaction" or item["field"] in TRANSACTION_CORRECTABLE),
+                                    "row": shown_row, "_order": (item["created_at"], 1, item["id"])})
+            for event in db.execute("SELECT * FROM review_events WHERE record_type=? AND record_id=?", (record_type, record_id)):
+                automatic = event["note"] == AUTO_VERIFIED_NOTE and not event["actor"]
+                entries.append({"kind": "review", "id": event["id"], "at": event["created_at"],
+                                "who": event["actor"] or ("Automatic check" if automatic else "Home Manager"), "automatic": automatic,
+                                "from_status": event["previous_status"], "to_status": event["new_status"], "note": event["note"],
+                                "_order": (event["created_at"], 0, event["id"])})
+            for number, item in enumerate(db.execute("SELECT * FROM family_corrections WHERE direction='received' AND record_type=? AND record_id=? ORDER BY created_at",
+                                                     (record_type, record_id))):
+                entries.append({"kind": "family", "at": item["created_at"], "who": item["actor"] or "The family", "field": item["field"],
+                                "label": field_labels(record_type).get(item["field"], item["field"].replace("_", " ").capitalize()),
+                                "from": item["previous"], "to": item["value"], "status": item["status"], "_order": (item["created_at"], 2, number)})
+        entries.sort(key=lambda entry: entry.pop("_order"), reverse=True)
+        return entries
+
+    def undo_corrections(self, record_type, record_id, ids):
+        """Put back what corrections replaced (each the latest of its field), with the issues they resolved. A record the
+        correction verified automatically, and nobody has decided since, goes back to needing review."""
+        if record_type not in RECORD_TABLES:
+            raise ValueError("Unknown financial record type.")
+        if not ids:
+            raise ValueError("Choose the changes to undo.")
+        with self.store.connection() as db:
+            if db.execute(f"SELECT 1 FROM {RECORD_TABLES[record_type]} WHERE id=?", (record_id,)).fetchone() is None:
+                raise ValueError("Financial record not found.")
+            rows = [db.execute("SELECT * FROM record_corrections WHERE id=?", (correction_id,)).fetchone() for correction_id in ids]
+            for row in rows:
+                owned = row is not None and ((row["record_type"], row["record_id"]) == (record_type, record_id) or (
+                    record_type == "statement" and row["record_type"] == "transaction"
+                    and db.execute("SELECT 1 FROM transactions WHERE id=? AND statement_id=?", (row["record_id"], record_id)).fetchone()))
+                if not owned:
+                    raise ValueError("That change isn't part of this record.")
+                later = db.execute("SELECT 1 FROM record_corrections WHERE record_type=? AND record_id=? AND field=? AND id>?",
+                                   (row["record_type"], row["record_id"], row["field"], row["id"])).fetchone()
+                if later:
+                    raise ValueError("It was changed again since; correct it instead.")
+                if row["record_type"] == "transaction" and row["field"] not in TRANSACTION_CORRECTABLE:
+                    raise ValueError("Change a transaction's category on the transaction instead.")
+            for row in sorted(rows, key=lambda item: -item["id"]):
+                if row["record_type"] == "transaction":
+                    self._apply_transaction_correction(db, row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
+                    continue
+                self._apply_correction(db, row["record_type"], row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
+                table = RECORD_TABLES[row["record_type"]]
+                issues = json.loads(db.execute(f"SELECT validation_json FROM {table} WHERE id=?", (row["record_id"],)).fetchone()[0])
+                issues += [issue for issue in json.loads(row["resolved_issues_json"]) if issue not in issues]
+                db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), row["record_id"]))
+            table = RECORD_TABLES[record_type]
+            record = db.execute(f"SELECT review_status,review_source FROM {table} WHERE id=?", (record_id,)).fetchone()
+            event = db.execute("SELECT note,actor,created_at FROM review_events WHERE record_type=? AND record_id=? ORDER BY id DESC LIMIT 1",
+                               (record_type, record_id)).fetchone()
+            first = min(row["created_at"] for row in rows)
+            if (record["review_status"], record["review_source"]) == ("verified", "automatic") and event and event["note"] == AUTO_VERIFIED_NOTE \
+                    and not event["actor"] and event["created_at"] >= first:
+                db.execute(f"UPDATE {table} SET review_status='needs_review',updated_at=? WHERE id=?", (now(), record_id))
+                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES(?,?,'verified','needs_review',?,?,?)",
+                           (record_type, record_id, "Undid a correction", now(), actor.current()))
         return self.record(record_type, record_id)
 
     def apply_corrections(self, db, record_type, record_id):

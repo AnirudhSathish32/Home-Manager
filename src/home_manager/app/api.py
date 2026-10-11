@@ -62,7 +62,7 @@ from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "today_v2.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "taxes_v2.js": "text/javascript", "theme.js": "text/javascript", "style.css": "text/css",
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "today_v2.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "taxes_v2.js": "text/javascript", "document_v2.js": "text/javascript", "review_v2.js": "text/javascript", "month_v2.js": "text/javascript", "money_v2.js": "text/javascript", "transactions_v2.js": "text/javascript", "bills_v2.js": "text/javascript", "accounts_v2.js": "text/javascript", "investments_v2.js": "text/javascript", "forecast_v2.js": "text/javascript", "whatif_v2.js": "text/javascript","theme.js": "text/javascript", "style.css": "text/css",
           # Self-hosted fonts (OFL; the license files sit beside them and aren't served).
           "fonts/PlusJakartaSans-Variable.woff2": "font/woff2", "fonts/JetBrainsMono-Regular.woff2": "font/woff2",
           "fonts/JetBrainsMono-Medium.woff2": "font/woff2"}
@@ -412,6 +412,12 @@ class CorrectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     changes: dict[str, str | None] = Field(min_length=1, max_length=8)
     reason: str | None = Field(default=None, max_length=500)  # Optional: why, kept with the correction.
+
+
+class UndoCorrectionsInput(BaseModel):
+    """The correction rows to put back (a save's correction_ids)."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    ids: list[int] = Field(min_length=1, max_length=20)
 
 
 class ManualTransactionInput(BaseModel):
@@ -955,13 +961,12 @@ def create_app(control: Path | None = None, token: str | None = None,
         return call_tool(manager().tools, name, arguments)
 
     @app.get("/api/finance/records/{record_type}/{record_id}")
-    def finance_record(record_type: RecordType, record_id: int, member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$")):
+    def finance_record(record_type: RecordType, record_id: int, member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$"), figures: bool = False):
         if member and manager().family:  # The family ledger's drawer: a member's record from their copy.
             return manager().family_record(member, record_type, record_id)
         store()
-        if record_type == "income_record":  # With how its taxes were figured.
-            return manager().paystub(record_id)
-        return manager().ledger.record(record_type, record_id)
+        # A pay stub comes with how its taxes were figured; figures adds what the record counts as and in.
+        return manager().record_view(record_type, record_id, figures)
 
     @app.get("/api/tax-tables")
     def tax_tables(status: Literal["proposed", "verified", "rejected"] | None = None):
@@ -1238,6 +1243,24 @@ def create_app(control: Path | None = None, token: str | None = None,
             return {"record": manager().correct_family_record(member, record_type, record_id, value.changes)}
         store()  # Otherwise this profile's own records (in the family view, the family's inbox).
         return manager().correct_record(record_type, record_id, value.changes, value.reason)
+
+    @app.post("/api/finance/records/{record_type}/{record_id}/correction-preview")
+    def preview_correction(record_type: RecordType, record_id: int, value: CorrectionInput, member: str | None = Query(None, pattern=r"^[0-9a-f]{12}$")):
+        """What the correction would change, before it's saved (finance/correction_preview.py); the reason is ignored."""
+        if member:
+            raise HTTPException(400, "The preview isn't available for family records.")
+        store()
+        return manager().preview_correction(record_type, record_id, value.changes)
+
+    @app.get("/api/finance/records/{record_type}/{record_id}/history")
+    def record_history(record_type: RecordType, record_id: int):
+        store()
+        return {"entries": manager().ledger.history(record_type, record_id)}
+
+    @app.post("/api/finance/records/{record_type}/{record_id}/corrections/undo")
+    def undo_corrections(record_type: RecordType, record_id: int, value: UndoCorrectionsInput):
+        store()
+        return manager().undo_corrections(record_type, record_id, value.ids)
 
     @app.post("/api/finance/family-corrections/{key}/reject")
     def reject_family_correction(key: str = PathParam(pattern=r"^[0-9a-f]{32}$")):

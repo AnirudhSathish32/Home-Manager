@@ -66,6 +66,9 @@ def test_approval_creates_product_alias_and_lot_and_the_alias_resolves_the_next_
     proposal = items.propose(milk_line, ResolutionFields(name="Whole Milk", category="dairy & eggs", consumable=True), "search", "medium")
     with pytest.raises(ValueError, match="already has a proposal"):
         items.propose(milk_line, MILK, "search", "high")
+    # To check shows the proposal beside its receipt's document, with the line it was read from lit.
+    [listed] = items.resolutions()
+    assert (listed["line"]["document_id"], listed["line_ids"]) == (docs["a.png"]["id"], ["line-1"])
     approved = items.review(proposal["id"], "verified", edits=MILK, today=TODAY)  # The user corrects the name while approving.
     assert approved["review_status"] == "verified" and approved["method"] == "user" and approved["name"] == MILK.name
     with pytest.raises(ValueError, match="already reviewed"):

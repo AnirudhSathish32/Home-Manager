@@ -79,7 +79,7 @@ function showRoute(moveFocus) {
   if (familyMode && !FAMILY_ROUTES.includes(route.name)) { location.replace("#/home"); return; }
   const lists = ["documents", "receipts"], page = ROUTES[route.name].page || route.name;
   if (lists.includes(previous) && !lists.includes(route.name)) listScroll = window.scrollY;
-  if (previous === "document" && route.name !== "document") closeReceipt();
+  if (previous === "document" && route.name !== "document") { closeReceipt(); closeDocumentV2(); }
   if (route.name === "document") openedFromList = lists.includes(previous) || (previous === "document" && openedFromList);
   currentRoute = route;
   // A redesigned screen is a data-ui="v2" section for the same page, shown when this profile turned it on.
@@ -99,10 +99,14 @@ function showRoute(moveFocus) {
   Promise.resolve().then(() => (v2 || ROUTES[route.name]).show(route)).catch(error => notice(error, true));
 }
 
-// The sidebar calls the home route "Today" only while the redesigned Today is on (today_v2.js).
+// The sidebar calls the home route "Today", the review route "To check", spending "This month" and bills "Bills &
+// subscriptions" only while their redesigned screens are on (today_v2.js, review_v2.js, month_v2.js, bills_v2.js).
 function setHomeNavLabel() {
-  const label = uiV2Screens.includes("home") ? "Today" : "Home";
-  $("nav-home").querySelector(".nav-label").textContent = label; $("nav-home").title = label;
+  for (const [id, route, v1, v2] of [["nav-home", "home", "Home", "Today"], ["nav-review", "review", "Review", "To check"],
+                                     ["nav-spending", "spending", "Spending & budgets", "This month"], ["nav-bills", "bills", "Bills & recurring", "Bills & subscriptions"]]) {
+    const label = uiV2Screens.includes(route) ? v2 : v1;
+    $(id).querySelector(".nav-label").textContent = label; $(id).title = label;
+  }
 }
 // Settings › Appearance › New screens: one checkbox per redesigned screen, saved for this profile.
 function renderUiV2Choices() {

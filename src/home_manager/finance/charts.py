@@ -11,6 +11,7 @@ page (forecast.js forecastSvg), which lets that CSS reach it.
 """
 
 from decimal import Decimal
+import re
 from xml.sax.saxutils import escape
 
 from ..core.money import EXPONENTS
@@ -69,8 +70,9 @@ def nice_ticks(low, high, count=5):
     return ticks
 
 
-def line_chart(title, subtitle, labels, series, currency):
-    """labels: x labels (years); series: [{"name", "short" (end label), "values": [minor units]}], at most three."""
+def line_chart(title, subtitle, labels, series, currency, key="chart"):
+    """labels: x labels (years); series: [{"name", "short" (end label), "values": [minor units]}], at most three.
+    key prefixes the title and desc ids, so several charts on one page keep unique ids."""
     if not series or len(series) > SERIES or any(len(item["values"]) != len(labels) for item in series) or not labels:
         raise ValueError("A chart needs one to three series with one value per label.")
     values = [[major(value, currency) for value in item["values"]] for item in series]
@@ -84,9 +86,9 @@ def line_chart(title, subtitle, labels, series, currency):
     def y(value):
         return TOP + plot_h - float((value - bottom) / (top - bottom)) * plot_h
 
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="t d" class="forecast-chart" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="{key}-t {key}-d" class="forecast-chart" '
            f'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">',
-           f'<title id="t">{escape(title)}</title><desc id="d">{escape(subtitle)}. Values by year are in the table below the chart.</desc>',
+           f'<title id="{key}-t">{escape(title)}</title><desc id="{key}-d">{escape(subtitle)}. Values by year are in the table below the chart.</desc>',
            f'<rect width="{WIDTH}" height="{HEIGHT}" class="{SURFACE}"/>']
     # Legend (always, for two or more series): a short line key beside plain text.
     if len(series) > 1:
@@ -134,7 +136,12 @@ BAR_TOP, BAR_HEIGHT, BUCKET_HEIGHT = 30, 34, 116
 BUCKET_WIDTH = 520  # The record pane's width, so labels render near their true 12px size.
 
 
-def tax_buckets_svg(title, buckets, currency, paychecks):
+def chart_key(prefix, name):
+    """An id prefix for one chart: lower-case, every run of non-alphanumerics a single "-"."""
+    return f"{prefix}-{re.sub(r'[^a-z0-9]+', '-', str(name).lower()).strip('-')}"
+
+
+def tax_buckets_svg(title, buckets, currency, paychecks, key="tb"):
     """One bar: a year of taxable wages split into its tax buckets (the standard deduction at 0%, then each bracket's
     slice). Each segment is labelled with its rate above and its income and tax below when it is wide enough; its hover
     title gives the exact year and per-paycheck amounts."""
@@ -146,9 +153,9 @@ def tax_buckets_svg(title, buckets, currency, paychecks):
     taxed = [bucket for bucket in shown if bucket["rate_bp"] > 0]
     colors = {id(bucket): f"c-seq-{min(BUCKET_STEPS - 1, index * max(1, (BUCKET_STEPS - 1) // max(1, len(taxed) - 1))) + 1}"
               for index, bucket in enumerate(taxed)}
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BUCKET_WIDTH} {BUCKET_HEIGHT}" role="img" aria-labelledby="bt bd" class="tax-buckets" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BUCKET_WIDTH} {BUCKET_HEIGHT}" role="img" aria-labelledby="{key}-t {key}-d" class="tax-buckets" '
            f'font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">',
-           f'<title id="bt">{escape(title)}</title><desc id="bd">A year of wages split into tax buckets; each bucket\'s income and tax, '
+           f'<title id="{key}-t">{escape(title)}</title><desc id="{key}-d">A year of wages split into tax buckets; each bucket\'s income and tax, '
            f'for the year and per paycheck, are in the table below the chart.</desc>',
            f'<rect width="{BUCKET_WIDTH}" height="{BUCKET_HEIGHT}" class="{SURFACE}"/>']
     position = 16.0
@@ -184,12 +191,15 @@ def forecast_charts(result):
     return {
         "net_worth": line_chart("Net worth", f"{currency}, end of each year, {span}. Today's dollars remove {result['assumptions']['inflation_percent']}% yearly inflation", labels,
                                 [{"name": "Net worth", "short": "net worth", "values": [row["end_net_worth"] for row in years]},
-                                 {"name": "In today's dollars", "short": "today's $", "values": [row["end_net_worth_today"] for row in years]}], currency),
+                                 {"name": "In today's dollars", "short": "today's $", "values": [row["end_net_worth_today"] for row in years]}], currency,
+                                key="fc-net-worth"),
         "cash_flow": line_chart("Income and spending", f"{currency} per year, {span}. Spending includes loan payments", labels,
                                 [{"name": "Income", "short": "income", "values": [row["income"] for row in years]},
-                                 {"name": "Spending", "short": "spending", "values": [row["spending"] + row["loan_payments"] for row in years]}], currency),
+                                 {"name": "Spending", "short": "spending", "values": [row["spending"] + row["loan_payments"] for row in years]}], currency,
+                                key="fc-cash-flow"),
         "balance_sheet": line_chart("Cash, assets and loans", f"{currency}, end of each year, {span}", labels,
                                     [{"name": "Cash", "short": "cash", "values": [row["end_cash"] for row in years]},
                                      {"name": "Assets", "short": "assets", "values": [row["end_assets"] for row in years]},
-                                     {"name": "Loans owed", "short": "owed", "values": [row["end_loans"] for row in years]}], currency),
+                                     {"name": "Loans owed", "short": "owed", "values": [row["end_loans"] for row in years]}], currency,
+                                    key="fc-balance"),
     }

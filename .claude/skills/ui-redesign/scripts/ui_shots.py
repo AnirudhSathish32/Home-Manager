@@ -25,14 +25,18 @@ from home_manager.finance.forecast import AssetInput, Assets  # noqa: E402
 from home_manager.finance.reconcile import Reconciler  # noqa: E402
 from home_manager.finance.tools import FinanceTools  # noqa: E402
 from home_manager.library.scanner import ScanLimits  # noqa: E402
+from model_server import start_model_server  # noqa: E402
+from seed_documents import seed_documents, seed_review_items  # noqa: E402
+from seed_wealth import seed_investments, seed_plans  # noqa: E402
 from test_reconcile_tools import add, receipt  # noqa: E402
 from test_taxes_browser import seed_tax_year  # noqa: E402
 
 TOKEN = "ui-shots"
 
 
-def seed(manager, root):
-    """A small household: two accounts, a month of spending across categories, a budget, and items left to review."""
+def seed(manager, root, model):
+    """A small household: two accounts, a month of spending across categories, a budget, items left to review, and
+    read and recorded documents (tests/seed_documents.py). Returns those documents' ids for --routes placeholders."""
     manager.configure(str(root / "managed"))
     inbox_scan(manager.store, {"checking-statement.csv": b"Date,Description,Amount\n",
                                "card-statement.csv": b"Date,Description,Amount\n"})
@@ -58,8 +62,17 @@ def seed(manager, root):
     manager.ledger.set_budget("groceries", "USD", "250.00")
     manager.ledger.set_budget("dining", "USD", "120.00")
     seed_today(manager, checking, card)
+    seed_money(manager, checking, card)
     # This year's taxes (a pay stub, interest, the federal table), when the tax engine covers this year.
     seed_tax_year(manager, manager.store, manager.ledger)
+    # Investment accounts of every kind (tests/seed_wealth.py); {ira_account}, {brokerage_account} and so on name them.
+    accounts = {f"{name}_account": account_id for name, account_id in seed_investments(manager).items()}
+    # Two What If plans (tests/seed_wealth.py); {plan} is Tom's move, {raise_plan} the raise.
+    accounts.update(seed_plans(manager))
+    # Last: once a reasoning model is set, newly captured documents are recorded as well as read. Then one of each other
+    # To check kind (a product, a warranty, a tax table, images that look like one document).
+    ids = seed_documents(manager, model)
+    return {**ids, **seed_review_items(manager, ids), **accounts}
 
 
 def seed_today(manager, checking, card):
@@ -78,7 +91,9 @@ def seed_today(manager, checking, card):
                        (account["id"], doc["id"], doc["current_hash"], kind, (today - timedelta(days=back)).isoformat(), closing))
     assets = Assets(store)
     assets.add(AssetInput(name="Family car", kind="vehicle", value="18000", currency="USD", as_of=today.isoformat()))
-    assets.add(AssetInput(name="Car loan", kind="loan", value="6000", currency="USD", as_of=today.isoformat()))
+    # A rate and payment so the forecast pays it down (at 0% its notes say the loan never shrinks).
+    assets.add(AssetInput(name="Car loan", kind="loan", value="6000", currency="USD", as_of=today.isoformat(),
+                          annual_rate_percent="6", monthly_payment="350.00"))
     # A confirmed monthly rent paid 20 days ago, so it is next due in about ten.
     rent = docs["rent-receipt.png"]
     ledger.publish_receipt({"merchant": "Maple Street Rentals", "purchase_date": (today - timedelta(days=20)).isoformat(), "subtotal_minor": None,
@@ -94,9 +109,36 @@ def seed_today(manager, checking, card):
                                                         (earlier(2), "Fresh Market", -18825), (earlier(2), "Metro Transit", -4500)], status="verified")
 
 
+def seed_money(manager, checking, card):
+    """What the Money screens show beyond Today's seed: a confirmed subscription, a proposed recurring payment, a refund
+    credit this month, a payment entered by hand, a bank export waiting in the inbox, and a category rule."""
+    store, ledger = manager.store, manager.ledger
+    inbox_scan(store, {"money-history.csv": b"Date,Description,Amount\n",
+                       "bank-export.csv": b"Date,Description,Amount\n2026-01-05,BAKERY ROW,-6.40\n2026-01-06,METRO TRANSIT,-45.00\n2026-01-07,PAYROLL ACME CORP,4125.00\n"})
+    docs = {doc["relative_path"].rsplit("/", 1)[-1]: doc for doc in store.documents()["items"]}
+    today = date.today()
+    first = today.replace(day=1)
+    def month_back(months, day):
+        year, month = divmod(first.year * 12 + first.month - 1 - months, 12)
+        return date(year, month + 1, day).isoformat()
+    add(store, ledger, checking, docs["money-history.csv"],
+        [(month_back(m, 5), "STREAMING PLUS", -1599) for m in (1, 2, 3)]
+        + [(month_back(m, 9), "HARBOR INSURANCE", -10000) for m in (1, 2, 3)], status="verified")
+    add(store, ledger, card, docs["money-history.csv"], [(first.replace(day=min(3, today.day)).isoformat(), "Fresh Market", 1248)], status="verified")
+    ledger.add_manual_transaction(checking["id"], first.replace(day=min(6, today.day)).isoformat(), "Farmers market", "23.00", "out", "groceries")
+    ledger.add_rule("METRO", "transport", None)
+    reconciler = Reconciler(store)
+    reconciler.run()
+    for row in FinanceTools(store).get_recurring_obligations()["obligations"]:
+        if row["merchant"].upper().startswith("STREAMING PLUS") and row["status"] == "proposed":
+            reconciler.review_obligation(row["id"], "verified", kind="subscription")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--routes", default="home,review,transactions,spending,documents")
+    parser.add_argument("--routes", default="home,review,transactions,spending,documents",
+                        help="comma-separated; {receipt_doc}, {review_doc}, {statement_doc} and {review_record} name the seeded documents and records; "
+                             "{work_account}, {cd_account}, {ira_account}, {ibonds_account}, {pension_account}, {education_account} and {brokerage_account} the investment accounts")
     parser.add_argument("--widths", default="390,768,1440")
     parser.add_argument("--themes", default="light,dark")
     parser.add_argument("--height", type=int, default=900)
@@ -120,8 +162,10 @@ def main():
             time.sleep(.05)
         if not server.started:
             sys.exit("server did not start")
+        model, stop_model = start_model_server()
         try:
-            seed(app.state.manager, root)
+            ids = seed(app.state.manager, root, model)
+            routes = args.routes.format(**ids).split(",")
             with sync_playwright() as driver:
                 browser = driver.chromium.launch(channel="msedge", headless=True)
                 if args.v2:
@@ -138,7 +182,7 @@ def main():
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.goto(f"http://127.0.0.1:{port}/#token={TOKEN}")
                         page.wait_for_load_state("networkidle")
-                        for route in args.routes.split(","):
+                        for route in routes:
                             page.goto(f"http://127.0.0.1:{port}/#/{route}")
                             page.wait_for_load_state("networkidle")
                             # Slow pages (the tax engine) stay aria-busy until loaded; a selector wait, as the CSP blocks string wait_for_function.
@@ -153,6 +197,7 @@ def main():
                         page.close()
                 browser.close()
         finally:
+            stop_model()
             server.should_exit = True
     print(f"saved to {args.out}")
 

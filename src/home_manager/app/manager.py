@@ -25,16 +25,16 @@ from ..core.jobs import QUEUES, Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import currency_code, money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
-from ..core.trace import ref
+from ..core.trace import figure, ref
 from ..documents.extraction import ExtractionService
 from ..documents.grouping import Groups
 from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
 from ..documents.reviewer import ReviewerConfig, review
-from ..finance import paycheck, paystub, plan_tracking, scenarios
+from ..finance import correction_preview, paycheck, paystub, plan_tracking, scenarios, traces
 from ..finance.assistant import AssistantService
-from ..finance.charts import tax_buckets_svg
+from ..finance.charts import chart_key, tax_buckets_svg
 from ..finance.checkin import CheckinService
 from ..finance.item_categories import ItemCategorizer
 from ..finance.ledger import HouseholdConfig
@@ -42,7 +42,7 @@ from ..finance.reconcile import Reconciler
 from ..finance.recurring_scan import RecurringScan
 from ..finance.tax_engine import ENGINES as TAX_ENGINES
 from ..finance.tax_engine import readiness as tax_engine_readiness
-from ..finance.tools import FinanceTools
+from ..finance.tools import FinanceTools, last_day, month_index
 from ..household.resolver import ItemResolver
 from ..household.tax_tables import TaxTables, TaxTableService
 from ..household.warranty import WarrantyService
@@ -1472,7 +1472,7 @@ class Manager:
         for part in record["withholding"]["jurisdictions"]:
             if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
                 part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {year}", part["buckets"], record["currency"],
-                                                    record["withholding"]["paychecks"])
+                                                    record["withholding"]["paychecks"], key=chart_key("tb", part["name"]))
         return record
 
     def paystub_taxes(self, record, recorder=None, only=None):
@@ -1804,7 +1804,7 @@ class Manager:
         for part in result["jurisdictions"]:
             if part.get("buckets") and any(bucket["income_minor"] for bucket in part["buckets"]):
                 part["chart_svg"] = tax_buckets_svg(f"{part['name']} income tax buckets, {value.year}", part["buckets"], result["currency"],
-                                                    result["paychecks"])
+                                                    result["paychecks"], key=chart_key("tb", part["name"]))
         return result
 
     # What If scenarios (finance/scenarios.py) ----------------------------------------
@@ -2019,7 +2019,58 @@ class Manager:
             record = self.ledger.correct_transaction(record_id, changes, reason)
         else:
             record = self.ledger.correct(record_type, record_id, changes, reason)
+        ids = record.pop("correction_ids")
+        return {"record": record, "reconciliation": self.reconciler.run("correction"), "correction_ids": ids}
+
+    def preview_correction(self, record_type, record_id, changes):
+        """What a correction would change, worked out and rolled back (finance/correction_preview.py)."""
+        with self.mutex:
+            store = self.require(False)
+        return correction_preview.preview(store, record_type, record_id, changes)
+
+    def undo_corrections(self, record_type, record_id, ids):
+        """Put back what corrections replaced, then a reconciliation pass, as a correction runs."""
+        with self.mutex:
+            self.require(False)
+        record = self.ledger.undo_corrections(record_type, record_id, ids)
         return {"record": record, "reconciliation": self.reconciler.run("correction")}
+
+    def record_view(self, record_type, record_id, figures=False):
+        """One record as the document page shows it; figures adds what it counts as and in (docs/money.md "Corrections")."""
+        record = self.paystub(record_id) if record_type == "income_record" else self.ledger.record(record_type, record_id)
+        if not figures:
+            return record
+        shown = {}
+        if record_type == "receipt":
+            items = [("split", "Counts as", ref("split.receipt", receipt_id=record_id))]
+            month = (record.get("purchase_date") or "")[:7]
+            if month and record["review_status"] != "rejected":
+                period = {"start": month + "-01", "end": last_day(month_index(month)), "currency": record["currency"]}
+                categories = [split["category"] for split in record["splits"]] or [record.get("category") or "uncategorized"]
+                items += [("counts_in", f"{category.capitalize()}, {correction_preview.month_name(month)}", ref("spending.category", **period, category=category))
+                          for category in categories]
+            for key, label, ref_text in items:
+                try:
+                    found = traces.build_for(self.store, ref_text)
+                except ValueError:
+                    continue
+                item = {**figure(found["result"]["minor"], found["result"]["currency"], ref_text), "label": label}
+                shown.setdefault(key, []).append(item)
+            if "split" in shown:
+                shown["split"] = shown["split"][0]
+        if record_type == "statement":
+            with self.store.connection() as db:
+                latest = db.execute("SELECT id FROM statements WHERE account_id=? AND review_status<>'rejected' ORDER BY period_end DESC,id DESC LIMIT 1",
+                                    (record["account_id"],)).fetchone()
+            if latest and latest["id"] == record_id:
+                ref_text = ref("account.balance", account_id=record["account_id"])
+                try:
+                    found = traces.build_for(self.store, ref_text)
+                    shown["balance"] = {**figure(found["result"]["minor"], found["result"]["currency"], ref_text), "label": "Account balance"}
+                except ValueError:
+                    pass
+        traces.shown(self.store, [item for value in shown.values() for item in (value if isinstance(value, list) else [value])])
+        return {**record, "figures": shown}
 
     # Models, backups, restores and questions -----------------------------------------
 

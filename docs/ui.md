@@ -40,7 +40,10 @@ pages, the design system, accessibility and money display.
 - **Links read from documents** are shown as text, never as live links.
 - **Charts** each have a text summary and a **View data table** control. Colors come from the `--chart-*` tokens:
   categorical slots `--chart-cat-1..6` (`home.js` `categorySlot()` gives a category its `cat-N` class), the
-  sequential ramp `--chart-seq-1..10`, and the `c-*` classes on the server's SVG (`finance/charts.py`).
+  sequential ramp `--chart-seq-1..10`, and the `c-*` classes on the server's SVG (`finance/charts.py`). Series are
+  never told apart by hue alone: on a line chart series 2 is dashed (`.c-line-2`) and series 3 dotted (`.c-line-3`),
+  legend lines too, and the end labels stay. Each server chart's title and desc ids come from its `key`
+  (`line_chart(…, key=)`, `tax_buckets_svg(…, key=)`), so several charts on one page keep unique ids.
 
 ### Verifying a layout
 
@@ -79,7 +82,8 @@ Routes are in `ROUTES` in `shell.js`.
 | `#/donate` | Donate documents | [evals](evals.md#donating-documents) |
 
 - **Family view.** In the family view, only Home, Review, Receipts & statements, Documents, the document page,
-  Processing, Settings, What If and Taxes are offered (`FAMILY_ROUTES`).
+  Processing, Settings, What If, Taxes and the family ledger's Transactions, Spending, Bills and Accounts are offered
+  (`FAMILY_ROUTES`).
 - **Old links.** `#/finances?…` links redirect to the money pages.
 - **Taxes v2** (`taxes_v2.js`, behind `ui_v2_screens`; design in `design-system/home-manager/pages/taxes.md`) has six
   tabs: **This year** (three answer tiles, one "What to do" region with Tax Zen's one action and "Other ways", then the
@@ -98,6 +102,78 @@ Routes are in `ROUTES` in `shell.js`.
   "left"), then v1's trend and donut, and "What these numbers cover" folded. Under 1100px it is one column (Needs you,
   budgets, dated sections) and tiles go 2×2. The family view drops the budgets, check-in, returns and warranties and
   adds "Each person", the family's net worth and "Counted once". The URL keeps `?month=&currency=&months=`.
+- **Document page v2** (`document_v2.js`, behind `ui_v2_screens` as "Document page"; design in
+  `design-system/home-manager/pages/document.md`) puts the source beside a record whose sticky header holds the
+  decision, then the tabs Record · History · Details ([The document page](#the-document-page)).
+- **To check** (`review_v2.js`, behind `ui_v2_screens` as "To check"; design in `design-system/home-manager/pages/review.md`)
+  is three columns: the queue, the item's source with its evidence lit, and the item with its decision bar pinned at the
+  bottom of its column ([Review](#review)). The sidebar calls the route "To check" while it's on.
+- **The Money screens v2** (behind `ui_v2_screens`; design in `design-system/home-manager/pages/money.md`, plan in
+  `phase2-money-plan.md`). Category names show through `categoryLabel()` on all four.
+  - **This month** (`month_v2.js`, the spending route; the sidebar says "This month" while it's on) has month
+    stepping (‹ month ›, Next stops at this month), Compare (previous month or the same month last year) and a
+    currency select only when the data has more than one. Four tiles: Net spending and the comparison month's (both
+    traced), Refunded with its posted credits, and the budgets' states with the day of the month. A needs-attention row
+    says what awaits review. Then **By category** (this month, the comparison, and the change as text with an arrow,
+    never green or red; a 6px budget meter under budgeted names) beside **Budgets** (Today's rows, each with a Change…
+    and Remove… menu, then "Add a budget": an inline form whose currency is a select and whose errors show under it),
+    Top merchants (8, then all 20) and Refunds, then **Category rules** and "What these numbers cover" folded. The URL
+    keeps `?month=&compare=&currency=&rules=1`. The family view drops budgets and rules.
+  - **Transactions** (`transactions_v2.js`) has Import and **Add a payment** in its header (`money_v2.js` dialogs),
+    search and an Items | Charges switch, period chips (This month, Last month, 90 days, This year, All, Custom…),
+    Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges only). Its URL keys are v1's,
+    so every deep link works on both. Under 900px the Account column moves into the name's line; under 700px each row
+    stacks (date | name | amount, account · status, then the category select). A row opens the shared drawer, which
+    reloads v2 (`openTransaction(id, member, {onChange})`). A payment just added is marked and scrolled to.
+  - **Bills & subscriptions** (`bills_v2.js`; the sidebar label follows) has tiles from `recurring.totals` (Bills a
+    month, Subscriptions a month and a year, per currency), **To decide** for proposed payments (kind, Confirm, Not
+    recurring), **Coming up** in overdue / next 7 days / later groups, and **All recurring payments** with All | Bills |
+    Subscriptions (`?show=`), the kind select and a "Mark as ended…" menu. Expected amounts are `bill.expected` figures.
+    Coming up and All sit side by side from 1600px.
+  - **Accounts** (`accounts_v2.js`) lists v1's groups, each row with its balance as an `account.balance` figure, "as of",
+    an "Over 35 days old" badge, coverage and a Transactions link; **Import an export** opens the picker.
+  - **Add a payment** posts `POST /api/finance/transactions`; a validation error shows under the field it names
+    (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and opens v1's
+    import dialog (`openImport(doc, {onDone})`), which reloads the screen afterwards.
+- **Wealth & plans v2** (behind `ui_v2_screens`; design in `design-system/home-manager/pages/wealth.md`, plan in
+  `phase2-wealth-plan.md`).
+  - **Investments** (`investments_v2.js`) has tiles (Invested per currency as an `investments.total` figure with its
+    oldest value and how many are estimated, Coming due in 90 days, Required distributions), **Needs you** (values in
+    To check, the I bond yearly limit, matured CDs with Paid out / Renewed, distributions left this year, unmarked 529
+    withdrawals, sales with no purchase lot, and the payroll-account question), every account in one table grouped by
+    section (values are `investments.value` figures; a pension shows its monthly income, not counted), then How it
+    splits beside Taxes for a year. The URL keeps `?removed=1&year=`. **Add an account** is a dialog whose field errors
+    show under their field. An account opens in its own view (`?account=ID&tab=overview|holdings|activity|settings`,
+    and `renew=` as v1) with Back, the value as a figure, and the tabs Overview · Holdings & lots · Activity ·
+    Settings; Record value (not for a pension) goes to Overview's value form. The tabs reuse v1's builders, which call
+    `investmentsReload` after a save, so they reload whichever screen drew them. Estimated holding values and lot gains
+    are figures on both screens.
+  - **Forecast** (`forecast_v2.js`) puts the assumptions in a sticky column (340px) beside the results: four scalar
+    inputs, then one folded list each for spending changes, income changes, one-offs, education costs and retirement,
+    each summary counting its rows, and Update forecast (the header's copy submits the same form). Under 1100px the
+    column folds above the results as "Assumptions: 10 years · 2% inflation · 1 change", open only when the URL sets
+    nothing. Tiles: Cash and Net worth at the end of the last year (`forecast.cash` / `forecast.net_worth` figures; net
+    worth in today's dollars below it), and Cash below zero (amber with the trending-down icon, or "Stays above zero").
+    One chart at a time behind a three-chip switch (`?chart=`), its `<desc>` as a summary and View data table, whose
+    end cash and net worth cells are figures; then About these numbers, Assets and loans (add form folded), and the
+    Starting point (folded). **The assumptions live in the URL**: `years`, `inflation`, `growth`, `history`, and
+    repeated `spend=category~percent`, `income=YYYY-MM~amount`, `oneoff=` / `edu=YYYY-MM~amount~label`,
+    `retire=YYYY-MM~mode~amount|floor~tax`; invalid values are dropped. forecast.js's builders take an id prefix
+    (`"fc2-"`) and call `forecastReload` after an asset change, so they serve both screens.
+  - **What If** (`whatif_v2.js`) has the plan select, Duplicate, Delete… and Save plan in the header, then four tabs
+    (`?plan=ID|new&tab=plan|compare|planner|follow`; `stub=ID` opens the planner as v1 does). **Plan** puts the inputs
+    (name, start from, three scalars, then folded Paychecks, Set spending, Spending changes, Subscriptions, One-off
+    amounts and Retirement, each summary counting its rows or saying On/Off) beside a sticky **Against now** region
+    (420px): Try it runs the plan on screen against Now and shows net worth at the end (`forecast.net_worth` figures),
+    when cash goes below zero (amber with trending-down, or "Never"), and Tax time (`taxzen.plan` / `tax.result`
+    figures, or the server's not-ready note), with a link to the full comparison. The paychecks then show the server's
+    take-home per paycheck (`paycheck.net`) instead of the raw salary. **Compare** has the plans as chips (each keeps
+    its checkbox), Compare (disabled with "Choose up to three" when none is chosen), the chart with its `<desc>` and View
+    data table, Tax Zen per run, and each run's details; end cash and net worth are figures. **Paycheck planner** keeps
+    the result sticky beside the form (440px) with the federal and state fields folded; the take-home headline and the
+    tax lines are figures. **Follow this plan** (saved plans in a personal profile only) is v1's tracking, with
+    plan-vs-actual amounts as `plan.actual` figures. Under 1100px Against now and the planner result move above their
+    forms. whatif.js builds both screens on an id prefix (`wi.p`, `""` or `"wi2-"`) with per-screen hooks.
 - **Ask.** The Ask panel opens from anywhere ([assistant](assistant.md#the-ask-panel)).
 
 ### Review
@@ -118,6 +194,28 @@ Routes are in `ROUTES` in `shell.js`.
   apart · merchant matches"). The score and method are in a Details disclosure.
 - **When a decision fails,** the item stays selected with an inline error, and the queue doesn't advance.
 
+**To check (v2)** (`review_v2.js`; `#/review?item=<kind>:<id>`) keeps v1's data (`reviewData()` in `review.js`), groups,
+keys and wording, and changes the layout and the decision:
+- **Three columns at 1440:** the queue (260px), the source (`sourceViewer`), and the item (340–400px): its position, an
+  h2 for what it is, the *why* (the reason only, never the title again; a record's failed checks as a needs-attention
+  row), the evidence, then the decision bar. Each column is sticky and scrolls on its own, so the bar stays in view at
+  1366×768. Under 1180px the queue becomes a select with Previous and Next; under 900px it is one column (item, then
+  source) and the bar is fixed to the viewport bottom.
+- **The queue** adds v1's side panels as groups after `REVIEW_GROUPS`: "Images that look like one document" and
+  "Receipts with no matching charge", or "Who is it for?" in the family view. Failed and unfiled counts are links at its
+  foot.
+- **The source by kind:** a record, issue, asset, recurring payment, unmatched receipt or family upload shows its
+  document, a record's cited lines lit (`/api/provenance`). A proposed match shows the receipt with a chip for the
+  charge's statement; an image group shows its pages as chips; a tax tag its target's document, or a "Bank line" card;
+  a receipt item its receipt with the line lit (`line_ids` from `/api/items/resolutions`). Warranties and tax tables
+  show a `.source-card` with the quote and the address as text, never a link.
+- **The decision:** records, statement values, purchase confirmations and tax forms use `confirmCorrect` (Confirm,
+  Reject, Correct…; the form opens in the item's column, a failure shows above the bar). Other kinds keep v1's labels
+  as bar buttons. Labels keep " (V)" / " (R)". A decided item leaves the queue and the next takes its place; Undo
+  brings it back. An unmatched receipt offers Correct (its purchase date) and Open document. A family upload's "For"
+  form is the bar.
+- **Keys:** J/K/V/R, never in inputs, dialogs or the open Correct form. v1's handler returns early while v2 is on.
+
 ### The document page
 
 `#/documents/ID[?version=HASH][&lines=…]` is a full-width view, because checking evidence side by side needs the
@@ -136,6 +234,31 @@ scroll position.
   earlier version (with a banner).
 - The page also hosts the split controls for several receipts in one file, the page order of combined images, and
   "Also found" duplicate links ([documents](documents.md)).
+
+**v2** (`document_v2.js`; `#/documents/ID[?version=][&lines=][&tab=history|details]`) changes how the page is laid out
+and what it lets you do:
+- **Layout.** The source (`sourceViewer`) is on the left, sticky and scrolling on its own, at 45:55, or 40:60 from
+  900–1179px.
+- **Record header.** The record column's sticky header holds:
+  - the record's title and status;
+  - the steps (Read → Recorded), each with an icon and a hidden state word;
+  - the one next action: **Read document**, **Record it** (was "Extract to ledger") or **Try again**;
+  - the *why* as a needs-attention row;
+  - the decision (`confirmCorrect`): **Confirm / Reject / Correct…**.
+
+  The Correct form opens in the header, and the header stops being sticky while the form is open, so Save stays
+  reachable. Re-run actions (Read again, Extract again, Copy text) live in the `⋯` menu.
+- **Tabs.** Under the header are three tabs:
+  - **Record:** field rows, each with a "Changed by" mark when corrected, plus **Find** (the field's cited line) and
+    **Correct** (opens the form at that field). Every category shows as a tag. "Counts as" and "Counts in" are traced
+    figures. Then items or transactions (each statement row has its own Correct), matched records, rewards, the pay stub,
+    taxes and Checks.
+  - **History:** `historyList` with the record's changes, then the readings.
+  - **Details:** where the file is, versions and how the text was read.
+- **Under 900px.** It's one column (header, source, tabs), and the decision pins to the bottom of the screen.
+- **Esc** closes the Correct form or the breakdown first, then goes back to the list.
+- **What it doesn't decide.** An earlier version or a document in Trash shows its record without a decision.
+  Investment values, purchases and tax forms are confirmed or rejected here but not corrected (Wealth screens).
 
 ### Processing
 
@@ -465,7 +588,11 @@ Every number on screen can be explained. These rules override visual or layout p
 These are vanilla factories in `app/static/trace.js`, loaded after `ui.js`. They use tokens only and are CSP-safe.
 `figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` are built (Phase 1b). Taxes v2 is their first user.
 `tests/test_trace_components_browser.py` mounts them in the real app with the synthetic dashboard's traces.
-`confirmCorrect`, `sourceViewer` and `historyList` come with the To check and document page session.
+`confirmCorrect`, `sourceViewer` and `historyList`, with their loaders `loadReading` and `loadHistory`, came with the
+document page v2. `tests/test_record_components_browser.py` mounts them on read and recorded synthetic documents
+(`tests/seed_documents.py`). Each makes its own ids from a counter (`sv{n}-…`, `cc{n}-…`) and never reuses a v1 id.
+To check v2 is their second user: it moves `confirmCorrect`'s form and state line into its own regions and gives the
+buttons the `#review2-*` ids its keys press.
 
 - **`figure(fig, {size, signed, magnitude})`** is a `button.figure-button` (`data-figure-ref`, `data-figure-display`,
   `data-signed`, `data-magnitude`, `aria-controls`, `aria-expanded`) around `amount()`, flagged `unconfirmed` when the
@@ -488,9 +615,10 @@ These are vanilla factories in `app/static/trace.js`, loaded after `ui.js`. They
 | `figure(fig)` | A button around `amount()`. Its underline appears only on hover or focus. Unverified shows an icon + "unconfirmed"; stale shows an icon + "changed". Enter opens the breakdown. No `trace` ref means a plain `amount()`. |
 | `breakdownPanel(ref)` | Non-modal: beside the content at 1440, a bottom sheet under 900. It shows the answer and formula; a steps table (n, label, op, value, running); a rounding row; a "Sums to" footer with ✓; paged inputs (unverified first); the rule card; and "Calculated … · inputs unchanged". Computed inputs open as breadcrumbs, and Esc goes back. |
 | `provenanceBadge(prov)` | Icon + text through the `STATUS` map: Entered by …, Read by model …, Imported · file row, Worked out, Changed from … · reason, the rule name, the ECB rate date. |
-| `confirmCorrect(input)` | Confirm uses the same endpoint as Review V. Correct is an inline value + **optional** reason, with a server-computed preview of the affected figures. It offers Undo for 8 s. |
-| `sourceViewer(doc, lines)` | Reuses the document page's highlighting (`receipt.js`). Text read from documents stays text. |
-| `historyList(record, field)` | Corrections, review events and tax input changes, newest first: when, who, from → to, why. |
+| `confirmCorrect(opts)` | `div.confirm-correct`: a `role=group` "Decision" with the state's buttons, then `.cc-state`, then the hidden `form.cc-form`. Needs review or proposed shows Confirm (primary), Reject (secondary: it can be undone) and Correct…. Verified shows Undo verification and Correct…. Checked automatically shows "Not right? Reject" and Correct…. Rejected shows Undo rejection. Decisions post to `reviewPath` (default: the record's `/review`, as Review V) and offer Undo for 8 s; a failure stays inline. Correct… opens one field per `correctable` entry plus "Why (optional)". On input (450 ms debounce, late answers dropped) it shows the correction preview: before (a traced figure) → after (a plain amount) and the difference, then what stays, the match, review and notes. A 400 disables Save. Save PATCHes, then offers Undo (`/corrections/undo`). Esc closes the form. Options: `labels`, `undoBody`, `preview: false`, `decision: false` (Correct only, for a statement's row), `showState`, `onClose`. |
+| `sourceViewer(doc, reading, {runId, digest})` | `section.source-viewer`: Image \| Text tabs, a PDF page select, the preserved image (bearer fetch into a blob URL; a PDF gets a fresh iframe) with its read regions, the text as a roving list of `li.sv-line[data-line-id]` (↑/↓, Enter), and "Reading notes & codes". `highlight(ids)` goes to Text for a vision or PDF reading and marks the lines; otherwise it lights the regions. A region click or Enter on a line calls `onRegionClick` callbacks with `{blockId, lineIds}`. Also `update(reading, runId)`, `showDocument(id)` (a group's other page) and `destroy()`. Text read from documents stays text. |
+| `historyList(entries, {field, empty})` | `ol.history-list` of `li.history-row[data-kind]`: when, who ("Automatic check" for a review a correction made), then from → to (dates, categories and empty values in words; a statement row's label first) or a review's status → status, then why. `loadHistory(type, id)` fetches the entries. |
+| `loadReading(documentId, digest)` | `{doc, run, result}` for a document's newest finished reading (else its newest), cached until `clearReadings()`; one still running isn't cached. |
 | `ruleCard(rule)` | Name, source as text, version, tax year, checked on, CPA review state. |
 
 ### Redesigned navigation
@@ -536,14 +664,32 @@ Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves 
 - **A v2 screen** registers itself in `V2_SCREENS` (`route → {title, show}`, declared in `app.js` so a screen's script
   can register before `shell.js` routes the first page) and is a `data-ui="v2"` section with the same `data-page` as
   the old one. `showRoute` shows the v2 section and calls its `show` when the route is on the list; sections without
-  `data-ui` are v1. Registered: `taxes` (`taxes_v2.js`), `home` (`today_v2.js`).
+  `data-ui` are v1. Registered: `taxes` (`taxes_v2.js`), `home` (`today_v2.js`), `document` (`document_v2.js`, the
+  document page; its `show` first calls `closeReceipt()`, so v1's polling and keys see no document), `review`
+  (`review_v2.js`, To check), `spending` (`month_v2.js`, This month), `transactions` (`transactions_v2.js`), `bills`
+  (`bills_v2.js`), `accounts` (`accounts_v2.js`), `investments` (`investments_v2.js`; its `MIGRATED` pair seeds a
+  401(k) and a CD account with `tests/seed_wealth.py`) and `forecast` (`forecast_v2.js`; its `MIGRATED` pair lists
+  `forecast.cash` and `forecast.net_worth` in `NEW_ON_V2`, since v1 showed them only in folded tables) and `whatif`
+  (`whatif_v2.js`).
+- **What If has no `MIGRATED` pair**: its figures appear only after an action (Try it, Compare, working a paycheck out),
+  as Transactions shows none on load. Its checks, `check_figures` included, are in `tests/test_whatif_v2_browser.py`.
+- **Transactions has no `MIGRATED` pair**: it shows record amounts, not traced figures, as To check does. Its checks are
+  in `tests/test_transactions_v2_browser.py`.
+- **To check has no `MIGRATED` pair** either: it shows no traced figures, and the harness requires some. Its checks are
+  in `tests/test_review_v2_browser.py`.
+- **The document page has no `MIGRATED` pair**, because the harness opens a route on the default seed and the page
+  needs a seeded document id. Its parity check is in `tests/test_document_v2_browser.py` instead, on
+  `tests/seed_documents.py`'s documents. It runs `check_figures` on the page, then checks that "Counts as" is among the
+  old page's `v1_amounts` for the same document.
 - `tests/test_ui_parity.py` (browser, synthetic seed, with `seed_tax_year` from `test_taxes_browser.py`) checks that
   every figure on a new screen has a ref, that it equals its trace's result and reconciles (`check_figures`), and that
   it matches the old screen's values (`v1_amounts`: the old screen's `.amount` titles and its text, since old screens
   write some amounts inside sentences; a figure's unsigned form counts too). Each Phase 2 session adds its
   `(route, v1 route)` pair to `MIGRATED`; it has `("taxes", "taxes")`, skipped when Engine 1 doesn't cover this year,
-  and `("home", "home")`. `NEW_ON_V2` lists ref prefixes a v2 screen shows that the old one never did (Today's
-  `worth.today`, `budget.remaining`, `budget.projected`); those are checked against their trace only.
+  `("home", "home")`, `("spending", "spending")`, `("bills", "bills")` and `("accounts", "accounts")`; its seed has a
+  confirmed monthly water bill and a statement balance for the last two. `NEW_ON_V2` lists ref prefixes a v2 screen
+  shows that the old one never did (Today's `worth.today`, `budget.remaining`, `budget.projected`; This month's
+  `budget.remaining` and `budget.projected`); those are checked against their trace only.
   The harness's self-test also checks that it fails on a seeded mismatch. The parity run sees a screen's first tab
   only; the screen's own browser test checks the other tabs' figures.
 - **Passing tests are enough** to delete an old screen; no separate sign-off.

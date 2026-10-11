@@ -789,7 +789,9 @@ class FinanceTools(ItemAnalysisTools):
             if recorder.live and only and only[:2] == (currency, name):
                 yearly = only[2] == "year"
                 self._record_recurring(rows, currency, name, recorder, 12 if yearly else 1, year_minor if yearly else month_minor)
-        return {"obligations": [{**row, "expected_amount": money(row["expected_amount_minor"], row["currency"])} for row in rows], "totals": totals,
+        # expected_amount is a figure: its breakdown is the payments it averages (finance/traces.py bill_expected).
+        return {"obligations": [{**row, "expected_amount": figure(row["expected_amount_minor"], row["currency"], ref("bill.expected", obligation_id=row["id"]))}
+                                for row in rows], "totals": totals,
                 "notes": ["Proposed from a steady cadence of payments, one bill payment, a statement payee the local model read as a service, "
                           "or payment terms in a contract (source_document_id, evidence); each is a proposal until verified.",
                           "kind is the user's choice: a bill is a recurring payment they count as important, a subscription one they count as less so. "

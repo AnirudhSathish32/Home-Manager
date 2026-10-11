@@ -8,7 +8,8 @@ are in [taxes](taxes.md). How spending and recurring bills are counted is in [mo
 The forecast is a deterministic projection of income, spending, cash, assets, loans and net worth, month by month, for
 1 to 100 years. Code: `finance/forecast.py` (calculation), `finance/charts.py` (SVG charts), `static/forecast.js` (page),
 migration 022 (`assets`). No model is involved: the same records and assumptions always give the same numbers and
-byte-identical charts.
+byte-identical charts. Forecast v2 (`static/forecast_v2.js`, behind `ui_v2_screens`: docs/ui.md "Pages") keeps the
+assumptions in the URL, so a reload or a shared link shows the same forecast.
 
 ### Starting point
 - **Cash** is each account's latest statement balance (credit card balances count as owed).
@@ -129,6 +130,9 @@ another city or state, or your forecast on someone else's salary. It has three p
 - the **paycheck planner** works out a paycheck forward from gross pay, showing every line;
 - **saved plans** run through the forecast side by side with "Now";
 - **following a plan** turns its spending into budgets and compares it with actual pay stubs and spending.
+
+What If v2 (`static/whatif_v2.js`, behind `ui_v2_screens`: docs/ui.md "Pages") puts these on four tabs, Plan · Compare
+· Paycheck planner · Follow this plan, with the plan tried against now beside its inputs.
 
 ### Paycheck planner
 
@@ -289,7 +293,8 @@ Budgets and pay stubs belong to each person, so the family view doesn't follow p
 ## Investments
 
 Investments covers retirement accounts (401(k), 403(b), IRAs), pensions, HSAs, high-yield savings, CDs, Treasuries, I
-bonds, brokerage accounts, crypto and 529 plans. They have their own page: Money → Investments. Values come from
+bonds, brokerage accounts, crypto and 529 plans. They have their own page: Money → Investments (redesigned as
+Investments v2 behind `ui_v2_screens`: docs/ui.md "Pages"). Values come from
 documents and what you type. The one exception is crypto market prices, fetched only when you turn them on (see
 [Crypto](#crypto)). Investments are not spending.
 

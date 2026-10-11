@@ -75,6 +75,7 @@ function controls() {
   $("scan-inbox").disabled = !configured || busy.capture;
   // Work that runs on in the background stays unavailable until it finishes, so a second click can't start it twice.
   $("recurring-scan").disabled = !configured || busy.inference;
+  if ($("bills2-scan")) $("bills2-scan").disabled = !configured || busy.inference;
   $("backup-start").disabled = !configured || busy.capture;
   $("share-export").disabled = !configured || anyBusy();
   for (const id of ["save-settings", "managed"]) $(id).disabled = anyBusy();
@@ -323,7 +324,7 @@ async function poll() {
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
       // Member status in a family view; a finished family share or delivery updates the status lines.
       if (familyMode || (wasBusy && !anyBusy())) renderProfiles(settings);
-      if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await loadFamilyRouting();
+      if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await (uiV2Screens.includes("review") ? reloadReviewV2() : loadFamilyRouting());
       if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
       if (anyBusy() || wasBusy) {
         await refresh();
@@ -333,6 +334,7 @@ async function poll() {
       // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
       if ((wasBusy && !anyBusy()) || !reconcileChecked) { reconcileChecked = true; await loadReconcilePrompt(); }
       if (typeof pollReceipt === "function") await pollReceipt();
+      if (typeof pollDocumentV2 === "function") await pollDocumentV2();
     }
     if (pollFailure) { pollFailure = null; $("app-alert").replaceChildren(); }
   } catch (error) {

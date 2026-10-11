@@ -115,8 +115,9 @@ and link here for what isn't. When an item is built, remove it from this list an
   - **One action, many names:** Read, Record, Count it, Reject, Remove; and "Reconcile now" means two things.
   - **Missing states:** loading and error states exist only on Home, Review and Spending. Unconfigured pages show empty
     tables.
-  - **Forms:** form errors are toasts instead of messages next to the field. Budget and asset currencies are free text.
-  - **Filters lost on reload:** Documents, Inventory, the Spending month, Forecast assumptions and the Settings tab.
+  - **Forms:** form errors are toasts instead of messages next to the field (the Money screens v2 show them by the
+    field). Asset currencies are free text; v1's budget currency too (This month v2's is a select).
+  - **Filters lost on reload:** Documents, Inventory, the Spending month and the Settings tab.
   - **Deep links** from Home, Review and Search open the Documents library, which leaves out receipts and statements.
   - **Too many primary buttons** in Documents rows and Review questions.
   - **Dead ends:** no link from a receipt to its matched charge, no Import on Accounts, and CSV/XLSX files can't be
@@ -137,16 +138,32 @@ is built: ui.md "Design system". Phase 1b (item 5: `pageState()` on five pages, 
 `ui_v2_screens` flag and `tests/test_ui_parity.py`) is built: ui.md "Design system", "Observability components",
 "Migration". Phase 2 Taxes is built (2026-10-10): `taxes_v2.js` behind the flag, ui.md "Pages"; its v1 loader goes in
 item 8. Phase 2 Today is built (2026-10-10): `today_v2.js` behind the flag, ui.md "Pages"; its v1 loader (`home.js`
-`renderHome`, `renderHomeExtras`) goes in item 8. To check and the document page is next; see
-`design-system/home-manager/README.md`.
+`renderHome`, `renderHomeExtras`) goes in item 8. The document page v2 is built (2026-10-10, Build A of
+`design-system/home-manager/phase2-review-document-plan.md`): `document_v2.js` behind the flag, with the correction
+preview, history and undo endpoints (money.md "Corrections") and the last three `trace.js` components (ui.md "Pages",
+"The document page", "Observability components"). Its v1 loader goes in item 8. To check v2 is built (2026-10-10,
+Build B of the same plan): `review_v2.js` behind the flag (ui.md "Pages", "Review"); its v1 loader (`review.js`
+`loadReview`, `renderReviewQueue`, `renderReviewDetail`, `renderUnmatched`) goes in item 8. The Money screens are built
+(2026-10-11, Builds A–D of `design-system/home-manager/phase2-money-plan.md`): `month_v2.js`, `transactions_v2.js` with
+`money_v2.js`, `bills_v2.js` and `accounts_v2.js` behind the flag (ui.md "Pages"), with obligations' `expected_amount`
+now a `bill.expected` figure. Their v1 loaders (`finance.js` `openSpending`/`loadSpending`, `openTransactions`/
+`loadTransactions`/`loadItems`, `loadBills`/`renderBills`, `loadAccounts`/`renderAccounts`) go in item 8. Investments
+v2 is built (2026-10-11, Build A of `design-system/home-manager/phase2-wealth-plan.md`): `investments_v2.js` behind the
+flag (ui.md "Pages"). Its v1 loader (`investments.js` `loadInvestments`, `renderInvestments`, `renderInvestmentDetail`,
+and the `investmentsReload` hook, which collapses once v1 goes) goes in item 8. Forecast v2 is built (2026-10-11, Build
+B of the same plan): `forecast_v2.js` behind the flag, with keyed chart ids and dashed/dotted series (ui.md "Pages",
+"Conventions"). Its v1 loader (`forecast.js` `loadForecast`, `renderForecast`, and the `""`/`"fc2-"` id prefix and
+`forecastReload` hook, which collapse once v1 goes) goes in item 8. What If v2 is built (2026-10-11, Build C of the same
+plan): `whatif_v2.js` behind the flag (ui.md "Pages"). Its v1 loader (`whatif.js` `loadWhatIf`, and the `wi.p` prefix
+with `wi.hooks`, which collapse once v1 goes) goes in item 8.
 
-**6. Screens, one per session.** To check and the document page (with Correct) → This month,
-Transactions (Add, Import), Bills, Accounts (Import) → Investments, Forecast, What If → Inventory (Item insights) →
-Processing (Data health), Settings (Independent checks editable, Donate) → Search, Ask.
-
-The To check and document page session also builds the remaining components in ui.md "Observability components":
-`confirmCorrect()`, `sourceViewer()` and `historyList()`. It plans a correction-preview endpoint for Correct (none
-exists yet), and pulls `receipt.js`'s `highlightEvidence()` out of its global `receipt` state for `sourceViewer()`.
+**6. Screens, one per session.** Inventory (Item insights) → Processing (Data health),
+Settings (Independent checks editable, Donate) → Search, Ask. Left from the Money screens:
+- The transaction drawer as `confirmCorrect` (it inherits tokens only; shared by v1, Search and Taxes).
+- Account display names double the type ("Household checking checking"), and merchants show as the statement's upper
+  case. Both are server display text.
+- Untraced numbers shown plain: a category's change, top merchants, refunds, and no traced net-spending difference
+  between the two months (This month shows both months' figures instead).
 
 **7. Surface backend-only features.** Give a screen to `GET /api/finance/health`, `PUT /api/reviewer-settings`,
 `POST /api/decision-model-tests`, and `GET /api/tax-tags/on/{receipt|receipt_item}`.

@@ -44,7 +44,8 @@ function pageContext() {
   const params = [...currentRoute.params].filter(([key]) => !["token", "section"].includes(key)).map(([key, value]) => `${key} ${value}`);
   const homeMonth = $(uiV2Screens.includes("home") ? "today-month" : "home-month").value;  // Today v2 has its own (today_v2.js).
   if (currentRoute.name === "home" && homeMonth && !params.some(item => item.startsWith("month"))) params.push(`month ${homeMonth}`);
-  if (currentRoute.name === "spending" && $("spend-month").value && !params.some(item => item.startsWith("month"))) params.push(`month ${$("spend-month").value}`);
+  const spendMonth = $(uiV2Screens.includes("spending") ? "month2-month" : "spend-month").value;  // This month v2 has its own (month_v2.js).
+  if (currentRoute.name === "spending" && spendMonth && !params.some(item => item.startsWith("month"))) params.push(`month ${spendMonth}`);
   return [title, ...params].join(" · ").slice(0, 300);
 }
 function renderAnswer(run) {

@@ -15,7 +15,7 @@ import unicodedata
 from pydantic import Field, field_validator
 
 from ..documents.receipt_schema import StrictModel
-from ..finance.ledger import normalize_name
+from ..finance.ledger import Ledger, normalize_name
 from ..library.storage import now
 
 CATEGORIES = ("produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages",
@@ -102,7 +102,7 @@ class ItemLedger:
 
     @staticmethod
     def _line(db, item_id):
-        row = db.execute("SELECT i.*,r.merchant_id,r.purchase_date,r.currency,m.canonical_name AS merchant FROM receipt_items i "
+        row = db.execute("SELECT i.*,r.merchant_id,r.purchase_date,r.currency,r.document_id,m.canonical_name AS merchant FROM receipt_items i "
                          "JOIN receipts r ON r.id=i.receipt_id LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.id=?", (item_id,)).fetchone()
         if row is None:
             raise ValueError("Receipt line not found.")
@@ -199,7 +199,11 @@ class ItemLedger:
             rows = db.execute("SELECT r.id FROM item_resolutions r JOIN receipt_items i ON i.id=r.receipt_item_id WHERE "
                               + " AND ".join(clauses) + " ORDER BY i.receipt_id,i.position LIMIT ?", (*params, limit)).fetchall()
         values = [self.resolution(row[0]) for row in rows]
-        return [{**value, "line": self.line(value["receipt_item_id"])} for value in values]
+        # line_ids: the source lines the receipt line was read from, so To check can light them beside the proposal.
+        evidence = Ledger(self.store).evidence
+        return [{**value, "line": self.line(value["receipt_item_id"]),
+                 "line_ids": [line for link in evidence("receipt_item", value["receipt_item_id"]) for line in link["locator"].get("line_ids", [])]}
+                for value in values]
 
     def resolution_count(self, status="proposed"):
         """How many resolutions have this status, with no limit (the Review badge, app/manager.py review_counts)."""

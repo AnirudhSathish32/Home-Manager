@@ -196,6 +196,16 @@ def test_charts_are_deterministic_escaped_and_include_zero():
         line_chart("t", "s", ["2026"], [{"name": str(n), "values": [1]} for n in range(4)], "USD")
 
 
+def test_forecast_chart_ids_are_distinct():
+    # The three charts can share a page (and What If's compare chart), so their title and desc ids differ.
+    import re
+    charts = forecast_charts(project(base(), ForecastInput(years=5), TODAY))
+    ids = [found for svg in charts.values() for found in re.findall(r'\bid="([^"]+)"', svg)]
+    assert len(ids) == 6 and len(set(ids)) == 6
+    assert all(f'aria-labelledby="{key}-t {key}-d"' in charts[name]
+               for name, key in [("net_worth", "fc-net-worth"), ("cash_flow", "fc-cash-flow"), ("balance_sheet", "fc-balance")])
+
+
 def test_forecast_and_asset_endpoints(tmp_path):
     app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:

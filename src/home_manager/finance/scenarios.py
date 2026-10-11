@@ -213,7 +213,7 @@ def compare_chart(runs, currency):
     labels = [row["year"][:4] if len(row["year"]) == 4 else row["year"][-7:-3] for row in runs[0]["result"]["years"]]
     span = f"{labels[0]}–{labels[-1]}" if labels[0] != labels[-1] else labels[0]
     series = [{"name": item["name"][:28], "short": item["name"][:14], "values": [row["end_net_worth"] for row in item["result"]["years"]]} for item in runs]
-    return line_chart("Net worth by plan", f"{currency}, end of each year, {span}", labels, series, currency)
+    return line_chart("Net worth by plan", f"{currency}, end of each year, {span}", labels, series, currency, key="compare-net-worth")
 
 
 def compare(runs):

@@ -3,12 +3,15 @@
 // and one account's values over time. The server does every sum and share; the page only arranges its text.
 // The open account lives in the URL (#/investments?account=ID) so Back and reload keep it.
 let investmentKinds = [], investmentsLoad = 0;
+// What the shared builders below call after a save: the screen that drew them (Investments v2 sets its own).
+let investmentsReload = () => loadInvestments();
 const SOURCE_LABELS = {manual: "Entered by you", statement: "Statement", ledger_statement: "Savings statement", estimated: "Estimated from purchase terms",
                        quote: "Market price"};
 const TERM_CLASSES = [["cd", "CD"], ["treasury_bill", "Treasury bill"], ["treasury_note", "Treasury note"], ["treasury_bond", "Treasury bond"],
                       ["i_bond", "I bond"], ["bond", "Bond"]];
 
 function loadInvestments(params = new URLSearchParams(location.hash.split("?")[1] || "")) {
+  investmentsReload = () => loadInvestments();
   return pageState($("investments-state"), () => renderInvestments(params), {loading: "Loading investments …", what: "investments", needsLibrary: true,
                                                                               content: [$("investments-summary"), $("investments-groups")]});
 }
@@ -190,7 +193,7 @@ function payrollQuestion(question) {
     event.preventDefault();
     try {
       await api(`/api/investments/${select.value}/payroll`, {method: "POST", body: JSON.stringify({employer_id: question.employer_id})});
-      notice(`${question.employer}'s ${question.label} contributions now go to ${select.selectedOptions[0].text}.`); await loadInvestments();
+      notice(`${question.employer}'s ${question.label} contributions now go to ${select.selectedOptions[0].text}.`); await investmentsReload();
     } catch (error) { notice(error, true); }
   });
   return alertBox(`Pay stubs from ${question.employer} list ${question.label} contributions. Which account do they go to?`, {tone: "info", action: form});
@@ -224,7 +227,7 @@ function maturedButtons(holdingId, name, accountId) {
     await api(`/api/investments/holdings/${holdingId}/matured`, {method: "POST", body: JSON.stringify({outcome})});
     notice(outcome === "cash" ? `${name} recorded as paid out.` : `${name} closed. Add the renewed one to this account.`);
     const next = `#/investments?account=${accountId}${outcome === "rollover" ? `&renew=${holdingId}` : ""}`;
-    if (location.hash === next) await loadInvestments(); else location.hash = next;
+    if (location.hash === next) await investmentsReload(); else location.hash = next;
   }, "small"));
 }
 
@@ -386,7 +389,7 @@ function investmentSettingsForm(account) {
     if (linked.value) body.ledger_account_id = Number(linked.value);
     if (account.takes_payroll && payroll.value) body.payroll_employer_id = Number(payroll.value);
     if (monthly.value.trim()) body.monthly_contribution = monthly.value.trim();
-    try { await api(`/api/investments/${account.id}`, {method: "PUT", body: JSON.stringify(body)}); notice("Saved."); await loadInvestments(); } catch (error) { notice(error, true); }
+    try { await api(`/api/investments/${account.id}`, {method: "PUT", body: JSON.stringify(body)}); notice("Saved."); await investmentsReload(); } catch (error) { notice(error, true); }
   });
   return form;
 }
@@ -400,7 +403,7 @@ function investmentValueForm(account) {
     event.preventDefault();
     try {
       await api(`/api/investments/${account.id}/values`, {method: "POST", body: JSON.stringify({value: value.value.trim(), as_of: asOf.value})});
-      notice("Value recorded."); await loadInvestments();
+      notice("Value recorded."); await investmentsReload();
     } catch (error) { notice(error, true); }
   });
   return form;
@@ -442,7 +445,9 @@ function investmentHoldings(account) {
     if (holding.identifier) name.append(element("small", holding.identifier, "muted block mono"));
     cell(tr, holding.class_label);
     if (market) { cell(tr, holding.quantity || "—").className = "numeric"; moneyCell(tr, holding.price); }
-    moneyCell(tr, holding.value);
+    // An estimated holding's value is traced: its figure opens how the terms give it.
+    if (holding.value?.trace) { const value = cell(tr, ""); value.className = "numeric"; value.append(figure(holding.value, {size: "sm", signed: false})); }
+    else moneyCell(tr, holding.value);
     if (market) { moneyCell(tr, holding.cost_basis); moneyCell(tr, holding.gain, true); }
     if (terms) {
       cell(tr, holding.rate_percent != null ? `${holding.rate_percent}%` : "—").className = "numeric";
@@ -475,12 +480,12 @@ function investmentLots(account, holdings) {
   for (const holding of holdings) {
     const section = element("div", "", "investment-lots");
     section.append(element("h4", holding.name));
-    if (holding.lot_gain) section.append(element("p", `Unrealized gain by lot cost: ${holding.lot_gain.display}`, "small"));
+    if (holding.lot_gain) { const gain = element("p", "Unrealized gain by lot cost: ", "small"); gain.append(figure(holding.lot_gain, {size: "sm"})); section.append(gain); }
     if (holding.lots.length) {
       const list = element("ul", "", "finance-list");
       for (const lot of holding.lots) {
         const li = element("li", `${dateText(lot.acquired_date)} · ${lot.shares} shares · cost ${lot.cost.display}${lot.source === "manual" ? " · entered by you" : ""}`);
-        if (lot.id) li.append(asyncButton("Remove", async () => { await api(`/api/investments/lots/${lot.id}`, {method: "DELETE"}); notice("Lot removed."); await loadInvestments(); }, "small quiet"));
+        if (lot.id) li.append(asyncButton("Remove", async () => { await api(`/api/investments/lots/${lot.id}`, {method: "DELETE"}); notice("Lot removed."); await investmentsReload(); }, "small quiet"));
         list.append(li);
       }
       section.append(list);
@@ -494,7 +499,7 @@ function investmentLots(account, holdings) {
       event.preventDefault();
       try {
         await api(`/api/investments/holdings/${holding.id}/lots`, {method: "POST", body: JSON.stringify({acquired_date: acquired.value, quantity: quantity.value.trim(), cost: cost.value.trim()})});
-        notice("Lot added."); await loadInvestments();
+        notice("Lot added."); await investmentsReload();
       } catch (error) { notice(error, true); }
     });
     section.append(form);
@@ -533,7 +538,7 @@ function investmentHoldingForm(account, renewing) {
       await api(`/api/investments/${account.id}/holdings`, {method: "POST", body: JSON.stringify(body)});
       notice(`${body.name} added.`);
       const next = `#/investments?account=${account.id}`;
-      if (location.hash === next) await loadInvestments(); else location.hash = next;
+      if (location.hash === next) await investmentsReload(); else location.hash = next;
     } catch (error) { notice(error, true); }
   });
   return details;
@@ -567,7 +572,7 @@ function investmentActivity(account) {
                                 message: `The ${event.paid_from} line counts as it did before. Review will ask which payment it was if others could match.`})) return;
       const result = await api(`/api/investments/events/${event.id}/unlink`, {method: "POST"});
       notice(result.question ? "Unmatched. Review asks which payment it was." : "Unmatched; no other payment matches, so it's left unmatched.");
-      await loadInvestments();
+      await investmentsReload();
     }, "small quiet"));
     moneyCell(tr, event.amount);
     const state = cell(tr, "");
@@ -578,7 +583,7 @@ function investmentActivity(account) {
         if (event.event_type === current) continue;
         state.append(asyncButton(label, async () => {
           await api(`/api/investments/events/${event.id}/qualified`, {method: "POST", body: JSON.stringify({qualified})});
-          notice(`Marked ${label.toLowerCase()}.`); await loadInvestments();
+          notice(`Marked ${label.toLowerCase()}.`); await investmentsReload();
         }, "small quiet"));
       }
     } else state.append(statusBadge(event.review_status));
@@ -603,7 +608,7 @@ function pensionForm(account) {
     event.preventDefault();
     const body = {monthly_benefit: benefit.value.trim(), start_date: start.value, cola_percent: cola.value.trim() || "0", survivor_percent: Number(survivor.value || 0)};
     if (lump.value.trim()) body.lump_sum = lump.value.trim();
-    try { await api(`/api/investments/${account.id}/pension`, {method: "PUT", body: JSON.stringify(body)}); notice("Pension terms saved."); await loadInvestments(); }
+    try { await api(`/api/investments/${account.id}/pension`, {method: "PUT", body: JSON.stringify(body)}); notice("Pension terms saved."); await investmentsReload(); }
     catch (error) { notice(error, true); }
   });
   return form;
@@ -624,7 +629,7 @@ function educationWithdrawalForm(account) {
     event.preventDefault();
     try {
       await api(`/api/investments/${account.id}/events`, {method: "POST", body: JSON.stringify({event_type: kind.value, event_date: day.value, amount: paid.value.trim(), note: note.value.trim()})});
-      notice("Withdrawal recorded."); await loadInvestments();
+      notice("Withdrawal recorded."); await investmentsReload();
     } catch (error) { notice(error, true); }
   });
   details.append(element("p", "Only the earnings part of a non-qualified withdrawal is taxed; the 1099-Q gives that share.", "muted small"), form);
@@ -667,7 +672,7 @@ function ibondRateTable(rates) {
     event.preventDefault();
     try {
       await api("/api/investments/ibond-rates", {method: "PUT", body: JSON.stringify({period_start: from.value, fixed_percent: fixed.value.trim(), inflation_percent: inflation.value.trim()})});
-      notice("Rate saved; I bond values follow it."); await loadInvestments();
+      notice("Rate saved; I bond values follow it."); await investmentsReload();
     } catch (error) { notice(error, true); }
   });
   holder.append(wrap, form);
@@ -685,7 +690,7 @@ function cryptoTools(account) {
     if (state.enabled) row.prepend(asyncButton("Refresh prices", async () => {
       const result = await api("/api/prices/refresh", {method: "POST"});
       notice(result.valued ? `Prices updated for ${result.valued} account${result.valued === 1 ? "" : "s"}.` : result.skipped[0] || "Nothing to price.");
-      await loadInvestments();
+      await investmentsReload();
     }, "small"));
   }).catch(() => { status.textContent = ""; });
   const details = element("details", "", "investment-add-holding"), form = element("form", "", "inline-form"), file = document.createElement("select");
@@ -704,7 +709,7 @@ function cryptoTools(account) {
     try {
       const result = await api(`/api/investments/${account.id}/crypto-import`, {method: "POST", body: JSON.stringify({document_id: Number(file.value)})});
       notice(`${result.added} entr${result.added === 1 ? "y" : "ies"} imported${result.duplicates ? `, ${result.duplicates} already here` : ""}${result.issues.length ? `; ${result.issues.length} skipped` : ""}.`);
-      await loadInvestments();
+      await investmentsReload();
     } catch (error) { notice(error, true); }
   });
   details.append(element("p", "Buys, sells, sends, receives, conversions and rewards become this account's activity; buys open tax lots.", "muted small"), form);

@@ -28,6 +28,16 @@
   <script src="/donate.js" defer></script>
   <script src="/trace.js" defer></script>
   <script src="/taxes_v2.js" defer></script>
+  <script src="/document_v2.js" defer></script>
+  <script src="/review_v2.js" defer></script>
+  <script src="/month_v2.js" defer></script>
+  <script src="/money_v2.js" defer></script>
+  <script src="/transactions_v2.js" defer></script>
+  <script src="/bills_v2.js" defer></script>
+  <script src="/accounts_v2.js" defer></script>
+  <script src="/investments_v2.js" defer></script>
+  <script src="/forecast_v2.js" defer></script>
+  <script src="/whatif_v2.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -181,6 +191,99 @@
       </section>
       <section class="panel"><h2>Starting point</h2><div id="forecast-start"></div></section>
       <div id="forecast-charts" class="forecast-charts"></div>
+    </section>
+
+    <section id="fc2-panel" class="page" data-page="forecast" data-ui="v2" aria-labelledby="fc2-title" hidden>
+      <header class="page-header"><div><h1 id="fc2-title" tabindex="-1">Forecast</h1>
+        <p class="page-subtitle">Projected from your balances, recent income and spending, and the assets below.</p></div>
+        <div class="page-actions"><button id="fc2-run-top" class="primary" type="submit" form="fc2-forecast-form">Update forecast</button></div></header>
+      <div id="fc2-state" class="page-state"></div>
+      <div id="fc2-body" class="page-body fc2-body">
+        <div class="fc2-layout">
+          <details id="fc2-assumptions" class="fc2-assumptions today-region" open>
+            <summary><span class="fc2-assumptions-title">Assumptions</span><span id="fc2-assumptions-line" class="fc2-assumptions-line"></span></summary>
+            <form id="fc2-forecast-form" class="form fc2-form" novalidate>
+              <div class="fc2-scalars">
+                <div class="field"><label for="fc2-forecast-years">Years ahead</label><input id="fc2-forecast-years" type="number" min="1" max="100" value="10" required></div>
+                <div class="field"><label for="fc2-forecast-inflation">Inflation per year (%)</label><input id="fc2-forecast-inflation" value="2" inputmode="decimal" required></div>
+                <div class="field"><label for="fc2-forecast-income-growth">Income growth per year (%)</label><input id="fc2-forecast-income-growth" value="0" inputmode="decimal" required></div>
+                <div class="field"><label for="fc2-forecast-history">Average over the last (months)</label><input id="fc2-forecast-history" type="number" min="1" max="24" value="6" required></div>
+              </div>
+              <details class="fc2-list" data-list="fc2-forecast-spending-changes"><summary>Spending changes <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Raise or lower a category from its recent average, e.g. groceries +10.</p>
+                <div id="fc2-forecast-spending-changes" class="forecast-list"></div>
+                <button id="fc2-add-spending-change" type="button" class="quiet">Add spending change</button></details>
+              <details class="fc2-list" data-list="fc2-forecast-income-changes"><summary>Income changes <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Added to monthly income from the chosen month on; use a negative amount for a cut.</p>
+                <div id="fc2-forecast-income-changes" class="forecast-list"></div>
+                <button id="fc2-add-income-change" type="button" class="quiet">Add income change</button></details>
+              <details class="fc2-list" data-list="fc2-forecast-one-offs"><summary>One-off amounts <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Money in is positive; an expense such as a vacation is negative.</p>
+                <div id="fc2-forecast-one-offs" class="forecast-list"></div>
+                <button id="fc2-add-one-off" type="button" class="quiet">Add one-off amount</button></details>
+              <details class="fc2-list" data-list="fc2-forecast-education"><summary>Education costs <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Paid from your 529 accounts in that month; whatever they can't cover comes from cash.</p>
+                <div id="fc2-forecast-education" class="forecast-list"></div>
+                <button id="fc2-add-education" type="button" class="quiet">Add education cost</button></details>
+              <details id="fc2-retirement" class="fc2-list"><summary>Retirement <span id="fc2-retire-state" class="fc2-count">Off</span></summary>
+                <p class="muted small">From the month you retire, take-home pay and contributions from pay stop, and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last. 529 accounts are kept for education, and pensions pay their benefit from their start month. Required minimum distributions use the birth year in Settings.</p>
+                <label class="check-field"><input id="fc2-retire-plan" type="checkbox"> Plan withdrawals from investments</label>
+                <fieldset id="fc2-retire-fields" class="forecast-retirement" hidden>
+                  <legend class="visually-hidden">Retirement withdrawals</legend>
+                  <div class="fc2-fields">
+                    <div class="field"><label for="fc2-retire-month">Retire in</label><input id="fc2-retire-month" type="month"></div>
+                    <div class="field"><label for="fc2-retire-mode">Withdraw</label>
+                      <select id="fc2-retire-mode"><option value="shortfall">Enough to cover the shortfall</option><option value="fixed">A fixed monthly amount</option></select></div>
+                    <div class="field" id="fc2-retire-amount-field" hidden><label for="fc2-retire-amount">Monthly amount, today's dollars</label><input id="fc2-retire-amount" inputmode="decimal" placeholder="4000.00"></div>
+                    <div class="field" id="fc2-retire-floor-field"><label for="fc2-retire-floor">Keep at least this cash, today's dollars</label><input id="fc2-retire-floor" inputmode="decimal" value="0"></div>
+                    <div class="field"><label for="fc2-retire-tax">Tax on tax-deferred withdrawals (%)</label><input id="fc2-retire-tax" inputmode="decimal" value="0"></div>
+                  </div>
+                </fieldset></details>
+              <div class="fc2-form-foot"><button id="fc2-run-forecast" class="primary" type="submit">Update forecast</button></div>
+            </form>
+          </details>
+          <div class="fc2-results">
+            <p id="fc2-status" class="visually-hidden" role="status"></p>
+            <div id="fc2-alerts" class="fc2-alerts"></div>
+            <div id="fc2-tiles" class="fc2-tiles"></div>
+            <section class="fc2-chart" aria-labelledby="fc2-chart-title">
+              <h2 id="fc2-chart-title" class="visually-hidden">Chart</h2>
+              <div id="fc2-chart-switch" class="chart-switch" role="group" aria-label="Chart">
+                <button type="button" class="chip" data-chart="net_worth" aria-pressed="true">Net worth</button>
+                <button type="button" class="chip" data-chart="cash_flow" aria-pressed="false">Income and spending</button>
+                <button type="button" class="chip" data-chart="balance_sheet" aria-pressed="false">Cash, assets and loans</button>
+              </div>
+              <figure id="fc2-chart" class="fc2-chart-figure"></figure>
+              <p id="fc2-chart-desc" class="muted small fc2-chart-desc"></p>
+              <details id="fc2-chart-data" class="fc2-fold"><summary>View data table</summary><div id="fc2-chart-table"></div></details>
+            </section>
+            <details id="fc2-about" class="fc2-fold"><summary>About these numbers</summary><ul id="fc2-notes" class="forecast-notes fc2-notes"></ul></details>
+            <section id="fc2-assets" class="today-region fc2-assets" aria-labelledby="fc2-assets-title">
+              <h2 id="fc2-assets-title">Assets and loans</h2>
+              <p class="muted small">Values you enter count immediately. Values read from statements count after you review them. Yearly rate: growth for an asset, interest for a loan.
+                Retirement, HSA, savings, CD, Treasury and brokerage accounts are on <a href="#/investments">Investments</a>.</p>
+              <div class="table-wrap"><table class="data-table fc2-assets-table"><thead><tr><th scope="col">Name</th><th scope="col" class="fc2-col-kind">Kind</th><th scope="col" class="numeric">Value or owed</th><th scope="col" class="fc2-col-as-of">As of</th><th scope="col" class="numeric">Yearly rate</th><th scope="col" class="numeric">Monthly payment</th><th scope="col">Source</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                <tbody id="fc2-asset-rows"></tbody></table></div>
+              <details id="fc2-asset-add" class="fc2-fold"><summary>Add an asset or loan</summary>
+                <form id="fc2-asset-form" class="form fc2-asset-form">
+                  <div class="fc2-fields">
+                    <div class="field"><label for="fc2-asset-name">Name</label><input id="fc2-asset-name" required maxlength="80" placeholder="Honda Civic"></div>
+                    <div class="field"><label for="fc2-asset-kind">Kind</label><select id="fc2-asset-kind">
+                      <option value="vehicle">Vehicle</option><option value="real_estate">Home or property</option>
+                      <option value="other_asset">Other asset</option><option value="loan">Loan</option></select></div>
+                    <div class="field"><label for="fc2-asset-value">Value, or amount owed</label><input id="fc2-asset-value" required inputmode="decimal" placeholder="18000.00"></div>
+                    <div class="field"><label for="fc2-asset-currency">Currency</label><input id="fc2-asset-currency" required maxlength="3" value="USD"></div>
+                    <div class="field"><label for="fc2-asset-as-of">Value as of</label><input id="fc2-asset-as-of" type="date" required></div>
+                    <div class="field"><label for="fc2-asset-rate">Yearly rate (%)</label><input id="fc2-asset-rate" inputmode="decimal" placeholder="Car: -15 if blank"></div>
+                    <div class="field"><label for="fc2-asset-payment">Monthly payment (loans)</label><input id="fc2-asset-payment" inputmode="decimal" disabled></div>
+                  </div>
+                  <div class="button-row"><button id="fc2-add-asset" type="submit">Add</button></div>
+                </form></details>
+            </section>
+            <details id="fc2-start-region" class="fc2-fold"><summary>Starting point</summary><div id="fc2-start" class="fc2-start"></div></details>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="taxes-panel" class="page" data-page="taxes" aria-labelledby="taxes-title" hidden>
@@ -391,6 +494,186 @@
       </div>
     </section>
 
+    <!-- What If, redesigned (whatif_v2.js; design-system/home-manager/pages/wealth.md): four tabs over one plan, behind the
+         ui_v2_screens flag. whatif.js builds both screens; every id here is v1's with the "wi2-" prefix. -->
+    <section id="wi2-panel" class="page" data-page="whatif" data-ui="v2" aria-labelledby="wi2-title" hidden>
+      <header class="page-header wi2-header"><div class="wi2-heading"><h1 id="wi2-title" tabindex="-1">What If</h1>
+        <p class="page-subtitle">Try money plans before they're real: a new job, a raise, a move to another city or someone else's salary. Plans run through the forecast beside how things are now.</p></div>
+        <div class="page-actions wi2-actions">
+          <label class="inline-field wi2-plan-field">Plan <select id="wi2-scenario-select"></select></label>
+          <button id="wi2-scenario-duplicate" type="button" class="quiet" disabled>Duplicate</button>
+          <button id="wi2-scenario-delete" type="button" class="quiet" disabled>Delete…</button>
+          <button id="wi2-scenario-save" class="primary" type="submit" form="wi2-scenario-form">Save plan</button>
+        </div></header>
+      <div id="wi2-state" class="page-state"></div>
+      <div id="wi2-body" class="page-body">
+        <div id="wi2-tabs" class="tabs wi2-tabs" role="tablist" aria-label="What If sections">
+          <button type="button" id="wi2-tab-plan" role="tab" aria-controls="wi2-plan-panel" aria-selected="true">Plan</button>
+          <button type="button" id="wi2-tab-compare" role="tab" aria-controls="wi2-compare-panel" aria-selected="false" tabindex="-1">Compare</button>
+          <button type="button" id="wi2-tab-planner" role="tab" aria-controls="wi2-planner-panel" aria-selected="false" tabindex="-1">Paycheck planner</button>
+          <button type="button" id="wi2-tab-follow" role="tab" aria-controls="wi2-track-panel" aria-selected="false" tabindex="-1" hidden>Follow this plan</button>
+        </div>
+
+        <section id="wi2-plan-panel" class="wi2-tabpanel" role="tabpanel" aria-labelledby="wi2-tab-plan">
+          <div class="wi2-plan-layout">
+            <form id="wi2-scenario-form" class="form wi2-plan-form today-region" novalidate>
+              <h2 class="visually-hidden">Plan inputs</h2>
+              <div class="wi2-scalars">
+                <div class="field wi2-name-field"><label for="wi2-scenario-name">Name</label><input id="wi2-scenario-name" maxlength="60" placeholder="Tom moves to Denver" required></div>
+                <div class="field"><label for="wi2-scenario-basis">Start from</label><select id="wi2-scenario-basis"></select></div>
+                <div class="field" id="wi2-scenario-cash-field" hidden><label for="wi2-scenario-cash">Cash to start with</label><input id="wi2-scenario-cash" inputmode="decimal" value="0"></div>
+              </div>
+              <div class="wi2-scalars">
+                <div class="field"><label for="wi2-scenario-years">Years ahead</label><input id="wi2-scenario-years" type="number" min="1" max="100" value="10"></div>
+                <div class="field"><label for="wi2-scenario-inflation">Inflation per year (%)</label><input id="wi2-scenario-inflation" inputmode="decimal" value="2"></div>
+                <div class="field"><label for="wi2-scenario-income-growth">Income growth per year (%)</label><input id="wi2-scenario-income-growth" inputmode="decimal" value="0"></div>
+              </div>
+              <details class="fc2-list wi2-group" data-list="wi2-scenario-paychecks"><summary>Paychecks <span class="fc2-count">(0)</span><span class="wi2-group-line"></span></summary>
+                <p class="muted small">Work a paycheck out in the Paycheck planner, then add it here. One that replaces pay takes the place of the pay on your confirmed pay stubs while it runs; one that adds is another earner.</p>
+                <div id="wi2-scenario-paychecks" class="forecast-list"></div></details>
+              <details class="fc2-list wi2-group" data-list="wi2-scenario-amounts"><summary>Set spending <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">A category's monthly amount from a month on, in today's dollars, e.g. rent in the new city. It replaces the category's recent average and its bills.</p>
+                <div id="wi2-scenario-amounts" class="forecast-list"></div>
+                <button id="wi2-add-scenario-amount" type="button" class="quiet">Add set spending</button></details>
+              <details class="fc2-list wi2-group" data-list="wi2-scenario-changes"><summary>Spending changes <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Raise or lower a category from its recent average, e.g. dining -20.</p>
+                <div id="wi2-scenario-changes" class="forecast-list"></div>
+                <button id="wi2-add-scenario-change" type="button" class="quiet">Add spending change</button></details>
+              <details class="fc2-list wi2-group" data-switch="wi2-scenario-cut-subscriptions"><summary>Subscriptions <span class="fc2-count">Off</span></summary>
+                <p class="muted small">See the plan with your confirmed subscriptions cancelled from a month on. Bills stay; the plan's notes say how much it saves.</p>
+                <label class="check-field"><input id="wi2-scenario-cut-subscriptions" type="checkbox"> Cancel subscriptions</label>
+                <div class="forecast-row" id="wi2-scenario-cut-fields" hidden>
+                  <div class="field"><label for="wi2-scenario-cut-month">Cancel from</label><input id="wi2-scenario-cut-month" type="month"></div>
+                </div></details>
+              <details class="fc2-list wi2-group" data-list="wi2-scenario-one-offs"><summary>One-off amounts <span class="fc2-count">(0)</span></summary>
+                <p class="muted small">Moving costs and deposits are negative; money in is positive.</p>
+                <div id="wi2-scenario-one-offs" class="forecast-list"></div>
+                <button id="wi2-add-scenario-one-off" type="button" class="quiet">Add one-off amount</button></details>
+              <details class="fc2-list wi2-group" data-switch="wi2-scenario-retire"><summary>Retirement <span class="fc2-count">Off</span></summary>
+                <p class="muted small">From the month you retire, pay and planned paychecks stop and money is drawn from investments: taxable accounts first, then tax-deferred, then tax-free, and an HSA last.</p>
+                <label class="check-field"><input id="wi2-scenario-retire" type="checkbox"> Plan withdrawals from investments</label>
+                <fieldset id="wi2-scenario-retire-fields" class="forecast-retirement" hidden>
+                  <legend class="visually-hidden">Retirement withdrawals in this plan</legend>
+                  <div class="forecast-row">
+                    <div class="field"><label for="wi2-scenario-retire-month">Retire in</label><input id="wi2-scenario-retire-month" type="month"></div>
+                    <div class="field"><label for="wi2-scenario-retire-mode">Withdraw</label>
+                      <select id="wi2-scenario-retire-mode"><option value="shortfall">Enough to cover the shortfall</option><option value="fixed">A fixed monthly amount</option></select></div>
+                    <div class="field" id="wi2-scenario-retire-amount-field" hidden><label for="wi2-scenario-retire-amount">Monthly amount, today's dollars</label><input id="wi2-scenario-retire-amount" inputmode="decimal" placeholder="4000.00"></div>
+                    <div class="field" id="wi2-scenario-retire-floor-field"><label for="wi2-scenario-retire-floor">Keep at least this cash, today's dollars</label><input id="wi2-scenario-retire-floor" inputmode="decimal" value="0"></div>
+                    <div class="field"><label for="wi2-scenario-retire-tax">Tax on tax-deferred withdrawals (%)</label><input id="wi2-scenario-retire-tax" inputmode="decimal" value="0"></div>
+                  </div>
+                </fieldset></details>
+            </form>
+            <section id="wi2-against" class="today-region wi2-against" aria-labelledby="wi2-against-title">
+              <div class="wi2-against-head"><h2 id="wi2-against-title">Against now</h2><button id="wi2-scenario-try" type="button">Try it</button></div>
+              <div id="wi2-against-body" class="wi2-against-body" aria-live="polite"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="wi2-compare-panel" class="wi2-tabpanel" role="tabpanel" aria-labelledby="wi2-tab-compare" hidden>
+          <div class="wi2-compare-bar">
+            <fieldset class="compare-choices wi2-compare-choices"><legend>Show, up to three</legend><div id="wi2-compare-options" class="chip-list wi2-compare-options"></div></fieldset>
+            <div class="field wi2-compare-years"><label for="wi2-compare-years">Years ahead</label><input id="wi2-compare-years" type="number" min="1" max="100" value="10"></div>
+            <button id="wi2-compare-run" type="button" class="primary">Compare</button>
+          </div>
+          <p id="wi2-compare-note" class="muted small" hidden>Choose up to three</p>
+          <div id="wi2-compare-result" class="wi2-compare-result" aria-live="polite"></div>
+        </section>
+
+        <section id="wi2-planner-panel" class="wi2-tabpanel" role="tabpanel" aria-labelledby="wi2-tab-planner" hidden>
+          <div id="wi2-paycheck-error"></div>
+          <div class="wi2-planner-layout">
+            <form id="wi2-paycheck-form" class="form whatif-inputs wi2-paycheck-form" novalidate>
+              <h2 class="visually-hidden">Paycheck planner</h2>
+              <div class="forecast-row">
+                <div class="field"><label for="wi2-plan-year">Tax year</label><input id="wi2-plan-year" type="number" min="2000" max="2100" required></div>
+                <div class="field"><label for="wi2-plan-status">Filing status</label>
+                  <select id="wi2-plan-status"><option value="single">Single</option><option value="married_joint">Married filing jointly</option><option value="head_of_household">Head of household</option></select></div>
+                <div class="field"><label for="wi2-plan-state">Work state</label><select id="wi2-plan-state"></select></div>
+                <div class="field"><label for="wi2-plan-frequency">Paid</label>
+                  <select id="wi2-plan-frequency"><option value="26">Every two weeks (26)</option><option value="24">Twice a month (24)</option><option value="52">Weekly (52)</option><option value="12">Monthly (12)</option></select></div>
+              </div>
+              <div class="forecast-row">
+                <div class="field"><label for="wi2-plan-pay-kind">Pay given as</label>
+                  <select id="wi2-plan-pay-kind"><option value="annual">Yearly salary</option><option value="check">Gross pay per paycheck</option></select></div>
+                <div class="field"><label for="wi2-plan-pay">Amount</label><input id="wi2-plan-pay" inputmode="decimal" placeholder="85000.00" required></div>
+              </div>
+              <h3>Other earnings</h3><p class="muted small">Overtime, commission or a regular bonus, per paycheck.</p>
+              <div id="wi2-plan-earnings" class="forecast-list"></div>
+              <button id="wi2-add-plan-earnings" type="button" class="quiet">Add earnings</button>
+              <h3>Bonuses</h3><p class="muted small">Paid once a year with the first paycheck of its month, withheld at the federal supplemental rate (22%).</p>
+              <div id="wi2-plan-bonuses" class="forecast-list"></div>
+              <button id="wi2-add-plan-bonus" type="button" class="quiet">Add bonus</button>
+              <h3>Pre-tax deductions</h3><p class="muted small">401(k), HSA, FSA and health, dental and vision premiums. A 401(k) lowers income tax only; the others also lower Social Security and Medicare.</p>
+              <div id="wi2-plan-pre_tax" class="forecast-list"></div>
+              <button id="wi2-add-plan-pre_tax" type="button" class="quiet">Add pre-tax deduction</button>
+              <details id="wi2-plan-federal" class="fc2-list wi2-tax-group"><summary>Federal income tax</summary>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-fed-deduction">Standard deduction a year</label><input id="wi2-plan-fed-deduction" inputmode="decimal"></div>
+                  <div class="field"><label for="wi2-plan-fed-extra">Extra withholding per paycheck (W-4 4c)</label><input id="wi2-plan-fed-extra" inputmode="decimal" placeholder="0.00"></div>
+                </div>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-fed-credits">Credits a year (W-4 step 3)</label><input id="wi2-plan-fed-credits" inputmode="decimal" placeholder="0.00"></div>
+                  <div class="field"><label for="wi2-plan-fed-other-income">Other income a year (W-4 4a)</label><input id="wi2-plan-fed-other-income" inputmode="decimal" placeholder="0.00"></div>
+                  <div class="field"><label for="wi2-plan-fed-deductions">Other deductions a year (W-4 4b)</label><input id="wi2-plan-fed-deductions" inputmode="decimal" placeholder="0.00"></div>
+                </div>
+                <label class="check-field"><input id="wi2-plan-fed-step2" type="checkbox"> W-4 Step 2 checked (more than one job, or a spouse who works)</label>
+                <p class="muted small">Leave the standard deduction blank to use the year's confirmed table.</p>
+              </details>
+              <details id="wi2-plan-state-tax" class="fc2-list wi2-tax-group"><summary>State and local tax</summary>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-state-deduction">State deduction or exemption a year</label><input id="wi2-plan-state-deduction" inputmode="decimal"></div>
+                  <div class="field"><label for="wi2-plan-state-rate">Flat state rate (%) instead of the table</label><input id="wi2-plan-state-rate" inputmode="decimal"></div>
+                  <div class="field"><label for="wi2-plan-state-extra">Extra state withholding per paycheck</label><input id="wi2-plan-state-extra" inputmode="decimal" placeholder="0.00"></div>
+                </div>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-state-credits">State credits a year</label><input id="wi2-plan-state-credits" inputmode="decimal" placeholder="0.00"></div>
+                  <div class="field"><label for="wi2-plan-state-supplemental">State rate on bonuses (%)</label><input id="wi2-plan-state-supplemental" inputmode="decimal"></div>
+                </div>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-sdi">State disability insurance (%)</label><input id="wi2-plan-sdi" inputmode="decimal"></div>
+                  <div class="field"><label for="wi2-plan-sdi-limit">…on wages up to, a year</label><input id="wi2-plan-sdi-limit" inputmode="decimal" placeholder="No limit"></div>
+                </div>
+                <div class="forecast-row">
+                  <div class="field"><label for="wi2-plan-local-kind">Local tax</label>
+                    <select id="wi2-plan-local-kind"><option value="none">None</option><option value="percent">A percent</option><option value="amount">An amount per paycheck</option></select></div>
+                  <div class="field" id="wi2-plan-local-value-field" hidden><label for="wi2-plan-local-value">Local tax rate (%)</label><input id="wi2-plan-local-value" inputmode="decimal"></div>
+                  <div class="field" id="wi2-plan-local-wages-field" hidden><label for="wi2-plan-local-wages">Of</label>
+                    <select id="wi2-plan-local-wages"><option value="taxable">Income-tax wages</option><option value="gross">Gross pay</option></select></div>
+                </div>
+                <p class="muted small">Leave the state deduction blank to use the state's confirmed table; fill it in where the state gives a personal exemption instead.</p>
+              </details>
+              <h3>Post-tax deductions</h3>
+              <div id="wi2-plan-post_tax" class="forecast-list"></div>
+              <button id="wi2-add-plan-post_tax" type="button" class="quiet">Add post-tax deduction</button>
+              <h3>Paid by your employer</h3><p class="muted small">Not taken from pay; counted toward your 401(k) and HSA.</p>
+              <div class="forecast-row">
+                <div class="field"><label for="wi2-plan-match">401(k) match: % of what you put in</label><input id="wi2-plan-match" inputmode="decimal" placeholder="100"></div>
+                <div class="field"><label for="wi2-plan-match-limit">…up to % of gross pay</label><input id="wi2-plan-match-limit" inputmode="decimal" placeholder="4"></div>
+              </div>
+              <div id="wi2-plan-employer" class="forecast-list"></div>
+              <button id="wi2-add-plan-employer" type="button" class="quiet">Add employer contribution</button>
+              <div class="button-row wi2-planner-foot"><button id="wi2-run-paycheck" class="primary" type="submit">Work it out</button><button id="wi2-paycheck-to-plan" type="button">Add to plan</button></div>
+            </form>
+            <section id="wi2-paycheck-result" class="panel whatif-result wi2-paycheck-result" aria-label="Paycheck from gross to net" aria-live="polite"></section>
+          </div>
+        </section>
+
+        <section id="wi2-track-panel" class="wi2-tabpanel" role="tabpanel" aria-labelledby="wi2-tab-follow" hidden>
+          <h2 class="visually-hidden">Follow this plan</h2>
+          <p id="wi2-track-status" class="muted small"></p>
+          <div class="button-row track-actions">
+            <div class="field"><label for="wi2-track-month">Budgets from</label><input id="wi2-track-month" type="month"></div>
+            <button id="wi2-track-preview" type="button">Use as budgets…</button>
+            <button id="wi2-track-stop" type="button" class="quiet" hidden>Stop following</button>
+          </div>
+          <div id="wi2-track-budgets"></div>
+          <div id="wi2-track-actual"></div>
+        </section>
+      </div>
+    </section>
+
     <section id="investments-panel" class="page" data-page="investments" aria-labelledby="investments-title" hidden>
       <header class="page-header"><div><h1 id="investments-title" tabindex="-1">Investments</h1>
         <p class="page-subtitle">Retirement, pensions, health savings, savings, CDs, Treasuries, I bonds, brokerage, crypto and 529 accounts. Values come from your statements, purchase confirmations and what you enter; crypto market prices only if you turn them on in Settings.</p></div>
@@ -420,6 +703,46 @@
           <div class="button-row"><button id="add-investment" type="submit">Add account</button></div>
         </form>
       </section>
+    </section>
+
+    <!-- Investments, redesigned (investments_v2.js; design-system/home-manager/pages/wealth.md), behind the ui_v2_screens flag.
+         The list, or one account (?account=ID) in its own view with Back and four tabs. -->
+    <section id="inv2-panel" class="page" data-page="investments" data-ui="v2" aria-labelledby="inv2-title" hidden>
+      <a id="inv2-back" class="inv2-back" href="#/investments" hidden>Investments</a>
+      <header class="page-header"><div><h1 id="inv2-title" tabindex="-1">Investments</h1>
+        <p id="inv2-subtitle" class="page-subtitle">Retirement, savings, CDs and Treasuries, I bonds, brokerage, crypto and 529s.</p></div>
+        <div class="page-actions inv2-actions">
+          <label id="inv2-removed-field" class="compact-check"><input id="inv2-removed" type="checkbox"> Show removed</label>
+          <button id="inv2-add" type="button" class="primary">Add an account</button>
+          <button id="inv2-record" type="button" class="primary" hidden>Record value</button></div></header>
+      <div id="inv2-state" class="page-state"></div>
+      <div id="inv2-body" class="page-body">
+        <div id="inv2-list" class="inv2-view">
+          <div id="inv2-tiles" class="inv2-tiles"></div>
+          <section id="inv2-needs" class="today-region" aria-labelledby="inv2-needs-title" hidden>
+            <h2 id="inv2-needs-title">Needs you</h2><ul id="inv2-needs-list" class="needs-list"></ul></section>
+          <section id="inv2-accounts" class="today-region" aria-labelledby="inv2-accounts-title">
+            <h2 id="inv2-accounts-title">Accounts</h2><div id="inv2-accounts-body"></div></section>
+          <div class="inv2-bottom">
+            <section id="inv2-split" class="today-region" aria-labelledby="inv2-split-title">
+              <h2 id="inv2-split-title">How it splits</h2><div id="inv2-split-body"></div></section>
+            <section id="inv2-taxes" class="today-region" aria-labelledby="inv2-taxes-title"></section>
+          </div>
+        </div>
+        <div id="inv2-account" class="inv2-view" hidden>
+          <div id="inv2-account-head" class="inv2-account-head"></div>
+          <div id="inv2-tabs" class="tabs" role="tablist" aria-label="Account sections">
+            <button type="button" id="inv2-tab-overview" role="tab" aria-controls="inv2-overview-panel" aria-selected="true">Overview</button>
+            <button type="button" id="inv2-tab-holdings" role="tab" aria-controls="inv2-holdings-panel" aria-selected="false" tabindex="-1">Holdings &amp; lots</button>
+            <button type="button" id="inv2-tab-activity" role="tab" aria-controls="inv2-activity-panel" aria-selected="false" tabindex="-1">Activity</button>
+            <button type="button" id="inv2-tab-settings" role="tab" aria-controls="inv2-settings-panel" aria-selected="false" tabindex="-1">Settings</button>
+          </div>
+          <section id="inv2-overview-panel" class="inv2-tabpanel" role="tabpanel" aria-labelledby="inv2-tab-overview"></section>
+          <section id="inv2-holdings-panel" class="inv2-tabpanel" role="tabpanel" aria-labelledby="inv2-tab-holdings" hidden></section>
+          <section id="inv2-activity-panel" class="inv2-tabpanel" role="tabpanel" aria-labelledby="inv2-tab-activity" hidden></section>
+          <section id="inv2-settings-panel" class="inv2-tabpanel" role="tabpanel" aria-labelledby="inv2-tab-settings" hidden></section>
+        </div>
+      </div>
     </section>
 
     <section id="search-panel" class="page" data-page="search" aria-labelledby="search-title" hidden>
@@ -457,6 +780,40 @@
         <ul id="review-unmatched" class="finance-list"></ul><p id="review-unmatched-note" class="muted small"></p></section>
     </section>
 
+    <!-- To check, redesigned (review_v2.js; design-system/home-manager/pages/review.md). -->
+    <section id="review2-panel" class="page review2" data-page="review" data-ui="v2" aria-labelledby="review2-title" hidden>
+      <header class="page-header"><div><h1 id="review2-title" tabindex="-1">To check</h1>
+        <p id="review2-status" class="page-subtitle" role="status"></p></div>
+        <div class="page-actions"><button id="review2-reconcile" type="button">Reconcile now</button><button id="review2-refresh" type="button">Refresh</button></div></header>
+      <div id="review2-state" class="page-state"></div>
+      <div id="review2-body" class="review2-body">
+        <div class="review2-picker-row">
+          <label class="visually-hidden" for="review2-picker">Item to check</label>
+          <select id="review2-picker"></select>
+          <button id="review2-prev" type="button" aria-label="Previous item">Previous</button>
+          <button id="review2-next" type="button" aria-label="Next item">Next</button>
+        </div>
+        <div id="review2-layout" class="review2-layout">
+          <nav id="review2-queue" class="review2-queue" aria-label="Items to check"></nav>
+          <div id="review2-empty" class="review2-empty" hidden></div>
+          <section id="review2-source" class="review2-source" aria-label="Evidence"></section>
+          <section id="review2-item" class="review2-item" aria-labelledby="review2-what">
+            <div class="review2-head">
+              <p id="review2-position" class="muted small"></p>
+              <h2 id="review2-what"></h2>
+              <div id="review2-why"></div>
+            </div>
+            <div class="review2-scroll">
+              <div id="review2-evidence" class="review2-evidence"></div>
+              <div id="review2-form" class="review2-form"></div>
+            </div>
+            <div id="review2-alert" class="review2-alert"></div>
+            <div id="review2-bar" class="review2-bar" role="group" aria-label="Decision"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
     <section id="transactions-panel" class="page" data-page="transactions" aria-labelledby="transactions-title" hidden>
       <header class="page-header"><div><h1 id="transactions-title" tabindex="-1">Transactions</h1>
         <p class="page-subtitle">Everything you spent, item by item, with its category and whether a statement and a receipt agree. Filters run on the server; nothing here is estimated.</p></div></header>
@@ -487,6 +844,52 @@
         <th scope="col">Category</th><th scope="col"><span class="visually-hidden">Receipt</span></th><th scope="col">Status</th><th scope="col" class="numeric">Amount</th></tr></thead>
         <tbody id="tx-rows"></tbody></table></div>
       <div class="pager"><button id="tx-prev" type="button">Previous</button><span id="tx-page"></span><button id="tx-next" type="button">Next</button></div>
+    </section>
+
+    <!-- Transactions, redesigned (transactions_v2.js; docs/ui.md "Pages"), behind the ui_v2_screens flag. -->
+    <section id="tx2-panel" class="page" data-page="transactions" data-ui="v2" aria-labelledby="tx2-title" hidden>
+      <header class="page-header"><div><h1 id="tx2-title" tabindex="-1">Transactions</h1>
+        <p class="page-subtitle">Every payment and item, with its category and whether a statement and a receipt agree.</p></div>
+        <div class="page-actions tx2-actions"><button id="tx2-import" type="button" class="secondary personal-only">Import</button>
+          <button id="tx2-add" type="button" class="primary personal-only">Add a payment</button></div></header>
+      <div id="tx2-state" class="page-state"></div>
+      <div id="tx2-body" class="page-body">
+        <div class="tx2-toolbar">
+          <div class="tx2-row">
+            <input id="tx2-search" type="search" placeholder="Search description, merchant or item" aria-label="Search transactions" autocomplete="off">
+            <div id="tx2-view" class="tabs tx2-view" role="tablist" aria-label="Show">
+              <button id="tx2-view-items" type="button" role="tab" aria-selected="true" aria-controls="tx2-results">Items</button>
+              <button id="tx2-view-charges" type="button" role="tab" aria-selected="false" aria-controls="tx2-results" tabindex="-1">Charges</button></div>
+          </div>
+          <div class="tx2-row">
+            <div id="tx2-periods" class="chip-list" role="group" aria-label="Period">
+              <button type="button" class="chip" data-period="this_month" aria-pressed="false">This month</button>
+              <button type="button" class="chip" data-period="last_month" aria-pressed="false">Last month</button>
+              <button type="button" class="chip" data-period="last_90" aria-pressed="false">90 days</button>
+              <button type="button" class="chip" data-period="year" aria-pressed="false">This year</button>
+              <button type="button" class="chip" data-period="all" aria-pressed="false">All</button>
+              <button type="button" class="chip" data-period="custom" aria-pressed="false">Custom…</button></div>
+            <div id="tx2-dates" class="tx2-dates" hidden><label class="inline-field">From <input id="tx2-from" type="date"></label>
+              <label class="inline-field">To <input id="tx2-to" type="date"></label></div>
+            <label class="inline-field tx2-select">Account <select id="tx2-account"><option value="">All accounts</option></select></label>
+            <label class="inline-field tx2-select">Category <select id="tx2-category"><option value="">All categories</option></select></label>
+            <details id="tx2-more" class="tx2-more"><summary>More filters</summary>
+              <div class="tx2-more-body"><p id="tx2-more-hint" class="muted small">Charges view only</p>
+                <label class="inline-field">Type <select id="tx2-type"><option value="">All types</option><option value="purchase,withdrawal">Purchases</option><option value="refund">Refunds</option>
+                  <option value="transfer,payment">Transfers &amp; payments</option><option value="deposit">Income</option><option value="fee,interest">Fees &amp; interest</option></select></label>
+                <label class="inline-field">Status <select id="tx2-status"><option value="">Counted and awaiting review</option><option value="counted">Counted</option>
+                  <option value="pending">Awaiting review</option><option value="rejected">Rejected</option></select></label>
+                <label class="inline-field">Receipt <select id="tx2-receipt"><option value="">Any</option><option value="true">Has receipt</option><option value="false">No receipt</option></select></label>
+                <label class="inline-field">Sort <select id="tx2-sort"><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option>
+                  <option value="amount_asc">Largest spending first</option><option value="amount_desc">Largest money in first</option><option value="description">Description</option></select></label></div></details>
+          </div>
+        </div>
+        <p id="tx2-summary" class="muted small" aria-live="polite"></p>
+        <ul id="tx2-backfill" class="needs-list"></ul>
+        <div id="tx2-error"></div>
+        <div id="tx2-results"></div>
+        <div class="pager"><button id="tx2-prev" type="button">Previous</button><span id="tx2-page"></span><button id="tx2-next" type="button">Next</button></div>
+      </div>
     </section>
 
     <section id="spending-panel" class="page" data-page="spending" aria-labelledby="spending-title" hidden>
@@ -527,6 +930,29 @@
       <datalist id="category-options"></datalist>
     </section>
 
+    <!-- This month, redesigned (month_v2.js; docs/ui.md "Pages"), behind the ui_v2_screens flag. -->
+    <section id="month2-panel" class="page" data-page="spending" data-ui="v2" aria-labelledby="month2-title" hidden>
+      <header class="page-header"><div><h1 id="month2-title" tabindex="-1">This month</h1><p id="month2-subtitle" class="page-subtitle"></p></div>
+        <div class="page-actions month2-controls">
+          <div class="month2-stepper"><button id="month2-prev" type="button" class="icon-button" aria-label="Previous month"></button>
+            <input id="month2-month" type="month" aria-label="Month">
+            <button id="month2-next" type="button" class="icon-button" aria-label="Next month"></button></div>
+          <label class="inline-field">Compare <select id="month2-compare"><option value="previous">Previous month</option><option value="last_year">Same month last year</option></select></label>
+          <label class="inline-field" id="month2-currency-field" hidden>Currency <select id="month2-currency"></select></label></div></header>
+      <div id="month2-state" class="page-state"></div>
+      <div id="month2-body" class="page-body">
+        <div id="month2-tiles" class="month2-tiles"></div>
+        <ul id="month2-pending" class="needs-list"></ul>
+        <div id="month2-main" class="month2-main">
+          <section id="month2-categories" class="today-region" aria-labelledby="month2-categories-title"></section>
+          <section id="month2-budgets" class="today-region personal-only" aria-labelledby="month2-budgets-title"></section>
+        </div>
+        <div class="month2-pair"><section id="month2-merchants" class="today-region"></section><section id="month2-refunds" class="today-region"></section></div>
+        <details id="month2-rules" class="today-region personal-only"></details>
+        <details id="month2-about" class="today-about"></details>
+      </div>
+    </section>
+
     <section id="bills-panel" class="page" data-page="bills" aria-labelledby="bills-title" hidden>
       <header class="page-header"><div><h1 id="bills-title" tabindex="-1">Bills &amp; recurring</h1>
         <p class="page-subtitle">Recurring bills and subscriptions, when they are next due, and whether a payment was found.</p></div></header>
@@ -542,12 +968,45 @@
           <th scope="col">Counts as</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="recurring-rows"></tbody></table></div></section>
     </section>
 
+    <!-- Bills & subscriptions, redesigned (bills_v2.js; docs/ui.md "Pages"), behind the ui_v2_screens flag. -->
+    <section id="bills2-panel" class="page" data-page="bills" data-ui="v2" aria-labelledby="bills2-title" hidden>
+      <header class="page-header"><div><h1 id="bills2-title" tabindex="-1">Bills &amp; subscriptions</h1>
+        <p class="page-subtitle">What's due, what it usually costs, and whether a payment was found.</p></div>
+        <div class="page-actions bills2-actions"><button id="bills2-scan" type="button" class="secondary personal-only">Look for recurring bills</button></div></header>
+      <div id="bills2-state" class="page-state"></div>
+      <div id="bills2-body" class="page-body">
+        <div id="bills2-empty"></div>
+        <div id="bills2-tiles" class="bills2-tile-sets"></div>
+        <section id="bills2-decide" class="today-region" aria-labelledby="bills2-decide-title" hidden></section>
+        <div id="bills2-main" class="bills2-main">
+          <section id="bills2-upcoming" class="today-region" aria-labelledby="bills2-upcoming-title"></section>
+          <section id="bills2-all" class="today-region" aria-labelledby="bills2-all-title"></section>
+        </div>
+        <details id="bills2-about" class="today-about"></details>
+      </div>
+    </section>
+
     <section id="accounts-panel" class="page" data-page="accounts" aria-labelledby="accounts-title" hidden>
       <header class="page-header"><div><h1 id="accounts-title" tabindex="-1">Accounts</h1>
         <p class="page-subtitle">Balances come from statements and show their dates. They are not added up: statements from different days don't make a meaningful total.</p></div></header>
       <div id="accounts-state" class="page-state"></div>
       <div id="account-groups"></div>
       <p class="muted small">To add transactions, drop a bank or card export (CSV or XLSX) into the Inbox, then choose Import transactions on it in Documents.</p>
+    </section>
+
+    <!-- Accounts, redesigned (accounts_v2.js; docs/ui.md "Pages"), behind the ui_v2_screens flag. -->
+    <section id="accounts2-panel" class="page" data-page="accounts" data-ui="v2" aria-labelledby="accounts2-title" hidden>
+      <header class="page-header"><div><h1 id="accounts2-title" tabindex="-1">Accounts</h1>
+        <p class="page-subtitle">Each account's latest statement balance and how recent it is. Cash and net worth across accounts are on Today.</p></div>
+        <div class="page-actions accounts2-actions"><button id="accounts2-import" type="button" class="primary personal-only">Import an export</button></div></header>
+      <div id="accounts2-state" class="page-state"></div>
+      <div id="accounts2-body" class="page-body">
+        <div id="accounts2-groups" class="accounts2-groups"></div>
+        <details id="accounts2-about" class="today-about"><summary>About these balances</summary>
+          <p class="muted small">Balances come from statements and show their dates. They aren't added up here; Today shows Cash and Net worth.</p>
+          <p class="muted small">Balances aren't estimated from partial transaction history.</p>
+          <p class="muted small">To add transactions, drop a bank or card export (CSV or XLSX) into the Inbox, then choose Import an export.</p></details>
+      </div>
     </section>
 
     <section id="inventory-panel" class="page" data-page="inventory" aria-labelledby="inventory-title" hidden>
@@ -687,6 +1146,51 @@
           </div>
         </div>
       </section>
+    </section>
+
+    <!-- The document page, redesigned (document_v2.js; design-system/home-manager/pages/document.md). -->
+    <section id="doc2-panel" class="page doc2" data-page="document" data-ui="v2" aria-labelledby="doc2-title" hidden>
+      <header class="inspector-header">
+        <a id="doc2-back" class="back-link" href="#/documents">Documents</a>
+        <div class="inspector-heading"><h1 id="doc2-title" tabindex="-1">Document</h1><p id="doc2-subtitle" class="page-subtitle"></p></div>
+        <div class="page-actions"><span id="doc2-state"></span><span id="doc2-menu"></span></div>
+      </header>
+      <div id="doc2-version-banner"></div>
+      <div id="doc2-loading" class="page-state"></div>
+      <div id="doc2-body" class="doc2-body">
+        <div id="doc2-source" class="doc2-source"><div id="doc2-group" class="group-strip" hidden></div><div id="doc2-viewer"></div></div>
+        <section id="doc2-record" class="doc2-record" aria-labelledby="doc2-record-title">
+          <div id="doc2-header" class="doc2-header">
+            <div class="doc2-record-top"><h2 id="doc2-record-title">Recorded information</h2><span id="doc2-record-badge"></span></div>
+            <ol id="doc2-steps" class="doc2-steps" aria-label="Processing steps"></ol>
+            <div id="doc2-next"></div>
+            <div id="doc2-why"></div>
+            <div id="doc2-decision" class="doc2-pinned"></div>
+            <p id="doc2-status" class="muted small" role="status" aria-live="polite"></p>
+          </div>
+          <div class="tabs doc2-tabs" role="tablist" aria-label="Record sections">
+            <button id="doc2-tab-record" type="button" role="tab" aria-selected="true" aria-controls="doc2-panel-record">Record</button>
+            <button id="doc2-tab-history" type="button" role="tab" aria-selected="false" aria-controls="doc2-panel-history" tabindex="-1">History</button>
+            <button id="doc2-tab-details" type="button" role="tab" aria-selected="false" aria-controls="doc2-panel-details" tabindex="-1">Details</button>
+          </div>
+          <section id="doc2-panel-record" class="doc2-tabpanel" role="tabpanel" aria-labelledby="doc2-tab-record"></section>
+          <section id="doc2-panel-history" class="doc2-tabpanel" role="tabpanel" aria-labelledby="doc2-tab-history" hidden>
+            <div id="doc2-history"></div>
+            <div class="doc2-readings">
+              <h3>Readings</h3>
+              <div class="field"><label for="doc2-runs">Saved readings</label><select id="doc2-runs"><option value="">Not read yet</option></select></div>
+              <div class="field"><label for="doc2-rotation">Rotate clockwise before reading</label><select id="doc2-rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div>
+              <div class="button-row"><button id="doc2-reread" type="button">Read again as a new run</button></div>
+              <p id="doc2-telemetry" class="muted small"></p>
+            </div>
+          </section>
+          <section id="doc2-panel-details" class="doc2-tabpanel" role="tabpanel" aria-labelledby="doc2-tab-details" hidden>
+            <dl id="doc2-details" class="detail-list"></dl>
+            <h3>How the text was read</h3>
+            <dl id="doc2-provenance" class="detail-list"></dl>
+          </section>
+        </section>
+      </div>
     </section>
 
     <section id="scan-panel" class="page" data-page="processing" aria-labelledby="processing-title" hidden>
@@ -1062,6 +1566,61 @@
   <p id="import-status" role="status" aria-live="polite"></p>
   <ul id="import-issues" class="analysis-limitations"></ul>
   <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Row</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="numeric">Amount</th></tr></thead><tbody id="import-preview"></tbody></table></div>
+</dialog>
+<!-- Money screens v2 (money_v2.js): a payment entered by hand, and the bank or card export to import. -->
+<dialog id="money2-add" class="money2-dialog" aria-labelledby="money2-add-title" aria-describedby="money2-add-note">
+  <h2 id="money2-add-title">Add a payment</h2>
+  <p id="money2-add-note" class="muted small">Counts at once. When its statement line arrives, the line replaces it.</p>
+  <form id="money2-add-form" class="money2-add-form" novalidate>
+    <p class="field-error money2-wide" data-error-for="form" id="money2-add-error" role="alert"></p>
+    <div class="field"><label for="money2-add-account">Account</label><select id="money2-add-account" aria-describedby="money2-add-account-error"></select>
+      <p class="field-error" data-error-for="account" id="money2-add-account-error" role="alert"></p></div>
+    <div class="field"><label for="money2-add-date">Date</label><input id="money2-add-date" type="date" required aria-describedby="money2-add-date-error">
+      <p class="field-error" data-error-for="date" id="money2-add-date-error" role="alert"></p></div>
+    <div class="field money2-wide"><label for="money2-add-description">Description</label>
+      <input id="money2-add-description" maxlength="200" required autocomplete="off" aria-describedby="money2-add-description-error">
+      <p class="field-error" data-error-for="description" id="money2-add-description-error" role="alert"></p></div>
+    <div class="field"><label for="money2-add-amount">Amount</label>
+      <div class="money2-amount"><input id="money2-add-amount" inputmode="decimal" placeholder="0.00" maxlength="40" required autocomplete="off" aria-describedby="money2-add-amount-error money2-add-currency"><span id="money2-add-currency" class="muted"></span></div>
+      <p class="field-error" data-error-for="amount" id="money2-add-amount-error" role="alert"></p></div>
+    <fieldset class="money2-direction"><legend>Direction</legend>
+      <label class="check-field"><input type="radio" name="money2-add-direction" value="out" checked> Money out</label>
+      <label class="check-field"><input type="radio" name="money2-add-direction" value="in"> Money in</label>
+      <p class="field-error" data-error-for="direction" role="alert"></p></fieldset>
+    <div class="field money2-wide"><label for="money2-add-category">Category <span class="muted">(optional)</span></label>
+      <input id="money2-add-category" list="category-options" maxlength="60" autocomplete="off" aria-describedby="money2-add-category-error">
+      <p class="field-error" data-error-for="category" id="money2-add-category-error" role="alert"></p></div>
+    <div class="dialog-actions money2-wide"><button id="money2-add-cancel" type="button" class="link-button">Cancel</button><button id="money2-add-save" type="submit" class="primary">Add payment</button></div>
+  </form>
+</dialog>
+<dialog id="money2-import" class="money2-dialog" aria-labelledby="money2-import-title">
+  <div class="dialog-heading"><h2 id="money2-import-title">Import a bank or card export</h2><button id="money2-import-close" type="button" class="secondary">Close</button></div>
+  <p class="muted small">Files arrive through the Inbox or a watched folder. Choose one to import.</p>
+  <ul id="money2-import-list" class="dated-list"></ul>
+</dialog>
+<!-- Investments v2 (investments_v2.js): an account with no statement here yet. -->
+<dialog id="inv2-add-dialog" class="money2-dialog" aria-labelledby="inv2-add-title" aria-describedby="inv2-add-note">
+  <h2 id="inv2-add-title">Add an account</h2>
+  <p id="inv2-add-note" class="muted small">For an account with no statement here yet. Values you enter count at once; statements you add later record their values for you to confirm.</p>
+  <form id="inv2-add-form" class="money2-add-form" novalidate>
+    <p class="field-error money2-wide" data-error-for="form" id="inv2-add-error" role="alert"></p>
+    <div class="field money2-wide"><label for="inv2-add-name">Name</label><input id="inv2-add-name" required maxlength="80" placeholder="Work 401(k)" autocomplete="off" aria-describedby="inv2-add-name-error">
+      <p class="field-error" data-error-for="name" id="inv2-add-name-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-kind">Kind</label><select id="inv2-add-kind" required aria-describedby="inv2-add-kind-error"></select>
+      <p class="field-error" data-error-for="kind" id="inv2-add-kind-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-institution">Institution</label><input id="inv2-add-institution" maxlength="80" placeholder="Fidelity" autocomplete="off" aria-describedby="inv2-add-institution-error">
+      <p class="field-error" data-error-for="institution" id="inv2-add-institution-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-currency">Currency</label><select id="inv2-add-currency" aria-describedby="inv2-add-currency-error"></select>
+      <p class="field-error" data-error-for="currency" id="inv2-add-currency-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-value">Value</label><input id="inv2-add-value" inputmode="decimal" placeholder="25000.00" autocomplete="off" aria-describedby="inv2-add-value-note inv2-add-value-error">
+      <small id="inv2-add-value-note" class="muted">Leave blank for a pension; add its monthly benefit after.</small>
+      <p class="field-error" data-error-for="value" id="inv2-add-value-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-as-of">Value as of</label><input id="inv2-add-as-of" type="date" required aria-describedby="inv2-add-as-of-error">
+      <p class="field-error" data-error-for="as-of" id="inv2-add-as-of-error" role="alert"></p></div>
+    <div class="field"><label for="inv2-add-rate">Yearly growth or interest (%)</label><input id="inv2-add-rate" inputmode="decimal" placeholder="Kind's default if blank" autocomplete="off" aria-describedby="inv2-add-rate-error">
+      <p class="field-error" data-error-for="rate" id="inv2-add-rate-error" role="alert"></p></div>
+    <div class="dialog-actions money2-wide"><button id="inv2-add-cancel" type="button" class="link-button">Cancel</button><button id="inv2-add-save" type="submit" class="primary">Add account</button></div>
+  </form>
 </dialog>
 <dialog id="tx-drawer" class="drawer" aria-labelledby="tx-drawer-title">
   <div class="dialog-heading"><h2 id="tx-drawer-title">Transaction</h2><button id="close-tx-drawer" class="secondary" type="button">Close</button></div>

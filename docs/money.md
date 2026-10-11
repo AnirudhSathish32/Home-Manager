@@ -119,7 +119,9 @@ counts at once.
   line). The payment counts once throughout.
 - **No guessing.** When two or more lines could be the same payment, nothing is replaced, so nothing is counted twice
   or dropped.
-- There's no form for it yet. The redesigned Transactions screen adds one (docs/open-work.md "UI redesign" 6).
+- **Add a payment** on the redesigned Transactions screen is its form (`money_v2.js`, ui.md "Pages"): account, date,
+  description, amount with the account's currency beside it, money out or in, and an optional category. The new row
+  shows as Entered.
 
 ## Corrections
 
@@ -138,7 +140,33 @@ reading the document again.
   `as_of`). Statements rewrite a holding's terms and values each time, so the correction is kept by the holding and put
   back after each statement or confirmation. A holding you entered is changed by editing it.
 
-There's no screen for these yet; the redesigned document page adds Correct (docs/open-work.md "UI redesign" 6).
+The redesigned document page corrects receipts, bills, pay stubs, statements and a statement's rows
+([ui](ui.md#the-document-page)). Investment values wait for the Wealth screens. Three endpoints support it:
+- **Preview:** `POST /api/finance/records/{type}/{id}/correction-preview` takes the same `changes` (the reason is
+  ignored) and returns what saving them would change, without saving anything (`finance/correction_preview.py`):
+  - the fields, from → to;
+  - every total the record feeds that moves, before (a traced figure) → after, with the signed difference, and how many
+    stay the same;
+  - whether a match is made or lost;
+  - whether the record will count automatically, and which issues it resolves.
+
+  The correction and the reconciliation pass a save runs both run inside one write transaction, and that transaction is
+  rolled back. A bill or pay stub changes no totals, so its preview gives a note instead. Family records (`?member=`)
+  have no preview. Like a save, the preview keeps a charge's proposed receipt match when its amount changes, because
+  reconciliation doesn't re-check a link.
+- **History:** `GET /api/finance/records/{type}/{id}/history` lists, newest first: the record's corrections (for a
+  statement, its rows' too), its review decisions, and the corrections received from the family. Each entry has when,
+  who, the field, from → to and why. A review that a correction made automatically shows as "Automatic check"
+  (`ledger.AUTO_VERIFIED_NOTE`). A correction is undoable while it's the latest for its field.
+- **Undo:** `POST /api/finance/records/{type}/{id}/corrections/undo` with `ids` (the `correction_ids` a save returns)
+  puts the earlier values back, as new corrections with the reason "Undid a change", and restores the issues they
+  resolved. A record the correction verified automatically, and that nobody has decided on since, goes back to needing
+  review. Undoing a field corrected again since is refused.
+
+The record view (`GET /api/finance/records/{type}/{id}`) lists `correctable`: each field with its label, kind, current
+value and choices. A statement's rows list their own. With `?figures=1` it also returns what a receipt counts as (its
+`split.receipt` figure) and counts in (each category's month), and a statement's account balance when it's the
+account's latest.
 
 ## New statements wait for you
 
@@ -442,6 +470,11 @@ currency, settles it.
 | `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. |
 | `#/receipts` | Receipts & statements: the money store's folders. |
 | `#/review` | The Review queue (see [ui](ui.md#review)). Its groups: Questions, Proposed matches, Records to verify, Investment and loan documents to confirm, Warranties to confirm, Tax tables to confirm, Possible write-offs and tax payments, Recurring payments, Receipt items to identify. Statements awaiting reconciliation and documents that couldn't be processed are listed beside the queue. |
+
+With the `ui_v2_screens` flag the four money routes show their redesigned screens (ui.md "Pages"): **This month**
+(spending: tiles, by category beside budgets, merchants, refunds, rules folded), **Transactions** (period chips, Add a
+payment and Import), **Bills & subscriptions** (totals, To decide, Coming up, all recurring payments) and **Accounts**
+(balances as traced figures, Import). They read the same tools as the pages above.
 
 Old `#/finances?…` links redirect: `section=review|unmatched` goes to Review, `section=bills` to Bills, and anything else
 to Transactions with the same filters.

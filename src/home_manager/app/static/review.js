@@ -60,26 +60,15 @@ async function loadReview(keep = true) {
   else loadGroupSuggestions().catch(error => notice(error, true));
   const load = ++reviewLoad, previous = reviewItems[reviewIndex] ? reviewKey(reviewItems[reviewIndex]) : null;
   $("review-status").textContent = "Loading…";
-  let queue, recurring, items, catalog, unmatched, assets, warranties, taxTables, investments, taxTags, counts;
+  let items, catalog, unmatched, counts;
   try {
-    [queue, recurring, items, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}, counts] = await Promise.all([
-      tool("review_queue"), tool("get_recurring_obligations"),
-      api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
-      api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed"), api("/api/investments/review"),
-      api("/api/tax-tags?status=proposed"), api("/api/review/counts")]);
+    ({items, catalog, unmatched, counts} = await reviewData());
   } catch (error) {
     if (load === reviewLoad) { $("review-status").textContent = ""; $("review-detail").replaceChildren(alertBox(`Couldn't load the review queue. ${error.message}`, {tone: "error", action: asyncButton("Retry", () => loadReview())})); }
     return;
   }
   if (load !== reviewLoad) return;
-  reviewItems = [...queue.issues.map(value => ({kind: "issue", id: value.id, value})), ...queue.links.map(value => ({kind: "link", id: `${value.kind}-${value.id}`, value})),
-                 ...queue.records.map(value => ({kind: "record", id: `${value.record_type}-${value.id}`, value})),
-                 ...proposedAssets(assets, investments),
-                 ...warranties.map(value => ({kind: "warranty", id: value.id, value})),
-                 ...taxTables.map(value => ({kind: "tax_table", id: value.id, value})),
-                 ...taxTags.map(value => ({kind: "tax_tag", id: value.id, value})),
-                 ...recurring.obligations.filter(row => row.status === "proposed").map(value => ({kind: "recurring", id: value.id, value})),
-                 ...items.map(value => ({kind: "item", id: value.id, value}))];
+  reviewItems = items;
   const kept = keep && previous ? reviewItems.findIndex(item => reviewKey(item) === previous) : -1;
   reviewIndex = kept >= 0 ? kept : Math.min(reviewIndex, Math.max(0, reviewItems.length - 1));
   reviewCounts = counts;
@@ -88,6 +77,23 @@ async function loadReview(keep = true) {
   renderReviewDetail();
   renderUnmatched(unmatched);
   showReviewCounts(counts);
+}
+// Everything awaiting a decision, as one list of {kind, id, value} in REVIEW_GROUPS order (To check v2 shares it).
+async function reviewData() {
+  const [queue, recurring, resolutions, catalog, unmatched, assets, warranties, {tables: taxTables}, investments, {tags: taxTags}, counts] = await Promise.all([
+    tool("review_queue"), tool("get_recurring_obligations"),
+    api("/api/items/resolutions?status=proposed&limit=200"), api("/api/folders"), tool("get_unmatched_receipts", {start: "1900-01-01", end: todayIso()}),
+    api("/api/assets"), api("/api/warranties?status=proposed"), api("/api/tax-tables?status=proposed"), api("/api/investments/review"),
+    api("/api/tax-tags?status=proposed"), api("/api/review/counts")]);
+  const items = [...queue.issues.map(value => ({kind: "issue", id: value.id, value})), ...queue.links.map(value => ({kind: "link", id: `${value.kind}-${value.id}`, value})),
+                 ...queue.records.map(value => ({kind: "record", id: `${value.record_type}-${value.id}`, value})),
+                 ...proposedAssets(assets, investments),
+                 ...warranties.map(value => ({kind: "warranty", id: value.id, value})),
+                 ...taxTables.map(value => ({kind: "tax_table", id: value.id, value})),
+                 ...taxTags.map(value => ({kind: "tax_tag", id: value.id, value})),
+                 ...recurring.obligations.filter(row => row.status === "proposed").map(value => ({kind: "recurring", id: value.id, value})),
+                 ...resolutions.map(value => ({kind: "item", id: value.id, value}))];
+  return {items, catalog, unmatched, counts};
 }
 function reviewTitle(item) {
   const value = item.value;
@@ -402,6 +408,7 @@ function renderUnmatched(unmatched) {
 }
 document.addEventListener("keydown", event => {
   if (currentRoute?.name !== "review" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+  if (uiV2Screens.includes("review")) return;  // To check v2 has its own keys; V here would click v1's hidden Confirm.
   if (document.querySelector("dialog[open]") || event.target.closest("input, select, textarea, .menu")) return;
   const key = event.key.toLowerCase();
   if ((key === "j" || key === "k") && reviewItems.length) {
@@ -418,10 +425,10 @@ $("reconcile").addEventListener("click", () => api("/api/finance/reconcile", {me
   .catch(error => notice(error, true)));
 
 // Approve an item resolution with the user's corrections.
-let editingResolution = null;
+let editingResolution = null, itemDialogDone = null;
 $("item-category").replaceChildren(...ITEM_CATEGORIES.map(name => new Option(name)));
-function openItemDialog(resolution) {
-  editingResolution = resolution;
+function openItemDialog(resolution, onDone = () => loadReview(false)) {
+  editingResolution = resolution; itemDialogDone = onDone;
   $("item-dialog-line").textContent = `Printed: ${resolution.line.description}${resolution.line.merchant ? ` at ${resolution.line.merchant}` : ""}`;
   $("item-name").value = resolution.name; $("item-brand").value = resolution.brand || ""; $("item-size").value = resolution.size_text || "";
   $("item-category").value = resolution.category; $("item-consumable").checked = resolution.consumable; $("item-dialog-error").textContent = "";
@@ -434,6 +441,6 @@ $("item-form").addEventListener("submit", async event => {
                  category: $("item-category").value, consumable: $("item-consumable").checked, barcode: editingResolution.barcode || null};
   try {
     await api(`/api/items/resolutions/${editingResolution.id}/review`, {method: "POST", body: JSON.stringify({status: "verified", edits})});
-    $("item-dialog").close(); notice("Approved with your changes; the item joined your inventory."); await loadReview(false);
+    $("item-dialog").close(); notice("Approved with your changes; the item joined your inventory."); await itemDialogDone();
   } catch (error) { $("item-dialog-error").textContent = error.message; }
 });

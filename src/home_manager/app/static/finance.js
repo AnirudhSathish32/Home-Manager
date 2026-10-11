@@ -270,7 +270,7 @@ function itemRow(row, categories) {
   const value = cell(tr, ""); value.className = "numeric"; value.appendChild(amount(row.amount, {signed: false}));
   return tr;
 }
-function chargeCategorySelect(row) {
+function chargeCategorySelect(row, onDone = loadTransactions) {
   // A charge with no itemised receipt has one category for all of it: the same choice as in the transaction drawer.
   const select = document.createElement("select"); select.setAttribute("aria-label", `Category of ${row.merchant}`);
   const names = [...new Set([...(categoryCache || []), ...(receiptCategoryCache || []), ...(row.category !== "uncategorized" ? [row.category] : [])])].sort();
@@ -280,12 +280,12 @@ function chargeCategorySelect(row) {
   select.value = row.category === "uncategorized" ? "" : row.category;
   select.title = row.category_source === "rule" ? "Set by a category rule" : row.category_source === "user" ? "Set by you" : "";
   select.addEventListener("change", async () => {
-    if (select.value === "__new") { select.value = row.category === "uncategorized" ? "" : row.category; openTransaction(row.transaction_id); return; }
+    if (select.value === "__new") { select.value = row.category === "uncategorized" ? "" : row.category; openTransaction(row.transaction_id, null, {onChange: onDone}); return; }
     select.disabled = true;
     try {
       await api(`/api/finance/transactions/${row.transaction_id}/category`, {method: "PUT", body: JSON.stringify({category: select.value || null})});
       notice(select.value ? `${row.merchant} is now ${categoryLabel(select.value)}.` : `Category cleared; any matching rule applies again.`);
-      await loadTransactions();
+      await onDone();
     } catch (error) { notice(error, true); } finally { select.disabled = false; }
   });
   return select;
@@ -317,8 +317,10 @@ function ruleWords(record) {
   // A starting suggestion only: the server normalizes the words the same way it matches them.
   return (record.merchant || record.description_raw || "").toUpperCase().replace(/#\s*\d+|\b\d+\b|[^\w\s&]/g, " ").split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
 }
-async function openTransaction(id, member = null) {
-  if (familyMode) return openFamilyTransaction(id, member);
+// onChange reloads the list the drawer was opened from (v1's Transactions unless the caller says otherwise).
+async function openTransaction(id, member = null, {onChange = null} = {}) {
+  if (familyMode) return openFamilyTransaction(id, member, {onChange});
+  const reload = () => (onChange || loadTransactions)(), reopen = () => openTransaction(id, member, {onChange});
   const [record, {tag: taxTag}] = await Promise.all([api(`/api/finance/records/transaction/${id}`), api(`/api/tax-tags/on/transaction/${id}`).catch(() => ({tag: null}))]);
   await loadCategoryOptions().catch(() => {});
   const body = $("tx-drawer-body");
@@ -334,7 +336,7 @@ async function openTransaction(id, member = null) {
   const state = element("div", "", "drawer-status");
   state.append(statusBadge(badge), element("span", counted ? " Counted in your totals." : record.review_status === "rejected" ? " Not counted." : " Not counted until you decide.", "muted small"));
   const review = status => api(`/api/finance/records/transaction/${id}/review`, {method: "POST", body: JSON.stringify({status})})
-    .then(() => { notice(status === "needs_review" ? "Returned to review." : "Saved."); refreshReviewCount(); return Promise.all([openTransaction(id), loadTransactions()]); });
+    .then(() => { notice(status === "needs_review" ? "Returned to review." : "Saved."); refreshReviewCount(); return Promise.all([reopen(), reload()]); });
   if (!counted && record.review_status !== "rejected") state.append(asyncButton("Count it", () => review("verified"), "small primary"), asyncButton("Reject", () => review("rejected")));
   else if (record.review_source === "user") state.append(asyncButton(record.review_status === "rejected" ? "Undo rejection" : "Undo verification", () => review("needs_review"), "small quiet"));
   else if (counted) state.append(asyncButton("Reject (not a real transaction)", () => review("rejected"), "small quiet"));
@@ -351,7 +353,7 @@ async function openTransaction(id, member = null) {
   form.append(input, save, ruleRow, source);
   if (record.category_source === "user") form.append(asyncButton("Clear my category", async () => {
     await api(`/api/finance/transactions/${id}/category`, {method: "PUT", body: JSON.stringify({category: null})});
-    notice("Category cleared; any matching rule applies again."); await Promise.all([openTransaction(id), loadTransactions()]);
+    notice("Category cleared; any matching rule applies again."); await Promise.all([reopen(), reload()]);
   }, "small quiet"));
   form.addEventListener("submit", async event => {
     event.preventDefault();
@@ -366,7 +368,7 @@ async function openTransaction(id, member = null) {
         await api(`/api/finance/transactions/${id}/category`, {method: "PUT", body: JSON.stringify({category})});
         notice(`Category saved for ${record.description_raw}.`);
       }
-      await Promise.all([openTransaction(id), loadTransactions()]);
+      await Promise.all([reopen(), reload()]);
     } catch (error) { notice(error, true); }
   });
   const evidence = element("ul", "", "finance-list");
@@ -391,7 +393,7 @@ async function openTransaction(id, member = null) {
                             + ` from ${change.previous ?? "nothing"} to ${change.value ?? "nothing"}`);
     if (change.status === "applied") li.append(document.createTextNode(" "), asyncButton("Reject", async () => {
       await api(`/api/finance/family-corrections/${change.key}/reject`, {method: "POST", body: "{}"});
-      notice(`Put back ${change.previous ?? "the earlier value"}.`); await Promise.all([openTransaction(id), loadTransactions()]);
+      notice(`Put back ${change.previous ?? "the earlier value"}.`); await Promise.all([reopen(), reload()]);
     }, "small quiet"));
     else li.append(element("small", ` · ${statusLabel(change.status)}`, "muted"));
     history.append(li);
@@ -414,14 +416,14 @@ async function openTransaction(id, member = null) {
   // Taxes (taxes.js): a write-off, business income or a tax payment made ahead.
   const taxes = taxTagEditor({targets: [{type: "transaction", id, label: record.description_raw, inflow: record.amount_minor > 0,
                                          amount: record.display.amount_minor.replace(/^-/, "")}],
-                              tags: taxTag ? [taxTag] : [], words: ruleWords(record), onDone: () => openTransaction(id)});
+                              tags: taxTag ? [taxTag] : [], words: ruleWords(record), onDone: reopen});
   body.replaceChildren(...sections, drawerSection("Category", form), drawerSection("Taxes", taxes), drawerSection("Evidence", evidence),
                        drawerSection("History", history), details);
   if (!$("tx-drawer").open) $("tx-drawer").showModal();
 }
 // The family ledger's drawer: a member's transaction as their latest copy has it, with its evidence opening from the
 // family computer.
-async function openFamilyTransaction(id, member) {
+async function openFamilyTransaction(id, member, {onChange = null} = {}) {
   const record = await api(recordUrl("transaction", id, member));
   $("tx-drawer-title").textContent = record.merchant || record.description_raw;
   const head = element("div", "", "drawer-head");
@@ -454,7 +456,7 @@ async function openFamilyTransaction(id, member) {
     try {
       await api(recordUrl("transaction", id, member), {method: "PATCH", body: JSON.stringify({changes})});
       notice(`Sent to ${record.owner}.`);
-      await Promise.all([openFamilyTransaction(id, member), loadTransactions()]);
+      await Promise.all([openFamilyTransaction(id, member, {onChange}), (onChange || loadTransactions)()]);
     } catch (error) { notice(error, true); } finally { save.disabled = false; }
   });
   const evidence = element("ul", "", "finance-list");
@@ -760,7 +762,8 @@ async function reconcileStatement(row) {
   refreshReviewCount();
   await loadReconcilePrompt();
   // The page on screen shows totals from before the statement's charges counted.
-  if (currentRoute) Promise.resolve().then(() => ROUTES[currentRoute.name].show(currentRoute)).catch(error => notice(error, true));
+  if (currentRoute) Promise.resolve().then(() => ((uiV2Screens.includes(currentRoute.name) && V2_SCREENS[currentRoute.name]) || ROUTES[currentRoute.name]).show(currentRoute))
+    .catch(error => notice(error, true));
 }
 function reconcilePromptBox(row) {
   const kind = STATEMENT_KINDS[row.statement_type];

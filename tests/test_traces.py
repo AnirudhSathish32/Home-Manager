@@ -112,7 +112,10 @@ def test_cash_flow_budgets_recurring_bills_and_balances_trace(books):
     same(trace(store, budget["spent"]["trace"]), budget["spent"])
 
     [water] = [row for row in tools.get_recurring_obligations()["obligations"] if row["merchant"].startswith("CITY WATER")]
+    same(trace(store, water["expected_amount"]["trace"]), water["expected_amount"])  # Proposed: Bills v2 shows it too.
     Reconciler(store).review_obligation(water["id"], "verified")
+    [confirmed] = [row for row in tools.get_recurring_obligations()["obligations"] if row["id"] == water["id"]]
+    same(trace(store, confirmed["expected_amount"]["trace"]), confirmed["expected_amount"])
     [total] = tools.get_recurring_obligations()["totals"]
     monthly = same(trace(store, total["monthly"]["trace"]), total["monthly"])
     yearly = same(trace(store, total["yearly"]["trace"]), total["yearly"])
