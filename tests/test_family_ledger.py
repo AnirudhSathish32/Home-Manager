@@ -86,6 +86,11 @@ def test_spending_adds_up_to_the_family_dashboard(family):
     assert sum(row["spending"]["minor"] for row in categories["categories"]) == usd["spending"]["minor"]
     compared = tool(family, "compare_categories", {"first": {"start": "2026-08-01", "end": "2026-08-31"}, "second": SEPTEMBER})
     assert sum(row["second"]["minor"] for row in compared["categories"]) == usd["spending"]["minor"]
+    # This month's change, merchant and refund figures: members' traces don't add up to the family's, so none is kept.
+    [periods] = tool(family, "compare_periods", {"first": {"start": "2026-08-01", "end": "2026-08-31"}, "second": SEPTEMBER})["by_currency"]
+    assert periods["second"]["minor"] == 10500 and "trace" not in periods["change"]
+    assert not any("trace" in row["change"] for row in compared["categories"])
+    assert not any("trace" in row["spending"] for row in categories["top_merchants"]) and "trace" not in usd["refunds"]
     assert tool(family, "get_upcoming_bills", {"as_of": TODAY.isoformat(), "days": 30})["bills"] == []
 
 

@@ -1,11 +1,11 @@
-"""This month v2 in the browser (month_v2.js; docs/ui.md "Pages"): synthetic data only, behind the ui_v2_screens flag."""
+"""This month v2 in the browser (month_v2.js; docs/ui.md "Pages"): synthetic data only."""
 from datetime import date
 import os
 import re
 
 import pytest
 
-from conftest import inbox_scan
+from conftest import assert_tiles_fit_beside_ask, inbox_scan
 from test_family_browser import spend
 from test_reconcile_tools import add
 from test_taxes_v2_browser import served
@@ -14,10 +14,6 @@ from test_today_v2_browser import months_back, seed
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-
-
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["spending"]}, headers={"Authorization": f"Bearer {token}"}).ok
 
 
 def seed_month(manager):
@@ -43,7 +39,6 @@ def test_this_month_v2_shows_the_month_its_budgets_and_rules(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/spending")
         panel = page.locator("#month2-panel")
@@ -62,11 +57,20 @@ def test_this_month_v2_shows_the_month_its_budgets_and_rules(tmp_path):
         expect(tiles.nth(0)).to_contain_text("149.00")
         expect(tiles.nth(1)).to_contain_text("120.00")  # Groceries 80.00 and the 40.00 water bill.
         expect(tiles.nth(3)).to_contain_text("1 over")
-        net = tiles.nth(0).locator(".figure-button")
+        net = tiles.nth(0).locator("> .figure-button")
         net.click()
         expect(page.locator("#breakdown")).to_be_visible()
         page.keyboard.press("Escape")
         expect(net).to_be_focused()
+        # Under it, the traced difference from last month (spending.net_change): an arrow and words, never red.
+        more = tiles.nth(0).locator(".figure-sub", has_text="more than")
+        expect(more).to_contain_text(f"29.00 USD more than {previous}")
+        expect(more.locator(".month2-arrow")).to_have_count(1)
+        expect(more.locator('[data-figure-ref^="spending.net_change?"]')).to_have_count(1)
+        # The Refunded tile, a change cell and a top merchant are traced figures too.
+        expect(tiles.nth(2).locator('> [data-figure-ref^="spending.refunds?"]')).to_have_count(1)
+        expect(page.locator('#month2-categories .month2-change [data-figure-ref^="spending.change?"]').first).to_be_visible()
+        expect(page.locator('#month2-merchants [data-figure-ref^="spending.merchant?"]').first).to_be_visible()
 
         # By category: names through categoryLabel, the comparison month beside this one, and the change as text.
         categories = page.locator("#month2-categories")
@@ -129,6 +133,8 @@ def test_this_month_v2_shows_the_month_its_budgets_and_rules(tmp_path):
         for width in (390, 768, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width
+        # A million or more shrinks the row's figures to fit, with Ask open and without.
+        assert_tiles_fit_beside_ask(page, "#month2-tiles")
         assert not failures, failures
         browser.close()
 
@@ -160,7 +166,6 @@ def test_this_month_v2_family_view_has_no_budgets_or_rules(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/spending")
         expect(page.locator("#month2-panel")).to_be_visible()

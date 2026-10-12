@@ -22,13 +22,12 @@ const ROUTES = {
   // #/documents/ID[?version=HASH][&lines=ID,ID] opens the inspector over the preserved list state, at those text lines.
   document: {title: "Document", nav: "documents", show: route => configured ? openDocument(route.id, route.params.get("version"), route.params.get("lines")) : null},
   processing: {title: "Processing", show: () => configured ? Promise.all([loadJobs().then(loadEvents), loadModelHistory(), loadProcessing()]) : null},
-  settings: {title: "Settings", show: () => null},
+  // #/settings?tab=checks opens that tab; the default tab (Library folder) leaves the URL bare.
+  settings: {title: "Settings", show: route => showSettingsTab(route.params.get("tab"))},
   // #/donate lists checks and documents; #/donate/ID is one check beside its original.
   donate: {title: "Donate documents", show: route => configured ? openDonate(route) : null},
 };
-// V2_SCREENS (app.js): route → {title, show}, filled by each Phase 2 screen's script.
-// Routes this profile shows redesigned (HouseholdConfig.ui_v2_screens), filled by app.js loadSettings.
-let uiV2Screens = [];
+// V2_SCREENS (app.js): route → {title, show}, filled by each Phase 2 screen's script; it wins over ROUTES.
 const DEFAULT_ROUTE = "home";
 let currentRoute = null, listScroll = 0, openedFromList = false;
 
@@ -37,7 +36,28 @@ for (const link of document.querySelectorAll(".nav-link[data-icon]")) {
   link.title = link.querySelector(".nav-label").textContent;  // Tooltip when the sidebar collapses to icons.
 }
 $("close-receipt").prepend(icon("arrow-left"));
-wireTabs(["directories-tab", "profiles-tab", "preferences-tab", "appearance-tab", "model-tab", "checks-tab", "backup-tab", "sharing-tab", "privacy-tab"]);
+// Settings tabs by their ?tab= name. Donate comes after Privacy & security so the arrow order of the others is unchanged.
+const SETTINGS_TABS = {library: "directories-tab", profiles: "profiles-tab", preferences: "preferences-tab", appearance: "appearance-tab",
+                       models: "model-tab", checks: "checks-tab", backup: "backup-tab", sharing: "sharing-tab", privacy: "privacy-tab", donate: "donate-tab"};
+const activateSettingsTab = wireTabs(Object.values(SETTINGS_TABS));
+for (const [name, id] of Object.entries(SETTINGS_TABS)) $(id).addEventListener("tabshow", () => {
+  // In the scrolling row (below 800px) the selected tab stays in sight.
+  const nav = document.querySelector(".settings-nav"), tab = $(id);
+  if (!settingsColumn.matches) nav.scrollLeft = tab.offsetLeft - nav.offsetLeft - (nav.clientWidth - tab.offsetWidth) / 2;
+  if (currentRoute?.name !== "settings") return;
+  const next = new URLSearchParams(name === "library" ? {} : {tab: name});
+  currentRoute.params = next;
+  history.replaceState(null, "", `#/settings${name === "library" ? "" : `?${next}`}`);
+});
+function showSettingsTab(name) {
+  const id = SETTINGS_TABS[name] || SETTINGS_TABS.library;
+  if ($(id).getAttribute("aria-selected") !== "true") activateSettingsTab(id);
+  else if (id === SETTINGS_TABS.donate) loadDonateSettings();
+}
+// The tablist is a column beside the content from 800px, and a scrolling row above it below that.
+const settingsColumn = matchMedia("(min-width: 801px)");
+function settingsOrientation() { document.querySelector(".settings-nav").setAttribute("aria-orientation", settingsColumn.matches ? "vertical" : "horizontal"); }
+settingsColumn.addEventListener("change", settingsOrientation); settingsOrientation();
 
 // Settings › Appearance: System, Light or Dark, saved in this browser (theme.js).
 const themeChoice = $(`theme-${storedTheme()}`) || $("theme-system");
@@ -82,8 +102,8 @@ function showRoute(moveFocus) {
   if (previous === "document" && route.name !== "document") { closeReceipt(); closeDocumentV2(); }
   if (route.name === "document") openedFromList = lists.includes(previous) || (previous === "document" && openedFromList);
   currentRoute = route;
-  // A redesigned screen is a data-ui="v2" section for the same page, shown when this profile turned it on.
-  const v2 = uiV2Screens.includes(route.name) && V2_SCREENS[route.name], ui = v2 ? "v2" : "v1";
+  // A redesigned screen is a data-ui="v2" section for the same page; pages without one show their plain section.
+  const v2 = V2_SCREENS[route.name], ui = v2 ? "v2" : "v1";
   for (const section of document.querySelectorAll("[data-page]")) section.hidden = !(section.dataset.page === page && (section.dataset.ui || "v1") === ui);
   // A document belongs to the store its list was opened from.
   const nav = route.name === "document" && libraryScope === "money" ? "receipts" : ROUTES[route.name].nav || route.name;
@@ -99,36 +119,6 @@ function showRoute(moveFocus) {
   Promise.resolve().then(() => (v2 || ROUTES[route.name]).show(route)).catch(error => notice(error, true));
 }
 
-// The sidebar calls the home route "Today", the review route "To check", spending "This month" and bills "Bills &
-// subscriptions" only while their redesigned screens are on (today_v2.js, review_v2.js, month_v2.js, bills_v2.js).
-function setHomeNavLabel() {
-  for (const [id, route, v1, v2] of [["nav-home", "home", "Home", "Today"], ["nav-review", "review", "Review", "To check"],
-                                     ["nav-spending", "spending", "Spending & budgets", "This month"], ["nav-bills", "bills", "Bills & recurring", "Bills & subscriptions"]]) {
-    const label = uiV2Screens.includes(route) ? v2 : v1;
-    $(id).querySelector(".nav-label").textContent = label; $(id).title = label;
-  }
-}
-// Settings › Appearance › New screens: one checkbox per redesigned screen, saved for this profile.
-function renderUiV2Choices() {
-  const list = $("ui-v2-list"), entries = Object.entries(V2_SCREENS);
-  // Saved with the profile's household settings, so like the household form it needs an open profile.
-  $("ui-v2-choice").disabled = !configured && !familyMode;
-  if (!entries.length) { list.replaceChildren(emptyState("No redesigned screens are ready yet.")); return; }
-  list.replaceChildren(...entries.map(([name, screen]) => {
-    const label = element("label", "", "check-field"), box = document.createElement("input");
-    box.type = "checkbox"; box.id = `ui-v2-${name}`; box.checked = uiV2Screens.includes(name);
-    box.addEventListener("change", async () => {
-      const routes = entries.map(([key]) => key).filter(key => key === name ? box.checked : uiV2Screens.includes(key));
-      try {
-        await api("/api/ui-screens", {method: "PUT", body: JSON.stringify({routes})});
-        notice("Saved."); uiV2Screens = routes; setHomeNavLabel();
-        if (currentRoute?.name === name) showRoute(false);
-      } catch (error) { box.checked = !box.checked; notice(error, true); }
-    });
-    label.append(box, ` ${screen.title}`);
-    return label;
-  }));
-}
 function leaveDocument() {
   // Back to the list the document was opened from, keeping filters, page and scroll position.
   if (openedFromList) history.back(); else location.hash = libraryScope === "money" ? "#/receipts" : "#/documents";

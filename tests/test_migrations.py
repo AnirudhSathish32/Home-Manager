@@ -232,6 +232,31 @@ def test_064_drops_the_dead_columns_and_keeps_the_rows():
         db.close()
 
 
+def test_065_drops_the_doubled_type_from_generated_account_names_only():
+    """"Household checking checking" becomes "Household checking"; a name the user chose stays as it is."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 65:
+                db.executescript(script.read_text())
+        rows = [("Household checking", "checking", "Household checking checking", None),
+                ("Family Savings", "savings", "Family Savings savings 1234", "1234"),
+                ("Chase", "checking", "Chase checking", None),  # The type isn't in the institution.
+                ("Superchecking", "checking", "Superchecking checking", None),  # Not the type as a word.
+                ("Household checking", "savings", "Household checking savings", None),
+                ("My credit card", "credit_card", "Groceries card", None)]  # Chosen by the user.
+        for institution, kind, name, last_four in rows:
+            db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,'USD','t','t')",
+                       (institution, kind, name, last_four))
+        db.commit()
+        storage.apply_migrations(db, 64)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert [row[0] for row in db.execute("SELECT display_name FROM accounts ORDER BY id")] == [
+            "Household checking", "Family Savings 1234", "Chase checking", "Superchecking checking", "Household checking savings", "Groceries card"]
+    finally:
+        db.close()
+
+
 def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
     control, managed = tmp_path / "control", tmp_path / "managed"
     manager = Manager(control, ScanLimits(stability_seconds=0))

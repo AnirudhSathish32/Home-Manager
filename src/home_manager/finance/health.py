@@ -63,6 +63,34 @@ def check_ledger(db) -> list[Problem]:
     return sorted(found, key=lambda item: (SEVERITIES.index(item.severity), item.code, str(item.record_id)))
 
 
+# Record type -> (SQL giving the record's link value, link key). A problem reported by a table name (orphans, unknown
+# currencies) has no record to open.
+LINKS = {
+    "receipt": ("SELECT document_id FROM receipts WHERE id=?", "document_id"),
+    "statement": ("SELECT document_id FROM statements WHERE id=?", "document_id"),
+    "bill": ("SELECT document_id FROM bills WHERE id=?", "document_id"),
+    "transaction": ("SELECT coalesce(t.source_document_id, s.document_id) FROM transactions t LEFT JOIN statements s ON s.id=t.statement_id "
+                    "WHERE t.id=?", "document_id"),
+    "holding": ("SELECT account_id FROM holdings WHERE id=?", "investment_account_id"),
+    "investment_event": ("SELECT account_id FROM investment_events WHERE id=?", "investment_account_id"),
+}
+
+
+def record_links(db, problems):
+    """Each problem as a dict with `link`: where the user opens the record to fix it ({document_id} or
+    {investment_account_id}), or None when there is no such page (docs/operations.md "Ledger health")."""
+    linked = []
+    for item in problems:
+        link = None
+        if item.record_type in LINKS:
+            sql, key = LINKS[item.record_type]
+            row = db.execute(sql, (item.record_id,)).fetchone()
+            if row and row[0] is not None:
+                link = {key: row[0]}
+        linked.append({**item._asdict(), "link": link})
+    return linked
+
+
 def summary(problems):
     """{"error": n, "warning": n, "info": n, "by_rule": {code: n}}."""
     severities = Counter(item.severity for item in problems)

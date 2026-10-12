@@ -246,6 +246,7 @@ function renderPaycheck(result) {
     const dd = element("dd", "", big ? "plan-figure" : ""); dd.appendChild(wiMoney(value, {size: big ? "lg" : "sm", signed: false}));
     headline.append(element("dt", label), dd);
   }
+  fitFigures(headline);
   const rates = element("p", `Taxes take ${planRate(result.rates.total_tax_percent)} of gross pay; you keep ${planRate(result.rates.take_home_percent)}.`
     + (result.rates.federal_marginal_percent != null ? ` Top federal bucket ${planRate(result.rates.federal_marginal_percent)}` : "")
     + (result.rates.state_marginal_percent != null ? `, top ${result.state_name} bucket ${planRate(result.rates.state_marginal_percent)}.` : result.rates.federal_marginal_percent != null ? "." : ""), "muted small");

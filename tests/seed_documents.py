@@ -34,7 +34,7 @@ def _read_and_record(manager, model, name, lines, outputs):
 
 
 def _models(manager, model):
-    """The fake models, and the household's settings kept (model_copy keeps ui_v2_screens) with item lookups off."""
+    """The fake models, and the household's settings kept with item lookups off."""
     manager.configure_vision(model["config"])
     manager.configure_reasoning(ReasoningConfig(base_url=model["config"].base_url, model="synthetic-reasoning"))
     manager.configure_household(manager.household.model_copy(update={"auto_identify_items": False}))
@@ -117,7 +117,7 @@ def seed_review_items(manager, ids):
     lot = next(lot for lot in items.inventory(include_closed=True) if lot["receipt_id"] == ids["receipt_record"])
     warranty = Warranties(manager.store).propose(lot["id"], "manufacturer", 12, False, "Support | Acme Home", "https://acme.example/warranty",
                                                  "Every Acme toaster includes a one-year limited warranty")
-    # Head of household, so it never meets the single table other seeding confirms (test_taxes_browser.seed_tax_year).
+    # Head of household, so it never meets the single table other seeding confirms (seed_taxes.seed_tax_year).
     table = TaxTables(manager.store).propose("US", date.today().year, "head_of_household",
                                              {"standard_deduction_minor": 1500000, "brackets": [{"from_minor": 0, "rate_bp": 1000}, {"from_minor": 1192500, "rate_bp": 1200}]},
                                              [{"url": "https://irs.example/brackets", "quote": "10% on taxable income up to $11,925"}])
@@ -130,9 +130,9 @@ def seed_review_items(manager, ids):
 
 
 @contextmanager
-def document_server(tmp_path, token, routes=(), review_items=False):
-    """The app on a free port with seed_documents' documents (and seed_review_items' when asked) and the redesigned
-    routes turned on. Yields (base, ids, manager)."""
+def document_server(tmp_path, token, review_items=False):
+    """The app on a free port with seed_documents' documents (and seed_review_items' when asked).
+    Yields (base, ids, manager)."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -156,8 +156,6 @@ def document_server(tmp_path, token, routes=(), review_items=False):
         ids = {**seed_documents(manager, model), "unread_doc": unread}
         if review_items:
             ids.update(seed_review_items(manager, ids))
-        if routes:
-            manager.configure_household(manager.household.model_copy(update={"ui_v2_screens": list(routes)}))
         yield f"http://127.0.0.1:{port}", ids, manager
     finally:
         stop()

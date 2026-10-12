@@ -13,6 +13,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..core.money import EXPONENTS, money
+from ..core.trace import NULL
 from .items import normalize_text
 
 # Unit -> (dimension, base units per unit). Bare "oz" is weight; "fl oz" is volume.
@@ -134,8 +135,9 @@ class ItemAnalysisTools:
         standard, label = STANDARD[dimension]
         return dimension, Decimal(lot["cost_minor"]) * standard / (quantity * base), label, assumed
 
-    def get_item_spending(self, value):
-        """What approved receipt items cost in a period, per currency, with the products that cost most."""
+    def get_item_spending(self, value, recorder=NULL):
+        """What approved receipt items cost in a period, per currency, with the products that cost most.
+        recorder: one step per product (household/item_traces.py items.spending)."""
         lots = self._lots(value.query, value.start, value.end)
         totals, products = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0])
         for lot in lots:
@@ -143,7 +145,10 @@ class ItemAnalysisTools:
             totals[lot["currency"]][1] += 1
             products[(lot["currency"], product_name(lot))][0] += lot["cost_minor"]
             products[(lot["currency"], product_name(lot))][1] += 1
-        top = sorted(products.items(), key=lambda item: -item[1][0])[:15]
+        ranked = sorted(products.items(), key=lambda item: -item[1][0])
+        for (currency, name), (total, count) in ranked:
+            recorder.add(name, total, currency, count=count)
+        top = ranked[:15]
         return {"period": {"start": value.start, "end": value.end}, "query": value.query,
                 "by_currency": [{"currency": currency, "spent": money(total, currency), "purchases": count} for currency, (total, count) in sorted(totals.items())],
                 "top_products": [{"product": name, "currency": currency, "spent": money(total, currency), "purchases": count} for (currency, name), (total, count) in top],
@@ -220,42 +225,67 @@ class ItemAnalysisTools:
             entry["lots"] += 1
         return list(rates.values())
 
-    def get_consumption_cost(self, value):
-        """Cost per day and per 30 days from finished lots: total cost divided by total days each lasted."""
-        rows, totals = [], defaultdict(Decimal)
+    @staticmethod
+    def _record_rate(recorder, entry, shown):
+        """A product's step (its rounded share of the figure) and the cost, days and lots it rests on."""
+        recorder.add(entry["product"], shown, entry["currency"], count=entry["lots"])
+        recorder.input(f"product:{entry['product']}", f"{entry['product']}: {entry['lots']} finished, lasting {entry['days']} days in all",
+                       entry["cost"], entry["currency"], "your check-in answers")
+
+    @staticmethod
+    def _record_rounding(recorder, totals, shown):
+        """The half-even rounding of each currency's exact total, against its products' rounded steps."""
+        for currency, total in totals.items():
+            recorder.round(rounded(total) - shown[currency], currency, note="Each product is rounded to the cent, and so is the exact total.")
+
+    def get_consumption_cost(self, value, recorder=NULL):
+        """Cost per day and per 30 days from finished lots: total cost divided by total days each lasted.
+        recorder: one step per product, its rate's inputs, and the rounding (items.per_30_days)."""
+        rows, totals, shown = [], defaultdict(Decimal), defaultdict(int)
         for entry in sorted(self._rates(value.query), key=lambda item: -item["cost"] / item["days"]):
             per_day = Decimal(entry["cost"]) / entry["days"]
             totals[entry["currency"]] += per_day * 30
+            shown[entry["currency"]] += rounded(per_day * 30)
+            self._record_rate(recorder, entry, rounded(per_day * 30))
             rows.append({"product": entry["product"], "currency": entry["currency"], "per_day": money(rounded(per_day), entry["currency"]),
                          "per_30_days": money(rounded(per_day * 30), entry["currency"]), "finished_lots": entry["lots"], "approximate": entry["lots"] < 3})
+        self._record_rounding(recorder, totals, shown)
         return {"query": value.query, "products": rows[:50],
                 "per_30_days_by_currency": [{"currency": currency, "amount": money(rounded(total), currency)} for currency, total in sorted(totals.items())],
                 "notes": ["Only items you marked finished count; thrown-out ones are waste, not consumption.",
                           "approximate is true while fewer than three finished lots back a figure."]}
 
-    def get_waste(self, value):
-        """Thrown-out items closed in the period and what they cost."""
+    def get_waste(self, value, recorder=NULL):
+        """Thrown-out items closed in the period and what they cost. recorder: one step per product (items.waste)."""
         lots = self._lots(value.query, value.start, value.end, date_column="l.closed_on", status="thrown_out")
-        totals = defaultdict(lambda: [0, 0])
+        totals, products = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0])
         for lot in lots:
             totals[lot["currency"]][0] += lot["cost_minor"]
             totals[lot["currency"]][1] += 1
+            products[(lot["currency"], product_name(lot))][0] += lot["cost_minor"]
+            products[(lot["currency"], product_name(lot))][1] += 1
+        for (currency, name), (total, count) in sorted(products.items(), key=lambda item: -item[1][0]):
+            recorder.add(name, total, currency, count=count)
         return {"period": {"start": value.start, "end": value.end},
                 "by_currency": [{"currency": currency, "wasted": money(total, currency), "items": count} for currency, (total, count) in sorted(totals.items())],
                 "items": [{"product": product_name(lot), "thrown_out_on": lot["closed_on"], "cost": money(lot["cost_minor"], lot["currency"])} for lot in lots[:50]]}
 
-    def forecast_consumables_spend(self, value):
-        """Projected cost of consumables in a month: each product's consumption rate times the month's days."""
+    def forecast_consumables_spend(self, value, recorder=NULL):
+        """Projected cost of consumables in a month: each product's consumption rate times the month's days.
+        recorder: one step per product, its rate's inputs, and the rounding (items.forecast)."""
         year, month = map(int, value.month.split("-"))
         days = ((date(year + month // 12, month % 12 + 1, 1)) - date(year, month, 1)).days
-        rows, totals, skipped = [], defaultdict(Decimal), 0
+        rows, totals, shown, skipped = [], defaultdict(Decimal), defaultdict(int), 0
         for entry in self._rates():
             if entry["lots"] < 2:
                 skipped += 1
                 continue
             projected = Decimal(entry["cost"]) * days / entry["days"]
             totals[entry["currency"]] += projected
+            shown[entry["currency"]] += rounded(projected)
+            self._record_rate(recorder, entry, rounded(projected))
             rows.append({"product": entry["product"], "currency": entry["currency"], "projected": money(rounded(projected), entry["currency"]), "finished_lots": entry["lots"]})
+        self._record_rounding(recorder, totals, shown)
         rows.sort(key=lambda row: -row["projected"]["minor"])
         return {"month": value.month, "days": days, "products": rows[:50],
                 "by_currency": [{"currency": currency, "projected": money(rounded(total), currency)} for currency, total in sorted(totals.items())],

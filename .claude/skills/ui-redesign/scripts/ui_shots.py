@@ -21,15 +21,18 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 from conftest import inbox_scan  # noqa: E402
 from home_manager.app.api import create_app  # noqa: E402
+from home_manager.documents.reviewer import ReviewerConfig  # noqa: E402
 from home_manager.finance.forecast import AssetInput, Assets  # noqa: E402
 from home_manager.finance.reconcile import Reconciler  # noqa: E402
 from home_manager.finance.tools import FinanceTools  # noqa: E402
 from home_manager.library.scanner import ScanLimits  # noqa: E402
 from model_server import start_model_server  # noqa: E402
 from seed_documents import seed_documents, seed_review_items  # noqa: E402
+from seed_items import seed_items  # noqa: E402
+from seed_processing import seed_processing  # noqa: E402
 from seed_wealth import seed_investments, seed_plans  # noqa: E402
 from test_reconcile_tools import add, receipt  # noqa: E402
-from test_taxes_browser import seed_tax_year  # noqa: E402
+from seed_taxes import seed_tax_year  # noqa: E402
 
 TOKEN = "ui-shots"
 
@@ -72,7 +75,24 @@ def seed(manager, root, model):
     # Last: once a reasoning model is set, newly captured documents are recorded as well as read. Then one of each other
     # To check kind (a product, a warranty, a tax table, images that look like one document).
     ids = seed_documents(manager, model)
-    return {**ids, **seed_review_items(manager, ids), **accounts}
+    review = seed_review_items(manager, ids)
+    # Household items after the To check kinds, so the Acme toaster gets its extended warranty (tests/seed_items.py);
+    # {drill_lot}, {towel_lot} and {cereal_lot} name lots.
+    items = seed_items(manager)
+    # Processing: a failed reading and model run, a watched folder and two health warnings (tests/seed_processing.py).
+    (root / "scanner").mkdir()
+    processing = seed_processing(manager, root / "scanner")
+    seed_settings(manager, model)
+    return {**ids, **review, **accounts, **items, **processing}
+
+
+def seed_settings(manager, model):
+    """Settings › Independent checks shows a second chat model as the reviewer, and Donate has one checked receipt."""
+    manager.configure_reviewer(ReviewerConfig(provider="chat", base_url=model["config"].base_url, model="synthetic-reasoning"))
+    donations = manager.donations()
+    receipt_row = next(row for row in donations.candidates() if row["record_type"] == "receipt")
+    check = donations.start("receipt", receipt_row["id"])
+    donations.save(check["id"], {"merchant": {"text": "Fresh Market", "state": "fixed"}}, finish=True)
 
 
 def seed_today(manager, checking, card):
@@ -143,7 +163,7 @@ def main():
     parser.add_argument("--themes", default="light,dark")
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--full-page", action="store_true", help="capture the whole scroll height, not just the viewport")
-    parser.add_argument("--v2", default="", help="comma-separated routes to show redesigned (the ui_v2_screens flag)")
+    parser.add_argument("--open-ask", action="store_true", help="open the Ask panel (Control+J) on each route before capturing")
     parser.add_argument("--out", type=Path, default=Path(tempfile.gettempdir()) / "ui-shots" / datetime.now().strftime("%Y%m%d-%H%M%S"))
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -168,13 +188,6 @@ def main():
             routes = args.routes.format(**ids).split(",")
             with sync_playwright() as driver:
                 browser = driver.chromium.launch(channel="msedge", headless=True)
-                if args.v2:
-                    request = driver.request.new_context()
-                    response = request.put(f"http://127.0.0.1:{port}/api/ui-screens", data={"routes": args.v2.split(",")},
-                                           headers={"Authorization": f"Bearer {TOKEN}"})
-                    if not response.ok:
-                        sys.exit(f"could not turn on {args.v2}: {response.status}")
-                    request.dispose()
                 for theme in args.themes.split(","):
                     for width in map(int, args.widths.split(",")):
                         page = browser.new_page(viewport={"width": width, "height": args.height}, color_scheme=theme)
@@ -188,7 +201,11 @@ def main():
                             # Slow pages (the tax engine) stay aria-busy until loaded; a selector wait, as the CSP blocks string wait_for_function.
                             page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)
                             page.wait_for_timeout(300)
-                            name = f"{route.replace('/', '_').replace('?', '_')}-{width}-{theme}.png"
+                            if args.open_ask:
+                                if page.locator("#assistant-panel").is_hidden():
+                                    page.keyboard.press("Control+j")
+                                page.wait_for_timeout(300)
+                            name = f"{route.replace('/', '_').replace('?', '_')}{'-ask' if args.open_ask else ''}-{width}-{theme}.png"
                             page.screenshot(path=str(args.out / name), full_page=args.full_page)
                             overflow = page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
                             print(f"{name}{'  HORIZONTAL OVERFLOW' if overflow else ''}")

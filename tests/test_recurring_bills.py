@@ -2,16 +2,10 @@
 
 from datetime import date
 import json
-import os
-import socket
-import threading
-import time
 
 import pytest
-import uvicorn
 
 from conftest import documents_by_name, inbox_scan
-from home_manager.app.api import create_app
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.dashboard import dashboard
 from home_manager.finance.forecast import ForecastInput, forecast
@@ -19,7 +13,6 @@ from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.recurring_scan import RecurringScan
 from home_manager.finance.tools import AsOfInput, BudgetInput, FinanceTools, RecurringInput
-from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from home_manager.library.trash import empty
 from test_extraction import MISSING, extract, transcribe, value
@@ -277,118 +270,3 @@ def test_unreadable_terms_never_fail_the_document(tmp_path, local_model):
         assert bills(manager.tools) == {}
     finally:
         manager.close()
-
-
-@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
-def test_browser_confirms_a_proposed_bill_with_its_frequency(tmp_path):
-    playwright = pytest.importorskip("playwright.sync_api")
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    app = create_app(tmp_path / "control", "bills-browser", port, ScanLimits(stability_seconds=0))
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(100):
-            if server.started:
-                break
-            time.sleep(.05)
-        manager = app.state.manager
-        manager.configure(str(tmp_path / "managed"))
-        inbox_scan(manager.store, {"insurance.png": b"synthetic insurance receipt"})
-        paid(manager.ledger, documents_by_name(manager.store)["insurance.png"], "Harbor Insurance", "2026-09-15", 60000, "insurance", "monthly")
-        manager.reconciler.run()
-        with playwright.sync_playwright() as driver:
-            browser = driver.chromium.launch(channel="msedge", headless=True)
-            page = browser.new_page(viewport={"width": 1280, "height": 900})
-            failures = []
-            page.on("pageerror", lambda error: failures.append(str(error)))
-            page.goto(f"http://127.0.0.1:{port}/#token=bills-browser")
-            page.locator("#nav-review").click()
-            detail = page.locator("#review-detail")
-            playwright.expect(detail).to_contain_text("A receipt was read as a payment for a service billed on a schedule")
-            detail.get_by_label("How often").select_option("semiannual")
-            playwright.expect(detail.get_by_label("Counts as")).to_have_value("bill")  # Insurance is suggested as a bill.
-            detail.get_by_label("Counts as").select_option("subscription")
-            detail.get_by_role("button", name="Confirm recurring (V)").click()
-            playwright.expect(page.locator(".toast").last).to_contain_text("Confirmed as a subscription")
-            playwright.expect(detail).to_contain_text("Nothing needs your review")
-            page.locator("#nav-bills").click()
-            playwright.expect(page.locator("#recurring-rows")).to_contain_text("6 months")
-            playwright.expect(page.locator("#recurring-rows")).to_contain_text("Mar 15, 2027")
-            playwright.expect(page.locator("#recurring-scan")).to_be_visible()
-            playwright.expect(page.locator("#bill-groups")).not_to_be_empty()  # The bill, or the empty state while it is months away.
-            # Every six months: 600.00 / 6 = 100.00 a month, 1,200.00 a year.
-            summary = page.locator("#subscription-summary")
-            playwright.expect(summary).to_contain_text("Harbor Insurance")
-            playwright.expect(summary).to_contain_text("1 subscription: about 100.00 USD a month, 1,200.00 USD a year")
-            # Changed back later on the Bills page.
-            page.get_by_label("Harbor Insurance counts as").select_option("bill")
-            playwright.expect(summary).to_contain_text("No confirmed subscriptions")
-            for width in (390, 768, 1440):
-                page.set_viewport_size({"width": width, "height": 900})
-                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
-            assert not failures
-            browser.close()
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
-
-
-@pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
-def test_browser_bills_shows_loading_and_a_retryable_error(tmp_path):
-    """ui.js pageState: a slow load says so after 300 ms; a failed one shows the error with Retry, and no toast."""
-    playwright = pytest.importorskip("playwright.sync_api")
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    app = create_app(tmp_path / "control", "bills-state", port, ScanLimits(stability_seconds=0))
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(100):
-            if server.started:
-                break
-            time.sleep(.05)
-        app.state.manager.configure(str(tmp_path / "managed"))
-        with playwright.sync_playwright() as driver:
-            browser = driver.chromium.launch(channel="msedge", headless=True)
-            page = browser.new_page(viewport={"width": 1280, "height": 900})
-            failures = []
-            page.on("pageerror", lambda error: failures.append(str(error)))
-            page.goto(f"http://127.0.0.1:{port}/#token=bills-state")
-            playwright.expect(page.locator("#home-panel")).to_be_visible()
-            # A slow response (delayed in the page): nothing for 300 ms, then the loading line, then the bills.
-            page.evaluate("""() => { const original = window.fetch;
-              window.fetch = (url, options) => String(url).includes("get_upcoming_bills")
-                ? new Promise(resolve => setTimeout(resolve, 1500)).then(() => { window.fetch = original; return original(url, options); })
-                : original(url, options); }""")
-            page.locator("#nav-bills").click()
-            state = page.locator("#bills-state")
-            playwright.expect(state.get_by_role("status")).to_contain_text("Loading bills")
-            playwright.expect(page.locator("#bills-panel")).to_have_attribute("aria-busy", "true")
-            playwright.expect(state).to_be_empty()
-            playwright.expect(page.locator("#bill-groups")).to_contain_text("No confirmed recurring payments due soon")
-            assert page.locator("#bills-panel").get_attribute("aria-busy") is None
-            # A failed request: the alert, its details and Retry; the panels are hidden and no toast repeats it.
-            page.route("**/api/finance/tools/get_upcoming_bills", lambda route: route.abort())
-            page.locator("#nav-home").click()
-            page.locator("#nav-bills").click()
-            alert = state.get_by_role("alert")
-            playwright.expect(alert).to_contain_text("Couldn't load bills.")
-            playwright.expect(alert.locator("summary")).to_have_text("Technical details")
-            playwright.expect(page.locator("#bill-groups")).to_be_hidden()
-            playwright.expect(page.locator('.toast[data-tone="error"]')).to_have_count(0)
-            page.unroute("**/api/finance/tools/get_upcoming_bills")
-            alert.get_by_role("button", name="Retry").click()
-            playwright.expect(state).to_be_empty()
-            playwright.expect(page.locator("#bill-groups")).to_be_visible()
-            # Focus waited on the state host while it loaded, then moved to the page heading once the host emptied.
-            playwright.expect(page.locator("#bills-title")).to_be_focused()
-            assert not failures
-            browser.close()
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)

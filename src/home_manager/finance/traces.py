@@ -9,6 +9,7 @@ from datetime import date
 
 from ..core.money import currency_code
 from ..core.trace import Recorder, build, parse, ref, remember
+from ..household.item_traces import TRACES as ITEM_TRACES
 from .dashboard import group_categories
 from .fx import REPORTING
 from .ledger import Ledger
@@ -86,6 +87,64 @@ def spending_category(store, ref_text, params):
     return build(ref_text, f"{category.capitalize()}, {start} to {end}", totals.get((currency, category), (0, 0))[0], currency,
                  "Charges and receipts counted in the period, in this category. A charge or receipt whose items are in several "
                  "categories counts only its items' share here, tax and discounts shared out with them. Refunds aren't taken off.", recorder)
+
+
+def _before(params):
+    """The comparison period's parameters of a change ref (tools.change_ref): the same figure, from before_start to before_end."""
+    return {**params, "start": _day(params, "before_start"), "end": _day(params, "before_end")}
+
+
+def _change(store, ref_text, params, name, builder, what):
+    """A change between two periods (tools.compare_categories, compare_periods): this period's figure minus the earlier one's,
+    each a step that opens its own trace. The inputs are both figures' lines, so a change to either marks it stale."""
+    shown = {key: value for key, value in params.items() if key not in ("before_start", "before_end")}
+    before = {key: value for key, value in _before(params).items() if key not in ("before_start", "before_end")}
+    now_ref, then_ref = ref(name, **shown), ref(name, **before)
+    now, then = builder(store, now_ref, shown), builder(store, then_ref, before)
+    currency = now["result"]["currency"]
+    recorder = Recorder()
+    recorder.step(f"{what}, {shown['start']} to {shown['end']}", "+", now["result"]["minor"], currency, trace=now_ref)
+    recorder.step(f"{what}, {before['start']} to {before['end']}", "−", then["result"]["minor"], currency, trace=then_ref)
+    recorder.inputs = [*now["inputs"], *then["inputs"]]
+    return build(ref_text, f"Change in {what[0].lower()}{what[1:]}", now["result"]["minor"] - then["result"]["minor"], currency,
+                 f"{what} this period minus {what[0].lower()}{what[1:]} the period it's compared with.", recorder)
+
+
+def spending_change(store, ref_text, params):
+    """A category's change between two periods (tools.compare_categories): this period's spending.category minus the earlier one's."""
+    category = " ".join(params.get("category", "").split()).lower()
+    if not category:
+        raise ValueError("The trace needs a category.")
+    return _change(store, ref_text, params, "spending.category", spending_category, category.capitalize())
+
+
+def spending_net_change(store, ref_text, params):
+    """The change in net spending between two periods (tools.compare_periods): this period's spending.net minus the earlier one's."""
+    return _change(store, ref_text, params, "spending.net", spending_net, "Net spending")
+
+
+def spending_merchant(store, ref_text, params):
+    """One merchant's counted spending (tools._merchant_totals), the figure top merchants shows: refunds taken off."""
+    start, end, currency, account_id = _period(params)
+    merchant = params.get("merchant", "")
+    if not merchant:
+        raise ValueError("The trace needs a merchant.")
+    recorder = Recorder()
+    totals = FinanceTools(store)._merchant_totals(start, end, account_id, recorder, (currency, merchant))
+    return build(ref_text, f"{merchant}, {start} to {end}", totals.get((currency, merchant), (0, 0))[0], currency,
+                 "Charges and receipts counted in the period whose merchant starts with these words, less its refunds. "
+                 "Receipts a card or bank charge has replaced count once, as the charge.", recorder)
+
+
+def spending_refunds(store, ref_text, params):
+    """Refunds for a period and currency (tools.get_spending's refunds): refund credits plus return receipts no credit has replaced."""
+    start, end, currency, account_id = _period(params)
+    recorder = Recorder()
+    totals = FinanceTools(store)._totals(start, end, account_id, recorder=recorder, refunds_only=True)
+    bucket = totals.get((None, currency), {"refunds": 0})
+    return build(ref_text, f"Refunds, {start} to {end}", bucket["refunds"], currency,
+                 "Refund credits on card and bank statements in the period, plus return receipts no credit has replaced yet. "
+                 "Lines still waiting for review aren't counted.", recorder.only(currency))
 
 
 def _categories(store, params):
@@ -234,7 +293,8 @@ def tax_tags(store, ref_text, params):
 
 TRACES = {
     "spending.net": spending_net, "tax.tags": tax_tags, "cashflow.net": cashflow_net, "cashflow.in": cashflow_in, "spending.category": spending_category, "spending.other": spending_other,
-    "spending.gross": spending_gross, "spending.usd": spending_usd,
+    "spending.gross": spending_gross, "spending.usd": spending_usd, "spending.change": spending_change, "spending.net_change": spending_net_change,
+    "spending.merchant": spending_merchant, "spending.refunds": spending_refunds,
     "split.receipt": lambda store, text, params: split(store, text, params, False),
     "split.charge": lambda store, text, params: split(store, text, params, True),
     "budget.remaining": lambda store, text, params: budget_figure(store, text, params, "remaining"),
@@ -242,6 +302,7 @@ TRACES = {
     "recurring.total": recurring_total, "bill.expected": bill_expected, "account.balance": account_balance,
 }
 TRACES.update(WEALTH_TRACES)
+TRACES.update(ITEM_TRACES)
 
 
 # The family view (finance/family.py) -------------------------------------------------------------------------------

@@ -8,7 +8,7 @@ if (fragment.has("token")) {
 const token = sessionStorage.getItem("home-manager-token") || "";
 // Capture and model inference are independent queues; library actions wait for neither.
 // familyMode: a family profile is open. It has no library of its own; only Home and Settings apply.
-let savedManaged = "", savedDecision = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
+let savedManaged = "", savedDecision = {}, savedReviewer = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
 const pageSize = 100;
 // Redesigned screens: route → {title, show}. Each Phase 2 screen registers itself here from its own script, which loads
 // before shell.js routes the first page (docs/ui.md "Migration").
@@ -71,8 +71,10 @@ const anyBusy = () => busy.capture || busy.inference;
 function setBusy(settings) { busy = {capture: settings.capture_busy, inference: settings.inference_busy}; }
 function controls() {
   $("parse-all-receipts").disabled = !configured || busy.inference;
-  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "force-receipts", "auto-organize"]) $(id).disabled = busy.inference;
-  $("scan-inbox").disabled = !configured || busy.capture;
+  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "force-receipts", "auto-organize", "save-reviewer"]) $(id).disabled = busy.inference;
+  $("reviewer-busy").hidden = !busy.inference;
+  $("scan-inbox").disabled = $("pr2-scan").disabled = !configured || busy.capture;
+  $("pr2-read").disabled = $("pr2-read-start").disabled = !configured || busy.inference;
   // Work that runs on in the background stays unavailable until it finishes, so a second click can't start it twice.
   $("recurring-scan").disabled = !configured || busy.inference;
   if ($("bills2-scan")) $("bills2-scan").disabled = !configured || busy.inference;
@@ -124,6 +126,8 @@ function renderActivity(activity) {
     if (work.queue === "inference" && ["queued", "running"].includes(work.status)) item.appendChild(cancelButton(work));
     $("activity").appendChild(item);
   }
+  // Processing v2 (processing_v2.js): its Now running line and lanes.
+  if (typeof renderPr2Activity === "function") renderPr2Activity(activity);
 }
 async function loadModelHistory() {
   const query = new URLSearchParams({limit: 50});
@@ -198,6 +202,11 @@ async function loadSettings() {
   const decisionOn = decision.provider !== "off" && decision.model;
   $("decision-status").textContent = !decisionOn ? "No decision model is chosen, so extractions are not checked independently."
     : `${decision.model} checks every ledger extraction. ${decision.calibrated ? "It is calibrated on your documents." : "It is not yet calibrated on your documents, so its scores are a hint."}`;
+  const reviewer = savedReviewer = settings.reviewer;
+  $("reviewer-kind").value = reviewer.provider;
+  $("reviewer-url").value = reviewer.base_url;
+  $("reviewer-model").value = reviewer.model;
+  showReviewerKind();
   $("auto-organize").checked = settings.vision.organize_after_scan;
   $("home-currency").value = homeCurrency = settings.household.home_currency || "";
   $("checkin-weekday").value = String(settings.household.checkin_weekday ?? 6);
@@ -216,11 +225,6 @@ async function loadSettings() {
   // The second opinion is offered once another engine can run here.
   $("tax-compare-field").hidden = !seconds.some(item => item.ready);
   $("tax-compare").checked = settings.household.tax_engine_compare !== false;
-  // Redesigned screens this profile shows (shell.js V2_SCREENS); a change re-routes the page that's open.
-  const screens = settings.household?.ui_v2_screens || [];
-  const changed = [...screens.filter(name => !uiV2Screens.includes(name)), ...uiV2Screens.filter(name => !screens.includes(name))];
-  uiV2Screens = screens; renderUiV2Choices(); setHomeNavLabel();
-  if (currentRoute && changed.includes(currentRoute.name)) showRoute(false);
   showReceiptBatch(settings.receipt_batch);
   $("limits").textContent = `Capture limits: ${settings.max_file_mib} MiB per file; ${settings.max_store_gib} GiB of unique preserved evidence.`;
   savedManaged = settings.managed_directory;
@@ -324,13 +328,16 @@ async function poll() {
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
       // Member status in a family view; a finished family share or delivery updates the status lines.
       if (familyMode || (wasBusy && !anyBusy())) renderProfiles(settings);
-      if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await (uiV2Screens.includes("review") ? reloadReviewV2() : loadFamilyRouting());
+      if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await reloadReviewV2();
       if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
       if (anyBusy() || wasBusy) {
         await refresh();
-        if (currentRoute?.name === "processing") await loadProcessing();
+        // Processing v2 points processingReload at its own refresh (the strip and the shown tab) while it shows.
+        if (currentRoute?.name === "processing") await (processingReload ? processingReload() : loadProcessing());
+        // Records v2 (records_v2.js) redraws only when its documents changed.
+        if (typeof rc2Refresh === "function") await rc2Refresh();
       }
-      if (wasBusy && !anyBusy() && currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : loadHome());
+      if (wasBusy && !anyBusy() && currentRoute?.name === "home") await reloadToday();
       // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
       if ((wasBusy && !anyBusy()) || !reconcileChecked) { reconcileChecked = true; await loadReconcilePrompt(); }
       if (typeof pollReceipt === "function") await pollReceipt();
@@ -351,14 +358,33 @@ let pollFailure = null, reconcileChecked = false;
 document.addEventListener("DOMContentLoaded", () => loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true)));
 
 function showReceiptBatch(batch) {
+  $("receipt-batch-status").dataset.status = batch?.status || "";  // Processing v2 shows it under Reading while it runs.
   $("receipt-batch-status").textContent = batch ?
     `Batch ${batch.status}: ${batch.total} documents; ${Object.entries(batch.counts).map(([state, count]) => `${count} ${state}`).join(", ")}. ${batch.unique_runs} distinct images; ${batch.reused} reused/duplicate results; ${batch.skipped} unsupported documents skipped.` : "";
+}
+// A Settings form's result line under its buttons (docs/ui.md "Settings"): "Saved." or why not. Focus stays put.
+function settingsResult(form, message = "", error = false) {
+  let line = $(form).querySelector(".save-result");
+  if (!line) {
+    line = element("p", "", "save-result"); line.setAttribute("aria-live", "polite");
+    $(form).querySelector(".button-row").after(line);
+  }
+  line.classList.toggle("is-error", error);
+  line.replaceChildren(...(message ? [icon(error ? "alert" : "check"), message] : []));
 }
 function saveSettingsForm(form, path, body, message) {
   $(form).addEventListener("submit", async event => {
     event.preventDefault();
-    try { await api(path, {method:"PUT", body:JSON.stringify(body())}); notice(message); await loadSettings(); }
-    catch (error) { notice(error, true); }
+    for (const node of $(form).querySelectorAll(".field-error")) node.replaceChildren();
+    settingsResult(form);
+    try { await api(path, {method:"PUT", body:JSON.stringify(body())}); notice(message); settingsResult(form, "Saved."); await loadSettings(); }
+    catch (error) {
+      notice(error, true);
+      // A validation error goes under the field it names (money_v2.js errorField); a URL the server refused names no field.
+      const field = errorField(error) || (/http:\/\/127\.0\.0\.1/.test(error.message) ? "url" : null);
+      const target = field && $(form).querySelector(`[data-error-for="${field}"]`);
+      if (target) target.replaceChildren(icon("alert"), error.message); else settingsResult(form, error.message, true);
+    }
   });
 }
 saveSettingsForm("vision-form", "/api/vision-settings",
@@ -403,6 +429,28 @@ saveSettingsForm("reasoning-form", "/api/reasoning-settings",
 saveSettingsForm("decision-form", "/api/decision-settings",
   () => ({...savedDecision, provider: $("decision-provider").value, base_url: $("decision-url").value.trim(), model: $("decision-model").value.trim()}),
   "Decision model saved. Use Test connection to check that it answers.");
+// The document reasoning reviewer (documents/reviewer.py). Only the fields shown are sent; sampling keeps its saved values.
+function showReviewerKind() {
+  const chat = $("reviewer-kind").value === "chat";
+  $("reviewer-url-field").hidden = $("reviewer-model-field").hidden = $("test-reviewer").hidden = !chat;
+  if (!chat) $("test-reviewer-result").replaceChildren();
+}
+$("reviewer-kind").addEventListener("change", showReviewerKind);
+saveSettingsForm("reviewer-form", "/api/reviewer-settings", () => {
+  const provider = $("reviewer-kind").value;
+  return {...savedReviewer, provider, ...(provider === "chat" ? {base_url: $("reviewer-url").value.trim(), model: $("reviewer-model").value.trim()} : {})};
+}, "Reviewer saved.");
+// Settings › Donate: how many checked documents are ready; the work itself is on #/donate (donate.js).
+async function loadDonateSettings() {
+  const line = $("donate-settings-count");
+  if (!configured) { line.textContent = "Choose a library folder first."; return; }
+  try {
+    const {checks} = await api("/api/donations");
+    const ready = checks.filter(check => check.status === "checked").length;
+    line.textContent = `${ready} ${ready === 1 ? "document" : "documents"} checked, ready to donate.`;
+  } catch (error) { line.textContent = error.message; }
+}
+$("donate-tab").addEventListener("tabshow", () => loadDonateSettings());
 $("share-form").addEventListener("submit", async event => {
   event.preventDefault();
   const passphrase = $("share-passphrase").value;
@@ -430,7 +478,7 @@ saveSettingsForm("household-form", "/api/household-settings", () => ({home_curre
                                                              filing_status: $("filing-status").value, birth_year: $("birth-year").value ? Number($("birth-year").value) : null,
                                                              fetch_exchange_rates: $("fetch-rates").checked,
                                                              fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value),
-                                                             tax_engine_compare: $("tax-compare").checked, ui_v2_screens: uiV2Screens}),
+                                                             tax_engine_compare: $("tax-compare").checked}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
 for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
   $(id).addEventListener("click", async () => {

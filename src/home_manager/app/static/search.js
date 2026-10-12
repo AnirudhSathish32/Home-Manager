@@ -73,7 +73,8 @@ for (const [form, input] of [["global-search-form", "global-search"], ["search-p
     const query = $(input).value.trim();
     if (!query && form === "global-search-form") return;
     const target = searchHref(query);
-    if (location.hash === target) openSearch(new URLSearchParams({q: query})).catch(error => notice(error, true)); else location.hash = target;
+    // The same hash fires no hashchange; showRoute re-runs whichever Search this profile shows (search_v2.js).
+    if (location.hash === target) showRoute(false); else location.hash = target;
   });
 }
 document.addEventListener("keydown", event => {

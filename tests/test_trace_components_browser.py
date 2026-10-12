@@ -17,7 +17,7 @@ def test_figure_opens_its_breakdown_drills_and_returns(tmp_path):
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.goto(f"{base}/#token=trace-test")
-        expect(page.locator("#home-panel")).to_be_visible()
+        expect(page.locator("#today-panel")).to_be_visible()
         mount_dashboard_figures(page)
         panel = page.locator("#breakdown")
         expect(panel).to_be_hidden()
@@ -107,7 +107,7 @@ def test_breakdown_edge_cases_provenance_and_rule_card(tmp_path):
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.goto(f"{base}/#token=trace-test")
-        expect(page.locator("#home-panel")).to_be_visible()
+        expect(page.locator("#today-panel")).to_be_visible()
 
         # Provenance: icon + the server's own words.
         badges = page.evaluate("""() => [

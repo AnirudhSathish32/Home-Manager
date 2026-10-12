@@ -44,7 +44,13 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             page.on("pageerror", lambda error: failures.append(str(error)))
             response = page.goto(f"{base}/#token=shell-test")
             assert response.headers["content-security-policy"] == CSP
-            playwright.expect(page.locator("#home-panel")).to_be_visible()
+            playwright.expect(page.locator("#today-panel")).to_be_visible()
+            # The sidebar groups follow docs/ui.md "Redesigned navigation"; Donate is a Settings tab, not a link.
+            assert page.locator(".sidebar .nav-group").all_inner_texts() == ["Money", "Taxes", "Wealth & plans", "Home & things", "Records"]
+            assert page.locator(".sidebar nav[aria-label=Primary] .nav-link").evaluate_all("links => links.map(link => link.id)") == [
+                "nav-search", "nav-home", "nav-review", "nav-spending", "nav-transactions", "nav-bills", "nav-accounts", "nav-taxes",
+                "nav-investments", "nav-forecast", "nav-whatif", "nav-inventory", "nav-receipts", "nav-documents"]
+            assert page.locator("#nav-donate").count() == 0
             assert page.evaluate(CANVAS).upper() == "#F7F6F3"
             page.evaluate("document.fonts.ready")
             assert page.evaluate("document.fonts.check('14px \"Plus Jakarta Sans\"')")
@@ -53,10 +59,8 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             page.goto(f"{base}/#/settings")
             page.locator("#appearance-tab").click()
             playwright.expect(page.locator("#theme-system")).to_be_checked()
-            # New screens: one checkbox per registered screen (app.js V2_SCREENS), off until chosen.
-            playwright.expect(page.locator("#ui-v2-taxes")).not_to_be_checked()
-            playwright.expect(page.locator("#ui-v2-list")).to_contain_text("Taxes")
-            playwright.expect(page.locator("#ui-v2-choice")).to_be_enabled()
+            # The redesign is the only UI: no New screens choice.
+            assert page.locator("#ui-v2-choice").count() == 0
             page.locator("#theme-dark").check()
             playwright.expect(page.locator("html")).to_have_attribute("data-theme", "dark")
             assert page.evaluate(CANVAS).upper() == "#12141A"
@@ -82,7 +86,7 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             page = context.new_page()
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"{base}/#token=shell-test")
-            playwright.expect(page.locator("#home-panel")).to_be_visible()
+            playwright.expect(page.locator("#today-panel")).to_be_visible()
             assert page.evaluate(CANVAS).upper() == "#12141A"
             context.close()
 
@@ -91,7 +95,7 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             page = context.new_page()
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"{base}/#token=shell-test")
-            playwright.expect(page.locator("#home-panel")).to_be_visible()
+            playwright.expect(page.locator("#today-panel")).to_be_visible()
             toggle = page.locator("#nav-toggle")
             playwright.expect(toggle).to_be_visible()
             playwright.expect(page.locator("#nav-review")).to_be_hidden()
@@ -100,7 +104,7 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             playwright.expect(toggle).to_have_attribute("aria-expanded", "true")
             playwright.expect(page.locator("#nav-review")).to_be_visible()
             page.locator("#nav-review").click()
-            playwright.expect(page.locator("#review-panel")).to_be_visible()
+            playwright.expect(page.locator("#review2-panel")).to_be_visible()
             playwright.expect(page.locator("#nav-review")).to_be_hidden()
             playwright.expect(toggle).to_have_attribute("aria-expanded", "false")
             toggle.click()
@@ -121,7 +125,7 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
                     page = context.new_page()
                     page.on("pageerror", lambda error: failures.append(str(error)))
                     page.goto(f"{base}/#token=shell-test")
-                    playwright.expect(page.locator("#home-panel")).to_be_visible()
+                    playwright.expect(page.locator("#today-panel")).to_be_visible()
                     assert page.evaluate(NO_OVERFLOW), (scheme, width)
                     context.close()
             browser.close()

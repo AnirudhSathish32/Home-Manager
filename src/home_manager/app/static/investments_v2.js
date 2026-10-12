@@ -115,6 +115,7 @@ function investmentTilesV2(summary, rmd) {
                       due.length ? [`next ${dateText(due[0].date)}`] : []));
   tiles.push(inv2RmdTile(rmd));
   $("inv2-tiles").replaceChildren(...tiles);
+  fitFigures($("inv2-tiles"));
 }
 function inv2RmdTile(rmd) {
   const label = "Required distributions";

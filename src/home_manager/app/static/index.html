@@ -38,6 +38,10 @@
   <script src="/investments_v2.js" defer></script>
   <script src="/forecast_v2.js" defer></script>
   <script src="/whatif_v2.js" defer></script>
+  <script src="/inventory_v2.js" defer></script>
+  <script src="/processing_v2.js" defer></script>
+  <script src="/records_v2.js" defer></script>
+  <script src="/search_v2.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -51,7 +55,7 @@
     <div id="profile-switch" class="profile-switch" hidden>
       <div class="profile-picker"><label for="profile-select">Profile</label><select id="profile-select"></select></div>
       <!-- The collapsed sidebar has no room for the menu: an icon opens Settings → Profiles & family instead. -->
-      <a id="nav-profile" class="nav-link" href="#/settings" data-icon="users"><span class="nav-label">Profiles</span></a>
+      <a id="nav-profile" class="nav-link" href="#/settings?tab=profiles" data-icon="users"><span class="nav-label">Profiles</span></a>
     </div>
     <form id="global-search-form" class="global-search" role="search">
       <input id="global-search" type="search" placeholder="Search everything" aria-label="Search documents, transactions, items and accounts" aria-keyshortcuts="Control+K" autocomplete="off">
@@ -59,21 +63,24 @@
     </form>
     <nav class="nav" aria-label="Primary">
       <a id="nav-search" class="nav-link nav-search-link" href="#/search" data-route="search" data-icon="search"><span class="nav-label">Search</span></a>
-      <a id="nav-home" class="nav-link" href="#/home" data-route="home" data-icon="home"><span class="nav-label">Home</span></a>
-      <a id="nav-review" class="nav-link" href="#/review" data-route="review" data-icon="list-checks"><span class="nav-label">Review</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
+      <a id="nav-home" class="nav-link" href="#/home" data-route="home" data-icon="home"><span class="nav-label">Today</span></a>
+      <a id="nav-review" class="nav-link" href="#/review" data-route="review" data-icon="list-checks"><span class="nav-label">To check</span><span id="nav-review-count" class="nav-count attention" hidden></span></a>
+      <!-- Groups follow docs/ui.md "Redesigned navigation"; ids, routes and icons are the selector contract. -->
       <p class="nav-group nav-group-money">Money</p>
+      <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">This month</span></a>
       <a id="nav-transactions" class="nav-link" href="#/transactions" data-route="transactions" data-icon="wallet"><span class="nav-label">Transactions</span></a>
-      <a id="nav-receipts" class="nav-link" href="#/receipts" data-route="receipts" data-icon="paperclip"><span class="nav-label">Receipts &amp; statements</span></a>
-      <a id="nav-spending" class="nav-link" href="#/spending" data-route="spending" data-icon="pie"><span class="nav-label">Spending &amp; budgets</span></a>
-      <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; recurring</span></a>
+      <a id="nav-bills" class="nav-link" href="#/bills" data-route="bills" data-icon="calendar"><span class="nav-label">Bills &amp; subscriptions</span></a>
       <a id="nav-accounts" class="nav-link" href="#/accounts" data-route="accounts" data-icon="bank"><span class="nav-label">Accounts</span></a>
-      <a id="nav-investments" class="nav-link" href="#/investments" data-route="investments" data-icon="chart-line"><span class="nav-label">Investments</span></a>
+      <p class="nav-group">Taxes</p>
       <a id="nav-taxes" class="nav-link" href="#/taxes" data-route="taxes" data-icon="receipt-tax"><span class="nav-label">Taxes</span></a>
+      <p class="nav-group">Wealth &amp; plans</p>
+      <a id="nav-investments" class="nav-link" href="#/investments" data-route="investments" data-icon="chart-line"><span class="nav-label">Investments</span></a>
       <a id="nav-forecast" class="nav-link" href="#/forecast" data-route="forecast" data-icon="trend"><span class="nav-label">Forecast</span></a>
       <a id="nav-whatif" class="nav-link" href="#/whatif" data-route="whatif" data-icon="sliders"><span class="nav-label">What If</span></a>
-      <p class="nav-group">Household</p>
+      <p class="nav-group nav-group-household">Home &amp; things</p>
       <a id="nav-inventory" class="nav-link" href="#/inventory" data-route="inventory" data-icon="package"><span class="nav-label">Inventory</span><span id="nav-checkin-count" class="nav-count" hidden></span></a>
       <p class="nav-group">Records</p>
+      <a id="nav-receipts" class="nav-link" href="#/receipts" data-route="receipts" data-icon="paperclip"><span class="nav-label">Receipts &amp; statements</span></a>
       <a id="nav-documents" class="nav-link" href="#/documents" data-route="documents" data-icon="file"><span class="nav-label">Documents</span></a>
       <div class="nav-sub">
         <button id="nav-inbox" class="nav-sublink" type="button" data-folder="Inbox"><span class="nav-label">Inbox</span><span class="nav-count"></span></button>
@@ -81,15 +88,14 @@
       </div>
     </nav>
     <div class="sidebar-footer">
-      <!-- Who's here: the person changes and decisions are recorded under (core/actor.py). Shown when the profile has more than one. -->
-      <div id="who-picker" class="profile-picker" hidden><label for="who-select">Who's here</label><select id="who-select"></select></div>
       <div id="activity-indicator" class="activity-indicator" role="status" aria-live="polite" hidden></div>
       <nav class="nav" aria-label="System">
         <button id="nav-ask" class="nav-link nav-button" type="button" data-icon="message" aria-controls="assistant-panel" aria-expanded="false" aria-keyshortcuts="Control+J"><span class="nav-label">Ask</span></button>
         <a id="nav-processing" class="nav-link" href="#/processing" data-route="processing" data-icon="activity"><span class="nav-label">Processing</span></a>
-        <a id="nav-donate" class="nav-link" href="#/donate" data-route="donate" data-icon="gift"><span class="nav-label">Donate documents</span></a>
         <a id="nav-settings" class="nav-link" href="#/settings" data-route="settings" data-icon="settings"><span class="nav-label">Settings</span></a>
       </nav>
+      <!-- Who's here: the person changes and decisions are recorded under (core/actor.py). Shown when the profile has more than one. -->
+      <div id="who-picker" class="profile-picker" hidden><label for="who-select">Who's here</label><select id="who-select"></select></div>
     </div>
     </div>
   </aside>
@@ -756,6 +762,22 @@
       <div id="search-results" class="search-results"></div>
     </section>
 
+    <!-- Search, redesigned (search_v2.js; design-system/home-manager/pages/search-ask.md), behind the ui_v2_screens flag. -->
+    <section id="se2-panel" class="page" data-page="search" data-ui="v2" aria-labelledby="se2-title" hidden>
+      <header class="page-header"><div><h1 id="se2-title" tabindex="-1">Search</h1>
+        <p class="page-subtitle">Documents, transactions, household items and accounts in one place.</p></div></header>
+      <div id="se2-state" class="page-state"></div>
+      <div id="se2-body" class="page-body">
+        <form id="se2-form" class="se2-form" role="search">
+          <input id="se2-input" type="search" placeholder="Merchant, product, file name or words in a document" aria-label="Search everything" autocomplete="off">
+          <button id="se2-submit" type="submit" class="primary">Search</button>
+        </form>
+        <p id="se2-status" class="muted small se2-status" role="status"></p>
+        <div id="se2-kinds" class="se2-kinds" role="group" aria-label="Kind"></div>
+        <div id="se2-results" class="se2-results"></div>
+      </div>
+    </section>
+
     <section id="review-panel" class="page" data-page="review" aria-labelledby="review-title" hidden>
       <header class="page-header"><div><h1 id="review-title" tabindex="-1">Review</h1>
         <p class="page-subtitle">What Home Manager needs you to decide. Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>V</kbd> confirm, <kbd>R</kbd> reject.</p></div>
@@ -1044,6 +1066,63 @@
       </section>
     </section>
 
+    <!-- Inventory, redesigned (inventory_v2.js; design-system/home-manager/pages/inventory.md), behind the ui_v2_screens flag.
+         Five tabs, each drawn on its first show; ?tab=, q, closed and period keep the view across reloads. -->
+    <section id="it2-panel" class="page" data-page="inventory" data-ui="v2" aria-labelledby="it2-title" hidden>
+      <header class="page-header"><div><h1 id="it2-title" tabindex="-1">Inventory</h1>
+        <p class="page-subtitle">Household items from receipt lines you approved. Your answers apply at once.</p></div>
+        <div class="page-actions"><button id="it2-add" type="button" class="primary">Return policy</button></div></header>
+      <div id="it2-state" class="page-state"></div>
+      <div id="it2-body" class="page-body">
+        <div id="it2-tabs" class="tabs" role="tablist" aria-label="Inventory sections">
+          <button type="button" id="it2-tab-checkin" role="tab" aria-controls="it2-checkin-panel" aria-selected="false" tabindex="-1">Check-in</button>
+          <button type="button" id="it2-tab-items" role="tab" aria-controls="it2-items-panel" aria-selected="true">Items</button>
+          <button type="button" id="it2-tab-warranties" role="tab" aria-controls="it2-warranties-panel" aria-selected="false" tabindex="-1">Warranties</button>
+          <button type="button" id="it2-tab-returns" role="tab" aria-controls="it2-returns-panel" aria-selected="false" tabindex="-1">Returns</button>
+          <button type="button" id="it2-tab-insights" role="tab" aria-controls="it2-insights-panel" aria-selected="false" tabindex="-1">Item insights</button>
+        </div>
+        <section id="it2-checkin-panel" class="it2-tabpanel" role="tabpanel" aria-labelledby="it2-tab-checkin" hidden>
+          <section class="today-region" aria-labelledby="it2-checkin-title"><h2 id="it2-checkin-title">This week's check-in</h2>
+            <div id="it2-checkin-list"></div></section>
+          <form id="it2-checkin-form" class="form checkin-text">
+            <div class="field"><label for="it2-checkin-text">Or answer in your own words</label>
+              <textarea id="it2-checkin-text" rows="2" maxlength="2000" placeholder="Finished the milk on Tuesday, still have rice, threw out the spinach" aria-describedby="it2-checkin-note"></textarea>
+              <small id="it2-checkin-note">Read by your local model into a list of changes. Nothing changes until you confirm.</small></div>
+            <div class="button-row"><button id="it2-checkin-submit" type="submit" class="secondary">Read my answer</button></div></form>
+          <div id="it2-checkin-reading" aria-live="polite"></div>
+        </section>
+        <section id="it2-items-panel" class="it2-tabpanel" role="tabpanel" aria-labelledby="it2-tab-items">
+          <div class="toolbar it2-toolbar">
+            <input id="it2-search" type="search" placeholder="Search product, brand or category" aria-label="Search inventory" autocomplete="off">
+            <label class="compact-check"><input id="it2-closed" type="checkbox"> Show finished and thrown out</label>
+          </div>
+          <section id="it2-identify" class="today-region" aria-labelledby="it2-identify-title" hidden><h2 id="it2-identify-title">To identify</h2>
+            <ul id="it2-identify-list" class="needs-list"></ul></section>
+          <div id="it2-items"></div>
+        </section>
+        <section id="it2-warranties-panel" class="it2-tabpanel" role="tabpanel" aria-labelledby="it2-tab-warranties" hidden></section>
+        <section id="it2-returns-panel" class="it2-tabpanel" role="tabpanel" aria-labelledby="it2-tab-returns" hidden>
+          <section id="it2-returned" class="today-region" aria-labelledby="it2-returned-title"><h2 id="it2-returned-title">Did this go back?</h2>
+            <div id="it2-returned-body"></div></section>
+          <section id="it2-closing" class="today-region" aria-labelledby="it2-closing-title"><h2 id="it2-closing-title">Return windows closing</h2>
+            <div id="it2-closing-body"></div></section>
+          <section id="it2-policies" class="today-region" aria-labelledby="it2-policies-title"><h2 id="it2-policies-title">Return policies</h2>
+            <p class="muted small">Non-food items stay returnable while unopened, until the purchase date plus the store's window. A policy printed on the
+              receipt always wins. Typical policies are starting points: check the receipt before relying on one.</p>
+            <div id="it2-policies-body"></div></section>
+        </section>
+        <section id="it2-insights-panel" class="it2-tabpanel" role="tabpanel" aria-labelledby="it2-tab-insights" hidden>
+          <div class="chip-list" role="group" aria-label="Period">
+            <button type="button" class="chip" data-period="30" aria-pressed="false">30 days</button>
+            <button type="button" class="chip" data-period="90" aria-pressed="true">90 days</button>
+            <button type="button" class="chip" data-period="365" aria-pressed="false">12 months</button>
+            <button type="button" class="chip" data-period="year" aria-pressed="false">This year</button>
+          </div>
+          <div id="it2-insights"></div>
+        </section>
+      </div>
+    </section>
+
     <section id="library-panel" class="page" data-page="documents" aria-labelledby="library-title" hidden>
       <header class="page-header"><div><h1 id="library-title" tabindex="-1">Documents</h1>
         <p id="library-subtitle" class="page-subtitle">Your important papers: leases, policies, pay stubs, tax forms and more. New files arrive in the Inbox.</p></div>
@@ -1079,6 +1158,16 @@
           <div class="pager"><button id="docs-prev" type="button">Previous</button><span id="docs-page"></span><button id="docs-next" type="button">Next</button></div>
         </div>
       </div>
+    </section>
+
+    <!-- Records, redesigned (records_v2.js; design-system/home-manager/pages/records.md), behind the ui_v2_screens flag.
+         One section serves #/documents and #/receipts; the strip, toolbar, folders and list are drawn by JS. -->
+    <section id="rc2-panel" class="page" data-page="documents" data-ui="v2" aria-labelledby="rc2-title" hidden>
+      <header class="page-header"><div><h1 id="rc2-title" tabindex="-1">Documents</h1>
+        <p id="rc2-subtitle" class="page-subtitle">Your important papers: leases, policies, pay stubs, tax forms and more. New files arrive in the Inbox.</p></div>
+        <div class="page-actions"><button id="rc2-refresh" type="button" class="secondary">Refresh</button></div></header>
+      <div id="rc2-state" class="page-state"></div>
+      <div id="rc2-body" class="page-body"></div>
     </section>
 
     <section id="document-page" class="page inspector" data-page="document" aria-labelledby="receipt-title" hidden>
@@ -1240,6 +1329,69 @@
       </section>
     </section>
 
+    <!-- Processing, redesigned (processing_v2.js; design-system/home-manager/pages/system.md), behind the ui_v2_screens flag.
+         What's running and each stage's state over five tabs, each drawn on its first show; ?tab=, kind, task and status
+         keep the view across reloads. -->
+    <section id="pr2-panel" class="page" data-page="processing" data-ui="v2" aria-labelledby="pr2-title" hidden>
+      <header class="page-header"><div><h1 id="pr2-title" tabindex="-1">Processing</h1>
+        <p class="page-subtitle">Capture and reading run on separate queues; you can keep working meanwhile.</p></div>
+        <div class="page-actions">
+          <div class="pr2-read">
+            <button id="pr2-read" type="button" class="secondary" aria-expanded="false" aria-controls="pr2-read-menu">Read all documents</button>
+            <div id="pr2-read-menu" class="pr2-read-menu" hidden>
+              <p class="muted small">Reads every preserved image and PDF with the local vision model. To read only some, select them in Documents.</p>
+              <label class="check-field"><input id="pr2-force" type="checkbox"> Also re-read documents that already have text</label>
+              <div class="button-row"><button id="pr2-read-start" type="button" class="primary">Start reading</button></div>
+            </div>
+          </div>
+          <button id="pr2-scan" type="button" class="primary" disabled>Scan Inbox</button></div></header>
+      <div id="pr2-state" class="page-state"></div>
+      <div id="pr2-body" class="page-body">
+        <section class="today-region pr2-strip" aria-labelledby="pr2-strip-title"><h2 id="pr2-strip-title">Now running</h2>
+          <ul id="pr2-activity" class="pr2-now" aria-live="polite"></ul>
+          <div id="pr2-lanes" class="pr2-lanes"></div></section>
+        <div id="pr2-tabs" class="tabs" role="tablist" aria-label="Processing sections">
+          <button type="button" id="pr2-tab-work" role="tab" aria-controls="pr2-work-panel" aria-selected="true">Recent work</button>
+          <button type="button" id="pr2-tab-health" role="tab" aria-controls="pr2-health-panel" aria-selected="false" tabindex="-1">Data health</button>
+          <button type="button" id="pr2-tab-folders" role="tab" aria-controls="pr2-folders-panel" aria-selected="false" tabindex="-1">Watched folders</button>
+          <button type="button" id="pr2-tab-scans" role="tab" aria-controls="pr2-scans-panel" aria-selected="false" tabindex="-1">Scans</button>
+          <button type="button" id="pr2-tab-models" role="tab" aria-controls="pr2-models-panel" aria-selected="false" tabindex="-1">Model runs</button>
+        </div>
+        <section id="pr2-work-panel" class="pr2-tabpanel" role="tabpanel" aria-labelledby="pr2-tab-work">
+          <div class="toolbar">
+            <label class="inline-field">Show <select id="pr2-kind"><option value="">All kinds of work</option></select></label>
+            <div class="chip-list" role="group" aria-label="Result">
+              <button type="button" class="chip" data-result="all" aria-pressed="true">All</button>
+              <button type="button" class="chip" data-result="failed" aria-pressed="false">Failed</button>
+            </div>
+          </div>
+          <div id="pr2-work"></div>
+        </section>
+        <section id="pr2-health-panel" class="pr2-tabpanel" role="tabpanel" aria-labelledby="pr2-tab-health" hidden>
+          <p class="muted small pr2-intro">Rules your records should always follow. A problem here means a figure somewhere may be wrong; open the record to fix it.</p>
+          <div id="pr2-health"></div>
+        </section>
+        <section id="pr2-folders-panel" class="pr2-tabpanel" role="tabpanel" aria-labelledby="pr2-tab-folders" hidden>
+          <p class="muted small pr2-intro">Folders outside the library, such as Downloads or a scanner folder. New and changed files are copied into the library; the folder itself is never changed, and a file you delete there stays in the library.</p>
+          <div class="toolbar"><p id="pr2-inbox" class="path-text"></p>
+            <div class="toolbar-actions"><button id="pr2-add-source" type="button" class="secondary">Watch a folder</button></div></div>
+          <div id="pr2-folders"></div>
+        </section>
+        <section id="pr2-scans-panel" class="pr2-tabpanel" role="tabpanel" aria-labelledby="pr2-tab-scans" hidden>
+          <label class="inline-field">Scan <select id="pr2-scans"><option value="">No scans yet</option></select></label>
+          <p id="pr2-scan-state" class="pr2-scan-state" aria-live="polite"></p>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Path</th><th scope="col">Result</th><th scope="col">Details</th></tr></thead><tbody id="pr2-events"></tbody></table></div>
+          <div class="pager"><button id="pr2-events-prev" type="button">Previous results</button><span id="pr2-events-page"></span><button id="pr2-events-next" type="button">Next results</button></div>
+        </section>
+        <section id="pr2-models-panel" class="pr2-tabpanel" role="tabpanel" aria-labelledby="pr2-tab-models" hidden>
+          <p class="muted small pr2-intro">Measured per request. Token counts come from the model server when it reports them; “~” marks rates estimated from characters.</p>
+          <div class="toolbar"><label class="inline-field">Task <select id="pr2-task"><option value="">All tasks</option></select></label>
+            <label class="inline-field">Status <select id="pr2-status"><option value="">All statuses</option></select></label></div>
+          <div id="pr2-models"></div>
+        </section>
+      </div>
+    </section>
+
     <section id="donate-panel" class="page" data-page="donate" aria-labelledby="donate-title" hidden>
       <div id="donate-list-view">
         <header class="page-header"><div><h1 id="donate-title" tabindex="-1">Donate documents</h1>
@@ -1306,6 +1458,7 @@
           <button id="backup-tab" type="button" role="tab" aria-selected="false" aria-controls="backup-panel" tabindex="-1">Backup &amp; restore</button>
           <button id="sharing-tab" type="button" role="tab" aria-selected="false" aria-controls="sharing-panel" tabindex="-1">Sharing</button>
           <button id="privacy-tab" type="button" role="tab" aria-selected="false" aria-controls="privacy-panel" tabindex="-1">Privacy &amp; security</button>
+          <button id="donate-tab" type="button" role="tab" aria-selected="false" aria-controls="donate-settings-panel" tabindex="-1">Donate</button>
         </div>
         <div class="settings-content">
           <div id="directories-panel" role="tabpanel" aria-labelledby="directories-tab">
@@ -1319,7 +1472,7 @@
           </div>
           <div id="profiles-panel" role="tabpanel" aria-labelledby="profiles-tab" hidden>
             <h2>Profiles on this computer</h2>
-            <p class="muted small">Each person has their own profile, with its own library folder, Inbox and database. Switching closes one library and opens another; nothing is merged or moved.</p>
+            <p class="settings-lead">Each person has their own profile, with its own library folder, Inbox and database. Switching closes one library and opens another; nothing is merged or moved.</p>
             <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Folder</th>
               <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="profile-rows"></tbody></table></div>
             <form id="profile-form" class="form"><h3>Add a person</h3>
@@ -1375,12 +1528,10 @@
               <label class="check-field"><input id="theme-dark" type="radio" name="theme" value="dark"> Dark</label>
             </fieldset>
             <small>Saved in this browser. System follows Windows.</small>
-            <fieldset id="ui-v2-choice" class="theme-choice"><legend>New screens</legend><div id="ui-v2-list"></div></fieldset>
-            <small>Redesigned screens that are ready to try. Saved for this profile.</small>
           </div>
           <div id="model-panel" role="tabpanel" aria-labelledby="model-tab" hidden>
             <h2>Local models</h2>
-            <form id="model-computer-form" class="form"><h3>Model computer</h3>
+            <form id="model-computer-form" class="form"><h3>This computer or a shared GPU</h3>
               <div class="field"><label for="model-provider">Where models run</label>
                 <select id="model-provider"><option value="local">This PC</option><option value="family_gpu">Shared GPU (Tailscale)</option></select>
                 <small>A shared GPU computer, run by a family member or a friend, runs the models for you. Only page images and text prompts are sent to it; your documents and records stay on this computer.</small></div>
@@ -1398,7 +1549,7 @@
               <div id="test-model-computer-result" class="connection-result" role="status"></div>
             </form>
             <p class="muted small" id="local-models-note">Models run in a local server on this computer, such as LM Studio. Only loopback addresses are accepted. Saving does not load a model or test the connection.</p>
-            <form id="vision-form" class="form"><h3>Vision model</h3>
+            <form id="vision-form" class="form"><h3>Reading documents (vision)</h3>
               <div class="field"><label for="vision-url">Local API base URL</label><input id="vision-url" required value="http://127.0.0.1:1234/v1"></div>
               <div class="field"><label for="vision-model">Loaded vision model ID</label><input id="vision-model" placeholder="Copy the model ID from your local server">
                 <small>An image-capable model, such as Qwen3.5-9B. It reads images and scanned pages.</small></div>
@@ -1407,7 +1558,7 @@
                 <button id="test-vision" type="button" data-test="vision">Test connection</button></div>
               <div id="test-vision-result" class="connection-result" role="status"></div>
             </form>
-            <form id="reasoning-form" class="form"><h3>Reasoning model</h3>
+            <form id="reasoning-form" class="form"><h3>Reasoning</h3>
               <div class="field"><label for="reasoning-url">Reasoning API base URL</label><input id="reasoning-url" required value="http://127.0.0.1:1234/v1"></div>
               <div class="field"><label for="reasoning-model">Reasoning model ID</label><input id="reasoning-model" placeholder="Copy the text model ID from your local server">
                 <small>Classifies and extracts saved transcriptions. Independent of the vision model.</small></div>
@@ -1430,8 +1581,23 @@
           </div>
           <div id="checks-panel" role="tabpanel" aria-labelledby="checks-tab" hidden>
             <h2>Independent checks</h2>
-            <p id="decision-status" class="muted small"></p>
-            <p class="muted small">The decision model checks every ledger extraction. A value it cannot confirm sends the record to review; it never approves one. Choose it under Local models.</p>
+            <section class="settings-group" aria-labelledby="checks-ledger-title"><h3 id="checks-ledger-title">Every ledger extraction</h3>
+              <p class="muted small">The decision model checks every ledger extraction. A value it cannot confirm sends the record to review; it never approves one.</p>
+              <p id="decision-status" class="muted small"></p>
+              <p><a id="checks-decision-link" href="#/settings?tab=models">Change the decision model</a></p>
+            </section>
+            <form id="reviewer-form" class="form settings-group personal-only"><h3>Document reasoning reviewer</h3>
+              <p class="muted small">Checks the reasoning runs that organize documents (started by the assistant or the API) against the document text before anything is filed automatically. A failed check from a second chat model stops automatic filing; a decision-model check is advice only.</p>
+              <div class="field"><label for="reviewer-kind">Reviewer</label>
+                <select id="reviewer-kind"><option value="off">Off</option><option value="chat">A second chat model</option><option value="decision">The decision model</option></select></div>
+              <div class="field" id="reviewer-url-field"><label for="reviewer-url">Reviewer API base URL</label><input id="reviewer-url" value="http://127.0.0.1:1234/v1" autocomplete="off" spellcheck="false">
+                <p class="field-error" data-error-for="url"></p></div>
+              <div class="field" id="reviewer-model-field"><label for="reviewer-model">Reviewer model ID</label><input id="reviewer-model" placeholder="Copy the model ID from your local server" autocomplete="off" spellcheck="false"></div>
+              <p id="reviewer-busy" class="muted small" hidden>Model work is running. Save the reviewer when it finishes.</p>
+              <div class="button-row"><button id="save-reviewer" class="primary" type="submit">Save reviewer</button>
+                <button id="test-reviewer" type="button" data-test="reviewer">Test connection</button></div>
+              <div id="test-reviewer-result" class="connection-result" role="status"></div>
+            </form>
           </div>
           <div id="privacy-panel" role="tabpanel" aria-labelledby="privacy-tab" hidden>
             <h2>Privacy &amp; security</h2>
@@ -1441,6 +1607,12 @@
               <li><strong>Models propose, you decide.</strong> Model output stays proposed until you verify it, and totals come from exact arithmetic, never from a model.</li>
               <li><strong>The session is locked to its launch link.</strong> Other programs on this computer can't use the interface without it.</li>
             </ul>
+          </div>
+          <div id="donate-settings-panel" role="tabpanel" aria-labelledby="donate-tab" hidden>
+            <h2>Donate documents</h2>
+            <p class="settings-lead">Help test how well Home Manager reads documents. Check a document against its original, then save a donation file and hand it over yourself. Nothing is sent from this computer, and checking never changes your records.</p>
+            <p id="donate-settings-count" class="muted small" aria-live="polite"></p>
+            <p><a id="donate-settings-open" class="button primary" href="#/donate">Open Donate documents</a></p>
           </div>
           <div id="backup-panel" role="tabpanel" aria-labelledby="backup-tab" hidden>
             <h2>Back up your library</h2>
@@ -1484,18 +1656,19 @@
     </section>
   </main>
   <!-- How a figure is worked out (trace.js); beside the page, floating, or a bottom sheet by width. -->
-  <aside id="breakdown" class="breakdown-panel" aria-labelledby="breakdown-title" hidden><div id="breakdown-state" class="page-state"></div><div id="breakdown-body"></div></aside>
-  <aside id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
-    <header class="assistant-header"><h2 id="assistant-title" tabindex="-1">Ask about your household</h2>
-      <button id="close-assistant" class="icon-button quiet" type="button" aria-label="Close the assistant"></button></header>
-    <p class="muted small">Answers come only from your records, through read-only tools, and each figure is checked against what the tools returned. The page you're on is sent as context.</p>
+  <aside id="breakdown" class="side-panel breakdown-panel" aria-labelledby="breakdown-title" hidden><div id="breakdown-state" class="page-state"></div><div id="breakdown-body"></div></aside>
+  <!-- Ask (assistant.js): a non-modal column in the same slot as the breakdown; one of the two is open at a time. -->
+  <aside id="assistant-panel" class="side-panel assistant-panel" role="complementary" aria-labelledby="assistant-title" hidden>
+    <header class="assistant-header"><div><h2 id="assistant-title" tabindex="-1">Ask</h2>
+        <p class="muted small">Answers from your records by the local model, with where each came from.</p></div>
+      <button id="close-assistant" class="icon-button quiet" type="button" aria-label="Close Ask"></button></header>
     <div id="assistant-log" class="assistant-log" aria-live="polite"></div>
+    <details id="assistant-earlier" class="assistant-earlier"><summary>Earlier questions</summary><ul id="assistant-history" class="assistant-history"></ul></details>
     <form id="assistant-form" class="assistant-form">
       <label class="visually-hidden" for="assistant-question">Your question</label>
       <textarea id="assistant-question" rows="3" maxlength="1000" placeholder="How much did we spend on groceries this month compared with last?"></textarea>
-      <div class="button-row"><button id="assistant-ask" class="primary" type="submit">Ask</button><small class="muted">Ctrl+Enter to send · Ctrl+J to close</small></div>
+      <div class="assistant-compose-row"><small class="muted">Ctrl+Enter to ask</small><button id="assistant-ask" class="primary" type="submit">Ask</button></div>
     </form>
-    <details id="assistant-earlier" class="assistant-earlier"><summary>Earlier questions</summary><ul id="assistant-history" class="finance-list"></ul></details>
   </aside>
 </div>
 <div id="toasts" class="toast-region" aria-live="polite"></div>
@@ -1653,6 +1826,48 @@
     <div class="dialog-actions"><button id="cancel-warranty" type="button">Cancel</button><button class="primary" type="submit">Save warranty</button></div>
   </form>
 </dialog>
-<dialog id="versions-dialog" aria-labelledby="versions-title"><h2 id="versions-title">Preserved versions</h2><p id="versions-path"></p><div id="versions-content"></div><div class="dialog-actions"><button id="close-versions" type="button">Close</button></div></dialog>
+<!-- Inventory v2 (inventory_v2.js): a store's return policy, added or changed. -->
+<dialog id="it2-policy-dialog" class="money2-dialog" aria-labelledby="it2-policy-title">
+  <h2 id="it2-policy-title">Return policy</h2>
+  <form id="it2-policy-form" class="money2-add-form" novalidate>
+    <p class="field-error money2-wide" data-error-for="form" id="it2-policy-error" role="alert"></p>
+    <div class="field money2-wide"><label for="it2-policy-merchant">Store</label>
+      <input id="it2-policy-merchant" required maxlength="80" placeholder="Walmart" autocomplete="off" aria-describedby="it2-policy-merchant-error">
+      <p class="field-error" data-error-for="merchant" id="it2-policy-merchant-error" role="alert"></p></div>
+    <div class="field"><label for="it2-policy-days">Days to return</label>
+      <input id="it2-policy-days" type="number" min="0" max="730" placeholder="No limit" aria-describedby="it2-policy-days-note it2-policy-days-error">
+      <small id="it2-policy-days-note" class="muted">Leave blank for no fixed limit.</small>
+      <p class="field-error" data-error-for="days" id="it2-policy-days-error" role="alert"></p></div>
+    <div class="field"><label for="it2-policy-note">Notes</label>
+      <input id="it2-policy-note" maxlength="200" autocomplete="off" aria-describedby="it2-policy-note-error">
+      <p class="field-error" data-error-for="note" id="it2-policy-note-error" role="alert"></p></div>
+    <div class="dialog-actions money2-wide"><button id="it2-policy-cancel" type="button" class="link-button">Cancel</button><button id="it2-policy-save" type="submit" class="primary">Save policy</button></div>
+  </form>
+</dialog>
+<!-- Inventory v2: which item a warranty is for, before the shared warranty dialog. -->
+<dialog id="it2-warranty-pick" class="money2-dialog" aria-labelledby="it2-warranty-pick-title">
+  <h2 id="it2-warranty-pick-title">Add a warranty</h2>
+  <form id="it2-warranty-pick-form" class="money2-add-form" novalidate>
+    <div class="field money2-wide"><label for="it2-warranty-lot">Item</label><select id="it2-warranty-lot" aria-describedby="it2-warranty-lot-note"></select>
+      <small id="it2-warranty-lot-note" class="muted">Items that last (not food or supplies) that you still have.</small></div>
+    <div class="dialog-actions money2-wide"><button id="it2-warranty-pick-cancel" type="button" class="link-button">Cancel</button><button id="it2-warranty-pick-next" type="submit" class="primary">Continue</button></div>
+  </form>
+</dialog>
+<!-- Processing v2 (processing_v2.js): a folder outside the library to watch. -->
+<dialog id="pr2-source-dialog" class="money2-dialog" aria-labelledby="pr2-source-title">
+  <h2 id="pr2-source-title">Watch a folder</h2>
+  <form id="pr2-source-form" class="money2-add-form" novalidate>
+    <p class="field-error money2-wide" data-error-for="form" id="pr2-source-error" role="alert"></p>
+    <div class="field money2-wide"><label for="pr2-source-path">Folder to watch</label>
+      <input id="pr2-source-path" required maxlength="4096" placeholder="C:\Users\you\Downloads" autocomplete="off" spellcheck="false" aria-describedby="pr2-source-path-error">
+      <p class="field-error" data-error-for="path" id="pr2-source-path-error" role="alert"></p></div>
+    <div class="field money2-wide"><label for="pr2-source-label">Name (optional)</label>
+      <input id="pr2-source-label" maxlength="100" autocomplete="off" aria-describedby="pr2-source-label-error">
+      <p class="field-error" data-error-for="label" id="pr2-source-label-error" role="alert"></p></div>
+    <label class="check-field money2-wide"><input id="pr2-source-recursive" type="checkbox" checked> Include subfolders</label>
+    <div class="dialog-actions money2-wide"><button id="pr2-source-cancel" type="button" class="link-button">Cancel</button><button id="pr2-source-save" type="submit" class="primary">Watch folder</button></div>
+  </form>
+</dialog>
+<dialog id="versions-dialog"aria-labelledby="versions-title"><h2 id="versions-title">Preserved versions</h2><p id="versions-path"></p><div id="versions-content"></div><div class="dialog-actions"><button id="close-versions" type="button">Close</button></div></dialog>
 </body>
 </html>

@@ -61,7 +61,7 @@ function bills2Tiles(recurring) {
         : ["What If can show your plan with them cancelled. ", homeLink("Open What If", "#/whatif")]));
     }
     const row = element("div", "", "bills2-tiles"); row.append(...tiles);
-    return row;
+    return fitFigures(row);
   });
   $("bills2-tiles").replaceChildren(...sets);
   $("bills2-tiles").hidden = !sets.length;

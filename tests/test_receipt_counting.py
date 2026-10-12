@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -191,43 +192,43 @@ def test_browser_prompts_to_reconcile_and_lists_receipt_subfolders(tmp_path):
             playwright.expect(prompt).to_contain_text("1 of 2 charges matched to your receipts")
             if shots:
                 page.screenshot(path=os.path.join(shots, "2-result.png"))
-            # Receipts live in the money store, not in Documents.
+            # Receipts live in the money store, not in Documents (Records, records_v2.js).
             page.locator("#nav-documents").click()
-            playwright.expect(page.locator('[data-folder-group="Receipts"]')).to_have_count(0)
+            playwright.expect(page.locator("#rc2-panel")).to_be_visible()
+            playwright.expect(page.locator("#rc2-tree [data-folder-group='Receipts']")).to_have_count(0)
             page.locator("#nav-receipts").click()
-            playwright.expect(page.locator("#library-title")).to_have_text("Receipts & statements")
-            group = page.locator('[data-folder-group="Receipts"]')
+            playwright.expect(page.locator("#rc2-title")).to_have_text("Receipts & statements")
+            group = page.locator("#rc2-tree [data-folder-group='Receipts']")
             playwright.expect(group).to_have_attribute("aria-expanded", "false")
-            playwright.expect(page.locator('.folder-link[data-category="dining"]')).to_have_count(0)
+            playwright.expect(page.locator("#rc2-tree [data-category='dining']")).to_have_count(0)
             group.click()
             playwright.expect(group).to_have_attribute("aria-expanded", "true")
-            dining = page.locator('.folder-link[data-category="dining"]')
+            dining = page.locator("#rc2-tree [data-category='dining']")
             playwright.expect(dining).to_contain_text("1")
             dining.click()
-            playwright.expect(page.locator("#folder-breadcrumb")).to_have_text("Receipts › Dining")
-            playwright.expect(page.locator("#documents tr")).to_have_count(1)
+            playwright.expect(page).to_have_url(re.compile(r"folder=Receipts&category=dining"))
+            playwright.expect(page.locator("#rc2-summary")).to_contain_text("Receipts › Dining")
+            rows = page.locator("#rc2-table tbody tr")
+            playwright.expect(rows).to_have_count(1)
             if shots:
                 page.screenshot(path=os.path.join(shots, "3-subfolders.png"))
-            page.locator('.folder-link[data-folder="Receipts"]').click()  # "All receipts".
-            playwright.expect(page.locator("#documents tr")).to_have_count(2)
-            group.click()
-            playwright.expect(page.locator('.folder-link[data-category="dining"]')).to_have_count(0)
-            # A PDF opens in an embedded viewer. A read PDF loads the viewer twice (the document, then its reading's
-            # preview); neither load may add a history entry, so one Back returns to the list.
+            page.locator("#rc2-tree [data-folder='Receipts']:not([data-category])").click()  # "All receipts".
+            playwright.expect(rows).to_have_count(2)
+            # A PDF opens in the source viewer's embedded frame, which adds no history entry: one Back returns to the list.
             pdf = docs["statement.pdf"]
-            page.locator("#nav-documents").click()  # The statement was never recorded, so it waits in the Inbox.
-            page.locator('.folder-link[data-folder="all"]').click()
+            page.goto(f"http://127.0.0.1:{port}/#/documents?folder=all")
+            playwright.expect(page.locator("#rc2-table tbody tr").first).to_be_visible()
             page.evaluate(f"location.hash = '#/documents/{pdf['id']}'")
-            playwright.expect(page.locator("#receipt-pdf")).to_be_visible()
-            page.evaluate(f"imageForReceipt('/api/documents/{pdf['id']}/preview?blob_hash={pdf['current_hash']}', receipt)")
+            playwright.expect(page.locator("#doc2-viewer .sv-pdf")).to_be_visible()
             page.wait_for_timeout(500)  # Let the viewer finish loading.
-            page.locator("#close-receipt").click()
-            playwright.expect(page.locator("#library-panel")).to_be_visible()
-            # A preview that fails is said beside the image, and the rest of the page still loads (never stuck on "Loading").
+            page.locator("#doc2-back").click()
+            playwright.expect(page.locator("#rc2-panel")).to_be_visible()
+            # A preview that fails is said in the viewer, with no empty frame beside it, and the rest of the page still loads.
             page.route("**/preview*", lambda route: route.fulfill(status=500, content_type="application/json", body='{"detail": "Synthetic preview failure."}'))
             page.evaluate(f"location.hash = '#/documents/{pdf['id']}'")
-            playwright.expect(page.locator("#receipt-preview-error")).to_contain_text("Synthetic preview failure.")
-            playwright.expect(page.locator("#receipt-status")).not_to_contain_text("Loading the preserved document")
+            playwright.expect(page.locator("#doc2-viewer .sv-alert")).to_contain_text("Synthetic preview failure.")
+            playwright.expect(page.locator("#doc2-viewer .sv-pdf")).to_be_hidden()
+            playwright.expect(page.locator("#doc2-title")).not_to_be_empty()
             page.unroute("**/preview*")
             assert not failures
             browser.close()

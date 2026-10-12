@@ -406,19 +406,6 @@ function renderUnmatched(unmatched) {
   $("review-unmatched-note").textContent = unmatched.by_currency.map(row => `${row.total.display} in ${row.receipts} receipt${row.receipts === 1 ? "" : "s"}`).join("; ")
     + (returns ? " (returns are money back and subtract)" : "");
 }
-document.addEventListener("keydown", event => {
-  if (currentRoute?.name !== "review" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
-  if (uiV2Screens.includes("review")) return;  // To check v2 has its own keys; V here would click v1's hidden Confirm.
-  if (document.querySelector("dialog[open]") || event.target.closest("input, select, textarea, .menu")) return;
-  const key = event.key.toLowerCase();
-  if ((key === "j" || key === "k") && reviewItems.length) {
-    event.preventDefault();
-    reviewIndex = (reviewIndex + (key === "j" ? 1 : -1) + reviewItems.length) % reviewItems.length;
-    renderReviewQueue(currentCatalog()); renderReviewDetail();
-    $("review-queue").querySelector('[aria-current="true"]')?.scrollIntoView({block: "nearest"});
-  } else if (key === "v" && $("review-confirm")) { event.preventDefault(); $("review-confirm").click(); }
-  else if (key === "r" && $("review-reject")) { event.preventDefault(); $("review-reject").click(); }
-});
 $("review-refresh").addEventListener("click", () => loadReview());
 $("reconcile").addEventListener("click", () => api("/api/finance/reconcile", {method: "POST", body: "{}"})
   .then(result => { notice(`Reconciliation proposed ${result.receipt_links} receipt links, ${result.transfers} transfers and ${result.refunds} refunds; ${result.open_issues} ambiguous cases need you.`); return loadReview(); })

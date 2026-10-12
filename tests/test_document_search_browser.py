@@ -67,26 +67,21 @@ def test_search_shows_words_from_the_text_and_opens_the_document_at_them(tmp_pat
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
             page.goto(f"http://127.0.0.1:{port}/#/search?q=early%20termination")
-            snippet = page.locator("#search-results .search-snippet").first
+            snippet = page.locator("#se2-results .search-snippet").first
             playwright.expect(snippet).to_contain_text("TERMINATION")
             assert snippet.locator("mark").count() >= 1
-            # The Documents list shows the same match under the name.
+            # The Documents list (Records) shows the same match under the name.
             page.goto(f"http://127.0.0.1:{port}/#/documents?q=renewal")
-            playwright.expect(page.locator("#documents .search-snippet")).to_contain_text("Renewal")
+            playwright.expect(page.locator("#rc2-table .search-snippet")).to_contain_text("Renewal")
+            # The result opens the document page with the matched line found in the source viewer.
             page.goto(f"http://127.0.0.1:{port}/#/search?q=early%20termination")
-            page.locator("#search-results a[href*='lines=']").first.click()
-            playwright.expect(page.locator("#document-page")).to_be_visible()
-            selected = "() => { const f = document.getElementById('receipt-text'); return f.value.slice(f.selectionStart, f.selectionEnd); }"
-            playwright.expect(page.locator("#receipt-text")).to_be_visible()
-            for _ in range(50):
-                if page.evaluate(selected):
-                    break
-                time.sleep(.1)
-            assert page.evaluate(selected) == "EARLY TERMINATION"
+            page.locator("#se2-results a[href*='lines=']").first.click()
+            playwright.expect(page.locator("#doc2-panel")).to_be_visible()
+            playwright.expect(page.locator("#doc2-viewer .sv-line.selected").first).to_have_text("EARLY TERMINATION")
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 900})
                 page.goto(f"http://127.0.0.1:{port}/#/search?q=deposit")
-                playwright.expect(page.locator("#search-results .search-snippet").first).to_be_visible()
+                playwright.expect(page.locator("#se2-results .search-snippet").first).to_be_visible()
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
             assert failures == []
             browser.close()

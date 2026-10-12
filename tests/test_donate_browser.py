@@ -54,7 +54,9 @@ def test_real_browser_checks_and_donates_a_receipt(tmp_path, local_model):
             failures = []
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"http://127.0.0.1:{port}/#token=browser-test-token")
-            page.locator("#nav-donate").click()
+            # Donate is a Settings tab now, not a sidebar link; the route stays.
+            playwright.expect(page.locator("#nav-home")).to_be_visible()
+            page.goto(f"http://127.0.0.1:{port}/#/donate")
             candidates = page.locator("#donate-candidates")
             playwright.expect(candidates).to_contain_text("Receipt", timeout=15000)
             candidates.get_by_role("button", name="Check").click()

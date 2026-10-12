@@ -464,14 +464,14 @@ currency, settles it.
 | Route | Content |
 |---|---|
 | `#/home` | The dashboard (see [Home](#home)). |
-| `#/transactions` | Items and Charges views. The toolbar has search, from/to, account, category, type, status, receipt evidence and sort. The table pages 200 rows at a time (server offset). A row opens a drawer with the amount, status (Count/Reject), category with "always use for this merchant", the split, evidence and links, and history. |
+| `#/transactions` | Items and Charges views. The toolbar has search, from/to, account, category, type, status, receipt evidence and sort. The table pages 200 rows at a time (server offset). A row opens a drawer with the amount, the decision (Confirm/Reject through `confirmCorrect`, undoable for 8 seconds) and whether it counts, category with "always use for this merchant", the split, evidence and links, and history. |
 | `#/spending` | **Spending & budgets.** The month compared with the previous month and the same month last year. Figures, a by-category table with change and budget, top merchants, refunds and coverage notes. Budgets and category rules are managed here. |
 | `#/bills` | Confirmed recurring bills grouped as overdue, next 7 days and later, with subscriptions totalled separately. Recurring payments offer Confirm, Not recurring and Ended. **Look for recurring bills** runs the payee scan. |
-| `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. |
+| `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. An account's default name is its institution, its type and any last four digits, leaving out the type when the institution already ends with it as a word ("Household checking", not "Household checking checking"; `ledger.py` `account_in`). Migration 065 renamed older rows still carrying the doubled form; names the user chose are untouched. |
 | `#/receipts` | Receipts & statements: the money store's folders. |
 | `#/review` | The Review queue (see [ui](ui.md#review)). Its groups: Questions, Proposed matches, Records to verify, Investment and loan documents to confirm, Warranties to confirm, Tax tables to confirm, Possible write-offs and tax payments, Recurring payments, Receipt items to identify. Statements awaiting reconciliation and documents that couldn't be processed are listed beside the queue. |
 
-With the `ui_v2_screens` flag the four money routes show their redesigned screens (ui.md "Pages"): **This month**
+The four money routes show their redesigned screens (ui.md "Pages"): **This month**
 (spending: tiles, by category beside budgets, merchants, refunds, rules folded), **Transactions** (period chips, Add a
 payment and Import), **Bills & subscriptions** (totals, To decide, Coming up, all recurring payments) and **Accounts**
 (balances as traced figures, Import). They read the same tools as the pages above.

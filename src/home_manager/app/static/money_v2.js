@@ -5,7 +5,11 @@
 const money2 = {onSaved: null, onImported: null, opener: null, accounts: []};
 const MONEY2_FIELDS = {account_id: "account", date: "date", description: "description", amount: "amount", direction: "direction", category: "category",
                        // Investments v2's Add an account (investments_v2.js).
-                       name: "name", kind: "kind", institution: "institution", currency: "currency", value: "value", as_of: "as-of", annual_rate_percent: "rate"};
+                       name: "name", kind: "kind", institution: "institution", currency: "currency", value: "value", as_of: "as-of", annual_rate_percent: "rate",
+                       // Inventory v2's Return policy (inventory_v2.js).
+                       merchant: "merchant", days: "days", note: "note",
+                       // Processing v2's Watch a folder (processing_v2.js).
+                       path: "path", label: "label"};
 
 // A form's error under the field the server named (FastAPI's loc), or at the top of the form.
 function fieldError(form, field, message) {

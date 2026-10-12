@@ -53,6 +53,7 @@ class Recorder(NullRecorder):
 
     def __init__(self):
         self.steps, self.inputs, self.rule_card, self.rounding = [], [], None, None
+        self.roundings = {}  # Currency -> its rounding, for a calculation that rounds each currency's total.
 
     def step(self, label, op, amount_minor, currency, trace=None, count=None):
         """One term of the result: op is "+" or "−" (U+2212); amount is positive as shown."""
@@ -75,13 +76,15 @@ class Recorder(NullRecorder):
 
     def round(self, adjustment_minor, currency, method="half_even_minor", note=""):
         self.rounding = {"method": method, "adjustment": money(adjustment_minor, currency) if adjustment_minor else None, "note": note}
+        self.roundings[currency] = self.rounding
 
     def only(self, currency):
         """What was recorded for one currency (a calculation that works every currency at once)."""
         kept = Recorder()
         kept.steps = [item for item in self.steps if item["currency"] == currency]
         kept.inputs = [item for item in self.inputs if item["value"]["currency"] == currency]
-        kept.rule_card, kept.rounding = self.rule_card, self.rounding
+        kept.rule_card = self.rule_card
+        kept.rounding = self.roundings.get(currency)
         return kept
 
 

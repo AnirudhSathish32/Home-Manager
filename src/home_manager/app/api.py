@@ -1,7 +1,7 @@
 """Loopback-only API and minimal manual-testing UI."""
 
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 import logging
 from pathlib import Path
 import secrets
@@ -24,7 +24,7 @@ from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
 from ..finance import rules, traces
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
-from ..finance.health import check_ledger, summary
+from ..finance.health import check_ledger, record_links, summary
 from ..finance.investments import AccountInput as InvestmentAccountInput
 from ..finance.investments import (
     AccountUpdate,
@@ -40,7 +40,7 @@ from ..finance.investments import (
     WithdrawalKind,
 )
 from ..finance.item_categories import ItemCategorizer
-from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig, UiRoute
+from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig
 from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
@@ -62,7 +62,7 @@ from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 log = logging.getLogger(__name__)
 RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
-          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "today_v2.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "taxes_v2.js": "text/javascript", "document_v2.js": "text/javascript", "review_v2.js": "text/javascript", "month_v2.js": "text/javascript", "money_v2.js": "text/javascript", "transactions_v2.js": "text/javascript", "bills_v2.js": "text/javascript", "accounts_v2.js": "text/javascript", "investments_v2.js": "text/javascript", "forecast_v2.js": "text/javascript", "whatif_v2.js": "text/javascript","theme.js": "text/javascript", "style.css": "text/css",
+          "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "today_v2.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "taxes_v2.js": "text/javascript", "document_v2.js": "text/javascript", "review_v2.js": "text/javascript", "month_v2.js": "text/javascript", "money_v2.js": "text/javascript", "transactions_v2.js": "text/javascript", "bills_v2.js": "text/javascript", "accounts_v2.js": "text/javascript", "investments_v2.js": "text/javascript", "forecast_v2.js": "text/javascript", "whatif_v2.js": "text/javascript", "inventory_v2.js": "text/javascript", "processing_v2.js": "text/javascript", "records_v2.js": "text/javascript", "search_v2.js": "text/javascript","theme.js": "text/javascript", "style.css": "text/css",
           # Self-hosted fonts (OFL; the license files sit beside them and aren't served).
           "fonts/PlusJakartaSans-Variable.woff2": "font/woff2", "fonts/JetBrainsMono-Regular.woff2": "font/woff2",
           "fonts/JetBrainsMono-Medium.woff2": "font/woff2"}
@@ -71,12 +71,6 @@ STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text
 class SettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     managed_directory: str = Field(min_length=1, max_length=4096)
-
-
-class UiScreensInput(BaseModel):
-    """The routes that show their redesigned screen (docs/ui.md "Migration")."""
-    model_config = ConfigDict(extra="forbid", strict=True)
-    routes: list[UiRoute] = Field(max_length=32)
 
 
 class SourceInput(BaseModel):
@@ -806,11 +800,6 @@ def create_app(control: Path | None = None, token: str | None = None,
     def household_settings(value: HouseholdConfig):
         return manager().configure_household(value)
 
-    @app.put("/api/ui-screens")
-    def ui_screens(value: UiScreensInput):
-        owner = manager()
-        return owner.configure_household(owner.household.model_copy(update={"ui_v2_screens": value.routes}))
-
     @app.get("/api/dashboard")
     def home_dashboard(month: str = Query(pattern=r"^\d{4}-\d{2}$"), months: int = Query(6, ge=6, le=12),
                        currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
@@ -863,7 +852,8 @@ def create_app(control: Path | None = None, token: str | None = None,
         from ..finance import tax_engine
         with store().connection() as db:
             problems = check_ledger(db)
-        return {"summary": summary(problems), "problems": [item._asdict() for item in problems],
+            linked = record_links(db, problems)
+        return {"summary": summary(problems), "problems": linked,
                 "tax_engines": [tax_engine.readiness(slot) for slot in tax_engine.ENGINES]}
 
     @app.post("/api/finance/accounts", status_code=201)
@@ -1692,6 +1682,22 @@ def create_app(control: Path | None = None, token: str | None = None,
     def review_returned(receipt_item_id: int, value: LotReturnInput):
         store()
         return manager().items.ledger.review_return(receipt_item_id, value.lot_id)
+
+    @app.get("/api/inventory/insights")
+    def inventory_insights(period: Literal["30", "90", "365", "year"] = "90", start: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                           end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"), currency: str | None = Query(None, pattern=r"^[A-Z]{3}$")):
+        """Item insights (household/item_traces.py): the period is the last `period` days to today, or `start`..`end`."""
+        from ..household.item_traces import insights
+        library, today = store(), date.today()
+        if not (start and end):
+            end = today.isoformat()
+            start = (date(today.year, 1, 1) if period == "year" else today - timedelta(days=int(period) - 1)).isoformat()
+        try:
+            found = insights(library, start, end, currency, today, manager().household.home_currency)
+        except ValueError as error:  # pydantic's ValidationError is one: a reversed or over-long period.
+            raise HTTPException(422, str(error).splitlines()[-1]) from None
+        traces.shown(library, list(found["figures"].values()))  # Each says whether it changed since it was last shown.
+        return found
 
     @app.get("/api/inventory/receipts-to-identify")
     def receipts_to_identify(limit: int = Query(20, ge=1, le=100)):

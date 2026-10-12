@@ -109,7 +109,9 @@ library, not just the visible page.
   menu with Versions, Move and Delete. Select rows to read, move, delete or combine several at once.
 - **Filters.** Filter by state or document date. Sort by date, name, recently added or path. Receipts show their
   reconciliation status ("Matched to a charge", "Match proposed", "Several possible charges", "No matching charge
-  yet"). Unfiled documents show why they are unfiled.
+  yet"). Unfiled documents show why they are unfiled. On the redesigned screen (Records v2, [ui](ui.md#pages)) the
+  folder, filters, sort and page are kept in the URL, and a strip above the list counts what is waiting with **Read
+  all**.
 - **Virtual folders.** A manual folder choice is a fixed folder identifier; it never becomes an operating-system path,
   a shell command or a file name.
 

@@ -254,7 +254,7 @@ function taxes2YearTab(host) {
   const line = key => result.lines.find(item => item.key === key);
   tiles.append(taxes2Tile("Total tax", line("total_tax").figure, {magnitude: true}, result.marginal_percent != null ? `Top federal bracket ${result.marginal_percent}%` : ""),
                taxes2Tile("Paid and credited", line("total_payments").figure, {magnitude: true}, "Withholding projected to Dec 31"));
-  parts.push(tiles);
+  parts.push(fitFigures(tiles));
   // Which engine slot worked it out (finance/tax_engine.py): "Engine 1", never an engine's own name.
   const engine = result.engine?.label || "the tax engine", comparison = result.comparison;
   const other = comparison?.engine?.label || "The other engine";
@@ -687,7 +687,7 @@ function taxes2WriteOffsTab(host) {
     details.append(element("summary", `Every tagged item in ${summary.year} (${tags.length})`),
       trackTable([["Date", false], ["Item", false], ["Counts as", false], ["Amount", true], ["", false]], tags, (tr, tag) => {
         tr.appendChild(element("td")).append(dateDisplay(tag.tax_date));
-        tr.insertCell().append(tag.transaction_id ? taxItemLink(tag) : element("span", tag.target.description), element("small", tag.target.detail || "", "muted block"));
+        tr.insertCell().append(taxItemLink(tag),element("small", tag.target.detail || "", "muted block"));
         tr.insertCell().append(element("span", `${tag.kind_label}: ${tag.line_label}`), element("small", tag.review_status === "proposed" ? "Waiting in Review" : TAX_SOURCES[tag.source], "muted block"));
         tr.appendChild(element("td", "", "numeric")).append(amount(tag.display.counted_minor, {signed: false}));
         tr.insertCell().append(asyncButton("Not a write-off", async () => { await api(`/api/tax-tags/${tag.id}/not-a-write-off`, {method: "POST"}); notice("Untagged."); await taxes2Reload(); }, "small quiet"));

@@ -46,7 +46,6 @@ function renderProfileSwitch() {
   const label = activeProfile ? `Profile: ${activeProfile.name}${activeProfile.kind === "family" ? " (family)" : ""}` : "Profiles";
   $("nav-profile").querySelector(".nav-label").textContent = label; $("nav-profile").title = label;
 }
-$("nav-profile").addEventListener("click", () => requestAnimationFrame(() => $("profiles-tab").click()));
 
 async function switchProfile(id) {
   const profile = profileList.find(item => item.id === id);
@@ -369,6 +368,6 @@ $("local-member-form").addEventListener("submit", async event => {
 async function removeMember(member) {
   if (!await confirmAction({title: `Remove ${member.name} from ${familyView.name}?`, danger: true, confirmLabel: "Remove from family",
       message: `${member.name}'s totals leave the family view. Their own profile and records are not changed, and their invite stops working.`})) return;
-  try { await api(`/api/families/${activeProfile.id}/members/${member.member_id}`, {method: "DELETE"}); profilesKey = ""; await loadSettings(); if (currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : loadHome()); }
+  try { await api(`/api/families/${activeProfile.id}/members/${member.member_id}`, {method: "DELETE"}); profilesKey = ""; await loadSettings(); if (currentRoute?.name === "home") await reloadToday(); }
   catch (error) { notice(error, true); }
 }

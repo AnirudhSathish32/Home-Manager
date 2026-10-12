@@ -9,11 +9,11 @@ from datetime import date
 import hashlib
 import json
 import re
-from typing import Annotated, Literal
+from typing import Literal
 import unicodedata
 import uuid
 
-from pydantic import Field, StringConstraints, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..core import actor
 from ..core.categories import RECEIPT_CATEGORIES, receipt_category
@@ -239,9 +239,6 @@ def fingerprints(account_id, rows):
         seen[key] += 1
 
 
-UiRoute = Annotated[str, StringConstraints(pattern=r"^[a-z]+$", max_length=32)]  # A page's route name, as in shell.js ROUTES.
-
-
 class HouseholdConfig(StrictModel):
     """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it.
     checkin_weekday is the day of the weekly household check-in: Monday 0 … Sunday 6."""
@@ -255,8 +252,14 @@ class HouseholdConfig(StrictModel):
     rescan_hours: int = Field(default=6, ge=1, le=168)  # Full rescan of each watched folder, catching changes the watcher missed.
     tax_engine: Literal["engine_1"] = "engine_1"  # The engine slot that works out the year's return (finance/tax_engine.py).
     tax_engine_compare: bool = True  # Also work it out with another engine that can run here (Engine 2), and show where they differ.
-    # Routes that show their redesigned screen (docs/ui.md "Migration").
-    ui_v2_screens: list[UiRoute] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def retired_keys(cls, value):
+        # ui_v2_screens chose redesigned screens while both UIs shipped; every screen is redesigned now.
+        if isinstance(value, dict) and "ui_v2_screens" in value:
+            value = {key: item for key, item in value.items() if key != "ui_v2_screens"}
+        return value
 
     @field_validator("tax_engine", mode="before")
     @classmethod
@@ -310,8 +313,12 @@ class Ledger:
             if existing["currency"] != currency:
                 raise ValueError("This account already exists with a different currency.")
             return existing
+        # The default name leaves out the type when the institution already ends with it ("Household checking", not
+        # "Household checking checking"); migration 065 renames older rows the same way.
+        kind = account_type.replace("_", " ")
+        default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind}"
         cursor = db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                            (institution, account_type, (display_name or f"{institution} {account_type.replace('_', ' ')}{' ' + last_four if last_four else ''}")[:160],
+                            (institution, account_type, (display_name or f"{default}{' ' + last_four if last_four else ''}")[:160],
                              last_four, currency, now(), now()))
         return dict(db.execute("SELECT * FROM accounts WHERE id=?", (cursor.lastrowid,)).fetchone())
 

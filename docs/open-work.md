@@ -117,9 +117,9 @@ and link here for what isn't. When an item is built, remove it from this list an
     tables.
   - **Forms:** form errors are toasts instead of messages next to the field (the Money screens v2 show them by the
     field). Asset currencies are free text; v1's budget currency too (This month v2's is a select).
-  - **Filters lost on reload:** Documents, Inventory, the Spending month and the Settings tab.
+  - **Filters lost on reload:** Documents (fixed in Records v2) and the Spending month.
   - **Deep links** from Home, Review and Search open the Documents library, which leaves out receipts and statements.
-  - **Too many primary buttons** in Documents rows and Review questions.
+  - **Too many primary buttons** in Documents rows (Records v2 uses text links) and Review questions.
   - **Dead ends:** no link from a receipt to its matched charge, no Import on Accounts, and CSV/XLSX files can't be
     opened.
   - **Internal wording** in the document page's default tab and in Processing titles.
@@ -155,22 +155,43 @@ B of the same plan): `forecast_v2.js` behind the flag, with keyed chart ids and 
 "Conventions"). Its v1 loader (`forecast.js` `loadForecast`, `renderForecast`, and the `""`/`"fc2-"` id prefix and
 `forecastReload` hook, which collapse once v1 goes) goes in item 8. What If v2 is built (2026-10-11, Build C of the same
 plan): `whatif_v2.js` behind the flag (ui.md "Pages"). Its v1 loader (`whatif.js` `loadWhatIf`, and the `wi.p` prefix
-with `wi.hooks`, which collapse once v1 goes) goes in item 8.
+with `wi.hooks`, which collapse once v1 goes) goes in item 8. Inventory v2 is built (2026-10-11, Build A of
+`design-system/home-manager/phase2-system-plan.md`): `inventory_v2.js` behind the flag, with item traces and
+`GET /api/inventory/insights` (ui.md "Pages", household.md "Item analysis"). Its v1 loader (`inventory.js`
+`loadInventory`, `inventoryRow`, `renderReturned`, `renderPolicies` and the policy form, and the `inventoryReload`
+hook, which collapses once v1 goes) goes in item 8. Processing v2 is built (2026-10-11, Build B of the same plan):
+`processing_v2.js` behind the flag, with Data health over `GET /api/finance/health` and its new `link` per problem, and
+`tax_table_lookup` in the job history (ui.md "Pages", "Processing"; operations.md "Ledger health"). Its v1 loader
+(`processing.js` `loadProcessing`, `renderLanes`, `loadJobHistory`, `loadModelFacets`, plus `app.js` `loadSources`/
+`loadEvents`/`loadModelHistory` and the `processingReload` hook, which collapses once v1 goes) goes in item 8. Settings
+is restyled in place (2026-10-11, Build C of the same plan): `?tab=` in the URL, the document reasoning reviewer
+editable under Independent checks, and a Donate tab (ui.md "Settings"). It has no v1 loader to remove. Records v2 is
+built (2026-10-11, Build A of `design-system/home-manager/phase2-rest-plan.md`): `records_v2.js` behind the flag for
+`#/documents` and `#/receipts`, with every filter in the URL, a work strip with Read all, and quiet rows (ui.md
+"Pages"). Its v1 loader (`library.js` `showLibrary`, `renderFolders`, `renderDocuments`, `renderSelection`, the toolbar
+listeners, and `app.js` `loadDocuments` with the docs pager) goes in item 8; the shared dialogs stay. Search v2 is
+built (2026-10-11, Build B of the same plan): `search_v2.js` behind the flag, with kind chips and `?q=&kind=` in the
+URL (ui.md "Pages"). Its v1 loader (`search.js` `openSearch`, `searchGroup`, `searchHit` and the `#search-page-form`
+listener) goes in item 8; `matchSnippet`, `documentHref`, the global box and the shortcuts stay. Ask is restyled in
+place as a column sharing the breakdown's slot (assistant.md "The Ask panel"); it has no v1 loader to remove.
+Build C of the same plan is built (2026-10-11): the sidebar regrouped (ui.md "Redesigned navigation"), the transaction
+drawer deciding through `confirmCorrect` with toasts moving into an open modal so Undo stays clickable, Write-offs
+rows linking a receipt's tags to its document (taxes.md "Tax tags"), and account default names without the doubled
+type (money.md "Money pages", migration 065). Figure tiles fit their amounts on every page (2026-10-11,
+`design-system/home-manager/figure-fit-plan.md`): ui.md "Observability components". Build D is built (2026-10-11):
+This month's category change, top merchants, Refunded tile and a new "more/less than" line under Net spending are
+traced figures (ui.md "Trace contract"); the family view shows them untraced, since members' traces don't add up.
+Phase 3 Build E is built (2026-10-12): the redesign is the only UI. The `ui_v2_screens` flag, its endpoint and its
+Settings checklist are gone (a stored key is dropped on load), the sidebar labels are the redesigned ones, the v1
+browser tests are deleted or ported to v2 selectors, and `tests/test_ui_parity.py` runs `test_every_screen_reconciles`
+(ui.md "Migration"). The v1 sections and loaders are unreachable until Build F deletes them.
 
-**6. Screens, one per session.** Inventory (Item insights) → Processing (Data health),
-Settings (Independent checks editable, Donate) → Search, Ask. Left from the Money screens:
-- The transaction drawer as `confirmCorrect` (it inherits tokens only; shared by v1, Search and Taxes).
-- Account display names double the type ("Household checking checking"), and merchants show as the statement's upper
-  case. Both are server display text.
-- Untraced numbers shown plain: a category's change, top merchants, refunds, and no traced net-spending difference
-  between the two months (This month shows both months' figures instead).
-
-**7. Surface backend-only features.** Give a screen to `GET /api/finance/health`, `PUT /api/reviewer-settings`,
-`POST /api/decision-model-tests`, and `GET /api/tax-tags/on/{receipt|receipt_item}`.
-Each is tested at the API already; the bill payment endpoint was removed.
+**6. Screens, one per session.** Left from the Money screens:
+- Merchants show as the statement's upper case (server display text; a merchant-naming decision).
 
 **8. Cleanup.** Remove the old loaders, the duplicate helpers (`asyncButton`/`actionButton`, the five table builders)
-and dead CSS. Then rewrite ui.md "Design system" and "Pages" to match what was built.
+and dead CSS (`.figure-value` goes with `investments.js` and `finance.js`'s v1 loaders, its only users). Then rewrite
+ui.md "Design system" and "Pages" to match what was built.
 
 ## Database
 

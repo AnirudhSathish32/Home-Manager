@@ -86,6 +86,7 @@ function todayTiles(data, worth) {
     todayTile("Net worth", netWorth, {}, ["Cash + assets − loans"]),
     todayTile(`Spent in ${month}`, data.totals?.net_spending, {magnitude: true}, [before]),
     todayTile("Money in", data.cashflow?.inflow, {}, [net]));
+  fitFigures($("today-tiles"));
 }
 
 // Needs you ------------------------------------------------------------------------------------------------------

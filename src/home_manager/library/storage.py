@@ -56,6 +56,7 @@ JOB_HISTORY = {
                            "LEFT JOIN receipts r ON r.id=x.receipt_id",
     "checkin_text": "SELECT 'checkin_text',id,status,created_at,updated_at,NULL,error FROM checkin_runs",
     "warranty_lookup": "SELECT 'warranty_lookup',id,status,created_at,updated_at,NULL,error FROM warranty_runs",
+    "tax_table_lookup": "SELECT 'tax_table_lookup',id,status,created_at,updated_at,NULL,error FROM tax_table_runs",
 }
 # Forward-only schema scripts; NNN_ prefixes match PRAGMA user_version.
 # Same-directory snapshots taken before each schema upgrade. Recovery aids, not backups.

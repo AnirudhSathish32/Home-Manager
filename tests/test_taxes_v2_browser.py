@@ -1,4 +1,4 @@
-"""Taxes v2 in the browser (taxes_v2.js; docs/ui.md "Pages"): the six tabs on synthetic data, behind the ui_v2_screens flag."""
+"""Taxes v2 in the browser (taxes_v2.js; docs/ui.md "Pages"): the six tabs on synthetic data."""
 from contextlib import contextmanager
 from datetime import date
 import os
@@ -10,14 +10,19 @@ import time
 import pytest
 import uvicorn
 
+from conftest import assert_tiles_fit_beside_ask, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.app.family_sync import FamilyFolder
+from home_manager.finance.engines import taxcalc
+from home_manager.finance.tax_tags import TaxTags
 from home_manager.household.tax_tables import TaxTables
 from home_manager.library.scanner import ScanLimits
+from seed_taxes import seed_tax_year, this_year_covered
+from test_reconcile_tools import receipt
 from test_tax_family import paid
 from test_tax_return import JOINT
-from test_taxes_browser import seed_tax_year, this_year_covered
 from test_ui_parity import check_figures
+from test_withholding import FEDERAL, confirmed
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
@@ -46,7 +51,6 @@ def served(tmp_path, token):
 
 
 def open_taxes_v2(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["taxes"]}, headers={"Authorization": f"Bearer {token}"}).ok
     page.goto(f"{base}/#token={token}")
     page.locator("#nav-taxes").click()
     page.wait_for_selector("#taxes2-panel:not([hidden])")
@@ -84,6 +88,8 @@ def test_taxes_v2_answers_explains_and_edits_the_year(tmp_path):
         assert box["y"] + box["height"] <= 768, box
         expect(panel.locator(".taxes2-return [data-figure-ref]").first).to_be_visible()
         check_figures(page, base, token)
+        if taxcalc.installed() == taxcalc.PINNED:  # The second engine checks the return line by line.
+            expect(panel.locator(".taxes2-meta")).to_contain_text("Engine 2 agrees")
         # A figure opens its breakdown, which follows its sign; Esc returns to it.
         answer.click()
         expect(page.locator("#breakdown")).to_be_visible()
@@ -136,10 +142,27 @@ def test_taxes_v2_answers_explains_and_edits_the_year(tmp_path):
         expect(jobs.locator("[data-w4][data-key=other_income]")).to_have_value("5000")
         page.locator("#taxes2-tab-year").click()
         expect(ways).not_to_have_text(before)
+        # A different aim is saved with the year and steers the advice: keep cash, owing at most $999 less the buffer.
+        advice_before = panel.locator(".taxes2-advice-lead").text_content()
+        page.locator("#taxes2-zen-strategy").select_option("cash_retention")
+        expect(page.locator("#taxes2-zen-amount")).to_be_visible()
+        expect(panel.locator(".taxes2-advice-lead")).not_to_have_text(advice_before)
+        page.reload()
+        expect(page.locator("#taxes2-zen-strategy")).to_have_value("cash_retention")
 
         # Write-offs, the CPA pack, and the rules with their sources.
         page.locator("#taxes2-tab-writeoffs").click()
         expect(page.locator("#taxes2-writeoffs-panel")).to_contain_text(f"Nothing tagged for {year} yet.")
+        # A receipt's write-off links to its document page; a transaction's opens the drawer.
+        inbox_scan(manager.store, {"goodwill.png": b"receipt"})
+        doc = next(doc for doc in manager.store.documents()["items"] if doc["relative_path"].endswith("goodwill.png"))
+        given = receipt(manager.ledger, doc, "Goodwill", date.today().isoformat(), 8000)
+        manager.ledger.review("receipt", given, "verified")
+        TaxTags(manager.store).tag("receipt", given, "itemized", "charity_cash")
+        page.reload()
+        writeoffs = page.locator("#taxes2-writeoffs-panel")
+        writeoffs.locator("details.tax-items summary").click()
+        expect(writeoffs.get_by_role("link", name="Goodwill")).to_have_attribute("href", f"#/documents/{doc['id']}")
         page.locator("#taxes2-tab-pack").click()
         expect(page.locator("#taxes2-pack-body").get_by_role("button", name=f"Build the {year} CPA pack")).to_be_visible()
         page.locator("#taxes2-tab-rules").click()
@@ -176,6 +199,12 @@ def test_taxes_v2_answers_explains_and_edits_the_year(tmp_path):
         page.locator("#taxes2-year").select_option(str(year))
         expect(page.locator("#taxes2-state")).to_be_empty()
         expect(page.locator("#taxes2-body")).to_be_visible()
+
+        # A million or more shrinks the answer's figures to fit, with Ask open and without.
+        page.evaluate("activateTaxes2Tab('taxes2-tab-year')")
+        page.wait_for_selector("[aria-busy='true']", state="detached")
+        expect(page.locator(".taxes2-answer")).to_be_visible()
+        assert_tiles_fit_beside_ask(page, ".taxes2-answer")
         assert not failures, failures
         browser.close()
 
@@ -217,9 +246,12 @@ def test_taxes_v2_family_view_shows_returns_not_write_offs(tmp_path):
         expect(page.locator("#taxes2-family-note")).to_be_visible()
         expect(page.locator("#taxes2-unit")).to_be_visible()
         year_panel = page.locator("#taxes2-year-panel")
+        page.wait_for_load_state("networkidle")  # A refresh after the family's first sync would redraw the form under the clicks.
         for name in ("Mom", "Dad"):
             year_panel.get_by_label(name).check()
         page.locator("#taxes-unit-status").select_option("married_joint")
+        for name in ("Mom", "Dad"):
+            expect(year_panel.get_by_label(name)).to_be_checked()
         year_panel.get_by_role("button", name="Add a return").click()
         expect(page.locator("#taxes2-unit option")).to_have_count(1)
         expect(page.locator("#taxes2-unit option").first).to_have_text(re.compile(r"(Mom & Dad|Dad & Mom) · married filing jointly"))
@@ -227,6 +259,96 @@ def test_taxes_v2_family_view_shows_returns_not_write_offs(tmp_path):
         page.locator("#taxes2-tab-built").click()
         page.locator("#taxes2-sec-jobs").click()
         expect(page.locator("#taxes2-built-panel")).to_contain_text("Mom · ")
+        for width in (390, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(NO_OVERFLOW), width
+        assert not failures, failures
+        browser.close()
+
+
+@browser_test
+@this_year_covered
+def test_taxes_v2_adds_up_tags_from_the_drawer_and_to_check(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    expect.set_options(timeout=30000)
+    token, year = "taxes-v2-tags", date.today().year
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        manager.configure_household(manager.household.model_copy(update={"birth_year": 1985}))
+        store, ledger = manager.store, manager.ledger
+        confirmed(TaxTables(store), "US", FEDERAL)
+        inbox_scan(store, {"export.csv": b"date,amount\n"})
+        doc = store.documents()["items"][0]
+        account = ledger.create_account("First Local Bank", "checking", "USD")
+        rows = [(f"{year}-01-05", "ADOBE *CREATIVE CLD 800-833", -5999), (f"{year}-02-05", "ADOBE *CREATIVE CLD 800-833", -5999),
+                (f"{year}-04-15", "IRS USATAXPYMT 270612345", -300000)]
+        with store.connection() as db:
+            ids = ledger.insert_transactions(db, account, [{"posted_date": day, "description": text, "amount_minor": amount, "currency": "USD",
+                                                            "locator": {"rows": [index]}} for index, (day, text, amount) in enumerate(rows, 1)],
+                                             "import", {"document_id": doc["id"], "blob_hash": doc["current_hash"], "source_key": "import:test"})[0]
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        open_taxes_v2(page, base, token)
+        page.locator("#taxes2-tab-writeoffs").click()
+        expect(page.locator("#taxes2-writeoffs-panel")).to_contain_text("1 suggestion waits in Review")
+        # The drawer: tag Adobe as an office expense of a new business, with a rule for every Adobe line.
+        page.evaluate(f"openTransaction({ids[0]})")
+        drawer = page.locator("#tx-drawer")
+        expect(drawer).to_contain_text("Not tagged for taxes.")
+        drawer.get_by_role("button", name="Tag for taxes…").click()
+        drawer.get_by_label("Counts as").select_option("business_expense")
+        drawer.get_by_label("Line", exact=True).select_option("office")
+        drawer.get_by_label("New business name").fill("Contract work")
+        drawer.locator(".tax-tag-form .compact-check input[type=checkbox]").check()
+        drawer.get_by_role("button", name="Save tag").click()
+        expect(drawer).to_contain_text("Business expense: Office expense and software")
+        expect(drawer).to_contain_text("Tagged by a tax rule")
+        page.locator("#close-tx-drawer").click()
+        # To check suggests the IRS payment as estimated tax.
+        page.locator("#nav-review").click()
+        expect(page.locator("#review2-queue")).to_contain_text("Possible write-offs and tax payments")
+        page.locator("#review2-queue").get_by_text("IRS USATAXPYMT").click()
+        expect(page.locator("#review2-panel")).to_contain_text("looks like a payment to the IRS")
+        page.locator("#review2-bar").get_by_role("button", name="Tag it").click()
+        expect(page.locator("#toasts")).to_contain_text("Tagged; it counts in this year's taxes.")
+        # Taxes adds them up for the year.
+        page.locator("#nav-taxes").click()
+        page.locator("#taxes2-tab-writeoffs").click()
+        writeoffs = page.locator("#taxes2-writeoffs-panel")
+        expect(writeoffs).to_contain_text("Office expense and software")
+        expect(writeoffs).to_contain_text("119.98")
+        expect(writeoffs).to_contain_text("Federal estimated tax (1040-ES)")
+        page.locator("#taxes2-tab-rules").click()
+        expect(page.locator("#taxes2-rules-panel")).to_contain_text("ADOBE CREATIVE")
+        page.locator("#taxes2-tab-built").click()
+        page.locator("#taxes2-sec-businesses").click()
+        expect(page.locator("#taxes2-built-panel")).to_contain_text("Contract work")
+        # The return: 3,000 of estimated tax paid and a small business loss, so all of it comes back; worked out by Engine 1.
+        page.locator("#taxes2-tab-year").click()
+        panel = page.locator("#taxes2-year-panel")
+        answer = panel.locator(".taxes2-answer > .figure-tile").first
+        expect(answer).to_contain_text("3,000.00")
+        expect(answer.locator(".figure-label")).to_have_text("Refund")
+        expect(panel.locator(".taxes2-meta")).to_contain_text("worked out by Engine 1")
+        assert "OpenTax" not in page.content()
+        # A job typed in (not in pay stubs): 94,770 of wages less the 119.98 loss and the 16,100 standard deduction; 78,550.02 is in
+        # the 78,550–78,600 row of the Tax Table: 1,240 + 4,560 + 22% of 28,175 = 11,998.50, about 11,999.
+        page.locator("#taxes2-tab-built").click()
+        page.locator("#taxes2-sec-jobs").click()
+        built = page.locator("#taxes2-built-panel")
+        built.get_by_role("button", name="Add a job not in your pay stubs").click()
+        job = built.locator(".taxes2-extra-job").last
+        job.locator("[data-key=name]").fill("Spouse's job")
+        job.locator("[data-key=wages]").fill("94770")
+        job.locator("[data-key=federal_withheld]").fill("12463.36")
+        built.get_by_role("button", name="Save and estimate again").click()
+        expect(built.locator(".taxes2-savebar-count")).to_have_text("No changes")
+        page.locator("#taxes2-tab-year").click()
+        expect(answer).to_contain_text(re.compile(r"3,46[45]\.36"))
+        expect(panel.locator(".taxes2-return")).to_contain_text(re.compile(r"11,99[89]\.00"))
         for width in (390, 768, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width

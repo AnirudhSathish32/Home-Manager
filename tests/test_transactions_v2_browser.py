@@ -1,5 +1,4 @@
-"""Transactions v2 in the browser (transactions_v2.js, money_v2.js; docs/ui.md "Pages"): synthetic data only, behind
-the ui_v2_screens flag."""
+"""Transactions v2 in the browser (transactions_v2.js, money_v2.js; docs/ui.md "Pages"): synthetic data only."""
 from datetime import date
 import os
 import re
@@ -13,10 +12,6 @@ from test_today_v2_browser import seed
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
-
-
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["transactions"]}, headers={"Authorization": f"Bearer {token}"}).ok
 
 
 def seed_transactions(manager):
@@ -38,7 +33,6 @@ def test_transactions_v2_filters_categorises_adds_and_imports(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/transactions")
         panel = page.locator("#tx2-panel")
@@ -76,7 +70,22 @@ def test_transactions_v2_filters_categorises_adds_and_imports(tmp_path):
         page.locator("#tx-drawer-category").fill("dining")
         page.locator("#tx-drawer").get_by_role("button", name="Save category").click()
         expect(page.locator("#tx2-table tbody tr", has_text="Cafe").get_by_role("combobox")).to_have_value("dining")
+        # The decision is the shared Confirm/Reject (trace.js confirmCorrect); Confirm can be undone from its toast,
+        # which sits inside the modal drawer so it stays clickable.
+        drawer = page.locator("#tx-drawer")
+        expect(drawer.locator(".drawer-status")).to_contain_text("Counted in your totals.")  # An import counts unless rejected.
+        drawer.get_by_role("button", name="Confirm", exact=True).click()
+        expect(drawer.get_by_role("button", name="Undo verification")).to_be_visible()
+        drawer.locator(".toast", has_text="Confirmed.").get_by_role("button", name="Undo").click()
+        expect(drawer.get_by_role("button", name="Confirm", exact=True)).to_be_visible()
+        expect(drawer.locator(".toast", has_text="Undone.")).to_be_visible()
+        # The drawer's big amount stays inside the drawer on a phone.
+        page.set_viewport_size({"width": 390, "height": 900})
+        assert page.evaluate("""() => { const a = document.querySelector('#tx-drawer-body .drawer-amount').getBoundingClientRect(),
+          b = document.getElementById('tx-drawer-body').getBoundingClientRect(); return a.left >= b.left - 0.5 && a.right <= b.right + 0.5; }""")
+        page.set_viewport_size({"width": 1440, "height": 1000})
         page.locator("#close-tx-drawer").click()
+        expect(page.locator("body > #toasts")).to_have_count(1)
         expect(page.locator("#tx2-table tbody tr[aria-selected=true]")).to_have_count(0)
 
         # Add a payment: a missing amount is a field error; a good one appears, marked new, as Entered.
@@ -153,7 +162,6 @@ def test_transactions_v2_family_view_shows_owners_and_no_add(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/transactions?view=charges")
         expect(page.locator("#tx2-panel")).to_be_visible()

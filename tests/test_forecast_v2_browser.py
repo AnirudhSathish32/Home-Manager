@@ -1,10 +1,10 @@
-"""Forecast v2 in the browser (forecast_v2.js; design-system/home-manager/pages/wealth.md): synthetic data only,
-behind the ui_v2_screens flag."""
+"""Forecast v2 in the browser (forecast_v2.js; design-system/home-manager/pages/wealth.md): synthetic data only."""
 from datetime import date
 import os
 
 import pytest
 
+from conftest import assert_tiles_fit_beside_ask
 from home_manager.finance.forecast import AssetInput, Assets
 from test_taxes_v2_browser import served
 from test_ui_parity import check_figures
@@ -44,7 +44,6 @@ def test_forecast_v2(tmp_path):
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.on("dialog", lambda dialog: dialog.accept())
-        assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["forecast"]}, headers={"Authorization": f"Bearer {token}"}).ok
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-forecast").click()
         expect(page.locator("#fc2-panel")).to_be_visible()
@@ -135,6 +134,8 @@ def test_forecast_v2(tmp_path):
         page.locator("#fc2-start-region summary").click()
         expect(page.locator("#fc2-start")).to_contain_text("Cash in accounts")
         no_overflow(page)
+        # A million or more shrinks the row's figures to fit, with Ask open and without.
+        assert_tiles_fit_beside_ask(page, "#fc2-tiles")
         assert not failures, failures
         browser.close()
 
@@ -151,7 +152,6 @@ def test_forecast_v2_narrow_folds_assumptions(tmp_path):
         page = browser.new_page(viewport={"width": 390, "height": 844})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["forecast"]}, headers={"Authorization": f"Bearer {token}"}).ok
         # With assumptions in the URL the column starts folded, its summary saying what's set.
         page.goto(f"{base}/#token={token}")
         page.wait_for_selector("[data-page]:not([hidden])")

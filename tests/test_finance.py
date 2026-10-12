@@ -64,6 +64,16 @@ def rows(*items):
             for index, (date, text, amount) in enumerate(items, 1)]
 
 
+def test_default_account_names_say_the_type_once(ledger):
+    finance, store, _ = ledger
+    with store.connection() as db:
+        names = [finance.account_in(db, institution, kind, "USD", last_four=last_four)["display_name"]
+                 for institution, kind, last_four in (("Household checking", "checking", None), ("Family SAVINGS", "savings", "1234"),
+                                                      ("Chase", "checking", None), ("Superchecking", "checking", None),
+                                                      ("Visa credit card", "credit_card", None))]
+    assert names == ["Household checking", "Family SAVINGS 1234", "Chase checking", "Superchecking checking", "Visa credit card"]
+
+
 def test_database_rejects_float_money_and_full_account_numbers(ledger):
     finance, store, source = ledger
     account = finance.create_account("First Local Bank", "checking", "USD", last_four="4821")

@@ -98,16 +98,16 @@ class TaxTags:
             return {"type": target_type, "id": target_id, "date": row["day"], "amount_minor": abs(row["amount_minor"]), "inflow": row["amount_minor"] > 0,
                     "currency": row["currency"], "description": row["merchant"] or row["description_raw"], "detail": row["account"]}
         if target_type == "receipt":
-            row = db.execute("SELECT r.purchase_date,r.total_minor,r.currency,m.canonical_name AS merchant FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id "
-                             "WHERE r.id=?", (target_id,)).fetchone()
+            row = db.execute("SELECT r.purchase_date,r.total_minor,r.currency,r.document_id,m.canonical_name AS merchant FROM receipts r "
+                             "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id=?", (target_id,)).fetchone()
             if row is None:
                 raise ValueError("Receipt not found.")
             if row["purchase_date"] is None or row["total_minor"] is None:
                 raise ValueError("The receipt's date or total wasn't read; correct it before tagging.")
             return {"type": target_type, "id": target_id, "date": row["purchase_date"], "amount_minor": abs(row["total_minor"]), "inflow": False,
-                    "currency": row["currency"], "description": row["merchant"] or "Receipt", "detail": "Receipt"}
+                    "currency": row["currency"], "description": row["merchant"] or "Receipt", "detail": "Receipt", "document_id": row["document_id"]}
         if target_type == "receipt_item":
-            row = db.execute("SELECT i.description,i.line_total_minor,coalesce(i.discount_minor,0) AS discount,r.id AS receipt_id,r.purchase_date,r.currency,"
+            row = db.execute("SELECT i.description,i.line_total_minor,coalesce(i.discount_minor,0) AS discount,r.id AS receipt_id,r.document_id,r.purchase_date,r.currency,"
                              "m.canonical_name AS merchant,(SELECT sum(s.amount_minor) FROM category_splits s WHERE s.receipt_item_id=i.id AND s.transaction_id IS NULL) AS split "
                              "FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.id=?", (target_id,)).fetchone()
             if row is None:
@@ -117,7 +117,8 @@ class TaxTags:
             # The line's share of the receipt, with its part of tax and tip, when the receipt has been split; else its printed total.
             amount = row["split"] if row["split"] is not None else (row["line_total_minor"] or 0) - row["discount"]
             return {"type": target_type, "id": target_id, "date": row["purchase_date"], "amount_minor": abs(amount), "inflow": False,
-                    "currency": row["currency"], "description": row["description"], "detail": row["merchant"] or "Receipt", "receipt_id": row["receipt_id"]}
+                    "currency": row["currency"], "description": row["description"], "detail": row["merchant"] or "Receipt", "receipt_id": row["receipt_id"],
+                    "document_id": row["document_id"]}
         raise ValueError("Tag a transaction, a receipt or a receipt line.")
 
     def _write(self, db, target, kind, line, business_id, amount, source, status, rule_id=None, reason="", note=""):

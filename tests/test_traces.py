@@ -27,7 +27,7 @@ from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.scenarios import ScenarioInput, Scenarios
 from home_manager.finance.tax_lots import realized
 from home_manager.finance.tax_tags import TaxTags
-from home_manager.finance.tools import AccountInput, AsOfInput, BudgetInput, FinanceTools, PeriodInput
+from home_manager.finance.tools import AccountInput, AsOfInput, BudgetInput, CompareInput, FinanceTools, PeriodInput
 from home_manager.finance.traces import CONTEXT_TRACES, TRACES, shown_family_tax, trace
 from home_manager.household.tax_tables import TaxTables
 from home_manager.library.scanner import ScanLimits
@@ -507,8 +507,49 @@ def test_family_figures_trace_to_each_members_own(tmp_path):
         manager.close()
 
 
+def test_this_months_changes_top_merchants_and_refunds_trace(books):
+    store, ledger, docs = books
+    tools = FinanceTools(store)
+    checking = ledger.create_account("First Local Bank", "checking", "USD", last_four="4821")
+    ids = add(store, ledger, checking, docs["export.csv"], [
+        ("2026-08-03", "GROCER", -4000), ("2026-09-02", "GROCER", -5000), ("2026-09-12", "GROCER", -2500), ("2026-09-14", "GROCER", 1200),
+        ("2026-09-20", "CAFE", -900)])
+    with store.connection() as db:
+        db.execute("UPDATE transactions SET category='groceries',category_source='user' WHERE description_raw='GROCER'")
+        db.execute("UPDATE transactions SET transaction_type='refund' WHERE id=?", (ids[3],))
+    ledger.publish_receipt({"merchant": "GROCER", "purchase_date": "2026-09-22", "subtotal_minor": None, "tax_minor": None, "tip_minor": None,
+                            "total_minor": 700, "currency": "USD", "issues": [], "items": [], "locator": {"line_ids": ["line-1"]}},
+                           {"document_id": docs["cafe.png"]["id"], "blob_hash": docs["cafe.png"]["current_hash"], "source_key": "extraction:grocer", "run_id": "r"},
+                           "verified")
+    compare = CompareInput(first=PeriodInput(start="2026-08-01", end="2026-08-31"), second=SEPTEMBER)
+
+    # A category's change: September's groceries minus August's, each step opening that month's category trace.
+    groceries = next(row for row in tools.compare_categories(compare)["categories"] if row["category"] == "groceries")
+    change = same(trace(store, groceries["change"]["trace"]), groceries["change"])
+    assert [(step["op"], step["value"]["minor"]) for step in change["steps"]] == [("+", groceries["second"]["minor"]), ("−", 4000)]
+    assert change["steps"][0]["trace"].startswith("spending.category?") and trace(store, change["steps"][1]["trace"])["result"]["minor"] == 4000
+    assert {item["key"] for item in change["inputs"]} >= {f"transaction:{ids[0]}", f"transaction:{ids[1]}"}
+
+    # Net spending's change, the Net spending tile's subline.
+    [net] = tools.compare_periods(compare)["by_currency"]
+    net_change = same(trace(store, net["change"]["trace"]), net["change"])
+    assert net_change["steps"][1]["trace"].startswith("spending.net?") and net_change["result"]["minor"] == net["second"]["minor"] - 4000
+
+    # A top merchant: its charges less its refund, plus the receipt no charge has replaced.
+    merchants = {row["merchant"]: row["spending"] for row in tools.get_spending_by_category(SEPTEMBER)["top_merchants"]}
+    grocer = same(trace(store, merchants["GROCER"]["trace"]), merchants["GROCER"])
+    assert grocer["result"]["minor"] == 5000 + 2500 - 1200 + 700
+    assert [step["value"]["minor"] for step in grocer["steps"]] == [6300, 700] and grocer["inputs_page"]["total"] == 4
+
+    # The Refunded tile: the refund credit alone.
+    [totals] = tools.get_spending(SEPTEMBER)["by_currency"]
+    refunds = same(trace(store, totals["refunds"]["trace"]), totals["refunds"])
+    assert refunds["result"]["minor"] == 1200 and [item["key"] for item in refunds["inputs"]] == [f"transaction:{ids[3]}"]
+
+
 def test_every_traced_name_is_registered():
     assert {"spending.net", "cashflow.net", "cashflow.in", "spending.category", "spending.other", "spending.gross", "spending.usd", "split.receipt", "split.charge",
+            "spending.change", "spending.net_change", "spending.merchant", "spending.refunds",
             "budget.remaining", "budget.projected", "recurring.total", "bill.expected", "account.balance", "tax.tags", "investments.value",
             "investments.total", "investments.holding", "investments.lot_gain"} <= set(TRACES)
     assert {"tax.result", "tax.line", "tax.node", "tax.field", "tax.job", "tax.safe_harbor", "taxzen.advance", "taxzen.extra", "paystub.tax",

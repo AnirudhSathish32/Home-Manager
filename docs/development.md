@@ -96,10 +96,12 @@ amounts, merchant names, file names or document text. Use `log_failure` for fail
 - **Browser tests** need `.[browser-test]`. They drive the installed **Microsoft Edge** through Playwright
   (`channel="msedge"`), so `playwright install` isn't needed.
   - They are skipped unless you pass `--browser` or set `RUN_BROWSER_TESTS=1`.
-  - They live in `test_browser.py`, `test_document_search_browser.py`, `test_donate_browser.py`,
-    `test_family_browser.py`, `test_home_browser.py`, `test_taxes_browser.py` and `test_whatif_browser.py`.
-  - Some other test files also have browser cases: `test_employers`, `test_forecast`, `test_investments`,
-    `test_receipt_counting`, `test_recurring_bills` and `test_share`.
+  - They live in the `test_*_browser.py` files (one `test_<screen>_v2_browser.py` per redesigned screen, plus
+    `test_browser.py`, `test_document_search_browser.py`, `test_donate_browser.py`, `test_family_browser.py`,
+    `test_record_components_browser.py`, `test_settings_browser.py`, `test_shell_browser.py` and
+    `test_trace_components_browser.py`) and `test_ui_parity.py`.
+  - Some other test files also have browser cases: `test_employers`, `test_receipt_counting` and `test_share`.
+  - Run them all with `-k "browser or parity"`, plus those three files.
   - Layout checks are described in `docs/ui.md` "Verifying a layout".
 - **Decision models** (`test_decisions.py`) use the same synthetic server. Set `local_model["decide"]` to a function
   `(path, body) -> reply` that answers `/v1/responses` and `/v1/systemone`. Requests to those paths are kept in
@@ -242,7 +244,7 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 ## Schema map
 
 Each library holds one SQLite database, `inventory.sqlite3`, built by the forward-only scripts in
-`src/home_manager/library/migrations/` (001–064). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
+`src/home_manager/library/migrations/` (001–065). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
 `.sql` file is the source of truth for columns and constraints. A table that was later rebuilt is listed under the
 migration that first created it.
 
@@ -351,12 +353,13 @@ migration that first created it.
 |---|---|---|---|
 | 062 | `family_corrections` | `family_corrections` | `sent` rows in a family's own library, `received` rows in a member's; `reconciliation_issues` rebuilt to allow the `kept_mine` and `took_family` resolutions of a `family_correction` question ([family](family.md#family-corrections)) |
 
-**Returns and cleanup (063–064)**
+**Returns and cleanup (063–065)**
 
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
 | 063 | `returned_lots` | `lot_returns` (a returned receipt line's proposed lots and the answer) | `inventory_lots` and `lot_events` rebuilt to allow `returned` ([household](household.md#returned-items)) |
 | 064 | `dead_columns` | | Drops the 2026-09-30 audit's dead columns: `jobs.year`/`month`, `occurrences.folder_year`/`folder_month` (and index `occurrences_root`), `investment_events.reverses_event_id` (table rebuilt) |
+| 065 | `account_names` | | Renames `accounts.display_name` from the old generated form that doubled the type ("Household checking checking") to the institution alone; names the user chose stay ([money](money.md#money-pages)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

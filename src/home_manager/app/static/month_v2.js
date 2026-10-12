@@ -45,10 +45,11 @@ function month2CompareLabel() {
 
 async function renderMonthV2() {
   const period = monthRange(month2.month), compareMonth = month2CompareMonth(), comparePeriod = monthRange(compareMonth);
-  const [spending, before, categories, beforeCategories, comparison, refunds, budgets, rules, accounts] = await Promise.all([
+  const [spending, before, categories, beforeCategories, comparison, periods, refunds, budgets, rules, accounts] = await Promise.all([
     ledgerTool("get_spending", period), ledgerTool("get_spending", comparePeriod),
     ledgerTool("get_spending_by_category", period), ledgerTool("get_spending_by_category", comparePeriod),
-    ledgerTool("compare_categories", {first: comparePeriod, second: period}), ledgerTool("get_refunds"),
+    ledgerTool("compare_categories", {first: comparePeriod, second: period}), ledgerTool("compare_periods", {first: comparePeriod, second: period}),
+    ledgerTool("get_refunds"),
     // Budgets and rules are each person's own: the family view adds up spending only.
     familyMode ? null : tool("get_budgets", {month: month2.month, as_of: todayIso()}),
     familyMode ? [] : api("/api/finance/category-rules"),
@@ -60,7 +61,7 @@ async function renderMonthV2() {
   $("month2-currency").replaceChildren(...currencies.map(code => new Option(code, code)));
   $("month2-currency").value = currency;
   $("month2-currency-field").hidden = currencies.length < 2;
-  const data = {period, currency, spending, before, categories, beforeCategories, comparison, refunds, budgets, rules, accounts: accounts.accounts};
+  const data = {period, currency, spending, before, categories, beforeCategories, comparison, periods, refunds, budgets, rules, accounts: accounts.accounts};
   month2Tiles(data);
   month2Pending(data);
   month2Categories(data);
@@ -79,17 +80,24 @@ function month2Tile(label, main, sub) {
   return tile;
 }
 function month2Count(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
-function month2Tiles({period, currency, spending, before, refunds, budgets}) {
+function month2Tiles({period, currency, spending, before, periods, refunds, budgets}) {
   const now = spending.by_currency.find(row => row.currency === currency), then = before.by_currency.find(row => row.currency === currency);
   const zero = `0.00 ${currency}`;
   const netSub = [month2Count(now?.transactions || 0, "transaction", "transactions")];
   if (now?.receipts) netSub.push(["Includes ", amount(now.from_receipts, {signed: false}), ` from ${month2Count(now.receipts, "receipt", "receipts")} no charge has replaced yet`]);
+  // The traced difference from the comparison month (spending.net_change): an arrow and words, never red.
+  const change = periods.by_currency.find(row => row.currency === currency)?.change;
+  if (change?.minor) {
+    const up = change.minor > 0;
+    netSub.push([icon(up ? "arrow-up" : "arrow-down", "icon month2-arrow"), figure(change, {size: "inline", magnitude: true}),
+      ` ${up ? "more" : "less"} than ${month2CompareLabel()}`]);
+  }
   const credits = refunds.posted_credits.filter(row => row.currency === currency && row.posted_date >= period.start && row.posted_date <= period.end).length;
   const tiles = [
     month2Tile("Net spending", now ? figure(now.net_spending, {size: "lg", signed: false}) : amount(zero, {signed: false}), netSub),
     month2Tile(month2CompareLabel(), then ? figure(then.net_spending, {size: "lg", signed: false}) : amount(zero, {signed: false}),
       [month2Count(then?.transactions || 0, "transaction", "transactions")]),
-    month2Tile("Refunded", amount(now?.refunds || zero, {signed: false}), [month2Count(credits, "credit posted", "credits posted")])];
+    month2Tile("Refunded", now ? figure(now.refunds, {size: "lg", signed: false}) : amount(zero, {signed: false}), [month2Count(credits, "credit posted", "credits posted")])];
   if (budgets) {
     const counts = {over: 0, ahead_of_pace: 0, on_track: 0};
     for (const row of budgets.budgets.filter(row => row.currency === currency)) counts[row.status in counts ? row.status : "on_track"] += 1;
@@ -99,6 +107,7 @@ function month2Tiles({period, currency, spending, before, refunds, budgets}) {
   }
   $("month2-tiles").classList.toggle("three", !budgets);
   $("month2-tiles").replaceChildren(...tiles);
+  fitFigures($("month2-tiles"));
 }
 function month2Pending({currency, spending}) {
   const pending = spending.pending_review.find(row => row.currency === currency);
@@ -128,7 +137,7 @@ function month2Categories({period, currency, categories, beforeCategories, compa
     else {
       const up = row.change.minor > 0;
       change.append(icon(up ? "arrow-up" : "arrow-down", "icon month2-arrow"), element("span", up ? "more " : "less ", "visually-hidden"),
-        amount(row.change, {magnitude: true}), row.percent_change === null ? "" : ` (${String(row.percent_change).replace(/^-/, "")}%)`);
+        figure(row.change, {size: "inline", magnitude: true}), row.percent_change === null ? "" : ` (${String(row.percent_change).replace(/^-/, "")}%)`);
     }
     return tr;
   });
@@ -252,7 +261,7 @@ function month2Pair({period, currency, categories, refunds}) {
       const li = element("li", "", "dated-row month2-merchant");
       li.hidden = index >= 8 && !month2.allMerchants;
       li.append(element("span", row.merchant, "month2-merchant-name"), element("span", `${row.transactions}×`, "muted small"));
-      const money = element("span", "", "dated-amount"); money.append(amount(row.spending, {signed: false})); li.append(money);
+      const money = element("span", "", "dated-amount"); money.append(figure(row.spending, {size: "inline", signed: false})); li.append(money);
       return li;
     }));
     merchantParts.push(list);

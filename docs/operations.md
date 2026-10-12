@@ -229,7 +229,10 @@ rather than trusting them:
 Each problem names its rule and record id only. Ways to run it:
 - `home-manager check-ledger` prints the report for every profile, reading each database read-only, so it works while
   the app is open.
-- `GET /api/finance/health` returns the same list, plus whether each tax engine can run (`tax_engines`).
+- `GET /api/finance/health` returns the same list, plus whether each tax engine can run (`tax_engines`). Each problem
+  also has `link` (`record_links`): `{document_id}` for a receipt, statement or bill, or a statement line (its own
+  source document, else its statement's), `{investment_account_id}` for a holding or investment event, and `null` for
+  problems named by a table row. Processing › Data health ([ui](ui.md#processing)) shows it, with Open on each record.
 - Tests call `conftest.assert_ledger_healthy(store)` after ledger-changing scenarios.
 
 For a deeper read-only check of a database file (integrity, type drift, orphans, unchecked values), see

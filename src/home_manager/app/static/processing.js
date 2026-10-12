@@ -7,7 +7,8 @@ const JOB_KINDS = {inbox_capture: "Inbox capture", text_batch: "Reading document
 const LANES = [["Capture", ["capture"], ["inbox_capture"]], ["Reading", ["transcription"], ["text_batch", "text_reading"]],
                ["Recording", ["extraction", "item_categories"], ["ledger_extraction"]], ["Item identification", ["item_resolution"], ["item_identification"]],
                ["Reconciliation", ["recurring_scan"], ["reconciliation"]]];
-let processingLoad = 0, lastActivity = [];
+// processingReload: Processing v2 (processing_v2.js) points it at its own refresh while it shows; v1's loader clears it.
+let processingLoad = 0, lastActivity = [], processingReload = null;
 
 function duration(start, end) {
   if (!start || !end) return "—";
@@ -17,6 +18,7 @@ function duration(start, end) {
 function whenText(iso) { return iso ? new Date(iso).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "—"; }
 
 async function loadProcessing() {
+  processingReload = null;
   if (!configured) return;
   const load = ++processingLoad;
   const [latest, reconciliations] = await Promise.all([api("/api/jobs?limit=200"), api("/api/finance/reconciliation-runs?limit=1")]);

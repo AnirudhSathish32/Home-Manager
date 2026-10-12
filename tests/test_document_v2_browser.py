@@ -1,12 +1,13 @@
 """The document page, redesigned (document_v2.js; design-system/home-manager/pages/document.md), on synthetic read
 and recorded documents (tests/seed_documents.py): its states, Find, Correct with its preview and Undo, the decision in
-view, the URL, Esc, every width, and its figures against their traces and the old page."""
+view, the URL, Esc, every width, and its figures against their traces and the record."""
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import pytest
 
 from seed_documents import document_server
-from test_ui_parity import browser_test, check_figures, shown_before, v1_amounts
+from test_ui_parity import browser_test, check_figures
 
 TOKEN = "document-v2-test"
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
@@ -22,7 +23,7 @@ def open_document(page, base, doc_id, query=""):
 def test_document_page_states_find_correct_and_decide(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     expect = playwright.expect
-    with document_server(tmp_path, TOKEN, ["document"]) as (base, ids, _), playwright.sync_playwright() as driver:
+    with document_server(tmp_path, TOKEN) as (base, ids, _), playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1366, "height": 768})
         failures = []
@@ -112,10 +113,9 @@ def test_document_page_states_find_correct_and_decide(tmp_path):
 
 
 @browser_test
-def test_document_page_fits_every_width_and_its_figures_match_their_traces_and_the_old_page(tmp_path):
+def test_document_page_fits_every_width_and_its_figures_match_their_traces_and_the_record(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
-    expect = playwright.expect
-    with document_server(tmp_path, TOKEN, ["document"]) as (base, ids, _), playwright.sync_playwright() as driver:
+    with document_server(tmp_path, TOKEN) as (base, ids, _), playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         failures = []
@@ -140,13 +140,11 @@ def test_document_page_fits_every_width_and_its_figures_match_their_traces_and_t
         found = check_figures(page, base, TOKEN)
         counts_as = page.locator(".doc2-fields dd:right-of(dt:text('Counts as')) [data-figure-ref]").first.get_attribute("data-figure-display")
         assert any(display == counts_as for _, display in found)
-        # The same document on the old page shows the same amount.
-        response = page.request.put(f"{base}/api/ui-screens", data={"routes": []}, headers={"Authorization": f"Bearer {TOKEN}"})
-        assert response.ok
-        page.reload()
-        page.wait_for_load_state("networkidle")
-        expect(page.locator("#document-page")).to_be_visible()
-        page.wait_for_selector("#extraction-result .receipt-summary")
-        assert shown_before(counts_as, v1_amounts(page)), counts_as
+        # "Counts as" is the receipt's own total, as the server records it (a receipt with no splits counts whole).
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        record = page.request.get(f"{base}/api/finance/records/receipt/{ids['receipt_record']}", headers=headers).json()
+        ref = page.locator(".doc2-fields dd:right-of(dt:text('Counts as')) [data-figure-ref]").first.get_attribute("data-figure-ref")
+        result = page.request.get(f"{base}/api/traces/{quote(ref, safe='')}", headers=headers).json()["result"]
+        assert (result["minor"], result["currency"]) == (abs(record["total_minor"]), record["currency"]), (result, record["total_minor"])
         assert failures == [], failures
         browser.close()

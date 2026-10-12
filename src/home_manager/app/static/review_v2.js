@@ -417,7 +417,7 @@ $("review2-picker").addEventListener("change", () => review2Select(Number($("rev
 $("review2-prev").addEventListener("click", () => review2Move(-1));
 $("review2-next").addEventListener("click", () => review2Move(1));
 document.addEventListener("keydown", event => {
-  if (currentRoute?.name !== "review" || !uiV2Screens.includes("review") || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+  if (currentRoute?.name !== "review" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
   if (document.querySelector("dialog[open]") || event.target.closest("input, select, textarea, .menu")) return;
   if ($("review2-form").querySelector(".cc-form:not([hidden])")) return;  // Never while a correction is open.
   const key = event.key.toLowerCase(), press = id => { const button = $(id); if (button && !button.disabled) { event.preventDefault(); button.click(); } };

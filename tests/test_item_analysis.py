@@ -120,7 +120,8 @@ def test_spending_anomalies_compare_with_the_three_earlier_periods(pantry):
     result = call_tool(tools, "detect_spending_anomalies", {"start": "2026-09-01", "end": "2026-09-30"})
     top = {row["merchant"]: row["spending"] for row in call_tool(tools, "get_spending_by_category", {"start": "2026-09-01", "end": "2026-09-30"})["top_merchants"]}
     flagged = {row["name"]: row["spent"] for row in result["anomalies"] if row["kind"] == "merchant"}
-    assert set(flagged) == {"HARDWARE STORE", "NEW GYM", "CORNER MARKET"} and all(flagged[name] == top[name] for name in flagged)
+    # Top merchants' amounts are figures (spending.merchant): the same money, plus the trace.
+    assert set(flagged) == {"HARDWARE STORE", "NEW GYM", "CORNER MARKET"} and all(flagged[name].items() <= top[name].items() for name in flagged)
 
 
 def test_routing_limits_the_assistants_tools():

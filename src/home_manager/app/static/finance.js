@@ -331,15 +331,11 @@ async function openTransaction(id, member = null, {onChange = null} = {}) {
   if (record.merchant) head.append(element("p", record.description_raw, "muted small"));
   // Imports count unless rejected; extracted rows count once verified (automatically or by you).
   const counted = record.review_status !== "rejected" && (record.origin !== "extraction" || record.review_status === "verified");
-  const badge = record.review_status === "rejected" ? "rejected" : !counted ? record.review_status : record.review_status !== "verified" ? "imported"
-    : record.review_source === "automatic" ? "checked" : "verified";
+  // The decision is the shared Confirm/Reject (trace.js, with an 8-second undo); the Category form below is the correction.
   const state = element("div", "", "drawer-status");
-  state.append(statusBadge(badge), element("span", counted ? " Counted in your totals." : record.review_status === "rejected" ? " Not counted." : " Not counted until you decide.", "muted small"));
-  const review = status => api(`/api/finance/records/transaction/${id}/review`, {method: "POST", body: JSON.stringify({status})})
-    .then(() => { notice(status === "needs_review" ? "Returned to review." : "Saved."); refreshReviewCount(); return Promise.all([reopen(), reload()]); });
-  if (!counted && record.review_status !== "rejected") state.append(asyncButton("Count it", () => review("verified"), "small primary"), asyncButton("Reject", () => review("rejected")));
-  else if (record.review_source === "user") state.append(asyncButton(record.review_status === "rejected" ? "Undo rejection" : "Undo verification", () => review("needs_review"), "small quiet"));
-  else if (counted) state.append(asyncButton("Reject (not a real transaction)", () => review("rejected"), "small quiet"));
+  state.append(confirmCorrect({recordType: "transaction", recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source,
+                               correctable: [], onChange: () => Promise.all([reopen(), reload(), refreshReviewCount()])}).el,
+               element("p", counted ? "Counted in your totals." : record.review_status === "rejected" ? "Not counted." : "Not counted until you decide.", "muted small"));
   // Category: the user's own choice, or a rule for every transaction like this one.
   const form = element("form", "", "drawer-category");
   const input = document.createElement("input"); input.setAttribute("list", "category-options"); input.value = record.category || ""; input.maxLength = 60;
@@ -762,7 +758,7 @@ async function reconcileStatement(row) {
   refreshReviewCount();
   await loadReconcilePrompt();
   // The page on screen shows totals from before the statement's charges counted.
-  if (currentRoute) Promise.resolve().then(() => ((uiV2Screens.includes(currentRoute.name) && V2_SCREENS[currentRoute.name]) || ROUTES[currentRoute.name]).show(currentRoute))
+  if (currentRoute) Promise.resolve().then(() => (V2_SCREENS[currentRoute.name] || ROUTES[currentRoute.name]).show(currentRoute))
     .catch(error => notice(error, true));
 }
 function reconcilePromptBox(row) {

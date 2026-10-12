@@ -146,10 +146,8 @@ async function renderNavCounts(catalog) {
   await loadNavCounts();
 }
 function showFolder(folder) {
-  // Inbox and Unfiled belong to Documents; switching store first keeps the chosen folder.
-  libraryScope = "documents"; activeFolder = folder; activeCategory = activeJob = null; activeStatus = "all";
-  if (location.hash !== "#/documents") location.hash = "#/documents";
-  reload();
+  // Inbox and Unfiled belong to Documents; Records (records_v2.js) keeps the folder in its URL.
+  location.hash = `#/documents?folder=${encodeURIComponent(folder)}`;
 }
 for (const id of ["nav-inbox", "nav-unfiled"]) $(id).addEventListener("click", () => showFolder($(id).dataset.folder));
 function renderFolders(catalog) {

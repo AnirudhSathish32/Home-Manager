@@ -29,7 +29,11 @@ needs them, then go and deal with it.
 
 ## Layout (from MASTER "Layout")
 - **Header:** the h1 "Today", the subline, and Month, Currency and Refresh on the right.
-- **Tiles:** 4 columns, and 2×2 under 1100px. Under 600px the figure is `--text-lg` and only the first subline shows.
+- **Tiles:** 4 columns, and 2×2 under 1100px or when the page is under 980px (the breakdown or Ask open beside it).
+  A figure's badge wraps under the amount. The four figures share one size, from `--figure-lg` down to `--text-lg`,
+  fitted to the longest amount; digits never wrap, and at the smallest size the currency code may drop under them
+  (MASTER "Components": figure tile). Under 600px the figure is `--text-lg` and
+  only the first subline shows.
 - **Main grid:** a left column `minmax(0,1.15fr)` (Needs you, then Bills, CDs and Treasuries coming due, Weekly
   check-in, Return windows closing and Warranties ending soon, each hidden when empty) beside the budgets
   `minmax(0,1fr)`. It becomes one column under 1100px.

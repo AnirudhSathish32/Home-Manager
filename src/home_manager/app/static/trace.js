@@ -19,6 +19,16 @@ function figure(fig, {size = "lg", signed = true, magnitude = false} = {}) {
   return button;
 }
 
+// A row of figure tiles (or a plan headline) shares one figure size, fitted to its longest amount
+// (style.css "Observability": figure tile). Counts what's on screen: the visually-hidden "money in/out" words aren't.
+function fitFigures(row) {
+  const shown = node => [...node.childNodes].filter(child => !child.classList?.contains("visually-hidden")).map(child => child.textContent).join("");
+  const amounts = row.querySelectorAll(".figure-tile > .figure-button[data-size='lg'] > .amount, .figure-tile > .amount, "
+    + ".plan-figure > .figure-button > .amount, .plan-figure > .amount");
+  row.style.setProperty("--figure-chars", String(Math.max(1, ...[...amounts].map(node => shown(node).length))));
+  return row;
+}
+
 // The breakdown panel: one shared, non-modal <aside id="breakdown">. Computed steps and inputs open as breadcrumbs.
 // sign: how the opener shows its figure; the answer, Running and "Sums to" follow it, drilled traces too.
 const breakdown = {stack: [], opener: null, labels: new Map(), sign: {signed: true, magnitude: false}};
@@ -27,6 +37,8 @@ function openBreakdown(ref, opener) {
   breakdown.stack = [ref]; breakdown.opener = opener;
   breakdown.sign = {signed: opener?.dataset.signed !== "false", magnitude: opener?.dataset.magnitude === "true"};
   opener?.setAttribute("aria-expanded", "true");
+  // One side panel at a time: the breakdown takes Ask's column (assistant.js), leaving focus with the figure.
+  if (typeof toggleAssistant === "function" && !$("assistant-panel").hidden) toggleAssistant(false, {returnFocus: false});
   $("breakdown").hidden = false; document.querySelector(".app-shell").classList.add("breakdown-open");
   return renderBreakdown();
 }

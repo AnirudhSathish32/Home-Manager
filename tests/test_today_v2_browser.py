@@ -1,11 +1,11 @@
-"""Today v2 in the browser (today_v2.js; docs/ui.md "Pages"): synthetic data only, behind the ui_v2_screens flag."""
+"""Today v2 in the browser (today_v2.js; docs/ui.md "Pages"): synthetic data only."""
 from datetime import date, timedelta
 import os
 import re
 
 import pytest
 
-from conftest import inbox_scan
+from conftest import TILES_FIT, assert_tiles_fit, assert_tiles_fit_beside_ask, inbox_scan
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools
 from test_family_browser import spend
@@ -14,6 +14,7 @@ from test_taxes_v2_browser import served
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
+TILE_COLUMNS = "getComputedStyle(document.getElementById('today-tiles')).gridTemplateColumns.split(' ').length"
 
 
 def months_back(count):
@@ -48,10 +49,6 @@ def seed(manager):
     receipt(ledger, docs["cafe.png"], "Corner Cafe", month + "-02", 1850)
 
 
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["home"]}, headers={"Authorization": f"Bearer {token}"}).ok
-
-
 @browser_test
 def test_today_v2_puts_the_household_and_what_needs_you_in_view(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
@@ -64,7 +61,6 @@ def test_today_v2_puts_the_household_and_what_needs_you_in_view(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         panel = page.locator("#today-panel")
         expect(panel).to_be_visible()
@@ -83,11 +79,16 @@ def test_today_v2_puts_the_household_and_what_needs_you_in_view(tmp_path):
         cash = tiles.nth(0).locator(".figure-button").first
         cash.click()
         expect(page.locator("#breakdown")).to_be_visible()
+        # The breakdown's column leaves the page too narrow for four tiles: they go 2×2 and nothing spills.
+        assert page.evaluate(TILE_COLUMNS) == 2
+        assert page.evaluate(TILES_FIT)
         expect(page.locator("#breakdown")).to_contain_text("over 35 days old")
         expect(page.locator("#breakdown-title")).to_be_focused()
         page.keyboard.press("Escape")
         expect(page.locator("#breakdown")).to_be_hidden()
         expect(cash).to_be_focused()
+        assert page.evaluate(TILE_COLUMNS) == 4
+        assert page.evaluate(TILES_FIT)
 
         # Needs you: the review row, and never a row with a count of 0.
         needs = page.locator("#today-needs")
@@ -127,6 +128,33 @@ def test_today_v2_puts_the_household_and_what_needs_you_in_view(tmp_path):
         for width in (390, 768, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width
+
+        # Ask's column does the same; with no panel, four tiles fit, the stale badge dropping under its amount if need be.
+        for width in (1180, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.keyboard.press("Control+j")
+            expect(page.locator("#assistant-panel")).to_be_visible()
+            assert page.evaluate(TILE_COLUMNS) == 2, width
+            assert page.evaluate(TILES_FIT), width
+            page.keyboard.press("Control+j")
+            expect(page.locator("#assistant-panel")).to_be_hidden()
+        for width in (1280, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(TILE_COLUMNS) == 4, width
+            assert page.evaluate(TILES_FIT), width
+
+        # A million or more shrinks its whole row to fit, with Ask open and without.
+        assert_tiles_fit_beside_ask(page, "#today-tiles", widths=(1180, 1280, 1366, 1440))
+        page.set_viewport_size({"width": 1366, "height": 768})
+        page.evaluate("window.scrollTo(0, 0)")
+        box = page.locator("#today-needs .needs-row .needs-action").first.bounding_box()
+        assert box and box["y"] + box["height"] <= 768, box
+        # Past the smallest size, only the currency code drops under the digits.
+        page.set_viewport_size({"width": 1180, "height": 900})
+        page.keyboard.press("Control+j")
+        expect(page.locator("#assistant-panel")).to_be_visible()
+        assert_tiles_fit(page, "#today-tiles", "+123,456,789.00 USD")
+        page.keyboard.press("Control+j")
         assert not failures, failures
         browser.close()
 
@@ -163,7 +191,6 @@ def test_today_v2_family_view_adds_everyone_up(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         expect(page.locator("#today-panel")).to_be_visible()
         tiles = page.locator("#today-tiles > .figure-tile")
@@ -174,6 +201,13 @@ def test_today_v2_family_view_adds_everyone_up(tmp_path):
         expect(page.locator("#today-family-worth")).to_be_visible()
         expect(page.locator("#today-budgets")).to_be_hidden()
         expect(page.locator("#today-needs .needs-row.attention").first).to_contain_text("waiting for a person")
+        tiles.nth(0).locator(".figure-button").first.click()
+        expect(page.locator("#breakdown")).to_be_visible()
+        assert page.evaluate(TILE_COLUMNS) == 2
+        assert page.evaluate(TILES_FIT)
+        expect(page.locator("#breakdown-title")).to_be_focused()
+        page.keyboard.press("Escape")
+        expect(page.locator("#breakdown")).to_be_hidden()
         for width in (390, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width

@@ -210,6 +210,7 @@ function forecastTilesV2(result) {
     below = fc2Tile("Cash below zero", text);
   }
   $("fc2-tiles").replaceChildren(cash, worth, below);
+  fitFigures($("fc2-tiles"));
 }
 // The chosen chart, its summary, and its numbers by year. Traced columns are figures that open their breakdown.
 function forecastChartV2(result) {

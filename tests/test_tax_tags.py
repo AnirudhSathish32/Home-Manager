@@ -118,7 +118,9 @@ def test_the_year_counts_each_item_once(books):
     ledger.review("transaction", dropped, "rejected")  # Not a real transaction: its tag doesn't count.
     # A standalone receipt counts once it's confirmed.
     receipt_id = receipt(ledger, docs["receipt.png"], "Goodwill", "2026-06-01", 8000)
-    tags.tag("receipt", receipt_id, "itemized", "charity_cash")
+    tagged = tags.tag("receipt", receipt_id, "itemized", "charity_cash")
+    # Write-offs link a receipt's tag to its document page (taxes.js taxItemLink).
+    assert tagged["target"]["document_id"] == docs["receipt.png"]["id"]
     year = tags.year(2026, "USD")
     assert [(line["line"], line["amount_minor"], line["counted_minor"]) for line in year["lines"]] == [("meals", 4000, 2000)]
     ledger.review("receipt", receipt_id, "verified")

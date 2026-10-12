@@ -44,6 +44,11 @@ const ICONS = {
   calendar: ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
   bank: ["M3 22h18", "M6 18v-7", "M10 18v-7", "M14 18v-7", "M18 18v-7", "m12 2 8 5H4z"],
   package: ["M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z", "M12 22V12", "m3.3 7 8.7 5 8.7-5"],
+  // Inventory v2: a warranty, and a return.
+  "shield-check": ["M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z", "m9 12 2 2 4-4"],
+  "undo-2": ["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"],
+  // Processing v2: Data health.
+  "heart-pulse": ["M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z", "M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"],
   users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0", "M22 21v-2a4 4 0 0 0-3-3.87", "M16 3.13a4 4 0 0 1 0 7.75"],
   menu: ["M4 6h16", "M4 12h16", "M4 18h16"],
   paperclip: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
@@ -54,6 +59,8 @@ const ICONS = {
   upload: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m17 8-5-5-5 5", "M12 3v12"],
   calculator: ["M6 2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M8 6h8", "M16 14v4", "M16 10h.01", "M12 10h.01", "M8 10h.01", "M12 14h.01", "M8 14h.01", "M12 18h.01", "M8 18h.01"],
   pencil: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
+  // Records v2: Trash in the folder tree and Empty trash.
+  "trash-2": ["M3 6h18", "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6", "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2", "M10 11v6", "M14 11v6"],
   "book-open": ["M12 7v14", "M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"],
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -101,6 +108,8 @@ const STATUS = {
   over_plan: ["Over plan", "danger", "octagon"], within_plan: ["Within plan", "positive", "check"],
   past_due_unpaid: ["Past due · marked unpaid", "danger", "alert"], paid: ["Paid", "positive", "check"],
   in_stock: ["In stock", "neutral", null], finished: ["Finished", "neutral", "check"], thrown_out: ["Thrown out", "neutral", "x-circle"], returned: ["Returned", "neutral", "slash"], ended: ["Ended", "neutral", "slash"],
+  // A warranty (Inventory v2): in force, or ending within 30 days.
+  warranty_active: ["In force", "positive", "check-circle"], warranty_ending: ["Ends within 30 days", "warning", "clock"],
   // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.
   reconciled: ["Reconciled", "positive", "check-circle"], receipt: ["Receipt only", "info", "file"], statement: ["Statement only", "neutral", null],
   // Investment accounts: a statement value waiting for the user, or an account left out of totals.
@@ -128,6 +137,11 @@ const STATUS = {
   prov_manual: ["Entered", "neutral", "user"], prov_extracted: ["Read by model", "info", "scan-text"], prov_imported: ["Imported", "neutral", "upload"],
   prov_computed: ["Worked out", "neutral", "calculator"], prov_override: ["Changed by hand", "info", "pencil"], prov_rule: ["Rule", "neutral", "book-open"],
   prov_rate: ["Exchange rate", "neutral", "trend"],
+  // A ledger rule broken (Processing › Data health; finance/health.py severities), or none.
+  health_error: ["Error", "danger", "octagon"], health_warning: ["Warning", "warning", "alert"], health_info: ["Note", "neutral", "info"],
+  health_ok: ["No problems found", "positive", "check-circle"],
+  // A pipeline stage with nothing queued or running (Processing v2).
+  idle: ["Idle", "neutral", null],
 };
 // How often a recurring bill is paid, as shown to people.
 const FREQUENCY_LABELS = {weekly: "Weekly", monthly: "Monthly", quarterly: "Quarterly", semiannual: "Every 6 months", annual: "Yearly"};
@@ -271,8 +285,16 @@ function technicalDetail(detail) {
 }
 
 // Toasts replace the old single notice line. Successes fade; errors stay until dismissed.
+// A modal dialog makes the page behind it inert, so while one is open the region moves into it (its Undo stays
+// clickable, as in the transaction drawer) and goes back after the shell when that dialog closes.
+document.addEventListener("close", event => {
+  if ($("toasts").parentElement === event.target) document.querySelector(".app-shell").after($("toasts"));
+}, true);
 function toast(message, {tone = "success", detail = "", timeout = tone === "error" ? 0 : 6000} = {}) {
   const region = $("toasts"), item = element("div", "", "toast"); item.dataset.tone = tone;
+  const modal = [...document.querySelectorAll("dialog[open]")].findLast(dialog => dialog.matches(":modal"));
+  if (modal && region.parentElement !== modal) modal.append(region);
+  else if (!modal && region.parentElement !== document.body) document.querySelector(".app-shell").after(region);
   item.append(icon(tone === "error" ? "octagon" : tone === "info" ? "info" : "check"));
   const body = element("div", "", "toast-body");
   if (tone === "error") body.appendChild(element("span", "Error: ", "visually-hidden"));

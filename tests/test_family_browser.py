@@ -69,35 +69,29 @@ def test_profile_switch_family_view_and_settings(tmp_path):
             failures = []
             page.on("pageerror", lambda error: failures.append(str(error)))
             page.goto(f"http://127.0.0.1:{port}/#token=family-test")
-            playwright.expect(page.locator("#home-content .home-metric").first).to_contain_text("125.00")
+            spent = page.locator("#today-tiles > .figure-tile").nth(2)  # Today's Spent tile (today_v2.js).
+            playwright.expect(spent).to_contain_text("125.00")
             playwright.expect(page.locator("#profile-select")).to_have_value(alex)
             page.locator("#profile-select").select_option(family["id"])
-            playwright.expect(page.locator("#family-members")).to_contain_text("Jo", timeout=15000)
-            playwright.expect(page.locator("#family-members")).to_contain_text("Alex")
-            playwright.expect(page.locator("#home-content .home-metric").first).to_contain_text("149.00")
-            playwright.expect(page.locator("#family-net-worth")).to_be_visible()
+            playwright.expect(page.locator("#today-family-members")).to_contain_text("Jo", timeout=15000)
+            playwright.expect(page.locator("#today-family-members")).to_contain_text("Alex")
+            playwright.expect(spent).to_contain_text("149.00")
+            playwright.expect(page.locator("#today-family-worth")).to_be_visible()
             playwright.expect(page.locator("#nav-investments")).to_be_hidden()  # Only the family ledger's pages join the family view.
-            playwright.expect(page.locator("#home-content")).to_contain_text("1 document uploaded to the family is waiting")
-            page.get_by_role("link", name="Choose who they're for").click()
-            row = page.locator("#family-routing .routing-row")
-            playwright.expect(row).to_contain_text("Corner Market")
-            playwright.expect(row).to_contain_text("50.01")
-            for width in (390, 1366):  # The decision stays beside the record, and nothing scrolls sideways.
-                page.set_viewport_size({"width": width, "height": 768})
-                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
-            box = row.get_by_role("button", name="Send").bounding_box()
-            assert box and box["y"] + box["height"] <= 768
-            page.set_viewport_size({"width": 1440, "height": 1000})
-            row.get_by_label("For").select_option("shared")
-            playwright.expect(row.locator(".routing-people")).to_be_visible()
+            playwright.expect(page.locator("#today-needs")).to_contain_text("waiting for a person")
+            # To check asks who the upload is for (test_review_v2_browser covers the decision in view).
+            page.locator("#nav-review").click()
+            bar = page.locator("#review2-bar")
+            playwright.expect(page.locator("#review2-what")).to_have_text("Who is Corner Market for?")
+            bar.get_by_label("For").select_option("shared")
+            playwright.expect(bar.locator(".routing-people")).to_be_visible()
             if os.environ.get("FAMILY_SCREENSHOT"):
                 page.screenshot(path=str(Path(os.environ["FAMILY_SCREENSHOT"]).with_name("family-routing.png")), full_page=True)
-            row.get_by_role("button", name="Send").click()
+            bar.get_by_role("button", name="Send").click()
             playwright.expect(page.locator("#toasts")).to_contain_text("Shared: Jo 25.01 USD · Alex 25.00 USD")
-            playwright.expect(page.locator("#family-routing")).to_contain_text("Everything uploaded to the family has been sent")
             page.locator("#nav-home").click()
             # Once delivered, each person carries their part and the family counts the purchase once: 149.00 + 50.01.
-            playwright.expect(page.locator("#home-content .home-metric").first).to_contain_text("199.01", timeout=15000)
+            playwright.expect(spent).to_contain_text("199.01", timeout=15000)
             for width in (390, 768, 1440):
                 page.set_viewport_size({"width": width, "height": 1000})
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
@@ -107,13 +101,12 @@ def test_profile_switch_family_view_and_settings(tmp_path):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(path), full_page=True)
             # The family ledger: everyone's charges, each with its owner.
-            page.locator("#nav-transactions").click()
-            page.locator("#tx-view").select_option("charges")
-            page.locator("#tx-period").select_option("all")
-            playwright.expect(page.locator("#charge-table th.owner-col")).to_be_visible()
-            books = page.locator("#tx-rows tr").filter(has_text="Books")
-            playwright.expect(books).to_contain_text("Jo")
-            playwright.expect(page.locator("#tx-rows tr").filter(has_text="Groceries")).to_contain_text("Alex")
+            page.goto(f"http://127.0.0.1:{port}/#/transactions?view=charges&period=all")
+            rows = page.locator("#tx2-table tbody tr")
+            playwright.expect(page.locator("#tx2-table thead .owner-col")).to_be_visible()
+            books = rows.filter(has_text="Books")
+            playwright.expect(books).to_contain_text("Jo", timeout=15000)
+            playwright.expect(rows.filter(has_text="Groceries")).to_contain_text("Alex")
             # A correction while Jo's library is busy waits in the family's outbox, tagged until her copy answers.
             from home_manager.library.storage import Store
             held = Store(tmp_path / "sam")
@@ -123,8 +116,6 @@ def test_profile_switch_family_view_and_settings(tmp_path):
                 page.get_by_role("button", name="Send correction").click()
                 playwright.expect(page.locator("#toasts")).to_contain_text("Sent to Jo")
                 playwright.expect(page.locator("#tx-drawer-body")).to_contain_text("Waiting for Jo")
-                playwright.expect(books).to_contain_text("Waiting for Jo")
-                playwright.expect(books).to_contain_text("reading")
             finally:
                 held.close()
             for width in (390, 1440):

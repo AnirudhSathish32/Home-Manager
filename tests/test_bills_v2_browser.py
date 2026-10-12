@@ -1,23 +1,19 @@
-"""Bills & subscriptions v2 in the browser (bills_v2.js; docs/ui.md "Pages"): synthetic data only, behind the
-ui_v2_screens flag."""
+"""Bills & subscriptions v2 in the browser (bills_v2.js; docs/ui.md "Pages"): synthetic data only."""
 import os
 import re
 
 import pytest
 
-from conftest import inbox_scan
+from conftest import assert_tiles_fit_beside_ask, documents_by_name, inbox_scan
 from home_manager.finance.reconcile import Reconciler
 from test_reconcile_tools import add
+from test_recurring_bills import paid
 from test_taxes_v2_browser import served
 from test_today_v2_browser import months_back, seed
 from test_ui_parity import check_figures
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
-
-
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["bills"]}, headers={"Authorization": f"Bearer {token}"}).ok
 
 
 def seed_bills(manager):
@@ -44,7 +40,6 @@ def test_bills_v2_totals_decisions_and_kinds(tmp_path):
         page = browser.new_page(viewport={"width": 1366, "height": 768})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/bills")
         panel = page.locator("#bills2-panel")
@@ -109,6 +104,48 @@ def test_bills_v2_totals_decisions_and_kinds(tmp_path):
         for width in (390, 768, 1440):
             page.set_viewport_size({"width": width, "height": 900})
             assert page.evaluate(NO_OVERFLOW), width
+        # A million or more shrinks the row's figures to fit, with Ask open and without.
+        assert_tiles_fit_beside_ask(page, "#bills2-tiles > .bills2-tiles")
+        assert not failures, failures
+        browser.close()
+
+
+@browser_test
+def test_a_bill_confirmed_in_to_check_keeps_its_frequency(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "bills-v2-frequency"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        inbox_scan(manager.store, {"insurance.png": b"synthetic insurance receipt"})
+        paid(manager.ledger, documents_by_name(manager.store)["insurance.png"], "Harbor Insurance", "2026-09-15", 60000, "insurance", "monthly")
+        manager.reconciler.run()
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.locator("#nav-review").click()
+        review = page.locator("#review2-panel")
+        expect(review).to_contain_text("A receipt was read as a payment for a service billed on a schedule")
+        page.wait_for_load_state("networkidle")  # A refresh after background work would redraw the item under the clicks.
+        review.get_by_label("How often").select_option("semiannual")
+        expect(review.get_by_label("Counts as")).to_have_value("bill")  # Insurance is suggested as a bill.
+        review.get_by_label("Counts as").select_option("subscription")
+        expect(review.get_by_label("How often")).to_have_value("semiannual")
+        page.locator("#review2-bar").get_by_role("button", name="Confirm recurring").click()
+        expect(page.locator(".toast").last).to_contain_text("Confirmed as a subscription")
+        page.locator("#nav-bills").click()
+        rows = page.locator("#bills2-all")
+        expect(rows).to_contain_text("6 months")
+        expect(rows).to_contain_text("Mar 15, 2027")
+        # Every six months: 600.00 / 6 = 100.00 a month, 1,200.00 a year.
+        tiles = page.locator("#bills2-tiles .figure-tile")
+        expect(tiles.filter(has_text="Subscriptions a month")).to_contain_text("100.00 USD")
+        expect(tiles.filter(has_text="1,200.00 USD")).to_have_count(1)
+        for width in (390, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(NO_OVERFLOW), width
         assert not failures, failures
         browser.close()
 
@@ -124,9 +161,8 @@ def test_bills_v2_shows_loading_and_a_retryable_error(tmp_path):
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
-        expect(page.locator("#home-panel")).to_be_visible()
+        expect(page.locator("#today-panel")).to_be_visible()
         page.locator("#nav-bills").click()
         expect(page.locator("#bills2-empty")).to_contain_text("No recurring payments yet")
         expect(page.locator("#bills2-tiles")).to_be_hidden()

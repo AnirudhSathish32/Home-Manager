@@ -40,19 +40,26 @@ function toolHref(tool, args = {}) {
 function pageContext() {
   // The page's name plus its filters, as plain words; sent as labelled context, never as an instruction.
   if (!currentRoute) return null;
-  const title = ROUTES[currentRoute.name]?.title || currentRoute.name;
+  const title = (V2_SCREENS[currentRoute.name] || ROUTES[currentRoute.name])?.title || currentRoute.name;
   const params = [...currentRoute.params].filter(([key]) => !["token", "section"].includes(key)).map(([key, value]) => `${key} ${value}`);
-  const homeMonth = $(uiV2Screens.includes("home") ? "today-month" : "home-month").value;  // Today v2 has its own (today_v2.js).
+  const homeMonth = $("today-month").value;  // today_v2.js
   if (currentRoute.name === "home" && homeMonth && !params.some(item => item.startsWith("month"))) params.push(`month ${homeMonth}`);
-  const spendMonth = $(uiV2Screens.includes("spending") ? "month2-month" : "spend-month").value;  // This month v2 has its own (month_v2.js).
+  const spendMonth = $("month2-month").value;  // month_v2.js
   if (currentRoute.name === "spending" && spendMonth && !params.some(item => item.startsWith("month"))) params.push(`month ${spendMonth}`);
   return [title, ...params].join(" · ").slice(0, 300);
 }
 function renderAnswer(run) {
   const box = element("article", "", "assistant-turn");
   if (run.id) box.dataset.run = run.id;  // Each answer is shown once: an earlier question is scrolled to, not added again.
-  box.append(element("p", run.question, "assistant-question"));
-  if (["queued", "running"].includes(run.status)) { box.append(element("p", "Looking through your records with the local model…", "muted small")); return box; }
+  const asked = element("p", "", "assistant-question");
+  asked.append(element("span", run.question));
+  if (run.created_at) asked.append(element("time", new Date(run.created_at).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}), "muted"));
+  box.append(asked);
+  if (["queued", "running"].includes(run.status)) {
+    const waiting = element("p", "", "assistant-waiting muted small");
+    waiting.append(icon("loader", "icon spin"), document.createTextNode("Looking through your records with the local model…"));
+    box.append(waiting); return box;
+  }
   if (run.status !== "succeeded") { box.append(alertBox(run.error || `The question ${statusLabel(run.status).toLowerCase()}.`, {tone: "error"})); return box; }
   const result = run.result;
   box.append(element("p", result.answer, "assistant-answer"));
@@ -94,7 +101,10 @@ async function loadAssistantHistory() {
     const li = document.createElement("li"), open = element("button", run.question, "link-button"); open.type = "button";
     open.addEventListener("click", async () => {
       let turn = [...$("assistant-log").children].find(node => node.dataset.run === String(run.id));
-      if (!turn) { turn = renderAnswer({...run, ...(await api(`/api/assistant-runs/${run.id}`))}); $("assistant-log").append(turn); }
+      if (!turn) {
+        turn = renderAnswer({...run, ...(await api(`/api/assistant-runs/${run.id}`))});
+        $("assistant-log").querySelector(".assistant-welcome")?.remove(); $("assistant-log").append(turn);
+      }
       turn.tabIndex = -1; turn.scrollIntoView({block: "nearest"}); turn.focus();
     });
     li.append(open, element("small", `${new Date(run.created_at).toLocaleString()} · ${statusLabel(run.status)}`, "muted"));
@@ -102,16 +112,35 @@ async function loadAssistantHistory() {
   }));
   if (!runs.length) $("assistant-history").append(element("li", "No questions yet.", "muted"));
 }
-function toggleAssistant(open = $("assistant-panel").hidden) {
+// Ask with nothing asked yet: three example questions that fill the box.
+const ASK_EXAMPLES = ["How much did we spend on groceries this month compared with last?", "Which bills are due in the next two weeks?",
+                      "When did we last buy coffee, and what did it cost?"];
+function assistantWelcome() {
+  const box = element("div", "", "assistant-welcome"), list = element("ul", "", "assistant-examples");
+  box.append(element("p", "Ask about your spending, bills or documents.", "muted"));
+  for (const question of ASK_EXAMPLES) {
+    const li = document.createElement("li"), fill = element("button", question, "link-button"); fill.type = "button";
+    fill.addEventListener("click", () => { $("assistant-question").value = question; $("assistant-question").focus(); });
+    li.append(fill); list.append(li);
+  }
+  box.append(list);
+  return box;
+}
+// Ask is a non-modal column beside the page (docs/assistant.md "The Ask panel"); it shares the breakdown panel's slot,
+// so opening one closes the other. returnFocus: false when the breakdown takes the slot and focus stays with its figure.
+function toggleAssistant(open = $("assistant-panel").hidden, {returnFocus = true} = {}) {
   $("assistant-panel").hidden = !open;
   $("nav-ask").setAttribute("aria-expanded", String(open));
   document.body.classList.toggle("assistant-open", open);
+  document.querySelector(".app-shell").classList.toggle("assistant-open", open);
   if (open) {
+    if (!$("breakdown").hidden) closeBreakdown();
     if (!configured) $("assistant-log").replaceChildren(emptyState("Set up your library first.", homeLink("Open Settings", "#/settings")));
     else if (!modelsConfigured.reasoning && !$("assistant-log").children.length) $("assistant-log").append(alertBox("The assistant needs a local reasoning model.", {action: homeLink("Set one up", "#/settings")}));
+    else if (!$("assistant-log").children.length) $("assistant-log").append(assistantWelcome());
     loadAssistantHistory().catch(() => {});
     $("assistant-question").focus();
-  } else $("nav-ask").focus();
+  } else if (returnFocus) $("nav-ask").focus();
 }
 $("close-assistant").append(icon("x"));
 $("close-assistant").addEventListener("click", () => toggleAssistant(false));
@@ -129,6 +158,7 @@ $("assistant-form").addEventListener("submit", async event => {
   if (!question || assistantBusy) return;
   assistantBusy = true; $("assistant-ask").disabled = true;
   const turn = renderAnswer({question, status: "running"});
+  $("assistant-log").querySelector(".assistant-welcome")?.remove();
   $("assistant-log").append(turn); turn.scrollIntoView({block: "end"});
   try {
     const {run_id} = await api("/api/assistant-runs", {method: "POST", body: JSON.stringify({question, context: pageContext()})});

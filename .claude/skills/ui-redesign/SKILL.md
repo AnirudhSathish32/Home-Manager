@@ -58,8 +58,9 @@ traces and doesn't invent explanations the backend can't give.
    "Feedback", "Tables" and "Menus and dialogs", plus the shell and sidebar. Page layouts don't change. Check every page
    afterwards with `ui_shots.py`, because tokens touch everything.
 2. **Screens**, one per session, in the order in docs/open-work.md "UI redesign": Taxes → Today → To check and
-   the document page → Money screens → Wealth → the rest. Each new screen sits behind the `ui_v2_screens` flag. The old
-   loader is deleted once `tests/test_ui_parity.py` and the screen's tests pass; there's no separate sign-off.
+   the document page → Money screens → Wealth → the rest. Each screen sat behind a `ui_v2_screens` flag until Phase 3
+   Build E made the redesign the only UI (docs/ui.md "Migration"); a new screen now shows as soon as it registers in
+   `V2_SCREENS`. The old loader is deleted once `tests/test_ui_parity.py` and the screen's tests pass.
 3. **Cleanup.** Remove dead CSS and the old loaders, rewrite docs/ui.md "Design system" and "Pages" to match what was
    built, retire "Redesign: calculation observability" into them, and update "Screen rules" if any token names
    changed.

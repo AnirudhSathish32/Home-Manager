@@ -1,6 +1,8 @@
 """The backend behind the UI pages: review summaries, transaction filters and links, series, jobs, backups (docs/ui.md)."""
 
 import json
+from pathlib import Path
+import re
 import socket
 
 from fastapi.testclient import TestClient
@@ -335,3 +337,16 @@ def test_transactions_link_their_receipts_and_unmatched_receipts_are_listed_not_
     [issue] = tools.review_queue()["issues"]
     Reconciler(store).resolve_issue(issue["id"], ids["card"][1])
     assert call_tool(tools, "get_unmatched_receipts", {"start": "2026-09-01", "end": "2026-09-30"})["receipts"] == []
+
+
+def test_every_kind_the_processing_page_offers_lists_its_history(tmp_path):
+    """processing.js JOB_KINDS is the Recent work filter; each value must be a kind GET /api/jobs knows."""
+    source = (Path(__file__).parents[1] / "src/home_manager/app/static/processing.js").read_text(encoding="utf-8")
+    kinds = re.findall(r"(\w+): \"", re.search(r"const JOB_KINDS = \{(.*?)\};", source, re.S).group(1))
+    assert "tax_table_lookup" in kinds and len(kinds) >= 12
+    app = create_app(tmp_path / "control", "jobs-token", limits=ScanLimits(stability_seconds=0))
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        client.headers.update({"Authorization": "Bearer jobs-token"})
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        for kind in kinds:
+            assert client.get("/api/jobs", params={"kind": kind}).status_code == 200, kind

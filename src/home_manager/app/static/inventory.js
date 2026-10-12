@@ -3,7 +3,8 @@
 // a free-text answer is read by the local model into a list of changes that apply only when confirmed.
 const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const CHECKIN_BUTTONS = [["still_have", "Still have it"], ["finished_today", "Finished today"], ["finished_this_week", "Finished this week"], ["thrown_out", "Thrown out"]];
-let inventoryLoad = 0, inventoryCheckin = null;
+// inventoryReload: Inventory v2 (inventory_v2.js) points it at its own reload while it shows; v1's loader clears it.
+let inventoryLoad = 0, inventoryCheckin = null, inventoryReload = null;
 function askedAt(nextCheck) {
   // A lot's question is asked at the first weekly check-in on or after it is due.
   if (!nextCheck || !inventoryCheckin) return nextCheck ? dateText(nextCheck) : "—";
@@ -36,8 +37,8 @@ function sinceText(day) {
 }
 async function afterInventoryChange() {
   loadNavCounts().catch(() => {});
-  if (currentRoute?.name === "inventory") await loadInventory();
-  else if (currentRoute?.name === "home") await (uiV2Screens.includes("home") ? reloadToday() : renderHomeExtras());
+  if (currentRoute?.name === "inventory") await (inventoryReload ? inventoryReload() : loadInventory());
+  else if (currentRoute?.name === "home") await reloadToday();
 }
 async function answerLot(lot, answer, source = "checkin") {
   await api(`/api/inventory/lots/${lot.id}/checkin-answer`, {method: "POST", body: JSON.stringify({answer, source})});
@@ -73,24 +74,27 @@ function renderCheckin(target, checkin, {compact = false} = {}) {
   target.replaceChildren(...nodes);
 }
 
-// Free-text answers: read by the model, shown as a list of changes, applied on confirmation.
-$("checkin-text-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const answer = $("checkin-text").value.trim();
+// Free-text answers: read by the model, shown as a list of changes, applied on confirmation. host: where the reading
+// shows; input: the text box to clear once changes apply (v1's, or Inventory v2's).
+async function submitCheckinText(text, host, button, input = $("checkin-text")) {
+  const answer = text.trim();
   if (!answer) return;
-  const submit = $("checkin-text-submit");
-  submit.disabled = true;
-  $("checkin-reading").replaceChildren(element("p", "Reading your answer with the local model…", "muted small"));
+  button.disabled = true;
+  host.replaceChildren(element("p", "Reading your answer with the local model…", "muted small"));
   try {
     const {run_id} = await api("/api/inventory/checkin-runs", {method: "POST", body: JSON.stringify({answer})});
     let run;
     do { await new Promise(resolve => setTimeout(resolve, 1000)); run = await api(`/api/inventory/checkin-runs/${run_id}`); } while (["queued", "running"].includes(run.status));
     if (run.status !== "succeeded") throw new Error(run.error || `The reading ${statusLabel(run.status).toLowerCase()}.`);
-    renderReading(run);
-  } catch (error) { $("checkin-reading").replaceChildren(alertBox(error.message, {tone: "error"})); }
-  finally { submit.disabled = false; }
+    renderReading(run, host, input);
+  } catch (error) { host.replaceChildren(alertBox(error.message, {tone: "error"})); }
+  finally { button.disabled = false; }
+}
+$("checkin-text-form").addEventListener("submit", event => {
+  event.preventDefault();
+  submitCheckinText($("checkin-text").value, $("checkin-reading"), $("checkin-text-submit"));
 });
-function renderReading(run) {
+function renderReading(run, host = $("checkin-reading"), input = $("checkin-text")) {
   const result = run.result, nodes = [element("h3", "Confirm these changes")];
   const labels = {still_have: "Still have it", finished: "Finished", thrown_out: "Thrown out"};
   const list = element("ul", "", "checkin-list");
@@ -113,37 +117,40 @@ function renderReading(run) {
       const {outcomes, applied, failed} = await api(`/api/inventory/checkin-runs/${run.id}/apply`, {method: "POST", body: JSON.stringify({lot_ids})});
       const firstError = outcomes.find(outcome => outcome.status === "failed")?.error;
       notice(failed ? `${applied} applied; ${failed} couldn't be: ${firstError}` : `${applied} change${applied === 1 ? "" : "s"} applied.`, Boolean(failed));
-      $("checkin-text").value = "";
-      renderReading(await api(`/api/inventory/checkin-runs/${run.id}`));
+      input.value = "";
+      renderReading(await api(`/api/inventory/checkin-runs/${run.id}`), host, input);
       await afterInventoryChange();
     }, "primary"));
   }
-  $("checkin-reading").replaceChildren(...nodes);
+  host.replaceChildren(...nodes);
 }
 
 // Returned items (docs/household.md "Returned items"): a returned receipt line and the in-stock items it may have been.
 function renderReturned(proposals) {
   $("returned-panel").hidden = !proposals.length;
-  $("returned-content").replaceChildren(...proposals.map(proposal => {
-    const li = element("li", "", "checkin-row"), name = element("div", "", "checkin-name");
-    name.append(element("strong", proposal.description),
-      element("small", `Returned${proposal.merchant ? ` to ${proposal.merchant}` : ""}${proposal.returned_on ? ` on ${dateText(proposal.returned_on)}` : ""}`, "muted block"));
-    const buttons = element("div", "", "checkin-buttons"); buttons.setAttribute("role", "group"); buttons.setAttribute("aria-label", `Which item went back: ${proposal.description}`);
-    const answer = (lotId, message) => async () => {
-      await api(`/api/inventory/returned/${proposal.receipt_item_id}`, {method: "POST", body: JSON.stringify({lot_id: lotId})});
-      notice(message); await afterInventoryChange();
-    };
-    for (const lot of proposal.lots) {
-      const label = proposal.lots.length === 1 ? `Yes, ${productName(lot)} went back` : `${productName(lot)}, bought ${lot.bought_on ? dateText(lot.bought_on) : "on an unknown date"}`;
-      buttons.append(asyncButton(label, answer(lot.id, `${productName(lot)} is marked returned. Undo it from its Actions menu.`), "small"));
-    }
-    buttons.append(asyncButton(proposal.lots.length === 1 ? "Not this item" : "None of these", answer(null, "Kept in your inventory."), "small quiet"));
-    li.append(name, buttons); return li;
-  }));
+  $("returned-content").replaceChildren(...proposals.map(proposal => returnedRow(proposal)));
+}
+// One returned line and its answers (v1's list, and Inventory v2's "Did this go back?"); className: the row's classes.
+function returnedRow(proposal, className = "checkin-row") {
+  const li = element("li", "", className), name = element("div", "", "checkin-name");
+  name.append(element("strong", proposal.description),
+    element("small", `Returned${proposal.merchant ? ` to ${proposal.merchant}` : ""}${proposal.returned_on ? ` on ${dateText(proposal.returned_on)}` : ""}`, "muted block"));
+  const buttons = element("div", "", "checkin-buttons"); buttons.setAttribute("role", "group"); buttons.setAttribute("aria-label", `Which item went back: ${proposal.description}`);
+  const answer = (lotId, message) => async () => {
+    await api(`/api/inventory/returned/${proposal.receipt_item_id}`, {method: "POST", body: JSON.stringify({lot_id: lotId})});
+    notice(message); await afterInventoryChange();
+  };
+  for (const lot of proposal.lots) {
+    const label = proposal.lots.length === 1 ? `Yes, ${productName(lot)} went back` : `${productName(lot)}, bought ${lot.bought_on ? dateText(lot.bought_on) : "on an unknown date"}`;
+    buttons.append(asyncButton(label, answer(lot.id, `${productName(lot)} is marked returned. Undo it from its Actions menu.`), "small"));
+  }
+  buttons.append(asyncButton(proposal.lots.length === 1 ? "Not this item" : "None of these", answer(null, "Kept in your inventory."), "small quiet"));
+  li.append(name, buttons); return li;
 }
 
 // Inventory page.
 async function loadInventory() {
+  inventoryReload = null;
   if (!configured) { $("inventory-groups").replaceChildren(emptyState("Set up your library to track household items.")); return; }
   const load = ++inventoryLoad, query = new URLSearchParams({limit: 1000});
   if ($("inventory-search").value.trim()) query.set("query", $("inventory-search").value.trim());
@@ -200,7 +207,23 @@ function inventoryRow(lot) {
   const returnWindow = returnText(lot);
   if (returnWindow) { const note = element("small", returnWindow, `return-note block ${lot.returnable ? "" : "muted"}`); note.title = lot.return_note || ""; state.append(note); }
   cell(tr, lot.status === "in_stock" ? (lot.consumable ? askedAt(lot.next_check_on) : "Not asked (lasts)") : "—");
-  const actions = cell(tr, "");
+  const history = element("button", "History"); history.type = "button";
+  history.addEventListener("click", async () => {
+    try {
+      const events = await api(`/api/inventory/lots/${lot.id}/history`);
+      const existing = tr.nextElementSibling?.classList.contains("lot-history-row") ? tr.nextElementSibling : null;
+      if (existing) { existing.remove(); return; }
+      const row = element("tr", "", "lot-history-row"), td = document.createElement("td"); td.colSpan = 5;
+      const list = element("ul", "", "finance-list");
+      for (const event of events) list.append(element("li", `${dateText(event.effective_on)} · ${statusLabel(event.event)}${event.precision_days ? ` (±${event.precision_days} days)` : ""} · ${{approval: "approved", manual: "you, on this page", checkin: "check-in", checkin_text: "check-in in your words"}[event.source] || event.source}`));
+      td.append(list); row.append(td); tr.after(row);
+    } catch (error) { notice(error, true); }
+  });
+  cell(tr, "").append(lotMenu(lot, [history]));
+  return tr;
+}
+// A lot's Actions menu (v1 rows and Inventory v2's Items table); extra: more items at the end (v1's History).
+function lotMenu(lot, extra = []) {
   const items = [];
   const add = (label, run) => { const button = element("button", label); button.type = "button"; button.addEventListener("click", () => run().catch(error => notice(error, true))); items.push(button); };
   if (lot.status === "in_stock" && lot.openable && !lot.opened_on) add("Mark opened", async () => {
@@ -219,17 +242,7 @@ function inventoryRow(lot) {
     });
   }
   add("Undo last change", async () => { await api(`/api/inventory/lots/${lot.id}/undo`, {method: "POST"}); notice("Undone."); await afterInventoryChange(); });
-  add("History", async () => {
-    const events = await api(`/api/inventory/lots/${lot.id}/history`);
-    const existing = tr.nextElementSibling?.classList.contains("history-row") ? tr.nextElementSibling : null;
-    if (existing) { existing.remove(); return; }
-    const row = element("tr", "", "history-row"), td = document.createElement("td"); td.colSpan = 5;
-    const list = element("ul", "", "finance-list");
-    for (const event of events) list.append(element("li", `${dateText(event.effective_on)} · ${statusLabel(event.event)}${event.precision_days ? ` (±${event.precision_days} days)` : ""} · ${{approval: "approved", manual: "you, on this page", checkin: "check-in", checkin_text: "check-in in your words"}[event.source] || event.source}`));
-    td.append(list); row.append(td); tr.after(row);
-  });
-  actions.append(menu(`Actions for ${lot.name}`, items));
-  return tr;
+  return menu(`Actions for ${lot.name}`, [...items, ...extra]);
 }
 // Warranties (docs/household.md "Warranties"): entered by hand, or looked up and confirmed in Review.
 let warrantyLot = null;

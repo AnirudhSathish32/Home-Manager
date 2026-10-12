@@ -36,7 +36,7 @@ def bottom(locator):
 def test_to_check_decides_each_kind_with_its_source_in_view(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     expect = playwright.expect
-    with document_server(tmp_path, TOKEN, ["review"], review_items=True) as (base, ids, _), playwright.sync_playwright() as driver:
+    with document_server(tmp_path, TOKEN, review_items=True) as (base, ids, _), playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1366, "height": 768})
         failures = []
@@ -149,24 +149,16 @@ def test_to_check_decides_each_kind_with_its_source_in_view(tmp_path):
 
 
 @browser_test
-def test_v1_review_keys_stay_quiet_once_to_check_v2_is_on(tmp_path):
+def test_v_on_a_warranty_decides_only_the_warranty(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     expect = playwright.expect
-    with document_server(tmp_path, TOKEN, [], review_items=True) as (base, ids, _), playwright.sync_playwright() as driver:
+    with document_server(tmp_path, TOKEN, review_items=True) as (base, ids, _), playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1366, "height": 768})
         posts = []
         page.on("request", lambda request: posts.append(request.url) if request.method == "POST" else None)
         page.goto(f"{base}/#token={TOKEN}")
         page.wait_for_load_state("networkidle")
-        # v1 first: its queue and its hidden-to-be Confirm exist.
-        page.goto(f"{base}/#/review")
-        expect(page.locator("#review-confirm")).to_be_visible()
-        # Then v2 on, from Settings › Appearance, in the same page.
-        page.goto(f"{base}/#/settings")
-        page.locator("#appearance-tab").click()
-        page.locator("#ui-v2-review").check()
-        expect(page.locator(".toast", has_text="Saved.")).to_be_visible()
         open_review(page, base, f"?item=warranty:{ids['warranty']}")
         expect(page.locator("#review2-what")).to_have_text("Warranty: Acme Toaster")
         posts.clear()
@@ -226,10 +218,7 @@ def test_the_familys_to_check_asks_who_each_upload_is_for(tmp_path):
             page.goto(f"{base}/#token={TOKEN}")
             page.wait_for_load_state("networkidle")
             page.locator("#profile-select").select_option(family["id"])
-            expect(page.locator("#family-members")).to_contain_text("Jo", timeout=15000)
-            page.evaluate("api('/api/ui-screens', {method: 'PUT', body: JSON.stringify({routes: ['review']})})")
-            page.reload()
-            page.wait_for_load_state("networkidle")
+            expect(page.locator("#today-family-members")).to_contain_text("Jo", timeout=15000)
             open_review(page, base)
             queue = page.locator("#review2-queue")
             expect(queue.locator(".review2-group-title", has_text="Who is it for?")).to_have_count(1)

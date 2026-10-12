@@ -6,6 +6,12 @@ Code: `finance/assistant.py`, `finance/tools.py`, `household/analysis.py`, `docu
 ## The Ask panel
 
 The Ask panel opens on the right from any page (**Ask** in the sidebar, or <kbd>Ctrl</kbd>+<kbd>J</kbd>).
+- **Placement.** A non-modal column beside the page from 1180px, in the same slot as the breakdown panel: opening one
+  closes the other. It floats over the page's right edge at 900–1179px and is a bottom sheet (80vh) below 900px. Toasts
+  move out from under it. Escape inside it closes it and returns focus to **Ask** (design in
+  `design-system/home-manager/pages/search-ask.md`).
+- **Asking.** <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends the question. With nothing asked yet, three example questions
+  fill the box. The log scrolls on its own, and the composer stays at the bottom.
 - **Context.** The current page (its name and filters) is sent with the question as context, labelled as data.
 - **Answers** are shown in the secondary text style, never as large figures.
 - **Evidence chips.** Each cited tool call becomes an evidence chip ("From spending · Sep 1 – Sep 30") that opens the

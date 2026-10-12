@@ -124,6 +124,15 @@ edit before approving). Steps 1–3 are pre-filled, so reviewing them takes one 
 A panel lists receipts with lines not yet identified. Home shows cards for return windows closing within 14 days and
 warranties ending within 60 days.
 
+**The redesigned page** (`inventory_v2.js`; [ui](ui.md#pages)) splits this into tabs:
+Check-in, Items (the table above, one table grouped by category), Warranties (confirmed ones with their end and
+source, those ending within 30 days marked), Returns (Did this go back?, return windows closing, return policies) and
+**Item insights**. Item insights shows, for 30 days, 90 days, 12 months or this year, what approved items cost, the
+cost per 30 days of finished items, what was thrown out and next month's projected consumables, each a traced figure
+([Item analysis](#item-analysis)), then the prices that went up, the products that cost most and the thrown-out items.
+`GET /api/inventory/insights?period=30|90|365|year` (or `start`/`end`; `currency`, chosen as Home chooses when left out)
+returns those figures and rows.
+
 ## Opened items and return windows
 
 **Opened.** Lots in non-food categories can be marked opened (`inventory_lots.opened_on`, event `opened`, undoable).
@@ -193,3 +202,8 @@ rounded half-even to the minor unit for display.
   means weight.
 - Purchases whose sizes are in different dimensions are not compared.
 - A missing quantity is treated as one unit, and the result says so.
+- **Traces.** `get_item_spending`, `get_waste`, `get_consumption_cost` and `forecast_consumables_spend` take an optional
+  recorder, which records one step per product ([ui](ui.md#trace-contract)). The rates also record each product's cost
+  with its days and finished lots as an input ("your check-in answers"), and the half-even rounding of the total
+  against the products' rounded steps. `household/item_traces.py` serves them as `items.spending`, `items.waste`,
+  `items.per_30_days` and `items.forecast`; without a recorder the tools return what they always did.

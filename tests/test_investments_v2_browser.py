@@ -1,20 +1,16 @@
-"""Investments v2 in the browser (investments_v2.js; design-system/home-manager/pages/wealth.md): synthetic data only,
-behind the ui_v2_screens flag."""
+"""Investments v2 in the browser (investments_v2.js; design-system/home-manager/pages/wealth.md): synthetic data only."""
 from datetime import date
 import os
 
 import pytest
 
+from conftest import assert_tiles_fit_beside_ask
 from seed_wealth import seed_investments
 from test_taxes_v2_browser import served
 from test_ui_parity import check_figures
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
-
-
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["investments"]}, headers={"Authorization": f"Bearer {token}"}).ok
 
 
 def no_overflow(page):
@@ -36,7 +32,6 @@ def test_investments_v2_list_needs_and_controls(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-investments").click()
         expect(page.locator("#inv2-panel")).to_be_visible()
@@ -71,6 +66,9 @@ def test_investments_v2_list_needs_and_controls(tmp_path):
         expect(page.locator("#inv2-taxes")).to_contain_text("Chase 1099-INT")
         expect(page.locator("#inv2-split")).to_contain_text("Tax-deferred")
         no_overflow(page)
+        # A million or more shrinks the row's figures to fit, with Ask open and without.
+        assert_tiles_fit_beside_ask(page, "#inv2-tiles")
+        page.set_viewport_size({"width": 1440, "height": 1000})
 
         # The year and Show removed live in the URL and survive a reload.
         page.locator("#inv2-removed").check()
@@ -112,7 +110,6 @@ def test_investments_v2_account_view(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/investments")
         page.locator("#inv2-accounts").get_by_role("link", name="12-month CD", exact=True).click()
@@ -159,6 +156,10 @@ def test_investments_v2_account_view(tmp_path):
         expect(page.locator("#confirm-cancel")).to_be_focused()
         page.locator("#confirm-cancel").click()
         expect(page.locator("#inv2-title")).to_have_text("Maya 529")
+
+        # I bonds: what each would pay if cashed today.
+        page.goto(f"{base}/#/investments?account={ids['ibonds']}&tab=holdings")
+        expect(page.locator("#inv2-holdings-panel")).to_contain_text("If cashed today")
 
         # A pension has no Holdings tab and no Record value; an unknown id says so.
         page.goto(f"{base}/#/investments?account={ids['pension']}")

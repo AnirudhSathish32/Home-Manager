@@ -1,7 +1,6 @@
-"""Parity harness for redesigned screens (docs/ui.md "Migration"), on synthetic data only.
+"""Figure harness for the traced screens (docs/ui.md "Trace contract"), on synthetic data only.
 
-Every figure a v2 screen shows must carry a trace ref, equal its trace's result, reconcile, and match a value the old
-screen showed. Each Phase 2 session adds its (route, v1 route) pair to MIGRATED."""
+Every figure a screen shows must carry a trace ref, equal its trace's result, and reconcile."""
 from contextlib import contextmanager
 from datetime import date, timedelta
 import os
@@ -19,19 +18,14 @@ from home_manager.finance.engines.opentax import YEARS
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools
 from home_manager.library.scanner import ScanLimits
+from seed_taxes import seed_tax_year
 from seed_wealth import seed_investments
 from test_reconcile_tools import add
-from test_taxes_browser import seed_tax_year
 
-# (route, v1 route) for each screen moved to its redesign; the v2 route opens with the flag on, the v1 one with it off.
-# Taxes works out this year's return, so it runs only while Engine 1 covers this year (test_taxes_browser.this_year_covered).
-MIGRATED = [pytest.param("taxes", "taxes", marks=pytest.mark.skipif(date.today().year not in YEARS, reason="Engine 1 doesn't cover this year")),
-            pytest.param("home", "home"), pytest.param("spending", "spending"), pytest.param("bills", "bills"), pytest.param("accounts", "accounts"),
-            pytest.param("investments", "investments"), pytest.param("forecast", "forecast")]
-# Figures a v2 screen shows that the old one never did (by ref prefix): checked against their trace only. The old
-# Forecast showed its end cash and net worth only inside folded tables.
-NEW_ON_V2 = {"home": ("worth.today", "budget.remaining", "budget.projected"), "spending": ("budget.remaining", "budget.projected"),
-             "forecast": ("forecast.cash", "forecast.net_worth")}
+# Every screen that shows traced figures. Taxes works out this year's return, so it runs only while Engine 1 covers
+# this year (seed_taxes.this_year_covered). Inventory's figures are on its Item insights tab.
+TRACED = [pytest.param("taxes", marks=pytest.mark.skipif(date.today().year not in YEARS, reason="Engine 1 doesn't cover this year")),
+          "home", "spending", "bills", "accounts", "investments", "forecast", "inventory?tab=insights"]
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 
@@ -122,20 +116,6 @@ def check_figures(page, base, token):
     return found
 
 
-def v1_amounts(page):
-    """The server display text of every amount an old screen shows, and the screen's text, for "matches the old screen"
-    (old screens write some amounts inside sentences, such as Tax Zen's)."""
-    titles = set(page.locator(".amount[title]").evaluate_all("nodes => nodes.map(node => node.title)"))
-    return titles, page.locator("[data-page]:not([hidden])").inner_text()
-
-
-def shown_before(display, old):
-    """Whether the old screen showed this amount: as an amount, or in its text. A tax figure shows unsigned on both (its
-    label gives the direction), so its magnitude counts."""
-    titles, text = old
-    return any(value in titles or value in text for value in (display, display.removeprefix("-")))
-
-
 def open_route(page, route):
     page.evaluate("route => { location.hash = '#/' + route; }", route)
     page.wait_for_selector("[data-page]:not([hidden])")
@@ -151,7 +131,7 @@ def test_harness_passes_real_figures_and_fails_a_seeded_mismatch(tmp_path):
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.goto(f"{base}/#token=parity-test")
-        playwright.expect(page.locator("#home-panel")).to_be_visible()
+        playwright.expect(page.locator("#today-panel")).to_be_visible()
         assert mount_dashboard_figures(page) >= 2
         assert len(check_figures(page, base, "parity-test")) >= 2
         # A16: the harness fails when a figure shows something other than its trace.
@@ -163,28 +143,19 @@ def test_harness_passes_real_figures_and_fails_a_seeded_mismatch(tmp_path):
 
 
 @browser_test
-@pytest.mark.parametrize("route,v1_route", MIGRATED)
-def test_migrated_screen_matches_its_traces_and_the_old_screen(tmp_path, route, v1_route):
+@pytest.mark.parametrize("route", TRACED)
+def test_every_screen_reconciles(tmp_path, route):
     playwright = pytest.importorskip("playwright.sync_api")
     with seeded_server(tmp_path, "parity-test") as base, playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        headers = {"Authorization": "Bearer parity-test"}
-        assert page.request.put(f"{base}/api/ui-screens", data={"routes": []}, headers=headers).ok
         page.goto(f"{base}/#token=parity-test")
-        open_route(page, v1_route)
-        page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)  # Slow pages (the tax engine) load first.
-        old = v1_amounts(page)
-        assert page.request.put(f"{base}/api/ui-screens", data={"routes": [route]}, headers=headers).ok
-        page.reload()
         open_route(page, route)
         playwright.expect(page.locator('[data-page][data-ui="v2"]:not([hidden])')).to_be_visible()
-        page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)
+        page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)  # Slow pages (the tax engine) load first.
         page.wait_for_selector('[data-page][data-ui="v2"]:not([hidden]) [data-figure-ref]')
-        shown = check_figures(page, base, "parity-test")
-        missing = [display for ref, display in shown if not ref.startswith(NEW_ON_V2.get(route, ())) and not shown_before(display, old)]
-        assert not missing, missing
+        check_figures(page, base, "parity-test")
         assert not failures, failures
         browser.close()

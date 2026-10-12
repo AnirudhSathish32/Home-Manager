@@ -123,6 +123,9 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
   and actions on the right, with one primary button.
 - **Breakdown and detail panel:** 360px on the right at 1180px and wider, `--surface`, with a left `--border`. Under
   1180px it moves below the content; under 900px it's a bottom sheet (docs/ui.md "Observability components").
+- **Ask shares the panel column** (`.side-panel`): the breakdown and Ask take the same 360px track, one at a time
+  (opening one closes the other). Ask floats and becomes a sheet at the same widths, its sheet 80vh. Toasts move left of
+  an open column, or to the top over a sheet.
 
 ## Components
 
@@ -131,7 +134,9 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
 - **Needs-attention row:** `--radius-md`, padding 12/14, `--surface` fill, or `--warning-subtle` when it needs you. A
   20px icon in its tone, a semibold *what*, a muted *why*, and one text link action on the right. Rows are 6px apart.
 - **Figure tile:** a label (12.5px, secondary), the figure as a `figure()` button (`--figure-lg`), and a subline
-  (12.5px muted with an optional flag such as "⚠ 1 unconfirmed"). When its breakdown is open, the tile gets an
+  (12.5px muted with an optional flag such as "⚠ 1 unconfirmed"). A row's figures share one size, from `--figure-lg`
+  down to `--text-lg`, fitted to its longest amount; digits never wrap, and at the smallest size the currency code may
+  drop under them. A stale or unconfirmed badge drops under its amount when it doesn't fit beside it. When its breakdown is open, the tile gets an
   `--accent` 1px border plus a 1px ring. Money in is `--positive` with `+`; money out is `--text` with `−`.
 - **Buttons:** primary is `--accent` fill with `--on-accent` text. Secondary is `--surface` with a `--border-strong`
   outline. A text link is `--accent` 550 weight and underlines on hover. The focus ring is a 2px `--accent` outline

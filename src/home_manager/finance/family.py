@@ -93,6 +93,7 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
         own = copy.deepcopy({"totals": data["totals"], "cashflow": data["cashflow"]})  # Their own figures, traced on their copy.
         if own["totals"]:
             own["totals"]["net_spending"]["trace"] = ref("spending.net", **mine)
+            own["totals"]["refunds"]["trace"] = ref("spending.refunds", **mine)
         if own["cashflow"]:
             own["cashflow"]["net"]["trace"], own["cashflow"]["outflow"]["trace"] = ref("cashflow.net", **mine), ref("spending.net", **mine)
             own["cashflow"]["inflow"]["trace"] = ref("cashflow.in", **mine)
@@ -125,6 +126,9 @@ def family_dashboard(members, month, months=6, currency=None, home_currency=None
     total["gross"] = figure(gross, chosen, ref("family.spending.gross", **shown))
     if total["totals"]:
         total["totals"]["net_spending"] = figure(total["totals"]["net_spending"]["minor"], chosen, ref("family.spending.net", **shown))
+        total["totals"]["refunds"] = money(total["totals"]["refunds"]["minor"], chosen)  # A member's trace doesn't add up to the family's.
+    if total["comparison"]:
+        total["comparison"]["change"] = money(total["comparison"]["change"]["minor"], chosen)
     if total["cashflow"]:
         total["cashflow"]["net"] = figure(total["cashflow"]["net"]["minor"], chosen, ref("family.cashflow.net", **shown))
         total["cashflow"]["outflow"] = figure(total["cashflow"]["outflow"]["minor"], chosen, ref("family.spending.net", **shown))
@@ -179,8 +183,8 @@ def _desc(text):
 def _merge_spending(results):
     total = dict(results[0])
     total["by_currency"] = _keyed([row for result in results for row in result["by_currency"]], lambda row: row["currency"])
-    for row in total["by_currency"]:
-        row["net_spending"] = money(row["net_spending"]["minor"], row["currency"])  # Members' traces don't add up to one.
+    for row in total["by_currency"]:  # Members' traces don't add up to one.
+        row["net_spending"], row["refunds"] = (money(row[key]["minor"], row["currency"]) for key in ("net_spending", "refunds"))
     total["pending_review"] = _keyed([row for result in results for row in result["pending_review"]], lambda row: row["currency"])
     total["excluded_transfers_and_card_payments"] = sum(result["excluded_transfers_and_card_payments"] for result in results)
     total["coverage"] = [row for result in results for row in result["coverage"]]
@@ -191,9 +195,19 @@ def _merge_spending(results):
 def _merge_compare(results):
     rows = _keyed([row for result in results for row in result["categories"]], lambda row: (row["currency"], row["category"]))
     for row in rows:
+        row["change"] = money(row["change"]["minor"], row["currency"])  # Members' traces don't add up to one.
         row["percent_change"] = percent_change(row["first"]["minor"], row["second"]["minor"])
     rows.sort(key=lambda row: (row["currency"], -row["second"]["minor"], row["category"]))
     return {**results[0], "categories": rows}
+
+
+def _merge_periods(results):
+    rows = _keyed([row for result in results for row in result["by_currency"]], lambda row: row["currency"])
+    for row in rows:
+        row["change"] = money(row["change"]["minor"], row["currency"])
+        row["percent_change"] = percent_change(row["first"]["minor"], row["second"]["minor"])
+    # Each member's conversion uses their own rates; the family view shows each currency.
+    return {**results[0], "by_currency": sorted(rows, key=lambda row: row["currency"]), "usd_total": None}
 
 
 def _merge_by_category(results):
@@ -201,6 +215,8 @@ def _merge_by_category(results):
     for row in categories:
         row["spending"] = money(row["spending"]["minor"], row["currency"])
     merchants = _keyed([row for result in results for row in result["top_merchants"]], lambda row: (row["currency"], row["merchant"]))
+    for row in merchants:
+        row["spending"] = money(row["spending"]["minor"], row["currency"])
     return {**results[0], "categories": sorted(categories, key=lambda row: (row["currency"], -row["spending"]["minor"])),
             "top_merchants": sorted(merchants, key=lambda row: -row["spending"]["minor"])[:20]}
 
@@ -226,6 +242,7 @@ FAMILY_TOOLS = {
         row["position"] is None, row["position"] or 0)), "notes": results[0]["notes"]}),
     "get_spending": ((), lambda results, args, order: _merge_spending(results)),
     "compare_categories": ((), lambda results, args, order: _merge_compare(results)),
+    "compare_periods": ((), lambda results, args, order: _merge_periods(results)),
     "get_spending_by_category": ((), lambda results, args, order: _merge_by_category(results)),
     "get_refunds": (("posted_credits", "refund_evidence"), lambda results, args, order: {
         **results[0], **{key: [row for result in results for row in result[key]] for key in ("posted_credits", "refund_evidence")}}),

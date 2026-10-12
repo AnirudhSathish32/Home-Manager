@@ -1,5 +1,4 @@
-"""Accounts v2 in the browser (accounts_v2.js, money_v2.js; docs/ui.md "Pages"): synthetic data only, behind the
-ui_v2_screens flag."""
+"""Accounts v2 in the browser (accounts_v2.js, money_v2.js; docs/ui.md "Pages"): synthetic data only."""
 from datetime import date
 import os
 
@@ -13,10 +12,6 @@ from test_ui_parity import check_figures
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
-
-
-def turn_on(page, base, token):
-    assert page.request.put(f"{base}/api/ui-screens", data={"routes": ["accounts"]}, headers={"Authorization": f"Bearer {token}"}).ok
 
 
 @browser_test
@@ -33,7 +28,6 @@ def test_accounts_v2_balances_their_age_and_import(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        turn_on(page, base, token)
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/accounts")
         panel = page.locator("#accounts2-panel")
@@ -80,10 +74,11 @@ def test_accounts_v2_without_a_library_and_in_the_family_view(tmp_path):
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         failures = []
         page.on("pageerror", lambda error: failures.append(str(error)))
-        # No library yet: the page says so, with the way to set one up. (The flag needs a profile, so it's set after.)
+        # No library yet: the page says so, with the way to set one up.
         page.goto(f"{base}/#token={token}")
         page.goto(f"{base}/#/accounts")
-        expect(page.locator("#accounts-state")).to_contain_text("Set up your library to see accounts")
+        expect(page.locator("#accounts2-state")).to_contain_text("Set up your library to see accounts")
+        expect(page.locator("#accounts2-body")).to_be_hidden()
 
         month = date.today().isoformat()[:7]
         manager.configure(str(tmp_path / "alex"))
@@ -102,7 +97,6 @@ def test_accounts_v2_without_a_library_and_in_the_family_view(tmp_path):
         manager.set_up_local_member(family["id"], jo, profile_id=sam["id"])
         manager.switch_profile(family["id"])
         manager.future.result(timeout=30)
-        turn_on(page, base, token)
         page.goto(f"{base}/#/home")
         page.reload()
         page.goto(f"{base}/#/accounts")

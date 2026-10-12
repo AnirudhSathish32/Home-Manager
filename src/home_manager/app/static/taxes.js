@@ -611,7 +611,7 @@ function renderWriteOffs(summary, tags) {
     for (const tag of tags) {
       const tr = body.insertRow(); tr.appendChild(element("td")).append(dateDisplay(tag.tax_date));
       const item = tr.insertCell();
-      item.append(tag.transaction_id ? taxItemLink(tag) : element("span", tag.target.description), element("small", tag.target.detail || "", "muted block"));
+      item.append(taxItemLink(tag),element("small", tag.target.detail || "", "muted block"));
       const what = tr.insertCell(); what.append(element("span", `${tag.kind_label}: ${tag.line_label}`), element("small", tag.review_status === "proposed" ? "Waiting in Review" : TAX_SOURCES[tag.source], "muted block"));
       tr.appendChild(element("td", "", "numeric")).appendChild(amount(tag.display.counted_minor, {signed: false}));
       tr.insertCell().append(asyncButton("Not a write-off", async () => { await api(`/api/tax-tags/${tag.id}/not-a-write-off`, {method: "POST"}); notice("Untagged."); await loadTaxes(); }, "small quiet"));
@@ -620,7 +620,11 @@ function renderWriteOffs(summary, tags) {
   }
   target.replaceChildren(...parts);
 }
+// A tagged item opens where it can be checked: a receipt or one of its lines on its document page, a transaction in its drawer.
 function taxItemLink(tag) {
+  if (["receipt", "receipt_item"].includes(tag.target.type))
+    return tag.target.document_id ? homeLink(tag.target.description, `#/documents/${tag.target.document_id}`) : element("span", tag.target.description);
+  if (!tag.transaction_id) return element("span", tag.target.description);
   const button = element("button", tag.target.description, "link-button"); button.type = "button";
   button.addEventListener("click", () => openTransaction(tag.transaction_id).catch(error => notice(error, true)));
   return button;

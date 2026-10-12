@@ -9,7 +9,7 @@ The Taxes page (`static/taxes.js`) is where the year's taxes come together:
   ([planning](planning.md#what-if)).
 - **The CPA pack:** one Excel workbook for the year, to hand to an accountant.
 
-The redesigned page (`static/taxes_v2.js`, behind the `ui_v2_screens` flag; [ui](ui.md#pages)) puts these in six tabs:
+The redesigned page (`static/taxes_v2.js`; [ui](ui.md#pages)) puts these in six tabs:
 This year (where the year ends, what to do, the return line by line), Built from (each input beside what the records
 give), Write-offs, Jobs & pay stubs, CPA pack, and Rules & sources. Every amount on it is a traced figure: the server
 adds a `figure` to each return line and Tax Zen amount, and `figures` to the records' values and each job's year
@@ -121,7 +121,10 @@ and a line:
 - Tags on a receipt's lines replace a tag on the receipt, and a receipt's tags replace a tag on the bank line it's
   matched to. The page notes each case.
 - The page lists the year by kind, line and business (amount and the part that counts), every tagged item, the tax
-  rules, and the businesses.
+  rules, and the businesses. A tagged bank line opens its transaction drawer; a tagged receipt or receipt line links to
+  its document page (each tag's `target` carries the receipt's `document_id`).
+- Where tags show: the document page lists a receipt's tag and its lines' tags through `GET /api/tax-tags?receipt_id=`,
+  and the transaction drawer shows a bank line's tag through `GET /api/tax-tags/on/transaction/{id}`.
 - Schedule C has no line yet for cost of goods sold, depreciation (line 13), home office (line 30) or vehicle mileage.
 
 **API:** `GET /api/tax/setup` · `POST /api/tax/businesses`, `PUT|DELETE /api/tax/businesses/{id}` (delete archives: its tags keep counting and the

@@ -7,7 +7,7 @@ from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
 from home_manager.app.ledger_check import main as check_ledger_cli
 from home_manager.finance import tax_engine
-from home_manager.finance.health import RULES, check_ledger, summary
+from home_manager.finance.health import RULES, check_ledger, record_links, summary
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import ScanLimits
@@ -166,6 +166,32 @@ def test_tax_lots_that_do_not_cover_sales_or_holdings(books):
     assert ("lots_vs_holding", "holding", holding) in problems  # No open lots, but the statement shows 2 shares.
     with store.connection() as db:
         assert {item.severity for item in check_ledger(db) if item.code.startswith("lots_")} == {"info"}
+
+
+def test_each_problem_links_to_the_record_to_open(books):
+    store, ids = books
+    damage(store, "UPDATE category_splits SET amount_minor=amount_minor+1 WHERE id=(SELECT min(id) FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL)",
+           ids["market"])
+    damage(store, "UPDATE category_splits SET amount_minor=amount_minor-1 WHERE id=(SELECT min(id) FROM category_splits WHERE transaction_id=?)", ids["charge"])
+    damage(store, "UPDATE statements SET opening_balance_minor=0,closing_balance_minor=1 WHERE id=?", ids["statement"])
+    damage(store, "INSERT INTO reconciliation_issues(issue_type,record_type,record_id,detail_json,status,created_at,updated_at) "
+                  "VALUES('ambiguous_refund','transaction',9999,'{}','open','t','t')")
+    with store.connection() as db:
+        account = db.execute("INSERT INTO investment_accounts(kind,name,currency,source,created_at,updated_at) VALUES('brokerage','Brokerage','USD','manual','t','t')").lastrowid
+        holding = db.execute("INSERT INTO holdings(account_id,instrument_class,name,holding_key,created_at,updated_at) VALUES(?,'stock','Fund','fund','t','t')",
+                             (account,)).lastrowid
+        sell = db.execute("INSERT INTO investment_events(account_id,holding_id,event_date,event_type,amount_minor,quantity,review_status,created_at) "
+                          "VALUES(?,?,'2026-03-02','sell',80000,'8','verified','t')", (account, holding)).lastrowid
+        db.execute("INSERT INTO investment_valuations(account_id,holding_id,as_of,value_minor,quantity,source,review_status,created_at,updated_at) "
+                   "VALUES(?,?,'2026-06-30',20000,'2','manual','verified','t','t')", (account, holding))
+        docs = {row["id"]: row["document_id"] for row in db.execute("SELECT id,document_id FROM receipts")}
+        statement_doc = db.execute("SELECT document_id FROM statements WHERE id=?", (ids["statement"],)).fetchone()[0]
+        links = {(item["record_type"], item["record_id"]): item["link"] for item in record_links(db, check_ledger(db))}
+    assert links[("receipt", ids["market"])] == {"document_id": docs[ids["market"]]}
+    assert links[("transaction", ids["charge"])] == {"document_id": statement_doc}  # A statement line opens its statement.
+    assert links[("statement", ids["statement"])] == {"document_id": statement_doc}
+    assert links[("investment_event", sell)] == links[("holding", holding)] == {"investment_account_id": account}
+    assert [link for (kind, _), link in links.items() if kind == "reconciliation_issues"] == [None]  # A table row has no page.
 
 
 def test_every_rule_has_a_severity_and_a_plain_description():
