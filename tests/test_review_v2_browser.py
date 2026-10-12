@@ -44,7 +44,7 @@ def test_to_check_decides_each_kind_with_its_source_in_view(tmp_path):
         page.goto(f"{base}/#token={TOKEN}")
         page.wait_for_load_state("networkidle")
         open_review(page, base)
-        expect(page.locator("#review-panel")).to_be_hidden()
+        expect(page.locator("[data-page='review']")).to_have_count(1)  # One section per page.
         expect(page.locator("#nav-review .nav-label")).to_have_text("To check")
         queue = page.locator("#review2-queue")
         for group in ("Records to verify", "Warranties to confirm", "Tax tables to confirm", "Receipt items to identify",

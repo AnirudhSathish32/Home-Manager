@@ -47,7 +47,7 @@ def test_forecast_v2(tmp_path):
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-forecast").click()
         expect(page.locator("#fc2-panel")).to_be_visible()
-        expect(page.locator("#forecast-panel")).to_be_hidden()
+        expect(page.locator("[data-page='forecast']")).to_have_count(1)  # One section per page.
         page.wait_for_selector("#fc2-tiles [data-figure-ref]")
 
         # Tiles: end cash and net worth are traced and open their breakdown; cash below zero is a needs-you tile.

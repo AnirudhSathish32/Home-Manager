@@ -116,7 +116,7 @@ Every color is a `:root` custom property in `style.css`. Dark redefines the same
 ## Layout
 
 - **Sidebar:** 220px on `--surface` with a right `--border`, collapsing to an icon rail below 1280px and to a top bar
-  below 820px. Groups follow docs/ui.md "Redesigned navigation". Group labels are 12px semibold muted, sentence case.
+  below 820px. Groups follow docs/ui.md "Navigation". Group labels are 12px semibold muted, sentence case.
   The selected item is a filled `--accent` pill with `--on-accent` text and 600 weight. Hover is `--surface-sunken`.
   The count badge is a warning pill.
 - **Page:** `--canvas` background with 28px/32px padding (16px under 820px). The header has an h1, a muted subline,

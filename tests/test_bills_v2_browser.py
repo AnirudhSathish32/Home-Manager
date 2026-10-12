@@ -44,7 +44,7 @@ def test_bills_v2_totals_decisions_and_kinds(tmp_path):
         page.goto(f"{base}/#/bills")
         panel = page.locator("#bills2-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#bills-panel")).to_be_hidden()
+        expect(page.locator("[data-page='bills']")).to_have_count(1)  # One section per page.
         expect(panel.locator("h1")).to_have_text("Bills & subscriptions")
         expect(page.locator("#nav-bills")).to_contain_text("Bills & subscriptions")
         page.wait_for_load_state("networkidle")

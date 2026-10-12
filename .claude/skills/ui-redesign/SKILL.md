@@ -44,26 +44,25 @@ Read files with offset/limit or Grep. `style.css`, `index.html` and the page JS 
   `P:\Finances` or `%LOCALAPPDATA%\HomeManager`.
 
 ## 3. Phases (one per session)
-The design and its principle (every number explainable) are in docs/ui.md "Redesign: calculation observability". The
-work items, in build order, are in docs/open-work.md "UI redesign". Its sections 1–4 are backend work (numbers that
-can be wrong, browser math, traces and provenance) and come before the phases below. A screen session builds on those
-traces and doesn't invent explanations the backend can't give.
+All four phases are done (Phase 3 Build F, 2026-10-12): the redesign is the only UI, and the old screens are deleted.
+The design and its principle (every number explainable) are in docs/ui.md "Design system" › "Every number explained",
+"Trace contract" and "Observability components". New screen work follows the planning procedure below, on the built
+pages in docs/ui.md "Pages". A screen builds on the backend's traces and doesn't invent explanations the backend can't
+give.
 
 0. **Design system.** Query Pro Max with a precise description, not a generic one, for example:
    `python .claude/skills/ui-ux-pro-max/scripts/search.py "personal finance household ledger records dashboard" --design-system --density 8 --persist -p "Home Manager" --output-dir .`
-   Reconcile the result with docs/ui.md "Screen rules" and "Redesign: calculation observability". Then show the user
+   Reconcile the result with docs/ui.md "Screen rules" and "Every number explained". Then show the user
    2–3 directions **as browser pages** (a throwaway artifact), and have them approve MASTER.md. The output of this phase
    is MASTER.md. It has no app code changes.
 1. **Foundation.** Tokens (light and dark), self-hosted fonts, and base components in `style.css` "Controls",
    "Feedback", "Tables" and "Menus and dialogs", plus the shell and sidebar. Page layouts don't change. Check every page
    afterwards with `ui_shots.py`, because tokens touch everything.
 2. **Screens**, one per session, in the order in docs/open-work.md "UI redesign": Taxes → Today → To check and
-   the document page → Money screens → Wealth → the rest. Each screen sat behind a `ui_v2_screens` flag until Phase 3
-   Build E made the redesign the only UI (docs/ui.md "Migration"); a new screen now shows as soon as it registers in
-   `V2_SCREENS`. The old loader is deleted once `tests/test_ui_parity.py` and the screen's tests pass.
-3. **Cleanup.** Remove dead CSS and the old loaders, rewrite docs/ui.md "Design system" and "Pages" to match what was
-   built, retire "Redesign: calculation observability" into them, and update "Screen rules" if any token names
-   changed.
+   the document page → Money screens → Wealth → the rest. A screen registers in `V2_SCREENS` and is one
+   `[data-page]` section (docs/ui.md "Pages"); `tests/test_ui_parity.py` and the screen's tests must pass.
+3. **Cleanup** (done, Build F). The old sections, loaders and CSS are deleted, the shared builders stay in the files
+   without the `_v2` suffix, and docs/ui.md "Design system" and "Pages" describe what was built.
 
 ## 4. Planning procedure for one screen
 1. **Before screenshots.**

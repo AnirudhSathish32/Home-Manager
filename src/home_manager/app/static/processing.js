@@ -1,5 +1,6 @@
 "use strict";
-// Processing (docs/ui.md "Processing"): pipeline lanes, one history of every kind of work, and model runs.
+// Processing's shared parts (processing_v2.js draws the page; docs/ui.md "Processing"), and Settings' connection tests
+// and backups.
 const JOB_KINDS = {inbox_capture: "Inbox capture", text_batch: "Reading documents (batch)", text_reading: "Reading a document", ledger_extraction: "Recording to the ledger",
                    item_identification: "Identifying receipt items", reconciliation: "Reconciliation", backup: "Backup", assistant: "Assistant question",
                    audit_analysis: "Audit analysis", checkin_text: "Check-in answer", warranty_lookup: "Warranty lookup", tax_table_lookup: "Tax table lookup"};
@@ -7,8 +8,7 @@ const JOB_KINDS = {inbox_capture: "Inbox capture", text_batch: "Reading document
 const LANES = [["Capture", ["capture"], ["inbox_capture"]], ["Reading", ["transcription"], ["text_batch", "text_reading"]],
                ["Recording", ["extraction", "item_categories"], ["ledger_extraction"]], ["Item identification", ["item_resolution"], ["item_identification"]],
                ["Reconciliation", ["recurring_scan"], ["reconciliation"]]];
-// processingReload: Processing v2 (processing_v2.js) points it at its own refresh while it shows; v1's loader clears it.
-let processingLoad = 0, lastActivity = [], processingReload = null;
+let lastActivity = [];  // The running work from the latest poll (app.js renderActivity).
 
 function duration(start, end) {
   if (!start || !end) return "—";
@@ -17,66 +17,6 @@ function duration(start, end) {
 }
 function whenText(iso) { return iso ? new Date(iso).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "—"; }
 
-async function loadProcessing() {
-  processingReload = null;
-  if (!configured) return;
-  const load = ++processingLoad;
-  const [latest, reconciliations] = await Promise.all([api("/api/jobs?limit=200"), api("/api/finance/reconciliation-runs?limit=1")]);
-  if (load !== processingLoad) return;
-  renderLanes(latest, reconciliations[0]);
-  await Promise.all([loadJobHistory(), loadModelFacets(), loadSources()]);
-}
-function renderLanes(history, reconciliation) {
-  const lanes = LANES.map(([title, liveKinds, historyKinds]) => {
-    const card = element("div", "", "pipeline-lane"), live = lastActivity.filter(work => liveKinds.includes(work.kind));
-    card.append(element("h3", title));
-    if (live.length) {
-      const running = live.find(work => work.status === "running") || live[0];
-      card.append(statusBadge(running.status), element("small", `${running.label}${running.progress ? ` · ${running.progress.stage.replaceAll("_", " ")} · ${running.progress.elapsed_seconds} s` : ""}`, "block"));
-      const queued = live.filter(work => work.status === "queued").length;
-      if (queued) card.append(element("small", `${queued} queued`, "muted block"));
-    } else card.append(element("span", "Idle", "muted"));
-    const last = title === "Reconciliation" ? null : history.find(row => historyKinds.includes(row.kind));
-    if (title === "Reconciliation" && reconciliation) {
-      card.append(element("small", `Last run ${whenText(reconciliation.started_at)} · ${statusLabel(reconciliation.status)}`, "muted block"),
-                  element("small", `${reconciliation.receipt_links ?? 0} receipt links · ${reconciliation.transfers ?? 0} transfers · ${reconciliation.refunds ?? 0} refunds · ${reconciliation.open_issues ?? 0} open questions`, "muted block"));
-    } else if (last) card.append(element("small", `Last ${whenText(last.started_at)} · ${statusLabel(last.status)}`, "muted block"));
-    else card.append(element("small", "Not run yet", "muted block"));
-    if (title === "Reading" && !modelsConfigured.vision) card.append(homeLink("Set up a vision model", "#/settings", "small block"));
-    if (["Recording", "Item identification"].includes(title) && !modelsConfigured.reasoning) card.append(homeLink("Set up a reasoning model", "#/settings", "small block"));
-    return card;
-  });
-  $("pipeline-lanes").replaceChildren(...lanes);
-}
-async function loadJobHistory() {
-  const kind = $("job-kind").value, query = new URLSearchParams({limit: 50});
-  if (kind) query.append("kind", kind);
-  const jobs = await api(`/api/jobs?${query}`);
-  const rows = jobs.map(job => {
-    const tr = document.createElement("tr");
-    cell(tr, JOB_KINDS[job.kind] || statusLabel(job.kind)); cell(tr, whenText(job.started_at));
-    cell(tr, duration(job.started_at, job.finished_at)).className = "numeric";
-    cell(tr, "").append(statusBadge(job.status));
-    const details = cell(tr, "");
-    if (job.document_id) details.append(homeLink("Open document", `#/documents/${job.document_id}`));
-    if (job.kind === "inbox_capture") {
-      const view = element("button", "Show files", "link-button"); view.type = "button";
-      view.addEventListener("click", () => { selectedJob = job.id; eventOffset = 0; $("scans").value = job.id; loadEvents().then(() => $("events").scrollIntoView({block: "center"})).catch(error => notice(error, true)); });
-      details.append(view);
-    }
-    if (job.error) details.append(technicalDetail(job.error));
-    return tr;
-  });
-  if (rows.length) $("job-rows").replaceChildren(...rows); else tableMessage($("job-rows"), 5, "No work recorded yet.");
-}
-async function loadModelFacets() {
-  const facets = await api("/api/model-runs/facets");
-  for (const [id, values, label] of [["model-task", facets.tasks, "All tasks"], ["model-status", facets.statuses, "All statuses"]]) {
-    const chosen = $(id).value;
-    $(id).replaceChildren(new Option(label, ""), ...values.map(value => new Option(statusLabel(value), value)));
-    $(id).value = values.includes(chosen) ? chosen : "";
-  }
-}
 // Settings depth (Phase E): connection tests and backup & restore.
 for (const button of document.querySelectorAll("[data-test]")) button.addEventListener("click", async () => {
   const kind = button.dataset.test, target = $(`test-${kind}-result`), provider = $(`${kind}-provider`);
@@ -149,7 +89,3 @@ $("restore-form").addEventListener("submit", async event => {
       : `The restore ${statusLabel(record.status).toLowerCase()}. ${record.error || ""}`;
   } catch (error) { $("restore-status").textContent = error.message; }
 });
-
-$("job-kind").replaceChildren(new Option("All kinds of work", ""), ...Object.entries(JOB_KINDS).map(([value, label]) => new Option(label, value)));
-$("job-kind").addEventListener("change", () => loadJobHistory().catch(error => notice(error, true)));
-for (const id of ["model-task", "model-status"]) $(id).addEventListener("change", () => loadModelHistory().catch(error => notice(error, true)));

@@ -1,9 +1,9 @@
 "use strict";
 // Processing, redesigned (docs/ui.md "Processing"; design-system/home-manager/pages/system.md): what is running now and
 // each pipeline stage's state over five tabs (Recent work, Data health, Watched folders, Scans, Model runs), each drawn on
-// its first show. processing.js keeps JOB_KINDS, LANES, duration and whenText; app.js keeps cancelButton, seconds and
-// tokenRate, calls renderPr2Activity on every poll, and calls processingReload, pointed here while this screen shows,
-// while work runs and when it finishes.
+// its first show. processing.js keeps JOB_KINDS, LANES, duration and whenText; app.js keeps cancelButton, seconds,
+// tokenRate and receiptBatch, calls renderPr2Activity on every poll, and calls pr2Refresh while this screen shows, while
+// work runs and when it finishes.
 const PR2_TABS = ["work", "health", "folders", "scans", "models"];
 // The view (in the URL): tab; kind and failed (Recent work); task and status (Model runs). history and reconciliation:
 // the lanes' last runs; health: the newest health report (or {error}); scan and offset: the Scans tab's place;
@@ -33,7 +33,6 @@ function loadProcessingV2(params) {
   pr2.status = pr2.tab === "models" ? status.slice(0, 20) : "";
   $("pr2-kind").value = pr2.kind;
   pr2Chips();
-  processingReload = () => pr2Refresh();
   return pr2Reload();
 }
 function pr2Reload() {
@@ -93,17 +92,9 @@ async function pr2Draw(tab, {quiet = false} = {}) {
     status.replaceChildren(alertBox(`Couldn't load ${PR2_WHAT[tab]}. ${error?.message || error}`, {tone: "error", detail: error?.detail || "", action: retry}));
   } finally { clearTimeout(timer); }
 }
+// columns: [title, className] pairs; an empty title is the actions column. rows: <tr> elements.
 function pr2Table(columns, rows, className = "") {
-  const table = element("table", "", `data-table ${className}`.trim()), head = table.createTHead().insertRow();
-  for (const [title, cls = ""] of columns) {
-    const th = element("th", "", cls); th.scope = "col";
-    if (title) th.textContent = title; else th.append(element("span", "Actions", "visually-hidden"));
-    head.append(th);
-  }
-  const body = table.createTBody();
-  for (const row of rows) body.append(row);
-  const wrap = element("div", "", "table-wrap"); wrap.append(table);
-  return wrap;
+  return dataTable(columns.map(([title, cls = ""]) => [title || element("span", "Actions", "visually-hidden"), cls]), rows, {className});
 }
 function pr2Count(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
 
@@ -143,7 +134,7 @@ function renderPr2Activity(activity) {
   renderPr2Lanes(work);
 }
 function renderPr2Lanes(activity) {
-  const batch = $("receipt-batch-status");
+  const batch = receiptBatch;
   $("pr2-lanes").replaceChildren(...LANES.map(([title, liveKinds, historyKinds]) => {
     const lane = element("div", "", "pr2-lane"), live = activity.filter(work => liveKinds.includes(work.kind));
     lane.append(element("p", title, "pr2-lane-title"));
@@ -162,7 +153,7 @@ function renderPr2Lanes(activity) {
     if (title === "Reconciliation" && last) {
       lane.append(element("p", `${pr2Count(last.receipt_links ?? 0, "link", "links")} · ${last.open_issues ?? 0} open`, "pr2-lane-last"));
     }
-    if (title === "Reading" && ["running", "queued"].includes(batch.dataset.status)) lane.append(element("p", batch.textContent, "pr2-lane-last"));
+    if (title === "Reading" && ["running", "queued"].includes(batch?.status)) lane.append(element("p", receiptBatchText(batch), "pr2-lane-last"));
     if (title === "Reading" && !modelsConfigured.vision) lane.append(homeLink("Set up a vision model", "#/settings", "small"));
     if (["Recording", "Item identification"].includes(title) && !modelsConfigured.reasoning) lane.append(homeLink("Set up a reasoning model", "#/settings", "small"));
     return lane;
@@ -174,7 +165,7 @@ $("pr2-scan").addEventListener("click", async () => {
   try {
     busy.capture = true; controls();
     const result = await api("/api/inbox-scans", {method: "POST", body: "{}"});
-    selectedJob = pr2.scan = result.job_id; eventOffset = pr2.offset = 0;
+    pr2.scan = result.job_id; pr2.offset = 0;
     notice("Inbox capture started. Files are preserved before any organization.");
     await Promise.all([refresh(), pr2Refresh()]);
   } catch (error) { busy.capture = false; controls(); notice(error, true); }
@@ -338,7 +329,7 @@ async function renderFoldersTab(current) {
     const actions = element("div", "", "button-row pr2-source-actions");
     const scan = asyncButton("Scan now", async () => {
       const result = await api(`/api/sources/${source.id}/scans`, {method: "POST", body: "{}"});
-      selectedJob = pr2.scan = result.job_id; eventOffset = pr2.offset = 0;
+      pr2.scan = result.job_id; pr2.offset = 0;
       notice("Watched folder scan started. Files are copied; the folder is not changed.");
       await Promise.all([refresh(), pr2Refresh()]);
     });

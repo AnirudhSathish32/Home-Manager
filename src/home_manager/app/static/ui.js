@@ -220,6 +220,36 @@ function dateDisplay(iso) {
   return time;
 }
 
+// A button that runs onClick once at a time: disabled while it runs, and any error becomes a toast.
+function asyncButton(label, onClick, className = "small") {
+  const button = element("button", label, className); button.type = "button";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try { await onClick(); } catch (error) { notice(error, true); } finally { button.disabled = false; }
+  });
+  return button;
+}
+// A data table in its scrolling wrapper. columns: [title, className] pairs, where title is text or a node (an empty
+// title leaves the header cell empty) and className applies to the column's header and cells. rows: <tr> elements, or
+// arrays of cell values (text or nodes). caption: a name for screen readers.
+function dataTable(columns, rows, {caption = "", className = ""} = {}) {
+  const table = element("table", "", `data-table ${className}`.trim()), head = table.createTHead().insertRow();
+  if (caption) table.createCaption().append(element("span", caption, "visually-hidden"));
+  for (const [title, cls = ""] of columns) {
+    const th = element("th", "", cls); th.scope = "col";
+    th.append(title instanceof Node ? title : document.createTextNode(title || ""));
+    head.append(th);
+  }
+  const body = table.createTBody();
+  for (const row of rows) {
+    if (row instanceof Node) { body.append(row); continue; }
+    const tr = body.insertRow();
+    row.forEach((value, index) => tr.appendChild(element("td", "", columns[index]?.[1] || "")).append(value instanceof Node ? value : document.createTextNode(value)));
+  }
+  const wrap = element("div", "", "table-wrap"); wrap.append(table);
+  return wrap;
+}
+
 function emptyState(message, action = null) {
   const box = element("div", "", "empty-state"); box.appendChild(element("p", message));
   if (action) box.appendChild(action);

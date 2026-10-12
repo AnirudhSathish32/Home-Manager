@@ -1,7 +1,6 @@
 "use strict";
-// Forecast page: the server computes every number and draws every chart; this page only collects
-// assumptions, lists assets, and shows the results. Charts arrive as escaped SVG and are parsed as XML.
-let forecastLoad = 0, forecastCategories = [];
+// Forecast builders (forecast_v2.js draws the page): the server computes every number and draws every chart; these
+// collect assumptions, list assets and shape the results. Charts arrive as escaped SVG and are parsed as XML.
 
 function forecastField(labelText, input) {
   const field = element("div", "", "field");
@@ -32,45 +31,42 @@ function forecastItems(list) {
   return [...$(list).querySelectorAll(".forecast-item")].map(row =>
     Object.fromEntries([...row.querySelectorAll("input")].map(input => [input.dataset.key, input.value.trim()])));
 }
-// The field specs of each assumption list. p is the id prefix: "" for this page, "fc2-" for the redesigned one
-// (forecast_v2.js), which reuses these builders on its own copies of the inputs.
-function forecastLists(p = "") {
+// The field specs of each assumption list, on the page's "fc2-" inputs.
+function forecastLists() {
   return {
-    spending: [p + "forecast-spending-changes", [["category", "Category", {list: p + "forecast-category-options", required: ""}], ["percent", "Change (%)", {inputmode: "decimal", required: "", placeholder: "10"}]]],
-    income: [p + "forecast-income-changes", [["month", "From month", {type: "month", required: ""}], ["monthly_amount", "Monthly change", {inputmode: "decimal", required: "", placeholder: "500.00"}]]],
-    oneoff: [p + "forecast-one-offs", [["month", "Month", {type: "month", required: ""}], ["amount", "Amount", {inputmode: "decimal", required: "", placeholder: "-3000.00"}], ["label", "What it is", {maxlength: "80"}]]],
-    edu: [p + "forecast-education", [["month", "Month", {type: "month", required: ""}], ["amount", "Cost", {inputmode: "decimal", required: "", placeholder: "12000.00"}], ["label", "What it is", {maxlength: "80"}]]],
+    spending: ["fc2-forecast-spending-changes", [["category", "Category", {list: "fc2-forecast-category-options", required: ""}], ["percent", "Change (%)", {inputmode: "decimal", required: "", placeholder: "10"}]]],
+    income: ["fc2-forecast-income-changes", [["month", "From month", {type: "month", required: ""}], ["monthly_amount", "Monthly change", {inputmode: "decimal", required: "", placeholder: "500.00"}]]],
+    oneoff: ["fc2-forecast-one-offs", [["month", "Month", {type: "month", required: ""}], ["amount", "Amount", {inputmode: "decimal", required: "", placeholder: "-3000.00"}], ["label", "What it is", {maxlength: "80"}]]],
+    edu: ["fc2-forecast-education", [["month", "Month", {type: "month", required: ""}], ["amount", "Cost", {inputmode: "decimal", required: "", placeholder: "12000.00"}], ["label", "What it is", {maxlength: "80"}]]],
   };
 }
 
-function forecastRequest(p = "") {
-  const request = {years: Number($(p + "forecast-years").value), inflation_percent: $(p + "forecast-inflation").value.trim(),
-                   income_growth_percent: $(p + "forecast-income-growth").value.trim(), history_months: Number($(p + "forecast-history").value),
-                   spending_changes: forecastItems(p + "forecast-spending-changes"), income_changes: forecastItems(p + "forecast-income-changes"),
-                   one_offs: forecastItems(p + "forecast-one-offs").map(item => ({...item, label: item.label || ""})),
-                   education_withdrawals: forecastItems(p + "forecast-education").map(item => ({...item, label: item.label || ""}))};
+function forecastRequest() {
+  const request = {years: Number($("fc2-forecast-years").value), inflation_percent: $("fc2-forecast-inflation").value.trim(),
+                   income_growth_percent: $("fc2-forecast-income-growth").value.trim(), history_months: Number($("fc2-forecast-history").value),
+                   spending_changes: forecastItems("fc2-forecast-spending-changes"), income_changes: forecastItems("fc2-forecast-income-changes"),
+                   one_offs: forecastItems("fc2-forecast-one-offs").map(item => ({...item, label: item.label || ""})),
+                   education_withdrawals: forecastItems("fc2-forecast-education").map(item => ({...item, label: item.label || ""}))};
   // A retirement plan is one self-contained input, so a scenario can change it without touching the rest.
-  if ($(p + "retire-plan").checked) {
-    const fixed = $(p + "retire-mode").value === "fixed";
-    request.retirement = {start_month: $(p + "retire-month").value, mode: $(p + "retire-mode").value, tax_percent: $(p + "retire-tax").value.trim() || "0",
-                          ...(fixed ? {monthly_amount: $(p + "retire-amount").value.trim()} : {cash_floor: $(p + "retire-floor").value.trim() || "0"})};
+  if ($("fc2-retire-plan").checked) {
+    const fixed = $("fc2-retire-mode").value === "fixed";
+    request.retirement = {start_month: $("fc2-retire-month").value, mode: $("fc2-retire-mode").value, tax_percent: $("fc2-retire-tax").value.trim() || "0",
+                          ...(fixed ? {monthly_amount: $("fc2-retire-amount").value.trim()} : {cash_floor: $("fc2-retire-floor").value.trim() || "0"})};
   }
   return request;
 }
-function showRetirementFields(p = "") {
-  const on = $(p + "retire-plan").checked, fixed = $(p + "retire-mode").value === "fixed";
-  $(p + "retire-fields").hidden = !on;
-  $(p + "retire-month").required = on;
-  $(p + "retire-amount-field").hidden = !fixed; $(p + "retire-amount").required = on && fixed;
-  $(p + "retire-floor-field").hidden = fixed;
+function showRetirementFields() {
+  const on = $("fc2-retire-plan").checked, fixed = $("fc2-retire-mode").value === "fixed";
+  $("fc2-retire-fields").hidden = !on;
+  $("fc2-retire-month").required = on;
+  $("fc2-retire-amount-field").hidden = !fixed; $("fc2-retire-amount").required = on && fixed;
+  $("fc2-retire-floor-field").hidden = fixed;
 }
 
-// Investment accounts have their own page (investments.js) and join the forecast from there.
+// Investment accounts have their own page (investments_v2.js) and join the forecast from there.
 const ASSET_KINDS = {vehicle: "Vehicle", real_estate: "Home or property", other_asset: "Other asset", loan: "Loan"};
-// Whichever forecast screen is showing reloads after an asset is added or removed; forecast_v2.js points this at its own.
-let forecastReload = () => loadForecast();
-async function loadAssets(p = "") {
-  const assets = await api("/api/assets"), body = $(p + "asset-rows");
+async function loadAssets() {
+  const assets = await api("/api/assets"), body = $("fc2-asset-rows");
   body.replaceChildren();
   if (!assets.length) {
     const row = body.insertRow(), td = row.insertCell(); td.colSpan = 8;
@@ -87,38 +83,37 @@ async function loadAssets(p = "") {
     remove.setAttribute("aria-label", `Remove ${asset.name}`);
     remove.addEventListener("click", async () => {
       if (!await confirmAction({title: `Remove ${asset.name}?`, message: "It is left out of forecasts from now on. Its history is kept.", confirmLabel: "Remove"})) return;
-      try { await api(`/api/assets/${asset.id}`, {method: "DELETE"}); await forecastReload(); } catch (error) { notice(error, true); }
+      try { await api(`/api/assets/${asset.id}`, {method: "DELETE"}); await fc2Reload(); } catch (error) { notice(error, true); }
     });
     td.append(remove);
   }
 }
-// The listeners on one copy of the inputs: "Add …" rows, retirement fields and the asset form.
-function wireForecast(p = "") {
-  const lists = forecastLists(p);
+// The listeners on the inputs: "Add …" rows, retirement fields and the asset form.
+function wireForecast() {
+  const lists = forecastLists();
   for (const [button, key] of [["add-spending-change", "spending"], ["add-income-change", "income"], ["add-one-off", "oneoff"], ["add-education", "edu"]]) {
-    $(p + button).addEventListener("click", () => forecastRow(...lists[key]));
+    $("fc2-" + button).addEventListener("click", () => forecastRow(...lists[key]));
   }
-  $(p + "retire-plan").addEventListener("change", () => showRetirementFields(p));
-  $(p + "retire-mode").addEventListener("change", () => showRetirementFields(p));
-  $(p + "asset-kind").addEventListener("change", () => {
-    const loan = $(p + "asset-kind").value === "loan";
-    $(p + "asset-payment").disabled = !loan; if (!loan) $(p + "asset-payment").value = "";
-    $(p + "asset-rate").placeholder = loan ? "Interest, e.g. 6.5" : $(p + "asset-kind").value === "vehicle" ? "Car: -15 if blank" : "0 if blank";
+  $("fc2-retire-plan").addEventListener("change", showRetirementFields);
+  $("fc2-retire-mode").addEventListener("change", showRetirementFields);
+  $("fc2-asset-kind").addEventListener("change", () => {
+    const loan = $("fc2-asset-kind").value === "loan";
+    $("fc2-asset-payment").disabled = !loan; if (!loan) $("fc2-asset-payment").value = "";
+    $("fc2-asset-rate").placeholder = loan ? "Interest, e.g. 6.5" : $("fc2-asset-kind").value === "vehicle" ? "Car: -15 if blank" : "0 if blank";
   });
-  $(p + "asset-form").addEventListener("submit", async event => {
+  $("fc2-asset-form").addEventListener("submit", async event => {
     event.preventDefault();
-    const body = {name: $(p + "asset-name").value.trim(), kind: $(p + "asset-kind").value, value: $(p + "asset-value").value.trim(),
-                  currency: $(p + "asset-currency").value.trim().toUpperCase(), as_of: $(p + "asset-as-of").value};
-    if ($(p + "asset-rate").value.trim()) body.annual_rate_percent = $(p + "asset-rate").value.trim();
-    if ($(p + "asset-payment").value.trim()) body.monthly_payment = $(p + "asset-payment").value.trim();
+    const body = {name: $("fc2-asset-name").value.trim(), kind: $("fc2-asset-kind").value, value: $("fc2-asset-value").value.trim(),
+                  currency: $("fc2-asset-currency").value.trim().toUpperCase(), as_of: $("fc2-asset-as-of").value};
+    if ($("fc2-asset-rate").value.trim()) body.annual_rate_percent = $("fc2-asset-rate").value.trim();
+    if ($("fc2-asset-payment").value.trim()) body.monthly_payment = $("fc2-asset-payment").value.trim();
     try {
       await api("/api/assets", {method: "POST", body: JSON.stringify(body)});
-      for (const id of ["asset-name", "asset-value", "asset-rate", "asset-payment"]) $(p + id).value = "";
-      notice(`${body.name} added.`); await forecastReload();
+      for (const id of ["asset-name", "asset-value", "asset-rate", "asset-payment"]) $("fc2-" + id).value = "";
+      notice(`${body.name} added.`); await fc2Reload();
     } catch (error) { notice(error, true); }
   });
 }
-wireForecast();
 
 function forecastSvg(markup) {
   // Server-built, escaped SVG. Parsed as XML and imported: nothing in it can run.
@@ -126,8 +121,8 @@ function forecastSvg(markup) {
   if (parsed.nodeName !== "svg") throw new Error("A chart could not be drawn.");
   return document.importNode(parsed, true);
 }
-// columns: [label, key] pairs into each year's display text. money(year, key) draws one cell; the redesigned page
-// passes one that makes traced columns into figures.
+// columns: [label, key] pairs into each year's display text. money(year, key) draws one cell; the page passes one that
+// makes traced columns into figures.
 function forecastTable(result, columns, money = (year, key) => amount(year.display[key], {signed: false})) {
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
   const head = table.createTHead().insertRow();
@@ -164,7 +159,7 @@ function retirementFacts(result) {
   if (rmd) facts.push(["Required distributions", `From ${rmd.year} (age ${rmd.age}), each December`]);
   return facts;
 }
-// The Starting point block's nodes. label shows a category name (the redesigned page passes categoryLabel).
+// The Starting point block's nodes. label shows a category name (the page passes categoryLabel).
 function forecastStart(result, label = name => name) {
   const start = result.starting_point, facts = element("dl", "", "forecast-facts");
   const history = result.assumptions.history;
@@ -192,42 +187,11 @@ function forecastStart(result, label = name => name) {
     element("h3", "Investments"), invested.length ? investments : element("p", "No confirmed investment values.", "muted"),
     homeLink("Open Investments to add accounts or change growth rates", "#/investments")];
 }
-// The categories a spending change can name, as the datalist id (one per screen).
-function forecastCategoryOptions(result, id) {
-  const start = result.starting_point;
-  forecastCategories = [...new Set([...start.monthly_spending.map(row => row.category), ...(start.recurring_bills || []).map(bill => bill.category)])];
+// The categories a spending change can name, as a datalist.
+function forecastCategoryOptions(result) {
+  const start = result.starting_point, id = "fc2-forecast-category-options";
+  const categories = new Set([...start.monthly_spending.map(row => row.category), ...(start.recurring_bills || []).map(bill => bill.category)]);
   const options = document.getElementById(id) || Object.assign(document.createElement("datalist"), {id});
-  options.replaceChildren(...forecastCategories.map(name => Object.assign(document.createElement("option"), {value: name})));
+  options.replaceChildren(...[...categories].map(name => Object.assign(document.createElement("option"), {value: name})));
   document.body.append(options);
 }
-function renderForecast(result) {
-  const alerts = $("forecast-alerts"); alerts.replaceChildren();
-  if (result.first_month_cash_below_zero) alerts.append(alertBox(`Cash is projected to fall below zero in ${monthText(result.first_month_cash_below_zero)}.`, {tone: "warning"}));
-  if (result.notes.length) {
-    const list = element("ul", "", "forecast-notes"); for (const note of result.notes) list.append(element("li", note));
-    const box = alertBox("About these numbers", {tone: "info"}); box.querySelector(".alert-body").append(list); alerts.append(box);
-  }
-  $("forecast-start").replaceChildren(...forecastStart(result));
-  forecastCategoryOptions(result, "forecast-category-options");
-  $("forecast-charts").replaceChildren(...Object.entries(forecastColumns(result)).map(([key, [title, columns]]) => {
-    const card = element("section", "", "panel forecast-chart-card"), details = element("details");
-    details.append(element("summary", "Show the numbers by year"), forecastTable(result, columns));
-    card.append(element("h2", title), forecastSvg(result.charts[key]), details);
-    return card;
-  }));
-}
-function loadForecast() {
-  forecastReload = () => loadForecast();
-  return pageState($("forecast-state"), runForecast, {loading: "Loading the forecast …", what: "the forecast", needsLibrary: true, content: [$("forecast-charts")]});
-}
-async function runForecast() {
-  const load = ++forecastLoad;
-  if (!$("asset-as-of").value) $("asset-as-of").value = todayIso();  // Local today: toISOString is UTC, a day ahead in the evening west of it.
-  await loadAssets();
-  const result = await api("/api/forecast", {method: "POST", body: JSON.stringify(forecastRequest())});
-  if (load === forecastLoad) renderForecast(result);
-}
-$("forecast-form").addEventListener("submit", event => {
-  event.preventDefault();
-  loadForecast();  // pageState shows any error.
-});

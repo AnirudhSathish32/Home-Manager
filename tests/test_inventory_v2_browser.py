@@ -33,7 +33,7 @@ def test_inventory_v2_tabs_answers_and_insights(tmp_path):
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-inventory").click()
         expect(page.locator("#it2-panel")).to_be_visible()
-        expect(page.locator("#inventory-panel")).to_be_hidden()
+        expect(page.locator("[data-page='inventory']")).to_have_count(1)  # One section per page.
         expect(page.locator("#it2-body")).to_contain_text("No items yet")
 
         seed_items(manager)

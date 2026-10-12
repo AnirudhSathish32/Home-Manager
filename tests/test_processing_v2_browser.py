@@ -33,7 +33,7 @@ def test_processing_v2_strip_tabs_health_and_folders(tmp_path):
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-processing").click()
         expect(page.locator("#pr2-panel")).to_be_visible()
-        expect(page.locator("#scan-panel")).to_be_hidden()
+        expect(page.locator("[data-page='processing']")).to_have_count(1)  # One section per page.
 
         # The strip: nothing running, five stages; the failed reading shows under Reading.
         expect(page.locator("#pr2-activity")).to_have_text("Nothing running.")

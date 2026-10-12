@@ -272,7 +272,8 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   const textLines = () => state.reading?.result?.lines || [];
   const tell = (blockId, lineIds) => { for (const callback of state.callbacks) callback({blockId, lineIds}); };
   function showPdf(url) {
-    // A fresh frame given its source before it is inserted adds no browser history entry (receipt.js showPdf).
+    // Navigating a frame already in the page adds a browser history entry, so Back would first rewind the PDF. A fresh
+    // frame given its source before it is inserted adds none.
     const fresh = element("iframe", "", "sv-pdf"); fresh.title = pdf.title; fresh.hidden = !url;
     if (url) fresh.src = url;
     pdf.replaceWith(fresh); pdf = fresh;

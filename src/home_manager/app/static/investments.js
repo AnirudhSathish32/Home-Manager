@@ -2,129 +2,11 @@
 // Investments (docs/planning.md "Investments"): accounts grouped by section, what share each section and tax treatment holds,
 // and one account's values over time. The server does every sum and share; the page only arranges its text.
 // The open account lives in the URL (#/investments?account=ID) so Back and reload keep it.
-let investmentKinds = [], investmentsLoad = 0;
-// What the shared builders below call after a save: the screen that drew them (Investments v2 sets its own).
-let investmentsReload = () => loadInvestments();
+let investmentKinds = [];
 const SOURCE_LABELS = {manual: "Entered by you", statement: "Statement", ledger_statement: "Savings statement", estimated: "Estimated from purchase terms",
                        quote: "Market price"};
 const TERM_CLASSES = [["cd", "CD"], ["treasury_bill", "Treasury bill"], ["treasury_note", "Treasury note"], ["treasury_bond", "Treasury bond"],
                       ["i_bond", "I bond"], ["bond", "Bond"]];
-
-function loadInvestments(params = new URLSearchParams(location.hash.split("?")[1] || "")) {
-  investmentsReload = () => loadInvestments();
-  return pageState($("investments-state"), () => renderInvestments(params), {loading: "Loading investments …", what: "investments", needsLibrary: true,
-                                                                              content: [$("investments-summary"), $("investments-groups")]});
-}
-async function renderInvestments(params) {
-  const load = ++investmentsLoad, archived = $("investments-archived").checked;
-  const [kinds, summary] = await Promise.all([investmentKinds.length ? investmentKinds : api("/api/investment-kinds"),
-                                              api(`/api/investments${archived ? "?include_archived=true" : ""}`)]);
-  if (load !== investmentsLoad) return;
-  investmentKinds = kinds;
-  fillKindSelect($("investment-kind"), kinds);
-  if (!$("investment-as-of").value) $("investment-as-of").value = todayIso();
-  renderInvestmentSummary(summary);
-  renderInvestmentGroups(summary);
-  const selected = Number(params.get("account"));
-  // Tax forms arrive early in the year for the year before, so that year is shown unless the URL names one.
-  const year = Number(params.get("year")) || new Date().getFullYear() - 1;
-  const taxes = api(`/api/investments/tax-years/${year}`).then(data => { if (load === investmentsLoad) renderInvestmentTaxes(data, params); })
-    .catch(error => { $("investments-taxes").replaceChildren(alertBox(error.message, {tone: "error"})); });
-  const rmd = api("/api/investments/rmd").then(data => { if (load === investmentsLoad) renderRequiredDistributions(data); })
-    .catch(error => { $("investments-rmd").replaceChildren(alertBox(error.message, {tone: "error"})); });
-  if (selected) await renderInvestmentDetail(selected, params.has("renew")).catch(error => { $("investment-detail").replaceChildren(alertBox(error.message, {tone: "error"})); });
-  else $("investment-detail").replaceChildren();
-  await Promise.all([taxes, rmd]);
-}
-
-function renderRequiredDistributions(data) {
-  // This year's required minimum distributions from tax-deferred accounts (finance/retirement.py); nothing until there is one.
-  const target = $("investments-rmd");
-  if (!data.has_accounts) { target.replaceChildren(); return; }
-  const panel = element("section", "", "panel");
-  panel.append(element("h2", `Required minimum distributions, ${data.year}`));
-  if (data.birth_year == null) {
-    panel.append(emptyState("Add the year you were born in Settings to see when required minimum distributions begin and how much each tax-deferred account must pay out.",
-                            homeLink("Open Settings", "#/settings")));
-  } else if (data.begins_later) {
-    panel.append(element("p", `They begin in ${data.first_year}, the year you turn ${data.start_age}. The first can wait until April 1, ${data.first_year + 1}.`));
-  } else {
-    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
-    for (const [title, numeric] of [["Account"], ["Balance on Dec 31", true], ["Divisor", true], ["Required", true], ["Taken", true], ["Left", true], ["Deadline"], ["Status"]]) {
-      const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th);
-    }
-    const body = table.createTBody();
-    for (const row of data.accounts) {
-      const tr = body.insertRow(), name = cell(tr, ""), link = element("a", row.name);
-      link.href = `#/investments?account=${row.account_id}`; name.append(link);
-      const balance = moneyCell(tr, row.balance);
-      if (row.stale) balance.append(element("small", `as of ${dateText(row.balance_as_of)}`, "muted block"));
-      cell(tr, row.divisor).className = "numeric";
-      moneyCell(tr, row.required); moneyCell(tr, row.taken); moneyCell(tr, row.left);
-      cell(tr, dateText(row.deadline));
-      cell(tr, "").append(row.required ? statusBadge(row.status === "verified" ? "rmd_taken" : "due") : element("span", "No value on Dec 31", "muted"));
-    }
-    wrap.append(table);
-    panel.append(element("p", `Age ${data.age} this year. Each tax-deferred account's balance at the end of last year is divided by the IRS Uniform Lifetime Table's `
-                               + "divisor for your age. Roth accounts and HSAs have none. Not included: the still-working exception for a current employer's plan, "
-                               + "inherited accounts, and a spouse more than ten years younger.", "muted small"), wrap);
-  }
-  target.replaceChildren(panel);
-}
-
-function renderInvestmentTaxes(data, params) {
-  // One tax year: each 1099 or 5498 box beside what is recorded for its account, and realized gains in taxable accounts.
-  const panel = element("section", "", "panel"), heading = element("div", "", "ledger-record-heading"), select = document.createElement("select");
-  for (const year of data.years) select.add(new Option(String(year), String(year)));
-  select.value = String(data.year); select.setAttribute("aria-label", "Tax year");
-  select.addEventListener("change", () => { const next = new URLSearchParams(params); next.set("year", select.value); location.hash = `#/investments?${next}`; });
-  heading.append(element("h2", `Taxes for ${data.year}`), select);
-  panel.append(heading);
-  for (const gains of data.gains) {
-    const figures = element("div", "", "figure-group");
-    for (const [label, value] of [["Sold for", gains.proceeds], ["Cost of what was sold", gains.cost], ["Short-term gain", gains.short], ["Long-term gain", gains.long]]) {
-      const item = element("div", "", "figure-item"), figure = amount(value, {signed: label.endsWith("gain")}); figure.classList.add("figure-small");
-      item.append(element("span", label, "figure-label"), figure); figures.append(item);
-    }
-    panel.append(element("h3", `Realized gains in taxable accounts${data.gains.length > 1 ? `, ${gains.currency}` : ""}`), figures,
-                 element("p", "Sales are matched to purchase lots first in, first out; a lot held more than a year gives a long-term gain.", "muted small"));
-    for (const gap of gains.missing) {
-      panel.append(alertBox(`${gap.account}: ${gap.shares} shares sold on ${dateText(gap.date)} have no purchase recorded, so their gain isn't counted. Add the lot under the holding.`,
-                            {tone: "warning", action: homeLink("Open the account", `#/investments?account=${gap.account_id}`)}));
-    }
-  }
-  for (const plan of data.education) {
-    // A 529's withdrawals that didn't pay for qualified education costs: their earnings part is taxed as income.
-    const link = homeLink("Open the account", `#/investments?account=${plan.account_id}`);
-    if (plan.unmarked) panel.append(alertBox(`${plan.account}: ${plan.unmarked.display} withdrawn isn't marked qualified or not yet.`, {tone: "warning", action: link}));
-    if (plan.nonqualified.minor) {
-      panel.append(element("p", plan.taxable_earnings
-        ? `${plan.account}: ${plan.nonqualified.display} withdrawn for other costs. ${plan.taxable_earnings.display} of it is earnings (${plan.earnings_share_percent}%, from the 1099-Q), taxed as income; a 10% additional tax usually applies too.`
-        : `${plan.account}: ${plan.nonqualified.display} withdrawn for other costs. Its taxable earnings come from the 1099-Q; add it to Receipts & statements.`));
-    }
-  }
-  if (!data.checks.length) {
-    panel.append(emptyState(`No 1099 or 5498 forms for ${data.year}. Add them to Receipts & statements; each box is then compared with what is recorded here.`));
-  } else {
-    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
-    for (const [title, numeric] of [["Form"], ["Account"], ["Reports"], ["On the form", true], ["Recorded", true], ["Difference", true], ["Status"]]) {
-      const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th);
-    }
-    const body = table.createTBody();
-    for (const check of data.checks) {
-      const tr = body.insertRow(), form = cell(tr, "");
-      form.append(check.document_id ? homeLink(`${check.institution} ${check.forms.join(", ")}`, `#/documents/${check.document_id}`) : element("span", check.institution),
-                  element("small", `Box ${check.boxes.join(", ")}`, "muted block"));
-      cell(tr, check.account || "—");
-      cell(tr, check.label);
-      moneyCell(tr, check.form_amount); moneyCell(tr, check.recorded); moneyCell(tr, check.difference, true);
-      cell(tr, "").append(statusBadge(check.review_status === "proposed" ? "proposed" : !check.recorded ? "tax_unlinked" : check.matches ? "tax_match" : "tax_differs"));
-    }
-    wrap.append(table);
-    panel.append(element("p", "Recorded amounts are confirmed activity for the account in that year. A difference can mean a statement or pay stub isn't here yet.", "muted small"), wrap);
-  }
-  $("investments-taxes").replaceChildren(panel);
-}
 
 function fillKindSelect(select, kinds, chosen = select.value) {
   const groups = new Map();
@@ -152,34 +34,6 @@ function shareTable(title, rows) {
   table.prepend(caption); wrap.append(table); return wrap;
 }
 
-function renderInvestmentSummary(summary) {
-  const nodes = [];
-  if (summary.awaiting_review) {
-    nodes.push(alertBox(`${summary.awaiting_review} statement value${summary.awaiting_review === 1 ? " or purchase waits" : "s or purchases wait"} for you. They count once you confirm them.`,
-                        {tone: "info", action: homeLink("Open Review", "#/review")}));
-  }
-  for (const question of summary.payroll_questions) nodes.push(payrollQuestion(question));
-  for (const warning of summary.ibond_warnings) nodes.push(alertBox(warning.message, {tone: "warning"}));
-  for (const total of summary.totals) {
-    const panel = element("section", "", "panel investment-total");
-    const figures = element("div", "", "figure-group"), main = element("div", "", "figure-main");
-    const value = amount(total.total, {signed: false}); value.classList.add("figure-value");
-    main.append(element("span", `Invested, ${total.currency}`, "figure-label"), value);
-    const oldest = element("div", "", "figure-item");
-    oldest.append(element("span", "Oldest value", "figure-label"), element("span", dateText(total.oldest_as_of), "figure-small"));
-    figures.append(main, oldest);
-    const split = element("div", "", "investment-split");
-    split.append(shareTable("Section", total.sections), shareTable("Tax treatment", total.tax));
-    const estimated = total.estimated_accounts
-      ? ` ${total.estimated_accounts} account${total.estimated_accounts === 1 ? " is" : "s are"} estimated today from the terms of confirmed CDs and Treasuries.` : "";
-    panel.append(element("h2", summary.totals.length > 1 ? `Confirmed values in ${total.currency}` : "Confirmed values"), figures,
-                 element("p", `Each account counts at its newest confirmed value. Shares are of this total.${estimated}`, "muted small"), split);
-    nodes.push(panel);
-  }
-  if (summary.maturities.length) nodes.push(maturityPanel(summary.maturities));
-  $("investments-summary").replaceChildren(...nodes);
-}
-
 function payrollQuestion(question) {
   // Pay stubs list contributions the documents can't place: several accounts could hold them, or there is none yet.
   if (!question.accounts.length) {
@@ -193,33 +47,10 @@ function payrollQuestion(question) {
     event.preventDefault();
     try {
       await api(`/api/investments/${select.value}/payroll`, {method: "POST", body: JSON.stringify({employer_id: question.employer_id})});
-      notice(`${question.employer}'s ${question.label} contributions now go to ${select.selectedOptions[0].text}.`); await investmentsReload();
+      notice(`${question.employer}'s ${question.label} contributions now go to ${select.selectedOptions[0].text}.`); await inv2Reload();
     } catch (error) { notice(error, true); }
   });
   return alertBox(`Pay stubs from ${question.employer} list ${question.label} contributions. Which account do they go to?`, {tone: "info", action: form});
-}
-function maturityPanel(maturities) {
-  // CDs and Treasuries coming due in the next 90 days, and matured ones waiting for an answer: paid out, or renewed.
-  const panel = element("section", "", "panel"), wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
-  const head = table.createTHead().insertRow();
-  for (const [title, numeric] of [["Holding"], ["Date"], ["Amount", true], ["Status"], ["What happened"]]) {
-    const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th);
-  }
-  const body = table.createTBody();
-  for (const due of maturities) {
-    const tr = body.insertRow(), name = cell(tr, "");
-    const link = element("a", due.name); link.href = `#/investments?account=${due.account_id}`;
-    name.append(link, element("small", due.account, "muted block"));
-    cell(tr, `${MATURITY_STATES[due.state === "matured" ? "matured" : due.kind]} ${dateText(due.date)}`);
-    moneyCell(tr, due.amount);
-    cell(tr, "").append(statusBadge(due.state));
-    const actions = cell(tr, "");
-    if (due.state === "matured") actions.append(...maturedButtons(due.holding_id, due.name, due.account_id));
-    else actions.append(element("span", due.rollover ? "Renews itself" : "—", "muted"));
-  }
-  wrap.append(table);
-  panel.append(element("h2", "Coming due"), element("p", "Amounts are what the terms pay at that date.", "muted small"), wrap);
-  return panel;
 }
 function maturedButtons(holdingId, name, accountId) {
   // One answer closes the holding and records the maturity; a renewal is then added as a new CD or Treasury.
@@ -227,120 +58,8 @@ function maturedButtons(holdingId, name, accountId) {
     await api(`/api/investments/holdings/${holdingId}/matured`, {method: "POST", body: JSON.stringify({outcome})});
     notice(outcome === "cash" ? `${name} recorded as paid out.` : `${name} closed. Add the renewed one to this account.`);
     const next = `#/investments?account=${accountId}${outcome === "rollover" ? `&renew=${holdingId}` : ""}`;
-    if (location.hash === next) await investmentsReload(); else location.hash = next;
+    if (location.hash === next) await inv2Reload(); else location.hash = next;
   }, "small"));
-}
-
-function renderInvestmentGroups(summary) {
-  const groups = new Map();
-  for (const account of summary.accounts) { if (!groups.has(account.section)) groups.set(account.section, []); groups.get(account.section).push(account); }
-  const panels = [];
-  for (const [section, label] of Object.entries(summary.sections)) {
-    const members = groups.get(section);
-    if (!members) continue;
-    const panel = element("section", "", "panel"); panel.append(element("h2", label));
-    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
-    const head = table.createTHead().insertRow();
-    for (const [title, numeric] of [["Account"], ["Kind"], ["Value", true], ["As of"], ["Change", true], ["Yearly rate", true], ["Status"]]) {
-      const th = element("th", title, numeric ? "numeric" : ""); th.scope = "col"; head.append(th);
-    }
-    const body = table.createTBody();
-    for (const account of members) body.append(investmentRow(account));
-    wrap.append(table); panel.append(wrap); panels.push(panel);
-  }
-  $("investments-groups").replaceChildren(...(panels.length ? panels : [emptyState(
-    "No investment accounts yet. Add one below, or add an investment statement to Receipts & statements and confirm its value in Review.")]));
-}
-
-function investmentRow(account) {
-  const tr = document.createElement("tr");
-  const name = cell(tr, ""), link = element("a", account.name);
-  link.href = `#/investments?account=${account.id}`;
-  name.append(link);
-  if (account.institution) name.append(element("small", account.institution, "muted block"));
-  cell(tr, account.kind_label);
-  const value = cell(tr, ""); value.className = "numeric";
-  if (account.is_income) {
-    // A pension pays a monthly benefit from its start date; it has no balance to show or add up.
-    if (account.pension) value.append(amount(account.pension.monthly_benefit, {signed: false}), element("small", "a month", "muted block"));
-    else value.append(element("span", "—", "muted"));
-    cell(tr, account.pension ? `From ${dateText(account.pension.start_date)}` : "—");
-    cell(tr, "—").className = "numeric";
-    cell(tr, account.pension && account.pension.cola_bp ? `${account.pension.cola_percent}% raise` : "—").className = "numeric";
-    const state = cell(tr, "");
-    state.append(account.archived_at ? statusBadge("removed") : account.pension ? statusBadge("pension_income") : element("span", "Add its terms", "muted"));
-    return tr;
-  }
-  value.append(account.current ? amount(account.current.value, {signed: false}) : element("span", "—", "muted"));
-  cell(tr, account.current ? dateText(account.current.as_of) : "—");
-  const change = cell(tr, ""); change.className = "numeric";
-  if (account.change) { change.append(amount(account.change)); change.title = `Since ${dateText(account.change_since)}`; } else change.append(element("span", "—", "muted"));
-  cell(tr, `${account.annual_rate_percent}%${account.rate_is_default ? " (default)" : ""}`).className = "numeric";
-  const state = cell(tr, "");
-  if (account.archived_at) state.append(statusBadge("removed"));
-  else if (account.current && account.current.source === "quote" && !account.awaiting_review.length) state.append(statusBadge("quote"));
-  else if (account.awaiting_review.length) state.append(statusBadge("value_to_confirm"));
-  else if (account.current) state.append(statusBadge(account.current.source === "estimated" ? "estimated" : "verified"));
-  else state.append(element("span", "No confirmed value", "muted"));
-  return tr;
-}
-
-async function renderInvestmentDetail(accountId, renewing = false) {
-  const account = await api(`/api/investments/${accountId}`), target = $("investment-detail");
-  const panel = element("section", "", "panel investment-detail");
-  const heading = element("div", "", "ledger-record-heading");
-  heading.append(element("h2", account.name), homeLink("Close", "#/investments"));
-  const facts = element("dl", "", "detail-list");
-  const pension = account.pension;
-  const valueFacts = account.is_income
-    ? [["Monthly benefit", pension ? `${pension.monthly_benefit.display} a month from ${dateText(pension.start_date)}, before tax` : "Add its terms below"],
-       ...(pension ? [["Yearly raise", pension.cola_bp ? `${pension.cola_percent}% each January` : "None"],
-                      ["Survivor benefit", pension.survivor_percent ? `${pension.survivor_percent}% to a surviving spouse` : "None"],
-                      ...(pension.lump_sum ? [["Lump sum offered", `${pension.lump_sum.display} instead; shown for comparison, not counted in totals`]] : [])] : []),
-       ["In the forecast", "Income from its start month; it is never drawn on and has no required distributions"]]
-    : [["Yearly growth or interest", `${account.annual_rate_percent}% a year${account.rate_is_default ? " (its kind's default)" : ""}; the forecast grows the value at this rate`],
-       ["Current value", account.current ? `${account.current.value.display} as of ${dateText(account.current.as_of)}${
-         account.current.source === "estimated" ? ", estimated from its holdings' terms" : account.current.source === "quote" ? ", from the market price that day" : ""}` : "No confirmed value yet"]];
-  for (const [label, value] of [["Kind", account.kind_label], ["Institution", account.institution || "—"], ["Section", account.section_label],
-      ["Tax treatment", `${account.tax_label}${account.tax_overridden ? "" : " (from its kind)"}`],
-      ...(account.is_education ? [["Beneficiary", account.beneficiary || "—"], ["Plan state", account.plan_state || "—"],
-                                  ["In the forecast", "Kept for education: retirement withdrawals never draw on it"]] : []),
-      ...valueFacts,
-      ...(account.ledger_account_id ? [["Values from", `${account.ledger_account_name} statements; they're reviewed with the statement and its balance counts here, not as cash`]] : [])]) {
-    facts.append(element("dt", label), element("dd", value));
-  }
-  panel.append(heading, ...account.ibond_warnings.map(warning => alertBox(warning.message, {tone: "warning"})), facts, investmentSettingsForm(account),
-               account.is_income ? pensionForm(account) : investmentValueForm(account));
-  if (account.has_crypto || account.kind === "crypto") panel.append(cryptoTools(account));
-  if (account.holdings.length) {
-    const waiting = account.holdings.some(holding => holding.review_status === "proposed");
-    const estimated = account.holdings.some(holding => holding.estimated);
-    const onStatement = account.holdings.some(holding => !holding.estimated);
-    panel.append(element("h3", onStatement && !estimated ? `Holdings on ${dateText(account.holdings_as_of)}` : "Holdings"),
-                 ...(waiting ? [element("p", "Some wait for review with their statement or purchase confirmation; they count once you confirm it.", "muted small")] : []),
-                 ...(estimated ? [element("p", `Estimated values are worked out for today from each purchase's terms${onStatement ? `; the rest are from the statement of ${dateText(account.holdings_as_of)}` : ""}.`, "muted small")] : []),
-                 investmentHoldings(account));
-    const traded = account.holdings.filter(holding => !holding.estimated && (holding.quantity || holding.lots.length));
-    if (account.tax_treatment === "taxable" && traded.length) panel.append(investmentLots(account, traded));
-  }
-  // A savings balance holds no CDs; any other account can (a bank's CDs, TreasuryDirect, a brokerage or IRA).
-  if (!account.archived_at && !["cash", "income"].includes(account.value_model) && account.kind !== "crypto" && !account.is_education) {
-    panel.append(investmentHoldingForm(account, renewing));
-  }
-  if (account.has_ibonds) panel.append(ibondRates());
-  if (!account.is_income || account.history.length) panel.append(element("h3", "Values over time"), investmentHistory(account));
-  if (account.is_education && !account.archived_at) panel.append(educationWithdrawalForm(account));
-  if (account.events.length) panel.append(element("h3", "Activity"), investmentActivity(account));
-  if (account.confirmations.length) panel.append(element("h3", "Purchase confirmations"), investmentConfirmations(account));
-  if (!account.archived_at) {
-    const remove = element("button", "Remove account", "quiet"); remove.type = "button";
-    remove.addEventListener("click", async () => {
-      if (!await confirmAction({title: `Remove ${account.name}?`, message: "It is left out of totals and forecasts from now on. Its values and statements are kept.", confirmLabel: "Remove", danger: true})) return;
-      try { await api(`/api/investments/${account.id}`, {method: "DELETE"}); notice(`${account.name} removed.`); location.hash = "#/investments"; } catch (error) { notice(error, true); }
-    });
-    panel.append(element("div", "", "button-row")); panel.lastChild.append(remove);
-  }
-  target.replaceChildren(panel);
 }
 
 function field(label, control) {
@@ -389,7 +108,7 @@ function investmentSettingsForm(account) {
     if (linked.value) body.ledger_account_id = Number(linked.value);
     if (account.takes_payroll && payroll.value) body.payroll_employer_id = Number(payroll.value);
     if (monthly.value.trim()) body.monthly_contribution = monthly.value.trim();
-    try { await api(`/api/investments/${account.id}`, {method: "PUT", body: JSON.stringify(body)}); notice("Saved."); await investmentsReload(); } catch (error) { notice(error, true); }
+    try { await api(`/api/investments/${account.id}`, {method: "PUT", body: JSON.stringify(body)}); notice("Saved."); await inv2Reload(); } catch (error) { notice(error, true); }
   });
   return form;
 }
@@ -403,7 +122,7 @@ function investmentValueForm(account) {
     event.preventDefault();
     try {
       await api(`/api/investments/${account.id}/values`, {method: "POST", body: JSON.stringify({value: value.value.trim(), as_of: asOf.value})});
-      notice("Value recorded."); await investmentsReload();
+      notice("Value recorded."); await inv2Reload();
     } catch (error) { notice(error, true); }
   });
   return form;
@@ -485,7 +204,7 @@ function investmentLots(account, holdings) {
       const list = element("ul", "", "finance-list");
       for (const lot of holding.lots) {
         const li = element("li", `${dateText(lot.acquired_date)} · ${lot.shares} shares · cost ${lot.cost.display}${lot.source === "manual" ? " · entered by you" : ""}`);
-        if (lot.id) li.append(asyncButton("Remove", async () => { await api(`/api/investments/lots/${lot.id}`, {method: "DELETE"}); notice("Lot removed."); await investmentsReload(); }, "small quiet"));
+        if (lot.id) li.append(asyncButton("Remove", async () => { await api(`/api/investments/lots/${lot.id}`, {method: "DELETE"}); notice("Lot removed."); await inv2Reload(); }, "small quiet"));
         list.append(li);
       }
       section.append(list);
@@ -499,7 +218,7 @@ function investmentLots(account, holdings) {
       event.preventDefault();
       try {
         await api(`/api/investments/holdings/${holding.id}/lots`, {method: "POST", body: JSON.stringify({acquired_date: acquired.value, quantity: quantity.value.trim(), cost: cost.value.trim()})});
-        notice("Lot added."); await investmentsReload();
+        notice("Lot added."); await inv2Reload();
       } catch (error) { notice(error, true); }
     });
     section.append(form);
@@ -538,7 +257,7 @@ function investmentHoldingForm(account, renewing) {
       await api(`/api/investments/${account.id}/holdings`, {method: "POST", body: JSON.stringify(body)});
       notice(`${body.name} added.`);
       const next = `#/investments?account=${account.id}`;
-      if (location.hash === next) await investmentsReload(); else location.hash = next;
+      if (location.hash === next) await inv2Reload(); else location.hash = next;
     } catch (error) { notice(error, true); }
   });
   return details;
@@ -572,7 +291,7 @@ function investmentActivity(account) {
                                 message: `The ${event.paid_from} line counts as it did before. Review will ask which payment it was if others could match.`})) return;
       const result = await api(`/api/investments/events/${event.id}/unlink`, {method: "POST"});
       notice(result.question ? "Unmatched. Review asks which payment it was." : "Unmatched; no other payment matches, so it's left unmatched.");
-      await investmentsReload();
+      await inv2Reload();
     }, "small quiet"));
     moneyCell(tr, event.amount);
     const state = cell(tr, "");
@@ -583,7 +302,7 @@ function investmentActivity(account) {
         if (event.event_type === current) continue;
         state.append(asyncButton(label, async () => {
           await api(`/api/investments/events/${event.id}/qualified`, {method: "POST", body: JSON.stringify({qualified})});
-          notice(`Marked ${label.toLowerCase()}.`); await investmentsReload();
+          notice(`Marked ${label.toLowerCase()}.`); await inv2Reload();
         }, "small quiet"));
       }
     } else state.append(statusBadge(event.review_status));
@@ -608,7 +327,7 @@ function pensionForm(account) {
     event.preventDefault();
     const body = {monthly_benefit: benefit.value.trim(), start_date: start.value, cola_percent: cola.value.trim() || "0", survivor_percent: Number(survivor.value || 0)};
     if (lump.value.trim()) body.lump_sum = lump.value.trim();
-    try { await api(`/api/investments/${account.id}/pension`, {method: "PUT", body: JSON.stringify(body)}); notice("Pension terms saved."); await investmentsReload(); }
+    try { await api(`/api/investments/${account.id}/pension`, {method: "PUT", body: JSON.stringify(body)}); notice("Pension terms saved."); await inv2Reload(); }
     catch (error) { notice(error, true); }
   });
   return form;
@@ -629,7 +348,7 @@ function educationWithdrawalForm(account) {
     event.preventDefault();
     try {
       await api(`/api/investments/${account.id}/events`, {method: "POST", body: JSON.stringify({event_type: kind.value, event_date: day.value, amount: paid.value.trim(), note: note.value.trim()})});
-      notice("Withdrawal recorded."); await investmentsReload();
+      notice("Withdrawal recorded."); await inv2Reload();
     } catch (error) { notice(error, true); }
   });
   details.append(element("p", "Only the earnings part of a non-qualified withdrawal is taxed; the 1099-Q gives that share.", "muted small"), form);
@@ -672,7 +391,7 @@ function ibondRateTable(rates) {
     event.preventDefault();
     try {
       await api("/api/investments/ibond-rates", {method: "PUT", body: JSON.stringify({period_start: from.value, fixed_percent: fixed.value.trim(), inflation_percent: inflation.value.trim()})});
-      notice("Rate saved; I bond values follow it."); await investmentsReload();
+      notice("Rate saved; I bond values follow it."); await inv2Reload();
     } catch (error) { notice(error, true); }
   });
   holder.append(wrap, form);
@@ -690,7 +409,7 @@ function cryptoTools(account) {
     if (state.enabled) row.prepend(asyncButton("Refresh prices", async () => {
       const result = await api("/api/prices/refresh", {method: "POST"});
       notice(result.valued ? `Prices updated for ${result.valued} account${result.valued === 1 ? "" : "s"}.` : result.skipped[0] || "Nothing to price.");
-      await investmentsReload();
+      await inv2Reload();
     }, "small"));
   }).catch(() => { status.textContent = ""; });
   const details = element("details", "", "investment-add-holding"), form = element("form", "", "inline-form"), file = document.createElement("select");
@@ -709,26 +428,10 @@ function cryptoTools(account) {
     try {
       const result = await api(`/api/investments/${account.id}/crypto-import`, {method: "POST", body: JSON.stringify({document_id: Number(file.value)})});
       notice(`${result.added} entr${result.added === 1 ? "y" : "ies"} imported${result.duplicates ? `, ${result.duplicates} already here` : ""}${result.issues.length ? `; ${result.issues.length} skipped` : ""}.`);
-      await investmentsReload();
+      await inv2Reload();
     } catch (error) { notice(error, true); }
   });
   details.append(element("p", "Buys, sells, sends, receives, conversions and rewards become this account's activity; buys open tax lots.", "muted small"), form);
   box.append(element("h3", "Prices and imports"), status, row, details);
   return box;
 }
-
-$("investments-archived").addEventListener("change", () => loadInvestments().catch(error => notice(error, true)));
-$("investment-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const body = {name: $("investment-name").value.trim(), kind: $("investment-kind").value, institution: $("investment-institution").value.trim(),
-                currency: $("investment-currency").value.trim().toUpperCase()};
-  // A pension has no balance: it's added without a value and its monthly benefit is entered next.
-  if ($("investment-value").value.trim()) Object.assign(body, {value: $("investment-value").value.trim(), as_of: $("investment-as-of").value});
-  if ($("investment-rate").value.trim()) body.annual_rate_percent = $("investment-rate").value.trim();
-  try {
-    const account = await api("/api/investments", {method: "POST", body: JSON.stringify(body)});
-    for (const id of ["investment-name", "investment-institution", "investment-value", "investment-rate"]) $(id).value = "";
-    notice(`${account.name} added.`);
-    location.hash = `#/investments?account=${account.id}`;
-  } catch (error) { notice(error, true); }
-});

@@ -120,15 +120,15 @@ button, .button {
 button:hover, .button:hover { background: var(--surface-sunken); }
 button:disabled { opacity: .5; cursor: default; }
 button:disabled:hover { background: var(--surface); }
-.primary, .primary-action, button.primary, .button.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-.primary:hover, .primary-action:hover, .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.primary:disabled:hover, .primary-action:disabled:hover { background: var(--accent); }
-.primary-action, .button.lg, button.lg { min-height: var(--control-lg); padding: 0 14px; }
+.primary, button.primary, .button.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.primary:hover, .button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.primary:disabled:hover { background: var(--accent); }
+.button.lg, button.lg { min-height: var(--control-lg); padding: 0 14px; }
 .danger, button.danger { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
 .danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
 .danger-text { color: var(--danger); }
 .secondary { /* Default button style; kept for existing markup. */ }
-button.small, .small-button { min-height: var(--control-sm); padding: 0 var(--space-2); font-size: var(--text-xs); }
+button.small { min-height: var(--control-sm); padding: 0 var(--space-2); font-size: var(--text-xs); }
 .icon-button { min-height: var(--control-sm); width: var(--control-sm); padding: 0; }
 .icon-button.quiet { border-color: transparent; background: transparent; }
 /* Filter chips: pill-shaped; pressed is accent-subtle with an accent border and text (MASTER.md "Components"). */
@@ -251,7 +251,7 @@ main:focus { outline: none; }
 .toast-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .toast-body p { margin: 0; }
 
-.status-badge, .review-badge {
+.status-badge {
   display: inline-flex; align-items: center; gap: var(--space-1); padding: 1px 9px 1px 6px; border-radius: var(--radius-pill);
   font-size: var(--text-xs); line-height: 20px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); background: var(--neutral-subtle);
 }
@@ -280,8 +280,8 @@ div.sale-tag { margin-top: var(--space-1); }
 /* Positioned so screen-reader-only text (absolute) in a cell stays inside the scroll area instead of widening the page. */
 .table-wrap { overflow-x: auto; position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
 /* Regions never nest (MASTER.md "Tinted region"): a table inside a panel, dialog or disclosure drops its own box. */
-.panel .table-wrap, .today-region .table-wrap, dialog .table-wrap, details .table-wrap, .settings-content .table-wrap, .inspector-pane .table-wrap,
-.inspector-footer .table-wrap, .file-browser .table-wrap { background: transparent; border: 0; border-radius: 0; }
+.panel .table-wrap, .today-region .table-wrap, dialog .table-wrap, details .table-wrap, .settings-content .table-wrap,
+.inspector-pane .table-wrap { background: transparent; border: 0; border-radius: 0; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 th, td { text-align: left; padding: 10px var(--space-3); border-bottom: 1px solid var(--border); vertical-align: top; }
 thead th { height: 32px; padding: 0 var(--space-3); vertical-align: middle; }
@@ -294,7 +294,6 @@ tbody tr:last-child > td, tbody tr:last-child > th { border-bottom: 0; }
 td small { color: var(--text-muted); }
 .data-table td { overflow-wrap: anywhere; }
 .data-table td.numeric, .data-table td:has(> time) { overflow-wrap: normal; white-space: nowrap; }
-#finance-transactions input { min-height: var(--control-sm); min-width: 120px; }
 .pager { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); font-size: var(--text-sm); color: var(--text-secondary); }
 
 /* ---- Menus and dialogs ---------------------------------------------------------- */
@@ -325,8 +324,6 @@ dialog code { display: block; overflow-wrap: anywhere; margin: var(--space-1) 0;
 .data-table td.profile-name { min-width: 120px; }
 #profile-form, #family-section > h2, #family-section > .form { margin-top: var(--space-6); }
 /* Family inbox: each upload beside its decision (docs/ui.md "Layout" rule 1: what, why and the button together). */
-.family-routing { margin-bottom: var(--space-4); }
-.routing-list { margin: 0; padding: 0; list-style: none; }
 .routing-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px solid var(--border); }
 .routing-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .routing-decision { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
@@ -430,27 +427,12 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 
 /* ---- Documents ----------------------------------------------------------------- */
 .toolbar { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; }
-#document-search { flex: 1 1 260px; max-width: 420px; }
 .toolbar-actions { display: flex; gap: var(--space-3); align-items: center; flex-wrap: wrap; margin-left: auto; }
 .work-filters { display: flex; gap: var(--space-1); flex-wrap: wrap; }
 .filter-chip { min-height: var(--control-sm); font-weight: 400; gap: 6px; }
 .filter-chip .chip-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .filter-chip[aria-pressed="true"] { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .filter-chip[aria-pressed="true"] .chip-count { color: var(--accent); }
-.batch-status:empty { display: none; }
-.batch-status { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
-.file-browser { display: grid; grid-template-columns: 200px minmax(0, 1fr); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); min-height: 420px; }
-#folder-tree { padding: var(--space-3) var(--space-2); border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
-.folder-link { justify-content: flex-start; width: 100%; min-height: var(--control-sm); border: 0; background: transparent; color: var(--text-secondary); font-weight: 400; }
-/* Long folder names wrap; the count keeps a fixed, right-aligned slot on the first line. */
-.folder-link { align-items: flex-start; padding-block: 5px; height: auto; line-height: 18px; }
-.folder-link > span:first-child { flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere; }
-.folder-link > .folder-count { line-height: 18px; }
-.folder-link:hover { background: var(--surface-sunken); }
-.folder-link[aria-current="page"] { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
-.folder-link.empty { color: var(--text-muted); }
-.folder-link.subfolder { padding-left: var(--space-6); font-size: var(--text-sm); }
-.folder-link.subfolder.deep { padding-left: calc(var(--space-6) * 1.75); }
 /* Pay stubs: gross to net, grouped, with subtotals; then the tax buckets. */
 .paystub-breakdown, .paystub-taxes { margin-top: var(--space-6); }
 .paystub-table th.paystub-group { padding-top: var(--space-4); font-weight: 600; text-align: left; }
@@ -459,8 +441,7 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 .tax-jurisdiction { margin-top: var(--space-4); }
 .tax-chart { margin: var(--space-3) 0; }
 .tax-chart svg { width: 100%; height: auto; max-width: 520px; display: block; }
-/* What If: the paycheck's inputs beside its gross-to-net breakdown; the breakdown stays in view and scrolls on its own. */
-.whatif-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--space-6); align-items: start; }
+/* What If: the paycheck's inputs and its gross-to-net breakdown; the breakdown stays in view and scrolls on its own. */
 .whatif-inputs { max-width: none; margin-bottom: 0; }
 .whatif-inputs .plan-line { grid-template-columns: minmax(0, 1.5fr) minmax(0, .9fr) minmax(0, 1.25fr) minmax(0, .8fr) auto; gap: var(--space-2); }
 .whatif-inputs > button.quiet, .scenario-form > button.quiet { align-self: flex-start; }
@@ -481,19 +462,7 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 .tax-tag-row small.block { flex-basis: 100%; }
 .tax-tag-form { max-width: none; gap: var(--space-3); margin: 0; align-self: stretch; }
 .tax-items { margin-top: var(--space-3); }
-.taxes-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: var(--space-6); align-items: start; }
-.taxes-inputs { max-width: none; margin: 0; gap: var(--space-3); }
-.taxes-inputs fieldset { min-width: 0; margin: 0; }
-.taxes-inputs > button.quiet { align-self: flex-start; }
-.taxes-zen { margin-bottom: var(--space-5); padding-bottom: var(--space-4); border-bottom: 1px solid var(--border); }
-.taxes-zen:empty { display: none; }
-.taxes-zen-headline { font-size: var(--text-lg); margin-bottom: var(--space-2); }
-.taxes-return-card { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-3) 0; border-top: 1px solid var(--border); }
-.taxes-return-card > p { flex-basis: 100%; margin: 0; }
 .taxes-unit-form { align-items: flex-end; }
-#taxes-return tbody th { white-space: normal; position: static; }
-#taxes-alerts:not(:empty) { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
-@media (max-width: 1100px) { .taxes-layout { grid-template-columns: minmax(0, 1fr); } }
 /* Taxes v2 (taxes_v2.js; design-system/home-manager/pages/taxes.md): tiles, one tinted "What to do" region, the return as
    a table; Built from as a section list beside rows; a sticky save bar. Tokens only. */
 .taxes2-tabpanel > h2, .taxes2-tabpanel > * + h2 { margin: var(--space-5) 0 var(--space-3); }
@@ -589,8 +558,6 @@ td > .error-text { display: block; margin-top: var(--space-1); }
   .taxes2-answer .figure-tile:not(:first-child) .figure-button[data-size="lg"] { font-size: var(--text-lg); }
   .taxes2-answer .figure-tile:not(:first-child) .figure-sub { display: none; }
 }
-.scenario-bar { display: flex; gap: var(--space-3); align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--space-4); }
-.scenario-bar .field { min-width: min(280px, 100%); }
 .scenario-form { max-width: none; margin-bottom: 0; }
 .scenario-paycheck { padding: var(--space-3) 0; border-top: 1px solid var(--border); }
 .scenario-paycheck > p { margin: var(--space-2) 0; }
@@ -601,53 +568,16 @@ td > .error-text { display: block; margin-top: var(--space-1); }
 .track-actions { align-items: flex-end; }
 #track-budgets:not(:empty), #track-actual:not(:empty) { margin-top: var(--space-4); }
 #track-actual h4 { margin-top: var(--space-4); }
-@media (max-width: 1100px) { .whatif-layout { grid-template-columns: minmax(0, 1fr); } .whatif-result { position: static; max-height: none; overflow: visible; } }
+@media (max-width: 1100px) { .whatif-result { position: static; max-height: none; overflow: visible; } }
 @media (max-width: 600px) { .plan-headline { grid-template-columns: 1fr; } .plan-headline dt, .plan-headline dd { grid-row: auto; } }
-.folder-group { gap: var(--space-1); }
-.folder-chevron { width: 14px; height: 14px; flex: none; margin-top: 2px; transition: transform .15s ease; }
-.folder-group[aria-expanded="true"] .folder-chevron { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .folder-chevron { transition: none; } }
-.folder-count { flex: none; min-width: 3ch; margin-left: auto; text-align: right; font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.file-pane { padding: var(--space-4) var(--space-5); min-width: 0; }
-.file-toolbar { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-3); }
-.file-toolbar p { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
-#folder-description:empty { display: none; }
-.doc-title { display: flex; gap: var(--space-3); align-items: baseline; justify-content: space-between; }
-.doc-title strong { font-weight: 500; }
-.doc-title .amount { font-weight: 600; }
-.source-path { margin-top: 2px; font-size: var(--text-xs); color: var(--text-muted); overflow-wrap: anywhere; }
-.row-status { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.document-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
-.document-actions > button { min-height: var(--control-sm); font-size: var(--text-xs); }
-.documents-table th, .documents-table td { vertical-align: middle; }
-/* Fixed layout: explicit widths for the short columns, the rest goes to Name. */
-.documents-table { table-layout: fixed; min-width: 760px; }
-.documents-table .select-col { width: 40px; padding-right: 0; }
-.documents-table .col-type { width: 150px; }
-.documents-table .col-date { width: 104px; }
-.documents-table .col-amount { width: 120px; }
-.documents-table .col-state { width: 150px; }
-.documents-table .col-actions { width: 210px; }
-.documents-table input[type="checkbox"] { display: block; }
-.doc-link { font-weight: 500; color: var(--text); text-decoration: none; }
-a.doc-link:hover { color: var(--accent); text-decoration: underline; }
-.secondary-cell { color: var(--text-secondary); white-space: nowrap; }
-.selection-bar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3); background: var(--accent-subtle); border-radius: var(--radius-sm); }
-.selection-bar #selection-count { font-weight: 600; font-size: var(--text-sm); margin-right: var(--space-2); }
-.selection-bar button { min-height: var(--control-sm); }
 button.quiet { border-color: transparent; background: transparent; color: var(--accent); }
 .empty-state code { display: block; margin: var(--space-3) auto var(--space-2); overflow-wrap: anywhere; }
 .toolbar-actions .inline-field input { width: 140px; }
 
 /* ---- Finances ------------------------------------------------------------------ */
-.finance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); }
-.home-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
-#home-content { display: grid; gap: var(--space-4); }
-.home-metric h2 { color: var(--text-secondary); font-size: var(--text-sm); }
 .home-figure { display: block; margin: var(--space-3) 0; font-size: clamp(20px, 2.2vw, 30px); font-weight: 600; font-variant-numeric: tabular-nums; text-decoration: none; color: var(--text); overflow-wrap: anywhere; }
 .home-charts { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: var(--space-4); }
-.home-bottom { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-.home-card, .home-metric { min-width: 0; }
+.home-card { min-width: 0; }
 .home-card > h3 { margin-top: var(--space-4); }
 .home-trend { width: 100%; display: block; margin: var(--space-5) 0; }
 .chart-label { fill: var(--text-secondary); font-size: 12px; font-family: var(--font); }
@@ -681,11 +611,10 @@ button.quiet { border-color: transparent; background: transparent; color: var(--
 .c-untaxed { fill: var(--chart-baseline); }
 .home-footer { display: block; border-top: 1px solid var(--border); padding-top: var(--space-3); margin-top: var(--space-3); }
 .home-range { display: flex; gap: var(--space-2); }
-.home-loading { min-height: 480px; color: var(--text-muted); }
 .home-card details { margin-top: var(--space-4); }
 .home-card svg a:focus { outline: 3px solid var(--accent); outline-offset: 3px; }
-@media (max-width: 900px) { .home-charts, .home-bottom { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .home-metrics { grid-template-columns: 1fr; } .home-figure { font-size: 28px; } .home-legend li { grid-template-columns: 12px minmax(0, 1fr); } .home-legend .numeric { grid-column: 2; text-align: left; } }
+@media (max-width: 900px) { .home-charts { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .home-figure { font-size: 28px; } .home-legend li { grid-template-columns: 12px minmax(0, 1fr); } .home-legend .numeric { grid-column: 2; text-align: left; } }
 /* Today v2 (today_v2.js; design-system/home-manager/pages/today.md). Tokens only. */
 /* .page-body's gap spaces the page's parts; an empty part takes no room. The tiles go 2×2 when the body is under 980px
    (a side panel open beside it) or the viewport is under 1100px; the figures shrink to fit (the figure tile rule). */
@@ -950,30 +879,16 @@ details.today-region[open] > summary { margin-bottom: var(--space-3); }
 .finance-list { margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); }
 .finance-list li { padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
 .finance-list li:last-child { border-bottom: 0; }
-#review-unmatched-note:not(:empty) { border-top: 1px solid var(--border); margin-top: var(--space-3); padding-top: var(--space-3); }
 .block { display: block; }
 .mono { font-family: var(--font-mono); overflow-wrap: anywhere; }
 button.link-button { display: inline; min-height: 0; padding: 0; border: 0; background: none; color: var(--accent); font-weight: 550; text-align: left; white-space: normal; }
 button.link-button:hover { background: none; text-decoration: underline; }
 .clickable-row { cursor: pointer; }
 .clickable-row:hover td { background: var(--surface-sunken); }
-.money-toolbar { flex-wrap: wrap; }
-.money-toolbar input[type="date"] { width: 140px; }
 .inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
-.money-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-.figure-row { display: grid; gap: var(--space-4); }
-.figure-group { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-4) var(--space-7); }
-.figure-main, .figure-item { display: flex; flex-direction: column; }
 .figure-label { font-size: var(--text-xs); color: var(--text-secondary); }
-.figure-value { font-size: var(--figure-lg); line-height: 36px; font-weight: 600; color: var(--text); text-decoration: none; font-variant-numeric: tabular-nums; }
-.figure-small { font-size: var(--text-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
 /* Budget meters: the fill carries the status (always with its badge and text); the track is a lighter step of the same hue.
    Over budget is amber, never red: red never marks spending (MASTER.md "Budget meter"). */
-.budget-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-4); }
-.budget-rows > p, .budget-rows > .empty-state { grid-column: 1 / -1; }
-.budget-row { display: flex; flex-direction: column; gap: var(--space-2); }
-.budget-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); font-weight: 600; }
-.budget-actions { display: flex; gap: var(--space-1); }
 .meter { height: 8px; min-width: 80px; border-radius: 4px; background: var(--chart-track); overflow: hidden; }
 .meter-fill { height: 100%; border-radius: 4px; background: var(--chart); }
 .meter[data-status="ahead_of_pace"], .meter[data-status="over"] { background: var(--warning-subtle); }
@@ -992,35 +907,12 @@ dialog.drawer[open] { animation: drawer-in var(--motion-panel); }
 .drawer-category { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .drawer-category .compact-check { flex-basis: 100%; }
 .drawer-category .compact-check input:not([type="checkbox"]) { width: 160px; }
-/* Bills and accounts. */
-.bill-group + .bill-group { margin-top: var(--space-4); }
-.bill-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-3); }
-.bill-row > small { grid-column: 1 / -1; }
+/* Bills: what a recurring payment counts as. */
 .kind-select { width: auto; min-height: var(--control-sm); font-size: var(--text-xs); }
-.subscription-total { margin: var(--space-3) 0 var(--space-1); font-weight: 600; }
-.bill-actions { display: flex; gap: var(--space-1); }
-.account-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
-.account-balance .amount { display: block; font-size: var(--text-lg); font-weight: 600; }
-#account-groups > .panel { margin-bottom: var(--space-4); }
-/* Review. */
-.review-layout { display: grid; grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
-.review-queue { position: sticky; top: var(--space-4); max-height: calc(100vh - 120px); overflow-y: auto; }
-.review-group + .review-group { margin-top: var(--space-4); }
-.review-group-title { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-1); }
-.review-list { list-style: none; margin: 0; padding: 0; }
-.review-entry { width: 100%; justify-content: flex-start; min-height: var(--control-md); border-color: transparent; background: transparent; white-space: normal; text-align: left; overflow-wrap: anywhere; }
-.review-entry[aria-current="true"] { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
-.review-other { display: flex; flex-direction: column; gap: var(--space-1); padding-bottom: var(--space-3); margin-bottom: var(--space-3); border-bottom: 1px solid var(--border); font-size: var(--text-sm); }
-.review-detail { min-height: 320px; color: var(--text); }
-.review-detail:focus { outline: none; }
-.review-detail > h2 { margin-bottom: var(--space-2); }
-.review-why { color: var(--text-secondary); }
+/* To check's record summaries (review.js summaryBlock) and a record's issues. */
 .review-issues { margin: 0 0 var(--space-3); padding-left: var(--space-5); }
-.review-candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin: var(--space-3) 0; }
 .review-side { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
 .review-side .amount { font-size: var(--text-lg); font-weight: 600; }
-.review-thumb img { max-width: 100%; max-height: 360px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin: var(--space-3) 0; }
-.review-detail .review-actions { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 
 /* To check v2 (review_v2.js; design-system/home-manager/pages/review.md). Tokens only. Queue | source | item, each column
    sticky and scrolling on its own; the item's decision bar is pinned at the bottom of its column. --review2-top is the
@@ -1105,27 +997,11 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .checkin-buttons { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .checkin-text { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .checkin-text textarea { width: 100%; font: inherit; }
-#inventory-groups > .panel { margin-bottom: var(--space-4); }
-.lot-history-row td { background: var(--surface-sunken); }
-@media (max-width: 900px) { .review-layout, .money-columns, .account-row { grid-template-columns: 1fr; } .review-queue { position: static; max-height: none; } .bill-row { grid-template-columns: 1fr auto; } }
 .finance-list li small { margin-top: 2px; }
-.review-item { display: flex; flex-direction: column; gap: 2px; }
-.review-item .review-title { font-weight: 600; }
-.review-detail { color: var(--text-secondary); overflow-wrap: anywhere; }
-.review-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
-.review-open { margin-left: auto; font-size: var(--text-xs); }
 .receipt-cell { white-space: nowrap; }
 .receipt-link { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); text-decoration: none; }
 .receipt-link:hover { text-decoration: underline; }
 .receipt-link .icon { width: 14px; height: 14px; }
-
-/* ---- Processing ---------------------------------------------------------------- */
-.activity-list { list-style: none; margin: 0; padding: 0; }
-.activity-list > li { padding: var(--space-2) 0; border-bottom: 1px solid var(--border); font-size: var(--text-sm); }
-.activity-list > li:last-child { border-bottom: 0; }
-.activity-item { display: flex; align-items: center; gap: var(--space-3); }
-.activity-text { flex: 1; min-width: 0; }
-#scan-state { margin: var(--space-3) 0; font-size: var(--text-sm); }
 
 /* ---- Settings ------------------------------------------------------------------ */
 .settings-layout { display: grid; grid-template-columns: 220px minmax(0, 760px); gap: var(--space-6); align-items: start; }
@@ -1149,60 +1025,31 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .save-result.is-error, .save-result.is-error .icon { color: var(--danger); }
 .guarantees { max-width: 720px; margin: 0 0 var(--space-4); padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); font-size: var(--text-sm); }
 
-/* ---- Document inspector ---------------------------------------------------------- */
+/* ---- Document layouts: the document page's header, and Donate's original beside its values ---------------------- */
 .inspector { gap: var(--space-4); }
 .inspector-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-4); align-items: start; }
 .back-link { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: var(--space-1); width: fit-content; font-size: var(--text-sm); font-weight: 500; text-decoration: none; }
 .back-link:hover { text-decoration: underline; }
 .inspector-heading { min-width: 0; }
 .inspector-heading h1 { overflow-wrap: anywhere; }
-#version-banner:empty, #record-empty:empty { display: none; }
 .inspector-body { display: grid; grid-template-columns: minmax(300px, 45fr) minmax(0, 55fr); gap: var(--space-4); align-items: start; }
 .inspector-pane { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .source-pane { position: sticky; top: var(--space-4); }
 .pane-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
-.source-toolbar { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
-.source-toolbar .tabs { margin: 0; flex: 1; }
 .source-pane .muted.small { margin: var(--space-2) 0 0; }
 .record-pane .empty-state { padding: var(--space-7) var(--space-4); }
 .record-pane .empty-state p { max-width: 460px; margin-inline: auto; }
-.inspector-footer { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-4); }
-.inspector-footer .tabs { margin: var(--space-4) 0 var(--space-3); }
 .detail-list { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0 0 var(--space-4); font-size: var(--text-sm); }
 .detail-list dt { color: var(--text-secondary); }
 .detail-list dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; }
 .detail-list code { overflow-wrap: anywhere; }
 .detail-list small { flex-basis: 100%; }
-#details-panel h3 { margin-bottom: var(--space-2); }
-.callout { padding: var(--space-3); background: var(--surface-sunken); border-radius: var(--radius-sm); font-size: var(--text-sm); color: var(--text-secondary); }
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); margin: var(--space-3) 0; overflow-x: auto; }
 .tabs [role="tab"] { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-secondary); min-height: var(--control-lg); }
 .tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
 .image-scroll { max-height: 64vh; overflow: auto; background: var(--surface-sunken); padding: var(--space-3); border-radius: var(--radius-sm); }
-#receipt-image-frame { position: relative; background: var(--paper); }
-#receipt-image { display: block; width: 100%; height: auto; }
-#receipt-pdf { display: block; width: 100%; height: 75vh; min-height: 480px; border: 0; }
-#receipt-overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
-#receipt-overlay polygon { fill: transparent; stroke: color-mix(in srgb, var(--accent) 45%, transparent); stroke-width: 1; cursor: pointer; }
-/* The highlighted source line is amber (MASTER.md "Source text"). */
-#receipt-overlay polygon.selected { stroke: var(--warning); stroke-width: 3; fill: color-mix(in srgb, var(--warning) 18%, transparent); }
-#receipt-text { width: 100%; resize: vertical; padding: var(--space-3); font: 13px/1.6 var(--font-mono); margin-bottom: var(--space-2); }
-.source-extras { font-size: var(--text-sm); }
-.source-extras h3 { margin: var(--space-3) 0 var(--space-2); }
-/* Processing steps: a compact horizontal stepper. */
-.process-steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); counter-reset: step; }
-.process-steps li { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "title badge" "action action" "note note"; gap: var(--space-2); align-items: center; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
-.process-steps .step-title { grid-area: title; font-weight: 600; font-size: var(--text-sm); }
-.process-steps .status-badge { grid-area: badge; justify-self: end; }
-.process-steps button { grid-area: action; justify-self: start; }
-.process-steps small { grid-area: note; overflow-wrap: anywhere; }
-.inspector-intro { color: var(--text-secondary); font-size: var(--text-sm); margin: 0; }
-#extraction-status:empty, #reasoning-status:empty { display: none; }
-#extraction-status, #reasoning-status { font-size: var(--text-sm); color: var(--text-secondary); overflow-wrap: anywhere; margin: 0; }
-#extraction-result tr.cited { background: var(--warning-subtle); }
 .ledger-rows { margin-top: var(--space-3); }
 .ledger-rows td { padding: 6px var(--space-2); }
-#extraction-result:empty { display: none; }
 .ledger-record-heading { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .ledger-record-heading strong { font-size: var(--text-lg); margin-right: var(--space-2); }
 /* A file holding several receipts: which one is shown, and the split's actions. */
@@ -1212,23 +1059,13 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 /* A combined document's pages beside its image. */
 .group-strip { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
 .group-pages { margin: var(--space-1) 0; padding-left: var(--space-5); }
-.receipt-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-4); margin-top: var(--space-3); }
-.receipt-summary > div { min-width: 0; overflow-wrap: anywhere; }
-.receipt-summary small { margin-bottom: 2px; }
-.receipt-summary strong { font-size: var(--text-lg); font-weight: 600; }
 /* A receipt spanning several categories shows each one, largest share first. */
-.receipt-summary strong:has(.category-tag) { display: flex; flex-wrap: wrap; gap: var(--space-1); font-size: var(--text-sm); }
 .category-tag { padding: 1px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-sunken); font-weight: 500; }
-.history-section { padding: var(--space-2) 0 var(--space-4); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
-.history-section label { width: 100%; }
-.history-section select { margin-top: var(--space-1); }
 .analysis-limitations { font-size: var(--text-sm); color: var(--text-secondary); padding-left: var(--space-5); margin: var(--space-2) 0; }
 .receipt-field { padding: var(--space-2) var(--space-3); border: 1px solid var(--border); margin-bottom: var(--space-2); border-radius: var(--radius-sm); }
 .receipt-field strong { display: block; }
 .receipt-field button { margin: var(--space-1) var(--space-1) 0 0; min-height: var(--control-sm); font-size: var(--text-xs); }
 button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs); color: var(--accent); border-color: var(--border); }
-#receipt-issues { padding-left: var(--space-5); font-size: var(--text-sm); }
-#receipt-version, #receipt-telemetry { overflow-wrap: anywhere; font-size: var(--text-xs); }
 .decision-panel { margin-top: var(--space-3); font-size: var(--text-sm); }
 
 /* ---- Source viewer (trace.js sourceViewer; MASTER.md "Source text") ----------------- */
@@ -1351,19 +1188,11 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .global-search input { width: 100%; padding-right: 52px; }
 .global-search kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-muted); }
 .nav-link.nav-search-link { display: none; }
-.search-results { display: grid; gap: var(--space-4); }
-.search-results .panel h2 { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
-.search-results .panel h2 a { font-size: var(--text-sm); font-weight: 500; }
-.search-hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: baseline; }
 /* Words matched inside a document's text, quoted under its name (docs/documents.md "Searching document text"). */
 .search-snippet { margin: 2px 0 0; font-size: var(--text-sm); color: var(--text-secondary); overflow-wrap: anywhere; }
 .search-snippet mark { background: var(--accent-subtle); color: var(--text); border-radius: var(--radius-sm); padding: 0 1px; }
-.match-state { margin-top: 2px; }
-.return-note { margin-top: 2px; }
 
-/* ---- Processing and settings (Phase E) --------------------------------------------- */
-.pipeline-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--space-3); }
-.pipeline-lane { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
+/* ---- Settings: connection tests, backups and the model list ------------------------ */
 .connection-result { margin-top: var(--space-3); }
 #backup-panel > h2:not(:first-child) { margin-top: var(--space-6); }
 #backup-panel .table-wrap { margin-top: var(--space-4); }
@@ -1371,7 +1200,6 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .model-list { list-style: none; margin: var(--space-1) 0 0; padding: 0; font-size: var(--text-sm); columns: 2; }
 .field-note { margin: 2px 0 var(--space-3) 26px; }
 .value-kind { overflow-wrap: anywhere; }
-.value-kind-to_enter { color: var(--warning); }
 .warranty-note { margin-top: 2px; color: var(--text-secondary); }
 
 /* ---- Assistant panel: Ask (assistant.js; design-system/home-manager/pages/search-ask.md) ---------------------------
@@ -1463,14 +1291,12 @@ button.nav-link.nav-button { width: 100%; border: 0; background: transparent; ju
 }
 @keyframes sheet-in { from { transform: translateY(-8px); opacity: 0; } }
 @media (max-width: 800px) {
-  .file-browser, .settings-layout { grid-template-columns: 1fr; }
-  #folder-tree { border-right: 0; border-bottom: 1px solid var(--border); max-height: 240px; overflow-y: auto; }
+  .settings-layout { grid-template-columns: 1fr; }
   /* One scrolling row of tabs, never several wrapped lines. */
   .settings-nav { position: static; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; min-width: 0; scrollbar-width: thin; }
   .settings-nav [role="tab"] { flex: none; white-space: nowrap; }
   .settings-content { padding: var(--space-4); }
-  .document-actions { justify-content: flex-start; min-width: 0; }
-  .inspector-body, .process-steps { grid-template-columns: 1fr; }
+  .inspector-body { grid-template-columns: 1fr; }
   .source-pane { position: static; }
   .detail-list { grid-template-columns: 1fr; }
   .image-scroll { max-height: 40vh; }
@@ -1479,25 +1305,13 @@ button.nav-link.nav-button { width: 100%; border: 0; background: transparent; ju
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
-.record-edit { display: flex; flex-direction: column; gap: var(--space-3); max-width: 420px; margin-top: var(--space-3); }
-.receipt-summary > div > button.small { margin-top: var(--space-1); }
 
-/* Investments */
-.investment-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); margin-top: var(--space-3); }
-.investment-total .figure-group { margin-bottom: var(--space-2); }
-.investment-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-.investment-detail h3 { margin-top: var(--space-5); }
-.investment-detail .ledger-record-heading { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
+/* Investments: the shared builders' parts (investments.js). */
 .investment-add-holding { margin-top: var(--space-4); }
 .investment-add-holding summary { cursor: pointer; color: var(--accent); font-weight: 600; }
 .investment-add-holding .inline-form { margin-top: var(--space-3); }
 .investment-lots { margin-top: var(--space-4); }
 .investment-lots h4 { margin: 0 0 var(--space-2); }
-#investments-taxes .ledger-record-heading { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); }
-#investments-taxes .figure-group { flex-wrap: wrap; }
-#investments-taxes .ledger-record-heading select { width: auto; }
-.investment-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-#investments-rmd:not(:empty) { margin-top: var(--space-4); }
 
 /* Investments v2 (investments_v2.js; design-system/home-manager/pages/wealth.md). Tokens only. */
 .inv2-back { display: inline-flex; align-items: center; gap: 2px; margin-bottom: var(--space-2); color: var(--accent); font-weight: 550; text-decoration: none; }
@@ -1977,16 +1791,11 @@ button.link-button.rc2-step:disabled { color: var(--text-muted); text-decoration
   .wi2-paycheck-result .plan-headline dd { white-space: normal; }
 }
 
-/* Forecast */
-.forecast-form h3 { margin-top: var(--space-4); }
+/* Forecast's shared parts (forecast.js): rows of inputs, the starting point's facts and notes. */
 .forecast-retirement { border: 0; padding: 0; margin: var(--space-3) 0 0; min-width: 0; }
 .forecast-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--space-3); align-items: end; }
 .forecast-item { margin-bottom: var(--space-2); }
 .forecast-list:empty { display: none; }
-/* minmax(0, 1fr): a chart card never grows past the page to fit its year table, which scrolls inside .table-wrap instead. */
-.forecast-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-.forecast-chart-card svg { width: 100%; height: auto; display: block; margin: var(--space-3) 0; }
-.forecast-chart-card .hover-target:hover { fill: color-mix(in srgb, var(--accent) 6%, transparent); }
 .forecast-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0; }
 .forecast-facts dt { color: var(--text-secondary); }
 .forecast-facts dd { margin: 0; font-variant-numeric: tabular-nums; }

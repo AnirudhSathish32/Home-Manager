@@ -1,8 +1,8 @@
 "use strict";
 // Investments, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/wealth.md): tiles, what needs you, every
 // account in one table grouped by section, how the total splits, and the tax year's forms. One account opens in its own
-// view (?account=ID) with Back and four tabs. investments.js keeps the builders both screens use; after a save they call
-// investmentsReload, which this screen points at its own reload. Every amount, share and date is the server's.
+// view (?account=ID) with Back and four tabs. investments.js keeps the shared builders; after a save they call
+// inv2Reload. Every amount, share and date is the server's.
 const INV2_TABS = ["overview", "holdings", "activity", "settings"];
 // account: the open account's id (0 on the list); tab: its tab; renew: a matured holding whose renewal is being added;
 // removed and year: the list's controls; view: the open account's data; stale: tabs to draw on their next show;
@@ -28,7 +28,6 @@ function loadInvestmentsV2(params) {
   const year = Number(params?.get?.("year"));
   inv2.year = Number.isInteger(year) && year > 1900 && year <= new Date().getFullYear() ? year : inv2LastYear();
   $("inv2-removed").checked = inv2.removed;
-  investmentsReload = () => inv2Reload();
   return inv2Reload();
 }
 function inv2Reload() {
@@ -70,7 +69,7 @@ function inv2Header(account = null) {
 // The list ---------------------------------------------------------------------------------------------------------
 async function renderInvestmentsV2() {
   const load = ++inv2.load;
-  // The RMD and tax sections fail on their own, each with its own message (as v1).
+  // The RMD and tax sections fail on their own, each with its own message.
   const failed = error => ({error});
   const [kinds, summary, rmd, taxes] = await Promise.all([
     investmentKinds.length ? investmentKinds : api("/api/investment-kinds"),
@@ -261,7 +260,7 @@ function inv2Split(summary) {
   $("inv2-split-body").replaceChildren(...parts);
 }
 
-// Taxes for a year: each 1099 or 5498 box beside what is recorded, and realized gains (v1's renderInvestmentTaxes).
+// Taxes for a year: each 1099 or 5498 box beside what is recorded, and realized gains.
 function investmentTaxesV2(data) {
   const host = $("inv2-taxes"), heading = element("div", "", "inv2-region-head");
   const title = element("h2", `Taxes for ${inv2.year}`); title.id = "inv2-taxes-title";

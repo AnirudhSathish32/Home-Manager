@@ -124,7 +124,7 @@ function taxes2ResetDraft() {
                   prior: {tax: String(inputs.prior_year_tax?.tax ?? ""), agi: String(inputs.prior_year_tax?.agi ?? "")}};
   taxes2.baseline = taxes2Flat(taxes2Request());
 }
-// The PUT body from the draft, trimmed as v1's taxInputsRequest trims the form.
+// The PUT body from the draft: blank values left out, the rest trimmed.
 function taxes2Request() {
   const draft = taxes2.draft, filled = value => typeof value === "string" ? value.trim() !== "" : value != null;
   const kept = object => Object.fromEntries(Object.entries(object || {}).filter(([, value]) => filled(value)).map(([key, value]) => [key, typeof value === "string" ? value.trim() : value]));
@@ -266,7 +266,7 @@ function taxes2YearTab(host) {
   table.setAttribute("aria-labelledby", "taxes2-return-title");
   let section = null, body = null;
   for (const item of result.lines) {
-    if (!item.amount_minor && item.section !== "total" && !["wages", "tax"].includes(item.key)) continue;  // Nothing there: left out, as v1.
+    if (!item.amount_minor && item.section !== "total" && !["wages", "tax"].includes(item.key)) continue;  // Nothing there: left out.
     if (item.section !== section && item.section !== "total") {
       section = item.section; body = table.appendChild(document.createElement("tbody"));
       const head = body.insertRow().appendChild(element("th", RETURN_SECTIONS[section] || section, "taxes2-group")); head.colSpan = 2; head.scope = "rowgroup";

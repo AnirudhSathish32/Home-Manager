@@ -249,11 +249,11 @@ def test_browser_shares_opens_and_ends_a_session(tmp_path):
             page.locator("#session-open").click()
             playwright.expect(page.locator("#session-banner")).to_contain_text("You are viewing “Mom”", timeout=30000)
             page.locator("#nav-documents").click()
-            playwright.expect(page.locator("#documents")).to_contain_text("mom-only.png")
-            playwright.expect(page.locator("#documents")).not_to_contain_text("mine-only.png")
+            playwright.expect(page.locator("#rc2-table")).to_contain_text("mom-only.png")
+            playwright.expect(page.locator("#rc2-table")).not_to_contain_text("mine-only.png")
             page.locator("#session-end").click()
             playwright.expect(page.locator("#session-banner")).to_be_empty(timeout=15000)
-            playwright.expect(page.locator("#documents")).to_contain_text("mine-only.png")
+            playwright.expect(page.locator("#rc2-table")).to_contain_text("mine-only.png")
             assert not failures, failures
             browser.close()
     finally:

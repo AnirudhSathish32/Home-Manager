@@ -60,6 +60,18 @@ def read_all(page, port, force=False):
     page.locator("#pr2-read-start").click()
 
 
+def wait_for_batch(page, text, timeout):
+    """The latest reading batch's status line (app.js receiptBatchText), as the poll last saw it. Polled with evaluate:
+    the strict CSP blocks wait_for_function's string eval."""
+    line = ""
+    for _ in range(timeout // 250):
+        line = page.evaluate("() => receiptBatchText(receiptBatch)")
+        if text in line:
+            return
+        page.wait_for_timeout(250)
+    raise AssertionError(f"The reading batch never said {text!r}; last: {line!r}")
+
+
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_model):
     local_model["output"]["full_text"] += "\nLATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00"
@@ -151,7 +163,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.get_by_role("tab", name="Independent checks", exact=True).click()
             playwright.expect(page.locator("#decision-status")).to_contain_text("synthetic-reasoning checks every ledger extraction")
             read_all(page, port)
-            playwright.expect(page.locator("#receipt-batch-status")).to_contain_text("completed", timeout=30000)
+            wait_for_batch(page, "completed", 30000)
             page.goto(f"http://127.0.0.1:{port}/#/documents?folder=all")
             open_document(page, "receipt.png")
             playwright.expect(page.locator("#doc2-title")).to_have_text("receipt.png")
@@ -165,7 +177,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             page.locator("#doc2-back").click()
             playwright.expect(page.locator("#rc2-panel")).to_be_visible()
             read_all(page, port)
-            playwright.expect(page.locator("#receipt-batch-status")).to_contain_text("1 reused", timeout=10000)
+            wait_for_batch(page, "1 reused", 10000)
             assert len(local_model["requests"]) == 1
             vision_output = local_model["output"]
             gate = threading.Event()
@@ -268,7 +280,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
                 playwright.expect(page.locator("#toasts")).to_contain_text("Cancellation requested")
             finally:
                 gate.set()
-            playwright.expect(page.locator("#receipt-batch-status")).to_contain_text("Batch cancelled", timeout=15000)
+            wait_for_batch(page, "Batch cancelled", 15000)
             playwright.expect(page.locator("#pr2-activity")).to_contain_text("Nothing running.")
             # Newly captured images are transcribed and extraction is attempted automatically. This synthetic
             # model answers only transcription, so extraction stops and the bill waits in Inbox.

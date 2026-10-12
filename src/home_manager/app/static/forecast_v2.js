@@ -1,8 +1,8 @@
 "use strict";
 // Forecast, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/wealth.md): the assumptions in a column
 // beside the answer (where cash and net worth end up, and whether cash goes below zero), one chart at a time, then what
-// the numbers rest on. The assumptions live in the URL. forecast.js keeps the builders both screens use, on inputs with
-// the "fc2-" prefix here. Every amount and date is the server's.
+// the numbers rest on. The assumptions live in the URL. forecast.js keeps the builders, on this page's "fc2-" inputs.
+// Every amount and date is the server's.
 const FC2 = "fc2-";
 const FC2_CHARTS = ["net_worth", "cash_flow", "balance_sheet"];
 const FC2_DEFAULTS = {years: 10, inflation: "2", growth: "0", history: 6, chart: "net_worth"};
@@ -14,7 +14,7 @@ const fc2 = {load: 0, chart: "net_worth", result: null};
 
 V2_SCREENS.forecast = {title: "Forecast", show: route => loadForecastV2(route.params)};
 
-wireForecast(FC2);
+wireForecast();
 const fc2Wide = matchMedia("(min-width: 1100px)");
 // Wide, the assumptions are a column that is always open; narrower, they fold above the results.
 fc2Wide.addEventListener("change", () => { if (fc2Wide.matches) $("fc2-assumptions").open = true; });
@@ -83,7 +83,7 @@ function forecastParamsV2(params) {
 }
 // The form's assumptions into the URL: only what differs from the defaults.
 function fc2Url() {
-  const request = forecastRequest(FC2), next = new URLSearchParams();
+  const request = forecastRequest(), next = new URLSearchParams();
   if (request.years !== FC2_DEFAULTS.years) next.set("years", String(request.years));
   if (request.inflation_percent !== FC2_DEFAULTS.inflation) next.set("inflation", request.inflation_percent);
   if (request.income_growth_percent !== FC2_DEFAULTS.growth) next.set("growth", request.income_growth_percent);
@@ -103,13 +103,12 @@ function fc2Url() {
 // Loading ----------------------------------------------------------------------------------------------------------
 function loadForecastV2(params) {
   const state = forecastParamsV2(params);
-  forecastReload = () => fc2Reload();
   fc2.chart = state.chart;
   $(FC2 + "forecast-years").value = state.years;
   $(FC2 + "forecast-inflation").value = state.inflation;
   $(FC2 + "forecast-income-growth").value = state.growth;
   $(FC2 + "forecast-history").value = state.history;
-  const lists = forecastLists(FC2);
+  const lists = forecastLists();
   for (const [key, items] of Object.entries(state.lists)) {
     const [list, fields] = lists[key];
     $(list).replaceChildren();
@@ -124,7 +123,7 @@ function loadForecastV2(params) {
   $(FC2 + "retire-amount").value = state.retire?.mode === "fixed" ? state.retire.amount : "";
   $(FC2 + "retire-floor").value = state.retire?.mode === "shortfall" ? state.retire.amount : "0";
   $(FC2 + "retire-tax").value = state.retire?.tax || "0";
-  showRetirementFields(FC2);
+  showRetirementFields();
   fc2Counts();
   // Each list opens when it has rows; the column opens on a narrow screen only when the URL sets nothing.
   for (const details of document.querySelectorAll("#fc2-forecast-form .fc2-list[data-list]")) details.open = $(details.dataset.list).children.length > 0;
@@ -134,7 +133,7 @@ function loadForecastV2(params) {
   return fc2Reload();
 }
 function fc2Reload() {
-  return pageState($("fc2-state"), async () => { await loadAssets(FC2); fc2AssetRows(); await fc2Run(); },
+  return pageState($("fc2-state"), async () => { await loadAssets(); fc2AssetRows(); await fc2Run(); },
                    {loading: "Loading the forecast …", what: "the forecast", needsLibrary: true, content: [$("fc2-body")]});
 }
 // The shared asset rows, marked so a narrow screen can fold Kind and As of into the name line.
@@ -151,7 +150,7 @@ async function fc2Run() {
   const load = ++fc2.load;
   let result;
   try {
-    result = await api("/api/forecast", {method: "POST", body: JSON.stringify(forecastRequest(FC2))});
+    result = await api("/api/forecast", {method: "POST", body: JSON.stringify(forecastRequest())});
   } catch (error) {
     if (load !== fc2.load) return;
     $("fc2-alerts").replaceChildren(alertBox(`Couldn't update the forecast. ${error?.message || error}`, {tone: "error", detail: error?.detail || ""}));
@@ -183,7 +182,7 @@ function renderForecastV2(result) {
   $("fc2-notes").replaceChildren(...result.notes.map(note => element("li", note)));
   $("fc2-about").hidden = !result.notes.length;
   $("fc2-start").replaceChildren(...forecastStart(result, categoryLabel));
-  forecastCategoryOptions(result, FC2 + "forecast-category-options");
+  forecastCategoryOptions(result);
   fc2Counts();
 }
 // "2036", or the last month of a year that doesn't start in January ("2036-10 to 2037-09" → "September 2037").

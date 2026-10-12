@@ -38,7 +38,7 @@ def test_search_v2_groups_kinds_and_next_steps(tmp_path):
         # The statement's water bill is both a document (its text) and a transaction.
         page.goto(f"{base}/#/search?q=water")
         expect(page.locator("#se2-panel")).to_be_visible()
-        expect(page.locator("#search-panel")).to_be_hidden()
+        expect(page.locator("[data-page='search']")).to_have_count(1)  # One section per page.
         expect(page.locator(".se2-group[data-kind='documents'] h2")).to_contain_text("Documents · ")
         expect(page.locator(".se2-group[data-kind='transactions'] h2")).to_contain_text("Transactions · ")
         expect(page.locator("#se2-status")).to_contain_text("for “water”")

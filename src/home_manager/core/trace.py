@@ -1,4 +1,4 @@
-"""Calculation traces: every figure can show how it was worked out (docs/ui.md "Redesign: calculation observability",
+"""Calculation traces: every figure can show how it was worked out (docs/ui.md "Every number explained",
 "Trace contract").
 
 No parallel explainer. A calculation takes an optional `recorder`; the default (NULL) does nothing, so ordinary calls

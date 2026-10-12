@@ -43,7 +43,7 @@ def test_this_month_v2_shows_the_month_its_budgets_and_rules(tmp_path):
         page.goto(f"{base}/#/spending")
         panel = page.locator("#month2-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#spending-panel")).to_be_hidden()
+        expect(page.locator("[data-page='spending']")).to_have_count(1)  # One section per page.
         expect(panel.locator("h1")).to_have_text("This month")
         expect(page.locator("#nav-spending")).to_contain_text("This month")
         assert page.title().startswith("This month")

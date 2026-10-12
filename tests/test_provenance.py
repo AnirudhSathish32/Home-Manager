@@ -1,4 +1,4 @@
-"""The trace and provenance backbone (docs/ui.md "Redesign: calculation observability"; docs/open-work.md "UI redesign" 3):
+"""The trace and provenance backbone (docs/ui.md "Every number explained", "What's built"):
 who changed what and why, corrections of statements, account values and tax form boxes, typed tax values beside the
 records', rule sets, provenance, verification, traces and manual transactions. Synthetic data only."""
 

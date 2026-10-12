@@ -927,7 +927,7 @@ class Investments:
             db.execute("INSERT INTO investment_valuations(account_id,as_of,value_minor,source,review_status,created_at,updated_at) VALUES(?,?,?,'manual','verified',?,?)",
                        (account_id, value.as_of, amount, now(), now()))
 
-    # Corrections (docs/ui.md "Redesign: calculation observability"): a value read from a document set right by a person,
+    # Corrections (docs/ui.md "What's built", "Corrections"): a value read from a document set right by a person,
     # kept with the value it replaced, who and why (record_corrections), and re-applied if the document is read again.
     def correct_valuation(self, valuation_id, value_text, reason=None):
         """An account value read from a statement, corrected. It keeps its statement and review state."""

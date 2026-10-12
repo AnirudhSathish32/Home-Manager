@@ -1,4 +1,4 @@
-"""Who is making a change (docs/ui.md "Redesign: calculation observability", "Who").
+"""Who is making a change (docs/ui.md "Trace contract", "Who").
 
 The person chosen in the who's-here picker arrives on each request as the X-HM-Actor header. The API checks it against
 the profile's people and holds it here for that request, so every writer (corrections, review events, tax input

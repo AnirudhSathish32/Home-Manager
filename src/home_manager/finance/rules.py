@@ -1,4 +1,4 @@
-"""The rule sets figures rest on (docs/ui.md "Redesign: calculation observability", "Rules").
+"""The rule sets figures rest on (docs/ui.md "Trace contract", "Rules").
 
 Each constant set a calculation uses (tax brackets come from confirmed tax tables, each with its own quoted sources) is
 listed here with a version, the tax year it's for (None: not tied to one year), the source it was taken from, the day it

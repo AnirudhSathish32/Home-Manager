@@ -1,10 +1,10 @@
 "use strict";
-// Inventory and the weekly check-in (docs/household.md "Run-out, cost per day and check-ins"). The user's answers apply at once;
-// a free-text answer is read by the local model into a list of changes that apply only when confirmed.
+// Inventory's shared parts (inventory_v2.js draws the page) and the weekly check-in (docs/household.md "Run-out, cost
+// per day and check-ins"). The user's answers apply at once; a free-text answer is read by the local model into a list of
+// changes that apply only when confirmed.
 const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const CHECKIN_BUTTONS = [["still_have", "Still have it"], ["finished_today", "Finished today"], ["finished_this_week", "Finished this week"], ["thrown_out", "Thrown out"]];
-// inventoryReload: Inventory v2 (inventory_v2.js) points it at its own reload while it shows; v1's loader clears it.
-let inventoryLoad = 0, inventoryCheckin = null, inventoryReload = null;
+let inventoryCheckin = null;  // The latest check-in (inventory_v2.js sets it), which askedAt counts from.
 function askedAt(nextCheck) {
   // A lot's question is asked at the first weekly check-in on or after it is due.
   if (!nextCheck || !inventoryCheckin) return nextCheck ? dateText(nextCheck) : "—";
@@ -37,7 +37,7 @@ function sinceText(day) {
 }
 async function afterInventoryChange() {
   loadNavCounts().catch(() => {});
-  if (currentRoute?.name === "inventory") await (inventoryReload ? inventoryReload() : loadInventory());
+  if (currentRoute?.name === "inventory") await it2Reload();
   else if (currentRoute?.name === "home") await reloadToday();
 }
 async function answerLot(lot, answer, source = "checkin") {
@@ -75,8 +75,8 @@ function renderCheckin(target, checkin, {compact = false} = {}) {
 }
 
 // Free-text answers: read by the model, shown as a list of changes, applied on confirmation. host: where the reading
-// shows; input: the text box to clear once changes apply (v1's, or Inventory v2's).
-async function submitCheckinText(text, host, button, input = $("checkin-text")) {
+// shows; input: the text box to clear once changes apply.
+async function submitCheckinText(text, host, button, input) {
   const answer = text.trim();
   if (!answer) return;
   button.disabled = true;
@@ -90,11 +90,7 @@ async function submitCheckinText(text, host, button, input = $("checkin-text")) 
   } catch (error) { host.replaceChildren(alertBox(error.message, {tone: "error"})); }
   finally { button.disabled = false; }
 }
-$("checkin-text-form").addEventListener("submit", event => {
-  event.preventDefault();
-  submitCheckinText($("checkin-text").value, $("checkin-reading"), $("checkin-text-submit"));
-});
-function renderReading(run, host = $("checkin-reading"), input = $("checkin-text")) {
+function renderReading(run, host, input) {
   const result = run.result, nodes = [element("h3", "Confirm these changes")];
   const labels = {still_have: "Still have it", finished: "Finished", thrown_out: "Thrown out"};
   const list = element("ul", "", "checkin-list");
@@ -125,12 +121,8 @@ function renderReading(run, host = $("checkin-reading"), input = $("checkin-text
   host.replaceChildren(...nodes);
 }
 
-// Returned items (docs/household.md "Returned items"): a returned receipt line and the in-stock items it may have been.
-function renderReturned(proposals) {
-  $("returned-panel").hidden = !proposals.length;
-  $("returned-content").replaceChildren(...proposals.map(proposal => returnedRow(proposal)));
-}
-// One returned line and its answers (v1's list, and Inventory v2's "Did this go back?"); className: the row's classes.
+// Returned items (docs/household.md "Returned items"): a returned receipt line and the in-stock items it may have been,
+// with its answers (Inventory's "Did this go back?"); className: the row's classes.
 function returnedRow(proposal, className = "checkin-row") {
   const li = element("li", "", className), name = element("div", "", "checkin-name");
   name.append(element("strong", proposal.description),
@@ -148,81 +140,7 @@ function returnedRow(proposal, className = "checkin-row") {
   li.append(name, buttons); return li;
 }
 
-// Inventory page.
-async function loadInventory() {
-  inventoryReload = null;
-  if (!configured) { $("inventory-groups").replaceChildren(emptyState("Set up your library to track household items.")); return; }
-  const load = ++inventoryLoad, query = new URLSearchParams({limit: 1000});
-  if ($("inventory-search").value.trim()) query.set("query", $("inventory-search").value.trim());
-  if ($("inventory-closed").checked) query.set("include_closed", "true");
-  const [lots, checkin, receipts, policies, returned] = await Promise.all([api(`/api/inventory?${query}`), api("/api/inventory/checkin"),
-    api("/api/inventory/receipts-to-identify"), api("/api/return-policies"), api("/api/inventory/returned")]);
-  if (load !== inventoryLoad) return;
-  renderPolicies(policies);
-  renderReturned(returned);
-  inventoryCheckin = checkin;
-  renderCheckin($("checkin-content"), checkin);
-  $("checkin-text-form").hidden = !checkin.lots.length;
-  const groups = new Map();
-  for (const lot of lots) { if (!groups.has(lot.category)) groups.set(lot.category, []); groups.get(lot.category).push(lot); }
-  const panels = [];
-  for (const [category, members] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-    const panel = element("section", "", "panel"); panel.append(element("h2", `${category} (${members.length})`));
-    const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
-    const head = document.createElement("thead"), headRow = document.createElement("tr");
-    for (const title of ["Item", "Bought", "Status", "Next question", ""]) { const th = element("th", title); th.scope = "col"; headRow.append(th); }
-    head.append(headRow);
-    const body = document.createElement("tbody");
-    for (const lot of members) body.append(inventoryRow(lot));
-    table.append(head, body); wrap.append(table); panel.append(wrap); panels.push(panel);
-  }
-  $("inventory-groups").replaceChildren(...(panels.length ? panels : [emptyState($("inventory-search").value.trim() ? "Nothing matches that search." :
-    "No items yet. Approve product names for receipt lines in Review, and they appear here.")]));
-  const items = receipts.map(receipt => {
-    const li = element("li", "", "review-item");
-    li.append(element("strong", receipt.merchant || "Receipt"), element("span", `${receipt.purchase_date ? dateText(receipt.purchase_date) : "No date"} · ${receipt.unresolved} of ${receipt.lines} lines not identified`, "block muted small"));
-    const row = element("div", "", "review-actions");
-    row.append(asyncButton("Identify items", async () => {
-      await api(`/api/receipts/${receipt.id}/item-resolution-runs`, {method: "POST"});
-      notice("Identifying items. Proposals appear in Review as they're found.");
-    }), homeLink("Open receipt", `#/documents/${receipt.document_id}`));
-    li.append(row); return li;
-  });
-  $("identify-receipts").replaceChildren(...(items.length ? items : [element("li", "Every receipt line has a product or a proposal.", "muted")]));
-}
-function inventoryRow(lot) {
-  const tr = document.createElement("tr");
-  const name = cell(tr, ""); name.append(element("strong", productName(lot)));
-  if (lot.units && lot.units !== "1") name.append(element("small", `Quantity ${lot.units}`, "muted block"));
-  cell(tr, lot.bought_on ? `${dateText(lot.bought_on)}` : "—");
-  const state = cell(tr, ""); state.append(statusBadge(lot.status));
-  if (lot.closed_on) state.append(element("small", `${lot.closed_precision_days ? "around " : ""}${dateText(lot.closed_on)}`, "muted block"));
-  if (lot.opened_on) state.append(element("small", `Opened ${dateText(lot.opened_on)}`, "muted block"));
-  for (const warranty of lot.warranties || []) {
-    const text = warranty.lifetime ? "Lifetime warranty" : `${{manufacturer: "Warranty", store: "Store warranty", extended: "Extended warranty"}[warranty.kind]} until ${dateText(warranty.expires_on)}`;
-    const note = element("small", warranty.review_status === "proposed" ? `${text} (found online, confirm in Review)` : text, "warranty-note block");
-    note.title = warranty.quote ? `“${warranty.quote}” — ${warranty.source_title || warranty.source_url}` : warranty.note || "";
-    state.append(note);
-  }
-  const returnWindow = returnText(lot);
-  if (returnWindow) { const note = element("small", returnWindow, `return-note block ${lot.returnable ? "" : "muted"}`); note.title = lot.return_note || ""; state.append(note); }
-  cell(tr, lot.status === "in_stock" ? (lot.consumable ? askedAt(lot.next_check_on) : "Not asked (lasts)") : "—");
-  const history = element("button", "History"); history.type = "button";
-  history.addEventListener("click", async () => {
-    try {
-      const events = await api(`/api/inventory/lots/${lot.id}/history`);
-      const existing = tr.nextElementSibling?.classList.contains("lot-history-row") ? tr.nextElementSibling : null;
-      if (existing) { existing.remove(); return; }
-      const row = element("tr", "", "lot-history-row"), td = document.createElement("td"); td.colSpan = 5;
-      const list = element("ul", "", "finance-list");
-      for (const event of events) list.append(element("li", `${dateText(event.effective_on)} · ${statusLabel(event.event)}${event.precision_days ? ` (±${event.precision_days} days)` : ""} · ${{approval: "approved", manual: "you, on this page", checkin: "check-in", checkin_text: "check-in in your words"}[event.source] || event.source}`));
-      td.append(list); row.append(td); tr.after(row);
-    } catch (error) { notice(error, true); }
-  });
-  cell(tr, "").append(lotMenu(lot, [history]));
-  return tr;
-}
-// A lot's Actions menu (v1 rows and Inventory v2's Items table); extra: more items at the end (v1's History).
+// A lot's Actions menu (Inventory's Items table); extra: more items at the end.
 function lotMenu(lot, extra = []) {
   const items = [];
   const add = (label, run) => { const button = element("button", label); button.type = "button"; button.addEventListener("click", () => run().catch(error => notice(error, true))); items.push(button); };
@@ -278,33 +196,3 @@ async function lookUpWarranty(lot) {
   else notice(run.result?.note || run.error || "No stated warranty was found.", run.status !== "succeeded");
   await afterInventoryChange();
 }
-
-function renderPolicies(policies) {
-  const rows = policies.map(policy => {
-    const tr = document.createElement("tr");
-    cell(tr, policy.merchant); cell(tr, policy.days ?? "No limit").className = "numeric"; cell(tr, policy.note || "—");
-    cell(tr, policy.source === "typical" ? "Typical (check your receipt)" : "Yours");
-    const actions = cell(tr, "");
-    actions.append(asyncButton("Change", async () => {
-      $("policy-merchant").value = policy.merchant; $("policy-days").value = policy.days ?? ""; $("policy-note").value = policy.note; $("policy-days").focus();
-    }, "small quiet"), asyncButton("Remove", async () => {
-      if (!await confirmAction({title: `Remove the ${policy.merchant} policy?`, message: "Items from this store will have no return window unless their receipt prints one.", confirmLabel: "Remove policy"})) return;
-      await api(`/api/return-policies/${policy.id}`, {method: "DELETE"}); notice("Policy removed."); await loadInventory();
-    }, "small quiet"));
-    return tr;
-  });
-  if (rows.length) $("policy-rows").replaceChildren(...rows); else tableMessage($("policy-rows"), 5, "No store policies. Add the stores you shop at.");
-}
-$("policy-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const days = $("policy-days").value.trim();
-  try {
-    const policy = await api("/api/return-policies", {method: "PUT", body: JSON.stringify({merchant: $("policy-merchant").value.trim(), days: days === "" ? null : Number(days), note: $("policy-note").value.trim()})});
-    notice(`Saved: ${policy.merchant}, ${policy.days ?? "no fixed"} ${policy.days === 1 ? "day" : "days"}${policy.days === null ? " limit" : ""}.`);
-    for (const id of ["policy-merchant", "policy-days", "policy-note"]) $(id).value = "";
-    await loadInventory();
-  } catch (error) { notice(error, true); }
-});
-$("inventory-search").addEventListener("search", () => loadInventory().catch(error => notice(error, true)));
-$("inventory-search").addEventListener("keydown", event => { if (event.key === "Enter") loadInventory().catch(error => notice(error, true)); });
-$("inventory-closed").addEventListener("change", () => loadInventory().catch(error => notice(error, true)));

@@ -312,7 +312,7 @@ function rc2GroupRow(key, label, count, depth = 0) {
   button.append(icon("chevron-right", "icon rc2-folder-icon rc2-chevron"), element("span", label, "rc2-folder-label"), element("span", count ?? 0, "rc2-folder-count"));
   return button;
 }
-// The tree's rows as v1 renderFolders has them: Receipts → categories, Jobs → employer → Paystubs/Documents, Trash last.
+// The tree's rows: Receipts → categories, Jobs → employer → Paystubs/Documents, Trash last.
 function rc2FolderEntries() {
   const catalog = rc2.catalog, rows = [];
   for (const folder of ["all", ...catalog.folders, "trash"]) {
@@ -437,7 +437,7 @@ function rc2Row(doc) {
   actions.append(wrap);
   return tr;
 }
-// The one most useful action for the document, as v1 nextStep chooses it, as a text link.
+// The one most useful action for the document, as a text link: Restore, Import, Read or Record.
 function rc2Step(doc, stateCell) {
   const name = documentName(doc);
   let label = "", run = null, model = false;

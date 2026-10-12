@@ -64,7 +64,7 @@ def test_today_v2_puts_the_household_and_what_needs_you_in_view(tmp_path):
         page.goto(f"{base}/#token={token}")
         panel = page.locator("#today-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#home-panel")).to_be_hidden()
+        expect(page.locator("[data-page='home']")).to_have_count(1)  # One section per page.
         expect(panel.locator("h1")).to_have_text("Today")
         expect(page.locator("#nav-home")).to_contain_text("Today")
         assert page.title().startswith("Today")

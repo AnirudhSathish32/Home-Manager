@@ -55,7 +55,8 @@ def test_every_used_token_is_defined_in_light():
     text = css()
     defined = set(tokens(block(text, LIGHT)))
     used = set(re.findall(r"var\((--[\w-]+)", text))
-    assert used - defined == set()
+    runtime = {"--figure-chars"}  # Set on a row by trace.js fitFigures, with a fallback in the CSS.
+    assert used - defined - runtime == set()
 
 
 def test_the_dark_blocks_match_and_cover_every_light_color():

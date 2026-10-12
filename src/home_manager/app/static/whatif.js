@@ -1,17 +1,10 @@
 "use strict";
 // What If (docs/planning.md "What If"): the paycheck planner. The server works out every line from gross to net
 // (finance/paycheck.py); this page only collects the inputs and shows the server's exact text.
-// Two screens share these builders: the original page (no id prefix) and the redesigned one (whatif_v2.js), whose copies
-// of the inputs carry the "wi2-" prefix. wi.p is the prefix of the screen being worked on; each entry point and handler
-// sets it first. hooks[prefix] belong to one screen (whatif_v2.js sets "wi2-"'s): showTab(name) opens a tab, tried(result,
-// error) takes a "Try it" result, followChanged(shown) shows or hides Follow this plan, href(plan) is a plan's link.
-const wi = {p: "", shown: null, follow: false, paychecksRun: null, hooks: {}};
-const w$ = id => $(wi.p + id);
-const wiHook = name => wi.hooks[wi.p]?.[name];
-const wiHref = plan => wiHook("href")?.(plan) ?? `#/whatif?plan=${plan}`;
-const wiShowTab = name => wiHook("showTab")?.(name);
-// Traced money: a figure that opens its breakdown on the redesigned screen, the plain amount on the original.
-const wiMoney = (fig, opts) => wi.p ? figure(fig, opts) : amount(fig, opts);
+// whatif_v2.js draws the page; these builders work on its inputs, which carry the "wi2-" prefix. whatif_v2.js answers
+// wi2ShowTab(name), renderAgainstNowV2(result, error), wi2FollowChanged(shown) and wi2Href(plan).
+const wi = {opened: false, follow: false, paychecksRun: null};
+const w$ = id => $("wi2-" + id);
 const PLAN_STATES = {AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware",
   DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
   KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
@@ -26,7 +19,7 @@ const PLAN_CATEGORIES = {
   employer: {hsa: "HSA", retirement_pretax: "401(k)", health: "Health insurance", dental: "Dental insurance", vision: "Vision insurance",
              life_insurance: "Life insurance", other: "Other"}};
 let planTimer = 0, planLoad = 0, planRowId = 0;
-const planReady = new Set();  // The prefixes whose planner has its states and year filled in.
+let planReady = false;  // Whether the planner has its states and year filled in.
 
 function planSelect(id, options, value = "") {
   const select = document.createElement("select"); select.id = id;
@@ -36,7 +29,7 @@ function planSelect(id, options, value = "") {
 }
 function planRow(list, line = {}) {
   // One deduction or earnings line: what it is, a name, and an amount per paycheck or a percent of gross pay.
-  const row = element("div", "", "forecast-row forecast-item plan-line"), id = ++planRowId, p = wi.p;
+  const row = element("div", "", "forecast-row forecast-item plan-line"), id = ++planRowId, p = "wi2-";
   const category = planSelect(`${p}${list}-category-${id}`, PLAN_CATEGORIES[list], line.category);
   const label = forecastInput(`${p}${list}-label-${id}`, {maxlength: "60", placeholder: "Optional"}); label.value = line.label || "";
   const kind = planSelect(`${p}${list}-kind-${id}`, list === "earnings" ? {amount: "$ a check"} : {amount: "$ a check", percent: "% of gross"},
@@ -45,7 +38,7 @@ function planRow(list, line = {}) {
   category.dataset.key = "category"; label.dataset.key = "label"; kind.dataset.key = "kind"; value.dataset.key = "value";
   row.append(forecastField("What", category), forecastField("Name", label), forecastField("As", kind), forecastField("Amount", value));
   const remove = element("button", "Remove", "quiet"); remove.type = "button";
-  remove.addEventListener("click", () => { wi.p = p; row.remove(); schedulePaycheck(); });
+  remove.addEventListener("click", () => { row.remove(); schedulePaycheck(); });
   row.append(remove); w$(`plan-${list}`).append(row);
   return row;
 }
@@ -59,13 +52,13 @@ const MONTH_OPTIONS = Object.fromEntries(["January", "February", "March", "April
   .map((name, index) => [String(index + 1), name]));
 function bonusRow(bonus = {}) {
   // A bonus: a name, the amount, and the month it's paid (with that month's first paycheck).
-  const row = element("div", "", "forecast-row forecast-item plan-bonus"), id = ++planRowId, p = wi.p;
+  const row = element("div", "", "forecast-row forecast-item plan-bonus"), id = ++planRowId, p = "wi2-";
   const label = forecastInput(`${p}bonus-label-${id}`, {maxlength: "60", placeholder: "Year-end bonus"}); label.value = bonus.label || "";
   const value = forecastInput(`${p}bonus-amount-${id}`, {inputmode: "decimal", required: ""}); value.value = bonus.amount || "";
   const month = planSelect(`${p}bonus-month-${id}`, MONTH_OPTIONS, String(bonus.month || 12));
   label.dataset.key = "label"; value.dataset.key = "amount"; month.dataset.key = "month";
   const remove = element("button", "Remove", "quiet"); remove.type = "button";
-  remove.addEventListener("click", () => { wi.p = p; row.remove(); schedulePaycheck(); });
+  remove.addEventListener("click", () => { row.remove(); schedulePaycheck(); });
   row.append(forecastField("Name", label), forecastField("Amount", value), forecastField("Paid in", month), remove);
   w$("plan-bonuses").append(row);
   return row;
@@ -128,7 +121,7 @@ function planTableRow(body, label, how, perCheck, perYear, className = "") {
   const tr = body.insertRow(); if (className) tr.className = className;
   const th = tr.appendChild(element("th", label)); th.scope = "row";
   if (how) th.appendChild(element("small", how, "muted block"));
-  for (const value of [perCheck, perYear]) tr.appendChild(element("td", "", "numeric")).appendChild(wiMoney(value || "—", {size: "sm", signed: false}));
+  for (const value of [perCheck, perYear]) tr.appendChild(element("td", "", "numeric")).appendChild(figure(value || "—", {size: "sm", signed: false}));
 }
 function paycheckTable(result) {
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows paystub-table");
@@ -189,9 +182,9 @@ function paycheckJurisdictions(result) {
     block.appendChild(element("h4", `${part.name} income tax`));
     if (part.status !== "verified") {
       block.appendChild(element("p", part.message, "muted"));
-      if (part.status === "missing") block.appendChild(actionButton(`Look up the ${result.year} ${part.name} table`, () =>
+      if (part.status === "missing") block.appendChild(asyncButton(`Look up the ${result.year} ${part.name} table`, () =>
         api("/api/tax-tables/lookup", {method: "POST", body: JSON.stringify({jurisdiction: part.jurisdiction, year: result.year, filing_status: result.filing_status})})
-          .then(() => notice("Looking it up. The table will wait for you in Review."))));
+          .then(() => notice("Looking it up. The table will wait for you in Review.")), ""));
       if (part.status === "proposed") block.appendChild(homeLink("Review the table", "#/review"));
       if (part.jurisdiction !== "US") block.appendChild(element("p", "Or enter the state's flat rate under State to work it out now.", "muted small"));
       section.appendChild(block); continue;
@@ -228,7 +221,7 @@ function taxTimeFix(zen) {
   return zen.w4?.amount != null ? ` To reach $0, put ${zen.w4.display.amount} in W-4 Step ${zen.w4.field === "4(a)" ? "4(a), other income" : "4(b), deductions"}`
     + `${zen.job ? ` for ${zen.job}` : ""}.` : zen.w4?.unreachable ? " No W-4 entry can bring it to $0." : "";
 }
-// The same sentence with the year's result as a figure that opens its breakdown (the redesigned screen).
+// The same sentence with the year's result as a figure that opens its breakdown.
 function taxTimeNodes(zen, lead) {
   const line = element("p", "", "small");
   if (zen.zen || !zen.trace) { line.textContent = taxTimeText(zen, lead); return line; }
@@ -239,11 +232,11 @@ function taxTimeNodes(zen, lead) {
 function renderPaycheck(result) {
   const target = w$("paycheck-result");
   const headline = element("dl", "", "plan-headline");
-  // The redesigned screen's take-home figures open their breakdown (paycheck.net).
-  const traced = (display, key) => wi.p && result.traces?.[key] ? {display, trace: result.traces[key]} : display;
-  for (const [label, value, big] of [[wi.p ? "Take-home per paycheck" : "Take-home pay", traced(result.net.display.per_check_minor, "net_per_check"), true],
+  // The take-home figures open their breakdown (paycheck.net).
+  const traced = (display, key) => result.traces?.[key] ? {display, trace: result.traces[key]} : display;
+  for (const [label, value, big] of [["Take-home per paycheck", traced(result.net.display.per_check_minor, "net_per_check"), true],
       ["A month, on average", traced(result.net.display.monthly_minor, "net_monthly")], ["A year", result.net.display.annual_minor]]) {
-    const dd = element("dd", "", big ? "plan-figure" : ""); dd.appendChild(wiMoney(value, {size: big ? "lg" : "sm", signed: false}));
+    const dd = element("dd", "", big ? "plan-figure" : ""); dd.appendChild(figure(value, {size: big ? "lg" : "sm", signed: false}));
     headline.append(element("dt", label), dd);
   }
   fitFigures(headline);
@@ -252,7 +245,7 @@ function renderPaycheck(result) {
     + (result.rates.state_marginal_percent != null ? `, top ${result.state_name} bucket ${planRate(result.rates.state_marginal_percent)}.` : result.rates.federal_marginal_percent != null ? "." : ""), "muted small");
   const parts = [element("h2", "From gross pay to net pay"), headline, rates];
   const taxTime = result.tax_time;
-  if (taxTime?.ready) parts.push(wi.p ? taxTimeNodes(taxTime, "With this paycheck alone for a full year") : element("p", taxTimeText(taxTime, "With this paycheck alone for a full year"), "small"));
+  if (taxTime?.ready) parts.push(taxTimeNodes(taxTime, "With this paycheck alone for a full year"));
   if (!result.complete) parts.push(alertBox("Some tax tables are missing, so taxes are left out and take-home pay is too high. See below.", {tone: "warning"}));
   parts.push(paycheckTable(result));
   if (result.schedule.length > 1) parts.push(paycheckSchedule(result));
@@ -268,7 +261,6 @@ function renderPaycheck(result) {
     w$(id).placeholder = part?.display?.table_deduction_minor ? `Table: ${part.display.table_deduction_minor}` : "";
 }
 async function runPaycheck() {
-  const p = wi.p;
   if (!planText("plan-pay")) {
     w$("paycheck-result").replaceChildren(element("h2", "From gross pay to net pay"), emptyState("Enter a salary or the gross pay per paycheck to see every line from gross to net."));
     return;
@@ -276,12 +268,11 @@ async function runPaycheck() {
   const load = ++planLoad;
   try {
     const result = await api("/api/paycheck", {method: "POST", body: JSON.stringify(paycheckRequest())});
-    if (load === planLoad) { wi.p = p; renderPaycheck(result); w$("paycheck-error").replaceChildren(); }
+    if (load === planLoad) { renderPaycheck(result); w$("paycheck-error").replaceChildren(); }
   } catch (error) {
     if (load !== planLoad) return;
-    wi.p = p;
-    // A tax table waiting to be confirmed is in To check (the redesigned screen links there).
-    const action = p && /table/i.test(error.message) ? homeLink("Check the tax tables", "#/review") : null;
+    // A tax table waiting to be confirmed is in To check.
+    const action = /table/i.test(error.message) ? homeLink("Check the tax tables", "#/review") : null;
     w$("paycheck-error").replaceChildren(alertBox(error.message, {tone: "error", action}));
   }
 }
@@ -301,7 +292,7 @@ function scenarioRow(list, fields, values = {}) {
   // Like the Forecast page's rows (forecastItems reads both), filled from a saved plan without moving focus.
   const row = element("div", "", "forecast-row forecast-item"), id = ++forecastRowId;
   for (const [key, label, attributes] of fields) {
-    const input = forecastInput(`${wi.p}${list}-${key}-${id}`, attributes);
+    const input = forecastInput(`wi2-${list}-${key}-${id}`, attributes);
     input.dataset.key = key; if (values[key] != null) input.value = values[key];
     row.append(forecastField(label, input));
   }
@@ -311,9 +302,9 @@ function scenarioRow(list, fields, values = {}) {
   return row;
 }
 const SCENARIO_LISTS = {
-  "scenario-amounts": [["category", "Category", {list: "forecast-category-options", required: ""}], ["monthly_amount", "A month, today's $", {inputmode: "decimal", required: "", placeholder: "2100.00"}],
+  "scenario-amounts": [["category", "Category", {list: "fc2-forecast-category-options", required: ""}], ["monthly_amount", "A month, today's $", {inputmode: "decimal", required: "", placeholder: "2100.00"}],
                        ["from_month", "From month", {type: "month", required: ""}]],
-  "scenario-changes": [["category", "Category", {list: "forecast-category-options", required: ""}], ["percent", "Change (%)", {inputmode: "decimal", required: "", placeholder: "-20"}]],
+  "scenario-changes": [["category", "Category", {list: "fc2-forecast-category-options", required: ""}], ["percent", "Change (%)", {inputmode: "decimal", required: "", placeholder: "-20"}]],
   "scenario-one-offs": [["month", "Month", {type: "month", required: ""}], ["amount", "Amount", {inputmode: "decimal", required: "", placeholder: "-3000.00"}], ["label", "What it is", {maxlength: "80"}]]};
 
 function accountOptions(select, treatments, chosen) {
@@ -322,24 +313,20 @@ function accountOptions(select, treatments, chosen) {
     select.append(Object.assign(document.createElement("option"), {value: String(account.id), textContent: `${account.name} (${account.kind_label})`}));
   select.value = chosen == null ? "" : String(chosen);
 }
-function paycheckSummary(paycheck) {
-  const pay = paycheck.annual_salary != null ? `${paycheck.annual_salary} a year` : `${paycheck.gross_per_check} a paycheck`;
-  return `${pay} · ${paycheckFacts(paycheck)}`;
-}
 function paycheckFacts(paycheck) {
   return `${paycheck.work_state ? PLAN_STATES[paycheck.work_state] : "no state tax"} · ${paycheck.pre_tax.length} pre-tax, ${paycheck.post_tax.length} post-tax lines · tax year ${paycheck.year}`;
 }
-// The redesigned screen's line: the server's take-home per paycheck once the plan has been tried, never the raw input.
+// A paycheck's line: the server's take-home per paycheck once the plan has been tried, never the raw input.
 function paycheckSummaryNodes(plan, index) {
   const line = element("p", "", "muted small"), run = wi.paychecksRun?.[index];
-  if (run) line.append(wiMoney(run.net_per_check, {size: "inline", signed: false}), ` take-home ${run.frequency_name} · ${paycheckFacts(plan.paycheck)}`);
+  if (run) line.append(figure(run.net_per_check, {size: "inline", signed: false}), ` take-home ${run.frequency_name} · ${paycheckFacts(plan.paycheck)}`);
   else line.append(`Try the plan to see its take-home · ${paycheckFacts(plan.paycheck)}`);
   return line;
 }
 function renderScenarioPaychecks() {
-  const list = w$("scenario-paychecks"), p = wi.p; list.replaceChildren();
+  const list = w$("scenario-paychecks"); list.replaceChildren();
   scenarioPaychecks.forEach((plan, index) => {
-    const row = element("div", "", "scenario-paycheck"), id = `${p}plan-${index}`;
+    const row = element("div", "", "scenario-paycheck"), id = `wi2-plan-${index}`;
     const fields = element("div", "", "forecast-row");
     const text = (key, label, attributes = {}) => { const input = forecastInput(`${id}-${key}`, attributes); input.value = plan[key] ?? ""; input.addEventListener("input", () => { plan[key] = input.value.trim() || null; }); return forecastField(label, input); };
     const mode = planSelect(`${id}-mode`, {replace_pay: "Replaces pay", add: "Adds to income"}, plan.mode);
@@ -355,22 +342,20 @@ function renderScenarioPaychecks() {
       fields.append(forecastField("401(k) goes into", retirement), forecastField("HSA goes into", hsa));
     }
     const actions = element("div", "", "button-row");
-    const open = element("button", editingPaycheck === index && !p ? "Open in the planner below" : "Open in planner", "quiet"); open.type = "button";
+    const open = element("button", "Open in planner", "quiet"); open.type = "button";
     open.addEventListener("click", () => {
-      wi.p = p;
       editingPaycheck = index; fillPaycheck(plan.paycheck); planButtons(); renderScenarioPaychecks(); runPaycheck();
-      wiShowTab("planner");
+      wi2ShowTab("planner");
       w$("paycheck-form").scrollIntoView({block: "start"}); w$("plan-pay").focus();
     });
     const remove = element("button", "Remove", "quiet"); remove.type = "button";
     remove.addEventListener("click", () => {
-      wi.p = p;
       scenarioPaychecks.splice(index, 1); if (editingPaycheck === index) editingPaycheck = null; else if (editingPaycheck > index) editingPaycheck--;
       wi.paychecksRun = null;
       planButtons(); renderScenarioPaychecks();
     });
     actions.append(open, remove);
-    row.append(fields, p ? paycheckSummaryNodes(plan, index) : element("p", paycheckSummary(plan.paycheck), "muted small"), actions);
+    row.append(fields, paycheckSummaryNodes(plan, index), actions);
     list.append(row);
   });
   if (!scenarioPaychecks.length) list.append(element("p", "No paychecks in this plan yet: income stays as recorded.", "muted small"));
@@ -406,8 +391,8 @@ function scenarioRequest() {
           paychecks: scenarioPaychecks.map(plan => ({...plan, label: (plan.label || "").trim() || "Paycheck", to_month: plan.to_month || null})),
           forecast: {years: Number(w$("scenario-years").value) || 10, inflation_percent: planText("scenario-inflation") || "0",
                      income_growth_percent: planText("scenario-income-growth") || "0",
-                     category_amounts: forecastItems(wi.p + "scenario-amounts"), spending_changes: forecastItems(wi.p + "scenario-changes"),
-                     one_offs: forecastItems(wi.p + "scenario-one-offs").map(item => ({...item, label: item.label || ""})),
+                     category_amounts: forecastItems("wi2-scenario-amounts"), spending_changes: forecastItems("wi2-scenario-changes"),
+                     one_offs: forecastItems("wi2-scenario-one-offs").map(item => ({...item, label: item.label || ""})),
                      retirement: scenarioRetirement(),
                      cut_subscriptions_from: w$("scenario-cut-subscriptions").checked ? w$("scenario-cut-month").value || null : null}};
 }
@@ -447,7 +432,7 @@ function renderScenarioChoices() {
   const options = w$("compare-options"), checked = new Set([...options.querySelectorAll("input:checked")].map(input => input.value));
   options.replaceChildren();
   for (const [value, label] of [["now", "Now"], ...scenarioView.scenarios.map(scenario => [String(scenario.id), scenario.name])]) {
-    const box = Object.assign(document.createElement("input"), {type: "checkbox", value, id: `${wi.p}compare-${value}`});
+    const box = Object.assign(document.createElement("input"), {type: "checkbox", value, id: `wi2-compare-${value}`});
     box.checked = checked.size ? checked.has(value) : value === "now" || value === String(scenarioId);
     box.addEventListener("change", limitCompare);
     const wrap = element("label", "", "check-field"); wrap.append(box, ` ${label}`); options.append(wrap);
@@ -457,8 +442,8 @@ function renderScenarioChoices() {
 function limitCompare() {
   const boxes = [...w$("compare-options").querySelectorAll("input")], chosen = boxes.filter(box => box.checked).length, full = chosen >= 3;
   for (const box of boxes) box.disabled = full && !box.checked;
-  // The redesigned screen can't compare nothing: its button waits for a choice.
-  if (wi.p) { w$("compare-run").disabled = !chosen; w$("compare-note").hidden = Boolean(chosen); }
+  // Nothing can't be compared: the button waits for a choice.
+  w$("compare-run").disabled = !chosen; w$("compare-note").hidden = Boolean(chosen);
 }
 async function loadScenarios() {
   scenarioView = await api("/api/scenarios");
@@ -471,21 +456,20 @@ function compareTable(result) {
   const body = table.createTBody();
   result.runs[0].years.forEach((year, index) => {
     const row = body.insertRow(); cell(row, year.year);
-    for (const run of result.runs) row.appendChild(element("td", "", "numeric")).appendChild(wiMoney(yearFigure(run.years[index], "end_net_worth"), {size: "sm", signed: false}));
+    for (const run of result.runs) row.appendChild(element("td", "", "numeric")).appendChild(figure(yearFigure(run.years[index], "end_net_worth"), {size: "sm", signed: false}));
   });
   wrap.append(table); return wrap;
 }
 // A year's traced amount as a figure ({display, trace}); the display text alone where it isn't traced.
 function yearFigure(year, key) { return year.traces?.[key] ? {display: year.display[key], trace: year.traces[key]} : year.display[key]; }
 function payLine(pay) {
-  // One paycheck as the plan worked it out; the redesigned screen's take-home amounts open their breakdown.
+  // One paycheck as the plan worked it out; the take-home amounts open their breakdown.
   const rest = ` from ${pay.from_month}${pay.to_month ? ` to ${pay.to_month}` : ""}, ${pay.mode === "replace_pay" ? "replacing pay" : "added to income"}`
     + (pay.bonuses || []).map(bonus => `; ${bonus.label} ${bonus.net.display} after tax each ${MONTH_OPTIONS[bonus.month]}`).join("")
     + `${pay.complete ? "" : "; some tax tables are missing"}`;
-  if (!wi.p) return element("li", `${pay.label}: ${pay.net_per_check.display} take-home ${pay.frequency_name} (${pay.net_monthly.display} a month)${rest}`);
   const li = element("li");
-  li.append(`${pay.label}: `, wiMoney(pay.net_per_check, {size: "inline", signed: false}), ` take-home ${pay.frequency_name} (`,
-            wiMoney(pay.net_monthly, {size: "inline", signed: false}), ` a month)${rest}`);
+  li.append(`${pay.label}: `, figure(pay.net_per_check, {size: "inline", signed: false}), ` take-home ${pay.frequency_name} (`,
+            figure(pay.net_monthly, {size: "inline", signed: false}), ` a month)${rest}`);
   return li;
 }
 function compareRun(run) {
@@ -508,7 +492,7 @@ function compareRun(run) {
   const body = table.createTBody();
   for (const year of run.years) {
     const row = body.insertRow(); cell(row, year.year);
-    for (const [, key] of columns) row.appendChild(element("td", "", "numeric")).appendChild(wiMoney(yearFigure(year, key), {size: "sm", signed: false}));
+    for (const [, key] of columns) row.appendChild(element("td", "", "numeric")).appendChild(figure(yearFigure(year, key), {size: "sm", signed: false}));
   }
   wrap.append(table);
   const notes = element("ul", "", "forecast-notes"); for (const note of run.notes) notes.append(element("li", note));
@@ -518,60 +502,56 @@ function compareRun(run) {
 function renderCompare(result) {
   const parts = [];
   for (const run of result.runs) if (run.first_month_cash_below_zero)
-    parts.push(alertBox(`${run.name}: cash falls below zero in ${wi.p ? monthText(run.first_month_cash_below_zero) : run.first_month_cash_below_zero}.`, {tone: "warning"}));
+    parts.push(alertBox(`${run.name}: cash falls below zero in ${monthText(run.first_month_cash_below_zero)}.`, {tone: "warning"}));
   // Tax Zen for each: where this year's return ends at the plan's pay, and the W-4 entry that brings it to $0.
   const taxes = result.runs.filter(run => run.tax_zen?.ready);
   if (taxes.length) {
     const list = element("ul", "", "finance-list compare-taxes");
     for (const run of taxes) {
       const lead = run.name === "Now" ? "Now" : `${run.name}, a full year at its pay`;
-      if (wi.p) { const li = element("li"); li.append(...taxTimeNodes(run.tax_zen, lead).childNodes); list.append(li); }
-      else list.append(element("li", taxTimeText(run.tax_zen, lead)));
+      const li = element("li"); li.append(...taxTimeNodes(run.tax_zen, lead).childNodes); list.append(li);
     }
     parts.push(element("h3", `Tax Zen in ${taxes[0].tax_zen.year}`), list);
   }
   const figure = element("figure", "", "compare-chart"), svg = forecastSvg(result.chart); figure.append(svg);
-  const table = element("details", "", wi.p ? "fc2-fold" : "");
-  table.append(element("summary", wi.p ? "View data table" : "Show net worth by year"), compareTable(result));
-  // The redesigned screen says what the chart shows in words, under it (the chart's own description).
-  parts.push(figure, ...(wi.p ? [element("p", svg.querySelector("desc")?.textContent || "", "muted small wi2-chart-desc")] : []), table, ...result.runs.map(compareRun));
+  const table = element("details", "", "fc2-fold");
+  table.append(element("summary", "View data table"), compareTable(result));
+  // What the chart shows in words, under it (the chart's own description).
+  parts.push(figure, element("p", svg.querySelector("desc")?.textContent || "", "muted small wi2-chart-desc"), table, ...result.runs.map(compareRun));
   w$("compare-result").replaceChildren(...parts);
 }
-// tried: the plan on screen against Now ("Try it" / "Compare with now"), which the redesigned screen also shows beside the plan.
+// tried: the plan on screen against Now ("Try it"), which also shows beside the plan.
 async function runCompare(body, {tried = false} = {}) {
-  const p = wi.p, button = w$("compare-run"), tryButton = w$("scenario-try");
+  const button = w$("compare-run"), tryButton = w$("scenario-try");
   button.disabled = tryButton.disabled = true;
   try {
     const result = await api("/api/scenarios/compare", {method: "POST", body: JSON.stringify(body)});
-    wi.p = p;
     renderCompare(result);
-    if (tried && wiHook("tried")) wiHook("tried")(result, null);
+    if (tried) renderAgainstNowV2(result, null);
     else w$("compare-result").scrollIntoView({block: "nearest"});
   } catch (error) {
-    wi.p = p;
     w$("compare-result").replaceChildren(alertBox(error.message, {tone: "error"}));
-    if (tried && wiHook("tried")) wiHook("tried")(null, error);
+    if (tried) renderAgainstNowV2(null, error);
   } finally {
     button.disabled = tryButton.disabled = false;
-    wi.p = p; limitCompare();
+    limitCompare();
   }
 }
 
 // Following a plan (finance/plan_tracking.py): its set spending as budgets, then planned pay and spending against what happened.
 function thisMonth() { const today = new Date(); return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`; }
+// columns: [title, numeric] pairs; fill(tr, row) draws each row into its table (it may add rows before it).
 function trackTable(columns, rows, fill) {
-  const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table"), head = table.createTHead().insertRow();
-  columns.forEach(([title, numeric]) => { const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; });
-  const body = table.createTBody();
+  const wrap = dataTable(columns.map(([title, numeric]) => [title, numeric ? "numeric" : ""]), []), body = wrap.querySelector("tbody");
   for (const row of rows) fill(body.insertRow(), row);
-  wrap.append(table); return wrap;
+  return wrap;
 }
-const trackMoney = (tr, value) => tr.appendChild(element("td", "", "numeric")).appendChild(wiMoney(value || "—", {size: "sm", signed: false}));
+const trackMoney = (tr, value) => tr.appendChild(element("td", "", "numeric")).appendChild(figure(value || "—", {size: "sm", signed: false}));
 function renderTracking() {
   // Follow this plan: for a saved plan in a personal profile only.
   const scenario = scenarioView.scenarios.find(item => item.id === scenarioId);
   wi.follow = Boolean(scenario) && !scenarioView.family;
-  if (wiHook("followChanged")) wiHook("followChanged")(wi.follow); else w$("track-panel").hidden = !wi.follow;
+  wi2FollowChanged(wi.follow);
   if (!wi.follow) return false;
   w$("track-status").textContent = scenario.adopted_month
     ? `Followed since ${monthText(scenario.adopted_month)}: its set spending became budgets, and what happened is compared below.`
@@ -582,11 +562,10 @@ function renderTracking() {
   return true;
 }
 async function previewTracking() {
-  const month = w$("track-month").value, p = wi.p;
+  const month = w$("track-month").value;
   if (!month) { notice("Choose the month the budgets start.", true); return; }
   try {
     const preview = await api(`/api/scenarios/${scenarioId}/budgets?month=${month}`);
-    wi.p = p;
     const labels = {new: "New budget", changed: "Changes", same: "Already set"};
     const parts = [element("h3", `Budgets from ${monthText(month)}`)];
     if (preview.rows.length) parts.push(trackTable([["Category", false], ["Budget now", true], ["From the plan", true], ["", false]], preview.rows, (tr, row) => {
@@ -595,10 +574,9 @@ async function previewTracking() {
     if (preview.untouched.length) parts.push(element("p", `Left as they are: ${preview.untouched.map(row => `${row.category} (${row.amount.display})`).join(", ")}.`, "muted small"));
     parts.push(...preview.notes.map(note => element("p", note, "muted small")));
     const actions = element("div", "", "button-row");
-    const cancel = element("button", "Cancel", "quiet"); cancel.type = "button"; cancel.addEventListener("click", () => $(p + "track-budgets").replaceChildren());
+    const cancel = element("button", "Cancel", "quiet"); cancel.type = "button"; cancel.addEventListener("click", () => w$("track-budgets").replaceChildren());
     const changing = preview.rows.filter(row => row.change !== "same").length;
     const apply = asyncButton(changing ? `Set ${changing} budget${changing === 1 ? "" : "s"} and follow this plan` : "Follow this plan", async () => {
-      wi.p = p;
       const result = await api(`/api/scenarios/${scenarioId}/adopt`, {method: "POST", body: JSON.stringify({month})});
       notice(result.applied ? `${result.applied} budget${result.applied === 1 ? "" : "s"} set. The plan is followed from ${monthText(month)}.` : `The plan is followed from ${monthText(month)}.`);
       await loadScenarios(); renderTracking(); await loadActual();
@@ -609,9 +587,8 @@ async function previewTracking() {
   } catch (error) { notice(error, true); }
 }
 async function stopTracking() {
-  const p = wi.p;
   if (!await confirmAction({title: "Stop following this plan?", message: "The budgets it set stay as they are; the plan is kept and can be followed again.", confirmLabel: "Stop following"})) return;
-  try { await api(`/api/scenarios/${scenarioId}/stop`, {method: "POST"}); wi.p = p; await loadScenarios(); renderTracking(); await loadActual(); }
+  try { await api(`/api/scenarios/${scenarioId}/stop`, {method: "POST"}); await loadScenarios(); renderTracking(); await loadActual(); }
   catch (error) { notice(error, true); }
 }
 function renderActual(result) {
@@ -638,12 +615,10 @@ function renderActual(result) {
   if (result.spending.length) {
     parts.push(element("h4", "Set spending and what was spent"));
     for (const month of result.spending) {
-      if (wi.p) {
-        const line = element("p", "", "small");
-        line.append(`${monthText(month.month)}${month.partial ? " (so far)" : ""}: `, wiMoney(month.actual, {size: "inline", signed: false}), " spent of ",
-                    wiMoney(month.planned, {size: "inline", signed: false}), " planned.");
-        parts.push(line);
-      } else parts.push(element("p", `${monthText(month.month)}${month.partial ? " (so far)" : ""}: ${month.actual.display} spent of ${month.planned.display} planned.`, "small"));
+      const line = element("p", "", "small");
+      line.append(`${monthText(month.month)}${month.partial ? " (so far)" : ""}: `, figure(month.actual, {size: "inline", signed: false}), " spent of ",
+                  figure(month.planned, {size: "inline", signed: false}), " planned.");
+      parts.push(line);
       parts.push(trackTable([["Category", false], ["Planned", true], ["Spent", true], ["Difference", true], ["", false]], month.rows, (tr, row) => {
         cell(tr, row.category); trackMoney(tr, row.planned); trackMoney(tr, row.actual); trackMoney(tr, row.difference);
         tr.insertCell().append(statusBadge(row.status === "over" ? "over_plan" : "within_plan"));
@@ -656,18 +631,16 @@ function renderActual(result) {
 }
 async function loadActual() {
   if (!wi.follow) return;
-  const loading = scenarioId, p = wi.p;
+  const loading = scenarioId;
   try {
     const result = await api(`/api/scenarios/${scenarioId}/actual`);
-    wi.p = p;
     if (loading === scenarioId) renderActual(result);
-  } catch (error) { $(p + "track-actual").replaceChildren(alertBox(error.message, {tone: "error"})); }
+  } catch (error) { w$("track-actual").replaceChildren(alertBox(error.message, {tone: "error"})); }
 }
 
-// The listeners on one copy of the inputs: "" for this page, "wi2-" for the redesigned one. Each handler works on its own
-// screen's inputs (wi.p) whichever screen ran last.
-function wireWhatIf(p = "") {
-  const on = (id, event, handler) => $(p + id).addEventListener(event, value => { wi.p = p; return handler(value); });
+// The listeners on the page's inputs.
+function wireWhatIf() {
+  const on = (id, event, handler) => w$(id).addEventListener(event, handler);
   for (const list of Object.keys(PLAN_CATEGORIES)) on(`add-plan-${list}`, "click", () => planRow(list).querySelector("select").focus());
   on("add-plan-bonus", "click", () => bonusRow().querySelector("input").focus());
   on("paycheck-form", "input", schedulePaycheck);
@@ -695,7 +668,7 @@ function wireWhatIf(p = "") {
     }
     wi.paychecksRun = null;
     planButtons(); renderScenarioPaychecks();
-    wiShowTab("plan");
+    wi2ShowTab("plan");
     const list = w$("scenario-paychecks"), group = list.closest("details");
     if (group) group.open = true;
     list.scrollIntoView({block: "center"});
@@ -706,30 +679,29 @@ function wireWhatIf(p = "") {
   on("scenario-basis", "change", () => { w$("scenario-cash-field").hidden = w$("scenario-basis").value !== "blank"; });
   on("scenario-select", "change", () => {
     const value = w$("scenario-select").value;
-    location.hash = wiHref(value || "new");
+    location.hash = wi2Href(value || "new");
   });
   on("scenario-form", "submit", async event => {
     event.preventDefault();
-    if (!w$("scenario-name").value.trim()) { notice("Name the plan first.", true); wiShowTab("plan"); w$("scenario-name").focus(); return; }
+    if (!w$("scenario-name").value.trim()) { notice("Name the plan first.", true); wi2ShowTab("plan"); w$("scenario-name").focus(); return; }
     try {
       const body = JSON.stringify(scenarioRequest());
       const saved = scenarioId == null ? await api("/api/scenarios", {method: "POST", body}) : await api(`/api/scenarios/${scenarioId}`, {method: "PUT", body});
-      wi.p = p;
       scenarioId = saved.id; notice(`${saved.name} saved.`);
       await loadScenarios(); fillScenario(saved);
-      const href = wiHref(saved.id);
+      const href = wi2Href(saved.id);
       history.replaceState(null, "", href);
       if (currentRoute?.name === "whatif") currentRoute.params = new URLSearchParams(href.split("?")[1] || "");
     } catch (error) { notice(error, true); }
   });
   on("scenario-duplicate", "click", async () => {
-    try { const copy = await api(`/api/scenarios/${scenarioId}/duplicate`, {method: "POST"}); wi.p = p; await loadScenarios(); location.hash = wiHref(copy.id); }
+    try { const copy = await api(`/api/scenarios/${scenarioId}/duplicate`, {method: "POST"}); await loadScenarios(); location.hash = wi2Href(copy.id); }
     catch (error) { notice(error, true); }
   });
   on("scenario-delete", "click", async () => {
     const name = w$("scenario-name").value || "this plan";
     if (!await confirmAction({title: `Delete ${name}?`, message: "The plan and its paychecks are removed. Your records aren't changed.", confirmLabel: "Delete", danger: true})) return;
-    try { await api(`/api/scenarios/${scenarioId}`, {method: "DELETE"}); wi.p = p; scenarioId = null; await loadScenarios(); location.hash = wiHref("new"); }
+    try { await api(`/api/scenarios/${scenarioId}`, {method: "DELETE"}); scenarioId = null; await loadScenarios(); location.hash = wi2Href("new"); }
     catch (error) { notice(error, true); }
   });
   on("compare-run", "click", () => {
@@ -747,44 +719,35 @@ function wireWhatIf(p = "") {
   on("track-preview", "click", previewTracking);
   on("track-stop", "click", stopTracking);
 }
-wireWhatIf();
 
-// Opens the page on one screen's inputs (p): the plan named in the URL, then the planner.
-async function openWhatIf(p, params = new URLSearchParams()) {
-  wi.p = p;
-  // Coming from the other screen: its plan isn't on these inputs, so start from the URL's plan or a new one.
-  const switched = wi.shown !== p;
-  if (switched) { wi.shown = p; scenarioId = null; editingPaycheck = null; }
+// Opens the page: the plan named in the URL, then the planner. wi.opened: the form has been filled once.
+async function openWhatIf(params = new URLSearchParams()) {
+  const first = !wi.opened;
+  wi.opened = true;
   try { await loadScenarios(); } catch (error) { notice(error, true); }
-  wi.p = p;
   const wanted = params.get?.("plan");
-  if (wanted === "new" && (scenarioId != null || switched)) fillScenario(null);
+  if (wanted === "new" && (scenarioId != null || first)) fillScenario(null);
   else if (wanted && wanted !== "new" && String(scenarioId) !== wanted) {
     const found = scenarioView.scenarios.find(scenario => String(scenario.id) === wanted);
     if (found) fillScenario(found); else { notice("That plan no longer exists.", true); fillScenario(null); }
-  } else if (!wanted && scenarioId == null && (switched || !w$("scenario-name").value)) fillScenario(null);
+  } else if (!wanted && scenarioId == null && (first || !w$("scenario-name").value)) fillScenario(null);
   else renderScenarioChoices();
   await loadPlanner(params);
 }
-function loadWhatIf(params = new URLSearchParams()) {
-  return openWhatIf("", params);
-}
 async function loadPlanner(params) {
-  const p = wi.p;
-  if (!planReady.has(p)) {
-    planReady.add(p);
+  if (!planReady) {
+    planReady = true;
     const state = w$("plan-state");
     state.append(Object.assign(document.createElement("option"), {value: "", textContent: "No state tax / not set"}));
     for (const [code, name] of Object.entries(PLAN_STATES)) state.append(Object.assign(document.createElement("option"), {value: code, textContent: name}));
     w$("plan-year").value = new Date().getFullYear();
-    try { const status = (await api("/api/settings")).household.filing_status || "single"; $(p + "plan-status").value = status; } catch { /* The default stays. */ }
-    wi.p = p;
+    try { const status = (await api("/api/settings")).household.filing_status || "single"; w$("plan-status").value = status; } catch { /* The default stays. */ }
   }
   const stub = params.get?.("stub");
   if (stub) {
     try {
       const value = await api(`/api/paycheck/from-stub/${Number(stub)}`);
-      wi.p = p; fillPaycheck(value); notice("Started from the pay stub. Remove one-time lines to see a steady paycheck.");
+      fillPaycheck(value); notice("Started from the pay stub. Remove one-time lines to see a steady paycheck.");
     } catch (error) { notice(error, true); }
   }
   await runPaycheck();

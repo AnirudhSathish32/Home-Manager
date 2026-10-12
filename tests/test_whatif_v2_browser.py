@@ -60,7 +60,7 @@ def test_whatif_v2_plan_compare_and_planner(tmp_path):
         # ?plan= opens the plan on the Plan tab.
         page.goto(f"{base}/#/whatif?plan={plans['plan']}")
         expect(page.locator("#wi2-panel")).to_be_visible()
-        expect(page.locator("#whatif-panel")).to_be_hidden()
+        expect(page.locator("[data-page='whatif']")).to_have_count(1)  # One section per page.
         expect(page.locator("#wi2-scenario-name")).to_have_value("Tom moves to Denver")
         expect(page.locator("#wi2-tab-plan")).to_have_attribute("aria-selected", "true")
         expect(page.locator("#wi2-scenario-one-offs").locator("xpath=..").locator("summary")).to_contain_text("(1)")

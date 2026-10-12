@@ -1,8 +1,8 @@
 "use strict";
 // Inventory, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/inventory.md): five tabs (Check-in, Items,
-// Warranties, Returns, Item insights), each drawn on its first show. inventory.js keeps the builders both screens use
+// Warranties, Returns, Item insights), each drawn on its first show. inventory.js keeps the shared builders
 // (renderCheckin, lotMenu, returnedRow, the warranty dialog); after a change they call afterInventoryChange, which runs
-// inventoryReload, pointed here while this screen shows. Every amount, date and percentage is the server's.
+// it2Reload while this screen shows. Every amount, date and percentage is the server's.
 const IT2_TABS = ["checkin", "items", "warranties", "returns", "insights"];
 const IT2_PERIODS = ["30", "90", "365", "year"];
 const IT2_WARRANTY_KINDS = {manufacturer: "Manufacturer", store: "Store", extended: "Extended or protection plan"};
@@ -28,7 +28,6 @@ function loadInventoryV2(params) {
   $("it2-search").value = it2.q;
   $("it2-closed").checked = it2.closed;
   for (const chip of document.querySelectorAll("#it2-insights-panel [data-period]")) chip.setAttribute("aria-pressed", String(chip.dataset.period === it2.period));
-  inventoryReload = () => it2Reload();
   return it2Reload();
 }
 function it2Reload() {
@@ -102,17 +101,9 @@ function it2Region(title, body, id = "") {
   region.append(heading, ...[].concat(body));
   return region;
 }
+// columns: [title, className] pairs; an empty title is the actions column. rows: <tr> elements.
 function it2Table(columns, rows, className = "") {
-  const table = element("table", "", `data-table ${className}`.trim()), head = table.createTHead().insertRow();
-  for (const [title, cls = ""] of columns) {
-    const th = element("th", "", cls); th.scope = "col";
-    if (title) th.textContent = title; else th.append(element("span", "Actions", "visually-hidden"));
-    head.append(th);
-  }
-  const body = table.createTBody();
-  for (const row of rows) body.append(row);
-  const wrap = element("div", "", "table-wrap"); wrap.append(table);
-  return wrap;
+  return dataTable(columns.map(([title, cls = ""]) => [title || element("span", "Actions", "visually-hidden"), cls]), rows, {className});
 }
 
 // Check-in ---------------------------------------------------------------------------------------------------------

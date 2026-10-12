@@ -37,7 +37,7 @@ def test_records_v2_filters_strip_read_all_and_trash(tmp_path):
         page.locator("#nav-documents").click()
         panel = page.locator("#rc2-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#library-panel")).to_be_hidden()
+        expect(page.locator("[data-page='documents']")).to_have_count(1)  # One section per page.
 
         # The strip names the backlog and holds the page's only primary.
         read_all = page.locator("#rc2-read-all")
@@ -109,7 +109,8 @@ def test_records_v2_filters_strip_read_all_and_trash(tmp_path):
         assert abs(page.evaluate("window.scrollY") - scrolled) < 2
         page.set_viewport_size({"width": 1440, "height": 900})
 
-        # A row's ⋯ menu deletes to Trash; Empty trash asks first.
+        # A row's ⋯ menu deletes to Trash; Empty trash asks first. Back redraws the list; open the menu on the redrawn row.
+        page.wait_for_load_state("networkidle")
         first = rows.first
         title = first.locator(".rc2-name").text_content()
         page.get_by_role("button", name=f"More actions for {title}").click()

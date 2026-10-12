@@ -37,7 +37,7 @@ def test_transactions_v2_filters_categorises_adds_and_imports(tmp_path):
         page.goto(f"{base}/#/transactions")
         panel = page.locator("#tx2-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#transactions-panel")).to_be_hidden()
+        expect(page.locator("[data-page='transactions']")).to_have_count(1)  # One section per page.
         page.wait_for_load_state("networkidle")
         expect(page.locator('#tx2-periods [data-period="last_90"]')).to_have_attribute("aria-pressed", "true")
         expect(page.locator("#tx2-table thead")).to_contain_text("Item")
@@ -56,12 +56,11 @@ def test_transactions_v2_filters_categorises_adds_and_imports(tmp_path):
         expect(page.locator("#tx2-table thead")).to_contain_text("Description")
         expect(page.locator("#tx2-type")).to_be_enabled()
 
-        # A row's category reloads v2's table, not v1's.
+        # A row's category reloads the table.
         cafe = page.locator("#tx2-table tbody tr", has_text="Cafe")
         cafe.get_by_role("combobox").select_option("groceries")
         expect(page.locator(".toast").last).to_contain_text("Groceries")
         expect(page.locator("#tx2-table tbody tr", has_text="Cafe").get_by_role("combobox")).to_have_value("groceries")
-        expect(page.locator("#tx-rows tr")).to_have_count(0)
 
         # The drawer opens from the row and its Save reloads v2.
         page.locator("#tx2-table tbody tr", has_text="Cafe").get_by_role("button", name="Cafe").click()

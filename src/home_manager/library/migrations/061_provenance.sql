@@ -1,4 +1,4 @@
--- Provenance for every figure (docs/ui.md "Redesign: calculation observability"; docs/open-work.md "UI redesign" 3).
+-- Provenance for every figure (docs/ui.md "Every number explained", "What's built").
 -- Who changed what, from what, and why; when child rows were written; which rule set a figure used; and the inputs a
 -- figure was last shown with, so a change since can be flagged.
 --

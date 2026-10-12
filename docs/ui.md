@@ -9,7 +9,7 @@ pages, the design system, accessibility and money display.
 
 ### Layout
 
-1. **Decision in view.** A screen that asks the user to decide (Review, reconcile prompts, confirmations) shows
+1. **Decision in view.** A screen that asks the user to decide (To check, reconcile prompts, confirmations) shows
    *what*, *why it needs you*, the evidence and the decision buttons together, with no scrolling, at 1366×768 and
    1440×900. Primary actions never sit below content of variable height. Tall evidence scrolls inside its own region,
    and the decision bar stays put.
@@ -23,8 +23,8 @@ pages, the design system, accessibility and money display.
 
 ### Conventions
 
-- **Tokens only.** Use the `:root` block in `style.css` and add no new hex values. The redesign may replace the
-  tokens, but it does so in that block.
+- **Tokens only.** Use the `:root` block in `style.css` and add no new hex values. Changing a token's value happens in
+  that block.
 - **Color carries meaning.** Accent means interactive. Green means money in or verified. Red means errors, past due or
   destructive. **Red never means spending.**
 - **Status** always goes through `statusBadge()` and the `STATUS` map in `ui.js`, as icon, text and tone. Color is
@@ -35,7 +35,7 @@ pages, the design system, accessibility and money display.
   framework and no build step. A strict CSP allows no inline scripts or styles and no CDN assets, so fonts are self-hosted
   and icons come from `icons.svg`.
 - **Copy.** Use plain words from the user's side. Internal IDs and scores go in a Details disclosure.
-- **Keyboard.** Every control is reachable in visual order. Review keeps J/K, V and R, and shortcuts never fire inside
+- **Keyboard.** Every control is reachable in visual order. To check keeps J/K, V and R, and shortcuts never fire inside
   inputs. The focus ring is visible.
 - **Links read from documents** are shown as text, never as live links.
 - **Charts** each have a text summary and a **View data table** control. Colors come from the `--chart-*` tokens:
@@ -56,36 +56,40 @@ pages, the design system, accessibility and money display.
 
 ## Pages
 
-The sidebar has **Search** (<kbd>Ctrl</kbd>+<kbd>K</kbd> or <kbd>/</kbd>), then **Home** and **Review** (with a count
-badge from `GET /api/review/counts`). Then come a **Money** group, **Household**, and **Records** (Documents, with Inbox and Unfiled counts). The
-foot of the sidebar has **Ask**, the activity indicator, **Processing** and **Settings**, plus the **Profile** menu.
-Routes are in `ROUTES` in `shell.js`.
+Routes are listed in `ROUTES` in `shell.js`. Each screen's script registers its title and loader in `V2_SCREENS`
+(`route → {title, show}`, declared in `app.js` so a script can register before `shell.js` routes the first page), and
+its markup is one `<section data-page="…">` in `index.html`. `showRoute` shows the route's section and calls the
+screen's `show`; Settings, Donate and the old `#/finances` links keep their loader in `ROUTES`. `#/documents` and
+`#/receipts` share one section (`records_v2.js`, which sets `libraryScope` for the shell and `leaveDocument`, and
+`libraryCatalog` for the shared move dialog). The screens' scripts end in `_v2.js`; the scripts without the suffix hold
+the builders, dialogs and helpers the screens share (forecast.js, whatif.js, investments.js, inventory.js, review.js,
+receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.js).
 
 | Route | Page | Doc |
 |---|---|---|
-| `#/home` | Home: the dashboard (default) | [money](money.md#home) |
-| `#/search?q=` | Search across documents, transactions, items and accounts | [documents](documents.md#searching-document-text) |
-| `#/review` | Review: everything that needs a decision | [Review](#review) |
+| `#/home` | Today (default) | [money](money.md#home) |
+| `#/search?q=&kind=` | Search across documents, transactions, items and accounts | [documents](documents.md#searching-document-text) |
+| `#/review` | To check: everything that needs a decision | [Review](#review) |
+| `#/spending` | This month: spending and budgets | [money](money.md#category-rules-and-budgets) |
 | `#/transactions` | Transactions (Items and Charges views) | [money](money.md#money-pages) |
-| `#/receipts` | Receipts & statements (the money store) | [money](money.md#two-stores-one-library) |
-| `#/spending` | Spending & budgets | [money](money.md#category-rules-and-budgets) |
-| `#/bills` | Bills & recurring | [money](money.md#recurring-bills) |
+| `#/bills` | Bills & subscriptions | [money](money.md#recurring-bills) |
 | `#/accounts` | Accounts | [money](money.md#money-pages) |
-| `#/investments` | Investments | [planning](planning.md#investments) |
 | `#/taxes` | Taxes (`?year=&tab=year\|built\|writeoffs\|jobs\|pack\|rules&section=&unit=`) | [taxes](taxes.md) |
+| `#/investments` | Investments | [planning](planning.md#investments) |
 | `#/forecast` | Forecast | [planning](planning.md#forecast) |
 | `#/whatif` | What If | [planning](planning.md#what-if) |
 | `#/inventory` | Inventory | [household](household.md#the-inventory-page) |
+| `#/receipts` | Receipts & statements (the money store) | [money](money.md#two-stores-one-library) |
 | `#/documents`, `#/documents/ID` | Documents and the document page | [documents](documents.md#browsing-the-library) |
 | `#/processing` | Processing | [Processing](#processing) |
 | `#/settings` | Settings | [Settings](#settings) |
 | `#/donate` | Donate documents | [evals](evals.md#donating-documents) |
 
-- **Family view.** In the family view, only Home, Review, Receipts & statements, Documents, the document page,
-  Processing, Settings, What If, Taxes and the family ledger's Transactions, Spending, Bills and Accounts are offered
+- **Family view.** In the family view, only Today, To check, Receipts & statements, Documents, the document page,
+  Processing, Settings, What If, Taxes and the family ledger's This month, Transactions, Bills and Accounts are offered
   (`FAMILY_ROUTES`).
 - **Old links.** `#/finances?…` links redirect to the money pages.
-- **Taxes v2** (`taxes_v2.js`; design in `design-system/home-manager/pages/taxes.md`) has six
+- **Taxes** (`taxes_v2.js`; design in `design-system/home-manager/pages/taxes.md`) has six
   tabs: **This year** (three answer tiles, one "What to do" region with Tax Zen's one action and "Other ways", then the
   return line by line), **Built from** (a section list beside rows of Box · From records · Yours), **Write-offs**,
   **Jobs & pay stubs** (each job's year figures, its W-4 on file and its pay stubs), **CPA pack** and **Rules &
@@ -93,25 +97,25 @@ Routes are in `ROUTES` in `shell.js`.
   a sticky save bar; a year or return change asks before discarding it. Tabs draw when first shown, and the URL keeps
   the year, tab, section and family return (`history.replaceState`). The family view hides Write-offs, CPA pack and
   Rules & sources, and shows its returns above This year with a Return select.
-- **Today v2** (`today_v2.js`; design in `design-system/home-manager/pages/today.md`) is the
-  home route redesigned; the h1, the tab title and the sidebar label say Today only while it is on. Four figure tiles,
+- **Today** (`today_v2.js`; design in `design-system/home-manager/pages/today.md`) is the home route. Four figure tiles,
   whose figures shrink to fit (Cash with its balances' date range and an "old" flag past 35 days, Net worth, Spent in the month, Money in with net
   cash flow), then **Needs you** (attention rows first, each with one action; rows with a count of 0 are left out)
   with the dated sections under it (Bills, CDs and Treasuries coming due, Weekly check-in, Return windows closing,
   Warranties ending soon, each only when it has rows) beside the month's **budgets** (amber meters, "Over by" or
-  "left"), then v1's trend and donut, and "What these numbers cover" folded. Under 1100px it is one column (Needs you,
+  "left"), then the spending trend and the category donut (`home.js` `homeTrend`, `homeCategories`), and "What these
+  numbers cover" folded. Under 1100px it is one column (Needs you,
   budgets, dated sections) and tiles go 2×2, as they do whenever a side panel leaves the page under 980px; a
   stale or unconfirmed badge drops under its amount when it doesn't fit. The family view drops the budgets, check-in, returns and warranties and
   adds "Each person", the family's net worth and "Counted once". The URL keeps `?month=&currency=&months=`.
-- **Document page v2** (`document_v2.js`; design in
-  `design-system/home-manager/pages/document.md`) puts the source beside a record whose sticky header holds the
-  decision, then the tabs Record · History · Details ([The document page](#the-document-page)).
-- **To check** (`review_v2.js`; design in `design-system/home-manager/pages/review.md`)
-  is three columns: the queue, the item's source with its evidence lit, and the item with its decision bar pinned at the
-  bottom of its column ([Review](#review)). The sidebar calls the route "To check" while it's on.
-- **The Money screens v2** (design in `design-system/home-manager/pages/money.md`, plan in
-  `phase2-money-plan.md`). Category names show through `categoryLabel()` on all four.
-  - **This month** (`month_v2.js`, the spending route; the sidebar says "This month" while it's on) has month
+- **The document page** (`document_v2.js`; design in `design-system/home-manager/pages/document.md`) puts the source
+  beside a record whose sticky header holds the decision, then the tabs Record · History · Details
+  ([The document page](#the-document-page)).
+- **To check** (`review_v2.js`; design in `design-system/home-manager/pages/review.md`) is three columns: the queue,
+  the item's source with its evidence lit, and the item with its decision bar pinned at the bottom of its column
+  ([Review](#review)).
+- **The Money screens** (design in `design-system/home-manager/pages/money.md`). Category names show through
+  `categoryLabel()` on all four.
+  - **This month** (`month_v2.js`, the spending route) has month
     stepping (‹ month ›, Next stops at this month), Compare (previous month or the same month last year) and a
     currency select only when the data has more than one. Four tiles: Net spending and the comparison month's (both
     traced), Refunded with its posted credits, and the budgets' states with the day of the month. A needs-attention row
@@ -122,22 +126,24 @@ Routes are in `ROUTES` in `shell.js`.
     keeps `?month=&compare=&currency=&rules=1`. The family view drops budgets and rules.
   - **Transactions** (`transactions_v2.js`) has Import and **Add a payment** in its header (`money_v2.js` dialogs),
     search and an Items | Charges switch, period chips (This month, Last month, 90 days, This year, All, Custom…),
-    Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges only). Its URL keys are v1's,
-    so every deep link works on both. Under 900px the Account column moves into the name's line; under 700px each row
-    stacks (date | name | amount, account · status, then the category select). A row opens the shared drawer, which
-    reloads v2 (`openTransaction(id, member, {onChange})`). A payment just added is marked and scrolled to.
-  - **Bills & subscriptions** (`bills_v2.js`; the sidebar label follows) has tiles from `recurring.totals` (Bills a
+    Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges only). Its URL keys
+    (`q, start, end, account, category, types, status, receipt, sort, period, view`, and Today's `currency, metric,
+    categories`) are the ones every deep link uses. Under 900px the Account column moves into the name's line; under
+    700px each row stacks (date | name | amount, account · status, then the category select). A row opens the
+    transaction drawer (`finance.js` `openTransaction(id, member, {onChange})`), which reloads the list after a change.
+    A payment just added is marked and scrolled to.
+  - **Bills & subscriptions** (`bills_v2.js`) has tiles from `recurring.totals` (Bills a
     month, Subscriptions a month and a year, per currency), **To decide** for proposed payments (kind, Confirm, Not
     recurring), **Coming up** in overdue / next 7 days / later groups, and **All recurring payments** with All | Bills |
     Subscriptions (`?show=`), the kind select and a "Mark as ended…" menu. Expected amounts are `bill.expected` figures.
     Coming up and All sit side by side from 1600px.
-  - **Accounts** (`accounts_v2.js`) lists v1's groups, each row with its balance as an `account.balance` figure, "as of",
-    an "Over 35 days old" badge, coverage and a Transactions link; **Import an export** opens the picker.
+  - **Accounts** (`accounts_v2.js`) lists the accounts in groups (Cash, Credit cards, Investments, Loans, Other;
+    `finance.js` `ACCOUNT_GROUPS`), each row with its balance as an `account.balance` figure, "as of", an "Over 35 days
+    old" badge, coverage and a Transactions link; **Import an export** opens the picker.
   - **Add a payment** posts `POST /api/finance/transactions`; a validation error shows under the field it names
-    (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and opens v1's
-    import dialog (`openImport(doc, {onDone})`), which reloads the screen afterwards.
-- **Wealth & plans v2** (design in `design-system/home-manager/pages/wealth.md`, plan in
-  `phase2-wealth-plan.md`).
+    (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and opens the
+    import dialog (`library.js` `openImport(doc, {onDone})`), which reloads the screen afterwards.
+- **Wealth & plans** (design in `design-system/home-manager/pages/wealth.md`).
   - **Investments** (`investments_v2.js`) has tiles (Invested per currency as an `investments.total` figure with its
     oldest value and how many are estimated, Coming due in 90 days, Required distributions), **Needs you** (values in
     To check, the I bond yearly limit, matured CDs with Paid out / Renewed, distributions left this year, unmarked 529
@@ -145,10 +151,9 @@ Routes are in `ROUTES` in `shell.js`.
     section (values are `investments.value` figures; a pension shows its monthly income, not counted), then How it
     splits beside Taxes for a year. The URL keeps `?removed=1&year=`. **Add an account** is a dialog whose field errors
     show under their field. An account opens in its own view (`?account=ID&tab=overview|holdings|activity|settings`,
-    and `renew=` as v1) with Back, the value as a figure, and the tabs Overview · Holdings & lots · Activity ·
-    Settings; Record value (not for a pension) goes to Overview's value form. The tabs reuse v1's builders, which call
-    `investmentsReload` after a save, so they reload whichever screen drew them. Estimated holding values and lot gains
-    are figures on both screens.
+    and `renew=ID` while a matured holding's renewal is added) with Back, the value as a figure, and the tabs Overview ·
+    Holdings & lots · Activity · Settings; Record value (not for a pension) goes to Overview's value form. The tabs use
+    investments.js's builders, which call `inv2Reload` after a save. Estimated holding values and lot gains are figures.
   - **Forecast** (`forecast_v2.js`) puts the assumptions in a sticky column (340px) beside the results: four scalar
     inputs, then one folded list each for spending changes, income changes, one-offs, education costs and retirement,
     each summary counting its rows, and Update forecast (the header's copy submits the same form). Under 1100px the
@@ -159,10 +164,10 @@ Routes are in `ROUTES` in `shell.js`.
     end cash and net worth cells are figures; then About these numbers, Assets and loans (add form folded), and the
     Starting point (folded). **The assumptions live in the URL**: `years`, `inflation`, `growth`, `history`, and
     repeated `spend=category~percent`, `income=YYYY-MM~amount`, `oneoff=` / `edu=YYYY-MM~amount~label`,
-    `retire=YYYY-MM~mode~amount|floor~tax`; invalid values are dropped. forecast.js's builders take an id prefix
-    (`"fc2-"`) and call `forecastReload` after an asset change, so they serve both screens.
+    `retire=YYYY-MM~mode~amount|floor~tax`; invalid values are dropped. forecast.js's builders work on the page's
+    `fc2-` inputs and call `fc2Reload` after an asset change.
   - **What If** (`whatif_v2.js`) has the plan select, Duplicate, Delete… and Save plan in the header, then four tabs
-    (`?plan=ID|new&tab=plan|compare|planner|follow`; `stub=ID` opens the planner as v1 does). **Plan** puts the inputs
+    (`?plan=ID|new&tab=plan|compare|planner|follow`; `stub=ID` opens the planner from a pay stub). **Plan** puts the inputs
     (name, start from, three scalars, then folded Paychecks, Set spending, Spending changes, Subscriptions, One-off
     amounts and Retirement, each summary counting its rows or saying On/Off) beside a sticky **Against now** region
     (420px): Try it runs the plan on screen against Now and shows net worth at the end (`forecast.net_worth` figures),
@@ -172,10 +177,12 @@ Routes are in `ROUTES` in `shell.js`.
     its checkbox), Compare (disabled with "Choose up to three" when none is chosen), the chart with its `<desc>` and View
     data table, Tax Zen per run, and each run's details; end cash and net worth are figures. **Paycheck planner** keeps
     the result sticky beside the form (440px) with the federal and state fields folded; the take-home headline and the
-    tax lines are figures. **Follow this plan** (saved plans in a personal profile only) is v1's tracking, with
-    plan-vs-actual amounts as `plan.actual` figures. Under 1100px Against now and the planner result move above their
-    forms. whatif.js builds both screens on an id prefix (`wi.p`, `""` or `"wi2-"`) with per-screen hooks.
-- **Home & things and System v2** (plan in `design-system/home-manager/phase2-system-plan.md`).
+    tax lines are figures. **Follow this plan** (saved plans in a personal profile only) sets the plan's spending as
+    budgets and compares pay and spending with it, with plan-vs-actual amounts as `plan.actual` figures. Under 1100px
+    Against now and the planner result move above their forms. whatif.js builds the page on its `wi2-` inputs and asks
+    whatif_v2.js to open a tab (`wi2ShowTab`), show Against now (`renderAgainstNowV2`), show or hide Follow this plan
+    (`wi2FollowChanged`) and link a plan (`wi2Href`).
+- **Home & things and System.**
   - **Inventory** (`inventory_v2.js`; design in `design-system/home-manager/pages/inventory.md`) has five tabs
     (`?tab=checkin|items|warranties|returns|insights`, Items by default; `q` and `closed=1` for Items, which `q` always
     opens; `period=30|90|365|year` for insights), each drawn on its first show. Check-in and Returns count what waits
@@ -184,20 +191,21 @@ Routes are in `ROUTES` in `shell.js`.
     **Items** is one table grouped by category, with To identify above it when receipts wait. **Warranties** lists the
     confirmed ones (those ending within 30 days say so) after a row for any waiting in To check. **Returns** is Did
     this go back? first, then return windows closing in 14 days, then the policies. **Item insights** has four tiles
-    (`items.*` figures), Prices that went up beside Costs most, and what was thrown out. inventory.js's builders call
-    `inventoryReload` after a change, which the screen points at its own reload.
+    (`items.*` figures), Prices that went up beside Costs most, and what was thrown out. inventory.js's builders
+    (`renderCheckin`, `lotMenu`, `returnedRow`, the warranty dialog) call `afterInventoryChange`, which runs `it2Reload`
+    on this page and `reloadToday` on Today.
   - **Processing** (`processing_v2.js`; design in `design-system/home-manager/pages/system.md`) puts **Read all
     documents** (a small panel with "Also re-read…" and Start reading) and **Scan Inbox** (primary) in the header, then a
     strip: Now running (a polite live region; Cancel names the work) over the five stages in columns, each with its
     state and last run (3 + 2 under 1100px, one row each under 600px). Five tabs follow
     (`?tab=work|health|folders|scans|models`, Recent work by default; `kind` and `status=failed` for Recent work, `task`
-    and `status` for Model runs), each drawn on its first show; see [Processing](#processing). app.js `poll()` calls
-    `processingReload`, which the screen points at its refresh of the strip and the shown tab, and `renderActivity`
-    redraws the strip on every poll.
-  - **Settings** is restyled in place, with no flag (design in `design-system/home-manager/pages/system.md`): `?tab=` in
-    the URL, Independent checks editable, and a Donate tab; see [Settings](#settings).
-- **Records v2** (`records_v2.js`; design in
-  `design-system/home-manager/pages/records.md`, plan in `phase2-rest-plan.md` Build A) is the library for
+    and `status` for Model runs), each drawn on its first show; see [Processing](#processing). While work runs and when
+    it finishes, app.js `poll()` calls `pr2Refresh` (the strip and the shown tab) on this page, and `renderActivity`
+    redraws the strip on every poll. The Reading stage shows the batch being read (`receiptBatch`, from the settings
+    poll).
+  - **Settings** (design in `design-system/home-manager/pages/system.md`): `?tab=` in the URL, Independent checks
+    editable, and a Donate tab; see [Settings](#settings).
+- **Records** (`records_v2.js`; design in `design-system/home-manager/pages/records.md`) is the library for
   `#/documents` and `#/receipts`. A work strip names the store's backlog ("21 not read yet · 2 ready to record · …",
   each count setting the state filter) with the page's only primary, **Read all N** (one batch of up to 500 not-read
   documents; a 409 while model work runs stays in the strip). Then search, the state chips with counts, From/To and
@@ -206,81 +214,90 @@ Routes are in `ROUTES` in `shell.js`.
   Import, Restore) and the ⋯ menu; selecting rows shows a sticky bar (Read, Combine, Move, Delete, or Restore in Trash).
   Under 820px rows stack (name · amount, folder · date, state · step · ⋯). **Every filter is in the URL**:
   `?folder=&category=&employer=&section=&status=&q=&from=&to=&sort=&offset=`, non-default values only, invalid ones
-  dropped. The sidebar's Inbox and Unfiled open `#/documents?folder=…` while it's on. app.js `poll()` calls
-  `rc2Refresh`, which redraws only when the documents changed (after an open row menu closes).
-- **Search v2** (`search_v2.js`; design in
-  `design-system/home-manager/pages/search-ask.md`, plan in `phase2-rest-plan.md` Build B): the query box with the
+  dropped. The sidebar's Inbox and Unfiled open `#/documents?folder=…`, and their counts (`library.js`
+  `renderNavCounts`, with To check's and the check-in's) refresh on start-up and whenever work finishes. app.js
+  `poll()` calls `rc2Refresh`, which redraws only when the documents changed (after an open row menu closes). The
+  move, delete, description, versions and import dialogs are library.js's, shared with the document page.
+- **Search** (`search_v2.js`; design in `design-system/home-manager/pages/search-ask.md`): the query box with the
   page's only primary, a status line ("14 matches for “fresh”."), then kind chips with counts (All, Documents,
   Transactions, Items, Accounts; a kind with none is disabled). Each kind is a tinted region, "Documents · 9", with a
   divided list: documents open at their matched lines with the snippet (two lines, full text in the title),
   transactions open the transaction drawer, items open Inventory filtered to them, and accounts open their
   transactions. "All" shows six of each and "Show all N" switches to that kind (up to 50, then a link to the kind's own
   page). No results suggests searching Documents' text or Transactions. `?q=&kind=` is in the URL (kind left out when
-  it's All). The sidebar box, <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>/</kbd> work as before.
+  it's All). The sidebar box, <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>/</kbd> go to it (`search.js`).
 - **Ask.** The Ask panel opens from anywhere as a column beside the page, sharing the breakdown panel's slot
   ([assistant](assistant.md#the-ask-panel)).
 
+### Navigation
+
+The sidebar in `index.html` follows these groups. Every `.nav-link` has an id, `data-route` and icon (the selector
+contract). Documents keeps its Inbox and Unfiled sub-links, which carry the counts the user relies on, and To check
+carries its count badge (`GET /api/review/counts`). Donate has no sidebar link; it's Settings › Donate, and `#/donate`
+still works. The icon rail hides the group labels, and the top-bar menu under 820px shows the same order. In the
+family view only the Home & things label hides with Inventory.
+
+```
+Search · Today (#/home) · To check (#/review)
+Money:          This month (#/spending) · Transactions (+ Add, Import) · Bills & subscriptions · Accounts (+ Import)
+Taxes:          tabs This year · Built from · Write-offs · Jobs & pay stubs · CPA pack · Rules & sources
+Wealth & plans: Investments · Forecast · What If
+Home & things:  Inventory tabs Check-in · Items · Warranties · Returns · Item insights
+Records:        Receipts & statements · Documents · the document page
+Footer:         Ask · Processing (+ Data health tab) · Settings (+ Donate tab) · Who's here
+```
+
+Features that had no page live here: ledger health in Processing › Data health; reviewer settings in Settings ›
+Independent checks; the decision-model test in Settings › Local models; tax businesses in Taxes › Built from; tax tags
+on the document page and in the transaction drawer; item analysis in Inventory › Item insights; reasoning and
+organization runs in the document page's Details.
+
 ### Review
 
-`#/review` is a two-pane queue. On the left, the groups, each with a count. On the right, the selected item's **what**,
-**why it needs you** and **evidence**, with the decision buttons.
-- **Keyboard.** <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>V</kbd> confirms and <kbd>R</kbd> rejects. Each decision advances to
-  the next item.
-- **Undo.** Record decisions offer Undo for 8 seconds, returning the record to Needs review. Link and issue decisions
-  are final.
+`#/review?item=<kind>:<id>` is To check (`review_v2.js`), one queue of everything awaiting a decision. Its data is
+`reviewData()` in `review.js`, with its titles (`reviewTitle`), record summaries (`summaryBlock`) and the asset kinds'
+evidence (`assetParts`).
+- **Keyboard.** <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>V</kbd> confirms and <kbd>R</kbd> rejects, never in inputs,
+  dialogs or the open Correct form. Each decision advances to the next item.
 - **Groups**, in order (`REVIEW_GROUPS` in `review.js`): Questions, Proposed matches, Records to verify, Investment and
   loan documents to confirm, Warranties to confirm, Tax tables to confirm, Possible write-offs and tax payments,
   Recurring payments, Receipt items to identify.
-- **Beside the queue:** statements awaiting reconciliation, image groups to combine, receipts with no matching charge,
-  and counts of documents that couldn't be processed or are unfiled. In the family view, family routing replaces the
-  unmatched-receipts panel.
 - **Plain language.** No internal ids or scores in the default view; match signals are in words ("Same amount · 2 days
   apart · merchant matches"). The score and method are in a Details disclosure.
 - **When a decision fails,** the item stays selected with an inline error, and the queue doesn't advance.
-
-**To check (v2)** (`review_v2.js`; `#/review?item=<kind>:<id>`) keeps v1's data (`reviewData()` in `review.js`), groups,
-keys and wording, and changes the layout and the decision:
 - **Three columns at 1440:** the queue (260px), the source (`sourceViewer`), and the item (340–400px): its position, an
   h2 for what it is, the *why* (the reason only, never the title again; a record's failed checks as a needs-attention
   row), the evidence, then the decision bar. Each column is sticky and scrolls on its own, so the bar stays in view at
   1366×768. Under 1180px the queue becomes a select with Previous and Next; under 900px it is one column (item, then
   source) and the bar is fixed to the viewport bottom.
-- **The queue** adds v1's side panels as groups after `REVIEW_GROUPS`: "Images that look like one document" and
-  "Receipts with no matching charge", or "Who is it for?" in the family view. Failed and unfiled counts are links at its
-  foot.
+- **The queue** adds two groups after `REVIEW_GROUPS`: "Images that look like one document" and "Receipts with no
+  matching charge", or "Who is it for?" in the family view (`profiles.js` `routingRow`). Failed and unfiled counts are
+  links at its foot.
 - **The source by kind:** a record, issue, asset, recurring payment, unmatched receipt or family upload shows its
   document, a record's cited lines lit (`/api/provenance`). A proposed match shows the receipt with a chip for the
   charge's statement; an image group shows its pages as chips; a tax tag its target's document, or a "Bank line" card;
   a receipt item its receipt with the line lit (`line_ids` from `/api/items/resolutions`). Warranties and tax tables
   show a `.source-card` with the quote and the address as text, never a link.
 - **The decision:** records, statement values, purchase confirmations and tax forms use `confirmCorrect` (Confirm,
-  Reject, Correct…; the form opens in the item's column, a failure shows above the bar). Other kinds keep v1's labels
-  as bar buttons. Labels keep " (V)" / " (R)". A decided item leaves the queue and the next takes its place; Undo
-  brings it back. An unmatched receipt offers Correct (its purchase date) and Open document. A family upload's "For"
-  form is the bar.
-- **Keys:** J/K/V/R, never in inputs, dialogs or the open Correct form. v1's handler returns early while v2 is on.
+  Reject, Correct…; the form opens in the item's column, a failure shows above the bar). Other kinds have their own
+  labels as bar buttons (Confirm match, Not a match, …). Labels keep " (V)" / " (R)". A decided item leaves the queue
+  and the next takes its place; Undo brings it back for 8 seconds. An unmatched receipt offers Correct (its purchase
+  date) and Open document. A family upload's "For" form is the bar.
 
 ### The document page
 
-`#/documents/ID[?version=HASH][&lines=…]` is a full-width view, because checking evidence side by side needs the
-width. It is opened over the current page, and Back (or <kbd>Esc</kbd>) returns to the list with its filters, page and
-scroll position.
+`#/documents/ID[?version=HASH][&lines=…][&tab=history|details]` (`document_v2.js`) is a full-width view, because
+checking evidence side by side needs the width. It is opened over the current page, and Back (or <kbd>Esc</kbd>)
+returns to the list with its filters, page and scroll position.
 - **The title** is set once, from the best name available, and never changes as data loads.
-- **Two panes.** The left pane is the image, with region highlights, or the text, with PDF pages. The right pane is the
-  record: field rows with **Find**, plain-language checks, items or transactions, the linked charge, the split and
-  rewards.
-  - Clicking a region highlights the rows that cite it.
-  - The decision model's result is an advisory disclosure under Checks.
-- **The footer** shows the steps (Read → Recorded), with Details, History and audit tabs. Re-run actions live there and
-  in the `⋯` menu.
 - **States:** loading, unread (**Read document**), reading (live stage, Cancel), read but not recorded, needs review,
   verified (with Undo), failed (reason plus Retry), cancelled, publication blocked (for example, no currency), and an
   earlier version (with a banner).
 - The page also hosts the split controls for several receipts in one file, the page order of combined images, and
-  "Also found" duplicate links ([documents](documents.md)).
-
-**v2** (`document_v2.js`; `#/documents/ID[?version=][&lines=][&tab=history|details]`) changes how the page is laid out
-and what it lets you do:
+  "Also found" duplicate links ([documents](documents.md)). The decision model's result is an advisory disclosure
+  under Checks.
+- **The builders** for the record's rows, pay stub, rewards and investment records, its details and its readings'
+  telemetry are in `receipt.js`.
 - **Layout.** The source (`sourceViewer`) is on the left, sticky and scrolling on its own, at 45:55, or 40:60 from
   900–1179px.
 - **Record header.** The record column's sticky header holds:
@@ -306,6 +323,8 @@ and what it lets you do:
 
 ### Processing
 
+`processing_v2.js` draws the page; `processing.js` keeps `JOB_KINDS`, `LANES`, `duration` and `whenText`, and
+Settings' connection tests and backups.
 - **Pipeline lanes:** Capture, Reading, Recording, Item identification and Reconciliation (`LANES` in `processing.js`),
   each with its live state and last run. Cancel is offered only where supported (inference); capture can't be
   interrupted. Reconciliation runs as part of imports and extraction; there is no separate action for it.
@@ -313,8 +332,9 @@ and what it lets you do:
 - **Jobs.** One job history across every kind of work (`GET /api/jobs[?kind=…]`), with a kind filter and links to
   documents. The last reconciliation is shown with its counts (`GET /api/finance/reconciliation-runs`). Every kind the
   filter offers (`JOB_KINDS`) is one `storage.py` `JOB_HISTORY` knows; a test reads the list from the JS.
+- **Scans.** Each scan's files with their result, paged.
 - **Model runs.** Telemetry filtered by task and status, with `~` marking estimates.
-- **Data health** (v2 only). `GET /api/finance/health` ([operations](operations.md)) as one needs-row per broken rule:
+- **Data health.** `GET /api/finance/health` ([operations](operations.md)) as one needs-row per broken rule:
   what the rule says, how many records and the severity (errors in the danger tone, warnings amber, notes neutral, each
   with an icon), and **Open** when the rule has one record with a page. Otherwise a disclosure lists up to 20 records,
   each a link (`#/documents/ID` or `#/investments?account=ID`, from the problem's `link`) or "(no page to open)" for
@@ -326,9 +346,9 @@ and what it lets you do:
 ### Settings
 
 Settings is a page with tabs: **Library folder**, **Profiles & family**, **Financial preferences**, **Appearance**,
-**Local models**, **Independent checks**, **Backup & restore**, **Sharing**, **Privacy & security**, **Donate**. It was
-restyled in place, not as a `data-ui="v2"` twin, because its forms are bound by fixed ids (design in
-`design-system/home-manager/pages/system.md`, Build C of `phase2-system-plan.md`).
+**Local models**, **Independent checks**, **Backup & restore**, **Sharing**, **Privacy & security**, **Donate** (design in
+`design-system/home-manager/pages/system.md`). Its loader stays in `ROUTES` (`shell.js` `showSettingsTab`), and its
+forms are bound by fixed ids in `app.js`, `profiles.js` and `processing.js`.
 - **URL.** `#/settings?tab=library|profiles|preferences|appearance|models|checks|backup|sharing|privacy|donate`; Library
   folder is the default and leaves the URL bare. Changing tabs rewrites `?tab=` with `history.replaceState`, so reload
   keeps the tab. The collapsed sidebar's profile icon links to `?tab=profiles`.
@@ -342,7 +362,7 @@ restyled in place, not as a `data-ui="v2"` twin, because its forms are bound by 
   (loopback URL and model ID, with Test connection) or the decision model. Only the fields shown are sent; sampling
   keeps its saved values. It's hidden in a family profile, like the model forms.
 - **Donate.** How many documents are checked and ready (`GET /api/donations`), and a link to `#/donate`, where the work
-  stays. `#nav-donate` stays in the sidebar until the navigation restructure.
+  stays.
 - **Appearance.** Theme: System (the default, following Windows), Light or Dark. The choice is saved in this browser
   (`localStorage["home-manager-theme"]`, `theme.js`); with storage blocked it falls back to System.
 - **Library folder.** Changing it switches libraries, so it asks for confirmation.
@@ -371,7 +391,7 @@ Settings › Appearance). The values, light and dark, and their checked contrast
 blocks, and `tests/test_style_tokens.py` enforces it. Beyond MASTER's table:
 - `--info` is `--accent`, and `--neutral-subtle` is `--surface-sunken`.
 - `--on-accent` and `--on-danger` are the text on accent and danger fills, `--danger-hover` the danger button's hover.
-- `--paper` stays white in both themes, behind document images (`#receipt-image-frame`, `.donate-frame`).
+- `--paper` stays white in both themes, behind document images (the source viewer's, `.donate-frame`).
 - `--backdrop` is the dialog backdrop.
 - `--chart`, `--chart-track`, `--chart-grid`, `--chart-baseline`, `--chart-cat-1..6` and `--chart-seq-1..10` color
   the charts and meters ("Conventions").
@@ -413,19 +433,23 @@ blocks, and `tests/test_style_tokens.py` enforces it. Beyond MASTER's table:
   520px, a form column 720px, and the breakdown panel `--panel-width` (360px, the same in both themes).
 - **Motion.** 120ms ease-out for hover and focus, 180ms (`--motion-panel`) for the drawer and the menu sheet. Everything is disabled under
   `prefers-reduced-motion`. The only looping animation is the running-job indicator.
-- **Components** are vanilla factory functions in `ui.js` that return DOM nodes: `element()`, `cell()`,
-  `statusBadge()`, `amount()`, `dateText()`, `asyncButton()`, `alertBox()`, `emptyState()`, menus, dialogs and toasts.
+- **Components** are vanilla factory functions that return DOM nodes: `element()` and `cell()` (`app.js`), and in
+  `ui.js` `statusBadge()`, `amount()`, `dateText()`, `alertBox()`, `emptyState()`, menus, dialogs and toasts.
+  `asyncButton(label, onClick, className)` runs its action once at a time (disabled while it runs; an error becomes a
+  toast). `dataTable(columns, rows, {caption, className})` is every generic table in its `.table-wrap`: columns are
+  `[title, className]` pairs, rows are `<tr>` elements or arrays of cell values (Today's and the family's tables,
+  Inventory's, Processing's and What If's tracking tables build on it).
   `pageState(host, load, {loading, what, content, needsLibrary})` gives a page its loading, error and no-library
   states in a `.page-state` host after its header: nothing for 300 ms, then a muted "Loading …" line with a spinner
   (`role=status`, `aria-busy` on the page); an error is an `alertBox` (`role=alert`) with Technical details and Retry,
   shown in place of the shell's toast; without a library, "Set up your library to see …" with Open Settings. `content`
   is hidden on an error or without a library. A newer call wins over an older one. Retry keeps focus on the host while
-  it loads, then moves it to the page heading. Empty data stays each page's own `emptyState()`. Bills, Accounts,
-  Investments, Forecast and Taxes use it (Taxes hides `#taxes-body`, so the year select stays usable).
+  it loads, then moves it to the page heading. Empty data stays each page's own `emptyState()`. Every screen uses it
+  (Taxes hides `#taxes2-body`, so the year select stays usable).
   This matches the strict CSP (`script-src 'self'; style-src 'self'`): no inline scripts or styles, no CDN fonts,
   scripts or chart libraries. Icons come from the vendored `icons.svg` (a Lucide subset, ISC license).
-- **Charts** are inline SVG with a data-table fallback. Home draws its own; the forecast's are drawn by the server
-  (`finance/charts.py`).
+- **Charts** are inline SVG with a data-table fallback. Today draws its own (`home.js`); the forecast's, What If's and
+  the tax buckets are drawn by the server (`finance/charts.py`).
 
 **Status vocabulary.** There is one `STATUS` map in `ui.js`, giving each status an icon, text and tone, never color
 alone. Add new states to that map.
@@ -452,83 +476,11 @@ kept in a "Technical details" disclosure.
   then retry."
 - The server never puts document content in errors, and the UI never adds it back.
 
-## Accessibility
+### Every number explained
 
-- **Landmarks:** `nav` (sidebar), `main`, `aside` (drawer), one `h1` per page, and an `h2` for each panel.
-- **Keyboard.**
-  - Every control is reachable, in visual order.
-  - Tables are navigable with the arrow keys when focused (roving tabindex), and <kbd>Enter</kbd> opens the row.
-  - <kbd>F6</kbd> cycles between the sidebar, main and drawer regions.
-  - Dialogs use native `<dialog>`, set an initial focus, and return focus to the trigger on close.
-  - Shortcuts are never required and never fire inside inputs.
-- **Narrow menu.** Under 820px, `#nav-toggle` carries `aria-expanded` and `aria-controls="sidebar-sheet"`. Opening it
-  focuses the first nav link. <kbd>Esc</kbd> closes the sheet and returns focus to the toggle, and a route change or a
-  click outside also closes it. Focus order is the skip link, the brand, the toggle, the sheet, then main.
-- **Focus:** a 2px `--accent` outline with a 2px offset on every interactive element. On the selected nav item (an
-  accent fill) the ring is `--text`.
-- **Contrast.** Every text token is at least 4.5:1 on `--surface` and `--canvas`. Badge text is at least 4.5:1 on
-  subtle backgrounds. Non-text UI (input borders, focus) is at least 3:1.
-- **Never color alone.** Every status has an icon and text. Amounts carry a `+`/`−` sign, and money in or out is also
-  announced.
-- **Live regions.** One polite region for toasts and job completion. Running-job progress is announced at start and
-  finish, not every second.
-- **Tables and charts.** Tables use `<th scope>` and `aria-sort`. Charts carry a data table.
-- **Zoom.** The UI is usable at 200% zoom on a 1440px screen. Browser tests check 390, 768 and 1440px widths for
-  horizontal overflow.
-
-## Money and dates on screen
-
-- **No money arithmetic in the browser.** It never sums, subtracts, converts or rounds; totals come only from server
-  tools. `amount()` takes the sign from the leading `-` of the server's `decimal`, and shows the server's `display`
-  text without it. That is lexical, not arithmetic. `amount(value, {magnitude: true})` adds no sign glyph at all (not
-  even `−`) and no direction, for figures whose label says which way (tax figures).
-- **No other figures worked out in the browser either.** The server returns them ready to show:
-  - percents as `*_percent` text beside each `*_bp` (`core/money.py` `percent_text`);
-  - Home's category shares as `share_bp` (whole basis points summing to 10,000, so the donut closes) with
-    `categories_chartable`;
-  - the budget meter's `meter_percent`, `remaining_state` and `over`;
-  - each upcoming bill's `group` (overdue, this_week, later);
-  - the Review badge and group counts from `GET /api/review/counts` (uncapped), and the check-in count with them;
-  - counts the pages show: the independent check's `confirmed`/`scored`/`unscored`, check-in `applied`/`failed`,
-    search `total`, an employer folder's `total`, Tax Zen's `aim` text, a job's `paydays_without_stub`.
-
-  `.minor` is read only for chart pixel geometry and for "is there any" checks.
-- **Months** show as `September 2026` (`monthText()` in `ui.js`).
-- **Currency.** The home currency uses its symbol. Every other currency uses its ISO code. Each currency shows its own
-  minor-unit precision (JPY 0, USD 2).
-- **Alignment.** Amounts are right-aligned with tabular figures, and the sign sits in a fixed-width slot so digits
-  line up.
-- **Dates.** Tables show `Sep 24` (current year) or `Sep 24, 2025`. Detail views show `Sep 24, 2026`. Tooltips and
-  provenance show ISO `2026-09-24`. Relative dates ("2 days ago") are used only for activity and freshness, never for
-  financial dates.
-- **Balances** always carry "as of <date>". Credit card balances are labelled "Owed". Statement balances from
-  different dates are never added into one total.
-
-## Decisions
-
-1. **Accent color:** one accent for interaction (cobalt from the redesign, `design-system/home-manager/MASTER.md`);
-   green means only money in or verified. An exceeded budget is amber, never red (2026-10-06).
-2. **Money parts:** no backend change. The UI splits the server's `display` text lexically.
-3. **Review** shows display summaries (merchant, amount, date, account, document) for every item, never bare ids.
-4. **Accounts** shows per-account balances with "as of" dates. It stays a top-level page. Since 2026-10-06, Today shows
-   **Cash** and **Net worth** across all accounts (`worth.today`), with the date range and stale accounts flagged.
-   This reverses the earlier "no balances on Home" for Today v2 (built 2026-10-10); v1 Home still shows none.
-5. **The document page** is a route, not a modal. Lists use a non-modal drawer where a detail view is needed.
-
-## Redesign: calculation observability
-
-Approved 2026-10-04. The backend is built: the trace contract with a trace for each calculation, provenance,
-corrections with who and why, the rule registry, stale detection and manual transactions (see "What's built" under
-"Trace contract"). The screens and components aren't built yet. The work items left, in build order, are in
-[open work](open-work.md#ui-redesign). The session process (phases, per-screen hand-offs, screenshots on synthetic
-data) is in the `ui-redesign` skill. This design replaces the 2026-09-30 "Household ledger" restyle proposal. Phase 0
-chose the visual direction (C · Family, 2026-10-06), recorded in `design-system/home-manager/MASTER.md`. Some of that proposal's round-one ideas carry over here: one
-loading/error/empty helper, one action vocabulary, Needs attention first on Home, and the Read and Record steps in the
-document page's record header.
-
-### The principle
-
-Every number on screen can be explained. These rules override visual or layout preferences.
+The visual direction (C · Family, 2026-10-06) is in `design-system/home-manager/MASTER.md`; the session process for
+changing a screen (per-screen hand-offs, screenshots on synthetic data) is in the `ui-redesign` skill. Every number on
+screen can be explained. These rules override visual or layout preferences.
 1. **Traceable.** Any figure opens its breakdown:
    - the formula in plain words;
    - every input with its value;
@@ -574,7 +526,7 @@ Every number on screen can be explained. These rules override visual or layout p
 ```
 
 - **Figures.** Every number the API returns is a *figure*: the `money()` dict (`core/money.py`) plus `trace` (a ref)
-  and `verification`. Old fields stay, so screens that haven't been redesigned keep working.
+  and `verification`. The older plain fields stay beside it.
 - **No parallel explainer.** A `Recorder` (`step`, `input`, `rule`, `round`) is passed into the existing calculation
   functions; its default does nothing. A trace request re-runs the same function with a live recorder. Tests assert
   `reconciles`, and that `trace.result` equals the figure shown.
@@ -599,7 +551,7 @@ Every number on screen can be explained. These rules override visual or layout p
   wealth figures) are built with the Manager as context (`CONTEXT_TRACES`). `tests/test_traces.py` checks every one:
   `reconciles`, and that the trace's result is the figure shown. Traced figures:
   - **Ledger and spending** (`finance/traces.py`): `spending.net`, `cashflow.net`, `cashflow.in` (money in alone),
-    `spending.category`, Home's
+    `spending.category`, Today's
     `spending.other` and `spending.gross`, `spending.usd` (each converted line with its ECB rate), `split.receipt` and
     `split.charge` (largest-remainder cents as the rounding row), This month's `spending.change` (a category's change:
     the two months' `spending.category` as steps), `spending.net_change` (the two months' `spending.net`; the Net
@@ -631,10 +583,10 @@ Every number on screen can be explained. These rules override visual or layout p
   - **Family** (`finance/traces.py`): `family.spending.net`, `family.cashflow.net`, `family.cashflow.in`, `family.spending.category`,
     `family.spending.gross`, `family.spending.other` and `family.worth.today` add up each member's own figure. Any ref
     with `member=<id>` runs the same calculation on that member's read-only copy.
-- **Review state.** A breakdown takes its inputs as correct: figures don't carry whether an input still waits in Review
+- **Review state.** A breakdown takes its inputs as correct: figures don't carry whether an input still waits in To check
   (decided 2026-10-05). The trace's own `verification` roll-up is informational.
 - **Stale.** Opening a trace compares its `inputs_hash` with the one in `figure_snapshots` for that ref, then stores the
-  new one. Home (net spending and cash flow), Taxes and the family's returns (the refund or amount owed) do the same
+  new one. Today (net spending and cash flow), Taxes and the family's returns (the refund or amount owed) do the same
   when they show the figure (`traces.shown`, `traces.shown_tax`, `traces.shown_family_tax`), so the figure carries
   `stale` without its breakdown being opened. A return figure (`tax.result`, `tax.line`, `tax.node`) also hashes its
   engine's pinned SHA-256 (`build(..., hash_extra=)`), so a changed engine marks it stale too.
@@ -663,13 +615,12 @@ Every number on screen can be explained. These rules override visual or layout p
 ### Observability components
 
 These are vanilla factories in `app/static/trace.js`, loaded after `ui.js`. They use tokens only and are CSP-safe.
-`figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` are built (Phase 1b). Taxes v2 is their first user.
-`tests/test_trace_components_browser.py` mounts them in the real app with the synthetic dashboard's traces.
-`confirmCorrect`, `sourceViewer` and `historyList`, with their loaders `loadReading` and `loadHistory`, came with the
-document page v2. `tests/test_record_components_browser.py` mounts them on read and recorded synthetic documents
-(`tests/seed_documents.py`). Each makes its own ids from a counter (`sv{n}-…`, `cc{n}-…`) and never reuses a v1 id.
-To check v2 is their second user: it moves `confirmCorrect`'s form and state line into its own regions and gives the
-buttons the `#review2-*` ids its keys press.
+`tests/test_trace_components_browser.py` mounts `figure`, `breakdownPanel`, `provenanceBadge` and `ruleCard` in the
+real app with the synthetic dashboard's traces, and `tests/test_record_components_browser.py` mounts `confirmCorrect`,
+`sourceViewer` and `historyList` (with their loaders `loadReading` and `loadHistory`) on read and recorded synthetic
+documents (`tests/seed_documents.py`). Each makes its own ids from a counter (`sv{n}-…`, `cc{n}-…`). The document page
+and To check use the record components; To check moves `confirmCorrect`'s form and state line into its own regions and
+gives the buttons the `#review2-*` ids its keys press.
 
 - **`figure(fig, {size, signed, magnitude})`** is a `button.figure-button` (`data-figure-ref`, `data-figure-display`,
   `data-signed`, `data-magnitude`, `aria-controls`, `aria-expanded`) around `amount()`, flagged `unconfirmed` when the
@@ -704,39 +655,6 @@ buttons the `#review2-*` ids its keys press.
 | `loadReading(documentId, digest)` | `{doc, run, result}` for a document's newest finished reading (else its newest), cached until `clearReadings()`; one still running isn't cached. |
 | `ruleCard(rule)` | Name, source as text, version, tax year, checked on, CPA review state. |
 
-### Redesigned navigation
-
-Built (2026-10-11): the sidebar in `index.html` follows these groups. Every `.nav-link` keeps its id, `data-route` and
-icon, and the labels are the redesigned ones (Today, To check, This month, Bills & subscriptions), written in
-`index.html`. Documents keeps its Inbox and Unfiled sub-links, which carry the counts the user relies
-on. Donate has no sidebar link; it's Settings › Donate, and `#/donate` still works. The icon rail hides the group
-labels, and the top-bar menu under 820px shows the same order. In the family view only the Home & things label hides
-with Inventory.
-
-```
-Search · Today (#/home) · To check (#/review)
-Money:          This month (#/spending) · Transactions (+ Add, Import) · Bills & subscriptions · Accounts (+ Import)
-Taxes:          tabs This year · Built from · Write-offs · Jobs & pay stubs · CPA pack · Rules & sources
-Wealth & plans: Investments · Forecast · What If
-Home & things:  Inventory tabs Check-in · Items · Warranties · Returns · Item insights
-Records:        Receipts & statements · Documents · the document page
-Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves here; route kept) · Who's here
-```
-
-- **Hidden features get a home:**
-  - Ledger health becomes Processing › Data health.
-  - Reviewer settings go in Settings › Independent checks.
-  - Decision-model test goes in Settings › Local models.
-  - Tax businesses edit and delete go in Taxes › Built from.
-  - Tax tags on receipts and items go on the document page and in the drawer.
-  - Item analysis becomes Home & things › Item insights.
-  - Reasoning and organization runs go in the document page's Details.
-- **Kept as they are:**
-  - Review's two panes with J/K/V/R.
-  - The document page's source beside the record.
-  - Accounts as per-account balances (the cross-account Cash and Net worth figures live on Today).
-  - The pay-stub tax explanation and the Taxes input kinds, which already work this way.
-
 ### Number display
 
 - Amounts are server `display` text through `amount()` only. Hand-typed "$" is removed. Money out is `−` (U+2212) in a
@@ -744,31 +662,77 @@ Footer:         Ask · Processing (+ Data health tab) · Settings (Donate moves 
 - Percentages are server `*_percent` text. The browser doesn't convert basis points.
 - When the server reports a rounding adjustment, it is shown as a row ("Rounding: +0.01"). A cent is never hidden.
 - Verified, unverified, stale and changed each carry an icon and text, never color alone.
+- **Every screen reconciles.** `tests/test_ui_parity.py` (browser, synthetic seed from `tests/seed_taxes.py` and
+  `tests/seed_wealth.py`) runs `test_every_screen_reconciles` over every screen with traced figures (`home`,
+  `spending`, `bills`, `accounts`, `investments`, `forecast`, `taxes` (skipped when Engine 1 doesn't cover this year)
+  and `inventory?tab=insights`): every figure has a ref, equals its trace's result and reconciles (`check_figures`).
+  The harness's self-test also checks that it fails on a seeded mismatch. It sees a screen's first tab only; each
+  screen's own browser test checks its other tabs, and screens whose figures appear only after an action (What If) or
+  that need a seeded document id (the document page, which also checks "Counts as" against the record's own total) run
+  `check_figures` there.
+- **Retired settings.** The old per-screen flag (`ui_v2_screens`) is gone; `HouseholdConfig` drops a stored key when it
+  loads (`finance/ledger.py` `retired_keys`), so settings saved while it existed still open.
 
-### Migration
+## Accessibility
 
-- **The redesign is the only UI** (Phase 3 Build E, 2026-10-12). The `ui_v2_screens` flag, `PUT /api/ui-screens` and
-  Settings › Appearance › New screens are gone. `HouseholdConfig` drops a stored `ui_v2_screens` key when it loads
-  (`finance/ledger.py` `retired_keys`), so settings saved while the flag existed still open, and a Preferences save from
-  a page opened before the change is accepted.
-- **A v2 screen** registers itself in `V2_SCREENS` (`route → {title, show}`, declared in `app.js` so a screen's script
-  can register before `shell.js` routes the first page) and is a `data-ui="v2"` section with the same `data-page` as
-  the old one. `showRoute` shows a route's v2 section and calls its `show` whenever `V2_SCREENS` has the route; other
-  routes (Settings, Donate, the old `#/finances` links) show their plain section. Registered: `taxes` (`taxes_v2.js`),
-  `home` (`today_v2.js`), `document` (`document_v2.js`; its `show` first calls `closeReceipt()`, so v1's polling and
-  keys see no document), `review` (`review_v2.js`, To check), `spending` (`month_v2.js`, This month), `transactions`
-  (`transactions_v2.js`), `bills` (`bills_v2.js`), `accounts` (`accounts_v2.js`), `investments` (`investments_v2.js`),
-  `forecast` (`forecast_v2.js`), `whatif` (`whatif_v2.js`), `inventory` (`inventory_v2.js`), `processing`
-  (`processing_v2.js`), `search` (`search_v2.js`), and `documents` and `receipts` (`records_v2.js`, one
-  `data-page="documents"` section for both; it sets `libraryScope`, so the shell and `leaveDocument` keep working, and
-  `libraryCatalog`, which the shared move dialog reads). The v1 sections and loaders stay, unreachable, until Build F
-  deletes them.
-- `tests/test_ui_parity.py` (browser, synthetic seed from `tests/seed_taxes.py` and `tests/seed_wealth.py`) runs
-  `test_every_screen_reconciles` over every screen with traced figures (`home`, `spending`, `bills`, `accounts`,
-  `investments`, `forecast`, `taxes` (skipped when Engine 1 doesn't cover this year) and `inventory?tab=insights`):
-  every figure has a ref, equals its trace's result and reconciles (`check_figures`). The harness's self-test also
-  checks that it fails on a seeded mismatch. It sees a screen's first tab only; each screen's own browser test checks
-  its other tabs, and screens whose figures appear only after an action (What If) or that need a seeded document id (the
-  document page, which also checks "Counts as" against the record's own total) run `check_figures` there.
-- **Passing tests are enough** to delete an old screen; no separate sign-off.
-- Phase 0's visual directions are shown as browser pages.
+- **Landmarks:** `nav` (sidebar), `main`, `aside` (drawer), one `h1` per page, and an `h2` for each panel.
+- **Keyboard.**
+  - Every control is reachable, in visual order.
+  - Tables are navigable with the arrow keys when focused (roving tabindex), and <kbd>Enter</kbd> opens the row.
+  - <kbd>F6</kbd> cycles between the sidebar, main and drawer regions.
+  - Dialogs use native `<dialog>`, set an initial focus, and return focus to the trigger on close.
+  - Shortcuts are never required and never fire inside inputs.
+- **Narrow menu.** Under 820px, `#nav-toggle` carries `aria-expanded` and `aria-controls="sidebar-sheet"`. Opening it
+  focuses the first nav link. <kbd>Esc</kbd> closes the sheet and returns focus to the toggle, and a route change or a
+  click outside also closes it. Focus order is the skip link, the brand, the toggle, the sheet, then main.
+- **Focus:** a 2px `--accent` outline with a 2px offset on every interactive element. On the selected nav item (an
+  accent fill) the ring is `--text`.
+- **Contrast.** Every text token is at least 4.5:1 on `--surface` and `--canvas`. Badge text is at least 4.5:1 on
+  subtle backgrounds. Non-text UI (input borders, focus) is at least 3:1.
+- **Never color alone.** Every status has an icon and text. Amounts carry a `+`/`−` sign, and money in or out is also
+  announced.
+- **Live regions.** One polite region for toasts and job completion. Running-job progress is announced at start and
+  finish, not every second.
+- **Tables and charts.** Tables use `<th scope>` and `aria-sort`. Charts carry a data table.
+- **Zoom.** The UI is usable at 200% zoom on a 1440px screen. Browser tests check 390, 768 and 1440px widths for
+  horizontal overflow.
+
+## Money and dates on screen
+
+- **No money arithmetic in the browser.** It never sums, subtracts, converts or rounds; totals come only from server
+  tools. `amount()` takes the sign from the leading `-` of the server's `decimal`, and shows the server's `display`
+  text without it. That is lexical, not arithmetic. `amount(value, {magnitude: true})` adds no sign glyph at all (not
+  even `−`) and no direction, for figures whose label says which way (tax figures).
+- **No other figures worked out in the browser either.** The server returns them ready to show:
+  - percents as `*_percent` text beside each `*_bp` (`core/money.py` `percent_text`);
+  - Today's category shares as `share_bp` (whole basis points summing to 10,000, so the donut closes) with
+    `categories_chartable`;
+  - the budget meter's `meter_percent`, `remaining_state` and `over`;
+  - each upcoming bill's `group` (overdue, this_week, later);
+  - To check's badge and group counts from `GET /api/review/counts` (uncapped), and the check-in count with them;
+  - counts the pages show: the independent check's `confirmed`/`scored`/`unscored`, check-in `applied`/`failed`,
+    search `total`, an employer folder's `total`, Tax Zen's `aim` text, a job's `paydays_without_stub`.
+
+  `.minor` is read only for chart pixel geometry and for "is there any" checks.
+- **Months** show as `September 2026` (`monthText()` in `ui.js`).
+- **Currency.** The home currency uses its symbol. Every other currency uses its ISO code. Each currency shows its own
+  minor-unit precision (JPY 0, USD 2).
+- **Alignment.** Amounts are right-aligned with tabular figures, and the sign sits in a fixed-width slot so digits
+  line up.
+- **Dates.** Tables show `Sep 24` (current year) or `Sep 24, 2025`. Detail views show `Sep 24, 2026`. Tooltips and
+  provenance show ISO `2026-09-24`. Relative dates ("2 days ago") are used only for activity and freshness, never for
+  financial dates.
+- **Balances** always carry "as of <date>". Credit card balances are labelled "Owed". Statement balances from
+  different dates are never added into one total.
+
+## Decisions
+
+1. **Accent color:** one accent for interaction (cobalt, `design-system/home-manager/MASTER.md`); green means only
+   money in or verified. An exceeded budget is amber, never red (2026-10-06).
+2. **Money parts:** no backend change. The UI splits the server's `display` text lexically.
+3. **To check** shows display summaries (merchant, amount, date, account, document) for every item, never bare ids.
+4. **Accounts** shows per-account balances with "as of" dates. It stays a top-level page. Since 2026-10-06, Today shows
+   **Cash** and **Net worth** across all accounts (`worth.today`), with the date range and stale accounts flagged.
+5. **The document page** is a route, not a modal. Lists use a non-modal drawer where a detail view is needed.
+6. **One UI** (2026-10-12): the redesigned screens replaced the old ones, which are deleted. Passing tests were enough
+   to delete an old screen; there was no separate sign-off.

@@ -1356,7 +1356,7 @@ def create_app(control: Path | None = None, token: str | None = None,
     def investment_values_to_review():
         return Investments(store()).pending()
 
-    # Observability (docs/ui.md "Redesign: calculation observability"): how a figure was worked out, where a value came
+    # Observability (docs/ui.md "Every number explained"): how a figure was worked out, where a value came
     # from, the rule sets figures rest on, and the history of changes.
     @app.get("/api/traces/{ref:path}")
     def figure_trace(ref: str):

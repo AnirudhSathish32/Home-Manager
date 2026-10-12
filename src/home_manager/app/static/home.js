@@ -1,5 +1,6 @@
 "use strict";
-let homeLoad = 0, homeMonths = 6;
+// Today's chart and family builders (today_v2.js draws the page), and homeLink, which every page uses.
+let homeMonths = 6;
 // Categorical slots 1–6 of the validated chart palette, colored by the --chart-cat-* tokens (docs/ui.md "Conventions").
 const CHART_SLOTS = ["cat-1", "cat-2", "cat-3", "cat-4", "cat-5", "cat-6"];
 const categorySlots = new Map();
@@ -36,29 +37,14 @@ function chartDetails(svg) {
   }
   return note;
 }
+// A chart's numbers as a table, folded under it.
 function homeTable(headings, rows) {
   const details = document.createElement("details");
-  details.append(element("summary", "View data table"));
-  const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
-  const head = document.createElement("thead"), tr = document.createElement("tr"), body = document.createElement("tbody");
-  for (const text of headings) { const th = element("th", text); th.scope = "col"; tr.append(th); }
-  head.append(tr);
-  for (const values of rows) {
-    const row = document.createElement("tr");
-    for (const value of values) { const td = document.createElement("td"); td.append(value instanceof Node ? value : document.createTextNode(value)); row.append(td); }
-    body.append(row);
-  }
-  table.append(head, body); wrap.append(table); details.append(wrap); return details;
+  details.append(element("summary", "View data table"), dataTable(headings.map(text => [text]), rows));
+  return details;
 }
-function homeMetric(label, value, note, href) {
-  const panel = element("section", "", "panel home-metric");
-  const figure = homeLink("", href, "home-figure");
-  figure.append(value ? amount(value, {signed: false}) : document.createTextNode("No recorded data"));
-  panel.append(element("h2", label), figure, element("p", note, "muted small"));
-  return panel;
-}
-// reload: what the 6/12 buttons run after setting homeMonths (v1 Home, or Today v2's reloadToday).
-function homeTrend(data, reload = loadHome) {
+// reload: what the 6/12 buttons run after setting homeMonths (Today's reloadToday).
+function homeTrend(data, reload) {
   const panel = homePanel("Spending over time", `Monthly net spending · ${data.currency}. Gaps mean no recorded spending transactions.`);
   const controls = element("div", "", "home-range"); controls.setAttribute("role", "group"); controls.setAttribute("aria-label", "Trend period");
   for (const months of [6, 12]) {
@@ -147,92 +133,10 @@ function homeCategories(data) {
   panel.append(homeTable(["Category", "Spent", "Share"], data.categories.map(row => [homeLink(row.category, href(row)), amount(row.spending, {signed: false}), `${row.share}%`])));
   return panel;
 }
-function renderHome(data) {
-  const content = $("home-content"), metrics = element("div", "", "home-metrics");
-  const compare = data.comparison;
-  const note = compare ? `Previous period ${compare.first.display}; change ${compare.change.display}${compare.percent_change === null ? "" : ` (${compare.percent_change}%)`}. ${dateText(data.previous_period.start)} – ${dateText(data.previous_period.end)}.` : "No recorded spending in the comparison period.";
-  metrics.append(homeMetric("Net spending", data.totals?.net_spending, note, financeHref(data, {metric: "spending"})),
-    homeMetric("Money in", data.cashflow?.inflow, "Counted inflows for this period", financeHref(data, {metric: "inflow"})),
-    homeMetric("Net cash flow", data.cashflow?.net, "Inflows less outflows · not an account balance", financeHref(data, {metric: "cashflow"})));
-  const charts = element("div", "", "home-charts"); charts.append(homeTrend(data), homeCategories(data));
-  const bottom = element("div", "", "home-bottom"), attention = homePanel("Needs attention", data.family
-    ? "Added up across the family. Review happens in each person's own profile."
-    : "Receipts count on their own until a statement charge replaces them.");
-  const list = element("ul", "", "finance-list"), counts = data.attention;
-  const rows = [
-    [`${counts.unmatched?.receipts || 0} receipts with no matching charge${counts.unmatched ? ` · ${counts.unmatched.total.display}` : ""}`, "#/review", "Selected period · approved ones count on their own"],
-    [`${counts.undated} receipts without a purchase date`, "#/review", `${data.currency} · all dates`],
-    [`${counts.records} financial records awaiting review`, "#/review", "All dates and currencies"],
-    [`${counts.links} proposed matches · ${counts.issues} unresolved questions`, "#/review", "All dates and currencies"],
-    [`${counts.ready} documents ready to record`, "#/documents?status=ready_for_ledger", "All dates"]];
-  // Tax Zen got worse since the Taxes page last showed it (finance/tax_zen.py TaxZenEvaluations.attention).
-  if (counts.tax) rows.unshift([`Taxes: ${counts.tax.status_text}`, "#/taxes", counts.tax.trigger ? `What changed: ${counts.tax.trigger}` : `${counts.tax.year} return`]);
-  for (const [label, href, note] of rows) { const li = document.createElement("li"); li.append(homeLink(label, href), element("small", note, "muted")); list.append(li); }
-  attention.append(list);
-  const bills = homePanel("Upcoming bills", `${dateText(data.bills.as_of)} – ${dateText(data.bills.until)} · ${data.currency}`);
-  for (const [title, items] of [["Overdue", data.bills.overdue], ["Next 30 days", data.bills.upcoming]]) {
-    if (!items.length) continue;
-    bills.append(element("h3", title));
-    const ul = element("ul", "", "finance-list");
-    for (const bill of items) {
-      const li = document.createElement("li");
-      li.append(homeLink(bill.provider, "#/bills"), element("small", `${bill.member ? `${bill.member} · ` : ""}${dateText(bill.due_date)} · ${bill.amount_due.display} · ${FREQUENCY_LABELS[bill.frequency] || bill.frequency}`));
-      ul.append(li);
-    }
-    bills.append(ul);
-  }
-  if (!data.bills.total) bills.append(emptyState("No confirmed recurring bills due in the next 30 days."));
-  if (data.maturities?.length) {
-    // CDs and Treasuries maturing in the next 90 days, or matured and waiting for an answer (Investments).
-    bills.append(element("h3", "CDs and Treasuries coming due"));
-    const ul = element("ul", "", "finance-list");
-    for (const due of data.maturities) {
-      const li = document.createElement("li"), when = MATURITY_STATES[due.state === "matured" ? "matured" : due.kind];
-      li.append(homeLink(due.name, due.member ? "#/investments" : `#/investments?account=${due.account_id}`),
-                element("small", `${due.member ? `${due.member} · ` : ""}${due.account} · ${when} ${dateText(due.date)} · ${due.amount.display}`));
-      ul.append(li);
-    }
-    bills.append(ul);
-    if (data.maturities_total > data.maturities.length) bills.append(homeLink(`All ${data.maturities_total} coming due`, "#/investments"));
-  }
-  bills.append(homeLink(`${data.family ? "Bills due or overdue across the family" : "View all bills"} (${data.bills.total})`, "#/bills", "home-footer"));
-  bottom.append(attention, bills);
-  const household = element("div", "", "home-bottom"); household.id = "home-extras";
-  const coverage = homePanel("What these numbers cover", `${dateText(data.period.start)} – ${dateText(data.period.end)} · ${data.currency}`);
-  coverage.append(element("p", data.coverage.map(row => `${row.display_name}: ${dateText(row.first)} to ${dateText(row.last)} (${row.transactions} counted transactions)`).join("; ") || "No counted account transactions in this period.", "muted small"));
-  if (data.pending) coverage.append(element("p", `${data.pending.amount.display} across ${data.pending.transactions} transactions awaits review or reconciliation and is not counted.`, "item-warning"));
-  coverage.append(element("p", "Totals reflect recorded transactions and approved receipts, not all household spending. A receipt counts until a card or bank charge replaces it, never both. Transfers and card payments are excluded from spending. Each currency is shown separately.", "muted small"));
-  if (data.family) {
-    household.hidden = true;
-    content.replaceChildren(...routingNote(data), metrics, familyMembers(data), charts, bottom, familyAdjustments(data.family), coverage);
-    renderNetWorth(data.currency).catch(() => {});  // Loads on its own, like the extras on a personal Home.
-    return;
-  }
-  content.replaceChildren(metrics, charts, bottom, household, coverage);
-  renderHomeExtras(data.month).catch(() => {});  // Budgets and the check-in load on their own; the dashboard never waits for them.
-}
 // Family view ------------------------------------------------------------------------
-function routingNote(data) {
-  // Uploads to the family count for nobody until someone says whose they are.
-  if (!data.routing_waiting) return [];
-  const count = data.routing_waiting;
-  return [alertBox(`${count} document${count === 1 ? "" : "s"} uploaded to the family ${count === 1 ? "is" : "are"} waiting to be sent to a person or shared. ` +
-    "They aren't counted anywhere until then.", {tone: "warning", action: homeLink("Choose who they're for", "#/review", "button")})];
-}
+// numeric: the indexes of the columns that hold amounts.
 function familyTable(headings, rows, numeric = []) {
-  const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
-  const head = document.createElement("thead"), tr = document.createElement("tr"), body = document.createElement("tbody");
-  headings.forEach((text, index) => { const th = element("th", text, numeric.includes(index) ? "numeric" : ""); th.scope = "col"; tr.append(th); });
-  head.append(tr);
-  for (const values of rows) {
-    const row = document.createElement("tr");
-    values.forEach((value, index) => {
-      const td = element("td", "", numeric.includes(index) ? "numeric" : "");
-      td.append(value instanceof Node ? value : document.createTextNode(value)); row.append(td);
-    });
-    body.append(row);
-  }
-  table.append(head, body); wrap.append(table); return wrap;
+  return dataTable(headings.map((text, index) => [text, numeric.includes(index) ? "numeric" : ""]), rows);
 }
 function asOfText(iso) {
   return iso ? `${dateText(iso)} ${new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}` : "No data yet";
@@ -267,16 +171,7 @@ function familyAdjustments(family) {
   panel.append(joint.length || transfers.length ? list : emptyState("No shared accounts or transfers between family members were found."));
   return panel;
 }
-async function renderNetWorth(currency) {
-  const target = $("family-members");
-  if (!target) return;
-  const worth = await api(`/api/family/net-worth?${new URLSearchParams({currency})}`);
-  if (!worth || !$("family-members")) return;
-  const panel = familyWorthPanel(worth);
-  panel.id = "family-net-worth";
-  $("family-members").after(panel);
-}
-// The family's net worth today, each person's row and the family's (Home and Today v2).
+// The family's net worth today, each person's row and the family's (Today).
 function familyWorthPanel(worth) {
   const panel = homePanel("Net worth today", `${worth.currency} · statement balances plus verified assets, less loans`);
   const figure = element("p", "", "home-figure");
@@ -288,85 +183,3 @@ function familyWorthPanel(worth) {
   panel.append(element("p", worth.notes.join(" "), "muted small"));
   return panel;
 }
-async function renderHomeExtras(month = $("home-month").value) {
-  const target = $("home-extras");
-  if (!target) return;
-  const [budgets, checkin, returns, warranties] = await Promise.all([tool("get_budgets", {month, as_of: todayIso()}), api("/api/inventory/checkin"),
-    api("/api/inventory/returns"), api("/api/warranties/expiring")]);
-  const cards = [];
-  if (warranties.length) {
-    const card = homePanel("Warranties ending soon", "Within the next 60 days");
-    const list = element("ul", "", "finance-list");
-    for (const warranty of warranties.slice(0, 6)) {
-      const li = document.createElement("li");
-      li.append(homeLink([warranty.brand, warranty.name].filter(Boolean).join(" "), `#/inventory?${new URLSearchParams({q: warranty.name})}`),
-                element("small", `${statusLabel(warranty.kind)} warranty ends ${dateText(warranty.expires_on)}`, "muted"));
-      list.append(li);
-    }
-    card.append(list); cards.push(card);
-  }
-  if (returns.length) {
-    const card = homePanel("Return windows closing", "Unopened items you can still return in the next two weeks");
-    const list = element("ul", "", "finance-list");
-    for (const lot of returns.slice(0, 6)) {
-      const li = document.createElement("li");
-      li.append(homeLink(productName(lot), `#/inventory?${new URLSearchParams({q: lot.name})}`), element("small", `Return by ${dateText(lot.return_by)}${lot.merchant ? ` · ${lot.merchant}` : ""}`, "muted"));
-      list.append(li);
-    }
-    card.append(list, homeLink("Inventory", "#/inventory", "home-footer")); cards.push(card);
-  }
-  if (budgets.budgets.length) {
-    const card = homePanel("Budgets", `${month}${budgets.elapsed_days && budgets.elapsed_days < budgets.days ? ` · day ${budgets.elapsed_days} of ${budgets.days}` : ""}`);
-    const list = element("ul", "", "finance-list");
-    for (const row of budgets.budgets) {
-      const li = element("li", "", "budget-row");
-      const head = element("div", "", "budget-head"); head.append(homeLink(row.category, "#/spending"), statusBadge(row.status));
-      li.append(head, meter(row), element("small", `${row.spent.display} of ${row.budget.display}`, "muted")); list.append(li);
-    }
-    card.append(list, homeLink("Spending & budgets", "#/spending", "home-footer")); cards.push(card);
-  }
-  if (checkin.lots.length) {
-    const card = homePanel("Weekly check-in"), body = element("div");
-    renderCheckin(body, checkin, {compact: true}); card.append(body); cards.push(card);
-  }
-  target.replaceChildren(...cards);
-  target.hidden = !cards.length;
-}
-async function loadHome() {
-  const load = ++homeLoad;
-  $("home-month").max = localMonth();
-  if (!$("home-month").value) $("home-month").value = localMonth();
-  $("home-subtitle").textContent = familyMode ? "Your family, added up. Each person's records stay in their own profile." : "Your household, at a glance.";
-  if (!configured && !familyMode) {
-    $("home-content").replaceChildren(emptyState("Set up your library to see spending, receipts and bills.", homeLink("Set up your library", "#/settings", "button primary")));
-    $("home-status").textContent = ""; return;
-  }
-  $("home-error").replaceChildren();
-  $("home-status").textContent = "Loading your household overview…";
-  $("home-content").replaceChildren(element("div", "Loading totals and charts…", "panel home-loading"));
-  $("home-content").setAttribute("aria-busy", "true");
-  try {
-    const query = new URLSearchParams({month: $("home-month").value, months: homeMonths});
-    if ($("home-currency-select").value) query.set("currency", $("home-currency-select").value);
-    const data = await api(`/api/dashboard?${query}`);
-    if (load !== homeLoad) return;
-    if (data.family_empty) {
-      $("home-content").replaceChildren(...routingNote(data), emptyState(busy.capture ? "Updating the family view…"
-        : "No family member's data has arrived yet. Members appear here once their profile is set up on this computer or they share from their own.",
-        homeLink("Manage family members", "#/settings", "button")));
-      $("home-status").textContent = ""; return;
-    }
-    $("home-currency-select").replaceChildren(...data.currencies.map(code => new Option(code, code)));
-    $("home-currency-select").value = data.currency;
-    renderHome(data);
-    $("home-status").textContent = `${dateText(data.period.start)} – ${dateText(data.period.end)} · Updated ${new Date(data.loaded_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}`;
-  } catch (error) {
-    if (load !== homeLoad) return;
-    $("home-content").replaceChildren();
-    const retry = element("button", "Retry"); retry.type = "button"; retry.addEventListener("click", loadHome);
-    $("home-error").replaceChildren(alertBox(`Could not load your dashboard. ${error.message}`, {tone: "error", action: retry}));
-    $("home-status").textContent = "";
-  } finally { if (load === homeLoad) $("home-content").removeAttribute("aria-busy"); }
-}
-for (const id of ["home-month", "home-currency-select"]) $(id).addEventListener("change", loadHome);
-$("home-refresh").addEventListener("click", loadHome);

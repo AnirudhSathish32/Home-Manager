@@ -45,7 +45,7 @@ def test_theme_fonts_and_narrow_menu(tmp_path):
             response = page.goto(f"{base}/#token=shell-test")
             assert response.headers["content-security-policy"] == CSP
             playwright.expect(page.locator("#today-panel")).to_be_visible()
-            # The sidebar groups follow docs/ui.md "Redesigned navigation"; Donate is a Settings tab, not a link.
+            # The sidebar groups follow docs/ui.md "Navigation"; Donate is a Settings tab, not a link.
             assert page.locator(".sidebar .nav-group").all_inner_texts() == ["Money", "Taxes", "Wealth & plans", "Home & things", "Records"]
             assert page.locator(".sidebar nav[aria-label=Primary] .nav-link").evaluate_all("links => links.map(link => link.id)") == [
                 "nav-search", "nav-home", "nav-review", "nav-spending", "nav-transactions", "nav-bills", "nav-accounts", "nav-taxes",

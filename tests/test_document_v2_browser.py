@@ -33,7 +33,7 @@ def test_document_page_states_find_correct_and_decide(tmp_path):
 
         # Unread: one step, and the one next action is to read it.
         open_document(page, base, ids["unread_doc"])
-        expect(page.locator("#document-page")).to_be_hidden()
+        expect(page.locator("[data-page='document']")).to_have_count(1)  # One section per page.
         expect(page.locator("#doc2-steps li")).to_have_count(1)
         expect(page.locator('#doc2-steps li[data-state="todo"]')).to_contain_text("not started")
         expect(page.locator("#doc2-next").get_by_role("button", name="Read document")).to_be_visible()

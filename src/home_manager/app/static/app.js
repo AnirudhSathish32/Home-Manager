@@ -8,10 +8,10 @@ if (fragment.has("token")) {
 const token = sessionStorage.getItem("home-manager-token") || "";
 // Capture and model inference are independent queues; library actions wait for neither.
 // familyMode: a family profile is open. It has no library of its own; only Home and Settings apply.
-let savedManaged = "", savedDecision = {}, savedReviewer = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false}, selectedJob = "", docOffset = 0, eventOffset = 0;
+let savedManaged = "", savedDecision = {}, savedReviewer = {}, inboxDirectory = "", modelsConfigured = {vision: false, reasoning: false}, configured = false, familyMode = false, busy = {capture: false, inference: false};
 const pageSize = 100;
-// Redesigned screens: route → {title, show}. Each Phase 2 screen registers itself here from its own script, which loads
-// before shell.js routes the first page (docs/ui.md "Migration").
+// Screens: route → {title, show}. Each screen registers itself here from its own script, which loads before shell.js
+// routes the first page (docs/ui.md "Pages").
 const V2_SCREENS = {};
 function element(tag, text = "", className = "") {
   const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
@@ -70,20 +70,16 @@ let whoIsHere = null;  // Set by profiles.js renderWho from the profile's people
 const anyBusy = () => busy.capture || busy.inference;
 function setBusy(settings) { busy = {capture: settings.capture_busy, inference: settings.inference_busy}; }
 function controls() {
-  $("parse-all-receipts").disabled = !configured || busy.inference;
-  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "force-receipts", "auto-organize", "save-reviewer"]) $(id).disabled = busy.inference;
+  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "auto-organize", "save-reviewer"]) $(id).disabled = busy.inference;
   $("reviewer-busy").hidden = !busy.inference;
-  $("scan-inbox").disabled = $("pr2-scan").disabled = !configured || busy.capture;
+  $("pr2-scan").disabled = !configured || busy.capture;
   $("pr2-read").disabled = $("pr2-read-start").disabled = !configured || busy.inference;
   // Work that runs on in the background stays unavailable until it finishes, so a second click can't start it twice.
-  $("recurring-scan").disabled = !configured || busy.inference;
   if ($("bills2-scan")) $("bills2-scan").disabled = !configured || busy.inference;
   $("backup-start").disabled = !configured || busy.capture;
   $("share-export").disabled = !configured || anyBusy();
   for (const id of ["save-settings", "managed"]) $(id).disabled = anyBusy();
   document.querySelectorAll("[data-step]").forEach(button => { button.disabled = busy.inference; });
-  if (typeof receiptControls === "function") receiptControls();
-  if (typeof renderSelection === "function") renderSelection();
 }
 function seconds(ms) { return ms == null ? "—" : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`; }
 function tokenRate(run) {
@@ -115,34 +111,9 @@ function renderActivityIndicator(activity) {
 }
 function renderActivity(activity) {
   renderActivityIndicator(activity);
+  // Processing (processing_v2.js): its Now running line and lanes.
   if (typeof lastActivity !== "undefined") lastActivity = activity;
-  $("activity").replaceChildren();
-  if (!activity.length) $("activity").appendChild(element("li", "No active scans or model work.", "muted"));
-  for (const work of activity) {
-    const item = element("li", "", "activity-item");
-    const text = element("div", "", "activity-text");
-    text.append(element("strong", work.label), element("small", `${work.queue === "inference" ? "Model queue" : "Capture queue"}${work.progress ? ` · ${work.progress.stage.replaceAll("_", " ")} · ${work.progress.characters} characters · ${work.progress.elapsed_seconds} s` : ""}`));
-    item.append(statusBadge(work.status), text);
-    if (work.queue === "inference" && ["queued", "running"].includes(work.status)) item.appendChild(cancelButton(work));
-    $("activity").appendChild(item);
-  }
-  // Processing v2 (processing_v2.js): its Now running line and lanes.
   if (typeof renderPr2Activity === "function") renderPr2Activity(activity);
-}
-async function loadModelHistory() {
-  const query = new URLSearchParams({limit: 50});
-  if ($("model-task")?.value) query.set("task", $("model-task").value);
-  if ($("model-status")?.value) query.set("status", $("model-status").value);
-  const runs = await api(`/api/model-runs?${query}`);
-  $("model-history").replaceChildren();
-  for (const run of runs) {
-    const row = document.createElement("tr");
-    cell(row, new Date(run.started_at).toLocaleString()); cell(row, run.task); cell(row, run.model_id); cell(row, "").appendChild(statusBadge(run.status));
-    for (const value of [run.prompt_tokens ?? "—", run.completion_tokens ?? "—", seconds(run.time_to_first_token_ms), tokenRate(run), seconds(run.total_ms)])
-      cell(row, value).className = "numeric";
-    $("model-history").appendChild(row);
-  }
-  if (!runs.length) { const row = document.createElement("tr"); cell(row, "No model requests yet.").colSpan = 9; $("model-history").appendChild(row); }
 }
 function cell(row, value, code = false) {
   const td = document.createElement("td");
@@ -176,8 +147,6 @@ function renderSession(settings) {
   return changed;
 }
 async function sessionChanged() {
-  if (typeof closeReceipt === "function") closeReceipt();
-  selectedJob = ""; docOffset = eventOffset = 0; activeFolder = "all"; activeStatus = "all";
   await loadSettings(); await refresh(); showRoute(false);
 }
 async function loadSettings() {
@@ -190,7 +159,6 @@ async function loadSettings() {
   const familyGpu = settings.model_computer.provider === "family_gpu";
   modelsConfigured = familyGpu ? {vision: true, reasoning: true} : {vision: Boolean(settings.vision.model), reasoning: Boolean(settings.reasoning.model)};
   renderModelComputer(settings.model_computer);
-  $("inbox-location").textContent = settings.inbox_directory ? `Drop files into ${settings.inbox_directory}` : "Choose a library folder to create your Inbox.";
   $("vision-url").value = settings.vision.base_url;
   $("vision-model").value = settings.vision.model;
   $("reasoning-url").value = settings.reasoning.base_url;
@@ -233,50 +201,6 @@ async function loadSettings() {
     : !configured && !familyMode ? [alertBox("Choose where Home Manager keeps its library to get started.", {action: setup})] : []));
   controls();
 }
-async function loadJobs() {
-  const jobs = await api("/api/scans");
-  const selector = $("scans"); selector.replaceChildren();
-  if (!jobs.length) selector.add(new Option("No scans yet", ""));
-  for (const job of jobs) selector.add(new Option(`${new Date(job.created_at).toLocaleString()} · ${job.status} · ${job.year || "all years"}/${job.month || "all months"}`, job.id));
-  if (!selectedJob && jobs.length) selectedJob = jobs[0].id;
-  if (jobs.some(job => job.id === selectedJob)) selector.value = selectedJob;
-}
-async function loadEvents() {
-  if (!selectedJob) return;
-  const job = await api(`/api/scans/${selectedJob}`);
-  $("scan-state").textContent = `${job.status} — ${Object.entries(job.counts).map(([key,value]) => `${value} ${key}`).join(", ") || "Waiting for file inventory"}${job.error ? ". " + job.error : ""}`;
-  if (job.organization_status) $("scan-state").textContent += ` · Text extraction: ${job.organization_status}. ${job.organization_message || ""}`;
-  const events = await api(`/api/scans/${selectedJob}/events?offset=${eventOffset}&limit=${pageSize}`);
-  $("events").replaceChildren();
-  for (const event of events) {
-    const row = document.createElement("tr");
-    cell(row, event.relative_path); cell(row, event.status); cell(row, event.message);
-    $("events").appendChild(row);
-  }
-  $("events-prev").disabled = eventOffset === 0;
-  $("events-next").disabled = events.length < pageSize;
-  $("events-page").textContent = events.length ? `${eventOffset + 1}–${eventOffset + events.length}` : "No results on this page";
-}
-async function loadDocuments() {
-  const query = () => {
-    const params = new URLSearchParams({offset: docOffset, limit: pageSize, folder: activeFolder, status: activeStatus, q: searchQuery, sort: activeSort, scope: libraryScope});
-    if (activeFrom) params.set("date_from", activeFrom);
-    if (activeTo) params.set("date_to", activeTo);
-    if (receiptCategory()) params.set("category", receiptCategory());
-    if (jobFilter()) params.set("employer", jobFilter().employer);
-    if (jobFilter()?.section) params.set("section", jobFilter().section);
-    return params.toString();
-  };
-  const requested = query();
-  const data = await api(`/api/documents?${requested}`);
-  const catalog = await api(`/api/folders?scope=${libraryScope}`);
-  // A newer filter, page, sort or store supersedes this response.
-  if (query() !== requested) return;
-  renderFolders(catalog); renderDocuments(data);
-  $("docs-prev").disabled = docOffset === 0;
-  $("docs-next").disabled = docOffset + pageSize >= data.total;
-  $("docs-page").textContent = data.items.length ? `${docOffset + 1}–${docOffset + data.items.length} of ${data.total}` : "No documents on this page";
-}
 async function showVersions(doc) {
   const versions = await api(`/api/documents/${doc.id}/versions`);
   $("versions-path").textContent = doc.relative_path;
@@ -293,9 +217,10 @@ async function showVersions(doc) {
   }
   $("versions-dialog").showModal();
 }
+// What every page shares after work finishes: the sidebar's counts (library.js renderNavCounts).
 async function refresh() {
   if (!configured) return;
-  await loadJobs(); await loadEvents(); await loadDocuments(); await loadModelHistory();
+  await renderNavCounts();
 }
 $("settings-form").addEventListener("submit", async event => {
   event.preventDefault();
@@ -305,21 +230,10 @@ $("settings-form").addEventListener("submit", async event => {
       confirmLabel: "Switch library"})) return;
   try {
     await api("/api/settings", {method:"PUT", body:JSON.stringify({managed_directory:managed})});
-    if (typeof closeReceipt === "function") closeReceipt();
-    selectedJob = ""; docOffset = eventOffset = 0;
-    activeFolder = "all"; activeStatus = "all";
     await loadSettings(); await refresh(); notice("Library folder saved. Drop documents into its Inbox.");
   } catch (error) { notice(error, true); }
 });
-$("scans").addEventListener("change", () => { selectedJob = $("scans").value; eventOffset = 0; loadEvents().catch(e => notice(e, true)); });
-$("refresh").addEventListener("click", () => refresh().catch(e => notice(e, true)));
 $("close-versions").addEventListener("click", () => $("versions-dialog").close());
-for (const [id, delta, type] of [["docs-prev",-pageSize,"docs"],["docs-next",pageSize,"docs"],["events-prev",-pageSize,"events"],["events-next",pageSize,"events"]]) {
-  $(id).addEventListener("click", () => {
-    if (type === "docs") { docOffset = Math.max(0, docOffset + delta); loadDocuments().catch(e => notice(e, true)); }
-    else { eventOffset = Math.max(0,eventOffset + delta); loadEvents().catch(e => notice(e, true)); }
-  });
-}
 async function poll() {
   try {
     if (configured) {
@@ -332,15 +246,13 @@ async function poll() {
       if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
       if (anyBusy() || wasBusy) {
         await refresh();
-        // Processing v2 points processingReload at its own refresh (the strip and the shown tab) while it shows.
-        if (currentRoute?.name === "processing") await (processingReload ? processingReload() : loadProcessing());
-        // Records v2 (records_v2.js) redraws only when its documents changed.
-        if (typeof rc2Refresh === "function") await rc2Refresh();
+        // Processing redraws its strip and the shown tab; Records (records_v2.js) only when its documents changed.
+        if (currentRoute?.name === "processing") await pr2Refresh();
+        await rc2Refresh();
       }
       if (wasBusy && !anyBusy() && currentRoute?.name === "home") await reloadToday();
       // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
       if ((wasBusy && !anyBusy()) || !reconcileChecked) { reconcileChecked = true; await loadReconcilePrompt(); }
-      if (typeof pollReceipt === "function") await pollReceipt();
       if (typeof pollDocumentV2 === "function") await pollDocumentV2();
     }
     if (pollFailure) { pollFailure = null; $("app-alert").replaceChildren(); }
@@ -357,10 +269,11 @@ let pollFailure = null, reconcileChecked = false;
 // Start once every deferred script has run: a fast settings response must not reach showRoute (shell.js) before it exists.
 document.addEventListener("DOMContentLoaded", () => loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true)));
 
-function showReceiptBatch(batch) {
-  $("receipt-batch-status").dataset.status = batch?.status || "";  // Processing v2 shows it under Reading while it runs.
-  $("receipt-batch-status").textContent = batch ?
-    `Batch ${batch.status}: ${batch.total} documents; ${Object.entries(batch.counts).map(([state, count]) => `${count} ${state}`).join(", ")}. ${batch.unique_runs} distinct images; ${batch.reused} reused/duplicate results; ${batch.skipped} unsupported documents skipped.` : "";
+// The latest batch of documents being read; Processing shows it under Reading while it runs (processing_v2.js).
+let receiptBatch = null;
+function showReceiptBatch(batch) { receiptBatch = batch || null; }
+function receiptBatchText(batch) {
+  return batch ? `Batch ${batch.status}: ${batch.total} documents; ${Object.entries(batch.counts).map(([state, count]) => `${count} ${state}`).join(", ")}. ${batch.unique_runs} distinct images; ${batch.reused} reused/duplicate results; ${batch.skipped} unsupported documents skipped.` : "";
 }
 // A Settings form's result line under its buttons (docs/ui.md "Settings"): "Saved." or why not. Focus stays put.
 function settingsResult(form, message = "", error = false) {
@@ -480,66 +393,3 @@ saveSettingsForm("household-form", "/api/household-settings", () => ({home_curre
                                                              fetch_crypto_prices: $("fetch-prices").checked, rescan_hours: Number($("rescan-hours").value),
                                                              tax_engine_compare: $("tax-compare").checked}),
   "Preferences saved. A changed home currency applies when documents are extracted to the ledger again.");
-for (const [id, path, message] of [["scan-inbox", "/api/inbox-scans", "Inbox capture started. Files are preserved before any organization."]]) {
-  $(id).addEventListener("click", async () => {
-    try {
-      busy.capture = true; controls();
-      const result = await api(path, {method:"POST", body:"{}"});
-      selectedJob = result.job_id; eventOffset = 0;
-      notice(message);
-      await refresh();
-    } catch (error) { busy.capture = false; controls(); notice(error, true); }
-  });
-}
-// Watched folders: copied into the library, never changed.
-async function loadSources() {
-  const target = $("source-rows");
-  if (!configured || familyMode) { tableMessage(target, 4, "Choose a library folder first."); return; }
-  const sources = await api("/api/sources");
-  if (!sources.length) { tableMessage(target, 4, "No watched folders. Only Inbox is read."); return; }
-  target.replaceChildren(...sources.map(source => {
-    const row = document.createElement("tr"), where = cell(row, "");
-    where.append(element("strong", source.label || source.path.split(/[\\/]/).pop()), element("div", source.path, "path-text"));
-    if (!source.enabled) where.append(element("div", "Paused", "muted small"));
-    cell(row, source.recursive ? "Included" : "Not included");
-    cell(row, source.last_scan_at ? new Date(source.last_scan_at).toLocaleString() : "Not yet");
-    const actions = element("div", "", "button-row");
-    actions.append(
-      asyncButton("Scan now", async () => {
-        const result = await api(`/api/sources/${source.id}/scans`, {method: "POST", body: "{}"});
-        selectedJob = result.job_id; eventOffset = 0;
-        notice("Watched folder scan started. Files are copied; the folder is not changed.");
-        await refresh();
-      }),
-      asyncButton(source.enabled ? "Pause" : "Resume", async () => {
-        await api(`/api/sources/${source.id}`, {method: "PATCH", body: JSON.stringify({enabled: !source.enabled})});
-        await loadSources();
-      }),
-      asyncButton("Stop watching", async () => {
-        if (!await confirmAction({title: "Stop watching this folder?", message: "New files there will no longer be copied in. Documents already copied from it stay in the library, and the folder is not changed.",
-                                  confirmLabel: "Stop watching"})) return;
-        await api(`/api/sources/${source.id}`, {method: "DELETE"});
-        notice("Folder no longer watched. Its documents stay in the library.");
-        await loadSources();
-      }));
-    cell(row, "").append(actions);
-    return row;
-  }));
-}
-$("source-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  try {
-    await api("/api/sources", {method: "POST", body: JSON.stringify({path: $("source-path").value.trim(), label: $("source-label").value.trim(), recursive: $("source-recursive").checked})});
-    $("source-path").value = ""; $("source-label").value = "";
-    notice("Folder added. It is scanned within a minute, and new files are copied in from then on.");
-    await loadSources();
-  } catch (error) { notice(error, true); }
-});
-$("parse-all-receipts").addEventListener("click", async () => {
-  try {
-    busy.inference = true; controls();
-    await api("/api/receipt-batches", {method:"POST", body:JSON.stringify({force:$("force-receipts").checked})});
-    notice("Text extraction queued. Progress appears in the sidebar and results appear in the library as they are saved.");
-    await refresh();
-  } catch (error) { busy.inference = false; controls(); notice(error, true); }
-});

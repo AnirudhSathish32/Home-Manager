@@ -81,7 +81,7 @@ Built from `phase1b-plan.md`:
   below), `provenanceBadge()` and `ruleCard()`;
 - `tests/test_ui_parity.py` (the harness, with `MIGRATED` empty) and `tests/test_trace_components_browser.py`.
 
-docs/ui.md "Design system", "Observability components" and "Migration" describe it. Before and after screenshots of
+docs/ui.md "Design system" and "Observability components" describe it. Before and after screenshots of
 the six touched routes are identical once loaded.
 
 **Resolved in Phase 2 Taxes:** a breakdown's answer and running column used `amount()` signed, so a positive spending
@@ -262,7 +262,7 @@ Built from `phase2-review-document-plan.md` Build B; `pages/review.md` has the p
 
 ## Phase 3, v2 becomes the only UI (Build E, done 2026-10-12)
 
-Built from `phase2-rest-plan.md` Build E; docs/ui.md "Migration" describes the result.
+Built from `phase2-rest-plan.md` Build E; docs/ui.md "Pages" describes the routing that resulted.
 - **Routing:** `shell.js` `showRoute` shows a route's `data-ui="v2"` section whenever `V2_SCREENS` has it.
   `uiV2Screens`, `renderUiV2Choices` and `setHomeNavLabel` are gone; the sidebar labels are written in `index.html`.
   The flag checks in `app.js` (poll), `assistant.js`, `finance.js`, `inventory.js`, `profiles.js`, `library.js`
@@ -306,3 +306,27 @@ Built from `phase2-rest-plan.md` Build E; docs/ui.md "Migration" describes the r
   Inventory test passed only on Sundays. They're now due on the latest check-in day.
 - Several tests now wait for the page to settle (`networkidle`) before acting where a background refresh redraws the
   item under the clicks (To check's recurring payment, Taxes' Add a return, Records' row menus).
+
+## Phase 3, delete v1 (Build F, done 2026-10-12)
+
+Built from `phase2-rest-plan.md` Build F; docs/ui.md "Pages" and "Design system" describe the result.
+- **index.html:** every v1 `[data-page]` section with a v2 twin is gone, and so is `data-ui`: one section per page.
+  The `category-options` datalist moved out of v1 Spending (This month and the drawer use it).
+- **Loaders:** the v1 loaders the plan named are deleted, with Taxes' (`loadTaxes`, `renderTaxes`, `renderTaxYear`,
+  `renderTaxInputs`, `renderTaxZen`, `renderWriteOffs`, the family list) and receipt.js's whole v1 inspector
+  (open, read, extract, record pane, `renderLedgerRecord`, `editRecord`, `loadExtraction`, `renderSplit`).
+  `ROUTES` keeps routing data only; `showRoute` shows one section per page.
+- **Hooks collapsed:** forecast.js works on the `fc2-` ids and calls `fc2Reload`; whatif.js works on `wi2-` and calls
+  `wi2ShowTab`, `renderAgainstNowV2`, `wi2FollowChanged` and `wi2Href`; investments.js calls `inv2Reload`; inventory.js
+  `it2Reload`; app.js `poll()` calls `pr2Refresh`. `reviewParts` shrank to `assetParts` (To check's asset evidence).
+- **Kept as app state:** the reading batch's status line (`receiptBatch`, `receiptBatchText`), shown in Processing's
+  Reading stage; it lived in a hidden v1 element. The sidebar's Inbox/Unfiled counts come from `library.js`
+  `renderNavCounts`, which `refresh()` and the document page call.
+- **Duplicates merged:** `actionButton` into `asyncButton` (now in `ui.js`); `dataTable()` in `ui.js` under
+  `homeTable`, `familyTable`, `it2Table`, `pr2Table` and `trackTable`.
+- **Dead code:** a script listed every top-level function with no caller until none was left; another listed `$("id")`
+  lookups with no element. Dead CSS went the same way (each selector checked against JS, HTML and `finance/charts.py`).
+- **Tests:** the v2 tests' "v1 panel hidden" checks now assert one section per page; `test_browser.py` waits on
+  `receiptBatchText` instead of the v1 status line; `test_share.py` reads Records. Two flakes found on the way, both
+  failing at HEAD too: Records' row menu opened while Back still redrew the list (now waits for `networkidle`), and the
+  token test didn't know `--figure-chars` is set at runtime.

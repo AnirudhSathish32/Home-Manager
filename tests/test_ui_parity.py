@@ -153,9 +153,9 @@ def test_every_screen_reconciles(tmp_path, route):
         page.on("pageerror", lambda error: failures.append(str(error)))
         page.goto(f"{base}/#token=parity-test")
         open_route(page, route)
-        playwright.expect(page.locator('[data-page][data-ui="v2"]:not([hidden])')).to_be_visible()
+        playwright.expect(page.locator("[data-page]:not([hidden])")).to_be_visible()
         page.wait_for_selector("[aria-busy='true']", state="detached", timeout=120000)  # Slow pages (the tax engine) load first.
-        page.wait_for_selector('[data-page][data-ui="v2"]:not([hidden]) [data-figure-ref]')
+        page.wait_for_selector("[data-page]:not([hidden]) [data-figure-ref]")
         check_figures(page, base, "parity-test")
         assert not failures, failures
         browser.close()

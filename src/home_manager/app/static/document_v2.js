@@ -38,7 +38,6 @@ function doc2Url() {
 }
 
 async function openDocumentV2(id, params) {
-  closeReceipt();  // v1's polling and keys see no document.
   const version = params.get("version"), wanted = (params.get("lines") || "").split(",").filter(Boolean);
   const tab = DOC2_TABS.includes(params.get("tab")) ? params.get("tab") : "record";
   if (doc2?.doc && doc2.doc.id === id && doc2.digest === (version || doc2.doc.current_hash)) {
@@ -105,15 +104,15 @@ function doc2Menu(state) {
   const key = [doc.version_count, doc.deleted_at, ready, canRead, Boolean(state.extraction), Boolean(state.result)].join(":");
   if (state.menuKey === key) return;  // Rebuilt only when it changes, so polling never closes an open menu.
   state.menuKey = key;
-  const items = [actionButton("Edit description…", () => openDescription(state.doc)), actionButton(`Versions (${doc.version_count})`, () => showVersions(doc))];
-  if (doc.deleted_at) items.push(actionButton("Restore", () => restoreDocuments([doc])));
-  else items.push(actionButton("Move", () => openLibraryAction([doc], "move")), actionButton("Delete", () => openLibraryAction([doc], "trash"), "danger-text"));
-  const read = actionButton("Read again", () => doc2Read(true)); read.disabled = !canRead;
-  const extract = actionButton("Extract again", () => doc2Record(true)); extract.disabled = !ready || !state.extraction;
-  const copy = actionButton("Copy text", async () => {
+  const items = [asyncButton("Edit description…", () => openDescription(state.doc), ""), asyncButton(`Versions (${doc.version_count})`, () => showVersions(doc), "")];
+  if (doc.deleted_at) items.push(asyncButton("Restore", () => restoreDocuments([doc]), ""));
+  else items.push(asyncButton("Move", () => openLibraryAction([doc], "move"), ""), asyncButton("Delete", () => openLibraryAction([doc], "trash"), "danger-text"));
+  const read = asyncButton("Read again", () => doc2Read(true), ""); read.disabled = !canRead;
+  const extract = asyncButton("Extract again", () => doc2Record(true), ""); extract.disabled = !ready || !state.extraction;
+  const copy = asyncButton("Copy text", async () => {
     try { await navigator.clipboard.writeText(state.result.lines.map(line => line.text).join("\n")); notice("Text copied."); }
     catch { notice("Copying isn't available here. Use the source's Text tab and press Ctrl+C.", true); }
-  });
+  }, "");
   copy.disabled = !state.result;
   items.push(read, extract, copy);
   $("doc2-menu").replaceChildren(menu("More actions", items));
@@ -145,7 +144,7 @@ function doc2Provenance(result) {
     if (value !== undefined) detailRow(list, label, code(value));
 }
 
-// Several images as one document (documents/grouping.py), as receipt.js loadGroupPages, beside the source.
+// Several images as one document (documents/grouping.py), beside the source.
 async function doc2ChangeGroup(state, group, body, message) {
   await api(`/api/document-groups/${group.id}`, {method: "PATCH", body: JSON.stringify(body)});
   notice(message);
@@ -197,7 +196,7 @@ async function doc2Group(state) {
   strip.hidden = false;
 }
 
-// Readings (receipt.js receiptHistory, displayReceiptRun, startReceipt) with this page's state.
+// Readings: the run history, the shown run, and reading again.
 async function doc2Runs(state) {
   const runs = await api(`/api/documents/${state.doc.id}/receipt-runs?blob_hash=${state.digest}`);
   if (doc2 !== state) return;
@@ -314,7 +313,7 @@ function doc2Steps(state) {
   state.stateKey = key;
 }
 
-// The record (receipt.js loadExtraction, renderLedgerRecord) with this page's header, decision and tabs.
+// The record (receipt.js keeps its row, pay stub and investment builders) with this page's header, decision and tabs.
 function doc2ClearRecord() {
   for (const id of ["doc2-panel-record", "doc2-why", "doc2-decision", "doc2-record-badge"]) $(id).replaceChildren();
   $("doc2-record-title").textContent = "Recorded information";
@@ -369,7 +368,7 @@ function doc2Decision(state, options) {
 }
 async function doc2Changed(state) {
   if (doc2 !== state) return;
-  await Promise.all([state.reload?.(), refreshDocumentV2(state), loadDocuments().catch(() => {})]);
+  await Promise.all([state.reload?.(), refreshDocumentV2(state), renderNavCounts().catch(() => {})]);
   if (state.tab === "history") await doc2History(state);
 }
 // The page's h1 is the document's name; the record header says what was recorded and from whom.
@@ -509,7 +508,7 @@ function doc2Links(record, type) {
   section.append(list);
   return section;
 }
-// Statement values, purchases and tax forms: the v1 record (receipt.js) with this page's decision.
+// Statement values, purchases and tax forms: receipt.js's record with this page's decision.
 async function doc2Other(state, target, publication) {
   let record, path, render;
   if (publication.record_type === "asset") {
@@ -539,7 +538,7 @@ async function doc2Other(state, target, publication) {
                        reviewPath: path, undoBody: {status: "proposed"}});
   doc2Steps(state);
 }
-// A file holding several receipts (receipt.js renderSplit): pick one, confirm the split once, or change it.
+// A file holding several receipts (docs/documents.md): pick one, confirm the split once, or change it.
 async function doc2ChangeSplit(state, starts, message) {
   await api(`/api/documents/${state.doc.id}/segments`, {method: "PUT", body: JSON.stringify({starts})});
   notice(message);

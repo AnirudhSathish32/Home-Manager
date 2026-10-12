@@ -1,27 +1,23 @@
 "use strict";
 // What If, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/wealth.md): four tabs over one plan. Plan
 // puts the inputs beside the plan tried against now; Compare, Paycheck planner and Follow this plan hold the rest.
-// whatif.js keeps every builder both screens use, on inputs with the "wi2-" prefix here. Every amount and date is the
-// server's.
-const WI2 = "wi2-";
+// whatif.js keeps the builders, on this page's "wi2-" inputs. Every amount and date is the server's.
 const WI2_TABS = ["plan", "compare", "planner", "follow"];
-// tab: the open tab; stub: the pay stub the planner started from (kept in the URL, as on the original page).
+// tab: the open tab; stub: the pay stub the planner started from (kept in the URL).
 const wi2 = {tab: "plan", stub: null};
 
 V2_SCREENS.whatif = {title: "What If", show: route => loadWhatIfV2(route.params)};
 
-wireWhatIf(WI2);
+wireWhatIf();
 const activateWi2Tab = wireTabs(WI2_TABS.map(tab => `wi2-tab-${tab}`));
 for (const tab of WI2_TABS) $(`wi2-tab-${tab}`).addEventListener("tabshow", () => { wi2.tab = tab; wi2Url(); });
-wi.hooks[WI2] = {
-  showTab: tab => { if (!$(`wi2-tab-${tab}`).hidden) activateWi2Tab(`wi2-tab-${tab}`); },
-  tried: (result, error) => renderAgainstNowV2(result, error),
-  followChanged: shown => {
-    $("wi2-tab-follow").hidden = !shown;
-    if (!shown && wi2.tab === "follow") activateWi2Tab("wi2-tab-plan");
-  },
-  href: plan => `#/whatif?plan=${plan}${wi2.tab !== "plan" ? `&tab=${wi2.tab}` : ""}`,
-};
+// What whatif.js asks of the page: open a tab, show or hide Follow this plan, and a plan's link.
+function wi2ShowTab(tab) { if (!$(`wi2-tab-${tab}`).hidden) activateWi2Tab(`wi2-tab-${tab}`); }
+function wi2FollowChanged(shown) {
+  $("wi2-tab-follow").hidden = !shown;
+  if (!shown && wi2.tab === "follow") activateWi2Tab("wi2-tab-plan");
+}
+function wi2Href(plan) { return `#/whatif?plan=${plan}${wi2.tab !== "plan" ? `&tab=${wi2.tab}` : ""}`; }
 // Each group's summary counts its rows (or says On/Off); the counts change as rows are added and removed.
 for (const details of document.querySelectorAll("#wi2-scenario-form .wi2-group[data-list]")) {
   new MutationObserver(wi2Counts).observe($(details.dataset.list), {childList: true});
@@ -43,11 +39,11 @@ function wi2Url() {
 function loadWhatIfV2(params) {
   const tab = params?.get?.("tab"), stub = params?.get?.("stub");
   wi2.stub = /^\d+$/.test(stub || "") ? stub : null;
-  // A pay stub opens the planner, as on the original page.
+  // A pay stub opens the planner.
   wi2.tab = WI2_TABS.includes(tab) ? tab : wi2.stub ? "planner" : "plan";
-  const before = wi.shown === WI2 ? scenarioId : undefined;
+  const before = wi.opened ? scenarioId : undefined;
   return pageState($("wi2-state"), async () => {
-    await openWhatIf(WI2, params);
+    await openWhatIf(params);
     // Another plan: what was tried belongs to the one before.
     if (before !== scenarioId || !$("wi2-against-body").hasChildNodes()) renderAgainstNowV2(null);
     $("wi2-tab-follow").hidden = !wi.follow;
@@ -95,7 +91,7 @@ function renderAgainstNowV2(result, error = null) {
   }
   const now = result.runs[0], plan = result.runs[result.runs.length - 1];
   // The plan's paychecks as worked out: their take-home shows in the Paychecks group.
-  wi.p = WI2; wi.paychecksRun = plan.paychecks; renderScenarioPaychecks(); wi2Counts();
+  wi.paychecksRun = plan.paychecks; renderScenarioPaychecks(); wi2Counts();
   const runs = [["Now", now], ["This plan", plan]], last = run => run.years[run.years.length - 1];
   const group = (title, row) => {
     const box = element("div", "", "wi2-against-group");

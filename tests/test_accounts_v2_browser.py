@@ -32,7 +32,7 @@ def test_accounts_v2_balances_their_age_and_import(tmp_path):
         page.goto(f"{base}/#/accounts")
         panel = page.locator("#accounts2-panel")
         expect(panel).to_be_visible()
-        expect(page.locator("#accounts-panel")).to_be_hidden()
+        expect(page.locator("[data-page='accounts']")).to_have_count(1)  # One section per page.
         page.wait_for_load_state("networkidle")
 
         row = page.locator(".accounts2-row", has_text="Household checking")

@@ -35,7 +35,7 @@ def test_investments_v2_list_needs_and_controls(tmp_path):
         page.goto(f"{base}/#token={token}")
         page.locator("#nav-investments").click()
         expect(page.locator("#inv2-panel")).to_be_visible()
-        expect(page.locator("#investments-panel")).to_be_hidden()
+        expect(page.locator("[data-page='investments']")).to_have_count(1)  # One section per page.
         page.wait_for_selector("#inv2-tiles [data-figure-ref]")
 
         # Tiles: the invested total is traced and opens its breakdown.
@@ -139,8 +139,7 @@ def test_investments_v2_account_view(tmp_path):
         holdings.get_by_label("Cost (USD)").fill("1500")
         holdings.get_by_role("button", name="Add lot").click()
         expect(holdings.locator(".investment-lots li")).to_have_count(2)
-        expect(page.locator("#inv2-panel")).to_be_visible()
-        expect(page.locator("#investment-detail")).to_be_empty()
+        expect(page.locator("#inv2-panel")).to_be_visible()  # The shared builders reload this page (inv2Reload).
 
         # Activity: a 529 withdrawal marked not qualified.
         page.goto(f"{base}/#/investments?account={ids['education']}&tab=activity")

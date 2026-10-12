@@ -1,4 +1,4 @@
-"""Where a value came from (docs/ui.md "Redesign: calculation observability", "Provenance on every input").
+"""Where a value came from (docs/ui.md "Every number explained", "Provenance on every input").
 
 provenance_for(db, record_type, record_id, field) answers, for one record (or one of its fields):
 - imported: the file and row it was read from, deterministically;

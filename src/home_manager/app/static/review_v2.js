@@ -7,7 +7,8 @@ const review2 = {entries: [], index: 0, catalog: {}, counts: null, people: [], v
 
 V2_SCREENS.review = {title: "To check", show: route => loadReviewV2(route.params)};
 
-// v1's groups, then the two lists v1 showed as panels of their own.
+// review.js's groups, then images that may be one document, and receipts with no matching charge (or, in the family
+// view, who each upload is for).
 const review2Groups = () => [...REVIEW_GROUPS, ["group", "Images that look like one document"],
                              familyMode ? ["routing", "Who is it for?"] : ["unmatched", "Receipts with no matching charge"]];
 
@@ -226,8 +227,8 @@ function review2Quote(text) { return element("blockquote", `“${text}”`); }
 // A web address shown as text, never a link (the page it names wasn't checked by Home Manager).
 function review2Address(text) { return element("p", text, "mono small muted source-url"); }
 
-// Each kind: {what, why, issues, evidence, extra, source, document, cc | confirm/reject, bar}. Copied from review.js
-// reviewParts, with the why giving the reason only (never the title again) and decisions that keep this page current.
+// Each kind: {what, why, issues, evidence, extra, source, document, cc | confirm/reject, bar}. The why gives the reason
+// only (never the title again), and decisions keep this page current.
 function review2Parts(item) {
   const value = item.value;
   if (item.kind === "issue" && value.issue_type === "family_correction") {
@@ -279,12 +280,12 @@ function review2Parts(item) {
             }};
   }
   if (item.kind === "asset") {
-    // Statement values, purchase confirmations and tax forms: v1's evidence, with this page's decision.
-    const v1 = reviewParts(item), path = value.review_path || `/api/assets/${value.id}/review`;
-    return {why: v1.why, issues: value.issues || [], evidence: v1.evidence.filter(node => !node.classList?.contains("review-issues")),
+    // Statement values, purchase confirmations and tax forms: review.js assetParts' evidence, with this page's decision.
+    const parts = assetParts(item), path = value.review_path || `/api/assets/${value.id}/review`;
+    return {why: parts.why, issues: value.issues || [], evidence: parts.evidence.filter(node => !node.classList?.contains("review-issues")),
             source: {document: value.document_id}, document: value.document_id,
             cc: () => ({recordType: value.record_type || "asset", recordId: value.id, reviewStatus: "proposed", reviewSource: null, correctable: [],
-                        reviewPath: path, undoBody: {status: "proposed"}, labels: {confirm: `${v1.confirmLabel} (V)`, reject: "Reject (R)"}})};
+                        reviewPath: path, undoBody: {status: "proposed"}, labels: {confirm: `${parts.confirmLabel} (V)`, reject: "Reject (R)"}})};
   }
   if (item.kind === "warranty") {
     const path = `/api/warranties/${value.id}/review`, length = element("div", "", "review-side");

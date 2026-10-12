@@ -51,7 +51,7 @@ async function switchProfile(id) {
   const profile = profileList.find(item => item.id === id);
   try {
     await api("/api/profiles/active", {method: "PUT", body: JSON.stringify({id})});
-    $("home-currency-select").replaceChildren();  // The next profile has its own currencies.
+    $("today-currency").replaceChildren(); today.currency = null;  // The next profile has its own currencies.
     await sessionChanged();
     notice(profile?.kind === "family" ? `${profile.name} is open. Members' latest totals are being gathered.` : `${profile?.name || "Profile"} is open.`);
   } catch (error) {
@@ -264,16 +264,8 @@ function joinSection() {
   return [form];
 }
 
-// Family inbox: who each upload is for (Review page, family profile only) ----------------------
-let routingLoad = 0;
-async function loadFamilyRouting() {
-  const load = ++routingLoad, data = await api("/api/family/routing");
-  if (load !== routingLoad) return;
-  const list = $("family-routing");
-  if (!data.records.length) { list.replaceChildren(element("li", "Everything uploaded to the family has been sent to someone.", "muted small")); return; }
-  list.replaceChildren(...data.records.map(record => routingRow(record, data.people)));
-}
-function routingRow(record, people, onSent = loadFamilyRouting, idPrefix = "route") {
+// Family inbox: who each upload is for (To check, family profile only) ----------------------
+function routingRow(record, people, onSent, idPrefix) {
   const row = element("li", "", "routing-row"), what = element("div", "", "routing-what"), key = `${record.record_type}-${record.id}`;
   const title = element("strong", `${RECORD_KINDS?.[record.record_type] || statusLabel(record.record_type)} · ${record.name || "Name not found"}`);
   const facts = element("span", "", "small");

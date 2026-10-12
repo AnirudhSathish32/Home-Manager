@@ -1,7 +1,8 @@
 "use strict";
 // Transactions, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/money.md): search and the Items/Charges
 // view, period chips and filters, then one table that stacks into rows on a phone. Add a payment and Import open the
-// shared dialogs (money_v2.js). The URL keys are v1's (finance.js TX_FIELDS), so every deep link works on both.
+// shared dialogs (money_v2.js). The URL keys are the ones every deep link uses (q, start, end, account, category, types,
+// status, receipt, sort, period, view, currency, metric, categories).
 const TX2_FIELDS = {q: "tx2-search", start: "tx2-from", end: "tx2-to", account: "tx2-account", category: "tx2-category",
                     types: "tx2-type", status: "tx2-status", receipt: "tx2-receipt", sort: "tx2-sort"};
 const TX2_PERIODS = ["this_month", "last_month", "last_90", "year", "all", "custom"];
@@ -9,7 +10,7 @@ const tx2 = {params: new URLSearchParams(), view: "items", period: "last_90", lo
 
 V2_SCREENS.transactions = {title: "Transactions", show: route => loadTransactionsV2(route.params)};
 
-// A period's dates, as v1's applyPeriod (finance.js): [start, end], or null for a custom range.
+// A period's dates: [start, end], or null for a custom range.
 function tx2Range(period) {
   const now = new Date(), month = todayIso().slice(0, 7);
   return {this_month: [`${month}-01`, todayIso()], last_month: Object.values(monthRange(shiftMonth(month, -1))),
@@ -75,7 +76,7 @@ function tx2WriteUrl() {
   if (currentRoute?.name === "transactions") currentRoute.params = tx2.params;
   history.replaceState(null, "", `#/transactions${[...tx2.params].length ? `?${tx2.params}` : ""}`);
 }
-// The tool's arguments from plain values (v1's transactionQuery and itemQuery, without reading v1's controls).
+// The tool's arguments from plain values.
 function tx2Query(items) {
   const args = {limit: TX_PAGE, offset: Number(tx2.params.get("offset") || 0)};
   if ($("tx2-from").value) args.start = $("tx2-from").value;
@@ -164,7 +165,7 @@ function tx2Empty() {
   return emptyState("No transactions yet.", actions);
 }
 async function tx2Backfill() {
-  // Receipts recorded before items had categories: offer the model's sort once (v1's showItemBackfill).
+  // Receipts recorded before items had categories: offer the model's sort once.
   const {receipts} = await api("/api/finance/item-categories");
   if (!receipts || tx2.view !== "items") { $("tx2-backfill").replaceChildren(); return; }
   const row = needsRow("info", `${receipts} receipt${receipts === 1 ? " has" : "s have"} items to sort into the current categories`, "The local model sorts them; you can change any.", null, null, false);
