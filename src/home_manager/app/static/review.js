@@ -3,8 +3,9 @@
 // counts, summaries of records, and the item dialog.
 const ISSUE_KINDS = {ambiguous_receipt_match: "Which charge is this receipt?", ambiguous_transfer: "Which account received this transfer?",
                      ambiguous_refund: "Which purchase was refunded?", ambiguous_investment_transfer: "Which payment went into this investment?",
-                     family_correction: "Your family changed something you changed too"};
-const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "Is this a transfer between your accounts?", refund: "Is this a refund of that purchase?"};
+                     ambiguous_income_match: "Which deposit paid this pay stub?", family_correction: "Your family changed something you changed too"};
+const LINK_KINDS = {receipt: "Does this receipt match this charge?", transfer: "Is this a transfer between your accounts?", refund: "Is this a refund of that purchase?",
+                    income: "Is this deposit this pay stub's net pay?"};
 const ITEM_CATEGORIES = ["produce", "dairy & eggs", "meat & seafood", "bakery", "pantry", "frozen", "snacks", "beverages", "household cleaning",
                          "paper & disposables", "personal care", "health", "baby", "pet", "home maintenance", "other"];
 const REVIEW_GROUPS = [["issue", "Questions"], ["link", "Proposed matches"], ["record", "Records to verify"], ["asset", "Investment and loan documents to confirm"], ["warranty", "Warranties to confirm"],
@@ -48,7 +49,7 @@ function reviewTitle(item) {
   const value = item.value;
   if (item.kind === "issue") return ISSUE_KINDS[value.issue_type] || statusLabel(value.issue_type);
   if (item.kind === "link") return describe(value.to);
-  if (item.kind === "record") return `${value.summary?.sale_label || RECORD_KINDS[value.record_type]}: ${value.summary?.name || "name not found"}`;
+  if (item.kind === "record") return `${value.summary?.sale_label || (value.summary?.document_kind === "bill" ? "Bill" : RECORD_KINDS[value.record_type])}: ${value.summary?.name || "name not found"}`;
   if (item.kind === "recurring") return `${value.merchant} · ${value.expected_amount.display} ${value.frequency}`;
   if (item.kind === "asset") return value.name;
   if (item.kind === "warranty") return `Warranty: ${[value.brand, value.name].filter(Boolean).join(" ")}`;

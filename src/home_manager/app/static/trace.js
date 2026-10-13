@@ -394,7 +394,7 @@ let confirmCorrectCount = 0;
 const SALE_TYPES = {sale: "Sale", return: "Return"}, DIRECTION_WORDS = {out: "Money out", in: "Money in"};
 function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, correctable = [], reviewPath = null, confirmBody = {status: "verified"},
                          rejectBody = {status: "rejected"}, undoBody = {status: "needs_review"}, labels = {}, onChange = () => {}, preview = true,
-                         member = null, decision = true, onClose = null, showState = true} = {}) {
+                         member = null, decision = true, onClose = null, showState = true, saveCorrection = null} = {}) {
   const n = ++confirmCorrectCount, idOf = name => `cc${n}-${name}`;
   const record = `/api/finance/records/${recordType}/${recordId}`, path = reviewPath || `${record}/review`;
   const words = {confirm: "Confirm", reject: "Reject", correct: "Correct…", ...labels};
@@ -465,7 +465,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
       } else {
         input = document.createElement("input");
         input.type = item.kind === "date" ? "date" : "text";
-        if (["money", "amount"].includes(item.kind)) input.inputMode = "decimal";
+        if (["money", "amount", "receipt_money"].includes(item.kind)) input.inputMode = "decimal";
         input.maxLength = item.kind === "text" ? 60 : 120;
       }
       input.value = item.value ?? ""; input.id = idOf(item.field); caption.htmlFor = input.id;
@@ -511,7 +511,8 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
       if (!Object.keys(wanted).length) { close(); return; }
       save.disabled = true; error.textContent = "";
       try {
-        const saved = await api(`${record}${member ? `?member=${member}` : ""}`, {method: "PATCH", body: JSON.stringify({changes: wanted, reason: reason.value.trim() || null})});
+        const body = {changes: wanted, reason: reason.value.trim() || null};
+        const saved = saveCorrection ? await saveCorrection(body) : await api(`${record}${member ? `?member=${member}` : ""}`, {method: "PATCH", body: JSON.stringify(body)});
         const moved = shown?.figures?.length;
         close(false);
         const message = moved ? `Saved. ${moved} ${moved === 1 ? "total" : "totals"} changed.` : "Saved.";

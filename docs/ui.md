@@ -125,10 +125,12 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
     Top merchants (8, then all 20) and Refunds, then **Category rules** and "What these numbers cover" folded. The URL
     keeps `?month=&compare=&currency=&rules=1`. The family view drops budgets and rules.
   - **Transactions** (`transactions_v2.js`) has Import and **Add a payment** in its header (`money_v2.js` dialogs),
-    search and an Items | Charges switch, period chips (This month, Last month, 90 days, This year, All, Custom…),
-    Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges only). Its URL keys
-    (`q, start, end, account, category, types, status, receipt, sort, period, view`, and Today's `currency, metric,
-    categories`) are the ones every deep link uses. Under 900px the Account column moves into the name's line; under
+    search and an Items | Charges switch, All | Out | In chips (`direction`), period chips (This month, Last month, 90 days,
+    This year, All, Custom…), Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges
+    only). An In / Out / Net line (`#tx2-totals`) sits under the summary. Charges also lists the receipts, bills and pay
+    stubs that count on their own (`tr[data-source]`, their Receipt / Bill / Pay stub tag in the Account column); their
+    name opens the document. Its URL keys (`q, start, end, account, category, types, status, receipt, sort, period, view,
+    direction`, and Today's `currency, metric, categories`) are the ones every deep link uses. Under 900px the Account column moves into the name's line; under
     700px each row stacks (date | name | amount, account · status, then the category select). A row opens the
     transaction drawer (`finance.js` `openTransaction(id, member, {onChange})`), which reloads the list after a change.
     A payment just added is marked and scrolled to.
@@ -312,8 +314,11 @@ returns to the list with its filters, page and scroll position.
 - **Tabs.** Under the header are three tabs:
   - **Record:** field rows, each with a "Changed by" mark when corrected, plus **Find** (the field's cited line) and
     **Correct** (opens the form at that field). Every category shows as a tag. "Counts as" and "Counts in" are traced
-    figures. Then items or transactions (each statement row has its own Correct), matched records, rewards, the pay stub,
+    figures. Receipt money fields include Correct even when missing; pay-period ranges offer both ends. Then items
+    or transactions (each receipt item and statement row has its own Correct), matched records, rewards, the pay stub,
     taxes and Checks.
+    Receipt items show printed Price and, when different, Paid with tax. Correctable Subtotal, Tax, Tip and Total
+    rows follow, plus any amount not matched to an item and an arithmetic mismatch message.
   - **History:** `historyList` with the record's changes, then the readings.
   - **Details:** where the file is, versions and how the text was read.
 - **Under 900px.** It's one column (header, source, tabs), and the decision pins to the bottom of the screen.

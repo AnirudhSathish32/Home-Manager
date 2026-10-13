@@ -61,7 +61,7 @@ def test_a_shared_receipt_and_its_card_charge_count_only_this_persons_part(tmp_p
         receipt = costco(ledger, docs["receipt.png"])
         assert spending(store) == (6000, {"groceries": 3000, "household supplies": 3000})
         with store.connection() as db:
-            db.execute("INSERT INTO record_shares VALUES('receipt',?,2000,6000,'[]','key','now')", (receipt,))
+            db.execute("INSERT INTO record_shares VALUES('receipt',?,2000,6000,'[]','key','now',NULL)", (receipt,))
             ledger.refresh_splits(db, receipt)
         assert spending(store) == (2000, {"groceries": 1000, "household supplies": 1000})
         with store.connection() as db:
@@ -119,9 +119,15 @@ def test_upload_to_the_family_route_share_and_retract(tmp_path):
         doc = documents_by_name(mom.store)["costco.png"]
         receipt = costco(Ledger(mom.store), doc, card="1234", total=5001)
         routing = mom.family_routing()
+        # Nothing is guessed from Mom's own card: it is asked about, and offered as a Who has what entry to add.
+        [row] = routing["records"]
+        assert (row["routing"], row["suggested"]["ask"]) == ("unassigned", {"kind": "card", "last_four": "1234"})
+        assert {"member_id": mom_id, "kind": "card", "last_four": "1234", "label": "Chase"} in routing["offers"]
+        mom.set_who_has_what([{"member_id": mom_id, "kind": "card", "last_four": "1234", "label": "Chase"}])
+        routing = mom.family_routing()
         [row] = routing["records"]
         assert (row["record_type"], row["id"], row["routing"]) == ("receipt", receipt, "suggested")
-        assert row["suggested"]["member_id"] == mom_id and "1234" in row["suggested"]["reason"]
+        assert row["suggested"]["member_id"] == mom_id and "1234" in row["suggested"]["reason"] and routing["offers"] == []
         with pytest.raises(ValueError, match="only receipts and bills"):
             mom.assign_family_record("statement", receipt, "shared", [mom_id])
 

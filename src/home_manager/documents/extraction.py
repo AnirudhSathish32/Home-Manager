@@ -19,7 +19,7 @@ import uuid
 
 from pydantic import Field, ValidationError, create_model, model_validator
 
-from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, RECEIPT_CATEGORIES
+from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_CATEGORIES
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
@@ -38,7 +38,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v17"
+EXTRACTION_VERSION = "typed-extraction-v18"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -54,7 +54,8 @@ HEADERS = {
     "bank_statement": ("institution", "account_reference", "period_start", "period_end", "opening_balance", "closing_balance", "currency"),
     "credit_card_statement": ("issuer", "account_reference", "period_start", "period_end", "previous_balance", "payments", "credits",
                               "purchases", "fees", "interest", "statement_balance", "minimum_payment", "due_date", "currency"),
-    # Bills ("you owe … by …") are recognized but not recorded or tracked; recurring bills come from payments.
+    # A bill ("you owe … by …") counts its new charges, by line, on its due date (docs/money.md "Bills and their lines").
+    "bill": ("provider", "account_reference", "issue_date", "due_date", "period_start", "period_end", "amount_due", "new_charges", "currency"),
     "paystub": ("payer_or_employer", "pay_date", "period_start", "period_end", "pay_frequency", "work_state", "gross_pay", "gross_pay_ytd",
                 "net_pay", "net_pay_ytd", "taxes", "deductions", "currency"),
     # Offer letters, W-2s and other employment papers: read only to file them under their employer in Jobs.
@@ -69,7 +70,7 @@ HEADERS = {
 }
 # interest_rate is a percentage, not money; it is listed so its value must be printed in its citation.
 AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
-           "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "gross_pay", "net_pay", "taxes", "deductions",
+           "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "new_charges", "gross_pay", "net_pay", "taxes", "deductions",
            "gross_pay_ytd", "net_pay_ytd", "ending_value", "principal_balance", "monthly_payment", "interest_rate"}
 # Kinds recorded in the ledger; the rest are read only for filing.
 PUBLISHED = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "investment_statement", "investment_confirmation", "investment_tax_form",
@@ -84,6 +85,8 @@ ASSET_KINDS = ("investment_statement", "loan_document")
 TERM_KINDS = {"housing_document": "lease, mortgage or housing document", "insurance_document": "insurance policy or document",
               "loan_document": "loan document"}
 PERCENT = re.compile(r"(\d{1,2}(?:\.\d{1,4})?)\s*%")
+# A bill's period in days, and how often such a bill comes.
+BILL_PERIODS = {"weekly": (5, 9), "monthly": (25, 35), "quarterly": (85, 95), "semiannual": (175, 190), "annual": (355, 370)}
 DATES = {"purchase_date", "period_start", "period_end", "due_date", "issue_date", "pay_date", "document_date", "trade_date"}
 # Identity names must share a word with their citation; they feed filenames and merchants.
 NAMES = {"merchant", "institution", "issuer", "provider", "payer_or_employer", "employer"}
@@ -97,7 +100,9 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                       "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
                       "missing for an ordinary sale, and never a return policy)",
 "bank_statement": "bank statement", "credit_card_statement": "credit card statement",
-          "bill": "bill or invoice",
+          "bill": "bill or invoice for a service, such as rent, utilities, phone or internet (provider: who sends the bill; account_reference: "
+                  "the account number at the provider; amount_due: everything the bill asks for, past-due balance included; new_charges: "
+                  "this period's new or current charges only, without any previous or past-due balance, payments or credits carried over)",
           "paystub": f"pay stub (payer_or_employer: {EMPLOYER_RULE}; pay_frequency: the printed pay frequency such as Biweekly or "
                      "Semi-monthly; work_state: the two-letter code of the US state whose income tax is withheld, from the state tax line "
                      "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals)",
@@ -118,7 +123,7 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                            "interest_rate is the printed annual rate with its % sign; monthly_payment is the regular scheduled payment)"}
 # Automatic acceptance: fields a record needs before it can count without the user.
 REQUIRED = {"receipt": ("merchant", "purchase_date", "total_minor"), "bank_statement": ("institution", "period_end", "closing_balance_minor"),
-            "credit_card_statement": ("institution", "period_end", "statement_balance_minor"), "bill": ("provider", "due_date", "amount_due_minor"),
+            "credit_card_statement": ("institution", "period_end", "statement_balance_minor"), "bill": ("provider", "due_date", "total_minor"),
             "paystub": ("payer_or_employer", "pay_date", "net_pay_minor"),
             "investment_statement": ("institution", "period_end", "ending_value_minor"), "investment_confirmation": ("institution", "trade_date"),
             "investment_tax_form": ("institution", "tax_year"), "loan_document": ("institution", "period_end", "principal_balance_minor")}
@@ -126,7 +131,8 @@ REQUIRED = {"receipt": ("merchant", "purchase_date", "total_minor"), "bank_state
 CROSS_CHECKED = {"receipt": "Amounts could not be cross-checked: the subtotal, tax and tip do not add up to a printed total, and item lines do not add up to the subtotal.",
                  "bank_statement": "Balances could not be reconciled: the opening balance and transactions were not all read, or do not reach the closing balance.",
                  "credit_card_statement": "Balances could not be reconciled: the previous balance and transactions were not all read, or do not reach the statement balance.",
-                 "paystub": "Pay could not be cross-checked: the earnings, deductions and taxes read do not reach the printed gross and net pay."}
+                 "paystub": "Pay could not be cross-checked: the earnings, deductions and taxes read do not reach the printed gross and net pay.",
+                 "bill": "Charges could not be cross-checked: the bill's lines were not all read, or do not add up to its new charges."}
 # (merchant field, date field) used for managed filenames.
 IDENTITY = {"receipt": ("merchant", "purchase_date"), "bank_statement": ("institution", "period_end"),
             "credit_card_statement": ("issuer", "period_end"), "bill": ("provider", "issue_date"), "paystub": ("payer_or_employer", "pay_date"),
@@ -223,6 +229,12 @@ class Transaction(StrictModel):
 class BillLine(StrictModel):
     description: str = Field(min_length=1, max_length=500)
     amount: str | None = Field(max_length=50)
+    category: Literal[*RECEIPT_CATEGORIES] | None = Field(description="The spending category of this line from the list, or null if unclear.")
+    line_kind: Literal[*LINE_KINDS] = Field(description="service (a plan, rent or a fixed charge), usage (metered: kWh, gallons, minutes), "
+                                                        "subscription (an add-on such as Apple TV+ or Apple Music), device (a phone or equipment "
+                                                        "installment), tax_fee (a tax, surcharge or regulatory fee), credit (a discount or credit), other.")
+    line_holder: str | None = Field(max_length=80, description="Who the line is for exactly as printed, such as a phone line's name and number "
+                                                               "(Alex 555-123-4567), or null when the bill doesn't say.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
 
 
@@ -321,6 +333,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "bank_statement": (Transactions, "transactions", "amount", "transaction row"),
         "credit_card_statement": (Transactions, "transactions", "amount", "transaction row"),
         "paystub": (PayLines, "lines", ("current", "ytd"), "pay stub line (an earning, deduction, tax or employer contribution)"),
+        "bill": (BillLines, "line_items", "amount", "charge line"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
@@ -816,9 +829,7 @@ def normalize(kind, header, rows, currency):
                 issues.append(f"Statement arithmetic does not reconcile: opening balance and transactions give {format_minor(expected, currency)}, "
                               f"but the closing balance is {format_minor(closing, currency)}. Rows may be missing or misread.")
     elif kind == "bill":
-        amounts = [money(row.amount, f"Charge line {index}") for index, row in enumerate(rows, 1)]
-        if rows and total(amounts) is not None and record["amount_due_minor"] is not None and total(amounts) != record["amount_due_minor"]:
-            issues.append("Charge lines do not add up to the amount due; carried balances or credits may apply.")
+        bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total)
     elif kind == "investment_statement":
@@ -844,6 +855,44 @@ def normalize(kind, header, rows, currency):
     record.pop("interest_rate_text", None)
     record["issues"] = issues
     return record, issues
+
+
+def bill_lines(record, rows, money, issues, currency, total):
+    """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
+    rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
+    charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note."""
+    record["items"] = []
+    for index, row in enumerate(rows, 1):
+        amount = money(row.amount, f"Charge line {index}", magnitude=True)
+        holder = " ".join((row.line_holder or "").split())[:80] or None
+        digits = re.sub(r"\D", "", holder or "")
+        if holder and not (name_supported(holder, row.evidence) or len(digits) >= 4 and digits[-4:] in re.sub(r"\D", "", " ".join(cite.quote for cite in row.evidence))):
+            holder = None  # Who a line is for (a name, or a phone number) must be printed where it is cited.
+        record["items"].append({"description": " ".join(row.description.split()), "line_total_minor": -amount if amount is not None and row.line_kind == "credit" else amount,
+                                "category": row.category, "line_kind": row.line_kind, "line_holder": holder, "locator": locator(row.evidence)})
+    new, due = record.pop("new_charges_minor", None), record.get("amount_due_minor")
+    lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
+    if new is not None:
+        record["total_minor"] = new
+        if lines is not None:
+            if lines == new:
+                record["cross_checks"] += 1
+            else:
+                issues.append(f"New charges: the lines add up to {format_minor(lines, currency)}, but the bill's new charges are "
+                              f"{format_minor(new, currency)}. A line may be missing or misread.")
+    elif lines is not None:
+        record["total_minor"] = lines
+        if due is not None and lines == due:
+            record["cross_checks"] += 1
+    else:
+        record["total_minor"] = due
+        if due is not None:
+            issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
+    # A bill is for an ongoing service: how often it comes, from the length of its period (monthly when none is printed).
+    start, end = (date.fromisoformat(record[key]) if record.get(key) else None for key in ("period_start", "period_end"))
+    days = (end - start).days + 1 if start and end and start <= end else None
+    record["recurrence"] = next((name for name, (low, high) in BILL_PERIODS.items() if days and low <= days <= high), "monthly")
+    # Its own category, for lines that have none, is the one most of its money is in (Ledger.publish_bill).
 
 
 def percent_bp(text, label, issues):
@@ -1043,7 +1092,7 @@ def review_reasons(kind, record, decision=None, issues=()):
     """Why an extracted record cannot count without the user, beyond the issues already found. Empty means
     every automatic check passed. Each reason starts with its field's label, so correcting that field clears it."""
     reasons = []
-    names = {"institution": "Institution", "payer_or_employer": "Payer or employer"}
+    names = {"institution": "Institution", "payer_or_employer": "Payer or employer", **({"total_minor": "New charges"} if kind == "bill" else {})}
     for field in REQUIRED.get(kind, ()):
         if record.get(field) is None:
             label = names.get(field) or field.removesuffix("_minor").replace("_", " ").capitalize()
@@ -1202,6 +1251,13 @@ class ExtractionService:
                          " direction is debit when money leaves the account holder (purchase, fee, withdrawal or card charge) and credit when money "
                          "arrives (deposit, refund, or a payment received by a card). Resolve the year from the statement period or use null."
                          if key == "transactions" else
+                         " One entry per charge that makes up this period's new charges: each service, plan, usage, add-on, device installment, "
+                         "tax, surcharge, fee, discount and credit, with its amount as printed. A phone or family plan prints charges per line "
+                         "or per person: list each line's charges separately, with line_holder as printed for that line (its name and number), "
+                         "and put shared plan charges, taxes and fees without a line on their own rows with line_holder null. Add-ons such as "
+                         f"Apple TV+ or Apple Music are subscription lines. category, from this list or null: {CATEGORY_GUIDE}. Never list the "
+                         "amount due, the new charges total, a previous or past-due balance, or payments received as lines."
+                         if key == "line_items" else
                          " One entry per earning, deduction, tax and employer contribution line, with its this-period amount (current) and "
                          "year-to-date amount (ytd) as printed, null when not printed. group: earnings (regular pay, overtime, bonus, "
                          "commission); pre_tax (deducted before income tax: 401k or 403b, health, dental, vision, HSA, FSA); tax (federal, "
@@ -1368,7 +1424,8 @@ class ExtractionService:
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
         record, issues = normalize(kind, header, rows, currency)
-        record["description"], record["category"], record["recurrence"] = description, category, recurrence
+        # A bill's category comes from its lines (bill_lines); a receipt's from the model's description of it.
+        record["description"], record["category"], record["recurrence"] = description, category or record.get("category"), recurrence or record.get("recurrence")
         for item, item_category in zip(record.get("items", []) if item_categories else [], item_categories or []):
             item["category"] = item_category
         record["location"] = (identity or {}).get("location")

@@ -95,6 +95,27 @@ def seed_statement(manager, model):
     return {"doc_id": doc_id, "record_id": _record_id(manager, "statements", doc_id)}
 
 
+def seed_bill(manager, model):
+    """A phone bill due three days ago, read by line and recorded (docs/money.md "Bills and their lines"): a line for one
+    person, an Apple TV+ add-on and the taxes, with a past-due balance in the amount due. Returns {doc_id, record_id}."""
+    _models(manager, model)
+    due = date.today() - timedelta(days=3)
+    issued = due - timedelta(days=21)
+    lines = ["ACME WIRELESS", "Account 0000 4821", f"Bill date {issued}", f"Due {due}", "Alex 555-201-1111 Unlimited 40.00", "Apple TV+ 9.99",
+             "Taxes and fees 18.00", "Past due 12.00", "New charges 67.99", "Amount due USD 79.99"]
+    header = {"provider": value("ACME WIRELESS", 1), "account_reference": value("4821", 2, lines[1]), "issue_date": value(issued.isoformat(), 3),
+              "due_date": value(due.isoformat(), 4), "period_start": MISSING, "period_end": MISSING, "amount_due": value("79.99", 10, lines[9]),
+              "new_charges": value("67.99", 9, lines[8]), "currency": value("USD", 10, "USD")}
+    rows = [{"description": "Unlimited", "amount": "40.00", "category": "phone & internet", "line_kind": "service", "line_holder": "Alex 555-201-1111",
+             "evidence": cite(5, lines[4])},
+            {"description": "Apple TV+", "amount": "9.99", "category": "subscriptions", "line_kind": "subscription", "line_holder": None, "evidence": cite(6, lines[5])},
+            {"description": "Taxes and fees", "amount": "18.00", "category": None, "line_kind": "tax_fee", "line_holder": None, "evidence": cite(7, lines[6])}]
+    outputs = [{"document_type": "bill", "evidence": cite(1, "ACME WIRELESS"), "issuer": value("ACME WIRELESS", 1), "document_date": MISSING},
+               header, {"line_items": rows}]
+    doc_id = _read_and_record(manager, model, "acme-wireless.png", lines, outputs)
+    return {"doc_id": doc_id, "record_id": _record_id(manager, "receipts", doc_id)}
+
+
 def seed_documents(manager, model):
     """The three documents the document page's states need: a recorded receipt, one that needs review, and a statement.
     Returns the ids ui_shots.py's --routes placeholders name."""

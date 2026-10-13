@@ -60,6 +60,8 @@ HEX_ID = re.compile(r"^[0-9a-f]{12,32}$")  # Family ids, member ids and delivery
 # Words banks print on money moved between people rather than spent.
 TRANSFER_WORDS = re.compile(r"\b(transfer|xfer|zelle|venmo|paypal|cash ?app|apple cash|wire|p2p|interac)\b", re.IGNORECASE)
 TRANSFER_DAYS = 3
+# Who has what (docs/family.md "Who has what"): phone lines and cards, last four digits only.
+WHO_HAS_WHAT_KINDS, WHO_HAS_WHAT_MAX = ("phone", "card"), 100
 
 
 def token_digest(token):
@@ -244,7 +246,7 @@ def seal_copy(store, link, target: Path, seq, member_name, birth_year=None):
 
 
 # Tables whose rows cite a preserved document: the records themselves, and the evidence linking records to documents.
-CITING_TABLES = ("financial_evidence_links", "receipts", "statements", "bills", "income_records", "assets", "tax_forms",
+CITING_TABLES = ("financial_evidence_links", "receipts", "statements", "income_records", "assets", "tax_forms",
                  "transaction_imports", "investment_confirmations", "investment_events", "investment_valuations")
 
 
@@ -378,7 +380,41 @@ class FamilyFolder:
             return {"family_id": self.data["family_id"], "name": self.data["name"], "folder": str(self.root), "documents_bytes": self.blob_size(),
                     "members": [{key: member.get(key) for key in ("member_id", "name", "source", "profile_id", "as_of", "imported_at", "status", "error")}
                                 for member in self.data["members"]],
-                    "adjustments": self.data.get("adjustments") or {"joint_accounts": [], "transfers": []}}
+                    "adjustments": self.data.get("adjustments") or {"joint_accounts": [], "transfers": []},
+                    "who_has_what": self.who_has_what()}
+
+    # Who has what (docs/family.md "Who has what"): each member's phone lines and cards, by last four digits only ---------
+
+    def who_has_what(self):
+        with self.mutex:
+            members = {member["member_id"] for member in self.data["members"]}
+            return [dict(entry) for entry in self.data.get("who_has_what", []) if entry["member_id"] in members]
+
+    def set_who_has_what(self, entries):
+        """Replace the list. Each entry: member_id, kind (phone or card), last_four (four digits, never a full number), and a
+        label (a phone line's name, or a card's issuer). A last four can name only one member's line or card, so nothing is
+        left to guess."""
+        with self.mutex:
+            members = {member["member_id"] for member in self.data["members"]}
+            clean, seen = [], set()
+            for entry in entries[:WHO_HAS_WHAT_MAX]:
+                kind, digits = entry.get("kind"), str(entry.get("last_four") or "")
+                if entry.get("member_id") not in members:
+                    raise ValueError("Choose someone in the family for each line or card.")
+                if kind not in WHO_HAS_WHAT_KINDS:
+                    raise ValueError("Each entry is a phone line or a card.")
+                if not re.fullmatch(r"\d{4}", digits):
+                    raise ValueError("Enter only the last four digits of each number.")
+                if (kind, digits) in seen:
+                    raise ValueError(f"{'A phone line' if kind == 'phone' else 'A card'} ending {digits} is listed twice; keep one, for the person it belongs to.")
+                seen.add((kind, digits))
+                label = " ".join(str(entry.get("label") or "").split())[:40] or None
+                clean.append({"member_id": entry["member_id"], "kind": kind, "last_four": digits, "label": label})
+            if len(entries) > WHO_HAS_WHAT_MAX:
+                raise ValueError(f"Keep the list to {WHO_HAS_WHAT_MAX} lines and cards.")
+            self.data["who_has_what"] = clean
+            self.save()
+            return self.who_has_what()
 
     # Importing ----------------------------------------------------------------------
 

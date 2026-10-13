@@ -6,7 +6,7 @@ from ..core.paths import safe_path
 from .storage import digest_file
 
 RECORDS = {"statements": "statement", "transactions": "transaction", "receipts": "receipt",
-           "receipt_items": "receipt_item", "bills": "bill", "income_records": "income_record",
+           "receipt_items": "receipt_item", "income_records": "income_record",
            "transaction_receipt_links": "receipt_link", "transaction_links": "transaction_link",
            "reconciliation_issues": "reconciliation_issue"}
 
@@ -72,7 +72,7 @@ def empty(store):
 
         # Canonical records can be shared by duplicate documents/imports. Transfer their
         # ownership to surviving evidence before following foreign-key dependencies.
-        for table in ("statements", "transactions", "receipts", "bills", "income_records"):
+        for table in ("statements", "transactions", "receipts", "income_records"):
             column = "source_document_id" if table == "transactions" else "document_id"
             for key, row in rows[table].items():
                 if row[column] not in ids:
@@ -117,9 +117,6 @@ def empty(store):
             changed = False
             for table in tables:
                 for fk in foreign[table]:
-                    # Removing a payment must not remove a bill belonging to another document.
-                    if table == "bills" and fk["from"] == "payment_transaction_id":
-                        continue
                     # A recurring bill outlives the receipt or document it was proposed from; only the link is cleared below.
                     if table == "recurring_obligations" and fk["from"] in ("source_receipt_id", "source_document_id"):
                         continue
@@ -136,8 +133,11 @@ def empty(store):
                 targets = {rows[table][key]["id"] for key in doomed[table]}
                 for dependent in ("financial_evidence_links", "review_events", "record_corrections", "reconciliation_issues",
                                   "record_shares", "family_assignments"):
+                    if dependent == "record_corrections" and kind == "receipt_item":
+                        continue  # Item price corrections are keyed by receipt, not the replaceable item id.
                     additions = {key for key, row in rows[dependent].items()
-                                 if row["record_type"] == kind and row["record_id"] in targets} - doomed[dependent]
+                                 if (row["record_type"] == kind or dependent == "record_corrections" and kind == "receipt" and row["record_type"] == "receipt_item")
+                                 and row["record_id"] in targets} - doomed[dependent]
                     if additions:
                         doomed[dependent].update(additions)
                         changed = True
@@ -147,10 +147,6 @@ def empty(store):
             if key not in doomed["transactions"] and row["statement_id"] in removed_statements:
                 db.execute("UPDATE transactions SET statement_id=NULL WHERE rowid=?", (key,))
 
-        removed_transactions = {rows["transactions"][key]["id"] for key in doomed["transactions"]}
-        for row in rows["bills"].values():
-            if row["payment_transaction_id"] in removed_transactions:
-                db.execute("UPDATE bills SET payment_transaction_id=NULL,payment_status='unknown' WHERE id=?", (row["id"],))
         removed_receipts = {rows["receipts"][key]["id"] for key in doomed["receipts"]}
         for row in rows["recurring_obligations"].values():
             receipt = None if row["source_receipt_id"] in removed_receipts else row["source_receipt_id"]

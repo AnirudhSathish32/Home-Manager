@@ -34,7 +34,7 @@ class CaseInfo(BaseModel):
     case_id: str
     donor: str
     bundle_id: str
-    document_type: Literal["receipt", "bank_statement", "credit_card_statement", "paystub"]
+    document_type: Literal["receipt", "bank_statement", "credit_card_statement", "paystub", "bill"]
     source_kind: Literal["phone_photo", "scan", "native_pdf", "image_pdf"]
     pages: int
     redacted: bool

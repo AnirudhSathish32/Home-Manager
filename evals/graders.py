@@ -161,6 +161,10 @@ def arithmetic(kind, record):
             checks.append(sum(earnings) == gross)
         if lines and known(gross, net, *taken):
             checks.append(gross - sum(taken) == net)
+    elif kind == "bill":  # The lines make up the new charges (docs/money.md "Bills and their lines").
+        lines = [item.get("line_total_minor") for item in record.get("items") or []]
+        if lines and known(record.get("total_minor"), *lines):
+            checks.append(sum(lines) == record["total_minor"])
     return all(checks) if checks else None
 
 

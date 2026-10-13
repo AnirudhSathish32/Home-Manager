@@ -109,10 +109,13 @@ Code: `app/profiles.py`, `app/family_sync.py`, `app/family_hub.py`, `app/family_
     libraries.
   - While the family is open, Home, Review, Receipts & statements, Documents, Processing, Settings and the family
     ledger (below) are available.
-- **Who is it for?** Review lists every family record with a **For** choice: one person, or *Shared by the family* for
-  receipts. Statements and pay stubs belong to one person.
-  - The app suggests an owner when exactly one member has an account ending in the card digits printed on a receipt
-    (`receipts.payment_last_four`), or in a statement's account.
+- **Who is it for?** Review lists every family record with a **For** choice: one person, *Shared by the family* for
+  receipts and bills, or *Share by line* for a bill. Statements and pay stubs belong to one person.
+  - Owners come from [Who has what](#who-has-what), never a guess: a receipt paid with a listed card
+    (`receipts.payment_last_four`), or a statement whose account ends in one, is suggested for that card's member. A bill
+    whose phone lines are listed is suggested *Share by line*.
+  - A card or phone line that isn't listed is asked about once: the record says so and offers **Add to Who has what**,
+    with whose it is. Members' own accounts ending in four digits are offered as entries to add, never used to guess.
   - For a pay stub, the suggestion is an employer that exactly one member already has pay stubs from.
   - Nothing is sent until you choose **Send**.
 - **Sharing a cost.** The total is divided into equal whole-cent parts among the people ticked (`splits.equal_shares`:
@@ -141,8 +144,37 @@ Code: `app/profiles.py`, `app/family_sync.py`, `app/family_hub.py`, `app/family_
     has. Anyone no longer on it gets a withdrawal, which rejects their copy.
   - **After Send**, a delivered record is the person's own: correct it from the family ledger ([Family
     corrections](#family-corrections)), not in the family's inbox.
-- **Not included yet** ([open work](open-work.md)): a shared recurring bill's payments still count in full for whoever
-  paid.
+
+## Who has what
+
+A family's Settings has a **Who has what** list, kept in `family.json` (`FamilyFolder.who_has_what`,
+`PUT /api/family/who-has-what`). For each member it holds their phone lines (a name and the number's last four digits)
+and their cards and accounts (an issuer and the last four digits). Only last four digits are stored, never a full
+number, and a last four can name only one member's line or card.
+
+- **Phone bill lines.** A bill line whose printed number ends in a listed phone line is that member's
+  (`receipt_items.member_id`, `member_source` `configured`). A line a person assigned by hand stays theirs.
+- **Owner of a document.** A receipt or statement paid with a listed card goes to that card's member.
+- **Not listed.** A line or card that isn't in the list stays unassigned, and Review asks once with **Add to Who has
+  what**. Nothing is guessed.
+- **Changes** apply to every record in the family's inbox not yet sent. A sent record changes only by sending it again.
+
+## Sharing a bill by line
+
+- **Each person's part** (`splits.line_shares`) is their own lines, plus their part of every line no one is named on
+  (taxes, fees, shared plan charges) in proportion to their own lines. The parts add up exactly to the bill's new
+  charges. For example a phone bill of 117.99: Alex's line and Apple TV+ (49.99), Blair's line (30.00), Casey's line
+  (20.00) and 18.00 of taxes come to 58.99, 35.40 and 23.60.
+- **Each member's categories** come from their own lines and their part of the shared ones (`splits.by_line`); the
+  delivery names whose lines a library's part is (`record_shares.member_id`, migration 067).
+- **The payer's charge** counts only their part (`CHARGE_SHARE`), as for any shared receipt.
+- **In the family's inbox** each line shows whose it is, changed with its own choice
+  (`PUT /api/family/routing/receipt/{id}/lines/{position}`); a line set to nobody is shared out like the taxes.
+- **From a person's own library.** A bill with lines for more than one person offers **Ask the family to share by
+  line** (`PUT /api/receipts/{id}/share-by-line`, `share_requests`). Their next copy carries the request; the family
+  computer reads it when its inbox is opened (`Manager.import_share_requests`) and puts the bill in its inbox, once per
+  request, with Who has what deciding whose lines are whose. When the family sends it, the person's own copy takes their
+  part and the request is answered.
 
 ## Family ledger
 

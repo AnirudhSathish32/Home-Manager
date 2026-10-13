@@ -2,11 +2,13 @@
 // Transactions, redesigned (docs/ui.md "Pages"; design-system/home-manager/pages/money.md): search and the Items/Charges
 // view, period chips and filters, then one table that stacks into rows on a phone. Add a payment and Import open the
 // shared dialogs (money_v2.js). The URL keys are the ones every deep link uses (q, start, end, account, category, types,
-// status, receipt, sort, period, view, currency, metric, categories).
+// status, receipt, sort, period, view, currency, metric, categories, direction). Charges also lists the receipts, bills
+// and pay stubs that count on their own (docs/money.md "Bills and their lines", "Money in and paystubs").
 const TX2_FIELDS = {q: "tx2-search", start: "tx2-from", end: "tx2-to", account: "tx2-account", category: "tx2-category",
                     types: "tx2-type", status: "tx2-status", receipt: "tx2-receipt", sort: "tx2-sort"};
 const TX2_PERIODS = ["this_month", "last_month", "last_90", "year", "all", "custom"];
-const tx2 = {params: new URLSearchParams(), view: "items", period: "last_90", load: 0, newId: null, selected: null};
+const TX2_DIRECTIONS = ["all", "out", "in"];
+const tx2 = {params: new URLSearchParams(), view: "items", period: "last_90", direction: "all", load: 0, newId: null, selected: null};
 
 V2_SCREENS.transactions = {title: "Transactions", show: route => loadTransactionsV2(route.params)};
 
@@ -38,6 +40,7 @@ function loadTransactionsV2(params) {
       $(id).value = value;
     }
     tx2.period = TX2_PERIODS.includes(tx2.params.get("period")) ? tx2.params.get("period") : "custom";
+    tx2.direction = TX2_DIRECTIONS.includes(tx2.params.get("direction")) ? tx2.params.get("direction") : "all";
     const range = tx2Range(tx2.period);
     if (range) [$("tx2-from").value, $("tx2-to").value] = range;
     tx2Controls();
@@ -50,6 +53,7 @@ function tx2Controls() {
     tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1;
   }
   for (const chip of document.querySelectorAll("#tx2-periods .chip")) chip.setAttribute("aria-pressed", String(chip.dataset.period === tx2.period));
+  for (const chip of document.querySelectorAll("#tx2-direction .chip")) chip.setAttribute("aria-pressed", String(chip.dataset.direction === tx2.direction));
   $("tx2-dates").hidden = tx2.period !== "custom";
   // Type, status, receipt and sort apply to charges only.
   const items = tx2.view === "items";
@@ -61,6 +65,7 @@ function tx2Changed(period = tx2.period) {
   const next = new URLSearchParams();
   for (const key of ["currency", "metric", "categories"]) if (tx2.params.get(key)) next.set(key, tx2.params.get(key));
   if (tx2.view === "charges") next.set("view", "charges");
+  if (tx2.direction !== "all") next.set("direction", tx2.direction);
   for (const [key, id] of Object.entries(TX2_FIELDS)) {
     if (!$(id).value || (key === "sort" && $(id).value === "date_desc")) continue;
     if (["start", "end"].includes(key) && period !== "custom") continue;
@@ -88,7 +93,9 @@ function tx2Query(items) {
   if (tx2.params.get("categories")) {
     try { const values = JSON.parse(tx2.params.get("categories")); if (Array.isArray(values) && values.every(value => typeof value === "string")) args.categories = values; } catch {}
   }
+  if (tx2.direction !== "all") args.direction = tx2.direction;
   if (items) return args;
+  args.include_documents = true;  // Receipts, bills and pay stubs no card or bank line has replaced yet.
   args.sort = $("tx2-sort").value || "date_desc";
   if ($("tx2-type").value) args.transaction_types = $("tx2-type").value.split(",");
   if ($("tx2-receipt").value) args.has_receipt = $("tx2-receipt").value === "true";
@@ -104,7 +111,22 @@ function tx2Describe(args) {
   if (args.currency) parts.push(args.currency);
   if (args.metric) parts.push({spending: "spending only", inflow: "money in only", cashflow: "cash flow only", categories: "category spending only"}[args.metric]);
   if (args.categories) parts.push(args.categories.map(categoryLabel).join(", "));
+  if (args.direction) parts.push(args.direction === "out" ? "money out" : "money in");
   return parts.filter(Boolean).join(" · ");
+}
+// What counts among the matching rows, per currency: In, Out and Net, as the server worked them out.
+function tx2Totals(totals) {
+  const line = $("tx2-totals");
+  line.replaceChildren();
+  for (const row of totals || []) {
+    const group = element("span", "", "tx2-total-group");
+    for (const [label, value, signed] of [["In", row.in, false], ["Out", row.out, false], ["Net", row.net, true]]) {
+      const part = element("span", "", "tx2-total"); part.append(element("span", `${label} `, "muted"), amount(value, {signed}));
+      group.append(part);
+    }
+    line.append(group);
+  }
+  line.hidden = !line.childElementCount;
 }
 const tx2Filtered = () => [...tx2.params].some(([key]) => !["period", "view", "sort", "offset"].includes(key)) || tx2.period !== "last_90";
 function reloadTx2() { return tx2Table().catch(error => notice(error, true)); }
@@ -126,6 +148,7 @@ async function tx2Table() {
   const rows = items ? result.items : result.transactions, first = result.total_matching ? args.offset + 1 : 0;
   $("tx2-summary").replaceChildren(`${result.total_matching.toLocaleString()} ${items ? (result.total_matching === 1 ? "item" : "items") : (result.total_matching === 1 ? "transaction" : "transactions")} · ${tx2Describe(args)}`);
   if (tx2Filtered()) $("tx2-summary").append(" · ", homeLink("Clear filters", "#/transactions"));
+  tx2Totals(result.totals);
   $("tx2-page").textContent = result.total_matching ? `${first}–${args.offset + rows.length} of ${result.total_matching}` : "";
   $("tx2-prev").disabled = !args.offset;
   $("tx2-next").disabled = args.offset + rows.length >= result.total_matching;
@@ -214,20 +237,48 @@ function tx2ItemRow(row, categories) {
   const detail = [row.kind === "charge" ? (row.merchant !== row.description ? row.description : "") : row.merchant,
                   row.line_total && row.line_total.display !== row.amount.display ? `price ${row.line_total.display}` : ""].filter(Boolean).join(" · ");
   tx2Name(tr, {...row, id: null}, name, detail);
-  tx2Cell(tr, "tx2-col-account").textContent = row.account || "Receipt";
+  tx2Cell(tr, "tx2-col-account").textContent = row.account || {bill: "Bill", paystub: "Pay stub"}[row.source] || "Receipt";
   const category = tx2Cell(tr, "tx2-category");
-  if (familyMode) category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category);
+  if (row.kind === "income") {  // Money in has no spending category.
+    category.append(element("span", "—", "muted"), element("small", "Money in", "muted block"));
+  } else if (familyMode) { category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category); category.append(element("small", "Family view is read-only", "muted block")); }
   else if (row.kind === "item") category.append(itemCategorySelect(row.receipt_id, {item: row.item, position: row.position, category: row.category,
                                                                                     category_source: row.item_category_source}, categories, reloadTx2));
-  else if (row.source === "transaction") category.append(chargeCategorySelect(row, reloadTx2));
-  else category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category);
+  else if (row.source === "transaction" && row.kind === "charge") category.append(chargeCategorySelect(row, reloadTx2));
+  else { category.textContent = categoryLabel(row.category === "uncategorized" ? null : row.category); category.append(element("small", "Change on the receipt", "muted block")); }
   const status = tx2Cell(tr, "tx2-status"); status.append(statusBadge(row.status));
   if (row.pending_fields?.length) status.append(element("small", `Waiting for ${row.owner}`, "muted block pending-tag"));
-  tx2Cell(tr, "numeric tx2-amount").append(amount(row.amount, {signed: false}));
+  // Spending shows as a plain amount; money in (net pay, a deposit) with its sign.
+  tx2Cell(tr, "numeric tx2-amount").append(amount(row.amount, {signed: row.kind === "income"}));
   tx2Open(tr, row.transaction_id, row.member_id);
   return tr;
 }
+// A receipt, bill or pay stub no card or bank line has replaced yet: it counts on its own, so it is listed with the lines.
+function tx2DocumentRow(row) {
+  const tr = document.createElement("tr");
+  tr.dataset.source = row.source;
+  tr.append(tx2When(row.posted_date));
+  if (familyMode) tx2Cell(tr, "owner-col").textContent = row.owner || "";
+  const detail = row.source === "bill" && row.due_date ? `Due ${dateText(row.due_date)}` : row.description_raw !== row.merchant ? row.description_raw : "";
+  const name = tx2Name(tr, row, row.merchant, detail);
+  name.querySelector(".tx2-account-inline")?.replaceChildren(statusBadge(`src_${row.source}`));
+  tx2Cell(tr, "tx2-col-account").append(statusBadge(`src_${row.source}`));
+  const category = tx2Cell(tr, "tx2-category");
+  if (row.source === "paystub") category.append(element("span", "—", "muted"), element("small", "Money in", "muted block"));
+  else {
+    category.textContent = row.split_by_items ? "Split by items" : categoryLabel(row.category);
+    category.append(element("small", row.source === "bill" ? "Change on the bill" : "Change on the receipt", "muted block"));
+  }
+  tx2Cell(tr, "receipt-cell tx2-receipt");
+  const status = tx2Cell(tr, "tx2-status");
+  status.append(statusBadge(row.source === "paystub" ? "paystub" : row.source === "bill" ? "bill" : "receipt"),
+                element("small", row.source === "paystub" ? "Counted until its deposit arrives" : "Counted until its card or bank line arrives", "muted block"));
+  if (row.shared_part) status.append(element("small", `Shared expense · your part ${row.shared_part.display} counted`, "muted block"));
+  tx2Cell(tr, "numeric tx2-amount").append(amount(row.amount));
+  return tr;
+}
 function tx2ChargeRow(row) {
+  if (row.source && row.source !== "transaction") return tx2DocumentRow(row);
   const tr = document.createElement("tr");
   const notSpending = ["transfer", "payment"].includes(row.transaction_type);
   tr.append(tx2When(row.posted_date));
@@ -238,7 +289,11 @@ function tx2ChargeRow(row) {
   tx2Cell(tr, "tx2-col-account").textContent = row.account;
   const category = tx2Cell(tr, "tx2-category");
   if (notSpending) category.append(element("span", "—", "muted"));
-  else if (familyMode) category.textContent = categoryLabel(row.category);
+  else if (familyMode) { category.textContent = row.split_by_items ? "Split by items" : categoryLabel(row.category); category.append(element("small", "Family view is read-only", "muted block")); }
+  else if (row.split_by_items) {
+    const link = element("button", "Split by items", "link-button"); link.type = "button";
+    link.addEventListener("click", event => { event.stopPropagation(); tx2SetView("items", true); }); category.append(link);
+  }
   else category.append(chargeCategorySelect({...row, transaction_id: row.id, merchant: row.merchant || row.description_raw, category: row.category || "uncategorized"}, reloadTx2));
   const evidence = tx2Cell(tr, "receipt-cell tx2-receipt");
   if (row.receipt_document_id) evidence.append(familyMode ? originalButton(icon("paperclip"), row.member_id, row.receipt_document_id, "Open the matched receipt") : receiptLink(row));
@@ -248,6 +303,7 @@ function tx2ChargeRow(row) {
   if (row.pending_fields?.length) status.append(element("small", `Waiting for ${row.owner}`, "muted block pending-tag"));
   if (notSpending) status.append(element("small", "Not spending", "muted block"));
   if (row.shared_part) status.append(element("small", `Shared expense · your part ${row.shared_part.display} counted`, "muted block"));
+  if (row.income_record_id) status.append(element("small", "Pay stub matched", "muted block"));
   const value = tx2Cell(tr, "numeric tx2-amount"); value.append(amount(row.amount));
   if (notSpending) value.classList.add("muted");
   tx2Open(tr, row.id, row.member_id);
@@ -281,6 +337,12 @@ for (const chip of document.querySelectorAll("#tx2-periods .chip")) chip.addEven
   if (period === "custom") { tx2.period = "custom"; tx2Controls(); $("tx2-from").focus(); return; }
   [$("tx2-from").value, $("tx2-to").value] = tx2Range(period);
   tx2Changed(period).catch(error => notice(error, true));
+});
+for (const chip of document.querySelectorAll("#tx2-direction .chip")) chip.addEventListener("click", () => {
+  if (tx2.direction === chip.dataset.direction) return;
+  tx2.direction = chip.dataset.direction;
+  tx2.params.delete("offset");
+  tx2Changed().catch(error => notice(error, true));
 });
 for (const id of ["tx2-from", "tx2-to"]) $(id).addEventListener("change", () => { tx2.params.delete("offset"); tx2Changed("custom").catch(error => notice(error, true)); });
 for (const id of ["tx2-account", "tx2-category", "tx2-type", "tx2-status", "tx2-receipt", "tx2-sort"]) {

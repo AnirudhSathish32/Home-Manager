@@ -150,6 +150,16 @@ async function rc2Draw({initial = false, quiet = false} = {}) {
     if (load !== rc2.load) return;
     rc2Validate(catalog);
     let data = await api(`/api/documents?${rc2Query()}`);
+    // Keep a just-read Inbox row visible under Not read yet until a manual refresh or filter change.
+    if (quiet && rc2.folder === "Inbox" && rc2.status === "needs_text" && rc2.data?.items) {
+      const missing = rc2.data.items.filter(old => !data.items.some(item => item.id === old.id));
+      const changed = await Promise.all(missing.map(old => api(`/api/documents/${old.id}`).catch(() => null)));
+      for (const doc of changed) {
+        if (doc?.folder !== "Inbox" || !doc.text_run_id || doc.ledger_status || doc.deleted_at) continue;
+        data.items.push(doc); data.total++;
+        if (!rc2.data.items.find(old => old.id === doc.id)?.text_run_id) notice(`${documentName(doc)} is ready to record and still in Inbox. Refresh to apply Not read yet.`);
+      }
+    }
     // A page past the end (a reload after documents moved, or a hand-made link) falls back to the first.
     if (!data.items.length && rc2.offset) { rc2.offset = 0; data = await api(`/api/documents?${rc2Query()}`); }
     if (load !== rc2.load) return;
@@ -423,6 +433,10 @@ function rc2Row(doc) {
   cell(tr, folderLabel(doc.folder)).className = "rc2-folder-col";
   const day = cell(tr, ""); day.className = "rc2-date";
   day.append(doc.document_date ? dateDisplay(doc.document_date) : element("span", "—", "muted"));
+  if (doc.ledger_kind === "bill") {  // A bill counts on its due date (docs/money.md "Bills and their lines").
+    day.prepend(element("small", "Due", "muted block"));
+    if (doc.bill_period_start && doc.bill_period_end) day.append(element("small", `For ${dateText(doc.bill_period_start)} – ${dateText(doc.bill_period_end)}`, "muted block"));
+  }
   const value = cell(tr, ""); value.className = "numeric rc2-amount";
   if (doc.ledger_amount) value.append(amount(doc.ledger_amount, {signed: false}));
   value.append(...saleBadges(doc, {block: true}));  // Return or Exchange: the amount is money back.
@@ -472,7 +486,7 @@ async function rc2Start(path, body, message) {
   busy.inference = true; controls();
   await api(path, {method: "POST", body: JSON.stringify(body)});
   notice(message);
-  await rc2Draw();
+  await rc2Draw({quiet: true});
 }
 function rc2Menu(doc) {
   const name = documentName(doc);
@@ -513,25 +527,27 @@ function rc2Selection() {
   if (trash) buttons.push(rc2Button("Restore", "secondary", async () => { await restoreDocuments(docs); rc2.selection.clear(); await rc2Draw(); }));
   else {
     const read = rc2Button("Read", "secondary", () => rc2ReadSelected(docs));
+    const record = rc2Button("Record", "secondary", () => rc2ReadSelected(docs, true));
+    record.disabled = busy.inference || !docs.some(isReadable);
     read.disabled = busy.inference || !docs.some(isReadable);
     const combine = rc2Button("Combine", "secondary", () => rc2Combine(docs));
     const combinable = docs.length >= 2 && docs.length <= 20 && docs.every(isImage);
     combine.disabled = busy.inference || !combinable;
     if (!combinable) combine.title = "Combine 2 to 20 images into one document's pages.";
-    buttons.push(read, combine, rc2Button("Move", "secondary", () => openLibraryAction(docs, "move")),
+    buttons.push(read, record, combine, rc2Button("Move", "secondary", () => openLibraryAction(docs, "move")),
                  rc2Button("Delete", "secondary", () => openLibraryAction(docs, "trash")));
   }
   bar.replaceChildren(allLabel, element("span", `${docs.length} selected`, "rc2-selected"), ...buttons,
                       rc2Button("Clear", "link-button", () => rc2SelectAll(false)));
 }
-async function rc2ReadSelected(docs) {
+async function rc2ReadSelected(docs, record = false) {
   const ids = docs.filter(isReadable).map(doc => doc.id);
   busy.inference = true; controls();
   try {
-    await api("/api/receipt-batches", {method: "POST", body: JSON.stringify({document_ids: ids})});
+    await api("/api/receipt-batches", {method: "POST", body: JSON.stringify({document_ids: ids, record})});
   } catch (error) { busy.inference = false; controls(); throw error; }
-  notice(`Reading ${ids.length} document${ids.length === 1 ? "" : "s"}. Follow it on Processing.`);
-  rc2.selection.clear(); await rc2Draw();
+  notice(`${record ? "Recording" : "Reading"} ${ids.length} document${ids.length === 1 ? "" : "s"}. Follow it on Processing.`);
+  rc2.selection.clear(); await rc2Draw({quiet: !record});
 }
 async function rc2Combine(docs) {
   // Pages in file-name order (scan (1), scan (2)…); the document's page shows them and can reorder them.

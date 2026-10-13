@@ -23,7 +23,8 @@ from .grouping import Groups
 from .receipt_service import ReceiptService
 
 BUNDLE_FORMAT = "home-manager-donation/1"
-RECORD_DOCUMENT_TYPES = {"receipt": ("receipt",), "statement": ("bank_statement", "credit_card_statement"), "income_record": ("paystub",)}
+# A bill is a receipt record (docs/money.md "Bills and their lines").
+RECORD_DOCUMENT_TYPES = {"receipt": ("receipt", "bill"), "statement": ("bank_statement", "credit_card_statement"), "income_record": ("paystub",)}
 RECORD_TABLES = {"receipt": "receipts", "statement": "statements", "income_record": "income_records"}
 SOURCE_KINDS = ("phone_photo", "scan", "native_pdf", "image_pdf")
 ORIGINAL_EXTENSIONS = {".png": "png", ".jpg": "jpg", ".jpeg": "jpg", ".pdf": "pdf"}
@@ -104,7 +105,8 @@ class Donations:
         current = self.ledger.record(record_type, record_id)
         # Corrections the person already made in the app (merchant, date, employer) are the starting values.
         overlay = {"receipt": {"merchant": "merchant", "purchase_date": "purchase_date"},
-                   "income_record": {"payer_or_employer": "merchant", "pay_date": "pay_date"}}.get(record_type, {})
+                   "bill": {"provider": "merchant", "issue_date": "issue_date", "due_date": "due_date"},
+                   "income_record": {"payer_or_employer": "merchant", "pay_date": "pay_date"}}.get("bill" if kind == "bill" else record_type, {})
         for field, column in overlay.items():
             if current.get(column):
                 prefill[field] = current[column]

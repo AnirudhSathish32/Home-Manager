@@ -33,7 +33,7 @@ async function renderReviewV2() {
   const last = familyMode ? routing.records.map(value => ({kind: "routing", id: `${value.record_type}-${value.id}`, value}))
     : [...data.unmatched.receipts, ...data.unmatched.undated].map(value => ({kind: "unmatched", id: `receipt-${value.id}`, value}));
   review2.entries = [...data.items, ...groups.map(value => ({kind: "group", id: value.id, value})), ...last];
-  review2.catalog = data.catalog; review2.counts = data.counts; review2.people = routing?.people || [];
+  review2.catalog = data.catalog; review2.counts = data.counts; review2.people = routing?.people || []; review2.who = routing?.who_has_what || [];
   const found = review2.wanted ? review2.entries.findIndex(item => reviewKey(item) === review2.wanted) : -1;
   review2.index = found >= 0 ? found : Math.min(review2.fallback, Math.max(0, review2.entries.length - 1));
   const total = data.counts.total;
@@ -400,7 +400,7 @@ function review2Parts(item) {
             }};
   }
   // routing: who an upload to the family is for; routingRow's form is the decision.
-  const row = routingRow(value, review2.people, () => reloadReviewV2(), "review2-route");
+  const row = routingRow(value, review2.people, () => reloadReviewV2(), "review2-route", review2.who);
   row.querySelector(".routing-what a")?.remove();  // The bar opens the document.
   return {what: `Who is ${value.name || "this"} for?`, why: "Documents uploaded to the family count for nobody until you send them to a person or share them.",
           evidence: [row.querySelector(".routing-what")], source: {document: value.document_id}, document: value.document_id,

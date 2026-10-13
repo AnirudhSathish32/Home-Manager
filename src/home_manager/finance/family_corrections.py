@@ -23,8 +23,8 @@ from ..library.storage import now
 from .ledger import CORRECTABLE, TRANSACTION_CORRECTABLE, TRANSACTION_TYPES, Ledger, category_name, normalize_name, receipt_direction
 
 REASON = "Family correction"
-RECORD_TYPES = ("transaction", "receipt", "bill", "income_record", "statement")
-TABLES = {"transaction": "transactions", "receipt": "receipts", "bill": "bills", "income_record": "income_records", "statement": "statements"}
+RECORD_TYPES = ("transaction", "receipt", "income_record", "statement")  # A bill is a receipt (docs/money.md "Bills and their lines").
+TABLES = {"transaction": "transactions", "receipt": "receipts", "income_record": "income_records", "statement": "statements"}
 
 
 def field_kind(record_type, field):
@@ -58,8 +58,8 @@ def current_text(db, record_type, record_id, field):
     column = CORRECTABLE[record_type][field][0]
     if kind == "name":
         return Ledger._merchant_name(db, row[column])
-    if kind == "money":
-        return money(row[column], row["currency"])["decimal"] if row[column] is not None else None
+    if kind in ("money", "receipt_money"):
+        return Ledger(None)._field_text(db, row, kind, column)
     if kind == "sale_type":
         return receipt_direction(row)
     return row[column]
@@ -90,6 +90,8 @@ def checked_value(db, record_type, record_id, field, value):
         return text
     if kind == "money":
         return money(to_minor(text, row["currency"]), row["currency"])["decimal"]
+    if kind == "receipt_money":
+        return Ledger(None)._correction_value(db, kind, field, text, currency=row["currency"])[1]
     if kind == "amount":
         minor = to_minor(text, row["currency"])
         if minor <= 0:
@@ -136,6 +138,8 @@ def apply_to_view(db, record_type, record_id, field, value):
     else:
         column, kind, _ = CORRECTABLE[record_type][field]
         stored, _ = ledger._correction_value(db, kind, field, value, stored=True, currency=row["currency"])
+        if kind == "receipt_money" and stored is not None:
+            stored *= -1 if ledger.effective_receipt_direction(db, row) == "return" else 1
         if kind == "sale_type":
             ledger.set_receipt_direction(db, record_id, stored)
             return
@@ -247,5 +251,4 @@ def reject_correction(store, key):
     with store.connection() as db:
         db.execute("UPDATE family_corrections SET status='rejected',updated_at=? WHERE key=?", (now(), key))
     return {"key": key, "status": "rejected"}
-
 

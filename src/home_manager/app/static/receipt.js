@@ -36,7 +36,9 @@ const RECORD_FIELDS = {
             ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
   statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
-  bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Amount due", "amount_due_minor"]],
+  // A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"); it counts on its due date.
+  bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Period", "period_start", "period_end"], ["Categories", "category"],
+         ["Billed", "recurrence"], ["New charges", "total_minor"], ["Amount due", "amount_due_minor"]],
   income_record: [["Employer", "merchant"], ["Pay date", "pay_date"], ["Pay period", "period_start", "period_end"], ["Paid", "pay_frequency"],
                   ["Gross pay", "gross_pay_minor"], ["Net pay", "net_pay_minor"]],
 };
@@ -131,11 +133,89 @@ function itemCategorySelect(receiptId, row, categories, onSaved) {
   });
   return select;
 }
-function ledgerRows(record, categories, onSaved, find) {
+// What a bill's line is (docs/money.md "Bills and their lines"); core/categories.py LINE_KINDS.
+const LINE_KIND_LABELS = {service: "Service", usage: "Usage", subscription: "Subscription", device: "Device", tax_fee: "Tax or fee", credit: "Credit", other: "Other"};
+// A bill's lines: each line's price, category, type and person, then its new charges and amount due. The person is chosen
+// from the family where its people are known (the family's inbox); elsewhere it shows who the line is for as printed.
+function billLines(record, categories, onSaved, find, correctField = null) {
+  const people = familyMode ? (familyView?.members || []) : [];
+  const nameOf = id => people.find(person => person.member_id === id)?.name;
+  const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows bill-lines");
+  const head = document.createElement("tr");
+  for (const [title, className] of [["Line", ""], ["Price", "numeric"], ["Category", ""], ["Type", ""], ["Person", ""], ["Paid", "numeric"], ["", ""]]) {
+    const th = head.appendChild(element("th", title, className)); th.scope = "col";
+  }
+  table.appendChild(document.createElement("thead")).appendChild(head);
+  const body = table.appendChild(document.createElement("tbody"));
+  const save = async (row, field, value, select) => {
+    select.disabled = true;
+    try {
+      await api(`/api/receipts/${record.id}/lines/${row.position}`, {method: "PATCH", body: JSON.stringify({field, value: value || null})});
+      await onSaved?.();
+    } catch (error) { notice(error, true); select.disabled = false; }
+  };
+  for (const row of record.items.slice(0, 200)) {
+    const tr = document.createElement("tr");
+    if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");
+    const line = element("td"); line.append(element("span", row.description));
+    if (row.line_holder) line.append(element("small", row.line_holder, "muted block"));
+    const price = element("td", "", "numeric"); price.append(amount(row.display.line_total_minor || "—", {signed: false}));
+    const category = element("td");
+    category.append(categories.length ? itemCategorySelect(record.id, row, categories, onSaved) : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
+    const kind = element("td"), person = element("td");
+    if (categories.length) {
+      const kinds = document.createElement("select"); kinds.setAttribute("aria-label", `Type of ${row.description}`);
+      kinds.append(new Option("Not set", ""), ...Object.entries(LINE_KIND_LABELS).map(([key, label]) => new Option(label, key)));
+      kinds.value = row.line_kind || "";
+      kinds.addEventListener("change", () => save(row, "line_kind", kinds.value, kinds));
+      kind.append(kinds);
+    } else kind.textContent = LINE_KIND_LABELS[row.line_kind] || "—";
+    if (people.length && categories.length) {
+      const who = document.createElement("select"); who.setAttribute("aria-label", `Whose ${row.description} is`);
+      who.append(new Option("Shared (taxes, fees)", ""), ...people.map(member => new Option(member.name, member.member_id)));
+      who.value = row.member_id || "";
+      who.addEventListener("change", () => save(row, "member", who.value, who));
+      person.append(who);
+    } else person.textContent = nameOf(row.member_id) || (row.member_id ? "Someone in the family" : row.line_holder ? row.line_holder.replace(/[\d()\-\s]+$/, "") || "—" : "Shared");
+    const paid = element("td", "", "numeric");
+    if (row.display.share_minor && row.share_minor !== row.line_total_minor) { paid.append(amount(row.display.share_minor, {signed: false}), element("small", "with taxes and fees", "muted block")); }
+    else paid.append(element("span", "—", "muted"));
+    const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids, find));
+    tr.append(line, price, category, kind, person, paid, source);
+    body.appendChild(tr);
+  }
+  const foot = table.appendChild(element("tfoot"));
+  for (const [label, field] of [["New charges", "total"], ["Amount due", "amount_due"]]) {
+    const tr = element("tr"), name = element("th", label); name.scope = "row";
+    const value = element("td", "", "numeric"); value.append(amount(record.display[`${field}_minor`] || "—", {signed: false}));
+    const actions = element("td"); actions.colSpan = 5;
+    if (correctField) {
+      const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
+      button.addEventListener("click", () => correctField(field)); actions.append(button);
+    }
+    tr.append(name, value, actions); foot.append(tr);
+  }
+  wrap.appendChild(table);
+  if (record.amount_due_minor != null && record.total_minor != null && record.amount_due_minor !== record.total_minor) {
+    wrap.append(element("p", "Only the new charges count; the rest of the amount due is from an earlier bill.", "muted small"));
+  }
+  if (record.includes?.length) wrap.append(element("p", `Includes: ${record.includes.join(", ")}. These are part of this bill, not separate subscriptions.`, "muted small"));
+  if (record.share) wrap.append(element("p", record.share.member_id ? "Shared by line in the family: your own lines and your part of the taxes and fees count."
+                                                                   : "Shared by the family: only your part counts.", "muted small"));
+  if (record.splits?.length) {
+    const split = element("p", "", "receipt-splits small");
+    split.append(element("strong", "By category: "), document.createTextNode(record.splits.map(row => `${categoryLabel(row.category)} ${row.display.amount_minor}`).join(" · ")),
+                 document.createTextNode(" "), statusBadge(record.reconciled ? "reconciled" : "bill"));
+    wrap.appendChild(split);
+  }
+  return wrap;
+}
+function ledgerRows(record, categories, onSaved, find, correctField = null) {
+  if (record.document_kind === "bill" && record.items) return billLines(record, categories, onSaved, find, correctField);
   // Items or transactions exactly as recorded, each linked to its source line. Receipt items carry their own category
   // and their share of what was paid (the price with its part of tax and receipt-wide discounts).
   const rows = record.items || record.transactions || [];
-  if (!rows.length) return null;
+  if (!rows.length && !record.items) return null;
   const wrap = element("div", "", "table-wrap");
   const table = element("table", "", "ledger-rows");
   // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
@@ -153,20 +233,37 @@ function ledgerRows(record, categories, onSaved, find) {
   for (const row of rows.slice(0, 200)) {
     const tr = document.createElement("tr");
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
-    const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—", "", row.display.share_minor || "—"]
+    const paid = row.line_total_minor == null ? "—" : row.share_minor !== row.line_total_minor && row.display.share_minor ? row.display.share_minor : "—";
+    const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—", "", paid]
       : [row.posted_date, row.description_raw, row.display.amount_minor];
     values.forEach((value, index) => {
       if (!shown(index)) return;
       const money = index === 2 || index === 4;
       const td = tr.appendChild(element("td", money || index === 3 ? "" : value, money ? "numeric" : ""));
       if (money) td.appendChild(amount(value, {signed: !record.items}));  // Statement rows carry a direction; item prices don't.
+      if (record.items && index === 4 && paid !== "—") td.append(element("small", "with tax", "muted block"));
       if (index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
                                                         : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     });
     const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids, find)); tr.appendChild(source);
     body.appendChild(tr);
   }
+  if (record.items) {
+    const foot = table.appendChild(element("tfoot"));
+    for (const [label, field] of [["Subtotal", "subtotal"], ["Tax", "tax"], ["Tip", "tip"], ["Not matched to an item", "unmatched"], ["Total", "total"]]) {
+      if (field === "unmatched" && !record.unmatched_minor) continue;
+      const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = codes ? 2 : 1;
+      const value = element("td", "", "numeric"); value.append(amount(record.display[`${field}_minor`] || "—", {signed: false}));
+      const actions = element("td"); actions.colSpan = shares ? 3 : 2;
+      if (correctField && field !== "unmatched") {
+        const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", `Correct ${field}`);
+        button.addEventListener("click", () => correctField(field)); actions.append(button);
+      }
+      tr.append(name, value, actions); foot.append(tr);
+    }
+  }
   wrap.appendChild(table);
+  if (record.totals_mismatch) wrap.append(element("p", "Doesn't add up: subtotal + tax + tip differs from total by more than one cent.", "item-warning"));
   if (rows.length > 200) wrap.appendChild(element("p", `Showing 200 of ${rows.length} rows.`, "muted"));
   if (record.splits?.length) {
     // What this receipt counts as, by category, and whether a statement line confirms it.

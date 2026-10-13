@@ -16,7 +16,7 @@ import uuid
 from pydantic import Field, field_validator, model_validator
 
 from ..core import actor
-from ..core.categories import RECEIPT_CATEGORIES, receipt_category
+from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, receipt_category
 from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..core.trace import NULL
@@ -26,10 +26,9 @@ from . import paystub, splits
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
-PAYMENT_STATES = ("unknown", "unpaid", "paid")
 ACCOUNT_TYPES = ("checking", "savings", "credit_card", "brokerage", "loan", "other")
-RECORD_TABLES = {"statement": "statements", "transaction": "transactions", "receipt": "receipts",
-                 "bill": "bills", "income_record": "income_records"}
+# A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"), not a record type of its own.
+RECORD_TABLES = {"statement": "statements", "transaction": "transactions", "receipt": "receipts", "income_record": "income_records"}
 # Excluded from spending: moving money between the household's own accounts.
 NON_SPENDING = ("transfer", "payment")
 SPENDING = ("purchase", "fee", "interest", "withdrawal")
@@ -45,6 +44,11 @@ COUNTABLE = f"t.review_status<>'rejected' AND (t.origin<>'extraction' OR t.revie
 STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor<>0 AND r.purchase_date IS NOT NULL AND NOT EXISTS("
                       "SELECT 1 FROM transaction_receipt_links l JOIN transactions lt ON lt.id=l.transaction_id "
                       "WHERE l.receipt_id=r.id AND l.review_status<>'rejected' AND lt.review_status<>'rejected')")
+# A verified pay stub counts as net pay on its pay date until the bank deposit that paid it is linked, the same way a
+# receipt counts until its charge does (docs/money.md "Money in and paystubs").
+STANDALONE_INCOME = ("i.review_status='verified' AND i.net_pay_minor>0 AND i.pay_date IS NOT NULL AND NOT EXISTS("
+                     "SELECT 1 FROM transaction_income_links l JOIN transactions lt ON lt.id=l.transaction_id "
+                     "WHERE l.income_record_id=i.id AND l.review_status<>'rejected' AND lt.review_status<>'rejected')")
 # A transaction's category: its own (set by the user or a rule), else its matched receipt's; a refund with neither takes
 # the category of the purchase it refunds (docs/money.md "Returns").
 TRANSACTION_CATEGORY = ("coalesce(t.category,(SELECT r.category FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id "
@@ -119,12 +123,10 @@ SUMMARY_QUERIES = {
                    "t.amount_minor,t.currency,t.transaction_type,t.review_status,a.display_name AS account,t.source_document_id AS document_id "
                    "FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id WHERE t.id IN ({ids})",
     "receipt": "SELECT r.id,r.purchase_date AS date,m.canonical_name AS name,r.total_minor AS amount_minor,r.currency,r.review_status,"
-               f"NULL AS account,r.document_id,{SALE_LABEL_SQL} AS sale_label FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id IN ({{ids}})",
+               f"NULL AS account,r.document_id,{SALE_LABEL_SQL} AS sale_label,r.document_kind,r.due_date FROM receipts r "
+               "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id IN ({ids})",
     "statement": "SELECT s.id,s.period_end AS date,a.institution AS name,coalesce(s.closing_balance_minor,s.statement_balance_minor) AS amount_minor,"
                  "s.currency,s.review_status,a.display_name AS account,s.document_id FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.id IN ({ids})",
-    "bill": "SELECT b.id,coalesce(b.due_date,b.issue_date) AS date,m.canonical_name AS name,b.amount_due_minor AS amount_minor,b.currency,"
-            "b.review_status,a.display_name AS account,b.document_id FROM bills b LEFT JOIN merchants m ON m.id=b.provider_merchant_id "
-            "LEFT JOIN accounts a ON a.id=b.account_id WHERE b.id IN ({ids})",
     "income_record": "SELECT i.id,i.pay_date AS date,m.canonical_name AS name,i.net_pay_minor AS amount_minor,i.currency,i.review_status,"
                      "NULL AS account,i.document_id FROM income_records i LEFT JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.id IN ({ids})",
 }
@@ -132,12 +134,16 @@ SUMMARY_CHUNK = 500  # Bound on bound parameters per query.
 # Fields the user may correct: record type -> field -> (column, kind, label used in validation issues).
 CORRECTABLE = {
     "receipt": {"purchase_date": ("purchase_date", "date", "Purchase date"), "merchant": ("merchant_id", "name", "Merchant"),
+                **{field: (field + "_minor", "receipt_money", field.capitalize()) for field in ("subtotal", "tax", "tip", "total")},
                 "location": ("location", "text", "Location"), "category": ("category", "category", "Category"),
                 # sale or return: the signs of the receipt's amounts (docs/money.md "Returns").
-                "direction": ("total_minor", "sale_type", "Sale or return")},
-    "bill": {"issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
-             "provider": ("provider_merchant_id", "name", "Provider")},
-    "income_record": {"pay_date": ("pay_date", "date", "Pay date"), "payer": ("payer_merchant_id", "name", "Payer or employer")},
+                "direction": ("total_minor", "sale_type", "Sale or return"),
+                # A bill's own (BILL_FIELDS); its due date is also the date it counts on (purchase_date).
+                "issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
+                "period_start": ("period_start", "date", "Period start"), "period_end": ("period_end", "date", "Period end"),
+                "amount_due": ("amount_due_minor", "money", "Amount due")},
+    "income_record": {"pay_date": ("pay_date", "date", "Pay date"), "payer": ("payer_merchant_id", "name", "Payer or employer"),
+                      "period_start": ("period_start", "date", "Period start"), "period_end": ("period_end", "date", "Period end")},
     "statement": {"period_start": ("period_start", "date", "Period start"), "period_end": ("period_end", "date", "Period end"),
                   "issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
                   "opening_balance": ("opening_balance_minor", "money", "Opening balance"),
@@ -145,6 +151,13 @@ CORRECTABLE = {
                   "statement_balance": ("statement_balance_minor", "money", "Statement balance"),
                   "minimum_payment": ("minimum_payment_minor", "money", "Minimum payment")},
 }
+# Which receipt fields a bill shows, and what it calls them: a bill has no tip or store location, and counts its new
+# charges (total), not past-due balances (docs/money.md "Bills and their lines").
+BILL_FIELDS = ("issue_date", "due_date", "period_start", "period_end", "amount_due")
+BILL_SHOWN = {"merchant": "Provider", "issue_date": "Issue date", "due_date": "Due date", "period_start": "Period start",
+              "period_end": "Period end", "total": "New charges", "amount_due": "Amount due", "category": "Category"}
+# A bill line's own corrections, kept by printed position like an item's price ("line_kind:3", "member:3"): field -> column.
+LINE_FIELDS = {"line_kind": "line_kind", "member": "member_id"}
 TRANSACTION_TYPES = ("purchase", "refund", "payment", "transfer", "deposit", "fee", "interest", "withdrawal", "other")
 # A transaction's fields a person may correct when the import or the reading got them wrong (docs/money.md "Corrections"):
 # field -> (column, kind). The amount is entered positive, and its direction is a field of its own.
@@ -158,11 +171,22 @@ AUTO_VERIFIED_NOTE = "Every automatic check passes after your correction."
 UNDO_REASON = "Undid a change"
 
 
-def field_labels(record_type):
-    """What a record type's correctable fields are called."""
+def field_labels(record_type, bill=False):
+    """What a record type's correctable fields are called (a bill's as BILL_SHOWN names them)."""
     if record_type == "transaction":
         return TRANSACTION_LABELS
-    return {field: label for field, (_, _, label) in CORRECTABLE.get(record_type, {}).items()}
+    labels = {field: label for field, (_, _, label) in CORRECTABLE.get(record_type, {}).items()}
+    return {**labels, **BILL_SHOWN} if bill else labels
+
+
+def fields_for(record_type, row):
+    """The correctable fields of one record: a bill's (BILL_SHOWN), or a receipt's without the bill-only ones."""
+    fields = CORRECTABLE.get(record_type, {})
+    if record_type != "receipt":
+        return fields
+    if row["document_kind"] == "bill":
+        return {field: (column, kind, BILL_SHOWN[field]) for field, (column, kind, _) in fields.items() if field in BILL_SHOWN}
+    return {field: value for field, value in fields.items() if field not in BILL_FIELDS}
 PENDING = f"(t.origin='extraction' AND t.review_status IN ('proposed','needs_review') OR t.review_status<>'rejected' AND {HELD})"
 # Transactions reconciliation may match: not rejected, and not waiting on their statement.
 MATCHABLE = f"t.review_status<>'rejected' AND NOT ({HELD})"
@@ -453,7 +477,10 @@ class Ledger:
                 "description": record.get("description"), "location": record.get("location"), "category": record.get("category"),
                 "recurrence": record.get("recurrence"), "payment_last_four": record.get("payment_last_four"),
                 "review_status": status, "validation_json": json.dumps(record["issues"]),
-                "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote")})
+                "return_days_printed": record.get("return_days_printed"), "return_policy_quote": record.get("return_policy_quote"),
+                "document_kind": record.get("document_kind", "receipt"), "issue_date": record.get("issue_date"), "due_date": record.get("due_date"),
+                "period_start": record.get("period_start"), "period_end": record.get("period_end"),
+                "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("account_last_four")})
             kept = 0
             if written:
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
@@ -529,26 +556,33 @@ class Ledger:
             if category is None:
                 category, category_source = receipt_category(item.get("category")), "model"
             taxed = None if item.get("taxed") is None else int(item["taxed"])
-            values = (item["description"], item["product_code"], item["quantity"], item["unit_price_minor"], item["line_total_minor"], item["discount_minor"], taxed)
+            values = (item["description"], item.get("product_code"), item.get("quantity"), item.get("unit_price_minor"), item["line_total_minor"],
+                      item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"))
+            # Whose line it is: as the family sent it, else the person's own choice from before, else nobody yet.
+            member, member_source = item.get("member_id"), item.get("member_source") or ("configured" if item.get("member_id") else None)
             if position in matched:
                 item_id, earlier_item = matched[position]["id"], matched[position]
                 if earlier_item["category_source"] == "user":  # The user's own category outlives any reading.
                     category, category_source = earlier_item["category"], "user"
+                if member is None and earlier_item["member_source"] == "user":
+                    member, member_source = earlier_item["member_id"], "user"
                 db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
-                           "category=?,category_source=?,review_status=?,updated_at=? WHERE id=?",
-                           (*values, category, category_source if category else None, status, now(), item_id))
+                           "line_holder=?,line_kind=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
+                           (*values, category, category_source if category else None, member, member_source, status, now(), item_id))
                 db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
             else:
                 item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                     "taxed,category,category_source,review_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                     (receipt_id, position, *values, category, category_source if category else None, status, now(), now())).lastrowid
+                                     "taxed,line_holder,line_kind,category,category_source,member_id,member_source,review_status,created_at,updated_at) "
+                                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     (receipt_id, position, *values, category, category_source if category else None, member, member_source,
+                                      status, now(), now())).lastrowid
             self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
         return len(kept)
 
     @staticmethod
     def item_worked_on(db, receipt_id, item):
-        """Whether the user categorised, identified or tagged a receipt line, or keeps it in the household (a lot)."""
-        return item["category_source"] == "user" or db.execute(
+        """Whether the user categorised, identified or tagged a receipt line, said whose it is, or keeps it in the household (a lot)."""
+        return item["category_source"] == "user" or item.get("member_source") == "user" or db.execute(
             "SELECT EXISTS(SELECT 1 FROM item_resolutions WHERE receipt_item_id=:i AND review_status='verified') "
             "OR EXISTS(SELECT 1 FROM tax_tags WHERE receipt_item_id=:i AND (source='user' OR review_status='verified')) "
             "OR EXISTS(SELECT 1 FROM inventory_lots WHERE receipt_id=:r AND position=:p)",
@@ -584,14 +618,14 @@ class Ledger:
         """(receipt, items, [(transaction id or None, target, currency)], shared part) for dividing a receipt by item
         category, or None when it has no total or no items."""
         receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
-        items = [dict(row) for row in db.execute("SELECT id,description,line_total_minor,discount_minor,taxed,category FROM receipt_items "
+        items = [dict(row) for row in db.execute("SELECT id,description,line_total_minor,discount_minor,taxed,category,member_id FROM receipt_items "
                                                  "WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (receipt_id,))]
         if receipt is None or receipt["total_minor"] is None or not items:
             return None
         charges = [(None, receipt["total_minor"], receipt["currency"])] + [(row["id"], -row["amount_minor"], row["currency"]) for row in db.execute(
             "SELECT t.id,t.amount_minor,t.currency FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
             "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
-        shared = db.execute("SELECT share_minor,total_minor FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,)).fetchone()
+        shared = db.execute("SELECT share_minor,total_minor,member_id FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,)).fetchone()
         return receipt, items, charges, shared
 
     @staticmethod
@@ -604,7 +638,10 @@ class Ledger:
             shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency)
         else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
             shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"]), target, last(not shared), items, currency)
-        if shared:  # Each category keeps its proportion of this person's part.
+        if shared and shared["member_id"]:  # Shared by line: this person's own lines and their part of the rest (docs/family.md).
+            shares = splits.scale(splits.by_line(shares, items, shared["member_id"]), charge_share(target, shared["share_minor"], shared["total_minor"]),
+                                  recorder, items, currency)
+        elif shared:  # Each category keeps its proportion of this person's part.
             shares = splits.scale(shares, charge_share(target, shared["share_minor"], shared["total_minor"]), recorder, items, currency)
         return shares
 
@@ -706,7 +743,7 @@ class Ledger:
             "OR EXISTS(SELECT 1 FROM record_corrections WHERE record_type='transaction' AND record_id=:t) "
             "OR EXISTS(SELECT 1 FROM transaction_receipt_links WHERE transaction_id=:t AND review_status='verified') "
             "OR EXISTS(SELECT 1 FROM transaction_links WHERE :t IN (from_transaction_id,to_transaction_id) AND review_status='verified') "
-            "OR EXISTS(SELECT 1 FROM bills WHERE payment_transaction_id=:t) "
+            "OR EXISTS(SELECT 1 FROM transaction_income_links WHERE transaction_id=:t AND review_status='verified') "
             "OR EXISTS(SELECT 1 FROM tax_tags WHERE transaction_id=:t AND (source='user' OR review_status='verified')) "
             "OR EXISTS(SELECT 1 FROM investment_events WHERE transaction_id=:t AND transaction_link='user')",
             {"t": transaction_id}).fetchone()[0] == 1
@@ -716,22 +753,33 @@ class Ledger:
         """Delete a transaction no reading supports, with the machine-made rows that point at it. Tags, splits and
         payment rejections go by cascade; the typed-ID rows are removed here, as emptying Trash does."""
         db.execute("DELETE FROM transaction_receipt_links WHERE transaction_id=?", (transaction_id,))
+        db.execute("DELETE FROM transaction_income_links WHERE transaction_id=?", (transaction_id,))
         db.execute("DELETE FROM transaction_links WHERE ? IN (from_transaction_id,to_transaction_id)", (transaction_id,))
         for table in ("financial_evidence_links", "reconciliation_issues", "review_events"):
             db.execute(f"DELETE FROM {table} WHERE record_type='transaction' AND record_id=?", (transaction_id,))
         db.execute("DELETE FROM transactions WHERE id=?", (transaction_id,))
 
     def publish_bill(self, record, source, status):
-        with self.store.connection() as db:
-            bill_id, written = self._upsert(db, "bills", source, {
-                "provider_merchant_id": self.merchant(db, record["provider"]) if record["provider"] else None,
-                "issue_date": record["issue_date"], "due_date": record["due_date"], "period_start": record["period_start"],
-                "period_end": record["period_end"], "amount_due_minor": record["amount_due_minor"], "currency": record["currency"],
-                "review_status": status, "validation_json": json.dumps(record["issues"])})
-            if written:
-                self.add_evidence(db, "bill", bill_id, source, record["locator"])
-                self.apply_corrections(db, "bill", bill_id)
-        return self._published("bill", bill_id, written)
+        """A bill as a receipt (docs/money.md "Bills and their lines"): it counts its new charges (total_minor) on its due
+        date, by its lines' categories, until the payment that paid it replaces it. A bill sent by a family before bills had
+        lines carries only its amount due, which is then its total."""
+        items = [{"description": line["description"], "line_total_minor": line["line_total_minor"], "category": line.get("category"),
+                  "line_kind": line.get("line_kind"), "line_holder": line.get("line_holder"), "member_id": line.get("member_id"),
+                  "member_source": line.get("member_source"), "locator": line.get("locator") or {}} for line in record.get("items", [])]
+        total = record.get("total_minor", record.get("amount_due_minor"))
+        # The bill's own category, for lines that have none: the category most of its money is in.
+        spent: dict = {}
+        for item in items:
+            if receipt_category(item["category"]) and item["line_total_minor"]:
+                spent[item["category"]] = spent.get(item["category"], 0) + item["line_total_minor"]
+        category = record.get("category") or (max(sorted(spent), key=lambda name: spent[name]) if spent else None)
+        receipt = {"merchant": record["provider"], "purchase_date": record.get("due_date") or record.get("issue_date"), "subtotal_minor": None,
+                   "tax_minor": None, "tip_minor": None, "total_minor": total, "currency": record["currency"], "issues": record["issues"],
+                   "locator": record["locator"], "items": items, "category": category, "recurrence": record.get("recurrence"),
+                   "document_kind": "bill", "issue_date": record.get("issue_date"), "due_date": record.get("due_date"),
+                   "period_start": record.get("period_start"), "period_end": record.get("period_end"),
+                   "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("last_four") or record.get("account_last_four")}
+        return {**self.publish_receipt(receipt, source, status), "document_kind": "bill"}
 
     def publish_income(self, record, source, status):
         with self.store.connection() as db:
@@ -836,8 +884,29 @@ class Ledger:
                 # Each item's share of what was paid (its price with its part of tax and discounts), and the totals by category.
                 shares = dict(db.execute("SELECT receipt_item_id,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                                          "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
+                bill = row["document_kind"] == "bill"
                 for item in value["items"]:
                     item["share_minor"] = shares.get(item["id"])
+                    item["correctable"] = [{"field": "price", "label": "Price", "kind": "receipt_money",
+                                            "value": money(abs(item["line_total_minor"]), row["currency"])["decimal"] if item["line_total_minor"] is not None else None}]
+                    if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
+                        item["correctable"] += [{"field": "line_kind", "label": "Type", "kind": "choice", "value": item["line_kind"], "options": list(LINE_KINDS)},
+                                                {"field": "member_id", "label": "Person", "kind": "member", "value": item["member_id"]}]
+                if bill:
+                    # Subscription lines inside a bill aren't recurring payments of their own; the Bills page lists them under it.
+                    value["includes"] = [item["description"] for item in value["items"] if item["line_kind"] == "subscription" and item["review_status"] != "rejected"]
+                    share = db.execute("SELECT share_minor,total_minor,people_json,member_id FROM record_shares WHERE record_type='receipt' AND record_id=?",
+                                       (record_id,)).fetchone()
+                    value["share"] = {**dict(share), "people": json.loads(share["people_json"])} if share else None
+                    value["share_request"] = (dict(db.execute("SELECT mode,requested_at FROM share_requests WHERE receipt_id=?", (record_id,)).fetchone() or {})
+                                              or None)
+                    holders = {item["line_holder"] for item in value["items"] if item["line_holder"]}
+                    # Lines for more than one person: the family can share it by line (docs/family.md "Sharing a bill by line").
+                    value["shareable_by_line"] = len(holders) > 1 or len({item["member_id"] for item in value["items"] if item["member_id"]}) > 1
+                value["unmatched_minor"] = db.execute("SELECT sum(amount_minor) FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
+                                                      "AND receipt_item_id IS NULL", (record_id,)).fetchone()[0]
+                value["totals_mismatch"] = (row["subtotal_minor"] is not None and row["total_minor"] is not None
+                                             and abs(row["subtotal_minor"] + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - row["total_minor"]) > 1)
                 value["splits"] = [dict(split) for split in db.execute(
                     "SELECT category,sum(amount_minor) AS amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                     "GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
@@ -847,7 +916,7 @@ class Ledger:
                     reward["line_ids"] = json.loads(reward.pop("locator_json")).get("line_ids", [])
                     value["rewards"].append(reward)
                 # Sale or return, as a correction sets it, and the tag the page shows (docs/money.md "Returns").
-                value["direction"] = receipt_direction(row)
+                value["direction"] = self.effective_receipt_direction(db, row)
                 value["sale_label"] = sale_label(row["total_minor"], [item["line_total_minor"] for item in value["items"]])
                 value["reconciled"] = db.execute("SELECT 1 FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
                                                  "AND l.review_status<>'rejected' AND t.review_status<>'rejected'", (record_id,)).fetchone() is not None
@@ -868,7 +937,7 @@ class Ledger:
                     value["merchant"] = db.execute("SELECT canonical_name FROM merchants WHERE id=?", (value[key],)).fetchone()[0]
             if value.get("account_id"):
                 value["account"] = db.execute("SELECT display_name FROM accounts WHERE id=?", (value["account_id"],)).fetchone()[0]
-            if record_type in ("transaction", "receipt"):
+            if record_type in ("transaction", "receipt", "income_record"):
                 value["links"] = self.links(db, record_type, record_id)
             # What the Correct form offers, with the text a correction takes (docs/money.md "Corrections").
             value["correctable"] = self.correctable(db, record_type, row)
@@ -1130,36 +1199,18 @@ class Ledger:
             rows += [(dict(row), "transaction", row["to_transaction_id"] if row["from_transaction_id"] == record_id else row["from_transaction_id"])
                      for row in db.execute("SELECT link_type AS kind,* FROM transaction_links WHERE ? IN (from_transaction_id,to_transaction_id) "
                                            "AND review_status<>'rejected'", (record_id,))]
+            rows += [(dict(row), "income_record", row["income_record_id"]) for row in db.execute(
+                "SELECT 'income' AS kind,* FROM transaction_income_links WHERE transaction_id=? AND review_status<>'rejected'", (record_id,))]
         elif record_type == "receipt":
             rows += [(dict(row), "transaction", row["transaction_id"]) for row in db.execute(
                 "SELECT 'receipt' AS kind,* FROM transaction_receipt_links WHERE receipt_id=? AND review_status<>'rejected'", (record_id,))]
-        counterparts = {kind: self.summaries(db, kind, [other for _, row_kind, other in rows if row_kind == kind]) for kind in ("receipt", "transaction")}
+        elif record_type == "income_record":  # The deposit that paid a pay stub (docs/money.md "Money in and paystubs").
+            rows += [(dict(row), "transaction", row["transaction_id"]) for row in db.execute(
+                "SELECT 'income' AS kind,* FROM transaction_income_links WHERE income_record_id=? AND review_status<>'rejected'", (record_id,))]
+        counterparts = {kind: self.summaries(db, kind, [other for _, row_kind, other in rows if row_kind == kind])
+                        for kind in ("receipt", "transaction", "income_record")}
         return [{"kind": link["kind"], "id": link["id"], "review_status": link["review_status"], "match_score": link["match_score"],
                  "match_signals": link["match_method"].split("+"), "counterpart": counterparts[kind].get(other)} for link, kind, other in rows]
-
-    # Bill payment -------------------------------------------------------------
-
-    def set_bill_payment(self, bill_id, status, transaction_id=None, note=""):
-        """The user's payment state for a bill, optionally naming the paying transaction. Audited like reviews."""
-        if status not in PAYMENT_STATES:
-            raise ValueError("Choose paid, unpaid or unknown.")
-        if transaction_id is not None and status != "paid":
-            raise ValueError("Only a paid bill can name the transaction that paid it.")
-        with self.store.connection() as db:
-            bill = db.execute("SELECT id,currency,payment_status FROM bills WHERE id=?", (bill_id,)).fetchone()
-            if bill is None:
-                raise ValueError("Bill not found.")
-            if transaction_id is not None:
-                payment = db.execute("SELECT currency,amount_minor,review_status FROM transactions WHERE id=?", (transaction_id,)).fetchone()
-                if payment is None:
-                    raise ValueError("Transaction not found.")
-                if payment["currency"] != bill["currency"] or payment["amount_minor"] >= 0 or payment["review_status"] == "rejected":
-                    raise ValueError("The paying transaction must be money out, in the bill's currency, and not rejected.")
-            db.execute("UPDATE bills SET payment_status=?,payment_transaction_id=?,updated_at=? WHERE id=?", (status, transaction_id, now(), bill_id))
-            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES('bill_payment',?,?,?,?,?,?)",
-                       (bill_id, bill["payment_status"], status, (f"Paid by transaction {transaction_id}. " if transaction_id else "") + note[:900], now(), actor.current()))
-        return {"id": bill_id, "payment_status": status, "payment_transaction_id": transaction_id}
-
 
     # User corrections ---------------------------------------------------------
 
@@ -1174,8 +1225,10 @@ class Ledger:
             if text.lower() not in ("sale", "return"):
                 raise ValueError("Choose sale or return.")
             return text.lower(), text.lower()
-        if kind == "money":
+        if kind in ("money", "receipt_money"):
             minor = to_minor(text, currency)
+            if kind == "receipt_money" and minor < 0:
+                raise ValueError("Enter a positive amount; sale or return sets its direction.")
             return minor, money(minor, currency)["decimal"]
         if kind == "date":
             try:
@@ -1203,13 +1256,15 @@ class Ledger:
         """Set fields the document did not print or the model misread. Kept with the model's value in history, with the
         person (core/actor.py) and an optional reason; the record's review state is unchanged, and issues about the
         corrected fields are resolved."""
-        fields = CORRECTABLE.get(record_type)
-        if not fields:
+        if not CORRECTABLE.get(record_type):
             raise ValueError("This kind of record cannot be corrected here.")
-        unknown = set(changes) - set(fields)
-        if not changes or unknown:
-            raise ValueError("Choose fields this record allows: " + ", ".join(field.replace("_", " ") for field in fields) + ".")
         with self.store.connection() as db:
+            row = db.execute(f"SELECT * FROM {RECORD_TABLES[record_type]} WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                raise ValueError("Financial record not found.")
+            fields = fields_for(record_type, row)
+            if not changes or set(changes) - set(fields):
+                raise ValueError("Choose fields this record allows: " + ", ".join(field.replace("_", " ") for field in fields) + ".")
             ids = self._apply_correction(db, record_type, record_id, changes, reason)
             table = RECORD_TABLES[record_type]
             row = db.execute(f"SELECT validation_json,review_status,review_source FROM {table} WHERE id=?", (record_id,)).fetchone()
@@ -1223,15 +1278,18 @@ class Ledger:
     def _apply_correction(self, db, record_type, record_id, changes, reason):
         """Write a record's corrected fields and their history rows; returns the rows' ids. Issues about the corrected
         fields are resolved; the review state is left to the caller."""
-        fields, table = CORRECTABLE[record_type], RECORD_TABLES[record_type]
+        table = RECORD_TABLES[record_type]
         row = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
         if row is None:
             raise ValueError("Financial record not found.")
+        fields = fields_for(record_type, row)
         issues, ids = json.loads(row["validation_json"]), []
-        for field, text in changes.items():
+        for field, text in sorted(changes.items(), key=lambda pair: pair[0] == "direction"):
             column, kind, label = fields[field]
             value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
             current = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
+            if kind == "receipt_money" and value is not None:
+                value *= -1 if self.effective_receipt_direction(db, current) == "return" else 1
             previous = self._field_text(db, current, kind, column)
             resolved = [issue for issue in issues if issue.startswith(label)]
             issues = [issue for issue in issues if not issue.startswith(label)]
@@ -1248,19 +1306,26 @@ class Ledger:
             db.execute("UPDATE receipt_items SET category=?,category_source='receipt' WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
                        (receipt_category(changes["category"]), record_id))
         if record_type == "receipt":
+            self.bill_counts_on_due_date(db, record_id)
             self.refresh_splits(db, record_id)
         self.add_evidence(db, record_type, record_id, {"document_id": row["document_id"], "blob_hash": row["blob_hash"],
                                                        "source_key": f"user:correction:{ids[-1]}"}, {"entered_by_user": sorted(changes)})
         return ids
 
+    @staticmethod
+    def bill_counts_on_due_date(db, receipt_id):
+        """A bill counts on its due date (its issue date when none is printed): purchase_date follows them."""
+        db.execute("UPDATE receipts SET purchase_date=coalesce(due_date,issue_date,purchase_date) WHERE id=? AND document_kind='bill'", (receipt_id,))
+
     def _field_text(self, db, row, kind, column):
         """A correctable field as a correction enters it: the merchant's name, a money decimal, sale or return, or the value."""
         if kind == "name":
             return self._merchant_name(db, row[column])
-        if kind == "money":
-            return money(row[column], row["currency"])["decimal"] if row[column] is not None else None
+        if kind in ("money", "receipt_money"):
+            value = row[column]
+            return money(abs(value) if kind == "receipt_money" else value, row["currency"])["decimal"] if value is not None else None
         if kind == "sale_type":
-            return receipt_direction(row)
+            return self.effective_receipt_direction(db, row)
         return row[column]
 
     def correctable(self, db, record_type, row):
@@ -1269,7 +1334,7 @@ class Ledger:
         if record_type == "transaction":
             fields = [(field, TRANSACTION_LABELS[field], kind, self._transaction_text(db, row, field)) for field, (_, kind) in TRANSACTION_CORRECTABLE.items()]
         else:
-            fields = [(field, label, kind, self._field_text(db, row, kind, column)) for field, (column, kind, label) in CORRECTABLE.get(record_type, {}).items()]
+            fields = [(field, label, kind, self._field_text(db, row, kind, column)) for field, (column, kind, label) in fields_for(record_type, row).items()]
         options = {"category": RECEIPT_CATEGORIES, "sale_type": ("sale", "return"), "direction": ("out", "in"), "type": TRANSACTION_TYPES}
         found = []
         for field, label, kind, value in fields:
@@ -1290,21 +1355,28 @@ class Ledger:
                 raise ValueError("Financial record not found.")
             currency = row["currency"]
             targets = [(record_type, record_id, None)]
+            if record_type == "receipt":
+                targets.append(("receipt_item", record_id, None))
             if record_type == "statement":
                 for line in db.execute("SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name FROM transactions t "
                                        "LEFT JOIN merchants m ON m.id=t.merchant_id WHERE t.statement_id=? ORDER BY t.posted_date,t.id", (record_id,)):
                     targets.append(("transaction", line["id"], {"type": "transaction", "id": line["id"], "label": f"{line['name']} · {line['posted_date']}"}))
             entries = []
+            bill = record_type == "receipt" and row["document_kind"] == "bill"
             for kind, target, shown_row in targets:
-                labels = field_labels(kind)
+                labels = field_labels(kind, bill=bill and kind == "receipt")
+                if kind == "receipt_item":
+                    labels = {f"{field}:{item['position']}": f"{what} {item['description'] or 'item ' + str(item['position'])}"
+                              for item in db.execute("SELECT position,description FROM receipt_items WHERE receipt_id=?", (target,))
+                              for field, what in (("price", "Price of"), ("line_kind", "Type of"), ("member", "Person for"))}
                 kinds = ({field: value_kind for field, (_, value_kind) in TRANSACTION_CORRECTABLE.items()} | {"category": "category"} if kind == "transaction"
                          else {field: value_kind for field, (_, value_kind, _) in CORRECTABLE.get(kind, {}).items()})
                 latest = dict(db.execute("SELECT field,max(id) FROM record_corrections WHERE record_type=? AND record_id=? GROUP BY field", (kind, target)).fetchall())
                 for item in db.execute("SELECT * FROM record_corrections WHERE record_type=? AND record_id=?", (kind, target)):
-                    value_kind = kinds.get(item["field"], "text")
-                    shown = (lambda text: format_minor(to_minor(text, currency), currency) if text is not None else None) if value_kind in ("money", "amount") else (lambda text: text)
+                    value_kind = ("money" if item["field"].startswith("price:") else "text") if kind == "receipt_item" else kinds.get(item["field"], "text")
+                    shown = (lambda text: format_minor(to_minor(text, currency), currency) if text is not None else None) if value_kind in ("money", "amount", "receipt_money") else (lambda text: text)
                     entries.append({"kind": "correction", "id": item["id"], "at": item["created_at"], "who": item["actor"] or "Home Manager",
-                                    "field": item["field"], "label": labels.get(item["field"], item["field"].replace("_", " ").capitalize()),
+                                    "field": item["field"], "label": labels.get(item["field"], "Item price" if kind == "receipt_item" else item["field"].replace("_", " ").capitalize()),
                                     "value_kind": value_kind, "from": shown(item["previous"]), "to": shown(item["value"]), "reason": item["reason"],
                                     "resolved_issues": json.loads(item["resolved_issues_json"]),
                                     "undoable": latest.get(item["field"]) == item["id"] and (kind != "transaction" or item["field"] in TRANSACTION_CORRECTABLE),
@@ -1318,7 +1390,7 @@ class Ledger:
             for number, item in enumerate(db.execute("SELECT * FROM family_corrections WHERE direction='received' AND record_type=? AND record_id=? ORDER BY created_at",
                                                      (record_type, record_id))):
                 entries.append({"kind": "family", "at": item["created_at"], "who": item["actor"] or "The family", "field": item["field"],
-                                "label": field_labels(record_type).get(item["field"], item["field"].replace("_", " ").capitalize()),
+                                "label": field_labels(record_type, bill=bill).get(item["field"], item["field"].replace("_", " ").capitalize()),
                                 "from": item["previous"], "to": item["value"], "status": item["status"], "_order": (item["created_at"], 2, number)})
         entries.sort(key=lambda entry: entry.pop("_order"), reverse=True)
         return entries
@@ -1336,6 +1408,7 @@ class Ledger:
             rows = [db.execute("SELECT * FROM record_corrections WHERE id=?", (correction_id,)).fetchone() for correction_id in ids]
             for row in rows:
                 owned = row is not None and ((row["record_type"], row["record_id"]) == (record_type, record_id) or (
+                    record_type == "receipt" and row["record_type"] == "receipt_item" and row["record_id"] == record_id) or (
                     record_type == "statement" and row["record_type"] == "transaction"
                     and db.execute("SELECT 1 FROM transactions WHERE id=? AND statement_id=?", (row["record_id"], record_id)).fetchone()))
                 if not owned:
@@ -1347,6 +1420,16 @@ class Ledger:
                 if row["record_type"] == "transaction" and row["field"] not in TRANSACTION_CORRECTABLE:
                     raise ValueError("Change a transaction's category on the transaction instead.")
             for row in sorted(rows, key=lambda item: -item["id"]):
+                if row["record_type"] == "receipt_item":
+                    name, position = row["field"].split(":")
+                    if name in LINE_FIELDS:
+                        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                                   "VALUES('receipt_item',?,?,?,?,?,?,?)", (record_id, row["field"], row["previous"], row["value"], UNDO_REASON,
+                                                                           actor.current(), now()))
+                        self._set_line(db, record_id, int(position), name, row["previous"])
+                    else:
+                        self._correct_item(db, record_id, int(position), row["previous"], UNDO_REASON, signed=True)
+                    continue
                 if row["record_type"] == "transaction":
                     self._apply_transaction_correction(db, row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
                     continue
@@ -1369,7 +1452,19 @@ class Ledger:
 
     def apply_corrections(self, db, record_type, record_id):
         """Re-apply the latest correction of each field after an extraction rewrote the model's values."""
-        fields, table = CORRECTABLE[record_type], RECORD_TABLES[record_type]
+        if record_type == "receipt":
+            for item in db.execute("SELECT field,value FROM record_corrections c WHERE record_type='receipt_item' AND record_id=? "
+                                   "AND id=(SELECT max(id) FROM record_corrections WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)",
+                                   (record_id,)).fetchall():
+                name, position = item["field"].split(":")
+                if name in LINE_FIELDS:  # A bill line's type or person, as the person set it.
+                    self._set_line(db, record_id, int(position), name, item["value"])
+                    continue
+                currency = db.execute("SELECT currency FROM receipts WHERE id=?", (record_id,)).fetchone()[0]
+                price = to_minor(item["value"], currency) if item["value"] is not None else None
+                db.execute("UPDATE receipt_items SET line_total_minor=? WHERE receipt_id=? AND position=?", (price, record_id, int(position)))
+        table = RECORD_TABLES[record_type]
+        fields = fields_for(record_type, db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone())
         latest = db.execute("SELECT field,value FROM record_corrections c WHERE record_type=? AND record_id=? "
                             "AND id=(SELECT max(id) FROM record_corrections WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)",
                             (record_type, record_id)).fetchall()
@@ -1377,15 +1472,89 @@ class Ledger:
             return
         stored_json, currency = db.execute(f"SELECT validation_json,currency FROM {table} WHERE id=?", (record_id,)).fetchone()
         issues = json.loads(stored_json)
-        for field, text in latest:
+        for field, text in sorted(latest, key=lambda pair: pair[0] == "direction"):
+            if field not in fields:  # A field this kind of record no longer shows (a receipt read again as a bill).
+                continue
             column, kind, label = fields[field]
             value, _ = self._correction_value(db, kind, field, text, stored=True, currency=currency)
+            if kind == "receipt_money" and value is not None:
+                current = db.execute("SELECT * FROM receipts WHERE id=?", (record_id,)).fetchone()
+                value *= -1 if self.effective_receipt_direction(db, current) == "return" else 1
             if kind == "sale_type":
                 self.set_receipt_direction(db, record_id, value)
             else:
                 db.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (value, record_id))
             issues = [issue for issue in issues if not issue.startswith(label)]
         db.execute(f"UPDATE {table} SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
+        if record_type == "receipt":
+            self.bill_counts_on_due_date(db, record_id)
+
+    def correct_item(self, receipt_id, position, price, reason=None):
+        """Keep an item price correction by printed position across re-readings (docs/money.md)."""
+        with self.store.connection() as db:
+            correction_id = self._correct_item(db, receipt_id, position, price, reason)
+        return {"record": self.record("receipt", receipt_id), "correction_ids": [correction_id]}
+
+    def correct_line(self, receipt_id, position, field, value, reason=None, members=None):
+        """A bill line's type (line_kind) or whose it is (member: a family member's id, or None for nobody), kept by printed
+        position across re-readings like a price (docs/money.md "Bills and their lines"). members: the ids a person may be
+        given, when the family is known here; otherwise any id the line already had or none."""
+        if field not in LINE_FIELDS:
+            raise ValueError("Choose the line's type or person.")
+        value = " ".join(str(value).split()) or None if value is not None else None
+        if field == "line_kind" and value not in (None, *LINE_KINDS):
+            raise ValueError("Choose one of the listed line types.")
+        with self.store.connection() as db:
+            row = db.execute("SELECT i.* FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id WHERE i.receipt_id=? AND i.position=? "
+                             "AND r.document_kind='bill'", (receipt_id, position)).fetchone()
+            if row is None:
+                raise ValueError("Bill line not found.")
+            if field == "member" and value is not None and value not in (members or ()) and value != row["member_id"]:
+                raise ValueError("Choose someone in the family.")
+            correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                                       "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"{field}:{position}", value, row[LINE_FIELDS[field]],
+                                                                               clean_reason(reason), actor.current(), now())).lastrowid
+            self._set_line(db, receipt_id, position, field, value)
+        return {"record": self.record("receipt", receipt_id), "correction_ids": [correction_id]}
+
+    def _set_line(self, db, receipt_id, position, field, value):
+        if field == "member":
+            db.execute("UPDATE receipt_items SET member_id=?,member_source=CASE WHEN ? IS NULL THEN NULL ELSE 'user' END,updated_at=? "
+                       "WHERE receipt_id=? AND position=?", (value, value, now(), receipt_id, position))
+        else:
+            db.execute("UPDATE receipt_items SET line_kind=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
+        self.refresh_splits(db, receipt_id)
+
+    @staticmethod
+    def effective_receipt_direction(db, row):
+        """An explicit direction also survives a missing or zero total."""
+        saved = db.execute("SELECT value FROM record_corrections WHERE record_type='receipt' AND record_id=? AND field='direction' ORDER BY id DESC LIMIT 1",
+                           (row["id"],)).fetchone()
+        if saved and saved[0] in ("sale", "return"):
+            return saved[0]
+        for field in ("total_minor", "subtotal_minor", "tax_minor", "tip_minor"):
+            if row[field]:
+                return "return" if row[field] < 0 else "sale"
+        return "sale"
+
+    def _correct_item(self, db, receipt_id, position, price, reason, signed=False):
+        row = db.execute("SELECT i.*,r.currency,r.total_minor FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id "
+                         "WHERE i.receipt_id=? AND i.position=?", (receipt_id, position)).fetchone()
+        if row is None:
+            raise ValueError("Receipt item not found.")
+        value, _ = self._correction_value(db, "money" if signed else "receipt_money", "price", price, currency=row["currency"])
+        if value is not None:
+            value = abs(value)  # Undo restores the price, keeping any later sale/return direction change.
+            receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+            negative = row["line_total_minor"] < 0 if row["line_total_minor"] else self.effective_receipt_direction(db, receipt) == "return"
+            value *= -1 if negative else 1
+        decimal = lambda amount: money(amount, row["currency"])["decimal"] if amount is not None else None
+        correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                                   "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"price:{position}", decimal(value), decimal(row["line_total_minor"]),
+                                                                           clean_reason(reason), actor.current(), now())).lastrowid
+        db.execute("UPDATE receipt_items SET line_total_minor=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
+        self.refresh_splits(db, receipt_id)
+        return correction_id
 
     @staticmethod
     def set_receipt_direction(db, receipt_id, direction):

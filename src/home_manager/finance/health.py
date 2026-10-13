@@ -30,6 +30,8 @@ RULES = {
     "currency_unknown": ("error", "A record uses a currency Home Manager does not support."),
     "statement_balance": ("warning", "A statement's opening balance plus its lines does not reach its closing balance; lines may be missing or misread."),
     "share_total": ("error", "A shared record's share was recorded against a different total, or is larger than the total."),
+    "income_link_multi": ("error", "A deposit is matched to more than one pay stub, so their net pay is counted once for several."),
+    "income_link_amount": ("warning", "A proposed match joins a pay stub and a deposit of different amounts."),
     "lots_uncovered": ("info", "Shares were sold that no recorded lot covers."),
     "lots_vs_holding": ("info", "A holding's open lots do not add up to the shares its latest statement shows."),
     "orphan_share": ("error", "A family share or assignment names a record that no longer exists; the next record given that id would inherit it."),
@@ -38,7 +40,7 @@ RULES = {
 # Tables that name a record by (record_type, record_id) instead of a foreign key, and the records they can name.
 TYPED_ID_TABLES = {"record_shares": "orphan_share", "family_assignments": "orphan_share", "financial_evidence_links": "orphan_reference",
                    "record_corrections": "orphan_reference", "review_events": "orphan_reference", "reconciliation_issues": "orphan_reference"}
-RECORD_TABLES = {"receipt": "receipts", "bill": "bills", "statement": "statements", "income_record": "income_records",
+RECORD_TABLES = {"receipt": "receipts", "statement": "statements", "income_record": "income_records",
                  "transaction": "transactions", "receipt_item": "receipt_items"}
 
 
@@ -58,7 +60,7 @@ def problem(code, record_type, record_id):
 def check_ledger(db) -> list[Problem]:
     """Every rule over the whole database. db: an open connection with sqlite3.Row rows; nothing is written."""
     found: list[Problem] = []
-    for check in (split_sums, split_coverage, links, uncounted_receipts, currencies, statement_balances, record_shares, lots, orphans):
+    for check in (split_sums, split_coverage, links, income_links, uncounted_receipts, currencies, statement_balances, record_shares, lots, orphans):
         found += check(db)
     return sorted(found, key=lambda item: (SEVERITIES.index(item.severity), item.code, str(item.record_id)))
 
@@ -68,7 +70,7 @@ def check_ledger(db) -> list[Problem]:
 LINKS = {
     "receipt": ("SELECT document_id FROM receipts WHERE id=?", "document_id"),
     "statement": ("SELECT document_id FROM statements WHERE id=?", "document_id"),
-    "bill": ("SELECT document_id FROM bills WHERE id=?", "document_id"),
+    "income_record": ("SELECT document_id FROM income_records WHERE id=?", "document_id"),
     "transaction": ("SELECT coalesce(t.source_document_id, s.document_id) FROM transactions t LEFT JOIN statements s ON s.id=t.statement_id "
                     "WHERE t.id=?", "document_id"),
     "holding": ("SELECT account_id FROM holdings WHERE id=?", "investment_account_id"),
@@ -147,10 +149,23 @@ def links(db):
     found += [problem("link_currency", "receipt", row[0]) for row in db.execute(
         f"SELECT DISTINCT l.receipt_id FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id JOIN transactions t ON t.id=l.transaction_id "
         f"WHERE {live} AND r.currency<>t.currency AND NOT (l.review_status='verified' AND t.currency='USD')")]
-    # A match the user verified may differ on purpose (a tip added after printing); a proposed one should not.
+    # A match the user verified may differ on purpose (a tip added after printing); a proposed one should not. A bill may
+    # be paid by its amount due, past-due balance included (docs/money.md "Bills and their lines").
     found += [problem("link_amount", "receipt", row[0]) for row in db.execute(
         "SELECT DISTINCT l.receipt_id FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id JOIN transactions t ON t.id=l.transaction_id "
-        "WHERE l.review_status='proposed' AND r.total_minor IS NOT NULL AND r.total_minor<>-t.amount_minor")]
+        "WHERE l.review_status='proposed' AND r.total_minor IS NOT NULL AND r.total_minor<>-t.amount_minor "
+        "AND NOT (r.document_kind='bill' AND r.amount_due_minor=-t.amount_minor)")]
+    return found
+
+
+def income_links(db):
+    """A deposit pays one pay stub, and a proposed match is for exactly its net pay (reconcile.income)."""
+    live = "l.review_status<>'rejected'"
+    found = [problem("income_link_multi", "transaction", row[0]) for row in db.execute(
+        f"SELECT l.transaction_id FROM transaction_income_links l WHERE {live} GROUP BY l.transaction_id HAVING count(DISTINCT l.income_record_id)>1")]
+    found += [problem("income_link_amount", "income_record", row[0]) for row in db.execute(
+        "SELECT DISTINCT l.income_record_id FROM transaction_income_links l JOIN income_records i ON i.id=l.income_record_id "
+        "JOIN transactions t ON t.id=l.transaction_id WHERE l.review_status='proposed' AND i.net_pay_minor<>t.amount_minor")]
     return found
 
 
@@ -189,12 +204,9 @@ def statement_balances(db):
 
 def record_shares(db):
     """A person's part of a shared receipt or bill was recorded against that record's total, and is no larger than it."""
-    found = []
-    for kind, table, column in (("receipt", "receipts", "total_minor"), ("bill", "bills", "amount_due_minor")):
-        found += [problem("share_total", kind, row[0]) for row in db.execute(
-            f"SELECT h.record_id FROM record_shares h JOIN {table} x ON x.id=h.record_id WHERE h.record_type=? "
-            f"AND (x.{column} IS NULL OR x.{column}<>h.total_minor OR abs(h.share_minor)>abs(h.total_minor) OR h.share_minor*h.total_minor<0)", (kind,))]
-    return found
+    return [problem("share_total", "receipt", row[0]) for row in db.execute(
+        "SELECT h.record_id FROM record_shares h JOIN receipts x ON x.id=h.record_id WHERE h.record_type='receipt' "
+        "AND (x.total_minor IS NULL OR x.total_minor<>h.total_minor OR abs(h.share_minor)>abs(h.total_minor) OR h.share_minor*h.total_minor<0)")]
 
 
 def orphans(db):
@@ -203,6 +215,8 @@ def orphans(db):
     found = []
     for table, code in TYPED_ID_TABLES.items():
         for kind, records in RECORD_TABLES.items():
+            if table == "record_corrections" and kind == "receipt_item":
+                records = "receipts"  # Item price overrides use receipt id plus printed position.
             found += [problem(code, table, row[0]) for row in db.execute(
                 f"SELECT rowid FROM {table} WHERE record_type=? AND record_id NOT IN (SELECT id FROM {records})", (kind,))]
     return found

@@ -102,6 +102,7 @@ const STATUS = {
   return: ["Return", "info", null], exchange: ["Exchange", "info", null],
   // Document summary states (docs/documents.md "Browsing the library").
   not_read: ["Not read yet", "neutral", null], read: ["Read, not recorded", "neutral", "file"], recorded: ["Recorded", "positive", "check-circle"],
+  not_tracked: ["Filed — not tracked", "neutral", "file"],
   // Budgets, bills and inventory.
   on_track: ["On track", "info", "check"], ahead_of_pace: ["Ahead of pace", "warning", "alert"], over: ["Over budget", "danger", "octagon"],
   within: ["Within budget", "positive", "check"], not_started: ["Not started", "neutral", "clock"],
@@ -112,6 +113,11 @@ const STATUS = {
   warranty_active: ["In force", "positive", "check-circle"], warranty_ending: ["Ends within 30 days", "warning", "clock"],
   // Spending items: a charge confirmed by a statement line and a receipt, or known from only one of them.
   reconciled: ["Reconciled", "positive", "check-circle"], receipt: ["Receipt only", "info", "file"], statement: ["Statement only", "neutral", null],
+  bill: ["Bill only", "info", "file"], paystub: ["Pay stub only", "info", "wallet"],
+  // Where a ledger row comes from (Transactions › Charges; docs/money.md "Bills and their lines", "Money in and paystubs").
+  src_receipt: ["Receipt", "neutral", "receipt-tax"], src_bill: ["Bill", "neutral", "file"], src_paystub: ["Pay stub", "neutral", "wallet"],
+  // A bill's tag on Records and the document page.
+  bill_doc: ["Bill", "info", "file"],
   // Investment accounts: a statement value waiting for the user, or an account left out of totals.
   value_to_confirm: ["New value to confirm", "info", "dashed"], removed: ["Removed", "neutral", "slash"],
   // A value worked out from a CD's or Treasury's terms, and one that has matured and waits for an answer.
@@ -171,9 +177,12 @@ function setStatusBadge(target, status, prefix = "", label = null) {
 function statusBadge(status, prefix = "", label = null) { return setStatusBadge(document.createElement("span"), status, prefix, label); }
 // A receipt's Return or Exchange tag from the server's sale_label, or nothing for a sale. Wrapped so the tag keeps its
 // own width in a stretching column; block puts it on its own line (under an amount in a table cell).
+// A bill (a receipt with document_kind 'bill', or a document whose record is one: ledger_kind) gets its Bill tag the same way.
 function saleBadges(record, {block = false} = {}) {
-  if (!record?.sale_label) return [];
-  const wrap = element(block ? "div" : "span", "", "sale-tag"); wrap.append(statusBadge(record.sale_label.toLowerCase())); return [wrap];
+  const tags = [];
+  if (record?.document_kind === "bill" || record?.ledger_kind === "bill") tags.push(statusBadge("bill_doc"));
+  if (record?.sale_label) tags.push(statusBadge(record.sale_label.toLowerCase()));
+  return tags.map(tag => { const wrap = element(block ? "div" : "span", "", "sale-tag"); wrap.append(tag); return wrap; });
 }
 
 // Money: the server supplies exact display text such as "-1,234.56 USD". This only rearranges that text

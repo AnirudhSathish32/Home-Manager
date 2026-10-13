@@ -1,4 +1,4 @@
-"""A synthetic corpus: 42 invented receipts, bank and card statements and pay stubs with known answers.
+"""A synthetic corpus: 44 invented receipts, bank and card statements, pay stubs and bills with known answers.
 
   python -m evals.synthetic OUT_FOLDER
 
@@ -179,6 +179,22 @@ def paystub(rng, employer, name, *, currency="USD", ytd=False, totals=False, emp
     return case("paystub", text, fields, rows, tags, source)
 
 
+def bill(rng, printed, name, lines, *, past_due=0, account="4821", tags=(), source="png"):
+    """A bill whose lines make up its new charges; a past-due balance is in the amount due but never in what counts
+    (docs/money.md "Bills and their lines"). lines: (description, who it is for as printed or None, amount)."""
+    issued = random_day(rng)
+    due = issued + timedelta(days=21)
+    new = sum(amount for *_, amount in lines)
+    text = [printed, f"Account ending {account}", f"Bill date {issued.isoformat()}", f"Due date {due.isoformat()}", "Currency USD"]
+    text += [f"{holder + ' ' if holder else ''}{description} {money(amount)}" for description, holder, amount in lines]
+    text += [f"Past due balance {money(past_due)}"] if past_due else []
+    text += [f"New charges {money(new)}", f"Amount due {money(new + past_due)}"]
+    fields = {"provider": name, "issue_date": issued.isoformat(), "due_date": due.isoformat(), "currency": "USD", "amount_due_minor": new + past_due,
+              "total_minor": new}
+    rows = [{"description": description, "line_total_minor": amount, "line_holder": holder} for description, holder, amount in lines]
+    return case("bill", text, fields, rows, tags, source)
+
+
 def documents():
     """Every synthetic document, in a fixed order, from the fixed seed."""
     rng = random.Random(SEED)
@@ -224,6 +240,11 @@ def documents():
     hardware, electronics = SHOPS[1], SHOPS[8]
     out += [receipt(rng, hardware, items=[("DRILL BIT SET", 2400)], returned={"DRILL BIT SET"}, footer=("Refund to VISA ****4821",), tags=["return"]),
             receipt(rng, electronics, items=[("WIRELESS MOUSE", 2999), ("USB-C CABLE", 1499)], returned={"WIRELESS MOUSE"}, tags=["return"])]
+    # Bills, after everything above: a family phone plan read per line, and rent with water and trash.
+    out += [bill(rng, "ACME WIRELESS", "Acme Wireless", [("Unlimited plan", "Alex 555-201-1111", 4000), ("Unlimited plan", "Blair 555-202-2222", 3000),
+                                                          ("Basic plan", "Casey 555-203-3333", 2000), ("Apple TV+", "Alex 555-201-1111", 999),
+                                                          ("Taxes, surcharges and fees", None, 1800)], past_due=1250),
+            bill(rng, "OAKWOOD APARTMENTS", "Oakwood Apartments", [("Rent", None, 150000), ("Water", None, 4520), ("Trash", None, 1500)], account="7788")]
     for document in out:
         assert all(set(row) == set(ROWS[document["document_type"]][1]) for row in document["rows"])
     return out

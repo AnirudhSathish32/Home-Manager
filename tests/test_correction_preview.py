@@ -127,15 +127,24 @@ def test_a_statement_balance_moves_the_account_balance(app_client):
     assert {"Cash across accounts", "Net worth"} <= set(figures)
 
 
-def test_bills_and_pay_stubs_show_notes_only(app_client):
+def test_bills_and_pay_stubs_move_the_months_they_count_in(app_client):
     client, manager, docs = app_client
     bill = manager.ledger.publish_bill({"provider": "City Water", "issue_date": "2026-09-01", "due_date": "2026-09-20", "period_start": None, "period_end": None,
                                         "amount_due_minor": 4500, "currency": "USD", "issues": [], "locator": {}}, source_of(docs["bill.png"], "extraction:bill"), "verified")["id"]
-    preview = client.post(f"/api/finance/records/bill/{bill}/correction-preview", json={"changes": {"due_date": "2026-09-25"}}).json()
-    assert preview["figures"] == [] and preview["notes"] == ["Bills don't change any totals; the due date moves on Bills and Today."]
+    # A bill counts on its due date (docs/money.md "Bills and their lines"): a later due date in the same month moves nothing.
+    preview = client.post(f"/api/finance/records/receipt/{bill}/correction-preview", json={"changes": {"due_date": "2026-09-25"}}).json()
+    assert preview["figures"] == [] and preview["notes"] == []
     assert preview["changes"][0]["from"] == "2026-09-20" and preview["changes"][0]["to"] == "2026-09-25"
+    moved = client.post(f"/api/finance/records/receipt/{bill}/correction-preview", json={"changes": {"due_date": "2026-10-02"}}).json()
+    assert {item["label"]: item["difference"]["minor"] for item in moved["figures"] if item["label"] == "Spending in September 2026"} == {
+        "Spending in September 2026": -4500}
     with manager.store.connection() as db:
         stub = db.execute("INSERT INTO income_records(document_id,blob_hash,pay_date,gross_pay_minor,net_pay_minor,currency,review_status,created_at,updated_at) "
                           "VALUES(?,?,'2026-09-15',400000,300000,'USD','verified','t','t')", (docs["stub.png"]["id"], docs["stub.png"]["current_hash"])).lastrowid
     preview = client.post(f"/api/finance/records/income_record/{stub}/correction-preview", json={"changes": {"pay_date": "2026-09-30"}}).json()
     assert preview["figures"] == [] and preview["notes"] == ["Taxes for 2026 are worked out again from your pay stubs."]
+    # Its net pay counts as money in on its pay date until a deposit replaces it (docs/money.md "Money in and paystubs").
+    moved = client.post(f"/api/finance/records/income_record/{stub}/correction-preview", json={"changes": {"pay_date": "2026-10-01"}}).json()
+    assert {item["label"]: item["difference"]["minor"] for item in moved["figures"]} == {
+        "Money in during September 2026": -300000, "Cash flow in September 2026": -300000,
+        "Money in during October 2026": 300000, "Cash flow in October 2026": 300000}

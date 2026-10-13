@@ -253,6 +253,11 @@ class Store:
     def close(self):
         self.lock.close()
 
+    def library_version(self):
+        """Persistent revision: captures finishing between UI polls still refresh the library and badges."""
+        with self.connection() as db:
+            return db.execute("SELECT version FROM library_revision WHERE id=1").fetchone()[0]
+
     def blob_path(self, digest: str) -> Path:
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError("Invalid content hash.")
@@ -523,7 +528,6 @@ class Store:
                 "(SELECT i.pay_date FROM income_records i WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected') AS pay_date,"
                 "coalesce((SELECT m.canonical_name FROM receipts r JOIN merchants m ON m.id=r.merchant_id WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1),"
                 "(SELECT a.institution FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.blob_hash=o.current_hash AND s.review_status<>'rejected'),"
-                "(SELECT m.canonical_name FROM bills b JOIN merchants m ON m.id=b.provider_merchant_id WHERE b.blob_hash=o.current_hash AND b.review_status<>'rejected'),"
                 "(SELECT m.canonical_name FROM income_records i JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected')) AS merchant,"
                 "coalesce(m.folder,(SELECT f.folder FROM document_folders f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash),"
                 "(SELECT r.result_folder FROM organization_runs r WHERE r.document_id=o.id AND r.blob_hash=o.current_hash "
@@ -538,19 +542,27 @@ class Store:
                 "ORDER BY r.created_at DESC LIMIT 1) AS analysis_status,"
                 "(SELECT e.status FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=o.id "
                 "AND p.blob_hash=o.current_hash ORDER BY e.created_at DESC LIMIT 1) AS extraction_status,"
-                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(total_minor) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT amount_due_minor FROM bills WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(total_minor) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),"
                 "(SELECT net_pay_minor FROM income_records WHERE blob_hash=o.current_hash),"
                 "(SELECT coalesce(closing_balance_minor,statement_balance_minor) FROM statements WHERE blob_hash=o.current_hash)) AS ledger_amount_minor,"
-                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(currency) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT currency FROM bills WHERE blob_hash=o.current_hash),"
+                "coalesce((SELECT CASE WHEN count(*)=1 THEN max(currency) END FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),"
                 "(SELECT currency FROM income_records WHERE blob_hash=o.current_hash),(SELECT currency FROM statements WHERE blob_hash=o.current_hash)) AS ledger_currency,"
+                # A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"): its tag, due date and period.
+                "(SELECT r.document_kind FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS ledger_kind,"
+                "(SELECT r.due_date FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS due_date,"
+                "(SELECT r.period_start FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS bill_period_start,"
+                "(SELECT r.period_end FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS bill_period_end,"
                 # Review state of the ledger record published from this version, or 'imported' for CSV/XLSX.
                 "coalesce((SELECT review_status FROM receipts WHERE blob_hash=o.current_hash ORDER BY CASE review_status WHEN 'needs_review' THEN 0 "
                 "WHEN 'proposed' THEN 1 WHEN 'verified' THEN 2 ELSE 3 END LIMIT 1),(SELECT review_status FROM statements WHERE blob_hash=o.current_hash),"
-                "(SELECT review_status FROM bills WHERE blob_hash=o.current_hash),(SELECT review_status FROM income_records WHERE blob_hash=o.current_hash),"
-                "(SELECT CASE WHEN count(*)>0 THEN 'imported' END FROM transaction_imports i WHERE i.blob_hash=o.current_hash)) AS ledger_status,"
+                "(SELECT review_status FROM income_records WHERE blob_hash=o.current_hash),"
+                "(SELECT CASE WHEN count(*)>0 THEN 'imported' END FROM transaction_imports i WHERE i.blob_hash=o.current_hash),"
+                "(SELECT CASE WHEN e.status='succeeded' AND (e.publication_json IS NULL OR e.publication_json='null') THEN 'not_tracked' END "
+                "FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=o.id AND p.blob_hash=o.current_hash "
+                "ORDER BY e.created_at DESC,e.rowid DESC LIMIT 1)) AS ledger_status,"
                 # The document's own date from its ledger record, for display, filtering and sorting.
                 "coalesce((SELECT min(purchase_date) FROM receipts WHERE blob_hash=o.current_hash AND review_status<>'rejected'),(SELECT period_end FROM statements WHERE blob_hash=o.current_hash),"
-                "(SELECT coalesce(due_date,issue_date) FROM bills WHERE blob_hash=o.current_hash),(SELECT pay_date FROM income_records WHERE blob_hash=o.current_hash)) AS document_date,"
+                "(SELECT pay_date FROM income_records WHERE blob_hash=o.current_hash)) AS document_date,"
                 # The spending categories of the receipt recorded from this version, as ',dining,groceries,': the Receipts folder's
                 # subfolders. A receipt with categorised items is in each of its items' categories, else in the receipt's own.
                 "(SELECT group_concat(categories,'') FROM (SELECT ','||coalesce((SELECT group_concat(category) FROM (SELECT DISTINCT s.category FROM category_splits s "
@@ -560,15 +572,17 @@ class Store:
                 "(SELECT CASE WHEN EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor<0) "
                 "AND EXISTS(SELECT 1 FROM receipt_items i WHERE i.receipt_id=r.id AND i.line_total_minor>0) THEN 'Exchange' WHEN r.total_minor<0 THEN 'Return' END "
                 "FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1) AS sale_label,"
-                # Reconciliation of the record published from this version: a receipt's match to a
-                # transaction, or a bill's payment state. NULL where reconciliation does not apply.
+                # Reconciliation of the record published from this version: a receipt's or bill's match to the transaction that
+                # paid it, or a pay stub's to its deposit. NULL where reconciliation does not apply.
                 "coalesce((SELECT state FROM (SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='verified') THEN 'matched' "
                 "WHEN EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status='proposed') THEN 'proposed' "
                 "WHEN EXISTS(SELECT 1 FROM reconciliation_issues i WHERE i.record_type='receipt' AND i.record_id=r.id AND i.status='open') THEN 'ambiguous' "
                 "ELSE 'unmatched' END AS state FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected') "
                 "ORDER BY CASE state WHEN 'ambiguous' THEN 0 WHEN 'unmatched' THEN 1 WHEN 'proposed' THEN 2 ELSE 3 END LIMIT 1),"
-                "(SELECT CASE b.payment_status WHEN 'paid' THEN 'matched' WHEN 'unpaid' THEN 'unmatched' END FROM bills b "
-                "WHERE b.blob_hash=o.current_hash AND b.review_status<>'rejected')) AS reconciliation_status "
+                "(SELECT CASE WHEN EXISTS(SELECT 1 FROM transaction_income_links l WHERE l.income_record_id=i.id AND l.review_status='verified') THEN 'matched' "
+                "WHEN EXISTS(SELECT 1 FROM transaction_income_links l WHERE l.income_record_id=i.id AND l.review_status='proposed') THEN 'proposed' "
+                "WHEN EXISTS(SELECT 1 FROM reconciliation_issues x WHERE x.record_type='income_record' AND x.record_id=i.id AND x.status='open') THEN 'ambiguous' "
+                "END FROM income_records i WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected')) AS reconciliation_status "
                 "FROM occurrences o JOIN blobs b ON b.hash=o.current_hash LEFT JOIN managed_files m ON m.document_id=o.id AND m.blob_hash=o.current_hash), "
                 # An AI description that merely restates the merchant or location (saved before extraction checked
                 # for this) is left out of the title; the user's own description is always shown as written.

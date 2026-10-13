@@ -112,8 +112,8 @@ def test_a_larger_same_merchant_charge_is_asked_about_not_linked_or_double_count
 def test_receipt_category_is_a_correction_kept_through_re_extraction(books):
     store, ledger, docs = books
     receipt_id = receipt(ledger, docs["cafe.png"], "Cafe One", "2026-09-10", 1200, "clothing")
-    # Utilities and rent are bills, paid by card or bank; not a receipt category. Shopping was retired for finer categories.
-    for unlisted in ("coffee", "utilities", "shopping"):
+    # Shopping was retired for finer categories. Utilities is a category again, for bills' lines (docs/money.md "Categories").
+    for unlisted in ("coffee", "shopping"):
         with pytest.raises(ValueError, match="listed categories"):
             ledger.correct("receipt", receipt_id, {"category": unlisted})
     assert ledger.correct("receipt", receipt_id, {"category": "Dining"})["category"] == "dining"
@@ -123,8 +123,9 @@ def test_receipt_category_is_a_correction_kept_through_re_extraction(books):
     for name in ("cafe.png", "grocer.png"):  # The Receipts folder's subfolders count the documents filed there.
         store.library_action(docs[name]["id"], docs[name]["current_hash"], "move", "Receipts")
     folders = store.folders()["receipt_categories"]
-    assert [row["category"] for row in folders] == [*RECEIPT_CATEGORIES, "uncategorized"] and len(RECEIPT_CATEGORIES) == 19
-    assert {"furniture & decor", "household supplies", "home improvement", "pets", "kids & baby", "gifts & donations"} <= set(RECEIPT_CATEGORIES)
+    assert [row["category"] for row in folders] == [*RECEIPT_CATEGORIES, "uncategorized"] and len(RECEIPT_CATEGORIES) == 21
+    assert {"furniture & decor", "household supplies", "home improvement", "pets", "kids & baby", "gifts & donations", "utilities",
+            "phone & internet"} <= set(RECEIPT_CATEGORIES)
     assert {row["category"]: row["count"] for row in folders if row["count"]} == {"dining": 1, "uncategorized": 1}
     assert [doc["id"] for doc in store.documents(folder="Receipts", category="dining")["items"]] == [docs["cafe.png"]["id"]]
     with pytest.raises(ValueError, match="Unknown receipt category"):

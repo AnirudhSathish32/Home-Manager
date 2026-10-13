@@ -238,17 +238,19 @@ async function poll() {
   try {
     if (configured) {
       const settings = await api("/api/settings");
+      const libraryChanged = settings.library_version !== lastLibraryVersion;
       const wasBusy = anyBusy(); setBusy(settings); controls();
       showReceiptBatch(settings.receipt_batch); renderActivity(settings.activity);
       // Member status in a family view; a finished family share or delivery updates the status lines.
       if (familyMode || (wasBusy && !anyBusy())) renderProfiles(settings);
       if (familyMode && wasBusy && !anyBusy() && currentRoute?.name === "review") await reloadReviewV2();
       if (renderSession(settings)) { reconcileChecked = false; await sessionChanged(); return; }
-      if (anyBusy() || wasBusy) {
+      if (anyBusy() || wasBusy || libraryChanged) {
         await refresh();
         // Processing redraws its strip and the shown tab; Records (records_v2.js) only when its documents changed.
         if (currentRoute?.name === "processing") await pr2Refresh();
         await rc2Refresh();
+        lastLibraryVersion = settings.library_version;
       }
       if (wasBusy && !anyBusy() && currentRoute?.name === "home") await reloadToday();
       // Work just finished (it may have recorded a statement), or the first poll: check for statements to reconcile.
@@ -265,7 +267,7 @@ async function poll() {
   }
   finally { setTimeout(poll, 1500); }
 }
-let pollFailure = null, reconcileChecked = false;
+let pollFailure = null, reconcileChecked = false, lastLibraryVersion = null;
 // Start once every deferred script has run: a fast settings response must not reach showRoute (shell.js) before it exists.
 document.addEventListener("DOMContentLoaded", () => loadSettings().then(refresh).then(() => showRoute(false)).then(poll).catch(error => notice(error, true)));
 

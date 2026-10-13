@@ -13,12 +13,12 @@ LEGACY_HIERARCHY = {
 # Two stores over one library. Money: proof of what was spent, which the ledger counts and reconciles.
 # Documents: papers kept because they matter (leases, policies, pay stubs, tax forms).
 MONEY_FOLDERS = ["Receipts", "Bank_Statements", "Credit_Card_Statements"]
-DOCUMENT_FOLDERS = ["Housing", "Insurance", "Investments", "Jobs", "Loans", "Taxes"]
+DOCUMENT_FOLDERS = ["Bills", "Housing", "Insurance", "Investments", "Jobs", "Loans", "Taxes"]
 FOLDERS = [*MONEY_FOLDERS, *DOCUMENT_FOLDERS]
 FILING_FOLDERS = ["Unfiled", *FOLDERS]
 LIBRARY_FOLDERS = ["Inbox", *FILING_FOLDERS]
 # Folders no longer filed into, and where startup moves their files. They stay readable until then.
-RETIRED_FOLDERS = {"Bills": "Unfiled", "Income": "Jobs"}
+RETIRED_FOLDERS = {"Income": "Jobs"}
 # Jobs holds one folder per employer, each with these sections (docs/taxes.md "Jobs and pay stubs").
 JOB_SECTIONS = ("Paystubs", "Documents")
 DocumentFolder = Enum("DocumentFolder", {f"folder_{i}": value for i, value in enumerate(FILING_FOLDERS)}, type=str)  # type: ignore[misc]

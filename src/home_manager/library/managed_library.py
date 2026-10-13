@@ -22,7 +22,7 @@ from .storage import digest_file, now
 DATED_FOLDERS = frozenset(LIBRARY_FOLDERS) - {"Inbox", "Unfiled"}
 # Retired folders are only ever a source: their files are read while being moved out.
 READABLE_FOLDERS = frozenset(LIBRARY_FOLDERS) | frozenset(RETIRED_FOLDERS)
-TYPE_FOLDERS = {"receipt": "Receipts", "bank_statement": "Bank_Statements",
+TYPE_FOLDERS = {"bill": "Bills", "receipt": "Receipts", "bank_statement": "Bank_Statements",
                 "credit_card_statement": "Credit_Card_Statements",
                 "paystub": "Jobs", "employment_document": "Jobs", "investment_statement": "Investments",
                 "investment_confirmation": "Investments", "investment_tax_form": "Taxes", "loan_document": "Loans",
@@ -32,8 +32,6 @@ JOB_TYPES = {"paystub": "Paystubs", "employment_document": "Documents"}
 # Legal-form words left off an employer's folder name: "Google LLC" files under Google.
 LEGAL_SUFFIXES = {"LLC", "L.L.C.", "INC", "INC.", "INCORPORATED", "CORP", "CORP.", "CORPORATION", "CO", "CO.", "COMPANY", "LTD", "LTD.",
                   "LIMITED", "LP", "LLP", "PLC", "GMBH", "PBC"}
-# Recognized types that are deliberately not filed or tracked, with why.
-UNTRACKED_TYPES = {"bill": "Bills aren't tracked. Move it to a folder if you want to keep it, or delete it."}
 
 
 def locked(method):
@@ -436,7 +434,7 @@ class ManagedLibrary:
         employer = self.employer(merchant) if document_type in JOB_TYPES and merchant else None
         if document_type in JOB_TYPES and not employer:
             merchant = None  # A name with no letters can't name an employer folder.
-        if document_type in TYPE_FOLDERS and merchant and dated:
+        if document_type == "bill" or (document_type in TYPE_FOLDERS and merchant and dated):
             return self.organize(document_id, digest, TYPE_FOLDERS[document_type], reason, action="classification",
                                  merchant=merchant, document_date=dated, employer=employer, section=JOB_TYPES.get(document_type),
                                  label=("Paystub" if document_type == "paystub" else clean_label(spelled(document_name)) or "Document") if employer else None,
@@ -444,8 +442,6 @@ class ManagedLibrary:
         existing = self.current_file(document_id, digest)
         if existing and existing["folder"] in FOLDERS:
             return None
-        if document_type in UNTRACKED_TYPES:
-            return self.organize(document_id, digest, "Unfiled", UNTRACKED_TYPES[document_type], action="classification")
         missing = [text for text, known in (("the document type is not confirmed", document_type in TYPE_FOLDERS),
                                             ("the merchant or issuer is not confirmed", bool(merchant)), ("the date is not confirmed", bool(dated))) if not known]
         return self.organize(document_id, digest, "Unfiled", f"Not filed automatically: {'; '.join(missing)}. Choose a folder manually.",

@@ -192,7 +192,51 @@ function familyMembersSection(family) {
     } catch (error) { notice(error, true); }
   });
   const actions = element("div", "", "button-row"); actions.append(update);
-  return [heading, intro, hub, wrap, actions, form];
+  return [heading, intro, hub, wrap, actions, form, ...whoHasWhatSection(family)];
+}
+
+// Who has what (docs/family.md "Who has what"): each member's phone lines and cards, by their last four digits only. The
+// family's inbox reads owners from this list and never guesses.
+function whoHasWhatSection(family) {
+  const entries = family.who_has_what || [], people = family.members;
+  const heading = element("h2", "Who has what");
+  const intro = element("p", "Phone lines and cards, so a bill's lines and a card's receipts go to the right person. Enter only the last four digits. "
+                             + "Changes apply to everything in the family's inbox not sent yet.", "muted small");
+  const save = async next => {
+    try { await api("/api/family/who-has-what", {method: "PUT", body: JSON.stringify({entries: next})}); profilesKey = ""; await loadSettings(); }
+    catch (error) { notice(error, true); }
+  };
+  const named = id => people.find(person => person.member_id === id)?.name || "Former member";
+  const rows = entries.map((entry, index) => {
+    const row = document.createElement("tr");
+    const remove = element("button", "Remove", "link-button"); remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${entry.kind === "phone" ? "phone line" : "card"} ending ${entry.last_four}`);
+    remove.addEventListener("click", () => save(entries.filter((_, other) => other !== index)));
+    const actions = element("td"); actions.append(remove);
+    row.append(element("td", named(entry.member_id)), element("td", entry.kind === "phone" ? "Phone line" : "Card"), element("td", entry.label || "—"),
+               element("td", `•••• ${entry.last_four}`, "numeric"), actions);
+    return row;
+  });
+  const wrap = element("div", "", "table-wrap"), table = element("table", "", "data-table");
+  const head = document.createElement("thead"), tr = document.createElement("tr"), body = document.createElement("tbody");
+  for (const text of ["Person", "What", "Name", "Ends in", ""]) { const th = element("th", text, text === "Ends in" ? "numeric" : ""); th.scope = "col"; tr.append(th); }
+  if (!rows.length) { const row = document.createElement("tr"), td = element("td", "Nothing listed yet.", "muted"); td.colSpan = 5; row.append(td); rows.push(row); }
+  head.append(tr); body.append(...rows); table.append(head, body); wrap.append(table);
+  const form = element("form", "", "inline-form who-form");
+  const field = (text, control) => { const box = element("div", "", "field"), label = element("label", text); label.htmlFor = control.id; box.append(label, control); return box; };
+  const person = element("select"); person.id = "who-person"; person.required = true;
+  person.append(new Option("Choose…", ""), ...people.map(member => new Option(member.name, member.member_id)));
+  const kind = element("select"); kind.id = "who-kind"; kind.append(new Option("Phone line", "phone"), new Option("Card", "card"));
+  const label = element("input"); label.id = "who-label"; label.maxLength = 40; label.autocomplete = "off"; label.placeholder = "Mom's phone, Visa";
+  const digits = element("input"); digits.id = "who-last-four"; digits.required = true; digits.inputMode = "numeric"; digits.pattern = "\\d{4}";
+  digits.maxLength = 4; digits.autocomplete = "off"; digits.title = "The last four digits only";
+  const add = element("button", "Add", "secondary"); add.type = "submit";
+  form.append(field("Person", person), field("What", kind), field("Name (optional)", label), field("Last four digits", digits), add);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    save([...entries, {member_id: person.value, kind: kind.value, last_four: digits.value, label: label.value.trim() || null}]);
+  });
+  return [heading, intro, wrap, form];
 }
 
 // The member's line about the family hub: synced, waiting for the family computer, or refused.
@@ -265,19 +309,27 @@ function joinSection() {
 }
 
 // Family inbox: who each upload is for (To check, family profile only) ----------------------
-function routingRow(record, people, onSent, idPrefix) {
+function routingRow(record, people, onSent, idPrefix, who = []) {
   const row = element("li", "", "routing-row"), what = element("div", "", "routing-what"), key = `${record.record_type}-${record.id}`;
-  const title = element("strong", `${RECORD_KINDS?.[record.record_type] || statusLabel(record.record_type)} · ${record.name || "Name not found"}`);
+  const kind = record.bill ? "Bill" : RECORD_KINDS?.[record.record_type] || statusLabel(record.record_type);
+  const title = element("strong", `${kind} · ${record.name || "Name not found"}`);
   const facts = element("span", "", "small");
   facts.append(dateDisplay(record.date), document.createTextNode(" · "), amount(record.amount || "—", {signed: false}));
+  const named = id => people.find(person => person.member_id === id)?.name;
   const suggested = people.find(person => person.member_id === record.suggested?.member_id);
-  what.append(title, facts, element("small", suggested ? `Suggested: ${suggested.name} · ${record.suggested.reason}` : record.suggested?.reason || "", "muted"));
+  const byLine = record.suggested?.mode === "lines";
+  const asked = record.suggested?.requested_by ? `${named(record.suggested.requested_by) || "A member"} asked to share it by line. ` : "";
+  what.append(title, facts, element("small", asked + (suggested ? `Suggested: ${suggested.name} · ${record.suggested.reason}`
+                                                     : byLine ? `Suggested: share by line · ${record.suggested.reason}` : record.suggested?.reason || ""), "muted"));
+  if (record.bill && record.lines?.length) what.append(routingLines(record, people));
+  if (record.suggested?.ask) what.append(addToWhoHasWhat(record.suggested.ask, people, who, onSent));
   if (record.document_id) what.append(homeLink("Open the document", `#/documents/${record.document_id}`, "small"));
   const form = element("form", "", "routing-decision"), field = element("div", "", "field"), label = element("label", "For"), select = element("select");
   select.id = `${idPrefix}-${key}`; label.htmlFor = select.id; select.required = true;
   select.append(new Option("Choose…", ""), ...people.map(person => new Option(person.name, person.member_id)));
   if (record.shareable) select.append(new Option("Shared by the family", "shared"));
-  select.value = suggested ? suggested.member_id : "";
+  if (record.bill) select.append(new Option("Share by line", "lines"));
+  select.value = byLine ? "lines" : suggested ? suggested.member_id : "";
   field.append(label, select);
   const split = element("fieldset", "", "routing-people"); split.hidden = true;
   split.append(element("legend", "Split equally between"));
@@ -290,20 +342,60 @@ function routingRow(record, people, onSent, idPrefix) {
   form.append(field, split, send);
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    const shared = select.value === "shared";
-    const members = shared ? [...split.querySelectorAll("input:checked")].map(box => box.value) : [select.value];
-    if (!members.length) { notice("Tick at least one person to share it.", true); return; }
+    const shared = select.value === "shared", lines = select.value === "lines";
+    const members = shared ? [...split.querySelectorAll("input:checked")].map(box => box.value) : lines ? [] : [select.value];
+    if (!members.length && !lines) { notice("Tick at least one person to share it.", true); return; }
     send.disabled = true;
     try {
-      const result = await api(`/api/family/routing/${record.record_type}/${record.id}`, {method: "PUT", body: JSON.stringify({mode: shared ? "shared" : "member", members})});
-      notice(shared ? `Shared: ${result.shares.map(part => `${part.name} ${part.share?.display || ""}`).join(" · ")}. Each person's profile gets the document and their part.`
-                    : `Sent to ${result.shares[0]?.name}.`);
+      const mode = lines ? "lines" : shared ? "shared" : "member";
+      const result = await api(`/api/family/routing/${record.record_type}/${record.id}`, {method: "PUT", body: JSON.stringify({mode, members})});
+      notice(shared || lines ? `${lines ? "Shared by line" : "Shared"}: ${result.shares.map(part => `${part.name} ${part.share?.display || ""}`).join(" · ")}. Each person's profile gets the document and their part.`
+                             : `Sent to ${result.shares[0]?.name}.`);
       busy.capture = true;
       await onSent();
     } catch (error) { send.disabled = false; notice(error, true); }
   });
   row.append(what, form);
   return row;
+}
+// A bill's lines in the family's inbox, each with whose it is (docs/family.md "Sharing a bill by line"). A line no one is
+// named on is shared out with the taxes and fees.
+function routingLines(record, people) {
+  const list = element("ul", "", "routing-lines small");
+  for (const line of record.lines) {
+    const item = element("li"), who = document.createElement("select");
+    who.setAttribute("aria-label", `Whose ${line.description} is`);
+    who.append(new Option("Shared (taxes, fees)", ""), ...people.map(person => new Option(person.name, person.member_id)));
+    who.value = line.member_id || "";
+    who.addEventListener("change", async () => {
+      who.disabled = true;
+      try { await api(`/api/family/routing/receipt/${record.id}/lines/${line.position}`, {method: "PUT", body: JSON.stringify({member_id: who.value || null})}); }
+      catch (error) { notice(error, true); who.value = line.member_id || ""; }
+      finally { who.disabled = false; }
+    });
+    item.append(element("span", `${line.description}${line.line_holder ? ` · ${line.line_holder}` : ""}`), who);
+    list.append(item);
+  }
+  return list;
+}
+// Asked once: a card or phone line that isn't in the family's Who has what list, with whose it is.
+function addToWhoHasWhat(ask, people, who, onSaved) {
+  const form = element("form", "", "routing-ask small"), select = document.createElement("select");
+  select.setAttribute("aria-label", `Whose ${ask.kind === "phone" ? "phone line" : "card"} ending ${ask.last_four} is`);
+  select.required = true;
+  select.append(new Option("Choose…", ""), ...people.map(person => new Option(person.name, person.member_id)));
+  const add = element("button", "Add to Who has what", "secondary"); add.type = "submit";
+  form.append(element("span", `${ask.kind === "phone" ? "Phone line" : "Card"} ending ${ask.last_four} is `), select, add);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    add.disabled = true;
+    try {
+      await api("/api/family/who-has-what", {method: "PUT", body: JSON.stringify({entries: [...who, {member_id: select.value, kind: ask.kind, last_four: ask.last_four, label: null}]})});
+      notice("Added to Who has what.");
+      await onSaved();
+    } catch (error) { add.disabled = false; notice(error, true); }
+  });
+  return form;
 }
 
 // Member dialogs ------------------------------------------------------------------

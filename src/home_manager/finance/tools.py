@@ -27,7 +27,9 @@ from .fx import REPORTING, EcbRates, FxError
 from .ledger import (
     CHARGE_SHARE,
     COUNTABLE,
+    HAS_SPLITS,
     PENDING,
+    RECEIPT_SHARE,
     RECEIPT_SPENT,
     RECEIPT_SPLIT_CATEGORY,
     RECEIPT_SPLIT_SPENT,
@@ -35,6 +37,7 @@ from .ledger import (
     SPENDING,
     SPLIT_CATEGORY,
     SPLIT_SPENT,
+    STANDALONE_INCOME,
     STANDALONE_RECEIPT,
     TRANSACTION_SPENT,
     TRANSACTION_SPLITS,
@@ -53,6 +56,15 @@ STATUS_FILTERS = {"counted": COUNTABLE, "pending": PENDING, "rejected": "t.revie
 TRANSACTION_SORTS = {"date_desc": "t.posted_date DESC,t.id DESC", "date_asc": "t.posted_date,t.id",
                      "amount_desc": "t.amount_minor DESC,t.id DESC", "amount_asc": "t.amount_minor,t.id",
                      "description": "normalized_name(t.description_raw),t.id"}
+# The same orders for receipts, bills and pay stubs listed among transactions (get_transactions include_documents), and
+# for sorting the two together: (key, newest or largest first).
+DOCUMENT_SORTS = {"date_desc": "day DESC,record_id DESC", "date_asc": "day,record_id", "amount_desc": "amount_minor DESC,record_id DESC",
+                  "amount_asc": "amount_minor,record_id", "description": "normalized_name(description),record_id"}
+DOCUMENT_ORDER = {"date_desc": (lambda row: (row["posted_date"] or "", row["source"] == "transaction", row["id"] or row["record_id"]), True),
+                  "date_asc": (lambda row: (row["posted_date"] or "", row["source"] != "transaction", row["id"] or row["record_id"]), False),
+                  "amount_desc": (lambda row: (row["amount_minor"], row["id"] or row["record_id"]), True),
+                  "amount_asc": (lambda row: (row["amount_minor"], row["id"] or row["record_id"]), False),
+                  "description": (lambda row: (normalize_name(row["description_raw"] or ""), row["id"] or row["record_id"]), False)}
 HAS_RECEIPT = "EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.transaction_id=t.id AND l.review_status<>'rejected')"
 # A receipt with no link to a charge that the user has not rejected.
 UNLINKED_RECEIPT = "r.review_status<>'rejected' AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l WHERE l.receipt_id=r.id AND l.review_status<>'rejected')"
@@ -148,6 +160,9 @@ class TransactionsInput(ToolInput):
     categories: list[str] | None = Field(default=None, min_length=1, max_length=500)
     metric: Literal["spending", "inflow", "cashflow", "categories"] | None = None
     has_receipt: bool | None = None
+    direction: Literal["out", "in", "all"] = Field(default="all", description="Money out, money in, or both.")
+    include_documents: bool = Field(default=False, description="Also list receipts, bills and pay stubs that count on their own "
+                                                               "because no card or bank line has replaced them yet.")
     sort: Literal[*TRANSACTION_SORTS] = "date_desc"  # type: ignore[valid-type]
     offset: int = Field(default=0, ge=0, le=1_000_000)
     limit: int = Field(default=200, ge=1, le=1000)
@@ -161,6 +176,7 @@ class SpendingItemsInput(ToolInput):
     categories: list[str] | None = Field(default=None, min_length=1, max_length=500)
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
     query: str | None = Field(default=None, max_length=200, description="Words in the merchant, charge description or item name.")
+    direction: Literal["out", "in", "all"] = Field(default="all", description="Money out (spending), money in (refunds and net pay), or both.")
     offset: int = Field(default=0, ge=0, le=1_000_000)
     limit: int = Field(default=200, ge=1, le=1000)
 
@@ -349,6 +365,8 @@ class FinanceTools(ItemAnalysisTools):
             params += value.transaction_types
         if value.has_receipt is not None:
             clauses.append(HAS_RECEIPT if value.has_receipt else f"NOT {HAS_RECEIPT}")
+        if value.direction != "all":
+            clauses.append("t.amount_minor<0" if value.direction == "out" else "t.amount_minor>0")
         # Every query word must appear in the description or the merchant's name, compared as merchant keys.
         for token in normalize_name(value.query).split() if value.query else []:
             clauses.append("instr(' '||normalized_name(t.description_raw||' '||coalesce(m.canonical_name,''))||' ',?)>0")
@@ -358,18 +376,103 @@ class FinanceTools(ItemAnalysisTools):
         # The matched receipt (confirmed or proposed, the earliest if several), with the document to open for it.
         receipt = ("LEFT JOIN transaction_receipt_links l ON l.id=(SELECT min(k.id) FROM transaction_receipt_links k WHERE k.transaction_id=t.id "
                    "AND k.review_status<>'rejected') LEFT JOIN receipts r ON r.id=l.receipt_id ")
+        documents = self._documents_wanted(value)
+        # Page through the merged list: each source is asked for the rows up to this page's end, then they are sorted together.
+        fetch = value.offset + value.limit if documents else value.limit
         with self.connection() as db:
             total = db.execute("SELECT count(*) " + tables + where, params).fetchone()[0]
             rows = [dict(row) for row in db.execute(
-                "SELECT t.*,a.display_name AS account,m.canonical_name AS merchant,l.receipt_id,l.review_status AS receipt_link_status,"
-                f"r.document_id AS receipt_document_id,{CHARGE_SHARE} AS shared_part_minor " + tables + receipt + where
-                + f" ORDER BY {TRANSACTION_SORTS[value.sort]} LIMIT ? OFFSET ?", [*params, value.limit, value.offset])]
+                "SELECT 'transaction' AS source,t.*,a.display_name AS account,m.canonical_name AS merchant,l.receipt_id,l.review_status AS receipt_link_status,"
+                f"r.document_id AS receipt_document_id,r.document_kind AS receipt_kind,{HAS_SPLITS} AS split_by_items,{CHARGE_SHARE} AS shared_part_minor,"
+                f"(SELECT k.income_record_id FROM transaction_income_links k WHERE k.transaction_id=t.id AND k.review_status<>'rejected' ORDER BY k.id LIMIT 1) AS income_record_id "
+                + tables + receipt + where + f" ORDER BY {TRANSACTION_SORTS[value.sort]} LIMIT ? OFFSET ?",
+                [*params, fetch, 0 if documents else value.offset])]
+            # In and out of what counts: a shared charge counts this person's part; transfers and card payments are neither.
+            sums = [dict(row) for row in db.execute(
+                f"SELECT t.currency,coalesce(-{CHARGE_SHARE},t.amount_minor) AS signed " + tables + where
+                + f" AND {COUNTABLE} AND t.transaction_type NOT IN ('transfer','payment')", params)]
+            if documents:
+                found, count, signed = self._document_rows(db, value, fetch)
+                rows, total, sums = rows + found, total + count, sums + signed
+        if documents:
+            key, backwards = DOCUMENT_ORDER[value.sort]
+            rows = sorted(rows, key=key, reverse=backwards)[value.offset:value.offset + value.limit]
+        totals: dict = defaultdict(lambda: [0, 0])
+        for row in sums:
+            totals[row["currency"]][0 if row["signed"] > 0 else 1] += abs(row["signed"])
         # shared_part: a charge matched to a receipt the family shared counts only this person's part of it.
         return {"transactions": [{**row, "amount": money(row["amount_minor"], row["currency"]),
                                   "shared_part": money(row["shared_part_minor"], row["currency"]) if row["shared_part_minor"] is not None else None,
-                                  "counted": row["review_status"] != "rejected" and (row["origin"] != "extraction" or row["review_status"] == "verified")}
+                                  "counted": row["source"] != "transaction" or row["review_status"] != "rejected" and (row["origin"] != "extraction" or row["review_status"] == "verified")}
                                  for row in rows],
-                "total_matching": total, "offset": value.offset, "limit": value.limit}
+                "total_matching": total, "offset": value.offset, "limit": value.limit,
+                "totals": [{"currency": currency, "in": money(amounts[0], currency), "out": money(amounts[1], currency),
+                            "net": money(amounts[0] - amounts[1], currency)} for currency, amounts in sorted(totals.items())],
+                "notes": ["totals add up what counts among the matching rows: money in, money out and the difference. Transfers, card payments "
+                          "and rows still waiting for review aren't counted."]}
+
+    @staticmethod
+    def _documents_wanted(value):
+        """Whether a transactions list also takes receipts, bills and pay stubs that count on their own: asked for, and
+        no filter that only a card or bank line can meet (an account, a type, a receipt match, a status other than counted)."""
+        return (value.include_documents and value.account_id is None and not value.transaction_types and value.has_receipt is None
+                and (value.statuses is None or "counted" in value.statuses))
+
+    def _document_rows(self, db, value, limit):
+        """([rows], count, [{currency, signed}]) of receipts, bills and pay stubs that count on their own, shaped like
+        transaction rows (source receipt, bill or paystub; id None, record_id the record's) and filtered like them."""
+        dated, params = "", []
+        receipts, stubs = value.metric != "inflow", value.metric in (None, "inflow", "cashflow") and not (value.category or value.categories)
+        for bound, operator in ((value.start, ">="), (value.end, "<=")):
+            if bound:
+                dated += f" AND day{operator}?"
+                params.append(bound)
+        parts, part_params = [], []
+        if receipts:
+            wanted = [" ".join(value.category.split()).lower()] if value.category else value.categories or []
+            in_category = ""
+            if wanted:
+                marks = ",".join("?" * len(wanted))
+                in_category = (f" AND (EXISTS(SELECT 1 FROM category_splits s WHERE s.receipt_id=r.id AND s.transaction_id IS NULL AND s.category IN ({marks})) "
+                               f"OR NOT EXISTS(SELECT 1 FROM category_splits s WHERE s.receipt_id=r.id AND s.transaction_id IS NULL) "
+                               f"AND coalesce(r.category,'uncategorized') IN ({marks}))")
+                part_params += wanted * 2
+            parts.append(f"SELECT CASE r.document_kind WHEN 'bill' THEN 'bill' ELSE 'receipt' END AS source,r.id AS record_id,r.purchase_date AS day,"
+                         f"coalesce(m.canonical_name,'Unknown merchant') AS merchant,coalesce(r.description,m.canonical_name,'Unknown merchant') AS description,"
+                         f"-{RECEIPT_SPENT} AS signed,"
+                         f"-r.total_minor AS amount_minor,r.currency,r.review_status,r.document_id,r.category,r.due_date,{RECEIPT_SHARE} AS shared_part_minor,"
+                         "EXISTS(SELECT 1 FROM category_splits s WHERE s.receipt_id=r.id AND s.transaction_id IS NULL AND s.receipt_item_id IS NOT NULL) AS split_by_items "
+                         f"FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id WHERE {STANDALONE_RECEIPT}{in_category}")
+        if stubs:
+            parts.append("SELECT 'paystub',i.id,i.pay_date,coalesce(m.canonical_name,'Pay stub'),'Net pay',i.net_pay_minor,i.net_pay_minor,i.currency,"
+                         f"i.review_status,i.document_id,NULL,NULL,NULL,0 FROM income_records i LEFT JOIN merchants m ON m.id=i.payer_merchant_id WHERE {STANDALONE_INCOME}")
+        if not parts:
+            return [], 0, []
+        clauses = "WHERE 1=1" + dated
+        if value.currency:
+            clauses += " AND currency=?"
+            params.append(currency_code(value.currency))
+        if value.direction != "all":
+            clauses += " AND signed<0" if value.direction == "out" else " AND signed>0"
+        for token in normalize_name(value.query).split() if value.query else []:
+            clauses += " AND instr(' '||normalized_name(merchant||' '||description)||' ',?)>0"
+            params.append(f" {token} ")
+        union = f"SELECT * FROM ({' UNION ALL '.join(parts)}) {clauses}"
+        every = [*part_params, *params]
+        count = db.execute(f"SELECT count(*) FROM ({union})", every).fetchone()[0]
+        signed = [{"currency": row[0], "signed": row[1]} for row in db.execute(f"SELECT currency,signed FROM ({union})", every)]
+        rows = []
+        for row in db.execute(f"{union} ORDER BY {DOCUMENT_SORTS[value.sort]} LIMIT ?", [*every, limit]):
+            row = dict(row)
+            rows.append({"source": row["source"], "id": None, "record_id": row["record_id"], "posted_date": row["day"], "transaction_date": None,
+                         "description_raw": row["description"], "merchant": row["merchant"], "amount_minor": row["amount_minor"],
+                         "signed_minor": row["signed"], "currency": row["currency"], "account": None, "account_id": None,
+                         "transaction_type": "deposit" if row["source"] == "paystub" else "refund" if row["signed"] > 0 else "purchase",
+                         "review_status": row["review_status"], "origin": "document", "category": row["category"],
+                         "receipt_id": row["record_id"] if row["source"] != "paystub" else None, "receipt_document_id": row["document_id"],
+                         "document_id": row["document_id"], "due_date": row["due_date"], "split_by_items": bool(row["split_by_items"]),
+                         "shared_part_minor": row["shared_part_minor"], "income_record_id": row["record_id"] if row["source"] == "paystub" else None})
+        return rows, count, signed
 
     # Spending -----------------------------------------------------------------
 
@@ -603,10 +706,10 @@ class FinanceTools(ItemAnalysisTools):
                                   for (currency, name), (total, count) in top]}
 
     def get_spending_items(self, value):
-        """Counted spending one item per row, like a statement that lists what was bought: each charge's or receipt's
-        items with their share of what was paid, or the charge itself when no itemised receipt is matched to it.
-        status: reconciled (a statement line and a receipt agree), statement (a line with no receipt) or receipt
-        (a receipt no line has replaced yet)."""
+        """Counted money one item per row, like a statement that lists what was bought: each charge's, receipt's or bill's
+        items with their share of what was paid, or the charge itself when no itemised receipt is matched to it; and money
+        in, each deposit or pay stub net pay a row (kind income). status: reconciled (a statement line and a receipt or pay
+        stub agree), statement (a line with neither), receipt or bill (one no line has replaced yet) or paystub."""
         dated, params = [], []
         for bound, operator in ((value.start, ">="), (value.end, "<=")):
             if bound is not None:
@@ -617,21 +720,37 @@ class FinanceTools(ItemAnalysisTools):
         if value.account_id is not None:
             charge_scope += " AND t.account_id=?"
         linked = "(SELECT l.receipt_id FROM transaction_receipt_links l WHERE l.transaction_id=t.id AND l.review_status<>'rejected' ORDER BY l.id LIMIT 1)"
+        paid = "(SELECT k.income_record_id FROM transaction_income_links k WHERE k.transaction_id=t.id AND k.review_status<>'rejected' ORDER BY k.id LIMIT 1)"
+        account = [value.account_id] if value.account_id is not None else []
         rows = (f"SELECT 'transaction' AS source,t.id AS transaction_id,{linked} AS receipt_id,t.posted_date AS date,"
                 f"coalesce(m.canonical_name,t.description_raw) AS merchant,t.description_raw AS description,{ROW_KIND} AS kind,i.position,i.description AS item,"
                 f"i.line_total_minor,i.discount_minor,i.category_source AS item_category_source,{SPLIT_CATEGORY} AS category,{SPLIT_SPENT} AS amount_minor,"
                 f"t.currency,a.display_name AS account,t.category_source,CASE WHEN {linked} IS NOT NULL THEN 'reconciled' ELSE 'statement' END AS status,"
-                f"(SELECT document_id FROM receipts WHERE id={linked}) AS receipt_document_id "
+                f"(SELECT document_id FROM receipts WHERE id={linked}) AS receipt_document_id,-{SPLIT_SPENT} AS signed_minor,NULL AS income_record_id "
                 f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id {TRANSACTION_SPLITS} "
-                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES},'refund'){charge_scope}")
-        params = [*params, *([value.account_id] if value.account_id is not None else [])]
+                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES},'refund'){charge_scope}"
+                # Money in: deposits and other credits, a deposit matched to its pay stub reconciled (docs/money.md "Money in and paystubs").
+                # Interest earned is already above, as money back on the interest type.
+                f" UNION ALL SELECT 'transaction',t.id,NULL,t.posted_date,coalesce(m.canonical_name,t.description_raw),t.description_raw,'income',NULL,NULL,"
+                f"NULL,NULL,NULL,NULL,t.amount_minor,t.currency,a.display_name,t.category_source,CASE WHEN {paid} IS NOT NULL THEN 'reconciled' ELSE 'statement' END,"
+                f"(SELECT document_id FROM income_records WHERE id={paid}),t.amount_minor,{paid} "
+                f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {INFLOW} "
+                f"AND t.transaction_type NOT IN ({SPENDING_TYPES},'refund'){charge_scope}")
+        params = [*params, *account, *params[:len(dated)], *account]
         if value.account_id is None:
             rows += (f" UNION ALL SELECT 'receipt',NULL,r.id,r.purchase_date,coalesce(m.canonical_name,'Unknown merchant'),r.description,{ROW_KIND},i.position,i.description,"
-                     f"i.line_total_minor,i.discount_minor,i.category_source,{RECEIPT_SPLIT_CATEGORY},{RECEIPT_SPLIT_SPENT},r.currency,NULL,NULL,'receipt',r.document_id "
+                     f"i.line_total_minor,i.discount_minor,i.category_source,{RECEIPT_SPLIT_CATEGORY},{RECEIPT_SPLIT_SPENT},r.currency,NULL,NULL,"
+                     f"CASE r.document_kind WHEN 'bill' THEN 'bill' ELSE 'receipt' END,r.document_id,-{RECEIPT_SPLIT_SPENT},NULL "
                      f"FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id {RECEIPT_SPLITS} LEFT JOIN receipt_items i ON i.id=s.receipt_item_id "
-                     f"WHERE {STANDALONE_RECEIPT}{receipt_scope}")
-            params += params[:len(dated)]
+                     f"WHERE {STANDALONE_RECEIPT}{receipt_scope}"
+                     # Net pay from pay stubs no deposit has replaced yet.
+                     " UNION ALL SELECT 'paystub',NULL,NULL,i.pay_date,coalesce(m.canonical_name,'Pay stub'),'Net pay','income',NULL,NULL,NULL,NULL,NULL,NULL,"
+                     "i.net_pay_minor,i.currency,NULL,NULL,'paystub',i.document_id,i.net_pay_minor,i.id FROM income_records i "
+                     f"LEFT JOIN merchants m ON m.id=i.payer_merchant_id WHERE {STANDALONE_INCOME}{receipt_scope.replace('r.purchase_date', 'i.pay_date')}")
+            params += params[:len(dated)] * 2
         clauses, filters = [], []
+        if value.direction != "all":
+            clauses.append("signed_minor<0" if value.direction == "out" else "signed_minor>0")
         if value.category:
             clauses.append("category=?")
             filters.append(" ".join(value.category.split()).lower())
@@ -650,13 +769,20 @@ class FinanceTools(ItemAnalysisTools):
             found = [dict(row) for row in db.execute(
                 f"SELECT * FROM ({rows}){where} ORDER BY date DESC,source,transaction_id DESC,receipt_id DESC,position IS NULL,position "
                 "LIMIT ? OFFSET ?", [*params, *filters, value.limit, value.offset])]
+            sums = db.execute(f"SELECT currency,sum(CASE WHEN signed_minor>0 THEN signed_minor ELSE 0 END),sum(CASE WHEN signed_minor<0 THEN -signed_minor ELSE 0 END) "
+                              f"FROM ({rows}){where} GROUP BY currency ORDER BY currency", [*params, *filters]).fetchall()
         for row in found:
             row["amount"] = money(row["amount_minor"], row["currency"])
             row["line_total"] = money(row["line_total_minor"], row["currency"]) if row["line_total_minor"] is not None else None
+            row["direction"] = "in" if row["signed_minor"] > 0 else "out"
         return {"items": found, "total_matching": total, "offset": value.offset, "limit": value.limit,
+                "totals": [{"currency": currency, "in": money(money_in, currency), "out": money(money_out, currency), "net": money(money_in - money_out, currency)}
+                           for currency, money_in, money_out in sums],
                 "notes": ["amount is the item's share of what was paid, including its part of tax and receipt-wide discounts; "
                           "rows for one charge or receipt add up to it exactly. A refund or a returned item is negative.",
-                          "kind: item (one receipt item), extra (a tip or an amount no item carries) or charge (a whole charge or receipt without items).",
+                          "kind: item (one receipt item), extra (a tip or an amount no item carries), charge (a whole charge or receipt without "
+                          "items) or income (money in: a deposit, or a pay stub's net pay that no deposit has replaced yet; amount is positive).",
+                          "signed_minor is negative for money out and positive for money in; direction filters on it, and totals add it up.",
                           RECEIPT_NOTE]}
 
     def compare_periods(self, value):
@@ -773,6 +899,13 @@ class FinanceTools(ItemAnalysisTools):
         credits = self.query(f"SELECT t.currency,sum(t.amount_minor) AS total,count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} "
                              f"AND {INFLOW} GROUP BY t.currency", params)
         inflow = {row["currency"]: row["total"] for row in credits}
+        # Pay stubs no deposit has replaced yet count their net pay (docs/money.md "Money in and paystubs"); like receipts,
+        # they have no account, so only household-wide figures include them.
+        stubs = [] if value.account_id is not None else self.query(
+            f"SELECT i.currency,sum(i.net_pay_minor) AS total,count(*) AS count FROM income_records i WHERE {STANDALONE_INCOME} "
+            "AND i.pay_date BETWEEN ? AND ? GROUP BY i.currency", (value.start, value.end))
+        for row in stubs:
+            inflow[row["currency"]] = inflow.get(row["currency"], 0) + row["total"]
         excluded = self.query(f"SELECT count(*) AS count FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ('transfer','payment')", params)[0]["count"]
         result = [{"currency": currency, "inflow": money(inflow.get(currency, 0), currency), "outflow": money(outflow.get(currency, 0), currency),
                    "net": money(inflow.get(currency, 0) - outflow.get(currency, 0), currency)} for currency in sorted(set(inflow) | set(outflow))]
@@ -782,9 +915,13 @@ class FinanceTools(ItemAnalysisTools):
             row["inflow"]["trace"] = ref("cashflow.in", **shown)
         if recorder.live:
             counts = {row["currency"]: row["count"] for row in credits}
+            paid = {row["currency"]: (row["total"], row["count"]) for row in stubs}
             for row in result:
                 currency = row["currency"]
-                recorder.step("Money in: deposits, interest and other credits", "+", inflow.get(currency, 0), currency, count=counts.get(currency, 0))
+                pay, stub_count = paid.get(currency, (0, 0))
+                recorder.step("Money in: deposits, interest and other credits", "+", inflow.get(currency, 0) - pay, currency, count=counts.get(currency, 0))
+                if stub_count:
+                    recorder.step("Pay stubs no deposit has replaced yet (net pay)", "+", pay, currency, count=stub_count)
                 if only != "inflow":
                     recorder.add("Net spending", -outflow.get(currency, 0), currency, trace=row["outflow"]["trace"])
             for line in self.query(f"SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name,t.currency,t.amount_minor,t.origin,"
@@ -792,13 +929,22 @@ class FinanceTools(ItemAnalysisTools):
                                    f"WHERE {COUNTABLE} AND {scope} AND {INFLOW} ORDER BY t.posted_date,t.id", params):
                 recorder.input(f"transaction:{line['id']}", f"{line['name']} · {line['posted_date']}", line["amount_minor"], line["currency"],
                                light("transaction", line["id"], line["origin"]), verification_of(line))
+            if value.account_id is None:
+                for stub in self.query(f"SELECT i.id,i.pay_date,coalesce(m.canonical_name,'Pay stub') AS name,i.currency,i.net_pay_minor,i.review_status,"
+                                       f"i.review_source FROM income_records i LEFT JOIN merchants m ON m.id=i.payer_merchant_id WHERE {STANDALONE_INCOME} "
+                                       "AND i.pay_date BETWEEN ? AND ? ORDER BY i.pay_date,i.id", (value.start, value.end)):
+                    recorder.input(f"income_record:{stub['id']}", f"Pay stub · {stub['name']} · {stub['pay_date']}", stub["net_pay_minor"], stub["currency"],
+                                   light("income_record", stub["id"]), verification_of(stub))
         usd = None
         if not (set(inflow) | set(outflow)) <= {REPORTING}:
             spent = self._usd_total(value.start, value.end, value.account_id, outflow, always=True)
+            foreign_pay = [] if value.account_id is not None else self.query(
+                f"SELECT i.pay_date AS day,i.currency,i.net_pay_minor AS amount_minor FROM income_records i WHERE {STANDALONE_INCOME} "
+                "AND i.pay_date BETWEEN ? AND ? AND i.currency<>?", (value.start, value.end, REPORTING))
             received = self.rates.consolidate([("", REPORTING, inflow.get(REPORTING, 0)), *(
                 (row["day"], row["currency"], row["amount_minor"]) for row in self.query(
                     f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,t.amount_minor FROM transactions t WHERE {COUNTABLE} AND {scope} "
-                    f"AND {INFLOW} AND t.currency<>?", [*params, REPORTING]))])
+                    f"AND {INFLOW} AND t.currency<>?", [*params, REPORTING]) + foreign_pay)])
             usd = {"inflow": received["usd"], "outflow": spent["net"], "net": money(received["usd"]["minor"] - spent["net"]["minor"], REPORTING),
                    "status": "complete" if received["status"] == spent["status"] == "complete" else "partial",
                    "rate_ids": sorted(set(received["rate_ids"]) | set(spent["rate_ids"])), "unresolved": received["unresolved"] + spent["unresolved"]}
@@ -831,10 +977,13 @@ class FinanceTools(ItemAnalysisTools):
                 yearly = only[2] == "year"
                 self._record_recurring(rows, currency, name, recorder, 12 if yearly else 1, year_minor if yearly else month_minor)
         # expected_amount is a figure: its breakdown is the payments it averages (finance/traces.py bill_expected).
-        return {"obligations": [{**row, "expected_amount": figure(row["expected_amount_minor"], row["currency"], ref("bill.expected", obligation_id=row["id"]))}
-                                for row in rows], "totals": totals,
+        includes = self._bill_includes({row["merchant_id"] for row in rows})
+        return {"obligations": [{**row, "expected_amount": figure(row["expected_amount_minor"], row["currency"], ref("bill.expected", obligation_id=row["id"])),
+                                 "includes": includes.get(row["merchant_id"], [])} for row in rows], "totals": totals,
                 "notes": ["Proposed from a steady cadence of payments, one bill payment, a statement payee the local model read as a service, "
                           "or payment terms in a contract (source_document_id, evidence); each is a proposal until verified.",
+                          "includes lists the subscription lines (such as Apple TV+) on the payee's latest bill; they're part of that bill, "
+                          "not recurring payments of their own.",
                           "kind is the user's choice: a bill is a recurring payment they count as important, a subscription one they count as less so. "
                           "Both count in spending, budgets and the forecast.",
                           "totals are confirmed payments only: weekly ones count 52/12 times a month, others their amount over the months between payments."]}
@@ -855,6 +1004,18 @@ class FinanceTools(ItemAnalysisTools):
         recorder.round(total_minor - steps, currency, note="Weekly payments count 52/12 times a month, others their amount over the months between "
                                                           "payments; the exact sum is rounded once, half to even.")
 
+    def _bill_includes(self, merchant_ids):
+        """{merchant id: [subscription line descriptions]} from each payee's latest bill (docs/money.md "Bills and their lines")."""
+        found = {}
+        for merchant_id in merchant_ids:
+            latest = self.query("SELECT id FROM receipts WHERE document_kind='bill' AND merchant_id=? AND review_status<>'rejected' "
+                                "ORDER BY purchase_date DESC,id DESC LIMIT 1", (merchant_id,))
+            if latest:
+                found[merchant_id] = [row["description"] for row in self.query(
+                    "SELECT description FROM receipt_items WHERE receipt_id=? AND line_kind='subscription' AND review_status<>'rejected' ORDER BY position",
+                    (latest[0]["id"],))]
+        return found
+
     def get_upcoming_bills(self, value):
         """Confirmed recurring bills by next due date. Each matched payment moves a bill's next due date on,
         so a due date already past means no payment has been found since."""
@@ -862,8 +1023,10 @@ class FinanceTools(ItemAnalysisTools):
         bills = self.query("SELECT o.id,o.merchant_id,o.account_id,o.category,o.kind,o.frequency,o.currency,o.expected_amount_minor,o.last_paid_date,"
                            "o.next_due_date AS due_date,m.canonical_name AS provider FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
                            "WHERE o.status='verified' AND o.next_due_date IS NOT NULL AND o.next_due_date<=? ORDER BY o.next_due_date,m.canonical_name", (until,))
+        includes = self._bill_includes({bill["merchant_id"] for bill in bills})
         return {"as_of": value.as_of, "until": until,
-                "bills": [{**bill, "amount_due": figure(bill["expected_amount_minor"], bill["currency"], ref("bill.expected", obligation_id=bill["id"])),
+                "bills": [{**bill, "includes": includes.get(bill["merchant_id"], []),
+                           "amount_due": figure(bill["expected_amount_minor"], bill["currency"], ref("bill.expected", obligation_id=bill["id"])),
                            "payment_state": "due" if bill["due_date"] >= value.as_of else "overdue",
                            "group": "overdue" if bill["due_date"] < value.as_of else "this_week" if bill["due_date"] <= week else "later"} for bill in bills],
                 "notes": ["Confirmed recurring bills only; proposed ones wait in Review.",
@@ -1005,7 +1168,7 @@ class FinanceTools(ItemAnalysisTools):
         with self.connection() as db:
             records = []
             for record_type, table, label in (("statement", "statements", "period_end"), ("receipt", "receipts", "purchase_date"),
-                                              ("bill", "bills", "due_date"), ("income_record", "income_records", "pay_date")):
+                                              ("income_record", "income_records", "pay_date")):
                 rows = db.execute(f"SELECT id,review_status,validation_json,{label} AS date,currency FROM {table} WHERE review_status IN ('proposed','needs_review') ORDER BY id").fetchall()
                 summaries = self.ledger.summaries(db, record_type, [row["id"] for row in rows])
                 records += [{"record_type": record_type, "id": row["id"], "review_status": row["review_status"], "date": row["date"],
@@ -1013,14 +1176,17 @@ class FinanceTools(ItemAnalysisTools):
             links = [dict(row) for row in db.execute(
                 "SELECT 'receipt' AS kind,l.id,l.match_score,l.match_method,l.transaction_id AS from_id,l.receipt_id AS to_id FROM transaction_receipt_links l "
                 "WHERE l.review_status='proposed' UNION ALL SELECT l.link_type,l.id,l.match_score,l.match_method,l.from_transaction_id,l.to_transaction_id "
-                "FROM transaction_links l WHERE l.review_status='proposed'")]
+                "FROM transaction_links l WHERE l.review_status='proposed' UNION ALL SELECT 'income',l.id,l.match_score,l.match_method,l.transaction_id,"
+                "l.income_record_id FROM transaction_income_links l WHERE l.review_status='proposed'")]
             issues = [{**dict(row), "detail": json.loads(row["detail_json"])} for row in db.execute("SELECT * FROM reconciliation_issues WHERE status='open' ORDER BY id")]
             # One batched lookup per record type for everything the links and issues mention.
-            wanted = {"transaction": [link["from_id"] for link in links] + [link["to_id"] for link in links if link["kind"] != "receipt"]
+            wanted = {"transaction": [link["from_id"] for link in links] + [link["to_id"] for link in links if link["kind"] not in ("receipt", "income")]
                       + [candidate for issue in issues for candidate in issue["detail"]["candidate_transaction_ids"]]
                       + [issue["record_id"] for issue in issues if issue["record_type"] == "transaction"],
                       "receipt": [link["to_id"] for link in links if link["kind"] == "receipt"]
-                      + [issue["record_id"] for issue in issues if issue["record_type"] == "receipt"]}
+                      + [issue["record_id"] for issue in issues if issue["record_type"] == "receipt"],
+                      "income_record": [link["to_id"] for link in links if link["kind"] == "income"]
+                      + [issue["record_id"] for issue in issues if issue["record_type"] == "income_record"]}
             summaries = {kind: self.ledger.summaries(db, kind, ids) for kind, ids in wanted.items()}
             # A contribution or purchase paid into an investment account, when several bank lines could have paid it.
             summaries["investment_event"] = {}
@@ -1034,7 +1200,7 @@ class FinanceTools(ItemAnalysisTools):
         for link in links:
             link["match_signals"] = link["match_method"].split("+")
             link["from"] = summaries["transaction"].get(link["from_id"])
-            link["to"] = summaries["receipt" if link["kind"] == "receipt" else "transaction"].get(link["to_id"])
+            link["to"] = summaries["receipt" if link["kind"] == "receipt" else "income_record" if link["kind"] == "income" else "transaction"].get(link["to_id"])
         for issue in issues:  # A family_correction question lists the family's changes in detail["corrections"].
             del issue["detail_json"]
             issue["record"] = summaries.get(issue["record_type"], {}).get(issue["record_id"])

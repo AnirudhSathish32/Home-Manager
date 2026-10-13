@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .money import EXPONENTS
 
 ANSWERS_FORMAT = "home-manager-answers/1"
-DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "paystub")
+DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "paystub", "bill")
 STATES = ("correct", "fixed", "unchecked")
 PAY_GROUPS = ("earnings", "pre_tax", "tax", "post_tax", "employer_paid")
 # The fields a person checks for each document type, in the order they are shown.
@@ -26,6 +26,8 @@ CRITICAL = {
                               "statement_balance_minor", "minimum_payment_minor"),
     "paystub": ("payer_or_employer", "pay_date", "period_start", "period_end", "currency", "gross_pay_minor", "net_pay_minor",
                 "taxes_minor", "deductions_minor", "gross_pay_ytd_minor", "net_pay_ytd_minor"),
+    # total_minor is the bill's new charges, what counts; amount_due_minor includes any past-due balance.
+    "bill": ("provider", "issue_date", "due_date", "currency", "amount_due_minor", "total_minor"),
 }
 # The record's row list and the columns checked in each row.
 ROWS = {
@@ -33,6 +35,7 @@ ROWS = {
     "bank_statement": ("transactions", ("posted_date", "description", "amount_minor")),
     "credit_card_statement": ("transactions", ("posted_date", "description", "amount_minor")),
     "paystub": ("lines", ("description", "line_group", "current_minor", "ytd_minor")),
+    "bill": ("items", ("description", "line_total_minor", "line_holder")),
 }
 LABELS = {"merchant": "Merchant", "purchase_date": "Purchase date", "currency": "Currency", "subtotal_minor": "Subtotal", "tax_minor": "Tax",
           "tip_minor": "Tip", "total_minor": "Total", "institution": "Bank or card issuer", "period_start": "Period start",
@@ -41,8 +44,9 @@ LABELS = {"merchant": "Merchant", "purchase_date": "Purchase date", "currency": 
           "payer_or_employer": "Employer", "pay_date": "Pay date", "gross_pay_minor": "Gross pay", "net_pay_minor": "Net pay",
           "taxes_minor": "Taxes", "deductions_minor": "Deductions", "gross_pay_ytd_minor": "Gross pay, year to date",
           "net_pay_ytd_minor": "Net pay, year to date", "description": "Description", "line_total_minor": "Amount", "posted_date": "Date",
-          "amount_minor": "Amount", "line_group": "Group", "current_minor": "This period", "ytd_minor": "Year to date"}
-DATES = {"purchase_date", "period_start", "period_end", "due_date", "pay_date", "posted_date"}
+          "amount_minor": "Amount", "line_group": "Group", "current_minor": "This period", "ytd_minor": "Year to date",
+          "provider": "Provider", "issue_date": "Issue date", "amount_due_minor": "Amount due", "line_holder": "For"}
+DATES = {"purchase_date", "period_start", "period_end", "due_date", "pay_date", "posted_date", "issue_date"}
 MAX_ROWS = 500
 MAX_MINOR = 10**15
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -100,7 +104,7 @@ class Answers(BaseModel):
     """answers.json for one case. rows is None until someone looks at the row list."""
     model_config = ConfigDict(extra="forbid")
     format: Literal["home-manager-answers/1"] = "home-manager-answers/1"
-    document_type: Literal["receipt", "bank_statement", "credit_card_statement", "paystub"]
+    document_type: Literal["receipt", "bank_statement", "credit_card_statement", "paystub", "bill"]
     fields: dict[str, FieldAnswer]
     rows: list[dict[str, int | str | None]] | None = Field(default=None, max_length=MAX_ROWS)
     rows_state: Literal["correct", "fixed", "unchecked"] = "unchecked"

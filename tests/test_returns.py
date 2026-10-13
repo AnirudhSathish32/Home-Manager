@@ -214,7 +214,7 @@ def test_charge_share_rounds_a_refund_the_same_way_in_python_and_sqlite(library)
 
 def shared(store, receipt_id, share, total):
     with store.connection() as db:
-        db.execute("INSERT INTO record_shares VALUES('receipt',?,?,?,'[]','key',datetime('now'))", (receipt_id, share, total))
+        db.execute("INSERT INTO record_shares VALUES('receipt',?,?,?,'[]','key',datetime('now'),NULL)", (receipt_id, share, total))
         Ledger(store).refresh_splits(db, receipt_id)
 
 

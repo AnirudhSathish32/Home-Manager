@@ -98,7 +98,7 @@ function receiptLink(row) {
 }
 
 // Transaction drawer: the record with its evidence, links, category and history.
-const LINK_NAMES = {receipt: "Matched receipt", transfer: "Transfer between your accounts", refund: "Refund link"};
+const LINK_NAMES = {receipt: "Matched receipt", transfer: "Transfer between your accounts", refund: "Refund link", income: "Pay stub"};
 function drawerSection(title, ...children) {
   const section = element("section", "", "drawer-section"); section.append(element("h3", title), ...children); return section;
 }
@@ -144,6 +144,8 @@ async function openTransaction(id, member = null, {onChange = null} = {}) {
     event.preventDefault();
     const category = input.value.trim();
     if (!category) { notice("Enter a category, or use Clear my category.", true); return; }
+    if (!always.checked && record.splits?.length && !await confirmAction({title: "Replace the item categories?",
+      message: "Saving this category puts the whole charge in it instead of splitting it by the receipt's items.", confirmLabel: "Use for whole charge"})) return;
     try {
       if (always.checked) {
         const rule = await api("/api/finance/category-rules", {method: "POST", body: JSON.stringify({pattern: words.value.trim(), category})});

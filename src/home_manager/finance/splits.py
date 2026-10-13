@@ -110,12 +110,46 @@ def scale(rows, target, recorder=NULL, items=(), currency=None):
     """allocate()'s rows resized to sum exactly to target, each keeping its proportion (a person's part of a shared receipt)."""
     total = sum(amount for _, _, amount in rows)
     if not total:
-        return rows
+        return [(index, category, int(amount)) for index, category, amount in rows]
     values = [Fraction(amount) * target / total for _, _, amount in rows]
     whole = rounded(values, target)
     if recorder.live:
         record(recorder, values, target, [label(items, index, category) for index, category, _ in rows], currency)
     return [(index, category, amount) for (index, category, _), amount in zip(rows, whole)]
+
+
+def line_shares(items, total):
+    """{member id: minor units} for a bill shared by line (docs/family.md "Sharing a bill by line"), adding up exactly to
+    total: each person's own lines, plus a part of everything no line names anyone on (taxes, fees, other lines, amounts
+    no line carries) in proportion to their own lines. Empty when no line names anyone, or their lines add up to nothing."""
+    tagged: dict = {}
+    for item in items:
+        if item.get("member_id"):
+            tagged[item["member_id"]] = tagged.get(item["member_id"], 0) + item_amount(item)
+    base = sum(tagged.values())
+    if not tagged or base <= 0 or any(amount < 0 for amount in tagged.values()):
+        return {}
+    people = list(tagged)
+    values = [Fraction(tagged[person]) + Fraction(total - base) * tagged[person] / base for person in people]
+    return dict(zip(people, rounded(values, total)))
+
+
+def by_line(rows, items, member_id):
+    """allocate()'s rows cut down to one person's part of a bill shared by line: their own lines' shares, and each share
+    no one is named on in proportion to their own lines. Exact fractions; scale() rounds them to the person's part."""
+    owner = lambda index: None if index is None else items[index].get("member_id")
+    tagged: dict = {}
+    for index, _, amount in rows:
+        if owner(index):
+            tagged[owner(index)] = tagged.get(owner(index), 0) + amount
+    base, mine = sum(tagged.values()), tagged.get(member_id, 0)
+    found = []
+    for index, category, amount in rows:
+        if owner(index) == member_id:
+            found.append((index, category, Fraction(amount)))
+        elif owner(index) is None and base:
+            found.append((index, category, Fraction(amount) * mine / base))
+    return found or [(None, "uncategorized", Fraction(0))]
 
 
 def equal_shares(total, count):

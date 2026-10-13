@@ -18,6 +18,11 @@ and link here for what isn't. When an item is built, remove it from this list an
 - **Split receipts and combined images can't be donated** yet ([evals](evals.md#donating-documents)).
 - **Which document languages are required?** This affects vision evaluation and parsing conventions.
 - **A native folder picker** for choosing the library folder (paths are pasted today).
+- **Ingestion by document content** ([bugs.md](bugs.md)). Today one pathway reads every document as if it might be a
+  receipt. Offer letters, contracts and other keep-only documents should take a deterministic path to their folder.
+  Grocery, dining and gas-station receipts should each get their own handling.
+- **Gas-station receipts.** The pump number is read as an item, and the gallons and price per gallon are lost. These
+  receipts need their own extraction shape.
 
 ## Models and evals
 
@@ -37,7 +42,12 @@ and link here for what isn't. When an item is built, remove it from this list an
 ## Money
 
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
-- **Family shared bills.** A shared recurring bill's payments still count in full for whoever paid.
+- **Bills and money in, still open** ([money](money.md#bills-and-their-lines)):
+  - Manually linking a paystub deposit split across two accounts.
+  - A bill line's person can be chosen only in the family's inbox, where the family's people are known; a person's own
+    library shows who each line is for as printed.
+  - A member's request to share a bill by line reaches the family's inbox when the inbox is next opened on the family
+    computer, not at the moment their copy arrives.
 - **Family corrections.** Records corrected in the family library after they were sent need **Send** again.
 - **Returns** ([money](money.md#returns)):
   - A credit smaller than its return receipt (a restocking fee kept) isn't matched automatically. The user links it by
@@ -46,6 +56,9 @@ and link here for what isn't. When an item is built, remove it from this list an
     refund.
   - A refund with no receipt takes its purchase's category, not the purchase's item categories.
   - A Sale or return correction flips a whole receipt. An exchange's single lines can't be flipped yet.
+  - **Refund documents are misread** ([bugs.md](bugs.md)). A refund with cleanly extracted text, which says "refund"
+    outright, wasn't recognized as one. The refund amount and the item (furniture) were missed. The refund reasoning
+    needs another pass.
 
 ## Planning and investments
 

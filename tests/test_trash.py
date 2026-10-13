@@ -76,7 +76,7 @@ def test_empty_trash_removes_a_shared_receipts_family_rows(library):
     with store.connection() as db:
         receipt_id = db.execute("INSERT INTO receipts(document_id,blob_hash,total_minor,currency,review_status,created_at,updated_at) VALUES(?,?,2000,'USD','verified',?,?)",
                                 (doc["id"], doc["current_hash"], now(), now())).lastrowid
-        db.execute("INSERT INTO record_shares VALUES('receipt',?,500,2000,'[]','key',?)", (receipt_id, now()))
+        db.execute("INSERT INTO record_shares VALUES('receipt',?,500,2000,'[]','key',?,NULL)", (receipt_id, now()))
         db.execute("INSERT INTO family_assignments(record_type,record_id,family_record_key,mode,status,updated_at) VALUES('receipt',?,'key','shared','delivered',?)",
                    (receipt_id, now()))
     trash(store, source, doc)

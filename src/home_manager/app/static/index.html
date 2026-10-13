@@ -527,6 +527,10 @@
             <div id="tx2-view" class="tabs tx2-view" role="tablist" aria-label="Show">
               <button id="tx2-view-items" type="button" role="tab" aria-selected="true" aria-controls="tx2-results">Items</button>
               <button id="tx2-view-charges" type="button" role="tab" aria-selected="false" aria-controls="tx2-results" tabindex="-1">Charges</button></div>
+            <div id="tx2-direction" class="chip-list" role="group" aria-label="Money out or in">
+              <button type="button" class="chip" data-direction="all" aria-pressed="true">All</button>
+              <button type="button" class="chip" data-direction="out" aria-pressed="false">Out</button>
+              <button type="button" class="chip" data-direction="in" aria-pressed="false">In</button></div>
           </div>
           <div class="tx2-row">
             <div id="tx2-periods" class="chip-list" role="group" aria-label="Period">
@@ -552,6 +556,7 @@
           </div>
         </div>
         <p id="tx2-summary" class="muted small" aria-live="polite"></p>
+        <p id="tx2-totals" class="tx2-totals small"></p>
         <ul id="tx2-backfill" class="needs-list"></ul>
         <div id="tx2-error"></div>
         <div id="tx2-results"></div>

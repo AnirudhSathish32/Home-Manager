@@ -3,8 +3,8 @@
 from decimal import Decimal
 
 RECEIPT_CATEGORIES = ("groceries", "dining", "furniture & decor", "household supplies", "home improvement", "clothing", "electronics",
-                      "personal care", "transportation", "travel", "health", "entertainment", "subscriptions", "housing", "insurance",
-                      "pets", "kids & baby", "gifts & donations", "other")
+                      "personal care", "transportation", "travel", "health", "entertainment", "subscriptions", "housing", "utilities",
+                      "phone & internet", "insurance", "pets", "kids & baby", "gifts & donations", "other")
 # Retired names still found in stored data until it is re-sorted (finance/item_categories.py); never offered as a choice.
 # "shopping" covered all general retail until 2026-09-28.
 LEGACY_CATEGORIES = ("shopping",)
@@ -16,8 +16,9 @@ CATEGORY_GUIDE = ("groceries (food and drink to take home and cook), dining (res
                   "electronics (phones, computers, TVs, games consoles, cables, gadgets), personal care (toiletries, cosmetics, haircuts, grooming), "
                   "transportation (fuel, parking, tolls, car maintenance, transit, rideshare), travel (hotels, flights, car rental, trips), "
                   "health (pharmacy, medical, dental, vision), entertainment (movies, events, books, games, hobbies), "
-                  "subscriptions (streaming, software, memberships), housing (rent, mortgage, HOA dues, utilities: power, water, gas, "
-                  "internet, phone), insurance (home, renters, auto, health or life premiums), pets (pet food, supplies, vet), "
+                  "subscriptions (streaming, software, memberships), housing (rent, mortgage, HOA dues), utilities (power, water, gas, "
+                  "sewer, trash), phone & internet (phone service and lines, internet, cable), "
+                  "insurance (home, renters, auto, health or life premiums), pets (pet food, supplies, vet), "
                   "kids & baby (diapers, baby gear, toys, school supplies, childcare), gifts & donations (gifts for others, charity), other")
 # How often a bill recurs, and how many months apart its payments are. Weekly is handled as 12/52 of a month.
 FREQUENCY_MONTHS = {"monthly": 1, "quarterly": 3, "semiannual": 6, "annual": 12}
@@ -26,6 +27,9 @@ FREQUENCIES = ("weekly", *FREQUENCY_MONTHS)
 # suggested from its category, and everything outside these categories starts as a bill.
 RECURRING_KINDS = ("bill", "subscription")
 SUBSCRIPTION_CATEGORIES = ("subscriptions", "entertainment")
+# What a bill's line is (docs/money.md "Bills and their lines"): an add-on such as Apple TV+ is a subscription line,
+# and taxes and fees are lines of their own, shared out by the other lines.
+LINE_KINDS = ("service", "usage", "subscription", "device", "tax_fee", "credit", "other")
 
 
 def suggested_kind(category):

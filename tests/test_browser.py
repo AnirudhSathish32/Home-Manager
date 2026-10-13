@@ -322,10 +322,11 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#toasts")).to_contain_text("Imported 1 new transactions")
             page.locator("#nav-accounts").click()
             playwright.expect(page.locator("#accounts2-body")).to_contain_text("First Local Bank")
-            # Items is the default view: the cafe receipt item by item, with tax shared in and the tip as dining.
+            # Items is the default view: the cafe receipt item by item, with tax shared in and the tip as dining, and the
+            # imported 10.00 as money in (docs/money.md "Money in and paystubs").
             page.goto(f"http://127.0.0.1:{port}/#/transactions?period=all")
             items = page.locator("#tx2-table tbody")
-            playwright.expect(items.locator("tr")).to_have_count(4)
+            playwright.expect(items.locator("tr")).to_have_count(5)
             playwright.expect(items).to_contain_text("SANDWICH")
             playwright.expect(items).to_contain_text("11.00 USD")
             # Charges lists each card or bank line once, money in included.

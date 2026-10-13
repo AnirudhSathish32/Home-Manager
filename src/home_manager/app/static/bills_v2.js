@@ -124,6 +124,8 @@ function bills2Upcoming(upcoming) {
       if (bill.kind === "subscription") name.append(element("span", "Subscription", "bills2-tag"));
       const meta = [FREQUENCY_LABELS[bill.frequency] || bill.frequency, bill.last_paid_date ? `last paid ${dateText(bill.last_paid_date)}` : "no payment found yet"];
       text.append(name, element("small", meta.join(" · "), "muted"));
+      // Subscription lines on its latest bill (Apple TV+ on a phone bill) are part of it, not payments of their own.
+      if (bill.includes?.length) text.append(element("small", `Includes: ${bill.includes.join(", ")}`, "muted block"));
       const money = element("span", "", "dated-amount"); money.append(figure(bill.amount_due, {size: "inline", signed: false}));
       li.append(when, text, money, statusBadge(bill.payment_state));
       return li;
@@ -179,7 +181,8 @@ function bills2All(recurring) {
   body.append(...rows.map(row => {
     const tr = document.createElement("tr");
     if (row.status === "proposed") tr.classList.add("bills2-proposed");
-    cell(tr, row.merchant).className = "bills2-merchant";
+    const merchant = cell(tr, row.merchant); merchant.className = "bills2-merchant";
+    if (row.includes?.length) merchant.append(element("small", `Includes: ${row.includes.join(", ")}`, "muted block"));
     if (familyMode) cell(tr, row.owner || "").className = "owner-col";
     const expected = cell(tr, ""); expected.className = "numeric bills2-expected"; expected.append(figure(row.expected_amount, {size: "inline", signed: false}));
     cell(tr, BILLS2_EVERY[row.frequency] || row.frequency).className = "bills2-every";

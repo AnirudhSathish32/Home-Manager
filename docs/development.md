@@ -360,6 +360,7 @@ migration that first created it.
 | 063 | `returned_lots` | `lot_returns` (a returned receipt line's proposed lots and the answer) | `inventory_lots` and `lot_events` rebuilt to allow `returned` ([household](household.md#returned-items)) |
 | 064 | `dead_columns` | | Drops the 2026-09-30 audit's dead columns: `jobs.year`/`month`, `occurrences.folder_year`/`folder_month` (and index `occurrences_root`), `investment_events.reverses_event_id` (table rebuilt) |
 | 065 | `account_names` | | Renames `accounts.display_name` from the old generated form that doubled the type ("Household checking checking") to the institution alone; names the user chose stay ([money](money.md#money-pages)) |
+| 067 | `bills_as_receipts` | `share_requests`, `transaction_income_links` | `receipts.document_kind`, `issue_date`, `due_date`, `period_start`, `period_end`, `amount_due_minor`, `account_last_four`; `receipt_items.line_holder`, `member_id`, `member_source`, `line_kind`; `record_shares.member_id`; `bills` copied into receipts and dropped, its typed-id rows renamed, a named payment made a verified match; `family_assignments` rebuilt to allow mode `lines`; model-assigned `housing` items marked `legacy` for re-sorting ([money](money.md#bills-and-their-lines)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

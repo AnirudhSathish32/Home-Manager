@@ -23,6 +23,11 @@ from .ledger import COUNTABLE, MATCHABLE, NON_SPENDING, STANDALONE_RECEIPT, TRAN
 from .provenance import light
 
 RECEIPT_POSTING_DAYS, TRANSFER_DAYS, REFUND_DAYS = 5, 5, 120
+# A bill is paid between its issue date and five days after its due date (a month before the due date when no issue
+# date is printed), by a line that names its provider or the bill's account number (docs/money.md "Bills and their lines").
+BILL_PAID_AFTER_DUE, BILL_ISSUED_BEFORE_DUE = 5, 30
+# A pay stub's deposit: exactly its net pay, from two days before its pay date to five after (docs/money.md "Money in and paystubs").
+PAY_DEPOSIT_DAYS = (-2, 5)
 # A charge up to 30% above a receipt's total (a tip added after printing, a currency conversion)
 # from the same merchant is never linked automatically; the user is asked instead.
 NEAR_PERCENT = 130
@@ -32,14 +37,14 @@ CROSS_RANGE = (97, 106)
 TRANSFERISH = ("transfer", "payment")
 CADENCES = {"weekly": (6, 8), "monthly": (26, 35), "quarterly": (85, 95), "annual": (360, 370)}
 # Charges in these categories propose a recurring bill after a single payment.
-BILL_CATEGORIES = ("housing", "insurance", "subscriptions")
+BILL_CATEGORIES = ("housing", "utilities", "phone & internet", "insurance", "subscriptions")
 # A later payment pays a bill when it is 50% to 150% of the usual amount: utility bills vary month to month.
 BILL_RANGE = (50, 150)
 TRIGGERS = ("manual", "import", "extraction", "resolution", "correction")
 OBLIGATION_DECISIONS = ("verified", "rejected", "ended")
 # Issue type -> (table of the record the issue is about, how a chosen candidate is linked).
 ISSUE_KINDS = {"ambiguous_receipt_match": "receipt", "ambiguous_transfer": "transfer", "ambiguous_refund": "refund",
-               "ambiguous_investment_transfer": "investment"}
+               "ambiguous_investment_transfer": "investment", "ambiguous_income_match": "income"}
 
 
 def shift(value, days):
@@ -129,6 +134,23 @@ def receipt_match(receipt, transaction):
     return points, "+".join(signals)
 
 
+def bill_payer(bill, transaction):
+    """Whether a payment line names a bill's provider, or carries the last four digits of the bill's account number."""
+    digits = "".join(ch for ch in transaction["description_raw"] or "" if ch.isdigit())
+    return bool(bill["merchant"] and name_tokens(bill["merchant"]) & name_tokens(transaction["description_raw"])) or bool(
+        bill["account_last_four"] and bill["account_last_four"] in digits)
+
+
+def income_match(record, transaction):
+    """A deposit for a pay stub: its exact net pay (callers require it), with the payer's name and the pay date as bonuses."""
+    points, signals = 60, ["amount"]
+    if transaction["posted_date"] == record["pay_date"]:
+        points, signals = points + 10, signals + ["same_day"]
+    if record["payer"] and name_tokens(record["payer"]) & name_tokens(transaction["description_raw"]):
+        points, signals = points + 20, signals + ["payer"]
+    return points, "+".join(signals)
+
+
 def transfer_match(outflow, inflow):
     points = 70 + (10 if outflow["posted_date"] == inflow["posted_date"] else 0) + (
         20 if outflow["transaction_type"] in TRANSFERISH and inflow["transaction_type"] in TRANSFERISH else 0)
@@ -157,7 +179,7 @@ class Reconciler:
         try:
             with self.store.connection() as db:
                 summary = {"manual_replaced": self.replace_manual(db),  # First, so receipts and bills match the real line.
-                           "receipt_links": self.receipts(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
+                           "receipt_links": self.receipts(db), "income_links": self.income(db), "transfers": self.transfers(db), "refunds": self.refunds(db),
                            "investment_transfers": self.investment_transfers(db), "recurring": self.recurring(db) + self.propose_bills(db)}
                 self.track_bills(db)
                 summary["open_issues"] = db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
@@ -235,6 +257,14 @@ class Reconciler:
             if db.execute("SELECT 1 FROM investment_events WHERE transaction_id=? AND id<>?", (chosen["id"], record_id)).fetchone():
                 raise ValueError("That transaction already paid into another investment.")
             self.link_investment(db, record_id, chosen, "user")
+            return
+        if kind == "income":
+            if db.execute("SELECT 1 FROM transaction_income_links WHERE transaction_id=? AND income_record_id<>? AND review_status<>'rejected'",
+                          (chosen["id"], record_id)).fetchone():
+                raise ValueError("That deposit is already matched to another pay stub.")
+            record = self.pay_stub(db, record_id)
+            points, method = income_match(record, chosen)
+            self.link_income(db, record, chosen, points, method + "+user_choice", "verified")
             return
         record = self.transaction(db, record_id)
         if kind == "transfer":
@@ -346,7 +376,8 @@ class Reconciler:
     # Matching passes ----------------------------------------------------------------
 
     def receipts(self, db):
-        """Receipt total == -transaction amount (same currency), posted within the posting window."""
+        """Receipt total == -transaction amount (same currency), posted within the posting window. A bill is matched to its
+        payment instead (bill_payment)."""
         created = 0
         receipts = db.execute("SELECT r.*,m.canonical_name AS merchant FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id "
                               "WHERE r.review_status<>'rejected' AND r.total_minor IS NOT NULL AND r.purchase_date IS NOT NULL AND NOT EXISTS("
@@ -354,6 +385,9 @@ class Reconciler:
         unlinked = ("coalesce(t.transaction_date,t.posted_date) BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links l "
                     "WHERE l.transaction_id=t.id AND (l.review_status<>'rejected' OR l.receipt_id=?))")
         for receipt in receipts:
+            if receipt["document_kind"] == "bill":
+                created += self.bill_payment(db, receipt, unlinked)
+                continue
             window = (receipt["purchase_date"], shift(receipt["purchase_date"], RECEIPT_POSTING_DAYS), receipt["id"])
             candidates = db.execute(f"SELECT t.* FROM transactions t WHERE t.currency=? AND t.amount_minor=? AND {MATCHABLE} AND {unlinked}",
                                     (receipt["currency"], -receipt["total_minor"], *window)).fetchall()
@@ -377,6 +411,26 @@ class Reconciler:
                 elif receipt["currency"] != REPORTING:
                     self.cross_currency(db, receipt, unlinked, window)
         return created
+
+    def bill_payment(self, db, bill, unlinked):
+        """The payment of a bill (docs/money.md "Bills and their lines"): money out of exactly its new charges or its amount
+        due, between its issue date and five days after its due date, from a line that names its provider or the bill's
+        account number. One such line is linked (proposed) and replaces the bill; several become a question."""
+        due = bill["due_date"] or bill["purchase_date"]
+        window = (bill["issue_date"] or shift(due, -BILL_ISSUED_BEFORE_DUE), shift(due, BILL_PAID_AFTER_DUE), bill["id"])
+        amounts = sorted({amount for amount in (bill["total_minor"], bill["amount_due_minor"]) if amount and amount > 0})
+        if not amounts:
+            return 0
+        candidates = [row for row in db.execute(
+            f"SELECT t.* FROM transactions t WHERE t.currency=? AND -t.amount_minor IN ({','.join('?' * len(amounts))}) AND {MATCHABLE} AND {unlinked}",
+            (bill["currency"], *amounts, *window)) if bill_payer(bill, row)]
+        if len(candidates) == 1:
+            points, method = receipt_match(bill, candidates[0])
+            self.link_receipt(db, bill, candidates[0], points, method if "merchant" in method else method + "+account_number")
+            return 1
+        if candidates:
+            self.issue(db, "ambiguous_receipt_match", "receipt", bill["id"], [row["id"] for row in candidates])
+        return 0
 
     def cross_currency(self, db, receipt, unlinked, window):
         """A foreign receipt and the USD card charge that paid it (docs/money.md "Currency conversion"): charges within CROSS_RANGE of
@@ -489,6 +543,43 @@ class Reconciler:
                 created += 1
             elif plausible:
                 self.issue(db, "ambiguous_refund", "transaction", credit["id"], [row["id"] for row in plausible])
+        return created
+
+    # Pay stubs and their deposits (docs/money.md "Money in and paystubs") ---------------------------------------------
+
+    @staticmethod
+    def pay_stub(db, income_id):
+        return db.execute("SELECT i.*,m.canonical_name AS payer FROM income_records i LEFT JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.id=?",
+                          (income_id,)).fetchone()
+
+    def link_income(self, db, record, transaction, points, method, status="proposed"):
+        db.execute("INSERT INTO transaction_income_links(transaction_id,income_record_id,match_score,match_method,review_status,created_at,updated_at) "
+                   f"VALUES(?,?,?,?,?,?,?) ON CONFLICT(transaction_id,income_record_id) {self._conflict(status)}",
+                   (transaction["id"], record["id"], points, method, status, now(), now()))
+        self.resolve(db, "ambiguous_income_match", "income_record", record["id"])
+
+    def income(self, db):
+        """A verified pay stub's deposit: money in of exactly its net pay, posted from two days before its pay date to five
+        after, that no other pay stub has. One such line is linked and replaces the pay stub's net pay; several are a
+        question, unless exactly one names the payer. A pair the user rejected is never proposed again."""
+        created = 0
+        stubs = db.execute("SELECT i.*,m.canonical_name AS payer FROM income_records i LEFT JOIN merchants m ON m.id=i.payer_merchant_id "
+                           "WHERE i.review_status='verified' AND i.net_pay_minor>0 AND i.pay_date IS NOT NULL AND NOT EXISTS("
+                           "SELECT 1 FROM transaction_income_links l WHERE l.income_record_id=i.id AND l.review_status<>'rejected')").fetchall()
+        before, after = PAY_DEPOSIT_DAYS
+        for stub in stubs:
+            candidates = db.execute(
+                f"SELECT t.* FROM transactions t WHERE t.currency=? AND t.amount_minor=? AND {MATCHABLE} AND t.transaction_type IN ('deposit','other') "
+                "AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transaction_income_links l WHERE l.transaction_id=t.id "
+                "AND (l.review_status<>'rejected' OR l.income_record_id=?))",
+                (stub["currency"], stub["net_pay_minor"], shift(stub["pay_date"], before), shift(stub["pay_date"], after), stub["id"])).fetchall()
+            named = [row for row in candidates if stub["payer"] and name_tokens(stub["payer"]) & name_tokens(row["description_raw"])]
+            chosen = candidates if len(candidates) == 1 else named if len(named) == 1 else []
+            if chosen:
+                self.link_income(db, stub, chosen[0], *income_match(stub, chosen[0]))
+                created += 1
+            elif candidates:
+                self.issue(db, "ambiguous_income_match", "income_record", stub["id"], [row["id"] for row in candidates])
         return created
 
     def recurring(self, db):
@@ -645,12 +736,14 @@ class Reconciler:
         """Verify or reject a proposed link. Rejecting a transfer re-derives the rows' original types."""
         if status not in ("verified", "rejected"):
             raise ValueError("Choose verify or reject.")
-        table = {"receipt": "transaction_receipt_links", "transfer": "transaction_links", "refund": "transaction_links"}.get(kind)
+        table = {"receipt": "transaction_receipt_links", "transfer": "transaction_links", "refund": "transaction_links",
+                 "income": "transaction_income_links"}.get(kind)
         if table is None:
             raise ValueError("Unknown link type.")
+        typed = kind in ("transfer", "refund")
         with self.store.connection() as db:
-            link = db.execute(f"SELECT * FROM {table} WHERE id=?" + ("" if kind == "receipt" else " AND link_type=?"),
-                              (link_id,) if kind == "receipt" else (link_id, kind)).fetchone()
+            link = db.execute(f"SELECT * FROM {table} WHERE id=?" + (" AND link_type=?" if typed else ""),
+                              (link_id, kind) if typed else (link_id,)).fetchone()
             if link is None:
                 raise ValueError("Link not found.")
             db.execute(f"UPDATE {table} SET review_status=?,updated_at=? WHERE id=?", (status, now(), link_id))

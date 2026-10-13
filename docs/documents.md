@@ -23,11 +23,11 @@ Money (the ledger counts and reconciles these)
   Bank_Statements/
   Credit_Card_Statements/
 Documents (papers kept because they matter)
-  Housing/  Insurance/  Investments/  Loans/  Taxes/
+  Bills/  Housing/  Insurance/  Investments/  Loans/  Taxes/
   Jobs/<Employer>/Paystubs/ and Jobs/<Employer>/Documents/   (see taxes.md, "Jobs and pay stubs")
 ```
 
-The retired `Bills` and `Income` folders are emptied at startup into `Unfiled` and `Jobs`. The original nested layout
+The retired `Income` folder is emptied at startup into `Jobs`. Bills is an active document folder. The original nested layout
 (`01_Banking/…`) survives only as `LEGACY_HIERARCHY`, so old folder names in history still resolve. Where the database,
 blobs and settings live is in [operations](operations.md#where-things-live).
 
@@ -45,7 +45,8 @@ blobs and settings live is in [operations](operations.md#where-things-live).
   - A move that empties a month or year folder removes that folder.
   - At startup every file, including older versions' copies, is checked and moved into its month.
 - **Automatic filing.** After extraction, a document with a cited classification and an unambiguous merchant or issuer
-  and date is filed. Anything missing or unknown goes to Unfiled. No confidence threshold is invented.
+  and date is filed. A recognized bill files to Bills even without an issuer or date. Other missing or unknown
+  identities go to Unfiled. No confidence threshold is invented.
 - **Manual filing.** **Move** moves the app-owned library file. A manual choice takes precedence over automatic filing
   for that exact captured version, including after reprocessing. Changed content needs a fresh choice.
 - **File names.** Trusted code picks an allow-listed folder and generates the name from validated dates, a
@@ -106,7 +107,14 @@ library, not just the visible page.
 - **Row details.** Under the name: the file name, type, the document's own date, amount, and one state such as Not
   read yet, Needs review or Recorded. Hover the state for per-step detail.
 - **Row actions.** Each row offers one next step (Read, Record, Import transactions or Restore) and a **More actions**
-  menu with Versions, Move and Delete. Select rows to read, move, delete or combine several at once.
+  menu with Versions, Move and Delete. Select rows to read, record, move, delete or combine several at once.
+  **Record selected** reads any unread selections, then records them sequentially in one model job. Read alone
+  leaves documents in Inbox. Successful extraction without a ledger publication shows **Filed — not tracked**,
+  with no Record action and no inclusion in Ready to record.
+- **Live counts.** A persistent `library_version` in settings changes on captures, filing and reading/recording
+  updates. The poll refreshes sidebar counts and the list even when work finishes between polls.
+- **Read under a filter.** Under Inbox → Not read yet, a just-read row remains visible until manual refresh or a
+  filter change. A toast explains that it is ready to record and still in Inbox.
 - **Filters.** Filter by state or document date. Sort by date, name, recently added or path. Receipts show their
   reconciliation status ("Matched to a charge", "Match proposed", "Several possible charges", "No matching charge
   yet"). Unfiled documents show why they are unfiled. On the redesigned screen (Records v2, [ui](ui.md#pages)) the
@@ -285,15 +293,19 @@ Code: `Groups.suggest`, `create`, `set_status`, `reorder`; `ReceiptService.run` 
 Code: `documents/extraction.py`, `finance/ledger.py`.
 
 - **Two steps.** Extraction classifies the document, then extracts only that type's schema (receipt, bank statement,
-  credit card statement, pay stub, investment or loan statement, tax form, contract terms…) in bounded chunks with
+  credit card statement, bill, pay stub, investment or loan statement, tax form, contract terms…) in bounded chunks with
   task-specific output limits. A failed chunk is corrected on its own.
+- **Bills** are read line by line (`BillLine`: description, amount, category, `line_kind`, `line_holder`) with their
+  provider, account digits, dates, period, amount due and new charges, and recorded as a receipt with
+  `document_kind='bill'` ([money](money.md#bills-and-their-lines)).
 - **Deterministic checks:**
   - every citation is an exact quote;
   - every amount is printed in its cited line;
   - names appear in their citation;
   - dates are unambiguous ISO dates;
   - the currency is explicit, or taken from a known account for statements;
-  - document arithmetic reconciles: receipt totals, item sums, statement opening and closing balances, pay stubs.
+  - document arithmetic reconciles: receipt totals, item sums, statement opening and closing balances, pay stubs, and
+    a bill's lines against its new charges.
 - **Problems** mark the record `needs_review`. A missing currency blocks publication. Records you already reviewed are
   never overwritten. How a second reading replaces the first is in
   [money](money.md#reading-a-statement-or-receipt-again).
@@ -305,7 +317,8 @@ Code: `documents/extraction.py`, `finance/ledger.py`.
   ordinal among equal entries. So a CSV row and the same statement row are one transaction, while two equal purchases
   on one day stay distinct.
 - **Reconciliation** runs after each import and extraction, or from **Reconcile now**. It matches:
-  - receipts to transactions, by exact amount, posting window and merchant;
+  - receipts to transactions, by exact amount, posting window and merchant, and bills to their payments;
+  - pay stubs to their deposits;
   - transfers and card payments between owned accounts, which are excluded from spending;
   - refunds to their purchases;
   - recurring payments.

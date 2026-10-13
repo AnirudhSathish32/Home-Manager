@@ -63,9 +63,12 @@ All model calls go through one transport, `request_completion` (`models/model_cl
   retries, so first-try validity is measured.
 - **Two suites** (`evals/`, flat layout):
   - **Documents suite** (`python -m evals.run`): whole documents end to end through the real pipeline. It runs on the
-    42-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
+    44-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
     exchange printed without minus signs) have negative answers, so they measure `return_marker`, `returned` and the
-    sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out.
+    sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out. Its two bills (a
+    family phone plan read per line with a past-due balance, and rent with water and trash) measure the provider, dates,
+    amount due, new charges and each line with who it is for; their arithmetic is the lines against the new charges
+    ([money](money.md#bills-and-their-lines)). A bill can be donated like a receipt.
   - **Task suite** (`python -m evals.tasks`): every other model task, with cases generated in code from fixed data and
     seeds. The web agents run against recorded synthetic pages (`evals/tasks/web.py`), with no network.
 - **Results.** Each run writes `run.json` (the config and model metadata, including quantization and context length),

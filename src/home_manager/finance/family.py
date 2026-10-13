@@ -167,12 +167,19 @@ def _page(results, rows_key, args, sort):
 
 
 def _transaction_sort(sort, order):
-    keys = {"date_desc": lambda row: (_desc(row["posted_date"]), order[row["member_id"]], -row["id"]),
-            "date_asc": lambda row: (row["posted_date"], order[row["member_id"]], row["id"]),
-            "amount_desc": lambda row: (-row["amount_minor"], order[row["member_id"]], -row["id"]),
-            "amount_asc": lambda row: (row["amount_minor"], order[row["member_id"]], row["id"]),
-            "description": lambda row: (normalize_name(row["description_raw"] or ""), order[row["member_id"]], row["id"])}
+    # A receipt, bill or pay stub listed among transactions has no transaction id, only its record's (record_id).
+    number = lambda row: row["id"] or row.get("record_id") or 0
+    keys = {"date_desc": lambda row: (_desc(row["posted_date"]), order[row["member_id"]], -number(row)),
+            "date_asc": lambda row: (row["posted_date"], order[row["member_id"]], number(row)),
+            "amount_desc": lambda row: (-row["amount_minor"], order[row["member_id"]], -number(row)),
+            "amount_asc": lambda row: (row["amount_minor"], order[row["member_id"]], number(row)),
+            "description": lambda row: (normalize_name(row["description_raw"] or ""), order[row["member_id"]], number(row))}
     return keys.get(sort, keys["date_desc"])
+
+
+def _merge_totals(results):
+    """Members' In / Out / Net totals added up exactly per currency (tools.get_transactions, get_spending_items)."""
+    return sorted(_keyed([row for result in results for row in result.get("totals", [])], lambda row: row["currency"]), key=lambda row: row["currency"])
 
 
 def _desc(text):
@@ -236,10 +243,11 @@ FAMILY_TOOLS = {
     "get_accounts": (("accounts",), lambda results, args, order: {"accounts": [row for result in results for row in result["accounts"]]}),
     "get_categories": ((), lambda results, args, order: {"categories": sorted(
         _keyed([row for result in results for row in result["categories"]], lambda row: row["category"]), key=lambda row: row["category"])}),
-    "get_transactions": (("transactions",), lambda results, args, order: _page(results, "transactions", args, _transaction_sort(args.get("sort"), order))),
+    "get_transactions": (("transactions",), lambda results, args, order: {
+        **_page(results, "transactions", args, _transaction_sort(args.get("sort"), order)), "totals": _merge_totals(results), "notes": results[0]["notes"]}),
     "get_spending_items": (("items",), lambda results, args, order: {**_page(results, "items", args, lambda row: (
         _desc(row["date"]), order[row["member_id"]], row["source"], -(row["transaction_id"] or 0), -(row["receipt_id"] or 0),
-        row["position"] is None, row["position"] or 0)), "notes": results[0]["notes"]}),
+        row["position"] is None, row["position"] or 0)), "totals": _merge_totals(results), "notes": results[0]["notes"]}),
     "get_spending": ((), lambda results, args, order: _merge_spending(results)),
     "compare_categories": ((), lambda results, args, order: _merge_compare(results)),
     "compare_periods": ((), lambda results, args, order: _merge_periods(results)),

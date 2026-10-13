@@ -499,7 +499,8 @@ def test_family_figures_trace_to_each_members_own(tmp_path):
         names = check_every_ref(trace_of, home)
         assert {"family.spending.net", "family.cashflow.net", "family.cashflow.in", "cashflow.in", "spending.net"} <= names
         money_in = trace_of(home["cashflow"]["inflow"]["trace"])
-        assert money_in["reconciles"] and money_in["result"]["minor"] == home["cashflow"]["inflow"]["minor"] == 200000
+        # The payroll deposit, and each member's 2,700.00 pay stub that no deposit has replaced (docs/money.md "Money in and paystubs").
+        assert money_in["reconciles"] and money_in["result"]["minor"] == home["cashflow"]["inflow"]["minor"] == 200000 + 2 * 270000
         spending = trace_of(home["totals"]["net_spending"]["trace"])
         assert sorted(step["label"] for step in spending["steps"]) == ["Dad", "Mom"] and "member=" in spending["steps"][0]["trace"]
         assert "family.worth.today" in check_every_ref(trace_of, manager.family_net_worth("USD"))

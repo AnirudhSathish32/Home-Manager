@@ -51,7 +51,7 @@ def test_manual_moves_keep_evidence_and_never_overwrite_edited_copies(library):
     assert store.documents()["items"][0]["managed_status"] == "blocked"
 
 
-def test_files_in_the_retired_bills_folder_move_to_unfiled(library):
+def test_files_in_bills_are_preserved_on_recovery(library):
     store, inbox = library
     (inbox / "power.png").write_bytes(b"power bill bytes")
     scan(store)
@@ -64,12 +64,11 @@ def test_files_in_the_retired_bills_folder_move_to_unfiled(library):
     store.library.path(filed).rename(store.library.root / legacy)
     with store.connection() as db:
         db.execute("UPDATE managed_files SET folder='Bills',relative_path=? WHERE document_id=?", (legacy, doc["id"]))
-        db.execute("UPDATE document_folders SET folder='Unfiled' WHERE document_id=?", (doc["id"],))
+        db.execute("UPDATE document_folders SET folder='Bills' WHERE document_id=?", (doc["id"],))
     store.library.recover()
     moved = store.documents()["items"][0]
-    assert (moved["folder"], moved["managed_path"]) == ("Unfiled", "Unfiled/" + legacy.split("/")[-1])
+    assert moved["folder"] == "Bills"
     assert store.library.path(moved["managed_path"]).read_bytes() == b"power bill bytes"
-    assert not (store.library.root / "Bills" / "2026").exists()  # Emptied month and year folders are tidied.
 
 
 def test_inbox_capture_before_move_and_recovery_after_move(library, monkeypatch):
@@ -373,8 +372,9 @@ def test_category_files_live_in_year_month_folders_and_existing_files_move_there
         assert moved.startswith("Housing/2026/09/2026-09-22__Housing__")  # The known date carries over to name and folder.
         # A date that becomes known later (a published bill) moves the file into its month on the next start.
         with store.connection() as db:
-            db.execute("INSERT INTO bills(document_id,blob_hash,issue_date,due_date,amount_due_minor,currency,review_status,created_at,updated_at) "
-                       "VALUES(?,?,'2026-08-01','2026-08-20',4200,'USD','proposed','t','t')", (power["id"], power["current_hash"]))
+            db.execute("INSERT INTO receipts(document_id,blob_hash,document_kind,issue_date,due_date,purchase_date,total_minor,currency,review_status,"
+                       "created_at,updated_at) VALUES(?,?,'bill','2026-08-01','2026-08-20','2026-08-20',4200,'USD','proposed','t','t')",
+                       (power["id"], power["current_hash"]))
         name = store.document(power["id"])["managed_path"].split("/")[-1]
         # An older version filed before this layout existed: its copy sits at the category's top level.
         inbox_scan(store, {"lunch.png": b"receipt bytes, second version"})

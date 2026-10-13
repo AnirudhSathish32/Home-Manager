@@ -374,7 +374,8 @@ async function doc2Changed(state) {
 // The page's h1 is the document's name; the record header says what was recorded and from whom.
 function doc2RecordTitle(type, record) {
   if (type === "income_record") return ledgerTitle(type, record);
-  const kind = {receipt: "Receipt", statement: "Statement", bill: "Bill"}[type] || "Record", from = record.merchant || record.account || record.institution;
+  const kind = (record.document_kind === "bill" ? "Bill" : {receipt: "Receipt", statement: "Statement"}[type]) || "Record";
+  const from = record.merchant || record.account || record.institution;
   return from ? `${kind} from ${from}` : kind;
 }
 function doc2Why(issues) {
@@ -401,13 +402,14 @@ async function doc2Ledger(state, target, type, id, kept) {
   parts.push(doc2Fields(state, type, record));
   const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
   if (doc2 !== state) return;
-  const rows = ledgerRows(record, categories, state.reload, find);
+  const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
   if (rows) {
-    if (type === "statement") doc2RowCorrect(state, rows, record);
+    if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record);
     const section = element("section", "", "doc2-section");
     section.append(element("h3", type === "statement" ? `Transactions (${record.transactions.length})` : `Items (${record.items?.length || 0})`), rows);
     parts.push(section);
   }
+  if (record.shareable_by_line && !familyMode && activeProfile?.family && record.review_status !== "rejected") parts.push(doc2ShareByLine(state, record));
   if (record.links?.length) parts.push(doc2Links(record, type));
   if (record.rewards?.length) parts.push(rewardsList(record.rewards, find));
   if (type === "income_record") parts.push(...paystubBreakdown(record, find), ...withholdingSection(record));
@@ -420,8 +422,9 @@ function doc2Fields(state, type, record) {
   const list = element("dl", "", "doc2-fields");
   const fix = field => (record.correctable || []).find(item => item.shown_as === field || `${item.shown_as}_minor` === field);
   const corrected = field => (record.corrections || []).filter(item => item.field === field).at(-1);
-  for (const [label, field, end] of RECORD_FIELDS[type] || []) {
-    const shown = end ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : record.display[field] || record[field];
+  for (const [label, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
+    if (end && !record[field] && !record[end] && !fix(field)) continue;  // A bill without a printed period.
+    const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : record.display[field] || record[field];
     const correction = fix(field);
     if (shown == null && !correction) continue;
     const value = element("dd", "", "doc2-value");
@@ -452,6 +455,11 @@ function doc2Fields(state, type, record) {
       correct.addEventListener("click", () => state.cc.openCorrect(correction.field));
       links.append(correct);
     }
+    if (end && fix(end) && state.cc?.correctButton) {
+      const correct = element("button", "Correct end", "link-button"); correct.type = "button";
+      correct.setAttribute("aria-label", "Correct period end");
+      correct.addEventListener("click", () => state.cc.openCorrect(fix(end).field)); links.append(correct);
+    }
     value.append(links);
     list.append(element("dt", label), value);
   }
@@ -473,19 +481,22 @@ function doc2Fields(state, type, record) {
 }
 // A statement's rows each take a correction of their own, opened in a row under it.
 function doc2RowCorrect(state, rows, record) {
-  const lines = record.transactions.slice(0, 200);
+  const items = Boolean(record.items), lines = (record.items || record.transactions).slice(0, 200);
   [...rows.querySelectorAll("tbody tr")].forEach((tr, index) => {
     const row = lines[index];
     if (!row?.correctable?.length) return;
     const open = element("button", "Correct", "link-button doc2-row-correct"); open.type = "button";
-    open.setAttribute("aria-label", `Correct ${row.description_raw || "this row"}`); open.setAttribute("aria-expanded", "false");
+    open.setAttribute("aria-label", `Correct ${row.description || row.description_raw || "this row"}`); open.setAttribute("aria-expanded", "false");
     open.addEventListener("click", () => {
       const shown = tr.nextElementSibling?.classList.contains("doc2-row-form");
       tr.parentElement.querySelectorAll(".doc2-row-form").forEach(node => node.remove());
       for (const other of rows.querySelectorAll(".doc2-row-correct")) other.setAttribute("aria-expanded", "false");
       if (shown) return;
       const formRow = element("tr", "", "doc2-row-form"), cell = element("td"); cell.colSpan = tr.children.length;
-      const cc = confirmCorrect({recordType: "transaction", recordId: row.id, correctable: row.correctable, decision: false,
+      // A bill line's type and person are chosen in the table itself; Correct here is its price.
+      const cc = confirmCorrect({recordType: items ? "receipt" : "transaction", recordId: items ? record.id : row.id, decision: false,
+                                 correctable: items ? row.correctable.filter(item => item.field === "price") : row.correctable,
+                                 preview: !items, saveCorrection: items ? body => api(`/api/receipts/${record.id}/items/${row.position}`, {method: "PATCH", body: JSON.stringify({price: body.changes.price, reason: body.reason})}) : null,
                                  onChange: () => doc2Changed(state), onClose: () => { formRow.remove(); open.setAttribute("aria-expanded", "false"); open.focus(); }});
       cc.el.querySelector(".cc-actions").hidden = true;
       cell.append(cc.el); formRow.append(cell); tr.after(formRow);
@@ -495,9 +506,23 @@ function doc2RowCorrect(state, rows, record) {
     tr.lastElementChild.append(open);
   });
 }
+// A bill with lines for more than one person: the family's inbox shares it by line (docs/family.md "Sharing a bill by line").
+function doc2ShareByLine(state, record) {
+  const section = element("section", "", "doc2-section"), asked = Boolean(record.share_request);
+  section.append(element("h3", "Share by line"));
+  if (record.share?.member_id) { section.append(element("p", "Your family shared this bill by line; only your part counts.", "muted small")); return section; }
+  section.append(element("p", asked ? "Asked. Your family's inbox will show this bill at the next sync; once they send it, only your part counts."
+                                    : "This bill has lines for more than one person. Your family can share it so each person counts their own lines and their part of the taxes and fees.",
+                         "muted small"));
+  section.append(asyncButton(asked ? "Take the request back" : "Ask the family to share by line", async () => {
+    await api(`/api/receipts/${record.id}/share-by-line`, {method: "PUT", body: JSON.stringify({requested: !asked})});
+    await doc2Changed(state);
+  }, asked ? "link-button" : "secondary"));
+  return section;
+}
 function doc2Links(record, type) {
   const section = element("section", "", "doc2-section"), list = element("ul", "", "finance-list doc2-links");
-  section.append(element("h3", type === "receipt" ? "Matched charge" : "Matched records"));
+  section.append(element("h3", record.document_kind === "bill" ? "Payment" : type === "receipt" ? "Matched charge" : type === "income_record" ? "Deposit" : "Matched records"));
   for (const link of record.links) {
     const other = link.counterpart, item = element("li");
     if (!other) continue;

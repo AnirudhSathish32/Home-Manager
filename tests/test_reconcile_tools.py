@@ -59,7 +59,8 @@ def test_reconciliation_links_receipts_transfers_refunds_and_detects_recurring(b
     ambiguous = receipt(ledger, docs["bill.png"], "Corner Market", "2026-09-18", 1200)
     target_return = receipt(ledger, docs["return.png"], "Target", "2026-09-19", -2599)
     summary = Reconciler(store).run()
-    assert summary == {"manual_replaced": 0, "receipt_links": 2, "transfers": 2, "refunds": 1, "investment_transfers": 0, "recurring": 1, "open_issues": 1}
+    assert summary == {"manual_replaced": 0, "receipt_links": 2, "income_links": 0, "transfers": 2, "refunds": 1, "investment_transfers": 0,
+                       "recurring": 1, "open_issues": 1}
     with store.connection() as db:
         links = [dict(row) for row in db.execute("SELECT * FROM transaction_receipt_links ORDER BY receipt_id")]
         transfer_links = {(row[0], row[1]) for row in db.execute("SELECT from_transaction_id,to_transaction_id FROM transaction_links WHERE link_type='transfer'")}
@@ -160,7 +161,9 @@ def test_bills_wait_in_review(tmp_path, books):
     ledger.publish_bill({"provider": "Water District", "issue_date": "2026-08-01", "due_date": "2026-09-01", "period_start": None, "period_end": None,
                          "amount_due_minor": 4500, "currency": "USD", "issues": [], "locator": {"line_ids": ["line-1"]}}, other, "proposed")
     queue = FinanceTools(store).review_queue()
-    assert [(item["record_type"], item["review_status"]) for item in queue["records"]] == [("bill", "proposed"), ("bill", "proposed")]
+    # A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines").
+    assert [(item["record_type"], item["review_status"], item["summary"]["document_kind"]) for item in queue["records"]] == [
+        ("receipt", "proposed", "bill"), ("receipt", "proposed", "bill")]
 
 
 def test_tools_endpoint_validates_typed_arguments(tmp_path):

@@ -16,7 +16,6 @@ from .reconcile import Reconciler
 from .tools import last_day, month_index
 from .traces import build_for
 
-BILL_NOTE = "Bills don't change any totals; the due date moves on Bills and Today."
 TAX_NOTE = "Taxes for {year} are worked out again from your pay stubs."
 
 
@@ -57,6 +56,9 @@ def _state(ledger, db, record_type, record_id):
         state["refs"] += [ref("spending.category", **_period(month, currency), category=category) for category in sorted(categories)]
         if any(link["kind"] == "receipt" for link in state["links"]):
             state["refs"].append(ref("split.charge", transaction_id=record_id))
+    elif record_type == "income_record" and row["pay_date"]:
+        # A pay stub counts as money in until its deposit replaces it (docs/money.md "Money in and paystubs").
+        state["refs"] += [ref(name, **_period(row["pay_date"][:7], currency)) for name in ("cashflow.in", "cashflow.net")]
     elif record_type == "statement":
         state["refs"].append(ref("account.balance", account_id=row["account_id"]))
         state["refs"] += [ref("worth.today", figure=name, currency=currency, history_months=3) for name in ("cash", "net_worth")]
@@ -142,8 +144,6 @@ def preview(store, record_type, record_id, changes):
               "from": before["correctable"][field]["value"], "to": after["correctable"][field]["value"]} for field in changes if field in before["correctable"]]
     old_status, new_status = before["row"]["review_status"], after["row"]["review_status"]
     notes = []
-    if record_type == "bill":
-        notes.append(BILL_NOTE)
     if record_type == "income_record":
         pay_date = after["row"]["pay_date"] or before["row"]["pay_date"]
         notes.append(TAX_NOTE.format(year=pay_date[:4] if pay_date else "the year"))

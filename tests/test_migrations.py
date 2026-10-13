@@ -257,6 +257,58 @@ def test_065_drops_the_doubled_type_from_generated_account_names_only():
         db.close()
 
 
+def test_067_makes_bills_receipts_and_keeps_what_named_them():
+    """A bill becomes a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"): its correction, review,
+    evidence and family assignment follow it, the payment a person named becomes its verified match, and model-assigned
+    housing items wait to be re-sorted."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 67:
+                db.executescript(script.read_text())
+        for digest in ("a" * 64, "b" * 64):
+            db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", (digest,))
+        db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
+        bill_doc, receipt_doc = (db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                                            "VALUES('root',?,?,?,'t','t','job')", (name, name, digest)).lastrowid
+                                 for name, digest in (("bill.png", "a" * 64), ("receipt.png", "b" * 64)))
+        provider = db.execute("INSERT INTO merchants(canonical_name,normalized_name,created_at,updated_at) VALUES('City Power','CITY POWER','t','t')").lastrowid
+        account = db.execute("INSERT INTO accounts(institution,account_type,display_name,currency,created_at,updated_at) "
+                             "VALUES('Bank','checking','Bank','USD','t','t')").lastrowid
+        payment = db.execute("INSERT INTO transactions(account_id,posted_date,description_raw,amount_minor,currency,transaction_type,origin,review_status,"
+                             "source_fingerprint,created_at,updated_at) VALUES(?,'2026-09-22','CITY POWER',-4500,'USD','purchase','import','verified','f','t','t')",
+                             (account,)).lastrowid
+        bill = db.execute("INSERT INTO bills(document_id,blob_hash,provider_merchant_id,issue_date,due_date,amount_due_minor,currency,payment_status,"
+                          "review_status,created_at,updated_at,payment_transaction_id) VALUES(?,?,?,'2026-09-01','2026-09-20',4500,'USD','paid','verified','t','t',?)",
+                          (bill_doc, "a" * 64, provider, payment)).lastrowid
+        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,created_at) VALUES('bill',?,'provider','City Power','CITY PWR','t')", (bill,))
+        db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,created_at) VALUES('bill',?,'proposed','verified','t')", (bill,))
+        db.execute("INSERT INTO financial_evidence_links(record_type,record_id,document_id,blob_hash,source_key,locator_json,created_at) "
+                   "VALUES('bill',?,?,?,'extraction:x','{}','t')", (bill, bill_doc, "a" * 64))
+        db.execute("INSERT INTO family_assignments(record_type,record_id,family_record_key,status,updated_at) VALUES('bill',?,'key','unassigned','t')", (bill,))
+        receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,currency,review_status,created_at,updated_at) VALUES(?,?,'USD','verified','t','t')",
+                             (receipt_doc, "b" * 64)).lastrowid
+        for position, (category, source) in enumerate((("housing", "model"), ("housing", "user"), ("groceries", "model")), 1):
+            db.execute("INSERT INTO receipt_items(receipt_id,position,description,category,category_source,review_status) VALUES(?,?,'x',?,?,'verified')",
+                       (receipt, position, category, source))
+        db.commit()
+        storage.apply_migrations(db, 66)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert db.execute("SELECT count(*) FROM sqlite_schema WHERE name='bills'").fetchone()[0] == 0
+        moved = db.execute("SELECT id,document_kind,merchant_id,purchase_date,total_minor,amount_due_minor,due_date FROM receipts WHERE blob_hash=?",
+                           ("a" * 64,)).fetchone()
+        assert moved[1:] == ("bill", provider, "2026-09-20", 4500, 4500, "2026-09-20")
+        assert db.execute("SELECT record_type,record_id,field FROM record_corrections").fetchone() == ("receipt", moved[0], "merchant")
+        for table in ("review_events", "financial_evidence_links", "family_assignments"):
+            assert db.execute(f"SELECT record_type,record_id FROM {table}").fetchone() == ("receipt", moved[0]), table
+        assert db.execute("SELECT transaction_id,review_status FROM transaction_receipt_links WHERE receipt_id=?", (moved[0],)).fetchone() == (payment, "verified")
+        assert [row[0] for row in db.execute("SELECT category_source FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt,))] == [
+            "legacy", "user", "model"]
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        db.close()
+
+
 def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
     control, managed = tmp_path / "control", tmp_path / "managed"
     manager = Manager(control, ScanLimits(stability_seconds=0))

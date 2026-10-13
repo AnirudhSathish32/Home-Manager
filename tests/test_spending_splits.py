@@ -108,6 +108,7 @@ def test_a_receipt_counts_by_item_category_and_its_charge_takes_over_the_split(b
         ("HOT DOG COMBO", "reconciled"), ("QUEEN MATTRESS", "reconciled"), ("KS EGGS 24CT", "reconciled"), ("BOOKSHOP", "statement")}
     assert [row["description_raw"] for row in tools.get_transactions(TransactionsInput(category="furniture & decor"))["transactions"]] == ["COSTCO WHSE #1234"]
     charge = next(row["transaction_id"] for row in items if row["item"] == "QUEEN MATTRESS")
+    assert next(row for row in tools.get_transactions(TransactionsInput())["transactions"] if row["id"] == charge)["split_by_items"]
     assert {row["category"]: row["amount_minor"] for row in ledger.record("transaction", charge)["splits"]} == {"dining": 162, "furniture & decor": 53999, "groceries": 8000}
 
     # Changing one item moves its share, and the choice is remembered for the same item from the same seller.
@@ -117,6 +118,7 @@ def test_a_receipt_counts_by_item_category_and_its_charge_takes_over_the_split(b
         assert Ledger.remembered_categories(db, "COSTCO") == {"QUEEN MATTRESS": "housing"}
     # A category the user sets on the charge itself covers all of it.
     ledger.set_category(charge, "Warehouse")
+    assert not next(row for row in tools.get_transactions(TransactionsInput())["transactions"] if row["id"] == charge)["split_by_items"]
     assert categories(tools) == {"warehouse": 62161, "uncategorized": 800}
     # Rejecting the match hands the charge back to its own category and the receipt counts on its own again.
     ledger.set_category(charge, None)

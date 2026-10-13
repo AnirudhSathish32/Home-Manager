@@ -60,7 +60,7 @@ from ..models.vision import ModelComputer, VisionConfig
 from .manager import FAMILY_READ_ONLY, Manager, default_control_dir
 
 log = logging.getLogger(__name__)
-RecordType = Literal["statement", "transaction", "receipt", "bill", "income_record"]
+RecordType = Literal["statement", "transaction", "receipt", "income_record"]
 STATIC = {"index.html": "text/html", "ui.js": "text/javascript", "app.js": "text/javascript", "shell.js": "text/javascript", "receipt.js": "text/javascript",
           "library.js": "text/javascript", "finance.js": "text/javascript", "review.js": "text/javascript", "inventory.js": "text/javascript", "search.js": "text/javascript", "processing.js": "text/javascript", "assistant.js": "text/javascript", "home.js": "text/javascript", "today_v2.js": "text/javascript", "forecast.js": "text/javascript", "whatif.js": "text/javascript", "taxes.js": "text/javascript","investments.js": "text/javascript", "profiles.js": "text/javascript", "donate.js": "text/javascript", "trace.js": "text/javascript", "taxes_v2.js": "text/javascript", "document_v2.js": "text/javascript", "review_v2.js": "text/javascript", "month_v2.js": "text/javascript", "money_v2.js": "text/javascript", "transactions_v2.js": "text/javascript", "bills_v2.js": "text/javascript", "accounts_v2.js": "text/javascript", "investments_v2.js": "text/javascript", "forecast_v2.js": "text/javascript", "whatif_v2.js": "text/javascript", "inventory_v2.js": "text/javascript", "processing_v2.js": "text/javascript", "records_v2.js": "text/javascript", "search_v2.js": "text/javascript","theme.js": "text/javascript", "style.css": "text/css",
           # Self-hosted fonts (OFL; the license files sit beside them and aren't served).
@@ -164,8 +164,38 @@ class PublishingInput(BaseModel):
 
 class AssignmentInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    mode: Literal["member", "shared"]
-    members: list[str] = Field(min_length=1, max_length=20)
+    mode: Literal["member", "shared", "lines"]
+    members: list[str] = Field(default_factory=list, max_length=20)  # Shared by line: the people its lines name.
+
+
+class WhoHasWhatEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    member_id: str = Field(pattern=r"^[0-9a-f]{12,32}$")
+    kind: Literal["phone", "card"]
+    last_four: str = Field(pattern=r"^\d{4}$")
+    label: str | None = Field(default=None, max_length=40)
+
+
+class WhoHasWhatInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    entries: list[WhoHasWhatEntry] = Field(max_length=100)
+
+
+class LineMemberInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    member_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{12,32}$")
+
+
+class LineInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    field: Literal["line_kind", "member"]
+    value: str | None = Field(default=None, max_length=32)
+    reason: str | None = None
+
+
+class ShareRequestInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    requested: bool
 
 
 class ReceiptInput(BaseModel):
@@ -187,6 +217,13 @@ class EmptyTrashInput(BaseModel):
 
 class ReceiptBatchInput(BatchInput):
     document_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
+    record: bool = False
+
+
+class ItemPriceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    price: str | None
+    reason: str | None = None
 
 
 class ReasoningInput(BatchInput):
@@ -697,8 +734,22 @@ def create_app(control: Path | None = None, token: str | None = None,
         return manager().family_routing(include_delivered)
 
     @app.put("/api/family/routing/{record_type}/{record_id}")
-    def assign_family_record(record_type: Literal["receipt", "bill", "statement", "income_record"], record_id: int, value: AssignmentInput):
+    def assign_family_record(record_type: Literal["receipt", "statement", "income_record"], record_id: int, value: AssignmentInput):
+        if value.mode != "lines" and not value.members:
+            raise ValueError("Choose who this is for.")
         return manager().assign_family_record(record_type, record_id, value.mode, value.members)
+
+    @app.put("/api/family/routing/receipt/{record_id}/lines/{position}")
+    def family_line_member(record_id: int, position: int, value: LineMemberInput):
+        return manager().set_family_line_member(record_id, position, value.member_id)
+
+    @app.get("/api/family/who-has-what")
+    def who_has_what():
+        return manager().who_has_what()
+
+    @app.put("/api/family/who-has-what")
+    def set_who_has_what(value: WhoHasWhatInput):
+        return manager().set_who_has_what([entry.model_dump() for entry in value.entries])
 
     @app.post("/api/family-membership", status_code=201)
     def join_family(value: JoinInput):
@@ -790,7 +841,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.post("/api/receipt-batches", status_code=202)
     def receipt_batch(value: ReceiptBatchInput):
-        return manager().start_receipt_batch(value.force, value.document_ids)
+        return manager().start_receipt_batch(value.force, value.document_ids, record=value.record)
 
     @app.put("/api/reviewer-settings")
     def reviewer_settings(value: ReviewerConfig):
@@ -917,7 +968,7 @@ def create_app(control: Path | None = None, token: str | None = None,
         return manager().reconciler.set_obligation_kind(obligation_id, value.kind)
 
     @app.post("/api/finance/links/{kind}/{link_id}/review")
-    def review_link(kind: Literal["receipt", "transfer", "refund"], link_id: int, value: LinkReviewInput):
+    def review_link(kind: Literal["receipt", "transfer", "refund", "income"], link_id: int, value: LinkReviewInput):
         store()
         return manager().reconciler.review_link(kind, link_id, value.status)
 
@@ -930,6 +981,24 @@ def create_app(control: Path | None = None, token: str | None = None,
     def categorize_item(receipt_id: int, position: int, value: CategoryInput):
         store()
         return manager().ledger.set_item_category(receipt_id, position, value.category)
+
+    @app.patch("/api/receipts/{receipt_id}/items/{position}")
+    def correct_item_price(receipt_id: int, position: int, value: ItemPriceInput):
+        store()
+        return manager().ledger.correct_item(receipt_id, position, value.price, value.reason)
+
+    @app.patch("/api/receipts/{receipt_id}/lines/{position}")
+    def correct_bill_line(receipt_id: int, position: int, value: LineInput):
+        """A bill line's type or person (docs/money.md "Bills and their lines")."""
+        store()
+        if value.field == "member":  # The family's inbox knows its people; a person's own library knows only its own lines.
+            return manager().set_family_line_member(receipt_id, position, value.value)
+        return manager().ledger.correct_line(receipt_id, position, value.field, value.value, value.reason)
+
+    @app.put("/api/receipts/{receipt_id}/share-by-line")
+    def share_by_line(receipt_id: int, value: ShareRequestInput):
+        store()
+        return manager().request_share_by_line(receipt_id, value.requested)
 
     @app.get("/api/finance/item-categories")
     def item_categories_pending():
@@ -1363,7 +1432,7 @@ def create_app(control: Path | None = None, token: str | None = None,
         return traces.trace(store(), ref, manager())
 
     @app.get("/api/provenance/{record_type}/{record_id}")
-    def record_provenance(record_type: Literal["statement", "transaction", "receipt", "bill", "income_record", "investment_valuation", "tax_form", "holding"],
+    def record_provenance(record_type: Literal["statement", "transaction", "receipt", "income_record", "investment_valuation", "tax_form", "holding"],
                           record_id: int, field: str | None = Query(None, max_length=60)):
         with store().connection() as db:
             return provenance_for(db, record_type, record_id, field)

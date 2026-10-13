@@ -109,22 +109,21 @@ def test_monthly_series_and_category_comparison_are_exact(reconciled):  # B4, B5
     assert new["first"]["minor"] == 0 and new["percent_change"] is None
 
 
-def test_user_bill_payment_state_is_validated_and_audited(books):  # B6
+def test_a_bills_payment_is_its_matched_charge(books):  # B6
     store, ledger, docs = books
     checking = ledger.create_account("First Local Bank", "checking", "USD")
-    [autopay] = add(store, ledger, checking, docs["export.csv"], [("2026-09-28", "CITY POWER AUTOPAY", -12000)])
+    [autopay] = add(store, ledger, checking, docs["export.csv"], [("2026-09-24", "CITY POWER AUTOPAY", -12000)])
     bill = ledger.publish_bill({"provider": "City Power", "issue_date": "2026-09-10", "due_date": "2026-09-20", "period_start": None, "period_end": None,
-                                "amount_due_minor": 12000, "currency": "USD", "issues": [], "locator": {}}, source_of(docs["bill.png"], "extraction:bill"), "proposed")["id"]
-    with pytest.raises(ValueError, match="not found"):
-        ledger.set_bill_payment(bill, "paid", transaction_id=999)
-    with pytest.raises(ValueError, match="Only a paid bill"):
-        ledger.set_bill_payment(bill, "unpaid", transaction_id=autopay)
-    ledger.set_bill_payment(bill, "paid", transaction_id=autopay)
-    ledger.set_bill_payment(bill, "unpaid")
-    assert [(event["previous_status"], event["new_status"]) for event in ledger.review_history("bill_payment", bill)] == [("unknown", "paid"), ("paid", "unpaid")]
-    with store.connection() as db:
-        assert db.execute("SELECT reconciliation_status FROM (" + store.library_query() + "SELECT * FROM library) WHERE id=?",
-                          (docs["bill.png"]["id"],)).fetchone()[0] == "unmatched"  # B9: the bill's state reaches its document.
+                                "amount_due_minor": 12000, "currency": "USD", "issues": [], "locator": {}}, source_of(docs["bill.png"], "extraction:bill"), "verified")["id"]
+
+    def state():
+        with store.connection() as db:  # B9: the bill's state reaches its document.
+            return db.execute("SELECT reconciliation_status FROM (" + store.library_query() + "SELECT * FROM library) WHERE id=?",
+                              (docs["bill.png"]["id"],)).fetchone()[0]
+    assert state() == "unmatched"
+    Reconciler(store).run()
+    [link] = ledger.record("receipt", bill)["links"]
+    assert (link["counterpart"]["id"], link["review_status"], state()) == (autopay, "proposed", "proposed")
 
 
 def test_recurring_review_is_audited_and_never_reproposed_after_rejection(books):  # B6

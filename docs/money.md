@@ -1,8 +1,8 @@
 # Money
 
 How receipts, statements and imports become counted spending: what counts, reconciliation, categories and how a
-payment is divided between them, rules and budgets, rewards, recurring bills, currency conversion, and the money pages
-including Home. Investments, the forecast and What If are in [planning](planning.md). Taxes are in [taxes](taxes.md).
+payment is divided between them, bills and their lines, money in from pay stubs, rules and budgets, rewards, recurring
+bills, currency conversion, and the money pages including Home. Investments, the forecast and What If are in [planning](planning.md). Taxes are in [taxes](taxes.md).
 
 Code: `core/categories.py`, `core/money.py`, `finance/ledger.py`, `finance/reconcile.py`, `finance/splits.py`,
 `finance/item_categories.py`, `finance/recurring_scan.py`, `finance/fx.py`, `finance/tools.py`, `finance/dashboard.py`,
@@ -39,15 +39,14 @@ The rules every money figure follows. They are tested with fixtures, and the led
 
 - **Receipts & statements** (the Money section) holds Receipts, with a subfolder per category, Bank Statements and
   Credit Card Statements: proof of what was spent, counted and reconciled.
-- **Documents** holds Housing, Insurance, Investments, Jobs, Loans and Taxes, plus the shared Inbox and Unfiled: papers
+- **Documents** holds Bills, Housing, Insurance, Investments, Jobs, Loans and Taxes, plus the shared Inbox and Unfiled: papers
   kept because they matter.
 - Files arrive in the one Inbox and are filed to whichever store fits. Trash shows each store's trashed files.
   Emptying Trash is offered from Documents only, because it empties both. On disk the folders are listed in
   `core/folders.py` (`MONEY_FOLDERS`, `DOCUMENT_FOLDERS`). `scope=money|documents` on `/api/documents` and
   `/api/folders` selects the store.
-- **Bills are not tracked** (migration 029). A bill ("you owe … by …") is recognized but not recorded, and is filed
-  to Unfiled. The Bills folder is retired. Recurring bills come from payments, statement payees and contract terms
-  instead (see [Recurring bills](#recurring-bills)).
+- **Bills are filed to Bills and counted by their lines** (see [Bills and their lines](#bills-and-their-lines)). Record
+  files a recognized bill to Bills, even without an issuer or date (migration 066).
 
 What each document type means for money:
 
@@ -56,7 +55,8 @@ What each document type means for money:
 | Bank statement | account, period, opening and closing balances, each posting | postings and balance evidence; a closing balance is not an expense |
 | Credit card statement | account, period, purchases, refunds, fees, payments, statement balance | purchases and fees can be spending; paying the card is a transfer, not another purchase |
 | Receipt | merchant, purchase date, currency, items, tax, tip, total, payment lines, rewards | purchase evidence: matched to a posting, or counted on its own until one replaces it |
-| Bill | payee, amount due, due date | recognized but not recorded; recurring bills come from payments instead |
+| Bill | provider, issue and due dates, period, amount due, new charges, account's last four, each line | a receipt with `document_kind='bill'`: its new charges count on its due date, by line, until its payment replaces it |
+| Pay stub | employer, pay date, gross and net pay, each line | net pay counts as money in on its pay date until its deposit replaces it ([Money in and paystubs](#money-in-and-paystubs)) |
 
 The dates are kept separate: the folder a file sits in, the document's issue date, statement coverage, transaction and
 posted dates, purchase date and due date. A statement spanning two months is found by its coverage, not its folder.
@@ -70,7 +70,61 @@ posted dates, purchase date and due date. A statement spanning two months is fou
   confirmed, and not rejected), the line counts and the receipt stops counting. Never both. A return receipt is
   replaced the same way by its card or bank credit.
 - **Totals show the split.** Spending results carry `from_receipts` and `receipts`, and `refunds_from_receipts` and
-  `return_receipts`: the parts that so far only receipts show.
+  `return_receipts`: the parts that so far only receipts show. A bill is a receipt, so these include bills.
+- **Pay stubs count the same way on the money-in side** ([Money in and paystubs](#money-in-and-paystubs)).
+
+## Bills and their lines
+
+A bill is a receipt with `document_kind='bill'` (migration 067). There is no bills table: the old one was copied into
+receipts and dropped, and every correction, review, evidence link, family assignment and share that named a bill now
+names its receipt. The transaction a person had said paid a bill became that receipt's verified match.
+
+- **What is read** (`documents/extraction.py`, `bill_lines`): provider, the account's last four digits, issue and due
+  dates, period, amount due, new charges and every line. Each line has its category, its type (`line_kind`: service,
+  usage, subscription, device, tax_fee, credit or other) and who it is for as printed (`line_holder`). A phone bill is
+  read per line holder. Add-ons such as Apple TV+ or Apple Music are `subscription` lines. Taxes and fees are lines of
+  their own. A holder must be printed where its line is cited (a word of the name, or the number's last four digits);
+  otherwise it is left out.
+- **What counts is the new charges** (`total_minor`). The amount due (`amount_due_minor`) can include a past-due
+  balance and is kept beside it. The lines must add up to the new charges; that is the bill's arithmetic cross-check. With
+  no new charges printed, the lines' sum counts, else the amount due, with a note.
+- **How often** comes from the period's length (`BILL_PERIODS`); monthly when no period is printed.
+- **Counting.** A verified bill counts on its due date (`purchase_date` follows the due date, or the issue date when none
+  is printed), by its lines' categories, until its payment replaces it, like any receipt. A line with no category counts
+  under the bill's own, which is the category most of its money is in. Taxes and fees with no category of their own
+  count that way too.
+- **Its payment** (`Reconciler.bill_payment`) is money out of exactly the new charges or the amount due, posted between the
+  issue date (a month before the due date when none is printed) and five days after the due date, from a line that names
+  the provider or carries the bill's account number. One such line is proposed as its match and replaces the bill; it takes
+  the bill's line categories. Several become a question in To check. A line that names neither is never taken for it.
+- **Recurring bills.** A verified bill proposes its recurring bill, like a receipt with a recurrence. Subscription lines
+  inside a bill aren't recurring payments of their own: the Bills page lists them under the bill as "Includes: …"
+  (`includes`, from the payee's latest bill).
+- **Corrections.** A bill corrects as a receipt with its own fields (`ledger.fields_for`): provider, issue and due dates,
+  period, new charges, amount due and category. Each line's type and person are corrected by printed position
+  (`PATCH /api/receipts/{id}/lines/{position}` with `field` `line_kind` or `member`), kept across readings and undoable
+  like a price.
+- **Family.** A shared bill's payment counts only the payer's part, and a bill can be shared by its lines
+  ([family](family.md#sharing-a-bill-by-line)).
+- **The page.** Records and the document page show a **Bill** tag and the due date; Records adds the period. The
+  document page shows the lines table: line, price, category, type, person and what each paid, then new charges and
+  amount due. The person is chosen from the family in the family's inbox; elsewhere it shows who the line is for as
+  printed. A bill with lines for more than one person offers **Ask the family to share by line**.
+
+## Money in and paystubs
+
+- **A verified pay stub counts as net pay on its pay date** (`STANDALONE_INCOME`) until the bank deposit that paid it is
+  linked in `transaction_income_links` (migration 067). Then the deposit counts and the pay stub doesn't. Never both.
+- **The match** (`Reconciler.income`): a deposit (or other credit) of exactly the net pay, posted from two days before the
+  pay date to five after, that no other pay stub has. One such deposit is linked (proposed). With several, the one that
+  names the payer is linked; otherwise To check asks "Which deposit paid this pay stub?". A pair the user rejected is
+  never proposed again.
+- **Cash flow** (`calculate_cashflow`) adds pay stubs no deposit has replaced to money in. Like receipts, they have no
+  account, so a single account's cash flow leaves them out. The forecast's income is cash flow's, so a paycheck counts
+  once there too.
+- **The page.** A pay stub's page shows its deposit under **Deposit**. Its correction preview shows the months whose money
+  in moves.
+- Not built: manually linking a paystub deposit split across two accounts ([open work](open-work.md)).
 
 ## Returns
 
@@ -129,7 +183,12 @@ A value the import or the reading got wrong is corrected in place, and kept with
 (who's here) and an optional reason (`record_corrections`). Its review state doesn't change. Each correction outlives
 reading the document again.
 - **Receipts, bills, pay stubs and statements:** `PATCH /api/finance/records/{type}/{id}` with `changes` and `reason`
-  (`ledger.CORRECTABLE`).
+  (`ledger.CORRECTABLE`). Receipts include subtotal, tax, tip and total, including missing values. Enter magnitudes;
+  Sale or return sets their signs. Pay stubs include both pay-period dates. Receipt amounts refresh category shares. A
+  bill is a receipt (type `receipt`) with its own fields ([Bills and their lines](#bills-and-their-lines)).
+- **Receipt item prices:** `PATCH /api/receipts/{id}/items/{position}` with `price` and optional `reason`. Correct
+  opens beside the item. The price is kept by printed position across re-readings and refreshes category shares.
+  Receipt history includes these changes, with Undo through the receipt's corrections endpoint.
 - **Transactions:** the same endpoint (`ledger.correct_transaction`): the date, the amount (entered positive), its
   direction (money out or in), the merchant and the type. A statement read again puts them back on its lines. A
   manual entry its statement line replaced can't be corrected; the line can. Setting a category by hand is kept as a
@@ -151,7 +210,8 @@ The redesigned document page corrects receipts, bills, pay stubs, statements and
   - whether the record will count automatically, and which issues it resolves.
 
   The correction and the reconciliation pass a save runs both run inside one write transaction, and that transaction is
-  rolled back. A bill or pay stub changes no totals, so its preview gives a note instead. Family records (`?member=`)
+  rolled back. A bill previews like a receipt. A pay stub previews the months whose money in moves, with a note that
+  taxes are worked out again. Family records (`?member=`)
   have no preview. Like a save, the preview keeps a charge's proposed receipt match when its amount changes, because
   reconciliation doesn't re-check a link.
 - **History:** `GET /api/finance/records/{type}/{id}/history` lists, newest first: the record's corrections (for a
@@ -212,8 +272,13 @@ links the two (signal `near_amount`). How a receipt in another currency is match
 
 Receipts and their items take categories from one fixed, flat list (`RECEIPT_CATEGORIES` in `core/categories.py`):
 groceries, dining, furniture & decor, household supplies, home improvement, clothing, electronics, personal care,
-transportation, travel, health, entertainment, subscriptions, housing, insurance, pets, kids & baby, gifts & donations,
-other. `CATEGORY_GUIDE`, in the same file, says what each one covers; it is what the model is shown. Household *product*
+transportation, travel, health, entertainment, subscriptions, housing, utilities, phone & internet, insurance, pets,
+kids & baby, gifts & donations, other. `CATEGORY_GUIDE`, in the same file, says what each one covers; it is what the
+model is shown.
+
+- **Utilities and phone & internet** (migration 067) split out of housing, which is now rent, mortgage and HOA dues.
+  Utilities is power, water, gas, sewer and trash. Items the model had put in housing are marked `legacy` once and
+  re-sorted by **Categorise their items**; items a person put there stay. Household *product*
 categories (for inventory) are a different list; see [household](household.md#items-and-inventory).
 
 - **How a receipt gets its category.** The model suggests one while recording the receipt. You can change it with
@@ -240,6 +305,15 @@ categories (for inventory) are a different list; see [household](household.md#it
 One receipt can hold several kinds of spending. A Costco trip might include a food-court hot dog (dining), a mattress
 (furniture & decor) and eggs, bacon and milk (groceries). So categories belong to **receipt items**, not to whole
 receipts (migration 032, `finance/splits.py`).
+
+On the document, **Price** shows the item's own printed amount. **Paid** shows its allocated share with "with tax"
+only when it differs; an item with no price shows a dash. Subtotal, Tax, Tip and Total appear below the items with
+Correct controls, along with any amount **Not matched to an item**. A difference over one cent between subtotal +
+tax + tip and total is called out. This display does not change how the ledger allocates shares.
+
+The Transactions **Charges** view labels an itemised charge **Split by items**, linking to Items. Changing the
+whole charge's category in its drawer asks before replacing the item split. Read-only category cells explain
+**Family view is read-only** or **Change on the receipt**.
 
 **How items get a category**
 - While recording a receipt, the model gives a category for each item (`item_categories`), from the same fixed list.
@@ -287,8 +361,15 @@ the receipt total are the two figures that can be checked against each other. Ev
 
 **Where it shows**
 - **Transactions page.** Opens on **Items**: one row per item, with its share of what was paid, a category dropdown and
-  its status (`get_spending_items`). A matched charge's items appear once, under the charge. **Charges** lists each card
-  or bank line.
+  its status (`get_spending_items`). A matched charge's items appear once, under the charge. Money in has rows too
+  (`kind` income): each deposit or other credit, **Reconciled** when its pay stub matched it, and each pay stub no deposit
+  has replaced (**Pay stub only**). **Charges** lists each card or bank line, and with `include_documents` the receipts,
+  bills and pay stubs that still count on their own, each with its source tag (Receipt, Bill or Pay stub) in the Account
+  column.
+- **Out, In or All** (`direction`, in the URL as `direction=out|in`) filters both views by each row's sign
+  (`signed_minor` on items). Both tools return `totals`: per currency, the money in, money out and net of what counts among
+  the matching rows; transfers, card payments and rows waiting for review aren't counted. The page shows them under the
+  summary.
 - **Transaction drawer.** Shows a charge's split.
 - **Receipt page.** Shows each item's price, category and share, then the totals by category.
 - **Totals.** Category totals, budgets, the Home donut, the forecast and anomaly checks all count by item category.
@@ -359,7 +440,8 @@ There are three sources:
 - **One payment proposes one.** While recording a receipt for an ongoing service, the model also says how often it is
   billed (`recurrence`: weekly, monthly, quarterly, every six months, yearly).
   - Such a receipt proposes a recurring bill in Review. So does any approved receipt in a `BILL_CATEGORIES` category
-    (housing, insurance, subscriptions; defined in `finance/reconcile.py`).
+    (housing, utilities, phone & internet, insurance, subscriptions; defined in `finance/reconcile.py`), and any verified
+    bill ([Bills and their lines](#bills-and-their-lines)).
   - So does a card or bank charge with such a category, whether set by you or by a category rule. One charge can't
     show how often it repeats, so it is proposed as monthly and you choose the frequency when confirming.
   - The older rule (the same exact amount three times at a steady cadence) still applies.
@@ -464,7 +546,7 @@ currency, settles it.
 | Route | Content |
 |---|---|
 | `#/home` | The dashboard (see [Home](#home)). |
-| `#/transactions` | Items and Charges views. The toolbar has search, from/to, account, category, type, status, receipt evidence and sort. The table pages 200 rows at a time (server offset). A row opens a drawer with the amount, the decision (Confirm/Reject through `confirmCorrect`, undoable for 8 seconds) and whether it counts, category with "always use for this merchant", the split, evidence and links, and history. |
+| `#/transactions` | Items and Charges views, with Out / In / All and an In / Out / Net line. Charges also lists receipts, bills and pay stubs that count on their own. The toolbar has search, from/to, account, category, type, status, receipt evidence and sort. The table pages 200 rows at a time (server offset). A row opens a drawer with the amount, the decision (Confirm/Reject through `confirmCorrect`, undoable for 8 seconds) and whether it counts, category with "always use for this merchant", the split, evidence and links, and history. |
 | `#/spending` | **Spending & budgets.** The month compared with the previous month and the same month last year. Figures, a by-category table with change and budget, top merchants, refunds and coverage notes. Budgets and category rules are managed here. |
 | `#/bills` | Confirmed recurring bills grouped as overdue, next 7 days and later, with subscriptions totalled separately. Recurring payments offer Confirm, Not recurring and Ended. **Look for recurring bills** runs the payee scan. |
 | `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. An account's default name is its institution, its type and any last four digits, leaving out the type when the institution already ends with it as a word ("Household checking", not "Household checking checking"; `ledger.py` `account_in`). Migration 065 renamed older rows still carrying the doubled form; names the user chose are untouched. |

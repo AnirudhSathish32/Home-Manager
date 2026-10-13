@@ -329,6 +329,13 @@ dialog code { display: block; overflow-wrap: anywhere; margin: var(--space-1) 0;
 .routing-decision { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
 .routing-decision .field { min-width: 180px; }
 .routing-people { margin: 0; flex-basis: 100%; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+/* A bill's lines with whose each is, and the one-time Add to Who has what (docs/family.md "Who has what"). */
+.routing-lines { list-style: none; margin: var(--space-2) 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.routing-lines li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.routing-lines select, .routing-ask select { min-height: var(--control-sm); max-width: 200px; }
+.routing-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
+.who-form { flex-wrap: wrap; }
+.bill-lines select { min-height: var(--control-sm); max-width: 180px; }
 @media (max-width: 800px) { .routing-row { grid-template-columns: 1fr; } }
 #family-section > .button-row { margin-top: var(--space-3); }
 .inline-edit { display: flex; gap: var(--space-2); align-items: center; }
@@ -805,6 +812,11 @@ details.today-region[open] > summary { margin-bottom: var(--space-3); }
 .tx2-more-body p { flex-basis: 100%; margin: 0; }
 .tx2-more[open] { flex-basis: 100%; }
 #tx2-summary { margin: 0; }
+/* In / Out / Net of what counts among the matching rows (docs/money.md "Money in and paystubs"); one group per currency. */
+.tx2-totals { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); margin: 0; }
+.tx2-totals[hidden] { display: none; }
+.tx2-total-group { display: inline-flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); }
+.tx2-total { display: inline-flex; align-items: baseline; gap: var(--space-1); font-variant-numeric: tabular-nums; }
 #tx2-backfill:empty, #tx2-error:empty { display: none; }
 #tx2-table .tx2-account-inline { display: none; }
 #tx2-table .tx2-transfer { width: 14px; height: 14px; margin-right: var(--space-1); vertical-align: -2px; }
@@ -1050,6 +1062,7 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .image-scroll { max-height: 64vh; overflow: auto; background: var(--surface-sunken); padding: var(--space-3); border-radius: var(--radius-sm); }
 .ledger-rows { margin-top: var(--space-3); }
 .ledger-rows td { padding: 6px var(--space-2); }
+.ledger-rows select { min-width: 140px; }
 .ledger-record-heading { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .ledger-record-heading strong { font-size: var(--text-lg); margin-right: var(--space-2); }
 /* A file holding several receipts: which one is shown, and the split's actions. */

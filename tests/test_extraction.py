@@ -459,7 +459,7 @@ def test_user_corrections_fill_unprinted_dates_survive_re_extraction_and_are_aud
     receipt_id = run["publication"]["id"]
     assert manager.ledger.record("receipt", receipt_id)["issues"] == ["Purchase date is ambiguous in the document."]
     for changes, message in (({"purchase_date": "Sep 24"}, "full date"), ({"purchase_date": "2026-02-30"}, "full date"),
-                             ({"total": "1.00"}, "fields this record allows"), ({}, "fields this record allows")):
+                                 ({"currency": "USD"}, "fields this record allows"), ({}, "fields this record allows")):
         with pytest.raises(ValueError, match=message):
             manager.ledger.correct("receipt", receipt_id, changes)
     result = manager.correct_record("receipt", receipt_id, {"purchase_date": "2026-09-24", "merchant": "Local Test Café"})

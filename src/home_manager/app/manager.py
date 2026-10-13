@@ -330,6 +330,7 @@ class Manager:
                 "session_opening": self.session_opening,
                 "inbox_directory": str(self.store.library.inbox) if self.store else "",
                 "configured": self.store is not None, "busy": self.busy(),
+                "library_version": self.store.library_version() if self.store else None,
                 "capture_busy": self.busy("capture"), "inference_busy": self.busy("inference"),
                 "activity": activity, "startup_error": self.startup_error, "model_progress": progress,
                 "vision": self.model_settings["vision"].model_dump(),
@@ -781,17 +782,85 @@ class Manager:
         return [{"member_id": member["member_id"], "name": member["name"]} for member in self.family.data["members"]]
 
     def family_routing(self, include_delivered=False):
-        """Records in the family's own library with who each is for: suggestions for new ones, the rest as confirmed."""
+        """Records in the family's own library with who each is for: suggestions for new ones, the rest as confirmed. Bills
+        members asked to share by line arrive here first (docs/family.md "Sharing a bill by line")."""
         from ..finance.family_routing import FamilyRouting, member_facts
         with self.mutex:
             if not self.family or not self.store:
                 raise ValueError("Open a family profile first.")
             store = self.store
             with self.family.mutex:
-                facts = member_facts(self.family_members())
+                members = self.family_members()
+                facts = member_facts(members)
+            self.import_share_requests(members)
+            who = self.family.who_has_what()
             routing = FamilyRouting(store)
-            routing.refresh(facts)
-            return {"people": self.family_people(), "records": routing.list(include_delivered)}
+            routing.refresh(facts, who)
+            # What members' own accounts end in, offered as Who has what entries to add; never used to guess an owner.
+            listed = {(entry["kind"], entry["last_four"]) for entry in who}
+            offers = [{"member_id": member, "kind": "card", "last_four": account["last_four"], "label": account["institution"]}
+                      for member, known in facts.items() for account in known["accounts"] if ("card", account["last_four"]) not in listed]
+            return {"people": self.family_people(), "records": routing.list(include_delivered), "who_has_what": who, "offers": offers}
+
+    def import_share_requests(self, members):
+        """Each bill a member asked to share by line, from their copy into the family's inbox, once (finance/family_routing.py
+        import_request). A request whose document hasn't reached the family computer yet waits for the next look."""
+        from ..finance.family_routing import import_request, record_payload
+        for member, member_store in members:
+            with member_store.connection() as db:
+                requests = [dict(row) for row in db.execute(
+                    "SELECT q.receipt_id,r.document_id,r.blob_hash FROM share_requests q JOIN receipts r ON r.id=q.receipt_id "
+                    "WHERE r.document_kind='bill' AND r.review_status<>'rejected'")] if db.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='share_requests'").fetchone() else []
+            for request in requests:
+                try:
+                    record, row = record_payload(member_store, "receipt", request["receipt_id"])
+                    _, chunks = self.family_original(member["member_id"], request["document_id"], request["blob_hash"])
+                    document = b"".join(chunks)
+                except (ValueError, OSError, RuntimeError):
+                    continue
+                import_request(self.store, member["member_id"], request["receipt_id"], record, f"{member['name']} bill", document)
+
+    def who_has_what(self):
+        with self.mutex:
+            if not self.family:
+                raise ValueError("Open a family profile first.")
+            return {"people": self.family_people(), "entries": self.family.who_has_what()}
+
+    def set_who_has_what(self, entries):
+        """Replace the family's Who has what list. It applies again to every record in the inbox not yet delivered."""
+        with self.mutex:
+            if not self.family:
+                raise ValueError("Open a family profile first.")
+            self.family.set_who_has_what(entries)
+            return self.who_has_what()
+
+    def set_family_line_member(self, record_id, position, member_id):
+        """Whose one line of a bill in the family's inbox is."""
+        from ..finance.family_routing import FamilyRouting
+        with self.mutex:
+            if not self.family or not self.store:
+                raise ValueError("Open a family profile first.")
+            return FamilyRouting(self.store).set_line_member(record_id, position, member_id, [person["member_id"] for person in self.family_people()])
+
+    def request_share_by_line(self, receipt_id, requested=True):
+        """Ask the family to share one of your bills by its lines, or take the request back. The family computer reads it
+        from your next copy and puts the bill in its inbox (docs/family.md "Sharing a bill by line")."""
+        with self.mutex:
+            if self.family or not self.store:
+                raise ValueError("Open your own profile first.")
+            if not (self.profile or {}).get("family"):
+                raise ValueError("Join a family first: sharing by line goes through the family's inbox.")
+            with self.store.connection() as db:
+                bill = db.execute("SELECT document_kind,review_status FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+                if bill is None or bill["document_kind"] != "bill":
+                    raise ValueError("Only a bill can be shared by its lines.")
+                if requested:
+                    db.execute("INSERT OR REPLACE INTO share_requests(receipt_id,mode,requested_at,actor) VALUES(?,'lines',?,?)",
+                               (receipt_id, now(), actor.current()))
+                else:
+                    db.execute("DELETE FROM share_requests WHERE receipt_id=?", (receipt_id,))
+            return self.ledger.record("receipt", receipt_id)
 
     def assign_family_record(self, record_type, record_id, mode, members):
         """Confirm who a record is for, then deliver it to each person."""
@@ -832,8 +901,10 @@ class Manager:
                 member = names.get(member_id)
                 if member is None:
                     continue
+                # Shared by line, each person's part is their own lines and their part of the rest (docs/family.md "Sharing a bill by line").
                 delivery = {"key": assignment["family_record_key"], "action": action, "record_type": record_type, "name": document_name,
                             "blob_hash": hashlib.sha256(document).hexdigest(), "share": share, "people": people,
+                            "share_member": member_id if assignment["mode"] == "lines" else None,
                             "record": record if action == "record" else None}
                 applied = False
                 folder = folders.get(member.get("profile_id")) if member["source"] == "local" else None
@@ -1378,12 +1449,21 @@ class Manager:
                 self.future = self.submit("inference", "transcription", "Text extraction", self.receipts.run, run_id)
             return {"run_id": run_id, "reused": not created}
 
-    def start_receipt_batch(self, force=False, document_ids=None):
+    def start_receipt_batch(self, force=False, document_ids=None, record=False):
         with self.mutex:
             self.require("inference", "Model work is running. Wait for it or cancel it first.")
+            if record and not self.reasoning_config.model:
+                raise ValueError("Choose a reasoning model in Settings before recording documents.")
             batch = self.batches.enqueue(self.vision, force, document_ids=document_ids)
             label = "Text extraction for all images and PDFs" if document_ids is None else f"Text extraction for {len(document_ids)} selected documents"
-            self.future = self.submit("inference", "transcription", label, self.batches.run, batch)
+            def run(work):
+                self.batches.run(batch, work)
+                if record:
+                    work.check()
+                    failures = self.extract_batch(batch, work, force=force)
+                    if failures:
+                        raise ValueError(f"{failures} documents could not be recorded. Check Processing for details.")
+            self.future = self.submit("inference", "extraction" if record else "transcription", "Recording selected documents" if record else label, run)
             return {"batch_id": batch}
 
     def start_reasoning(self, document_id, parse_run_id, force=False):
