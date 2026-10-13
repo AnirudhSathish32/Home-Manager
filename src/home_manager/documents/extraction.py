@@ -38,7 +38,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v18"
+EXTRACTION_VERSION = "typed-extraction-v21-pdf-layout-review"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -55,7 +55,8 @@ HEADERS = {
     "credit_card_statement": ("issuer", "account_reference", "period_start", "period_end", "previous_balance", "payments", "credits",
                               "purchases", "fees", "interest", "statement_balance", "minimum_payment", "due_date", "currency"),
     # A bill ("you owe … by …") counts its new charges, by line, on its due date (docs/money.md "Bills and their lines").
-    "bill": ("provider", "account_reference", "issue_date", "due_date", "period_start", "period_end", "amount_due", "new_charges", "currency"),
+    "bill": ("provider", "account_reference", "issue_date", "due_date", "period_start", "period_end", "amount_due", "new_charges", "currency",
+             "invoice_marker", "invoice_number", "bill_to", "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due", "payment_status"),
     "paystub": ("payer_or_employer", "pay_date", "period_start", "period_end", "pay_frequency", "work_state", "gross_pay", "gross_pay_ytd",
                 "net_pay", "net_pay_ytd", "taxes", "deductions", "currency"),
     # Offer letters, W-2s and other employment papers: read only to file them under their employer in Jobs.
@@ -71,7 +72,8 @@ HEADERS = {
 # interest_rate is a percentage, not money; it is listed so its value must be printed in its citation.
 AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
            "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "new_charges", "gross_pay", "net_pay", "taxes", "deductions",
-           "gross_pay_ytd", "net_pay_ytd", "ending_value", "principal_balance", "monthly_payment", "interest_rate"}
+           "gross_pay_ytd", "net_pay_ytd", "ending_value", "principal_balance", "monthly_payment", "interest_rate",
+           "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due"}
 # Kinds recorded in the ledger; the rest are read only for filing.
 PUBLISHED = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "investment_statement", "investment_confirmation", "investment_tax_form",
              "loan_document")
@@ -100,10 +102,18 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                       "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
                       "missing for an ordinary sale, and never a return policy)",
 "bank_statement": "bank statement", "credit_card_statement": "credit card statement",
-          "bill": "bill or invoice for a service, such as rent, utilities, phone or internet (provider: who sends the bill; account_reference: "
+          "bill": "bill or supplier invoice for goods or services, whether unpaid, partially paid or paid (provider: the supplier/seller, never the bill-to customer; account_reference: "
                   "the account number at the provider; amount_due: everything the bill asks for, past-due balance included; new_charges: "
-                  "this period's new or current charges only, without any previous or past-due balance, payments or credits carried over)",
-          "paystub": f"pay stub (payer_or_employer: {EMPLOYER_RULE}; pay_frequency: the printed pay frequency such as Biweekly or "
+                  "this period's new or current charges only, without any previous or past-due balance, payments or credits carried over. "
+                  "For an invoice, copy invoice_marker from its printed Invoice heading; invoice_number is its identifier, bill_to is the customer. "
+                  "invoice_total is the full price including tax BEFORE payments or deposits, even when balance_due is zero. "
+                  "invoice_subtotal and invoice_tax are printed totals; payments_received is the printed combined amount already paid, including deposits; "
+                  "balance_due is the remaining unpaid amount; payment_status is the printed paid/unpaid/partial wording. "
+                  "Do not subtract payments from invoice_total or put payments/deposits into new_charges. Missing values stay missing)",
+          "paystub": f"pay stub (payer_or_employer: {EMPLOYER_RULE}; gross_pay and net_pay: amounts for this single paycheck "
+                     "under Current or This period, never Year to date; if only YTD is legible, mark the current amount ambiguous "
+                     "or missing instead of copying YTD. Match values to their printed column headings, even when OCR spacing is imperfect. "
+                     "Do not treat annual salary or annualized pay as gross_pay. pay_frequency: the printed pay frequency such as Biweekly or "
                      "Semi-monthly; work_state: the two-letter code of the US state whose income tax is withheld, from the state tax line "
                      "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals)",
           "employment_document": f"employment document such as an offer letter, employment agreement, benefits enrollment or W-2 wage "
@@ -229,6 +239,8 @@ class Transaction(StrictModel):
 class BillLine(StrictModel):
     description: str = Field(min_length=1, max_length=500)
     amount: str | None = Field(max_length=50)
+    quantity: str | None = Field(default=None, max_length=50)
+    unit_price: str | None = Field(default=None, max_length=50)
     category: Literal[*RECEIPT_CATEGORIES] | None = Field(description="The spending category of this line from the list, or null if unclear.")
     line_kind: Literal[*LINE_KINDS] = Field(description="service (a plan, rent or a fixed charge), usage (metered: kWh, gallons, minutes), "
                                                         "subscription (an add-on such as Apple TV+ or Apple Music), device (a phone or equipment "
@@ -244,6 +256,13 @@ class PayLine(StrictModel):
     category: Literal[*PAY_CATEGORIES]
     current: str | None = Field(max_length=50, description="This pay period's amount as printed, or null.")
     ytd: str | None = Field(max_length=50, description="The year-to-date amount as printed, or null.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
+
+
+class PayRowClass(StrictModel):
+    description: str = Field(min_length=1, max_length=200)
+    group: Literal[*PAY_GROUPS]
+    category: Literal[*PAY_CATEGORIES]
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
 
 
@@ -314,7 +333,8 @@ class Reward(StrictModel):
 
 
 # Optional summary fields: a model that leaves them out reads them as missing.
-OPTIONAL_FIELDS = {"card_last_four", "return_marker"}
+OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice_number", "bill_to", "invoice_total",
+                   "invoice_subtotal", "invoice_tax", "payments_received", "balance_due", "payment_status"}
 HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", __base__=StrictModel,
                                     **{name: (Value, Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
                                        for name in fields})
@@ -323,6 +343,7 @@ Items = create_model("Items", __base__=StrictModel, items=(list[Item], Field(max
 Transactions = create_model("Transactions", __base__=StrictModel, transactions=(list[Transaction], Field(max_length=200)))
 BillLines = create_model("BillLines", __base__=StrictModel, line_items=(list[BillLine], Field(max_length=100)))
 PayLines = create_model("PayLines", __base__=StrictModel, lines=(list[PayLine], Field(max_length=100)))
+PayRowClasses = create_model("PayRowClasses", __base__=StrictModel, lines=(list[PayRowClass], Field(max_length=100)))
 InvestmentLines = create_model("InvestmentLines", __base__=StrictModel, entries=(list[InvestmentLine], Field(max_length=200)))
 TradeLines = create_model("TradeLines", __base__=StrictModel, trades=(list[TradeLine], Field(max_length=50)))
 TaxBoxes = create_model("TaxBoxes", __base__=StrictModel, boxes=(list[TaxBox], Field(max_length=100)))
@@ -338,7 +359,8 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
 SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
-                                                                       PaymentTerm, PaymentTerms, PayLine, PayLines, Reward, Rewards, InvestmentLine, InvestmentLines,
+                                                                       PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
+                                                                       Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
                                                                        *HEADER_MODELS.values())))
 
@@ -410,7 +432,9 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "receipt: proof of a purchase from a store, restaurant, gas station or online order: item or service lines with prices, then a "
             "total, usually with tax and how it was paid (card, cash, change due); supercenter and warehouse-club receipts with product codes "
             "and tax-code letters are receipts. bank_statement or credit_card_statement: an account's activity over a statement period. "
-            "bill: an amount due for a service, before it is paid. "
+            "bill: a service bill or supplier invoice for goods or services, including paid invoices, partial payments, deposits and zero balance due. "
+            "A document headed Invoice with an invoice number, supplier and bill-to customer belongs to bill even if paid. "
+            "Quotes, estimates and pro-forma invoices are unknown, because they do not establish an actual charge. "
             "investment_statement: an investment, retirement, HSA or brokerage account's holdings and value over a period. "
             "investment_confirmation: a confirmation of one trade or purchase (shares bought or sold, a CD opened, a Treasury bill, "
             "note, bond or I bond bought) rather than a period's statement. "
@@ -433,6 +457,137 @@ def chunks(lines, limit=LINES_PER_CALL):
         size += amount
     if current:
         yield current
+
+
+def reported_tables(evidence):
+    pages = getattr(evidence, "pages", None)
+    sources = pages if pages is not None else [evidence]
+    return [table for source in sources for table in (getattr(source, "vision_tables", None) or SimpleNamespace(tables=[])).tables]
+
+
+def paystub_columns(table):
+    """Map copied headings only when current and YTD each identify one distinct column."""
+    labels = [" ".join(row.cells[index].quote.lower() for row in table.header_rows)
+              for index in range(len(table.header_rows[0].cells))]
+    current = [index for index, label in enumerate(labels) if re.search(r"\bcurrent\b|\bthis\s+(?:pay\s+)?period\b", label)]
+    ytd = [index for index, label in enumerate(labels) if re.search(r"\bytd\b|\byear[ -]?to[ -]?date\b", label)]
+    return (current[0], ytd[0]) if len(current) == len(ytd) == 1 and current[0] != ytd[0] else None
+
+
+def paystub_table_context(tables, part):
+    ids = {line.id for line in part}
+    context = []
+    for table in tables:
+        rows = [row for row in table.rows if row.line_id in ids]
+        if rows:
+            context.append({"table_id": table.id,
+                            "header_rows": [{"row_id": row.id, "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]}
+                                            for row in table.header_rows],
+                            "rows": [{"row_id": row.id, "line_id": row.line_id,
+                                      "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]} for row in rows]})
+    return context
+
+
+def paystub_chunks(lines, tables):
+    """Bound the repeated table header and cell payload alongside each source-line chunk."""
+    current = []
+    for line in lines:
+        candidate = [*current, line]
+        context = paystub_table_context(tables, candidate)
+        size = len(json.dumps({"lines": [{"line_id": item.id, "text": item.text} for item in candidate],
+                               "reported_tables": context}, ensure_ascii=False).encode())
+        if current and (len(candidate) > LINES_PER_CALL or size > BYTES_PER_CALL):
+            yield current
+            current = [line]
+        else:
+            current = candidate
+        if len(json.dumps({"lines": [{"line_id": item.id, "text": item.text} for item in current],
+                           "reported_tables": paystub_table_context(tables, current)}, ensure_ascii=False).encode()) > BYTES_PER_CALL:
+            raise ValueError("One reported table row exceeds the extraction input limit; it was not truncated.")
+    if current:
+        yield current
+
+
+def table_summary(lines, tables, notes):
+    """Keep summary lines and their cells within the same whole-document input budget."""
+    selected = list(lines)
+    while selected:
+        context = paystub_table_context(tables, selected)
+        size = len(json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in selected],
+                               "reported_tables": context}, ensure_ascii=False).encode())
+        if size <= WHOLE_BYTES:
+            return selected, context
+        selected.pop(len(selected) // 2)
+        note = "The summary's text and tables exceed the input limit; its start and end were used. Check omitted middle sections."
+        if note not in notes:
+            notes.append(note)
+    raise ValueError("The document summary exceeds the extraction input limit.")
+
+
+def cell_amount(cell):
+    quote = cell.quote.strip()
+    matches = list(NUMBER.finditer(quote))
+    if len(matches) != 1:
+        return None
+    number = matches[0].group(0)
+    if quote[:matches[0].start()].count("-") or ("(" in quote and ")" in quote) or quote.endswith("-"):
+        number = "-" + number
+    return number
+
+
+def anchor_paystub(header, rows, tables, notes, source_lines=None):
+    """Copy paystub money from validated cells after the model classifies cited rows."""
+    by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
+    line_text = {line.id: line.text for line in source_lines or []}
+    references = []
+
+    def cited_row(evidence):
+        matches = {cite.line_id for cite in evidence if cite.line_id in by_line}
+        return by_line[next(iter(matches))] if len(matches) == 1 else None
+
+    for index, item in enumerate(rows, 1):
+        found = cited_row(item.evidence)
+        reference = {"source_row_id": None, "current": None, "ytd": None}
+        if found:
+            table, source = found
+            reference["source_row_id"] = source.id
+            columns = paystub_columns(table)
+            if columns is None:
+                notes.append(f"Pay line {index} has conflicting or unknown column headings; check its amounts.")
+            for name, column in zip(("current", "ytd"), columns or (None, None)):
+                cell = source.cells[column] if column is not None else None
+                amount = cell_amount(cell) if cell else None
+                if amount is not None:
+                    reference[name] = {"cell_id": cell.id, "line_id": cell.line_id, "quote": cell.quote}
+                item = item.model_copy(update={name: amount})
+            rows[index - 1] = item
+        elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence):
+            rows[index - 1] = item.model_copy(update={"current": None, "ytd": None})
+            notes.append(f"Pay line {index} has multiple amounts without a validated source row; check its columns.")
+        references.append(reference)
+
+    for name, column_name in (("gross_pay", "current"), ("gross_pay_ytd", "ytd"),
+                              ("net_pay", "current"), ("net_pay_ytd", "ytd"),
+                              ("taxes", "current"), ("deductions", "current")):
+        field = getattr(header, name)
+        if field.status != "proposed":
+            continue
+        found = cited_row(field.evidence)
+        if found:
+            table, source = found
+            columns = paystub_columns(table)
+            column = columns[0 if column_name == "current" else 1] if columns else None
+            amount = cell_amount(source.cells[column]) if column is not None else None
+            header = header.model_copy(update={name: field.model_copy(update={"value": amount,
+                                    "status": "proposed" if amount is not None else "ambiguous",
+                                    "evidence": [EvidenceQuote(line_id=source.line_id, quote=source.cells[column].quote)]
+                                    if amount is not None else field.evidence})})
+            if amount is None:
+                notes.append(f"{name.replace('_', ' ').capitalize()} has no unambiguous {column_name} source cell.")
+        elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence):
+            header = header.model_copy(update={name: field.model_copy(update={"value": None, "status": "ambiguous"})})
+            notes.append(f"{name.replace('_', ' ').capitalize()} has multiple amounts without a validated source cell.")
+    return header, rows, references
 
 
 def whole(lines, notes=None):
@@ -614,6 +769,9 @@ def problems_in(output, lines, amount_field=None):
         item = getattr(output, name)
         if isinstance(item, Value) and item.status == "proposed":
             check(name, item.evidence, item.value if name in AMOUNTS else None, item.value if name in NAMES else None)
+            if name in ("invoice_marker", "invoice_number", "bill_to", "payment_status") and not any(
+                    item.value.strip().casefold() in cite.quote.casefold() for cite in item.evidence):
+                problems.append((name, "the invoice value is not printed in its cited evidence"))
         elif isinstance(item, list) and item and not isinstance(item[0], EvidenceQuote):
             for index, row in enumerate(item):
                 if not hasattr(row, "evidence"):  # Payment terms: each cited value is checked like a summary field.
@@ -649,7 +807,7 @@ def describe(exc):
     return "Extraction output failed validation: " + "; ".join(issues) + "."
 
 
-def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None, notes=None):
+def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None, notes=None, table_context=None):
     """One bounded call; one correction of this call only if validation fails.
 
     If the correction still fails only on identifying fields (names, dates, currency, account
@@ -657,7 +815,8 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
     document. Amount and row problems always fail: money is never dropped silently.
     """
     line_map = {line.id: line.text for line in lines}
-    content = json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in lines]}, ensure_ascii=False)
+    content = json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in lines],
+                          **({"reported_tables": table_context} if table_context else {})}, ensure_ascii=False)
     payload = {"max_tokens": max_tokens, "messages": [{"role": "system", "content": instruction + RULES}, {"role": "user", "content": content}],
                "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}}}
     for attempt in range(2):
@@ -665,6 +824,19 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
         try:
             output = repair_quotes(schema.model_validate_json(raw), line_map)
             problems = problems_in(output, line_map, amount_field)
+            if problems and attempt and schema is PayLines and notes is not None and all(
+                    path.startswith("lines.") and message == "the amount is not printed in its cited evidence" for path, message in problems):
+                repaired = []
+                for index, row in enumerate(output.lines, 1):
+                    changes = {}
+                    for field, label in (("current", "this-period"), ("ytd", "year-to-date")):
+                        amount = getattr(row, field)
+                        if amount is not None and not amount_supported(amount, row.evidence):
+                            changes[field] = None
+                            notes.append(f"Pay line {index} {label} amount was not supported by its cited text; correct it from the original stub.")
+                    repaired.append(row.model_copy(update=changes) if changes else row)
+                output = output.model_copy(update={"lines": repaired})
+                return verify(output, line_map, amount_field)
             if problems and attempt and notes is not None and all(path in DROPPABLE for path, _ in problems):
                 for path, message in problems:
                     notes.append(f"{path.replace('_', ' ').capitalize()} was not used: {message}. Check it against the document.")
@@ -861,6 +1033,7 @@ def bill_lines(record, rows, money, issues, currency, total):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
     charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note."""
+    invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     record["items"] = []
     for index, row in enumerate(rows, 1):
         amount = money(row.amount, f"Charge line {index}", magnitude=True)
@@ -868,9 +1041,23 @@ def bill_lines(record, rows, money, issues, currency, total):
         digits = re.sub(r"\D", "", holder or "")
         if holder and not (name_supported(holder, row.evidence) or len(digits) >= 4 and digits[-4:] in re.sub(r"\D", "", " ".join(cite.quote for cite in row.evidence))):
             holder = None  # Who a line is for (a name, or a phone number) must be printed where it is cited.
+        quantity = row.quantity if row.quantity and printed_in(row.quantity, row.evidence) else None
+        unit = money(row.unit_price, f"Charge line {index} unit price") if row.unit_price and printed_in(row.unit_price, row.evidence) else None
+        if row.quantity and quantity is None or row.unit_price and unit is None:
+            issues.append(f"Charge line {index}: quantity or unit price was not supported by its citation and was left out.")
+        if quantity and unit is not None and amount is not None:
+            try:
+                extended = (Decimal(quantity.replace(",", "")) * unit).quantize(Decimal(1), ROUND_HALF_EVEN)
+                if abs(extended) != amount:
+                    issues.append(f"Charge line {index}: quantity times unit price does not equal its line total; check discounts and columns.")
+            except (ValueError, ArithmeticError):
+                issues.append(f"Charge line {index}: quantity could not be checked.")
         record["items"].append({"description": " ".join(row.description.split()), "line_total_minor": -amount if amount is not None and row.line_kind == "credit" else amount,
+                                "quantity": quantity, "unit_price_minor": unit,
                                 "category": row.category, "line_kind": row.line_kind, "line_holder": holder, "locator": locator(row.evidence)})
     new, due = record.pop("new_charges_minor", None), record.get("amount_due_minor")
+    if invoice:
+        new = record.get("invoice_total_minor")
     lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
     if new is not None:
         record["total_minor"] = new
@@ -885,13 +1072,46 @@ def bill_lines(record, rows, money, issues, currency, total):
         if due is not None and lines == due:
             record["cross_checks"] += 1
     else:
-        record["total_minor"] = due
-        if due is not None:
+        record["total_minor"] = None if invoice else due
+        if due is not None and not invoice:
             issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
     # A bill is for an ongoing service: how often it comes, from the length of its period (monthly when none is printed).
     start, end = (date.fromisoformat(record[key]) if record.get(key) else None for key in ("period_start", "period_end"))
     days = (end - start).days + 1 if start and end and start <= end else None
     record["recurrence"] = next((name for name, (low, high) in BILL_PERIODS.items() if days and low <= days <= high), "monthly")
+    if invoice:
+        record["recurrence"] = None
+        invoice_total = record.get("invoice_total_minor")
+        subtotal, tax = record.get("invoice_subtotal_minor"), record.get("invoice_tax_minor")
+        paid, balance = record.get("payments_received_minor"), record.get("balance_due_minor")
+        if balance is None:
+            balance = due
+        record["amount_due_minor"] = balance
+        if invoice_total is None:
+            issues.append("Invoice total was not printed or read; check the charge lines before counting this invoice.")
+        if subtotal is not None and tax is not None and invoice_total is not None:
+            if subtotal + tax != invoice_total:
+                issues.append("Invoice subtotal plus tax does not equal its full total; check discounts and additional charges.")
+            else:
+                record["cross_checks"] += 1
+        if invoice_total is not None and paid is not None and balance is not None:
+            if invoice_total - paid != balance:
+                issues.append("Invoice total minus payments does not equal the remaining balance.")
+            else:
+                record["cross_checks"] += 1
+        if invoice_total is not None and balance is not None and 0 < balance < invoice_total:
+            issues.append("This invoice is partially paid. Review its deposits and remaining payment together before counting; split-payment matching is not automatic.")
+        elif paid is not None and invoice_total is not None and 0 < paid < invoice_total:
+            issues.append("This invoice reports a partial payment. Review all payments together; split-payment matching is not automatic.")
+        if (record.get("payment_status") or "").strip().casefold() in ("paid", "paid in full") and balance not in (None, 0):
+            issues.append("The invoice says paid but its remaining balance is not zero.")
+        if any(value is not None and value < 0 for value in (invoice_total, paid, balance)):
+            issues.append("Invoice amounts include a credit or overpayment; review how it should be counted.")
+        record["invoice"] = {"number": record.get("invoice_number"), "bill_to": record.get("bill_to"),
+                             "total_minor": invoice_total, "subtotal_minor": subtotal, "tax_minor": tax,
+                             "payments_received_minor": paid, "balance_due_minor": balance,
+                             "payment_status": record.get("payment_status"),
+                             "locator": record["locator"]}
     # Its own category, for lines that have none, is the one most of its money is in (Ledger.publish_bill).
 
 
@@ -1094,6 +1314,8 @@ def review_reasons(kind, record, decision=None, issues=()):
     reasons = []
     names = {"institution": "Institution", "payer_or_employer": "Payer or employer", **({"total_minor": "New charges"} if kind == "bill" else {})}
     for field in REQUIRED.get(kind, ()):
+        if kind == "bill" and record.get("invoice") and field == "due_date":
+            field = "due_date" if record.get("due_date") else "issue_date"
         if record.get(field) is None:
             label = names.get(field) or field.removesuffix("_minor").replace("_", " ").capitalize()
             if any(issue.startswith(label) for issue in issues):
@@ -1202,7 +1424,7 @@ class ExtractionService:
         with self.store.connection() as db:
             return [dict(row) for row in db.execute("SELECT id,status,document_type,created_at,error FROM extraction_runs WHERE parse_run_id=? ORDER BY created_at DESC", (parse_run_id,))]
 
-    def extract(self, config, work, lines, notes, classification=None):
+    def extract(self, config, work, lines, notes, classification=None, tables=()):
         """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
         classification: already asked of these same lines."""
         summary_lines = whole(lines, notes)
@@ -1218,9 +1440,14 @@ class ExtractionService:
                 known = ("Employers that already have a folder: " + json.dumps(names, ensure_ascii=False) + ". If this document's employer is one "
                          "of them, even when printed differently (Google LLC for Google), give that exact name as the value, still citing where "
                          "the employer is printed. ")
+        summary_context = None
+        if kind in ("paystub", "bill") and tables:
+            summary_lines, summary_context = table_summary(summary_lines, tables, notes)
+            known += " Use reported_tables headings to identify each amount's column; cite its exact source line and cell text. "
         scope = "the whole document" if len(summary_lines) == len(lines) else "the start and end of the document"
         header = ask(config, work, HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. The lines are {scope}; "
-                     "rows are extracted separately. " + known, summary_lines, 2048, notes=notes)
+                     "rows are extracted separately. " + known, summary_lines, 4096 if kind == "bill" else 2048,
+                     notes=notes, table_context=summary_context)
         identity = None
         if kind == "receipt":
             identity = self.identify(config, work, summary_lines)
@@ -1258,8 +1485,11 @@ class ExtractionService:
                          f"Apple TV+ or Apple Music are subscription lines. category, from this list or null: {CATEGORY_GUIDE}. Never list the "
                          "amount due, the new charges total, a previous or past-due balance, or payments received as lines."
                          if key == "line_items" else
-                         " One entry per earning, deduction, tax and employer contribution line, with its this-period amount (current) and "
-                         "year-to-date amount (ytd) as printed, null when not printed. group: earnings (regular pay, overtime, bonus, "
+                         " One entry per earning, deduction, tax and employer contribution line. Match each amount to the "
+                         "printed This period/Current or Year to date/YTD column heading: current is this paycheck only, ytd is the "
+                         "accumulated total. Do not copy a YTD amount into current when the current cell is unclear; use null. "
+                         "Keep the visual row and its column positions together, even if OCR spacing is imperfect. "
+                         "group: earnings (regular pay, overtime, bonus, "
                          "commission); pre_tax (deducted before income tax: 401k or 403b, health, dental, vision, HSA, FSA); tax (federal, "
                          "state and local income tax, Social Security or OASDI, Medicare, state disability); post_tax (Roth 401k, after-tax "
                          "insurance, garnishments); employer_paid (paid by the employer and not taken from pay, such as a 401k match or the "
@@ -1272,11 +1502,30 @@ class ExtractionService:
                          "taxed, false when it marks it untaxed or tax-exempt, null when no code is printed or its meaning is unclear. "
                          "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "
                          "printed negative), false for an item bought. Copy its line_total as printed.")
-            for part in chunks(lines):
+            if kind == "bill":
+                direction += (" For invoices, include goods and service lines, shipping, tax and discounts once each. "
+                              "amount is the extended line total, never the unit price. Copy quantity and unit_price when printed. "
+                              "Exclude invoice totals, subtotals, payments, deposits and balance due from charge rows.")
+            for part in (paystub_chunks(lines, tables) if kind in ("paystub", "bill") and tables else chunks(lines)):
                 work.check()
-                rows.extend(getattr(ask(config, work, schema, f"List every {row_label} printed in these lines of a {LABELS[kind]}, in order, "
-                                        f"one entry per printed row; repeated identical rows are separate entries. Do not skip rows.{direction} ",
-                                        part, 8192, amount_field), key))
+                context = paystub_table_context(tables, part) if kind in ("paystub", "bill") else None
+                classified_cells = kind == "paystub" and bool(context)
+                answer_schema = PayRowClasses if classified_cells else schema
+                row_direction = (" Classify each printed earning, deduction, tax and employer contribution row by group and "
+                                 "category. Never list totals such as gross pay, net pay, total deductions or total taxes. "
+                                 "Do not return money values; the application copies them from the cited reported table cells. "
+                                 if classified_cells else direction)
+                answer = ask(config, work, answer_schema, f"List every {row_label} printed in these lines of a {LABELS[kind]}, in order, "
+                                        f"one entry per printed row; repeated identical rows are separate entries. Do not skip rows.{row_direction} "
+                                        + ("The reported_tables include stable row and cell IDs and repeat their headings; "
+                                           "classify each earning, deduction, tax, or employer contribution row. "
+                                           "The application copies money from the reported cells; cite the exact source line. " if classified_cells else ""),
+                                        part, 8192, None if classified_cells else amount_field, notes, context)
+                if classified_cells:
+                    rows.extend(PayLine(description=row.description, group=row.group, category=row.category,
+                                        current=None, ytd=None, evidence=row.evidence) for row in answer.lines)
+                else:
+                    rows.extend(getattr(answer, key))
         return classification, header, rows, identity
 
     @staticmethod
@@ -1410,7 +1659,7 @@ class ExtractionService:
         return None, None
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
-                category=None, recurrence=None, item_categories=None, rewards=None, segment=0):
+                category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None):
         record_notes = []
         name_field = IDENTITY[kind][0]
         if getattr(header, name_field).status != "proposed" and classification.issuer.status == "proposed":
@@ -1424,6 +1673,11 @@ class ExtractionService:
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
         record, issues = normalize(kind, header, rows, currency)
+        if kind == "paystub" and cell_references:
+            for row, reference in zip(record.get("lines", []), cell_references):
+                cells = {name: reference[name] for name in ("current", "ytd") if reference.get(name)}
+                if cells:
+                    row["locator"]["cells"] = cells
         # A bill's category comes from its lines (bill_lines); a receipt's from the model's description of it.
         record["description"], record["category"], record["recurrence"] = description, category or record.get("category"), recurrence or record.get("recurrence")
         for item, item_category in zip(record.get("items", []) if item_categories else [], item_categories or []):
@@ -1537,7 +1791,16 @@ class ExtractionService:
 
     def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here."""
-        classification, header, rows, identity = self.extract(config, work, lines, notes, classification)
+        # The native layout can expose incomplete or ambiguous source coverage even
+        # before typed extractors consume its cells. Such records must not auto-count.
+        notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
+        tables = reported_tables(evidence)
+        classification, header, rows, identity = self.extract(config, work, lines, notes, classification, tables)
+        cell_references = []
+        has_table_contract = getattr(evidence, "vision_tables", None) is not None or any(
+            getattr(page, "vision_tables", None) is not None for page in getattr(evidence, "pages", []))
+        if classification.document_type == "paystub" and has_table_contract:
+            header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines)
         description = category = recurrence = item_categories = rewards = checks = None
         if classification.document_type == "receipt" and header is not None and rows:
             # The seller the record will carry: the seller answer or header, else the classifier's issuer.
@@ -1560,7 +1823,8 @@ class ExtractionService:
             work.check()
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
-                "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes}
+                "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
+                "cell_references": cell_references}
 
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
@@ -1571,6 +1835,9 @@ class ExtractionService:
                   "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
                   "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
                   "normalized": None, "notes": notes}
+        if classification.document_type == "paystub" and reading.get("cell_references"):
+            for row, reference in zip(result["rows"], reading["cell_references"]):
+                row["cell_evidence"] = reference
         if classification.document_type in TERM_KINDS:
             records = self.term_records(classification.document_type, reading["terms"], lines, home_currency, reading["term_notes"])
             # Proposals only: each waits in Review, and a payee with a bill already gets none.
@@ -1583,7 +1850,8 @@ class ExtractionService:
         if header is not None:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
-                                                             reading["recurrence"], reading["item_categories"], reading["rewards"], segment)
+                                                             reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
+                                                             reading.get("cell_references"))
         return result, publication
 
     # Several receipts in one file ------------------------------------------------

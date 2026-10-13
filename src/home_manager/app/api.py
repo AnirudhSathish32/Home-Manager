@@ -987,6 +987,16 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().ledger.correct_item(receipt_id, position, value.price, value.reason)
 
+    @app.patch("/api/paystubs/{income_id}/lines/{position}")
+    def correct_paystub_line(income_id: int, position: int, value: CorrectionInput):
+        store()
+        return manager().ledger.correct_income_line(income_id, position, value.changes, value.reason)
+
+    @app.delete("/api/receipts/{receipt_id}/items/{position}")
+    def delete_receipt_item(receipt_id: int, position: int):
+        store()
+        return manager().ledger.delete_item(receipt_id, position)
+
     @app.patch("/api/receipts/{receipt_id}/lines/{position}")
     def correct_bill_line(receipt_id: int, position: int, value: LineInput):
         """A bill line's type or person (docs/money.md "Bills and their lines")."""

@@ -967,6 +967,8 @@
               <div class="field"><label for="reasoning-url">Reasoning API base URL</label><input id="reasoning-url" required value="http://127.0.0.1:1234/v1"></div>
               <div class="field"><label for="reasoning-model">Reasoning model ID</label><input id="reasoning-model" placeholder="Copy the text model ID from your local server">
                 <small>Classifies and extracts saved transcriptions. Independent of the vision model.</small></div>
+              <label class="check-field"><input id="reasoning-schema" type="checkbox" checked> Use server-enforced JSON output</label>
+              <small class="field-note">Turn this off if your model server cannot enforce JSON Schema. Home Manager still checks every extracted value before saving it.</small>
               <div class="button-row"><button id="save-reasoning" class="primary" type="submit">Save reasoning model</button>
                 <button id="test-reasoning" type="button" data-test="reasoning">Test connection</button></div>
               <div id="test-reasoning-result" class="connection-result" role="status"></div>

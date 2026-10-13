@@ -7,6 +7,7 @@ import pytest
 from home_manager.app.api import create_app
 from home_manager.app.manager import Manager
 from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.models.model_client import request_completion
 from home_manager.library.scanner import ScanLimits
 from test_receipts import make_receipt
 
@@ -29,6 +30,27 @@ def proposal():
             "insights": [{"kind": "fee", "observation": "The receipt includes a 3.00 tip.",
                           "evidence": [{"line_id": "line-6", "quote": "Tip 3.00"}]}],
             "limitations": ["Unverified transcription; one document cannot establish spending trends."]}
+
+
+def test_reasoning_model_retries_empty_final_answer_with_more_tokens(local_model):
+    local_model["raw_outputs"] = ["", '{"ok":true}']
+    config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
+    payload = {"max_tokens": 1024, "messages": [{"role": "system", "content": "Return JSON."},
+                                                {"role": "user", "content": "Test"}]}
+    assert request_completion(config, payload) == '{"ok":true}'
+    assert [request["max_tokens"] for request in local_model["requests"]] == [1024, 8192]
+
+
+def test_reasoning_model_falls_back_when_server_rejects_json_schema(local_model):
+    local_model["reject_schema_once"] = True
+    config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
+    payload = {"max_tokens": 1024, "messages": [{"role": "system", "content": "Return JSON."},
+                                                {"role": "user", "content": "Test"}],
+               "response_format": {"type": "json_schema", "json_schema": {"name": "test", "schema": {"type": "object"}}}}
+    assert request_completion(config, payload)
+    assert "response_format" in local_model["requests"][0]
+    assert "response_format" not in local_model["requests"][1]
+    assert "JSON schema" in local_model["requests"][1]["messages"][0]["content"]
 
 
 @pytest.fixture
@@ -112,7 +134,9 @@ def test_invalid_analysis_does_not_replace_success(prepared, local_model, failur
     if failure == "unresolved_value":
         assert "facts.0" in result["error"]
         assert "value=null" in result["error"]
-    assert len(local_model["requests"]) == (3 if failure == "truncated" else 4)
+    assert len(local_model["requests"]) == 4  # An output-budget stop gets one larger-budget retry.
+    if failure == "truncated":
+        assert local_model["requests"][-1]["max_tokens"] == 16384
 
 
 @pytest.mark.parametrize("problem", ["ambiguous_value", "missing_line"])

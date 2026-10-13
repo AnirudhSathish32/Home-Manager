@@ -79,6 +79,12 @@ A bill is a receipt with `document_kind='bill'` (migration 067). There is no bil
 receipts and dropped, and every correction, review, evidence link, family assignment and share that named a bill now
 names its receipt. The transaction a person had said paid a bill became that receipt's verified match.
 
+For a purchase invoice, such as furniture, use **Record as → Correct → Purchase** on the document page to remove
+the financial Bill label. Invoice details, items, totals and existing payment matches stay available. The change has
+a preview, history and Undo, and is kept across readings. Check **Purchase date** after saving: it retains the previous
+counting date until corrected. The library folder stays as filed; moving a file uses the separate library action.
+Choosing Bill again uses its due date (or issue date) for counting. Changing the label does not mark an invoice paid.
+
 - **What is read** (`documents/extraction.py`, `bill_lines`): provider, the account's last four digits, issue and due
   dates, period, amount due, new charges and every line. Each line has its category, its type (`line_kind`: service,
   usage, subscription, device, tax_fee, credit or other) and who it is for as printed (`line_holder`). A phone bill is
@@ -111,7 +117,26 @@ names its receipt. The transaction a person had said paid a bill became that rec
   amount due. The person is chosen from the family in the family's inbox; elsewhere it shows who the line is for as
   printed. A bill with lines for more than one person offers **Ask the family to share by line**.
 
+Supplier invoices use the existing bill path, including paid invoices and invoices for goods. The record retains
+the supplier, bill-to customer, invoice number, printed subtotal/tax/full total, payments or deposits, remaining
+balance and printed payment status (`receipts.invoice_json`, migration 069). Quantity and unit price remain separate
+from each charge's extended amount. The full invoice charge counts, not its remaining balance. Printed payments
+are never additional charge lines. Arithmetic disagreements and partial payments need review; a zero balance never
+substitutes for a missing purchase total. A due date takes precedence over the issue date for counting. An invoice
+does not automatically propose a monthly recurring obligation. Existing single-payment matching uses only the full
+invoice charge, never a smaller remaining balance; matching deposits plus multiple payments is not yet automatic.
+
 ## Money in and paystubs
+
+For new readings, a pay stub's reported table cells carry source line and cell IDs. The reasoning model classifies
+earning and deduction rows; code maps the copied Current/This period and YTD/Year to date headings, then copies each
+amount from its named cell. A blank current cell stays blank even when YTD has a value. Conflicting headings or a
+multi-amount line without a validated row require review. The vision model's placement is still unverified against
+image pixels, so this contract is being evaluated before relying on it as a default accuracy guarantee.
+
+Paystub summaries receive the same table cells and headings as row classification, within the input budget. Summary
+amount citations use the exact cell quote after anchoring. The source viewer's Tables tab shows these cells and links
+back to the original lines. Saved readings with explicit separators can be reconstructed without another vision call.
 
 - **A verified pay stub counts as net pay on its pay date** (`STANDALONE_INCOME`) until the bank deposit that paid it is
   linked in `transaction_income_links` (migration 067). Then the deposit counts and the pay stub doesn't. Never both.
@@ -184,8 +209,12 @@ A value the import or the reading got wrong is corrected in place, and kept with
 reading the document again.
 - **Receipts, bills, pay stubs and statements:** `PATCH /api/finance/records/{type}/{id}` with `changes` and `reason`
   (`ledger.CORRECTABLE`). Receipts include subtotal, tax, tip and total, including missing values. Enter magnitudes;
-  Sale or return sets their signs. Pay stubs include both pay-period dates. Receipt amounts refresh category shares. A
+  Sale or return sets their signs. Pay stubs include both pay-period dates, this-period gross/net/taxes/deductions,
+  year-to-date gross/net, work state and pay frequency. Receipt amounts refresh category shares. A
   bill is a receipt (type `receipt`) with its own fields ([Bills and their lines](#bills-and-their-lines)).
+- **Pay stub lines:** `PATCH /api/paystubs/{id}/lines/{position}` with `changes.current` or `changes.ytd` and an optional
+  `reason` corrects the amount in that column. Corrections follow the line's group, description and occurrence across
+  later readings and appear in the pay stub's history with Undo.
 - **Receipt item prices:** `PATCH /api/receipts/{id}/items/{position}` with `price` and optional `reason`. Correct
   opens beside the item. The price is kept by printed position across re-readings and refreshes category shares.
   Receipt history includes these changes, with Undo through the receipt's corrections endpoint.

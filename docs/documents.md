@@ -174,17 +174,25 @@ Every reading, from any reader, keeps the same evidence:
 
 Code: `documents/receipt_service.py`, `documents/receipt_worker.py`, `models/vision.py`.
 
-- **Text only.** The vision model returns `full_text`: the visible wording in reading order, including line items and
-  footers. It doesn't choose titles, folders, dates, currencies or totals. There is no OCR fallback and no label-based
-  field inference.
+- **Text and reported tables.** The vision model returns `full_text` and table header/row cells with zero-based source
+  line indexes. The app accepts cells only when they match exact, ordered substrings of their lines and rectangular
+  header widths. Invalid tables are discarded with a review issue while the full text remains available. The model
+  does not choose titles, folders, dates, currencies or totals.
 - **Server requirements.** It needs a server with streaming chat completions, image input and JSON-schema output. The
   app doesn't download or load weights.
 - **Codes.** QR codes and barcodes are decoded independently, and their payloads are added as inert text with their
   exact bytes and polygons. Links are never followed.
-- **What is kept.** Each result keeps the source hash, dimensions, rotation, preview, full text, line ids, endpoint,
-  model id and prompt version. No coordinates or confidence scores are invented.
+- **What is kept.** Each result keeps the source hash, dimensions, rotation, preview, full text, line ids, validated
+  `vision_tables` version 1, endpoint, model id and prompt version. Each cell has a stable ID, exact quote and source
+  line ID. These are model reports, not independently located image regions; no coordinates or confidence scores are
+  invented.
 - **Rotating.** The document page compares the transcription with the preserved image. You can rotate the image and
   create a new reading under **History**.
+- **Tables view.** The source viewer offers Image, Text and Tables. Tables show copied headings, blank cells, page
+  labels and links to the original text lines. Missing or rejected table structures have an explanatory state.
+  Saved text with explicit pipe separators and recognizable headings can supply the same validated table view and
+  reasoning input without another vision call; it is labeled as reconstructed from text separators. Original text
+  and saved parse JSON remain unchanged. Whitespace alone is insufficient to reconstruct columns.
 - **Failures.** Blank or invalid output, and interrupted or token-truncated streams, fail without publishing partial
   text or replacing an earlier good reading. `[unreadable]` and `[no visible text]` markers produce partial results
   for you to inspect.
@@ -203,11 +211,15 @@ check the plumbing and evidence, not model accuracy.
 
 `documents/pdf_reader.py` reads page by page:
 - a page with a usable text layer uses its embedded text;
+- new `pdf-pages-v3-layout` reads also retain native character indexes, words, geometry, ordered blocks and conservative tables in `page.layout`, before document classification;
 - scanned or near-empty pages are transcribed by the vision model;
+- explicit pipe-delimited rows in embedded text are retained as cells when their header and width agree;
 - evidence ids are `page-N-line-M`;
+- native layout IDs are separate, so existing text citations remain stable; new native and scanned pages both have rendered previews with saved coordinate transforms;
+- ambiguous native layout or possible image-only content creates a review issue that prevents automatic record verification;
 - no page is silently skipped, and long PDFs are analysed in chunks.
 
-Mixed digital and scanned PDFs are covered by tests.
+Old PDF readings remain readable; read the preserved PDF again to create native layout evidence. The new cells are not yet connected to typed model prompts, search projection or viewer highlighting. Stacked headers, wrapped cells and cross-page table linkage remain follow-up work. See the [implementation status and remaining design](../text_extraction_plan.md). Mixed digital/scanned PDFs, positioned tables, shuffled content streams, crop/rotation transforms and compatibility are covered by synthetic tests.
 
 ### CSV and XLSX imports
 
@@ -274,7 +286,7 @@ are those images (`documents/grouping.py`, migration 055).
   document**, with **Combine** or **Keep separate**. A dismissed suggestion is never made again.
 - **Combining directly.** In the library, select 2 to 20 PNG or JPEG images and choose **Combine as pages**. Pages go in
   file-name order.
-- **Reading.** A confirmed group is read under its first page, the lead, with parser version `receipt-images-v1`.
+- **Reading.** A confirmed group is read under its first page, the lead, with parser version `receipt-images-v2-tables`.
   - Each page is prepared by its own bounded worker child and transcribed.
   - The result has the PDF's page-aware shape (`pages`, line ids `page-N-line-I`).
   - `page_hashes` names each page's bytes. `options_json` holds them in order, so reordering creates a new reading.

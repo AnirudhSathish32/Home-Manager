@@ -22,7 +22,7 @@ from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..library.storage import now
 from .http_server import TAILNET
-from .model_stream import IDLE_SECONDS, read_completion
+from .model_stream import IDLE_SECONDS, EmptyCompletion, OutputBudgetExhausted, read_completion
 
 log = logging.getLogger(__name__)
 
@@ -244,17 +244,21 @@ def apply_sampling(config, payload):
                    stream_options={"include_usage": True})
     if getattr(config, "seed", None) is not None:
         payload["seed"] = config.seed
-    if not getattr(config, "schema_enforced", True) and "response_format" in payload:
-        # Unenforced: the model sees the same schema as an instruction, and the caller's validation is unchanged.
-        schema = payload.pop("response_format").get("json_schema", {}).get("schema")
-        if schema is not None:
-            instruction = UNENFORCED_SCHEMA + json.dumps(schema, separators=(",", ":"))
-            messages = payload["messages"]
-            if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
-                messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + instruction}
-            else:
-                messages.insert(0, {"role": "system", "content": instruction})
+    if not getattr(config, "schema_enforced", True):
+        unenforce_schema(payload)
     return payload
+
+
+def unenforce_schema(payload):
+    """Keep the JSON contract in the prompt when a server cannot enforce it."""
+    schema = payload.pop("response_format", {}).get("json_schema", {}).get("schema")
+    if schema is not None:
+        instruction = UNENFORCED_SCHEMA + json.dumps(schema, separators=(",", ":"))
+        messages = payload["messages"]
+        if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+            messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + instruction}
+        else:
+            messages.insert(0, {"role": "system", "content": instruction})
 
 
 def request_completion(config, payload, work=None):
@@ -265,8 +269,22 @@ def request_completion(config, payload, work=None):
     # The single choke point for every model task: eject other models, then load this one.
     ensure_loaded(config, work)
     apply_sampling(config, payload)
-    return _exchange(config, "/chat/completions", payload, "text/event-stream", read_completion, work,
-                     "Local model returned an invalid completion stream.")
+    for attempt in range(2):
+        try:
+            return _exchange(config, "/chat/completions", payload, "text/event-stream", read_completion, work,
+                             "Local model returned an invalid completion stream.")
+        except ModelHTTPError as exc:
+            if exc.status not in (400, 422) or "rejected structured output" not in str(exc) or "response_format" not in payload:
+                raise
+            # Some local runtimes list the model but reject JSON Schema for that model. The caller still validates its JSON.
+            unenforce_schema(payload)
+        except (EmptyCompletion, OutputBudgetExhausted) as exc:
+            budget = payload.get("max_tokens")
+            if attempt or not isinstance(budget, int) or budget >= 16384:
+                problem = "incomplete or truncated" if isinstance(exc, OutputBudgetExhausted) else "empty"
+                raise ValueError(f"The model's final response was {problem}; it did not return JSON even with a larger output budget. "
+                                 "Try a model with shorter reasoning or increase its context/output limit in the model server.") from exc
+            payload["max_tokens"] = min(16384, max(8192, budget * 4))
 
 
 def _usage(usage):

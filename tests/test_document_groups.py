@@ -79,14 +79,19 @@ def test_a_combined_document_reads_as_pages(tmp_path, local_model):
                                        "total_minor": 500, "currency": "USD", "issues": [], "items": [], "locator": {"line_ids": ["line-1"]}},
                                       {"document_id": second, "blob_hash": group["pages"][1]["current_hash"], "source_key": "extraction:x", "run_id": "x"}, "proposed")
         manager.configure_vision(local_model["config"])
-        local_model["outputs"] = [{"full_text": "SHOP\nITEM 1.00"}, {"full_text": "ITEM 2.00\nTotal 3.00"}]
+        local_model["outputs"] = [{"full_text": "Description | This period | YTD\nRegular pay | 2000.00 | 52000.00",
+                                    "tables": [{"header_rows": [{"line_index": 0, "cells": ["Description", "This period", "YTD"]}],
+                                                "rows": [{"line_index": 1, "cells": ["Regular pay", "2000.00", "52000.00"]}]}]},
+                                   {"full_text": "ITEM 2.00\nTotal 3.00"}]
         manager.change_group(group["id"], "confirmed")
         manager.future.result(timeout=60)
-        [run] = [row for row in manager.receipts.history(first) if row["parser_version"] == "receipt-images-v1"]
+        [run] = [row for row in manager.receipts.history(first) if row["parser_version"] == "receipt-images-v2-tables"]
         reading = manager.receipts.get(run["id"])
         assert reading["status"] == "succeeded", reading["error"]
         assert [line["id"] for line in reading["result"]["lines"]] == ["page-1-line-1", "page-1-line-2", "page-2-line-1", "page-2-line-2"]
         assert reading["result"]["lines"][3]["text"] == "Total 3.00"
+        table = reading["result"]["pages"][0]["vision_tables"]["tables"][0]
+        assert table["rows"][0]["cells"][2]["line_id"] == "page-1-line-2"
         assert manager.receipts.page_image(run["id"], 2).is_file()
         listed = documents_by_name(store)
         assert "receipt_p2.png" not in listed and listed["receipt_p1.png"]["page_count"] == 2

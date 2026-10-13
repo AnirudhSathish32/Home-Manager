@@ -144,6 +144,10 @@ def preview(store, record_type, record_id, changes):
               "from": before["correctable"][field]["value"], "to": after["correctable"][field]["value"]} for field in changes if field in before["correctable"]]
     old_status, new_status = before["row"]["review_status"], after["row"]["review_status"]
     notes = []
+    if record_type == "receipt" and "document_kind" in changes:
+        notes.append("Invoice details, items and payment matches are kept. This changes the financial record's Bill label; the library folder stays as filed.")
+        if changes["document_kind"] == "receipt":
+            notes.append("The existing counting date becomes the purchase date. Check Purchase date after saving and correct it if needed.")
     if record_type == "income_record":
         pay_date = after["row"]["pay_date"] or before["row"]["pay_date"]
         notes.append(TAX_NOTE.format(year=pay_date[:4] if pay_date else "the year"))

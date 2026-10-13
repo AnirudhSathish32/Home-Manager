@@ -26,6 +26,9 @@ and link here for what isn't. When an item is built, remove it from this list an
 
 ## Models and evals
 
+- **Structured vision evaluation:** the vision model now reports validated table cells beside its text; paystub extraction
+  copies current and YTD amounts from named cells when available. Run the [text extraction plan](../text_extraction_plan.md)
+  evaluation gate on the local model and private corpus before default trust in its visual placement.
 - **Decision model:**
   - check the `/v1/responses` log-probability shape against the installed LM Studio;
   - calibrate a chosen model on real documents before it gets any routing role;

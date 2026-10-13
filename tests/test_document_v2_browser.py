@@ -2,6 +2,8 @@
 and recorded documents (tests/seed_documents.py): its states, Find, Correct with its preview and Undo, the decision in
 view, the URL, Esc, every width, and its figures against their traces and the record."""
 from datetime import date, timedelta
+import json
+import re
 from urllib.parse import quote
 
 import pytest
@@ -13,10 +15,83 @@ TOKEN = "document-v2-test"
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
 
 
+@browser_test
+def test_invoice_bill_label_can_be_removed_without_losing_invoice_details(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN) as (base, ids, manager), playwright.sync_playwright() as driver:
+        rid = ids["receipt_record"]
+        invoice = {"number": "FURN-101", "balance_due_minor": 0, "payment_status": "Paid"}
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET document_kind='bill',invoice_json=?,issue_date=purchase_date,due_date=purchase_date WHERE id=?",
+                       (json.dumps(invoice), rid))
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page()
+        page.goto(f"{base}/#token={TOKEN}")
+        open_document(page, base, ids["receipt_doc"])
+        page.locator(".doc2-fields").get_by_role("button", name="Correct record as").click()
+        form = page.locator("#doc2-decision .cc-form")
+        expect(form.get_by_label("Record as", exact=True)).to_have_value("bill")
+        form.get_by_label("Record as", exact=True).select_option(label="Purchase")
+        form.get_by_role("button", name="Save").click()
+        expect(form).to_be_hidden()
+        field = page.locator(".doc2-fields dt").filter(has_text="Record as").locator("xpath=following-sibling::dd[1]")
+        expect(field).to_contain_text("Purchase")
+        expect(page.locator(".invoice-details")).to_contain_text("FURN-101")
+        expect(page.locator("#doc2-record-title")).to_contain_text("Invoice from")
+        assert manager.ledger.record("receipt", rid)["document_kind"] == "receipt"
+        page.locator(".toast", has_text="Saved.").get_by_role("button", name="Undo").click()
+        expect(field).to_contain_text("Bill")
+        expect(page.locator(".invoice-details")).to_contain_text("FURN-101")
+        browser.close()
+
+
 def open_document(page, base, doc_id, query=""):
     page.goto(f"{base}/#/documents/{doc_id}{query}")
     page.wait_for_load_state("networkidle")
     page.wait_for_selector("#doc2-panel:not([hidden]) #doc2-steps li")
+
+
+@browser_test
+def test_paystub_totals_and_lines_can_be_corrected_on_document_page(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, paystub=True) as (base, ids, manager), playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page()
+        page.goto(f"{base}/#token={TOKEN}")
+        open_document(page, base, ids["paystub_doc"])
+        source = page.locator("#doc2-viewer")
+        source.get_by_role("tab", name="Text", exact=True).click()
+        source.get_by_role("button", name="View extracted tables").click()
+        expect(source.get_by_role("tab", name="Tables", exact=True)).to_have_attribute("aria-selected", "true")
+        expect(source.locator(".sv-table thead")).to_contain_text("This period")
+        expect(source.locator(".sv-table tbody tr").first).to_contain_text("Regular pay")
+        expect(source.locator(".sv-table caption")).to_contain_text("From text separators")
+        source.get_by_role("button", name="Find line-5 in extracted text", exact=True).click()
+        expect(source.locator(".sv-line.selected")).to_contain_text("Regular pay")
+        page.locator(".doc2-fields").get_by_role("button", name="Correct gross pay this period").click()
+        form = page.locator("#doc2-decision .cc-form")
+        expect(form.get_by_label("Gross pay", exact=True)).to_have_value("52000.00")
+        form.get_by_label("Gross pay", exact=True).fill("2000.00")
+        with page.expect_response(lambda response: response.request.method == "PATCH" and
+                                  response.url.endswith(f"/api/finance/records/income_record/{ids['paystub_record']}")):
+            form.get_by_role("button", name="Save").click()
+        expect(form).to_be_hidden()
+        gross = page.locator(".doc2-fields dt").filter(has_text="Gross pay this period").locator("xpath=following-sibling::dd[1]")
+        expect(gross).to_have_text(re.compile(r"^(?!.*52,000).*2,000\.00"))
+        page.locator(".paystub-breakdown").get_by_role("button", name="Correct Regular pay").click()
+        line_form = page.locator(".paystub-breakdown .doc2-row-form .cc-form")
+        expect(line_form.get_by_label("This period")).to_have_value("52000.00")
+        line_form.get_by_label("This period").fill("2000.00")
+        with page.expect_response(lambda response: response.request.method == "PATCH" and
+                                  response.url.endswith(f"/api/paystubs/{ids['paystub_record']}/lines/1")) as saved:
+            line_form.get_by_role("button", name="Save").click()
+        assert saved.value.status == 200, saved.value.text()
+        expect(page.locator(".paystub-breakdown tbody tr").filter(has_text="Regular pay").locator("td").first).to_have_text(
+            re.compile(r"^(?!.*52,000).*2,000\.00"))
+        assert manager.ledger.record("income_record", ids["paystub_record"])["lines"][0]["current_minor"] == 200000
+        browser.close()
 
 
 @browser_test

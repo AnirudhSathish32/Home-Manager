@@ -9,6 +9,14 @@ MAX_WIRE_BYTES = 16 * 1024**2
 MAX_TEXT_BYTES = 4 * 1024**2
 
 
+class OutputBudgetExhausted(ValueError):
+    """The model stopped before its final answer, often after a long thinking trace."""
+
+
+class EmptyCompletion(ValueError):
+    """The stream ended successfully but contained no final answer."""
+
+
 def read_completion(response, work, clock=time.monotonic):
     """Return (text, stats). stats carries first-token time and any server usage/timings."""
     started = clock()
@@ -25,6 +33,8 @@ def read_completion(response, work, clock=time.monotonic):
         event_lines.clear()
         if data == "[DONE]":
             if stats["finish_reason"] != "stop":
+                if stats["finish_reason"] == "length":
+                    raise OutputBudgetExhausted("The model used its output token budget before returning a final answer.")
                 raise ValueError("Model response was incomplete or truncated; no extraction was published.")
             return True
         event = json.loads(data)
@@ -73,6 +83,8 @@ def read_completion(response, work, clock=time.monotonic):
         if line in (b"\n", b"\r\n"):
             if consume():
                 stats["output_bytes"] = text_bytes
+                if not "".join(chunks).strip():
+                    raise EmptyCompletion("The model returned no final answer. It may have used the request for internal reasoning only.")
                 work.report({"stage": "validating", "characters": sum(map(len, chunks)), "elapsed_seconds": int(clock() - started)})
                 return "".join(chunks), stats
         elif line.startswith(b"data:"):

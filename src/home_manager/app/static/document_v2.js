@@ -374,7 +374,7 @@ async function doc2Changed(state) {
 // The page's h1 is the document's name; the record header says what was recorded and from whom.
 function doc2RecordTitle(type, record) {
   if (type === "income_record") return ledgerTitle(type, record);
-  const kind = (record.document_kind === "bill" ? "Bill" : {receipt: "Receipt", statement: "Statement"}[type]) || "Record";
+  const kind = (record.invoice ? "Invoice" : record.document_kind === "bill" ? "Bill" : {receipt: "Receipt", statement: "Statement"}[type]) || "Record";
   const from = record.merchant || record.account || record.institution;
   return from ? `${kind} from ${from}` : kind;
 }
@@ -404,7 +404,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   if (doc2 !== state) return;
   const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
   if (rows) {
-    if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record);
+    if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record, type === "receipt" && record.review_status !== "rejected");
     const section = element("section", "", "doc2-section");
     section.append(element("h3", type === "statement" ? `Transactions (${record.transactions.length})` : `Items (${record.items?.length || 0})`), rows);
     parts.push(section);
@@ -412,7 +412,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   if (record.shareable_by_line && !familyMode && activeProfile?.family && record.review_status !== "rejected") parts.push(doc2ShareByLine(state, record));
   if (record.links?.length) parts.push(doc2Links(record, type));
   if (record.rewards?.length) parts.push(rewardsList(record.rewards, find));
-  if (type === "income_record") parts.push(...paystubBreakdown(record, find), ...withholdingSection(record));
+  if (type === "income_record") parts.push(...paystubBreakdown(record, find, () => doc2Changed(state)), ...withholdingSection(record));
   if (type === "receipt" && record.review_status !== "rejected") parts.push(taxReceiptSection(record, state.reload));
   target.replaceChildren(...parts);
   doc2Steps(state);
@@ -422,7 +422,9 @@ function doc2Fields(state, type, record) {
   const list = element("dl", "", "doc2-fields");
   const fix = field => (record.correctable || []).find(item => item.shown_as === field || `${item.shown_as}_minor` === field);
   const corrected = field => (record.corrections || []).filter(item => item.field === field).at(-1);
-  for (const [label, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
+  for (const [fieldLabel, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
+    const label = record.invoice && field === "total_minor" ? "Invoice total"
+      : record.invoice && field === "amount_due_minor" ? "Remaining balance" : fieldLabel;
     if (end && !record[field] && !record[end] && !fix(field)) continue;  // A bill without a printed period.
     const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : record.display[field] || record[field];
     const correction = fix(field);
@@ -434,11 +436,12 @@ function doc2Fields(state, type, record) {
     else if (shown == null) value.append(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
     else value.append(record.display[field] ? amount(shown, {signed: false})
       : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
+        : field === "document_kind" ? DOCUMENT_KIND_LABELS[shown] || shown
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
     const change = correction && corrected(correction.field);
     if (change) value.append(provenanceBadge({kind: "override", actor: {person: change.actor}, override: {reason: change.reason}}));
     const links = element("span", "", "doc2-field-actions");
-    if (state.result) {
+    if (state.result && field !== "document_kind") {
       const find = element("button", "Find", "link-button"); find.type = "button"; find.setAttribute("aria-label", `Find ${label.toLowerCase()} in the source`);
       find.addEventListener("click", async () => {
         try {
@@ -480,7 +483,7 @@ function doc2Fields(state, type, record) {
   return list;
 }
 // A statement's rows each take a correction of their own, opened in a row under it.
-function doc2RowCorrect(state, rows, record) {
+function doc2RowCorrect(state, rows, record, allowDelete = false) {
   const items = Boolean(record.items), lines = (record.items || record.transactions).slice(0, 200);
   [...rows.querySelectorAll("tbody tr")].forEach((tr, index) => {
     const row = lines[index];
@@ -504,6 +507,22 @@ function doc2RowCorrect(state, rows, record) {
       cc.openCorrect();
     });
     tr.lastElementChild.append(open);
+    if (items && allowDelete) {
+      const remove = element("button", "Delete", "link-button danger-text"); remove.type = "button";
+      remove.setAttribute("aria-label", `Delete ${row.description || "this item"}`);
+      remove.addEventListener("click", async () => {
+        if (!await confirmAction({title: `Delete ${row.description || "this item"}?`,
+          message: "This line will be removed from the receipt and its category totals. The printed receipt total stays as recorded.",
+          confirmLabel: "Delete item", danger: true})) return;
+        remove.disabled = true;
+        try {
+          await api(`/api/receipts/${record.id}/items/${row.position}`, {method: "DELETE"});
+          await doc2Changed(state);
+          notice("Receipt item deleted.");
+        } catch (error) { notice(error, true); remove.disabled = false; }
+      });
+      tr.lastElementChild.append(remove);
+    }
   });
 }
 // A bill with lines for more than one person: the family's inbox shares it by line (docs/family.md "Sharing a bill by line").

@@ -116,6 +116,24 @@ def seed_bill(manager, model):
     return {"doc_id": doc_id, "record_id": _record_id(manager, "receipts", doc_id)}
 
 
+def seed_paystub(manager, model):
+    """A pay stub whose current and year-to-date amounts were confused, for correcting on the document page."""
+    _models(manager, model)
+    lines = ["ACME PAY", "Pay date 2026-09-15", "USD", "Description | This period | Year to date",
+             "Regular pay | 52000.00 | 52000.00", "Gross pay | 52000.00 | 52000.00", "Net pay | 40000.00 | 40000.00"]
+    summary = {"payer_or_employer": value("Acme", 1, lines[0]), "pay_date": value("2026-09-15", 2, lines[1]),
+               "period_start": MISSING, "period_end": MISSING, "pay_frequency": MISSING, "work_state": MISSING,
+               "gross_pay": value("52000.00", 6, lines[5]), "gross_pay_ytd": value("52000.00", 6, lines[5]),
+               "net_pay": value("40000.00", 7, lines[6]), "net_pay_ytd": value("40000.00", 7, lines[6]),
+               "taxes": MISSING, "deductions": MISSING, "currency": value("USD", 3)}
+    outputs = [{"document_type": "paystub", "evidence": cite(1, lines[0]), "issuer": value("Acme", 1, lines[0]),
+                "document_date": value("2026-09-15", 2, lines[1])}, summary,
+               {"lines": [{"description": "Regular pay", "group": "earnings", "category": "regular_pay",
+                           "evidence": cite(5, lines[4])}]}]
+    doc_id = _read_and_record(manager, model, "editable-stub.png", lines, outputs)
+    return {"doc_id": doc_id, "record_id": _record_id(manager, "income_records", doc_id)}
+
+
 def seed_documents(manager, model):
     """The three documents the document page's states need: a recorded receipt, one that needs review, and a statement.
     Returns the ids ui_shots.py's --routes placeholders name."""
@@ -151,7 +169,7 @@ def seed_review_items(manager, ids):
 
 
 @contextmanager
-def document_server(tmp_path, token, review_items=False):
+def document_server(tmp_path, token, review_items=False, paystub=False):
     """The app on a free port with seed_documents' documents (and seed_review_items' when asked).
     Yields (base, ids, manager)."""
     with socket.socket() as sock:
@@ -177,6 +195,9 @@ def document_server(tmp_path, token, review_items=False):
         ids = {**seed_documents(manager, model), "unread_doc": unread}
         if review_items:
             ids.update(seed_review_items(manager, ids))
+        if paystub:
+            stub = seed_paystub(manager, model)
+            ids.update(paystub_doc=stub["doc_id"], paystub_record=stub["record_id"])
         yield f"http://127.0.0.1:{port}", ids, manager
     finally:
         stop()

@@ -70,7 +70,7 @@ let whoIsHere = null;  // Set by profiles.js renderWho from the profile's people
 const anyBusy = () => busy.capture || busy.inference;
 function setBusy(settings) { busy = {capture: settings.capture_busy, inference: settings.inference_busy}; }
 function controls() {
-  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "save-vision", "vision-url", "vision-model", "auto-organize", "save-reviewer"]) $(id).disabled = busy.inference;
+  for (const id of ["save-reasoning", "reasoning-url", "reasoning-model", "reasoning-schema", "save-vision", "vision-url", "vision-model", "auto-organize", "save-reviewer"]) $(id).disabled = busy.inference;
   $("reviewer-busy").hidden = !busy.inference;
   $("pr2-scan").disabled = !configured || busy.capture;
   $("pr2-read").disabled = $("pr2-read-start").disabled = !configured || busy.inference;
@@ -163,6 +163,7 @@ async function loadSettings() {
   $("vision-model").value = settings.vision.model;
   $("reasoning-url").value = settings.reasoning.base_url;
   $("reasoning-model").value = settings.reasoning.model;
+  $("reasoning-schema").checked = settings.reasoning.schema_enforced !== false;
   const decision = savedDecision = settings.decision;
   $("decision-provider").value = decision.provider;
   $("decision-url").value = decision.base_url;
@@ -338,7 +339,8 @@ $("test-model-computer").addEventListener("click", async () => {
   finally { button.disabled = false; }
 });
 saveSettingsForm("reasoning-form", "/api/reasoning-settings",
-  () => ({base_url:$("reasoning-url").value.trim(), model:$("reasoning-model").value.trim()}),
+  () => ({base_url:$("reasoning-url").value.trim(), model:$("reasoning-model").value.trim(),
+          schema_enforced:$("reasoning-schema").checked}),
   "Reasoning settings saved. Open a read document and select Extract to ledger.");
 // The decision model (models/decisions.py). Calibration values come from an eval run and are kept as saved.
 saveSettingsForm("decision-form", "/api/decision-settings",

@@ -28,6 +28,30 @@ class TextLine(StrictModel):
     block_ids: list[str]
 
 
+class VisionCell(StrictModel):
+    id: str
+    line_id: str
+    quote: str = Field(max_length=32768)
+
+
+class VisionRow(StrictModel):
+    id: str
+    line_id: str
+    cells: list[VisionCell] = Field(min_length=1, max_length=40)
+
+
+class VisionTable(StrictModel):
+    id: str
+    header_rows: list[VisionRow] = Field(min_length=1, max_length=10)
+    rows: list[VisionRow] = Field(min_length=1, max_length=500)
+
+
+class VisionTables(StrictModel):
+    version: Literal[1] = 1
+    origin: Literal["reported", "text_separators"] = "reported"
+    tables: list[VisionTable] = Field(default_factory=list, max_length=100)
+
+
 class CodeEvidence(StrictModel):
     id: str
     format: str
@@ -85,6 +109,7 @@ class ReceiptResult(StrictModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     folder: HistoricalFolder | None = None
     model_text: str | None = Field(default=None, max_length=1_000_000)
+    vision_tables: VisionTables | None = None
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     image_format: Literal["PNG", "JPEG"]
     original_width: int = Field(gt=0, le=40000)
@@ -123,6 +148,11 @@ class ReceiptResult(StrictModel):
             raise ValueError("Vision output must not invent OCR regions/scores.")
         if text != "\n".join(line.text for line in self.lines):
             raise ValueError("Incomplete transcription text.")
+        if self.vision_tables is not None:
+            from .vision_tables import verify_saved_tables
+            if self.transcription_method != "vision_model":
+                raise ValueError("Only vision text can claim vision tables.")
+            verify_saved_tables(self.vision_tables, self.lines)
         if self.extracted_text != text + code_transcript(self.codes):
             raise ValueError("Complete extraction must retain every recognized line and code payload.")
         ids = set(blocks) | {line.id for line in self.lines} | {code.id for code in self.codes}

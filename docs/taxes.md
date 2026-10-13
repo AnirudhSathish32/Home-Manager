@@ -770,7 +770,8 @@ year-to-date amount and a group:
 - amounts paid by the employer (a 401(k) match), which are shown but never taken from pay.
 
 The page shows the lines grouped from gross pay down to net pay, with subtotals, and FICA as Social Security plus
-Medicare.
+Medicare. Each line's this-period and year-to-date amounts can be corrected on the document page. Gross/net totals,
+including their year-to-date values, can be corrected there too; saved corrections survive another reading.
 
 Two checks run on each column: earnings add up to gross pay, and gross pay less pre-tax deductions, taxes and post-tax
 deductions equals net pay. A stub that fails either check waits in Review with the difference named. One that passes

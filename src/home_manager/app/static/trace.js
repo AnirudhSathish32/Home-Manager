@@ -230,28 +230,31 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   pageField.append(pageSelect); pageField.hidden = true;
   const preserved = element("span", "Original preserved", "status-badge"); preserved.dataset.tone = "neutral";
   const imagePanel = element("div", "", "sv-panel sv-image"), textPanel = element("div", "", "sv-panel sv-text");
+  const tablePanel = element("div", "", "sv-panel sv-tables");
   const tabFor = (label, name, panel) => {
     const tab = element("button", label); tab.type = "button"; tab.id = idOf(`${name}-tab`); tab.setAttribute("role", "tab");
     panel.id = idOf(name); panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", tab.id); tab.setAttribute("aria-controls", panel.id);
     return tab;
   };
   const imageTab = tabFor("Image", "image", imagePanel), textTab = tabFor("Text", "text", textPanel);
+  const tableTab = tabFor("Tables", "tables", tablePanel);
+  const views = [[imageTab, imagePanel, "image"], [textTab, textPanel, "text"], [tableTab, tablePanel, "tables"]];
   const select = name => {
-    for (const [tab, panel, key] of [[imageTab, imagePanel, "image"], [textTab, textPanel, "text"]]) {
+    for (const [tab, panel, key] of views) {
       tab.setAttribute("aria-selected", String(key === name)); tab.tabIndex = key === name ? 0 : -1; panel.hidden = key !== name;
     }
   };
-  for (const tab of [imageTab, textTab]) {
-    tab.addEventListener("click", () => select(tab === imageTab ? "image" : "text"));
+  for (const [index, [tab, , name]] of views.entries()) {
+    tab.addEventListener("click", () => select(name));
     tab.addEventListener("keydown", event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      // Two tabs: the arrows switch to the other one; Home and End go to the first and last.
-      const next = event.key === "Home" ? imageTab : event.key === "End" ? textTab : tab === imageTab ? textTab : imageTab;
-      select(next === imageTab ? "image" : "text"); next.focus();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? views.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + views.length) % views.length;
+      select(views[next][2]); views[next][0].focus();
     });
   }
-  tabs.append(imageTab, textTab); toolbar.append(tabs, pageField, preserved);
+  tabs.append(imageTab, textTab, tableTab); toolbar.append(tabs, pageField, preserved);
 
   const alert = element("div", "", "sv-alert");
   let pdf = element("iframe", "", "sv-pdf"); pdf.title = "Preserved PDF document"; pdf.hidden = true;
@@ -263,10 +266,12 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   imagePanel.append(alert, pdf, scroll, element("p", "Select a highlighted region to find the recorded rows that cite it.", "muted small sv-hint"));
   const lines = element("ol", "", "sv-lines"); lines.setAttribute("aria-label", "Text read from the document");
   const copy = element("button", "Copy text", "small sv-copy"); copy.type = "button";
-  textPanel.append(lines, copy);
+  const viewTables = element("button", "View extracted tables", "small sv-copy"); viewTables.type = "button";
+  viewTables.addEventListener("click", () => { select("tables"); tableTab.focus(); });
+  textPanel.append(viewTables, lines, copy);
   const extras = element("details", "", "sv-extras"), issues = element("ul", "", "sv-issues"), codes = element("div", "", "sv-codes");
   extras.append(element("summary", "Reading notes & codes"), issues, element("h3", "QR codes and barcodes"), codes);
-  el.append(toolbar, imagePanel, textPanel, extras);
+  el.append(toolbar, imagePanel, textPanel, tablePanel, extras);
   select("image");
 
   const textLines = () => state.reading?.result?.lines || [];
@@ -302,7 +307,7 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   }
   function render() {
     const result = state.reading?.result;
-    lines.replaceChildren(); issues.replaceChildren(); codes.replaceChildren(); overlay.replaceChildren();
+    lines.replaceChildren(); issues.replaceChildren(); codes.replaceChildren(); overlay.replaceChildren(); tablePanel.replaceChildren();
     pageField.hidden = true; pageSelect.replaceChildren();
     if (!result) lines.append(element("li", "Not read yet. The text appears here once the document is read.", "muted sv-empty"));
     textLines().forEach((line, index) => {
@@ -310,6 +315,40 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
       lines.append(item);
     });
     copy.disabled = !result;
+    const sources = result?.pages || (result ? [result] : []);
+    const tables = sources.flatMap(source => (source.vision_tables?.tables || []).map(table => ({table, source})));
+    viewTables.hidden = !tables.length;
+    if (!tables.length) {
+      const rejected = (result?.issues || []).some(issue => ["vision_table_invalid", "pdf_table_ambiguous"].includes(issue.code));
+      tablePanel.append(element("p", !result ? "Not read yet. Tables appear here after text extraction."
+        : rejected ? "The table structure could not be validated. The extracted text is available in Text; check the original columns."
+        : "No table structure was saved, and the text has no recognizable table separators. The extracted text is available in Text.", "muted sv-empty"));
+    }
+    for (const [tableIndex, {table, source}] of tables.entries()) {
+      const wrap = element("div", "", "sv-table-scroll"), grid = element("table", "", "sv-table");
+      grid.dataset.tableId = table.id;
+      grid.append(element("caption", `${source.number ? `Page ${source.number} · ` : ""}Table ${tableIndex + 1} · ${
+        source.vision_tables.origin === "text_separators" || source.method === "embedded_text" ? "From text separators" : "Reported by vision"}`));
+      for (const [tag, rows] of [["thead", table.header_rows], ["tbody", table.rows]]) {
+        const section = element(tag);
+        for (const row of rows) {
+          const tr = element("tr"); tr.dataset.lineId = row.line_id;
+          for (const cell of row.cells) {
+            const td = element(tag === "thead" ? "th" : "td", cell.quote);
+            td.dataset.cellId = cell.id; td.title = `${cell.id} · ${cell.line_id}`;
+            if (tag === "thead") td.scope = "col";
+            if (!cell.quote) td.setAttribute("aria-label", "Blank source cell");
+            tr.append(td);
+          }
+          const linkCell = element(tag === "thead" ? "th" : "td"), link = element("button", "Source", "link-button");
+          link.type = "button"; link.setAttribute("aria-label", `Find ${row.line_id} in extracted text`);
+          link.addEventListener("click", () => { highlight([row.line_id]); select("text"); tell(null, [row.line_id]); });
+          linkCell.append(link); tr.append(linkCell); section.append(tr);
+        }
+        grid.append(section);
+      }
+      wrap.append(grid); tablePanel.append(wrap);
+    }
     if (result?.pages) {
       pageSelect.append(...result.pages.map(page => new Option(`${page.number} of ${result.pages.length} · ${page.method}`, String(page.number))));
       pageField.hidden = result.pages.length < 2;
@@ -345,6 +384,7 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     const result = state.reading?.result;
     if (!result || !ids?.length) return;
     const wanted = new Set(ids);
+    for (const row of tablePanel.querySelectorAll("tr[data-line-id]")) row.classList.toggle("selected", wanted.has(row.dataset.lineId));
     let first = null;
     for (const item of lines.children) {
       const selected = wanted.has(item.dataset.lineId);
@@ -460,7 +500,9 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
         input = document.createElement("select");
         if (item.kind === "category" && !item.value) input.add(new Option("Not set", ""));
         const text = item.kind === "category" ? categoryLabel : item.kind === "sale_type" ? value => SALE_TYPES[value] || value
-          : item.kind === "direction" ? value => DIRECTION_WORDS[value] || value : statusLabel;
+          : item.kind === "document_kind" ? value => DOCUMENT_KIND_LABELS[value] || value
+          : item.kind === "direction" ? value => DIRECTION_WORDS[value] || value
+          : item.kind === "pay_frequency" ? value => ({"": "Not set", 52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"})[value] : statusLabel;
         for (const option of item.options) input.add(new Option(text(option), option));
       } else {
         input = document.createElement("input");
@@ -571,6 +613,7 @@ function historyValue(entry, value) {
   if (entry.value_kind === "date") return dateText(value);
   if (entry.value_kind === "category") return categoryLabel(value);
   if (entry.value_kind === "sale_type") return SALE_TYPES[value] || value;
+  if (entry.value_kind === "document_kind") return DOCUMENT_KIND_LABELS[value] || value;
   if (entry.value_kind === "direction") return DIRECTION_WORDS[value] || value;
   return value;
 }

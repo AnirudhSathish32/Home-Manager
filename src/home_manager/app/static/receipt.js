@@ -32,17 +32,20 @@ function runTelemetry(run) {
   return `Model requests: ${run.model_runs.map(telemetryText).join("; ")}. Total workflow time (queued to finished): ${workflow}. Model identity: ${run.model_identity || "unavailable (results are not reused)"}.`;
 }
 const RECORD_FIELDS = {
-  receipt: [["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"],
+  receipt: [["Record as", "document_kind"], ["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"],
             ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
   statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
   // A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"); it counts on its due date.
-  bill: [["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Period", "period_start", "period_end"], ["Categories", "category"],
+  bill: [["Record as", "document_kind"], ["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Period", "period_start", "period_end"], ["Categories", "category"],
          ["Billed", "recurrence"], ["New charges", "total_minor"], ["Amount due", "amount_due_minor"]],
   income_record: [["Employer", "merchant"], ["Pay date", "pay_date"], ["Pay period", "period_start", "period_end"], ["Paid", "pay_frequency"],
-                  ["Gross pay", "gross_pay_minor"], ["Net pay", "net_pay_minor"]],
+                  ["Work state", "work_state"], ["Gross pay this period", "gross_pay_minor"], ["Net pay this period", "net_pay_minor"],
+                  ["Gross pay year to date", "gross_pay_ytd_minor"], ["Net pay year to date", "net_pay_ytd_minor"],
+                  ["Taxes this period", "taxes_minor"], ["Deductions this period", "deductions_minor"]],
 };
 const PAY_FREQUENCIES = {52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"};
+const DOCUMENT_KIND_LABELS = {receipt: "Purchase", bill: "Bill"};
 const isDateField = field => field.endsWith("_date");
 // A receipt is a sale or a return (docs/money.md "Returns"); an exchange is a return whose lines also buy something.
 const DIRECTIONS = {sale: "Sale", return: "Return"};
@@ -137,10 +140,25 @@ function itemCategorySelect(receiptId, row, categories, onSaved) {
 const LINE_KIND_LABELS = {service: "Service", usage: "Usage", subscription: "Subscription", device: "Device", tax_fee: "Tax or fee", credit: "Credit", other: "Other"};
 // A bill's lines: each line's price, category, type and person, then its new charges and amount due. The person is chosen
 // from the family where its people are known (the family's inbox); elsewhere it shows who the line is for as printed.
+function invoiceDetails(record, find) {
+  const wrap = element("div");
+  if (record.invoice) {
+    const invoice = record.invoice, details = element("dl", "", "invoice-details");
+    for (const [label, field] of [["Invoice number", "number"], ["Bill to", "bill_to"], ["Printed payment status", "payment_status"],
+      ["Invoice subtotal", "subtotal_minor"], ["Invoice tax", "tax_minor"], ["Printed invoice total", "total_minor"],
+      ["Payments / deposits", "payments_received_minor"], ["Remaining balance", "balance_due_minor"]]) {
+      if (invoice[field] != null) detailRow(details, label, invoice.display?.[field] ?? invoice[field]);
+    }
+    wrap.append(details);
+    if (invoice.locator?.line_ids?.length) wrap.append(sourceButton(invoice.locator.line_ids, find));
+  }
+  return wrap;
+}
 function billLines(record, categories, onSaved, find, correctField = null) {
   const people = familyMode ? (familyView?.members || []) : [];
   const nameOf = id => people.find(person => person.member_id === id)?.name;
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows bill-lines");
+  if (record.invoice) wrap.append(invoiceDetails(record, find));
   const head = document.createElement("tr");
   for (const [title, className] of [["Line", ""], ["Price", "numeric"], ["Category", ""], ["Type", ""], ["Person", ""], ["Paid", "numeric"], ["", ""]]) {
     const th = head.appendChild(element("th", title, className)); th.scope = "col";
@@ -158,6 +176,8 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     const tr = document.createElement("tr");
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");
     const line = element("td"); line.append(element("span", row.description));
+    if (row.quantity != null || row.unit_price_minor != null) line.append(element("small",
+      `Quantity: ${row.quantity ?? "not printed"} · Unit price: ${row.display.unit_price_minor ?? "not printed"}`, "muted block"));
     if (row.line_holder) line.append(element("small", row.line_holder, "muted block"));
     const price = element("td", "", "numeric"); price.append(amount(row.display.line_total_minor || "—", {signed: false}));
     const category = element("td");
@@ -185,7 +205,7 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     body.appendChild(tr);
   }
   const foot = table.appendChild(element("tfoot"));
-  for (const [label, field] of [["New charges", "total"], ["Amount due", "amount_due"]]) {
+  for (const [label, field] of [[record.invoice ? "Invoice total" : "New charges", "total"], [record.invoice ? "Remaining balance" : "Amount due", "amount_due"]]) {
     const tr = element("tr"), name = element("th", label); name.scope = "row";
     const value = element("td", "", "numeric"); value.append(amount(record.display[`${field}_minor`] || "—", {signed: false}));
     const actions = element("td"); actions.colSpan = 5;
@@ -197,7 +217,8 @@ function billLines(record, categories, onSaved, find, correctField = null) {
   }
   wrap.appendChild(table);
   if (record.amount_due_minor != null && record.total_minor != null && record.amount_due_minor !== record.total_minor) {
-    wrap.append(element("p", "Only the new charges count; the rest of the amount due is from an earlier bill.", "muted small"));
+    wrap.append(element("p", record.invoice ? "The full invoice charge and its remaining balance are recorded separately. Payments do not reduce the purchase total."
+      : "Only the new charges count; the rest of the amount due is from an earlier bill.", "muted small"));
   }
   if (record.includes?.length) wrap.append(element("p", `Includes: ${record.includes.join(", ")}. These are part of this bill, not separate subscriptions.`, "muted small"));
   if (record.share) wrap.append(element("p", record.share.member_id ? "Shared by line in the family: your own lines and your part of the taxes and fees count."
@@ -217,6 +238,7 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
   const rows = record.items || record.transactions || [];
   if (!rows.length && !record.items) return null;
   const wrap = element("div", "", "table-wrap");
+  if (record.invoice) wrap.append(invoiceDetails(record, find));
   const table = element("table", "", "ledger-rows");
   // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
   const codes = Boolean(record.items?.some(row => row.product_code));
@@ -356,8 +378,9 @@ function paystubRow(body, cells, className = "", lineIds = null, find = null) {
   });
   const source = tr.insertCell(); if (lineIds?.length) source.appendChild(sourceButton(lineIds, find));
   if (lineIds?.length) tr.dataset.lines = lineIds.join(" ");
+  return tr;
 }
-function paystubBreakdown(record, find) {
+function paystubBreakdown(record, find, onChange = null) {
   const {groups, checks} = record.breakdown;
   if (!record.lines.length) return [element("p", "The stub's individual lines weren't read, so only its totals are shown.", "muted")];
   const section = element("section", "", "paystub-breakdown");
@@ -371,7 +394,34 @@ function paystubBreakdown(record, find) {
   for (const group of groups) {
     body = table.appendChild(document.createElement("tbody"));
     const title = body.insertRow().appendChild(element("th", group.title, "paystub-group")); title.colSpan = 4; title.scope = "rowgroup";
-    for (const line of group.lines) paystubRow(body, [line.description, line.display.current_minor, line.display.ytd_minor], "", line.line_ids, find);
+    for (const line of group.lines) {
+      const tr = paystubRow(body, [line.description, line.display.current_minor, line.display.ytd_minor], "", line.line_ids, find);
+      for (const [index, name] of [[1, "current"], [2, "ytd"]]) {
+        const cell = line.cell_evidence?.[name];
+        if (cell) {
+          tr.children[index].dataset.sourceCellId = cell.cell_id;
+          tr.children[index].title = `Reported source cell: ${cell.quote} (${cell.line_id})`;
+        }
+      }
+      if (onChange && record.review_status !== "rejected") {
+        const edit = element("button", "Correct", "link-button"); edit.type = "button";
+        edit.setAttribute("aria-label", `Correct ${line.description}`); edit.setAttribute("aria-expanded", "false");
+        edit.addEventListener("click", () => {
+          const shown = tr.nextElementSibling?.classList.contains("doc2-row-form");
+          table.querySelectorAll(".doc2-row-form").forEach(node => node.remove());
+          table.querySelectorAll("button[aria-expanded]").forEach(node => node.setAttribute("aria-expanded", "false"));
+          if (shown) return;
+          const formRow = element("tr", "", "doc2-row-form"), cell = element("td"); cell.colSpan = tr.children.length;
+          const cc = confirmCorrect({recordType: "income_record", recordId: record.id, decision: false, preview: false,
+            correctable: line.correctable, onChange, onClose: () => { formRow.remove(); edit.setAttribute("aria-expanded", "false"); edit.focus(); },
+            saveCorrection: body => api(`/api/paystubs/${record.id}/lines/${line.position}`, {method: "PATCH", body: JSON.stringify(body)})});
+          cc.el.querySelector(".cc-actions").hidden = true;
+          cell.append(cc.el); formRow.append(cell); tr.after(formRow);
+          edit.setAttribute("aria-expanded", "true"); cc.openCorrect();
+        });
+        tr.lastElementChild.append(edit);
+      }
+    }
     if (group.group === "earnings") paystubRow(body, ["Gross pay", record.display.gross_pay_minor, record.display.gross_pay_ytd_minor], "paystub-total");
     if (group.group === "pre_tax") total("pre_tax", "Total pre-tax deductions");
     if (group.group === "tax") {

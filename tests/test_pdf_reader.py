@@ -8,6 +8,7 @@ import pytest
 
 from home_manager.documents.pdf_reader import PDFResult, complete_pdf, read_result, worker
 from home_manager.documents.receipt_schema import TextLine
+from home_manager.library.storage import digest_file
 from test_pdf import STATEMENT, make_pdf
 
 
@@ -18,7 +19,7 @@ def test_text_pages_keep_their_text_and_image_pages_are_rendered_for_vision(tmp_
     pages = json.loads((tmp_path / "pages.json").read_text(encoding="utf-8"))
     assert [(page["number"], page["method"]) for page in pages] == [(1, "embedded_text"), (2, "vision_model"), (3, "vision_model")]
     assert "Closing balance 1,250.00" in pages[0]["text"]
-    assert not (tmp_path / "page-1.png").exists()
+    assert (tmp_path / "page-1.png").is_file()  # Native geometry has the same rendered source surface.
     assert (tmp_path / "page-2.png").is_file() and (tmp_path / "page-3.png").is_file()  # Too little text counts as a scan.
 
 
@@ -34,7 +35,7 @@ def test_embedded_pages_are_assembled_without_a_model(tmp_path):
     source = tmp_path / "statement.pdf"
     make_pdf(source, [STATEMENT, STATEMENT.replace("FIRST", "SECOND")])
     worker(str(source), tmp_path)
-    complete_pdf(tmp_path, config=None, digest="d" * 64)  # No vision pages, so no model is needed.
+    complete_pdf(tmp_path, config=None, digest=digest_file(source))  # No vision pages, so no model is needed.
     result = read_result(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
     assert isinstance(result, PDFResult) and len(result.pages) == 2
     assert result.lines[0].id == "page-1-line-1" and result.pages[1].lines[0].text.startswith("SECOND")

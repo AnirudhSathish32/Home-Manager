@@ -161,7 +161,7 @@ def test_failed_reprocessing_preserves_completed_evidence(receipt_store, local_m
     assert service.get(second)["status"] == "failed"
     assert service.get(second)["result"] is None
     assert service.get(first)["result"] == saved
-    assert len(local_model["requests"]) == 2
+    assert len(local_model["requests"]) == 3  # The truncated retry gets one larger output budget.
 
 
 def test_historical_ocr_fields_remain_readable():

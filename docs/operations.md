@@ -51,7 +51,7 @@ database or the captured files by hand.
 ## Local models
 
 The app never downloads or loads model weights itself. It talks to an OpenAI-compatible server on loopback, normally LM
-Studio at `http://127.0.0.1:1234/v1`. That server must support streaming chat completions and JSON-schema output, and
+Studio at `http://127.0.0.1:1234/v1`. That server must support streaming chat completions, and
 the vision model needs image input. No request ever goes to a cloud model.
 
 In **Settings → Local models**, save the URL and exact model id for:
@@ -63,6 +63,11 @@ In **Settings → Local models**, save the URL and exact model id for:
   ([assistant](assistant.md#the-independent-reviewer)).
 
 **Test connection** checks each model without loading anything or sending content.
+
+Reasoning extraction uses JSON Schema when the server supports it. If a model rejects that request, the app retries
+with the schema in the prompt and still validates the answer before publishing. Settings also has a switch to turn off
+server-enforced JSON for a reasoning model. A model that spends its first output budget on internal reasoning gets one
+retry with a larger budget; if it still returns no final JSON, the run fails with a specific message.
 
 **One model loaded at a time** (`models/residency.py`). The app serializes all model work on one inference queue. Before
 each request it makes sure the target is the only generative model loaded:

@@ -10,7 +10,7 @@ import pytest
 
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
-from home_manager.documents.extraction import ExtractionService
+from home_manager.documents.extraction import ExtractionService, PayLines, ask
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
@@ -29,6 +29,76 @@ def value(text, number, quote=None):
 
 
 MISSING = {"value": None, "status": "missing", "evidence": []}
+
+
+def test_paystub_line_without_amount_evidence_is_left_blank_for_review(local_model):
+    local_model["output"] = {"lines": [{"description": "Regular pay", "group": "earnings", "category": "regular_pay",
+                                      "current": "52000.00", "ytd": "52000.00", "evidence": cite(1, "Regular pay | 2000.00 | 52000.00")},
+                                     {"description": "Federal tax", "group": "tax", "category": "federal_income_tax",
+                                      "current": "999.00", "ytd": "12000.00", "evidence": cite(2, "Federal tax | 450.00 | 12000.00")}]}
+    lines = [SimpleNamespace(id="line-1", text="Regular pay | 2000.00 | 52000.00"),
+             SimpleNamespace(id="line-2", text="Federal tax | 450.00 | 12000.00")]
+    notes = []
+    config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
+    result = ask(config, Work.detached(), PayLines, "Read pay lines.", lines, 8192, ("current", "ytd"), notes)
+    assert result.lines[0].current == "52000.00"  # Cited, even if its column assignment needs review.
+    assert result.lines[1].current is None and result.lines[1].ytd == "12000.00"
+    assert notes == ["Pay line 2 this-period amount was not supported by its cited text; correct it from the original stub."]
+    assert len(local_model["requests"]) == 2
+
+
+def test_structured_paystub_cells_override_wrong_column_model_values(tmp_path, local_model):
+    lines = ["EXAMPLE WIDGETS LLC", "Pay date 2026-09-20", "Currency USD",
+             "Description | This period | Year to date", "Regular pay | 2000.00 | 52000.00",
+             "Federal income tax | 200.00 | 5200.00", "Gross pay | 2000.00 | 52000.00",
+             "Net pay | 1800.00 | 46800.00"]
+    tables = [{"header_rows": [{"line_index": 3, "cells": ["Description", "This period", "Year to date"]}],
+               "rows": [{"line_index": index, "cells": cells} for index, cells in (
+                   (4, ["Regular pay", "2000.00", "52000.00"]),
+                   (5, ["Federal income tax", "200.00", "5200.00"]),
+                   (6, ["Gross pay", "2000.00", "52000.00"]),
+                   (7, ["Net pay", "1800.00", "46800.00"]))]}]
+    manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
+    try:
+        manager.configure(str(tmp_path / "managed"))
+        make_receipt(manager.store.library.inbox / "stub.png")
+        local_model["output"] = {"full_text": "\n".join(lines), "tables": tables}
+        manager.configure_vision(local_model["config"])
+        manager.start_inbox(); manager.future.result(timeout=30)
+        manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+        doc = manager.store.documents()["items"][0]
+        parse_id = manager.receipts.history(doc["id"])[0]["id"]
+        assert manager.receipts.get(parse_id)["result"]["vision_tables"]["tables"]
+        summary = {name: MISSING for name in ("payer_or_employer", "pay_date", "period_start", "period_end", "pay_frequency",
+                                                "work_state", "gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes",
+                                                "deductions", "currency")}
+        summary.update(payer_or_employer=value("EXAMPLE WIDGETS LLC", 1), pay_date=value("2026-09-20", 2, lines[1]),
+                       currency=value("USD", 3, lines[2]),
+                       gross_pay=value("52000.00", 7, lines[6]), gross_pay_ytd=value("2000.00", 7, lines[6]),
+                       net_pay=value("46800.00", 8, lines[7]), net_pay_ytd=value("1800.00", 8, lines[7]))
+        local_model["outputs"] = [
+            {"document_type": "paystub", "evidence": cite(1, lines[0]), "issuer": value("EXAMPLE WIDGETS LLC", 1),
+             "document_date": value("2026-09-20", 2, lines[1])},
+            summary,
+            {"lines": [{"description": "Regular pay", "group": "earnings", "category": "regular_pay", "evidence": cite(5, lines[4])},
+                       {"description": "Federal income tax", "group": "tax", "category": "federal_income_tax",
+                        "evidence": cite(6, lines[5])}]},
+        ]
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        assert run["result"]["header"]["net_pay"]["value"] == "1800.00"
+        assert [(row["current"], row["ytd"]) for row in run["result"]["rows"]] == [
+            ("2000.00", "52000.00"), ("200.00", "5200.00")]
+        record = manager.ledger.record("income_record", run["publication"]["id"])
+        assert record["net_pay_minor"] == 180000
+        assert record["lines"][0]["cell_evidence"]["current"]["quote"] == "2000.00"
+        assert [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][1:]] == [
+            "Classification", "PaystubSummary", "PayRowClasses"]
+        summary_input = json.loads(local_model["requests"][2]["messages"][1]["content"])
+        assert summary_input["reported_tables"][0]["header_rows"][0]["cells"][1]["text"] == "This period"
+        assert run["result"]["header"]["net_pay"]["evidence"] == cite(8, "1800.00")
+    finally:
+        manager.close()
 
 
 def classification(kind="receipt"):
@@ -135,6 +205,22 @@ def test_missing_summary_merchant_falls_back_to_the_cited_classifier_issuer(rece
     assert run["result"]["normalized"]["notes"] == ["The merchant or issuer was taken from the document classification."]
     assert manager.start_extraction(doc["id"], parse_id) == {"run_id": run["id"], "reused": True}
     manager.future.result(timeout=10)
+
+
+def test_pdf_layout_coverage_issue_prevents_automatic_verification(receipt, local_model):
+    manager, doc, parse_id = receipt
+    parse = manager.receipts.get(parse_id)["result"]
+    parse["issues"].append({"code": "pdf_layout_review", "message": "Page 1 has possible image-only content.", "evidence_ids": []})
+    with manager.store.connection() as db:
+        db.execute("UPDATE parse_runs SET result_json=? WHERE id=?", (json.dumps(parse), parse_id))
+    local_model["outputs"] = [classification(), receipt_summary(), identity(), receipt_items(),
+                              {"description": "coffee & lunch", "category": "dining", "recurrence": None, "item_categories": ["dining", "dining", None]},
+                              {"rewards": []}]
+    run = extract(manager, doc, parse_id)
+    assert run["status"] == "succeeded", run["error"]
+    assert run["publication"]["review_status"] == "needs_review"
+    record = manager.ledger.record("receipt", run["publication"]["id"])
+    assert "Page 1 has possible image-only content." in record["issues"]
 
 
 def test_arithmetic_mismatch_needs_review_and_reviewed_records_are_never_overwritten(receipt, local_model):

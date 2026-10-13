@@ -171,6 +171,35 @@ def test_a_bill_lines_type_and_person_survive_reading_it_again(books):
     assert ledger.undo_corrections("receipt", rent, [entry["id"]])["items"][2]["line_kind"] == "service"
 
 
+def test_deleting_a_bill_line_updates_splits_and_survives_a_new_reading(books):
+    store, ledger, docs = books
+    receipt_id = rent_and_water(ledger, docs["rent.png"], status="needs_review")
+    original = ledger.record("receipt", receipt_id)
+    removed_id = original["items"][1]["id"]
+    record = ledger.delete_item(receipt_id, 2)
+    assert [item["description"] for item in record["items"]] == ["Rent", "Trash"]
+    assert record["total_minor"] == original["total_minor"] == 156020
+    assert sum(part["amount_minor"] for part in record["splits"]) == 156020
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM receipt_items WHERE id=?", (removed_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM category_splits WHERE receipt_item_id=?", (removed_id,)).fetchone()[0] == 0
+    with pytest.raises(ValueError, match="not found"):
+        ledger.delete_item(receipt_id, 2)
+    rent_and_water(ledger, docs["rent.png"], status="needs_review")
+    assert [item["description"] for item in ledger.record("receipt", receipt_id)["items"]] == ["Rent", "Trash"]
+    assert_ledger_healthy(store)
+
+
+def test_deleting_one_of_two_same_named_bill_lines_keeps_the_other(books):
+    _, ledger, docs = books
+    receipt_id = bill(ledger, docs["phone.png"], "Acme Wireless", "2026-09-28", [
+        line("Unlimited plan", 4000, "phone & internet"), line("Unlimited plan", 3000, "phone & internet")], status="needs_review")
+    ledger.delete_item(receipt_id, 1)
+    bill(ledger, docs["phone.png"], "Acme Wireless", "2026-09-28", [
+        line("Unlimited plan", 4000, "phone & internet"), line("Unlimited plan", 3000, "phone & internet")], status="needs_review")
+    assert [(item["position"], item["line_total_minor"]) for item in ledger.record("receipt", receipt_id)["items"]] == [(2, 3000)]
+
+
 def test_who_has_what_is_checked_and_holds_last_four_digits_only(tmp_path):
     family = FamilyFolder.create(tmp_path / "family", "The Testers")
     try:
@@ -346,6 +375,15 @@ def test_bills_and_pay_stubs_on_transactions_and_the_document_page(tmp_path, loc
         expect(page.locator(".table-wrap", has=page.locator(".bill-lines"))).not_to_contain_text("Includes:")  # No longer a subscription line.
         expect(page.locator(".bill-lines").get_by_role("combobox", name="Type of Apple TV+")).to_have_value("service")
         assert manager.ledger.record("receipt", phone["record_id"])["items"][1]["line_kind"] == "service"
+
+        lines.get_by_role("button", name="Delete Apple TV+").click()
+        expect(page.locator("#confirm-dialog")).to_be_visible()
+        page.locator("#confirm-cancel").click()
+        expect(lines).to_contain_text("Apple TV+")
+        lines.get_by_role("button", name="Delete Apple TV+").click()
+        page.locator("#confirm-dialog").get_by_role("button", name="Delete item").click()
+        expect(page.locator(".bill-lines tbody tr")).to_have_count(2)
+        assert [item["description"] for item in manager.ledger.record("receipt", phone["record_id"])["items"]] == ["Unlimited", "Taxes and fees"]
 
         page.goto(f"{base}/#/documents?folder=Bills")
         expect(page.locator('#rc2-table [data-status="bill_doc"]')).to_have_count(1)

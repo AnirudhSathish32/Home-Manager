@@ -90,7 +90,7 @@ def checked_value(db, record_type, record_id, field, value):
         return text
     if kind == "money":
         return money(to_minor(text, row["currency"]), row["currency"])["decimal"]
-    if kind == "receipt_money":
+    if kind in ("receipt_money", "document_kind"):
         return Ledger(None)._correction_value(db, kind, field, text, currency=row["currency"])[1]
     if kind == "amount":
         minor = to_minor(text, row["currency"])
@@ -251,4 +251,3 @@ def reject_correction(store, key):
     with store.connection() as db:
         db.execute("UPDATE family_corrections SET status='rejected',updated_at=? WHERE key=?", (now(), key))
     return {"key": key, "status": "rejected"}
-

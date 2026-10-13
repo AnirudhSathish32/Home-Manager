@@ -28,8 +28,9 @@ def test_real_http_image_payload_and_invalid_responses(tmp_path, local_model):
     assert request["model"] == "synthetic-vision"
     assert request["response_format"]["type"] == "json_schema"
     schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["required"] == ["full_text"]
-    assert set(schema["properties"]) == {"full_text"}
+    assert schema["required"] == ["full_text", "tables"]
+    assert set(schema["properties"]) == {"full_text", "tables"}
+    assert set(schema["properties"]["tables"]["items"]["properties"]) == {"header_rows", "rows"}
     assert schema["additionalProperties"] is False
     payload = request["messages"][1]["content"][1]["image_url"]["url"]
     assert base64.b64decode(payload.split(",", 1)[1]) == image.read_bytes()
@@ -38,7 +39,7 @@ def test_real_http_image_payload_and_invalid_responses(tmp_path, local_model):
         transcribe(local_model["config"], image)
     local_model["finish_reason"] = "stop"
     local_model["output"] = {"title": "", "full_text": "invented"}
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="valid full text"):
         transcribe(local_model["config"], image)
     local_model["status"] = 302
     with pytest.raises(ValueError, match="redirects"):

@@ -47,6 +47,58 @@ def by_label(preview):
     return {item["label"]: item for item in preview["figures"]}
 
 
+def test_invoice_can_be_recorded_as_purchase_and_undone(app_client):
+    client, manager, docs = app_client
+    invoice = {"number": "FURN-101", "total_minor": 5000, "payments_received_minor": 5000, "balance_due_minor": 0}
+    record = {"provider": "Example Furniture", "issue_date": "2026-09-28", "due_date": "2026-09-28",
+              "total_minor": 5000, "amount_due_minor": 0, "currency": "USD", "issues": [], "locator": {}, "invoice": invoice,
+              "items": [{"description": "Chair", "line_total_minor": 5000, "category": "household supplies", "locator": {}}]}
+    rid = manager.ledger.publish_bill(record, source_of(docs["bill.png"], "extraction:invoice"), "verified")["id"]
+    account = manager.ledger.create_account("Example Bank", "checking", "USD")
+    add(manager.store, manager.ledger, account, docs["export.csv"], [("2026-09-28", "EXAMPLE FURNITURE", -5000)])
+    manager.reconciler.run()
+    before_record = manager.ledger.record("receipt", rid)
+    assert before_record["links"]
+    before = snapshot(manager.store)
+    endpoint = f"/api/finance/records/receipt/{rid}"
+    preview = client.post(endpoint + "/correction-preview", json={"changes": {"document_kind": "receipt"}})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["changes"] == [{"field": "document_kind", "label": "Record as", "kind": "document_kind", "from": "bill", "to": "receipt"}]
+    assert not preview.json()["figures"] and not preview.json()["matching"]["changed"]
+    assert snapshot(manager.store) == before
+    saved = client.patch(endpoint, json={"changes": {"document_kind": "receipt"}})
+    assert saved.status_code == 200, saved.text
+    result = saved.json()["record"]
+    assert result["document_kind"] == "receipt"
+    for key in ("invoice", "links", "total_minor", "purchase_date", "amount_due_minor"):
+        assert result[key] == before_record[key], key
+    for key in ("id", "description", "line_total_minor", "category", "quantity", "unit_price_minor"):
+        assert result["items"][0][key] == before_record["items"][0][key], key
+    assert next(item for item in result["correctable"] if item["field"] == "document_kind")["options"] == ["receipt", "bill"]
+    assert "purchase_date" in {item["field"] for item in result["correctable"]}
+    # The library's Bill tag follows the ledger, independently of the folder the user filed it in.
+    assert manager.store.document(docs["bill.png"]["id"])["ledger_kind"] is None
+    for invalid in (None, "", "invoice", "paystub"):
+        response = client.patch(endpoint, json={"changes": {"document_kind": invalid}})
+        assert response.status_code == 400, response.text
+    # A reread cannot reinstate the Bill label on a corrected record.
+    manager.ledger.publish_bill(record, source_of(docs["bill.png"], "extraction:invoice-again"), "verified")
+    assert manager.ledger.record("receipt", rid)["document_kind"] == "receipt"
+    # If model fields are refreshed, restore kind before purchase-only fields, regardless of history order.
+    with manager.store.connection() as db:
+        db.execute("SAVEPOINT reread")
+        manager.ledger._apply_correction(db, "receipt", rid, {"purchase_date": "2026-09-26"}, None)
+        db.execute("UPDATE receipts SET document_kind='bill',purchase_date='2026-09-28' WHERE id=?", (rid,))
+        manager.ledger.apply_corrections(db, "receipt", rid)
+        assert tuple(db.execute("SELECT document_kind,purchase_date FROM receipts WHERE id=?", (rid,)).fetchone()) == ("receipt", "2026-09-26")
+        db.execute("ROLLBACK TO reread")
+        db.execute("RELEASE reread")
+    undone = client.post(endpoint + "/corrections/undo", json={"ids": saved.json()["correction_ids"]})
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["record"]["document_kind"] == "bill"
+    assert undone.json()["record"]["invoice"] == before_record["invoice"]
+
+
 def test_moving_a_receipt_a_month_moves_both_months_and_nothing_persists(app_client):
     client, manager, docs = app_client
     receipt_id = itemised_receipt(manager.ledger, docs["receipt.png"])
@@ -148,3 +200,35 @@ def test_bills_and_pay_stubs_move_the_months_they_count_in(app_client):
     assert {item["label"]: item["difference"]["minor"] for item in moved["figures"]} == {
         "Money in during September 2026": -300000, "Cash flow in September 2026": -300000,
         "Money in during October 2026": 300000, "Cash flow in October 2026": 300000}
+
+
+def test_paystub_totals_and_current_ytd_lines_can_be_corrected_and_survive_a_new_reading(app_client):
+    client, manager, docs = app_client
+    stub = {"payer_or_employer": "Acme", "pay_date": "2026-09-15", "period_start": None, "period_end": None,
+            "gross_pay_minor": 5200000, "net_pay_minor": 4000000, "gross_pay_ytd_minor": 5200000,
+            "net_pay_ytd_minor": 4000000, "taxes_minor": 100000, "deductions_minor": 20000,
+            "currency": "USD", "work_state": None, "pay_frequency": None, "issues": ["Gross pay needs review."],
+            "locator": {}, "lines": [{"description": "Regular pay", "line_group": "earnings", "category": "regular_pay",
+                                    "current_minor": 5200000, "ytd_minor": 5200000, "locator": {}}]}
+    source = source_of(docs["stub.png"], "extraction:paystub")
+    income_id = manager.ledger.publish_income(stub, source, "needs_review")["id"]
+    changed = client.patch(f"/api/finance/records/income_record/{income_id}", json={"changes": {
+        "gross_pay": "2000.00", "net_pay": "1500.00", "gross_pay_ytd": "52000.00", "net_pay_ytd": "40000.00",
+        "pay_frequency": "26", "work_state": "NY"}})
+    assert changed.status_code == 200, changed.text
+    changed = client.patch(f"/api/paystubs/{income_id}/lines/1", json={"changes": {"current": "2000.00"}})
+    assert changed.status_code == 200, changed.text
+    line_correction_id = changed.json()["correction_ids"][0]
+    record = manager.ledger.record("income_record", income_id)
+    assert (record["gross_pay_minor"], record["net_pay_minor"], record["gross_pay_ytd_minor"], record["net_pay_ytd_minor"]) == (
+        200000, 150000, 5200000, 4000000)
+    assert (record["pay_frequency"], record["work_state"], record["lines"][0]["current_minor"]) == (26, "NY", 200000)
+    assert record["lines"][0]["correctable"][0]["value"] == "2000.00"
+    assert client.patch(f"/api/paystubs/{income_id}/lines/1", json={"changes": {"current": "bad"}}).status_code == 400
+    assert manager.ledger.record("income_record", income_id)["lines"][0]["current_minor"] == 200000
+    manager.ledger.publish_income(stub, source, "needs_review")
+    assert manager.ledger.record("income_record", income_id)["lines"][0]["current_minor"] == 200000
+    assert manager.ledger.record("income_record", income_id)["gross_pay_minor"] == 200000
+    undone = client.post(f"/api/finance/records/income_record/{income_id}/corrections/undo", json={"ids": [line_correction_id]})
+    assert undone.status_code == 200, undone.text
+    assert manager.ledger.record("income_record", income_id)["lines"][0]["current_minor"] == 5200000

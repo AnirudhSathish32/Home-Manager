@@ -87,12 +87,16 @@ def start_model_server():
             state["headers"] = dict(self.headers)
             if state.get("response_gate"):
                 state["response_gate"].wait(timeout=15)  # Like prompt processing: nothing sent yet.
+            if state.pop("reject_schema_once", False) and "response_format" in body:
+                self.respond(400, b'{"error":"response_format json_schema unsupported"}', "application/json")
+                return
             if "error_body" in state:
                 self.respond(state["status"], json.dumps({"error": state["error_body"]}).encode(), "text/event-stream")
                 return
             output = state["outputs"].pop(0) if state.get("outputs") else state["output"]
+            raw = state["raw_outputs"].pop(0) if state.get("raw_outputs") else json.dumps(output)
             event = {"choices": [{"finish_reason": state["finish_reason"],
-                                  "delta": {"content": json.dumps(output)}}]}
+                                  "delta": {"content": raw}}]}
             stream = "data: " + json.dumps(event) + "\n\n"
             if state.get("timings"):
                 stream += "data: " + json.dumps({"choices": [], "timings": state["timings"],

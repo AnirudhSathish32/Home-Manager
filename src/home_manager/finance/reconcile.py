@@ -419,6 +419,10 @@ class Reconciler:
         due = bill["due_date"] or bill["purchase_date"]
         window = (bill["issue_date"] or shift(due, -BILL_ISSUED_BEFORE_DUE), shift(due, BILL_PAID_AFTER_DUE), bill["id"])
         amounts = sorted({amount for amount in (bill["total_minor"], bill["amount_due_minor"]) if amount and amount > 0})
+        if bill["invoice_json"]:
+            # Matching a remaining balance would hide the full invoice while earlier deposits still count separately.
+            # Only a single payment for the full charge uses this existing one-payment replacement path.
+            amounts = [bill["total_minor"]] if bill["total_minor"] and bill["total_minor"] > 0 else []
         if not amounts:
             return 0
         candidates = [row for row in db.execute(
@@ -642,12 +646,15 @@ class Reconciler:
         marks = ",".join("?" * len(BILL_CATEGORIES))
         for receipt in db.execute("SELECT r.*,m.canonical_name AS merchant FROM receipts r JOIN merchants m ON m.id=r.merchant_id "
                                   f"WHERE (r.recurrence IS NOT NULL OR r.category IN ({marks})) AND r.review_status='verified' AND r.total_minor>0 "
+                                  "AND (r.invoice_json IS NULL OR r.recurrence IS NOT NULL) "
                                   "AND r.purchase_date IS NOT NULL ORDER BY r.purchase_date DESC,r.id", BILL_CATEGORIES).fetchall():
             if not any(bill_matches(bill, receipt["merchant"], receipt["currency"]) for bill in known):
                 propose(receipt["merchant_id"], None, receipt["total_minor"], receipt["currency"], receipt["recurrence"] or "monthly",
                         receipt["purchase_date"], receipt["category"], "receipt_single_payment", receipt["id"])
         for row in db.execute(f"SELECT t.*,m.canonical_name AS merchant,{TRANSACTION_CATEGORY} AS spending_category FROM transactions t "
                               f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') "
+                              "AND NOT EXISTS(SELECT 1 FROM transaction_receipt_links il JOIN receipts ir ON ir.id=il.receipt_id "
+                              "WHERE il.transaction_id=t.id AND il.review_status<>'rejected' AND ir.invoice_json IS NOT NULL AND ir.recurrence IS NULL) "
                               f"AND {TRANSACTION_CATEGORY} IN ({marks}) ORDER BY t.posted_date DESC,t.id DESC",
                               BILL_CATEGORIES).fetchall():
             name = row["merchant"] or payee_key(row["description_raw"])

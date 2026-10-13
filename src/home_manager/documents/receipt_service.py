@@ -21,7 +21,8 @@ from ..library.text_index import index_quietly
 from ..models.model_client import resolve_identity
 from ..models.vision import VISION_VERSION, VisionConfig, transcribe_preview
 from .grouping import Groups
-from .pdf_reader import GROUP_VERSION, PDF_VERSION, PDFResult, combine_pages, complete_pdf
+from .pdf_layout import PDF_EVIDENCE_BYTES, PDF_PREVIEW_BYTES, PDF_RUN_RESERVATION
+from .pdf_reader import GROUP_VERSION, PDF_VERSION, PDF_VERSIONS, PDFResult, combine_pages, complete_pdf, read_result
 from .receipt_schema import ReceiptResult
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,10 @@ class ReceiptService:
         result["options"] = json.loads(result.pop("options_json"))
         payload = result.pop("result_json")
         result["result"] = json.loads(payload) if payload else None
+        if result["result"]:
+            evidence = read_result(result["result"])
+            result["result"] = evidence.model_dump()
+            result["result"]["lines"] = [line.model_dump() for line in evidence.lines]
         result["model_runs"] = self.store.model_runs(run_id)
         return result
 
@@ -103,14 +108,28 @@ class ReceiptService:
     def publish(self, run_id):
         run = self.get(run_id)
         folder = self.folder(run_id)
-        if run["parser_version"] in (PDF_VERSION, GROUP_VERSION):
+        if run["parser_version"] in (*PDF_VERSIONS, GROUP_VERSION, "receipt-images-v1"):
             path = safe_path(folder / "result.json")
-            if path.stat().st_size > 4 * 1024**2:
+            if path.stat().st_size > (PDF_EVIDENCE_BYTES if run["parser_version"] == PDF_VERSION else 4 * 1024**2):
                 raise ValueError("PDF evidence exceeds storage limits.")
             result = PDFResult.model_validate_json(path.read_bytes())
             if result.input_hash != run["blob_hash"] or result.parser_version != run["parser_version"] \
                     or (result.page_hashes or None) != run["options"].get("pages"):
                 raise ValueError("Page evidence does not match preserved bytes.")
+            if run["parser_version"] == PDF_VERSION:
+                from PIL import Image
+
+                preview_bytes = 0
+                for page in result.pages:
+                    if page.layout is None:
+                        raise ValueError("Current PDF evidence is missing its native layout capture.")
+                    preview = safe_path(folder / f"page-{page.number}.png")
+                    preview_bytes += preview.stat().st_size
+                    if preview_bytes > PDF_PREVIEW_BYTES:
+                        raise ValueError("PDF previews exceed storage limits.")
+                    with Image.open(preview) as image:
+                        if image.size != (page.layout.preview_width, page.layout.preview_height):
+                            raise ValueError("PDF preview does not match its layout transform.")
             payload = result.model_dump()
             payload["lines"] = [line.model_dump() for line in result.lines]
             with self.store.connection() as db:
@@ -137,7 +156,7 @@ class ReceiptService:
             work.check()
             run = self.get(run_id)
             artifact_bytes = sum(safe_path(path).stat().st_size for path in self.root.glob("*/*") if path.is_file())
-            if artifact_bytes > 2 * 1024**3 - 68 * 1024**2:
+            if artifact_bytes > 2 * 1024**3 - PDF_RUN_RESERVATION:
                 raise ValueError("Receipt extraction storage limit reached (2 GiB). No new parsing run was started.")
             folder = self.folder(run_id)
             folder.mkdir(exist_ok=True)
@@ -150,6 +169,8 @@ class ReceiptService:
             env.update({"TEMP": str(folder), "TMP": str(folder), "OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
             vision = run["options"].get("vision")
             is_pdf = run["parser_version"] == PDF_VERSION
+            if run["parser_version"] in PDF_VERSIONS and not is_pdf:
+                raise ValueError("Create a new PDF reading to use the current layout parser; historical results remain available.")
             if not is_pdf and (not vision or not vision.get("model")):
                 raise ValueError("This legacy run cannot be executed. Create a new run with a configured vision model.")
             vision = VisionConfig.model_validate(vision or {})
@@ -234,13 +255,13 @@ class ReceiptService:
                 self.state(run_id, "interrupted", "Parsing was interrupted. Previous completed runs remain available; select Parse receipt to retry.")
 
     def page_image(self, run_id, number):
-        """One page's image of a combined document or a scanned PDF page, as read."""
+        """One saved page preview, including native PDF pages from the layout parser."""
         run = self.get(run_id)
         if run["status"] not in ("succeeded", "partial") or not 1 <= number <= len((run["result"] or {}).get("pages", [])):
             raise ValueError("No such page in this reading.")
         path = safe_path(self.folder(run_id) / f"page-{number}.png")
         if not path.is_file():
-            raise ValueError("This page was read from the PDF's own text, so it has no page image.")
+            raise ValueError("This historical reading has no page preview. Read the preserved PDF again to create one.")
         return path
 
     def preview(self, run_id):
