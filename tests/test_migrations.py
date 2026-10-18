@@ -309,6 +309,79 @@ def test_067_makes_bills_receipts_and_keeps_what_named_them():
         db.close()
 
 
+DOCUMENT_FORM_COLUMNS = {"receipts": ("receipt_kind", "details_json", "pending_details_json", "printed_total_minor"),
+                         "receipt_items": ("details_json",), "income_records": ("details_json",), "income_lines": ("details_json",),
+                         "statements": ("details_json",)}
+
+
+def test_070_document_forms_leaves_existing_records_untouched():
+    """SC-11 (FR-13): records read before document forms keep every value; receipt kind and the new details are null
+    (not general), nothing is queued, and the ledger health check still passes."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    try:
+        for number, script in MIGRATIONS:
+            if number < 70:
+                db.executescript(script.read_text())
+        for digest in ("a" * 64, "b" * 64, "c" * 64, "d" * 64):
+            db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", (digest,))
+        db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
+        docs = [db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                           "VALUES('root',?,?,?,'t','t','job')", (name, name, digest)).lastrowid
+                for name, digest in (("fuel.png", "a" * 64), ("dining.png", "b" * 64), ("stub.png", "c" * 64), ("bank.pdf", "d" * 64))]
+        fuel = db.execute("INSERT INTO receipts(document_id,blob_hash,purchase_date,subtotal_minor,tax_minor,total_minor,currency,review_status,"
+                          "review_source,created_at,updated_at) VALUES(?,?,'2026-10-01',3786,0,3786,'USD','needs_review',NULL,'t','t')",
+                          (docs[0], "a" * 64)).lastrowid
+        dining = db.execute("INSERT INTO receipts(document_id,blob_hash,purchase_date,subtotal_minor,tax_minor,tip_minor,total_minor,currency,"
+                            "review_status,review_source,created_at,updated_at) VALUES(?,?,'2026-10-02',5000,400,900,6300,'USD','verified','user','t','t')",
+                            (docs[1], "b" * 64)).lastrowid
+        for receipt, position, name, amount, category in ((fuel, 1, "PUMP 17", 0, "transportation"), (fuel, 2, "REG UNL", 3567, "transportation"),
+                                                          (fuel, 3, "COFFEE", 219, "dining"), (dining, 1, "PASTA", 6300, "dining")):
+            item = db.execute("INSERT INTO receipt_items(receipt_id,position,description,line_total_minor,category,review_status) VALUES(?,?,?,?,?,'proposed')",
+                              (receipt, position, name, amount, category)).lastrowid
+            if amount:
+                db.execute("INSERT INTO category_splits(receipt_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?)", (receipt, item, category, amount))
+        income = db.execute("INSERT INTO income_records(document_id,blob_hash,pay_date,period_start,period_end,gross_pay_minor,net_pay_minor,"
+                            "gross_pay_ytd_minor,net_pay_ytd_minor,currency,review_status,pay_frequency,created_at,updated_at) "
+                            "VALUES(?,?,'2026-07-03','2026-06-15','2026-06-28',250000,191234,3250000,2486042,'USD','verified',26,'t','t')",
+                            (docs[2], "c" * 64)).lastrowid
+        db.execute("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json) "
+                   "VALUES(?,1,'Regular','earnings','regular_pay',250000,3250000,'{}')", (income,))
+        account = db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) "
+                             "VALUES('Synth Bank','checking','Synth Bank checking','6789','USD','t','t')").lastrowid
+        statement = db.execute("INSERT INTO statements(account_id,document_id,blob_hash,statement_type,period_start,period_end,opening_balance_minor,"
+                               "closing_balance_minor,currency,review_status,created_at,updated_at) "
+                               "VALUES(?,?,?,'bank','2026-09-01','2026-09-30',100000,229950,'USD','verified','t','t')",
+                               (account, docs[3], "d" * 64)).lastrowid
+        for posted, text, amount, kind in (("2026-09-03", "PAYROLL", 250000, "deposit"), ("2026-09-05", "RENT", -120050, "payment")):
+            db.execute("INSERT INTO transactions(account_id,statement_id,posted_date,description_raw,amount_minor,currency,transaction_type,origin,"
+                       "review_status,source_fingerprint,created_at,updated_at) VALUES(?,?,?,?,?,'USD',?,'extraction','verified',?,'t','t')",
+                       (account, statement, posted, text, amount, kind, text))
+        db.commit()
+        before = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+                  for table in ("receipts", "receipt_items", "category_splits", "income_records", "income_lines", "statements", "transactions")}
+        storage.apply_migrations(db, 69)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        for table, rows in before.items():
+            after = [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+            assert [{key: row[key] for key in old} for row, old in zip(after, rows)] == rows, table
+            for row in after:
+                assert all(row[column] is None for column in DOCUMENT_FORM_COLUMNS.get(table, ())), table
+        assert db.execute("SELECT count(*) FROM receipt_items WHERE description='PUMP 17'").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM extraction_runs").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM jobs WHERE status<>'completed'").fetchone()[0] == 0
+        from home_manager.finance.health import check_ledger
+        assert [problem for problem in check_ledger(db) if problem.severity == "error"] == []
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE receipts SET receipt_kind='pharmacy' WHERE id=?", (fuel,))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE receipts SET printed_total_minor='8.55' WHERE id=?", (fuel,))
+        db.execute("UPDATE receipts SET receipt_kind='fuel',printed_total_minor=855 WHERE id=?", (fuel,))
+        assert db.execute("SELECT strict FROM pragma_table_list WHERE name='receipts'").fetchone()[0] == 1
+    finally:
+        db.close()
+
+
 def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
     control, managed = tmp_path / "control", tmp_path / "managed"
     manager = Manager(control, ScanLimits(stability_seconds=0))

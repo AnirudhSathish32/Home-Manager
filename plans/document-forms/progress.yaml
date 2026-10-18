@@ -1,0 +1,35 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: document-forms
+plan_sha256: 97e5e6496c74af34d051fcd2dcf0f712e7d50326d284881a960226e522f6ea7d
+slices:
+  - id: SL-01
+    status: done
+    commit: null
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py -k \"document_forms or 070\" -q -> 1 passed, 11 deselected"
+      - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py tests/test_extraction.py -q -> 38 passed (the by_schema harness leaves the outputs order intact)"
+      - "ruff check tests/document_forms_fixtures.py tests/model_server.py tests/test_migrations.py -> all checks passed"
+    notes: >-
+      Migration 070_document_forms.sql as planned; printed_total_minor also gets the integer typeof CHECK the other
+      money columns have. tests/model_server.py: state["by_schema"] = {json_schema name: [replies]}, popped before
+      outputs. tests/document_forms_fixtures.py: the contract's lines (fuel, dining, grocery, gift-card receipt,
+      fixture P as P-flat and P-table, bank, card, SC-27 statement) and stub helpers for today's schemas; later slices
+      add the new forms' stubs. SC-11's last checkpoint (record view) is SL-07.
+  - id: SL-02
+    status: todo
+  - id: SL-03
+    status: todo
+  - id: SL-04
+    status: todo
+  - id: SL-05
+    status: todo
+  - id: SL-06
+    status: todo
+  - id: SL-07
+    status: todo
+  - id: SL-08
+    status: todo
+  - id: SL-09
+    status: todo
+  - id: SL-10
+    status: todo
