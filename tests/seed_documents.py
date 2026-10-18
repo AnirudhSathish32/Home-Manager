@@ -127,7 +127,7 @@ def seed_paystub(manager, model):
                "net_pay": value("40000.00", 7, lines[6]), "net_pay_ytd": value("40000.00", 7, lines[6]),
                "taxes": MISSING, "deductions": MISSING, "currency": value("USD", 3)}
     outputs = [{"document_type": "paystub", "evidence": cite(1, lines[0]), "issuer": value("Acme", 1, lines[0]),
-                "document_date": value("2026-09-15", 2, lines[1])}, summary,
+                "document_date": value("2026-09-15", 2, lines[1])}, summary, {"lines": []},
                {"lines": [{"description": "Regular pay", "group": "earnings", "category": "regular_pay",
                            "evidence": cite(5, lines[4])}]}]
     doc_id = _read_and_record(manager, model, "editable-stub.png", lines, outputs)

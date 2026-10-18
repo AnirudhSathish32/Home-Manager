@@ -139,6 +139,7 @@ def test_legacy_pdf_recovery_and_versioned_reread_preserve_old_evidence(pdf_stor
     old = service.get(old_id)["result"]
     old["parser_version"] = version
     old.pop("lines")
+    old.pop("layout_context")  # Derived API view, never part of the historical worker artifact.
     for page in old["pages"]:
         page.pop("layout")
     (service.folder(old_id) / "result.json").write_text(json.dumps(old), encoding="utf-8")
@@ -180,9 +181,9 @@ def test_long_statement_analysis_is_chunked_not_one_monolithic_prompt(tmp_path, 
         doc = manager.store.documents()["items"][0]
         parse = manager.start_receipt(doc["id"])
         manager.future.result(timeout=30)
-        lines = [line["id"] for line in manager.receipts.get(parse["run_id"])["result"]["lines"]]
+        lines = [line["id"] for line in manager.receipts.get(parse["run_id"])["result"]["layout_context"]["lines"]]
         assert len(lines) == 180 and not local_model["requests"]
-        chunks = [lines[:150], lines[150:]]
+        chunks = [lines[:80], lines[80:160], lines[160:]]
         local_model["outputs"] = [{
             "title": "Bank statement", "document_type": "bank_statement",
             "classification_evidence": [{"line_id": chunk[0], "quote": "MERCHANT"}], "facts": [], "receipt_items": [],
@@ -193,10 +194,10 @@ def test_long_statement_analysis_is_chunked_not_one_monolithic_prompt(tmp_path, 
         manager.future.result(timeout=30)
         run = manager.reasoning.get(analysis)
         assert run["status"] == "succeeded", run["error"]
-        assert len(local_model["requests"]) == 2  # Two bounded chunks, never one prompt with 180 rows.
+        assert len(local_model["requests"]) == 3  # Shared row/context budget, never one prompt with 180 rows.
         sent = [json.loads(request["messages"][1]["content"])["lines"] for request in local_model["requests"]]
-        assert [len(chunk) for chunk in sent] == [150, 30]
+        assert [len(chunk) for chunk in sent] == [80, 80, 20]
         assert [row["line_id"] for chunk in sent for row in chunk] == lines
-        assert [row["task"] for row in manager.store.model_runs(analysis)] == ["reasoning", "reasoning"]
+        assert [row["task"] for row in manager.store.model_runs(analysis)] == ["reasoning"] * 3
     finally:
         manager.close()

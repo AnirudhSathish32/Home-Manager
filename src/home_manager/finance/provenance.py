@@ -66,6 +66,10 @@ def _extraction(db, row, record_type, record_id, field):
     document_id = row["document_id"] if "document_id" in row.keys() else None
     found["document"] = {"id": document_id, "lines": lines, "quote": next((cite["quote"] for cite in cites if cite.get("quote")), None),
                          "page": page_of(lines[0]) if lines else None}
+    cells = result.get("summary_cell_evidence", {})
+    cell = cells.get(field) or cells.get({"total": "invoice_total", "amount_due": "balance_due"}.get(field))
+    if cell:
+        found["document"]["cells"] = [cell]
     check = result.get("decision") or result.get("laya")
     label = CHECK_LABELS.get(field, field)
     doubt = next((item for item in (check or {}).get("checks", []) if item.get("field") == label), None) if field else None

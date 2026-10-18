@@ -1,16 +1,15 @@
-import pytest
-
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from home_manager.core.jobs import Work
 from home_manager.documents.extraction import PayLine, PayRowClasses, Value, anchor_paystub, ask, paystub_chunks, paystub_columns, paystub_table_context
 from home_manager.documents.reasoning import EvidenceQuote, ReasoningConfig
 from home_manager.documents.receipt_schema import TextLine
-from home_manager.documents.vision_tables import validate_tables, verify_saved_tables
+from home_manager.documents.vision_tables import embedded_tables, restore_text_tables, validate_tables, verify_saved_tables
 from home_manager.models.vision import transcribe
 from test_receipts import make_receipt
-from types import SimpleNamespace
-from home_manager.documents.vision_tables import embedded_tables, restore_text_tables
 
 
 def test_saved_text_tables_are_reconstructed_without_changing_source_lines():
@@ -31,7 +30,7 @@ def test_saved_text_tables_are_reconstructed_without_changing_source_lines():
 
 
 def test_summary_cells_fit_input_budget_and_keep_last_totals():
-    from home_manager.documents.extraction import table_summary, WHOLE_BYTES
+    from home_manager.documents.extraction import WHOLE_BYTES, table_summary
     lines, raw = sample()
     tables = validate_tables(raw, lines).tables
     selected, context = table_summary(lines, tables, [])
@@ -91,6 +90,7 @@ def test_paystub_money_is_copied_from_named_cells_not_model_guess():
     header.net_pay_ytd = Value(value="1550.00", status="proposed", evidence=cite(lines[3]))
     # Use a real model_copy-capable header, as the extraction pipeline does.
     from pydantic import create_model
+
     from home_manager.documents.receipt_schema import StrictModel
     Header = create_model("PayHeaderForTest", __base__=StrictModel,
                           **{name: (Value, ...) for name in ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions")})

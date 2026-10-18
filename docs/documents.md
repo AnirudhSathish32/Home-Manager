@@ -219,7 +219,20 @@ check the plumbing and evidence, not model accuracy.
 - ambiguous native layout or possible image-only content creates a review issue that prevents automatic record verification;
 - no page is silently skipped, and long PDFs are analysed in chunks.
 
-Old PDF readings remain readable; read the preserved PDF again to create native layout evidence. The new cells are not yet connected to typed model prompts, search projection or viewer highlighting. Stacked headers, wrapped cells and cross-page table linkage remain follow-up work. See the [implementation status and remaining design](../text_extraction_plan.md). Mixed digital/scanned PDFs, positioned tables, shuffled content streams, crop/rotation transforms and compatibility are covered by synthetic tests.
+Classification, typed extraction, general reasoning and search now use the same readable native layout. Table headings
+are repeated with each extraction chunk. Code copies monetary values from recognized printed columns, keeping
+Current separate from YTD, quantities separate from prices, and debits/credits separate from running balances.
+Ambiguous roles and unaccounted native rows require review. Nearby non-table pay lines are extracted separately.
+
+**Tables** shows native cells as **From PDF text positions**. Click a value to highlight its actual words on the saved
+page preview. **Original** opens the preserved PDF; **Text → Original text order** shows historical text and citations.
+Saved v3 readings gain this display when reopened; rerun ledger extraction for the new amount mappings. Older PDF
+readings need **Read again** to create native layout evidence. User-reviewed records keep their existing replacement protection.
+
+Stacked headers, wrapped cells, rich forms and cross-page table linkage remain follow-up work. Unsupported orientation
+or damaged native geometry uses original text with review issues. See the [implementation status and remaining design](../text_extraction_plan.md).
+Mixed digital/scanned PDFs, positioned tables, shuffled streams, crop/rotation transforms, compatibility, ledger publication,
+search and browser highlights are covered by synthetic tests; live-document accuracy remains to be evaluated.
 
 ### CSV and XLSX imports
 

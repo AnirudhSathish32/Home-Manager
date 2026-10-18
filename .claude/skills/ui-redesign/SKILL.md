@@ -68,7 +68,8 @@ give.
 1. **Before screenshots.**
    `.venv/Scripts/python.exe .claude/skills/ui-redesign/scripts/ui_shots.py --routes <route> --out <scratchpad>/before-<page>`
    It covers 390/768/1440 in light and dark, and accepts `--full-page`. Look at the images. If the default seed doesn't
-   show the screen's interesting states, add seeding to the script.
+   show the screen's interesting states, add seeding to `tests/seed_household.py` (the one household seed, shared with
+   the agent test instance).
 2. **Selector contract.** Run the Greps in `references/screen-inventory.md` against the page's tests and JS. Every id,
    class and role found is kept, or renamed with a matching test edit listed.
 3. **User job and problems.** Say what the user comes to this screen to do, and what's wrong today. Ask the user if you

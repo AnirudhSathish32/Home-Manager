@@ -58,7 +58,7 @@ class PDFResult(StrictModel):
 
 def read_result(value):
     if value.get("transcription_method") == "pdf_pages":
-        return restore_text_tables(PDFResult.model_validate({key: item for key, item in value.items() if key != "lines"}))
+        return restore_text_tables(PDFResult.model_validate({key: item for key, item in value.items() if key not in ("lines", "layout_context")}))
     return restore_text_tables(ReceiptResult.model_validate(value))
 
 

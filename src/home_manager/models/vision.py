@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from pydantic import Field, ValidationError, field_validator, model_serializer, model_validator
 
+from ..core import sandbox
 from ..core.paths import write_atomic
 from ..documents.receipt_schema import Issue, ReceiptResult, Region, StrictModel, TextLine, VisionTables, code_transcript
 from ..documents.vision_tables import validate_tables
@@ -23,7 +24,9 @@ ROLE_ALIASES = {"vision": "home-manager/vision", "reasoning_config": "home-manag
 
 
 def endpoint_url(value, tailnet=False):
-    """http://127.0.0.1:PORT/v1, or with tailnet=True http://<Tailscale host>:PORT/v1."""
+    """http://127.0.0.1:PORT/v1, or with tailnet=True http://<Tailscale host>:PORT/v1 (never in test mode)."""
+    if tailnet and sandbox.active():
+        raise ValueError("Test instance: only http://127.0.0.1:PORT/v1 model servers.")
     value = value.strip().rstrip("/")
     url = urlsplit(value)
     try:

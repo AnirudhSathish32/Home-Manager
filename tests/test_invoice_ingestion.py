@@ -1,10 +1,10 @@
 """Synthetic supplier invoices use the existing bill ledger without confusing charges and payments."""
-import json
 from decimal import Decimal
+import json
 
 import pytest
 
-from home_manager.documents.extraction import HEADERS, HEADER_MODELS, BillLine, normalize
+from home_manager.documents.extraction import HEADER_MODELS, HEADERS, BillLine, normalize
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from test_extraction import MISSING, cite, extract, transcribe, value

@@ -32,13 +32,14 @@ from ..library.storage import now
 from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
+from .layout_context import evidence_lines, evidence_tables, native_page, project_page
 from .pdf_reader import read_result
 from .reasoning import EvidenceQuote, ReasoningConfig, require_transcription
 from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v21-pdf-layout-review"
+EXTRACTION_VERSION = "typed-extraction-v22-native-cells"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -460,18 +461,26 @@ def chunks(lines, limit=LINES_PER_CALL):
 
 
 def reported_tables(evidence):
-    pages = getattr(evidence, "pages", None)
-    sources = pages if pages is not None else [evidence]
-    return [table for source in sources for table in (getattr(source, "vision_tables", None) or SimpleNamespace(tables=[])).tables]
+    return evidence_tables(evidence)
 
 
 def paystub_columns(table):
-    """Map copied headings only when current and YTD each identify one distinct column."""
+    """Resolve printed period roles independently; hours and rates are never pay."""
+    width = len(table.header_rows[0].cells)
+    if any(len(row.cells) != width or any(getattr(cell, "column_span", 1) != 1 or getattr(cell, "row_span", 1) != 1
+                                        for cell in row.cells) for row in [*table.header_rows, *table.rows]):
+        return None
     labels = [" ".join(row.cells[index].quote.lower() for row in table.header_rows)
               for index in range(len(table.header_rows[0].cells))]
-    current = [index for index, label in enumerate(labels) if re.search(r"\bcurrent\b|\bthis\s+(?:pay\s+)?period\b", label)]
-    ytd = [index for index, label in enumerate(labels) if re.search(r"\bytd\b|\byear[ -]?to[ -]?date\b", label)]
-    return (current[0], ytd[0]) if len(current) == len(ytd) == 1 and current[0] != ytd[0] else None
+    current = [index for index, label in enumerate(labels) if re.search(r"\bcurrent\b|\bthis\s+(?:pay\s+)?period\b", label)
+               and not re.search(r"\bhours?\b|\brate\b", label)]
+    ytd = [index for index, label in enumerate(labels) if re.search(r"\bytd\b|\byear[ -]?to[ -]?date\b", label)
+           and not re.search(r"\bhours?\b|\brate\b", label)]
+    if not current and not ytd:
+        current = [index for index, label in enumerate(labels) if label.strip() in ("amount", "pay amount")]
+    if len(current) > 1 or len(ytd) > 1 or set(current) & set(ytd):
+        return None
+    return (current[0] if current else None, ytd[0] if ytd else None) if current or ytd else None
 
 
 def paystub_table_context(tables, part):
@@ -480,7 +489,7 @@ def paystub_table_context(tables, part):
     for table in tables:
         rows = [row for row in table.rows if row.line_id in ids]
         if rows:
-            context.append({"table_id": table.id,
+            context.append({"table_id": table.id, "source": getattr(table, "source", "transcription"),
                             "header_rows": [{"row_id": row.id, "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]}
                                             for row in table.header_rows],
                             "rows": [{"row_id": row.id, "line_id": row.line_id,
@@ -488,15 +497,17 @@ def paystub_table_context(tables, part):
     return context
 
 
-def paystub_chunks(lines, tables):
+def paystub_chunks(lines, tables, split_covered=False):
     """Bound the repeated table header and cell payload alongside each source-line chunk."""
     current = []
+    covered = {row.line_id for table in tables for row in table.rows}
     for line in lines:
         candidate = [*current, line]
         context = paystub_table_context(tables, candidate)
         size = len(json.dumps({"lines": [{"line_id": item.id, "text": item.text} for item in candidate],
                                "reported_tables": context}, ensure_ascii=False).encode())
-        if current and (len(candidate) > LINES_PER_CALL or size > BYTES_PER_CALL):
+        if current and (len(candidate) > LINES_PER_CALL or size > BYTES_PER_CALL
+                        or (split_covered and (line.id in covered) != (current[-1].id in covered))):
             yield current
             current = [line]
         else:
@@ -510,17 +521,37 @@ def paystub_chunks(lines, tables):
 
 def table_summary(lines, tables, notes):
     """Keep summary lines and their cells within the same whole-document input budget."""
-    selected = list(lines)
-    while selected:
+    lines = list(lines)
+    important = re.compile(r"\b(total|subtotal|gross|net|balance|due|paid|payment|tax|deduction|period|date|invoice|account|currency|employer|payer)\b", re.I)
+    edges = {line.id for line in [*lines[:12], *lines[-12:]]}
+
+    def measure(selected):
         context = paystub_table_context(tables, selected)
         size = len(json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in selected],
                                "reported_tables": context}, ensure_ascii=False).encode())
+        return size, context
+
+    size, context = measure(lines)
+    if size <= WHOLE_BYTES:
+        return lines, context
+    priority = sorted(range(len(lines)), key=lambda i: (bool(important.search(lines[i].text)), lines[i].id in edges,
+                                                       abs(i-len(lines)//2)), reverse=True)
+    low, high, best = 1, len(lines)-1, None
+    # Adding a complete line/row can only increase the payload. Binary search
+    # avoids reserializing a large document once per discarded line.
+    while low <= high:
+        count = (low+high)//2
+        selected = [lines[i] for i in sorted(priority[:count])]
+        size, context = measure(selected)
         if size <= WHOLE_BYTES:
-            return selected, context
-        selected.pop(len(selected) // 2)
-        note = "The summary's text and tables exceed the input limit; its start and end were used. Check omitted middle sections."
+            best, low = (selected, context), count+1
+        else:
+            high = count-1
+    if best:
+        note = "The summary's text and tables exceed the input limit; summary labels and document ends were prioritized. Check omitted sections."
         if note not in notes:
             notes.append(note)
+        return best
     raise ValueError("The document summary exceeds the extraction input limit.")
 
 
@@ -545,6 +576,16 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
         matches = {cite.line_id for cite in evidence if cite.line_id in by_line}
         return by_line[next(iter(matches))] if len(matches) == 1 else None
 
+    kept = []
+    for item in rows:
+        found = cited_row(item.evidence)
+        label = found[1].cells[0].quote.strip() if found else ""
+        if re.fullmatch(r"(?:gross pay|net pay|total (?:earnings|pay|taxes|deductions|employee deductions|employer contributions))", label, re.I):
+            notes.append("A pay summary total was returned as an individual pay line; it was excluded. Check the breakdown.")
+        else:
+            kept.append(item)
+    rows = kept
+
     for index, item in enumerate(rows, 1):
         found = cited_row(item.evidence)
         reference = {"source_row_id": None, "current": None, "ytd": None}
@@ -559,6 +600,9 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                 amount = cell_amount(cell) if cell else None
                 if amount is not None:
                     reference[name] = {"cell_id": cell.id, "line_id": cell.line_id, "quote": cell.quote}
+                    if getattr(table, "source", None) == "pdf_text":
+                        from .native_values import reference as native_reference
+                        reference[name] = native_reference(cell)
                 item = item.model_copy(update={name: amount})
             rows[index - 1] = item
         elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence):
@@ -634,7 +678,7 @@ def units(evidence):
     pages = getattr(evidence, "pages", None)
     for page in pages if pages is not None else [SimpleNamespace(number=1, lines=evidence.lines, regions=getattr(evidence, "regions", []))]:
         region, ranges = 0, [(r.number, r.first_line, r.last_line) for r in page.regions if r.first_line]
-        for line in page.lines:
+        for line in project_page(page)[0] if hasattr(page, "method") and native_page(page) else page.lines:
             for number, first, _ in ranges:
                 if line.id == first:
                     region = number
@@ -1427,8 +1471,9 @@ class ExtractionService:
     def extract(self, config, work, lines, notes, classification=None, tables=()):
         """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
         classification: already asked of these same lines."""
-        summary_lines = whole(lines, notes)
-        classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes)
+        summary_lines, summary_context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
+        classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes,
+                                               table_context=summary_context)
         kind = classification.document_type
         if kind not in HEADERS:
             return classification, None, [], None
@@ -1440,11 +1485,9 @@ class ExtractionService:
                 known = ("Employers that already have a folder: " + json.dumps(names, ensure_ascii=False) + ". If this document's employer is one "
                          "of them, even when printed differently (Google LLC for Google), give that exact name as the value, still citing where "
                          "the employer is printed. ")
-        summary_context = None
-        if kind in ("paystub", "bill") and tables:
-            summary_lines, summary_context = table_summary(summary_lines, tables, notes)
+        if tables:
             known += " Use reported_tables headings to identify each amount's column; cite its exact source line and cell text. "
-        scope = "the whole document" if len(summary_lines) == len(lines) else "the start and end of the document"
+        scope = "the whole document" if len(summary_lines) == len(lines) else "selected summary candidates from the document"
         header = ask(config, work, HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. The lines are {scope}; "
                      "rows are extracted separately. " + known, summary_lines, 4096 if kind == "bill" else 2048,
                      notes=notes, table_context=summary_context)
@@ -1506,9 +1549,9 @@ class ExtractionService:
                 direction += (" For invoices, include goods and service lines, shipping, tax and discounts once each. "
                               "amount is the extended line total, never the unit price. Copy quantity and unit_price when printed. "
                               "Exclude invoice totals, subtotals, payments, deposits and balance due from charge rows.")
-            for part in (paystub_chunks(lines, tables) if kind in ("paystub", "bill") and tables else chunks(lines)):
+            for part in (paystub_chunks(lines, tables, split_covered=kind == "paystub") if tables else chunks(lines)):
                 work.check()
-                context = paystub_table_context(tables, part) if kind in ("paystub", "bill") else None
+                context = paystub_table_context(tables, part)
                 classified_cells = kind == "paystub" and bool(context)
                 answer_schema = PayRowClasses if classified_cells else schema
                 row_direction = (" Classify each printed earning, deduction, tax and employer contribution row by group and "
@@ -1586,14 +1629,15 @@ class ExtractionService:
         return kept
 
     @staticmethod
-    def payment_terms(config, work, kind, lines, notes):
+    def payment_terms(config, work, kind, lines, notes, tables=()):
         """Scheduled payments stated anywhere in a contract, lease, policy or loan document, read chunk by chunk.
         A chunk whose answer fails its checks twice is skipped with a note; it never fails the extraction."""
         terms = []
-        for index, part in enumerate(chunks(lines), 1):
+        for index, part in enumerate(paystub_chunks(lines, tables) if tables else chunks(lines), 1):
             work.check()
             try:
-                terms.extend(ask(config, work, PaymentTerms, TERMS.format(label=TERM_KINDS[kind]), part, 2048).terms)
+                terms.extend(ask(config, work, PaymentTerms, TERMS.format(label=TERM_KINDS[kind]), part, 2048,
+                                 table_context=paystub_table_context(tables, part)).terms)
             except ValueError:
                 notes.append(f"Payment terms in part {index} of the document could not be read with valid citations.")
         return terms
@@ -1659,7 +1703,7 @@ class ExtractionService:
         return None, None
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
-                category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None):
+                category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None):
         record_notes = []
         name_field = IDENTITY[kind][0]
         if getattr(header, name_field).status != "proposed" and classification.issuer.status == "proposed":
@@ -1673,11 +1717,22 @@ class ExtractionService:
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
         record, issues = normalize(kind, header, rows, currency)
+        if summary_references:
+            record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
             for row, reference in zip(record.get("lines", []), cell_references):
                 cells = {name: reference[name] for name in ("current", "ytd") if reference.get(name)}
                 if cells:
                     row["locator"]["cells"] = cells
+        elif cell_references:
+            by_line = {ref["line_id"]: cells for cells in cell_references for ref in cells.values()}
+            for values in record.values():
+                if isinstance(values, list):
+                    for value in values:
+                        if isinstance(value, dict) and "locator" in value:
+                            cells = {name: ref for id in value["locator"].get("line_ids", []) for name, ref in by_line.get(id, {}).items()}
+                            if cells:
+                                value["locator"]["cells"] = cells
         # A bill's category comes from its lines (bill_lines); a receipt's from the model's description of it.
         record["description"], record["category"], record["recurrence"] = description, category or record.get("category"), recurrence or record.get("recurrence")
         for item, item_category in zip(record.get("items", []) if item_categories else [], item_categories or []):
@@ -1741,10 +1796,12 @@ class ExtractionService:
             parse = self.receipts.get(run["parse_run_id"])
             evidence = read_result(parse["result"])
             require_transcription(evidence)
-            lines = [line for line in evidence.lines if line.text.strip()]
+            lines = [line for line in evidence_lines(evidence) if line.text.strip()]
             with work.attribute("extraction", run_id, EXTRACTION_VERSION, identity):
                 notes = []
-                classification = ask(config, work, Classification, CLASSIFY, whole(lines, notes), 1024, notes=notes)
+                tables = reported_tables(evidence)
+                summary, context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
+                classification = ask(config, work, Classification, CLASSIFY, summary, 1024, notes=notes, table_context=context)
                 # A file holding several receipts is read one receipt at a time; anything else stays one document.
                 parts, split_notes = [(0, len(lines))], []
                 if classification.document_type == "receipt":
@@ -1791,16 +1848,52 @@ class ExtractionService:
 
     def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here."""
-        # The native layout can expose incomplete or ambiguous source coverage even
-        # before typed extractors consume its cells. Such records must not auto-count.
+        # Incomplete or ambiguous native source coverage requires review even when
+        # the typed extractor can resolve individual cells.
         notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
         tables = reported_tables(evidence)
         classification, header, rows, identity = self.extract(config, work, lines, notes, classification, tables)
-        cell_references = []
+        cell_references, summary_references = [], {}
         has_table_contract = getattr(evidence, "vision_tables", None) is not None or any(
-            getattr(page, "vision_tables", None) is not None for page in getattr(evidence, "pages", []))
+            getattr(page, "vision_tables", None) is not None or getattr(page, "layout", None) is not None
+            for page in getattr(evidence, "pages", []))
         if classification.document_type == "paystub" and has_table_contract:
             header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines)
+            by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
+            for name in ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions"):
+                field = getattr(header, name)
+                if field.status != "proposed":
+                    continue
+                for cite in field.evidence:
+                    found = by_line.get(cite.line_id)
+                    if found and getattr(found[0], "source", None) == "pdf_text":
+                        columns = paystub_columns(found[0])
+                        column = columns[1 if name.endswith("_ytd") else 0] if columns else None
+                        if column is not None:
+                            from .native_values import reference
+                            summary_references[name] = reference(found[1].cells[column])
+        elif tables and header is not None:
+            from .native_values import anchor_rows, anchor_summary
+            header, summary_references = anchor_summary(header, tables, notes)
+            rows, cell_references = anchor_rows(classification.document_type, rows, tables, notes)
+        if header is not None:
+            # Every native body row must be accounted for, including summary rows.
+            # An omission cannot become an automatically accepted partial ledger.
+            cited = {cite.line_id for row in rows for cite in row.evidence}
+            cited.update(cite.line_id for name in type(header).model_fields for cite in getattr(header, name).evidence)
+            supplied = {line.id for line in lines}
+            native_ids = {row.line_id for table in tables if getattr(table, "source", None) == "pdf_text" for row in table.rows}
+            used = set()
+            for row in rows:
+                ids = {cite.line_id for cite in row.evidence} & native_ids
+                if used & ids:
+                    notes.append("Several extracted records cite the same native table row; check for duplicate records.")
+                    break
+                used.update(ids)
+            omitted = [row.line_id for table in tables if getattr(table, "source", None) == "pdf_text"
+                       for row in table.rows if row.line_id in supplied and row.line_id not in cited]
+            if omitted:
+                notes.append(f"{len(omitted)} native table row(s) were not accounted for in the extracted fields; review the source tables.")
         description = category = recurrence = item_categories = rewards = checks = None
         if classification.document_type == "receipt" and header is not None and rows:
             # The seller the record will carry: the seller answer or header, else the classifier's issuer.
@@ -1813,7 +1906,7 @@ class ExtractionService:
             rewards = self.rewards(config, work, lines + codes)
         terms, term_notes = [], []
         if classification.document_type in TERM_KINDS:
-            terms = self.payment_terms(config, work, classification.document_type, lines, term_notes)
+            terms = self.payment_terms(config, work, classification.document_type, lines, term_notes, tables)
         if decision is not None:
             try:
                 with work.attribute("decision_assessment", run_id, DECISION_VERSION):
@@ -1824,7 +1917,7 @@ class ExtractionService:
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
-                "cell_references": cell_references}
+                "cell_references": cell_references, "summary_references": summary_references}
 
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
@@ -1835,7 +1928,9 @@ class ExtractionService:
                   "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
                   "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
                   "normalized": None, "notes": notes}
-        if classification.document_type == "paystub" and reading.get("cell_references"):
+        if reading.get("summary_references"):
+            result["summary_cell_evidence"] = reading["summary_references"]
+        if reading.get("cell_references"):
             for row, reference in zip(result["rows"], reading["cell_references"]):
                 row["cell_evidence"] = reference
         if classification.document_type in TERM_KINDS:
@@ -1851,7 +1946,7 @@ class ExtractionService:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
-                                                             reading.get("cell_references"))
+                                                             reading.get("cell_references"), reading.get("summary_references"))
         return result, publication
 
     # Several receipts in one file ------------------------------------------------
@@ -1937,7 +2032,7 @@ class ExtractionService:
                              "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (document_id, doc["current_hash"])).fetchone()
         if row is None:
             raise ValueError("Record this document once before changing how it is split.")
-        lines = [line for line in read_result(self.receipts.get(row["parse_run_id"])["result"]).lines if line.text.strip()]
+        lines = [line for line in evidence_lines(read_result(self.receipts.get(row["parse_run_id"])["result"])) if line.text.strip()]
         index = {line.id: position for position, line in enumerate(lines)}
         if not starts or any(start not in index for start in starts) or len(starts) > 200:
             raise ValueError("Choose where each receipt starts from the document's own lines.")

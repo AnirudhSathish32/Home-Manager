@@ -254,7 +254,9 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
       select(views[next][2]); views[next][0].focus();
     });
   }
-  tabs.append(imageTab, textTab, tableTab); toolbar.append(tabs, pageField, preserved);
+  const original = element("button", "Original", "small"); original.type = "button";
+  original.addEventListener("click", () => { select("image"); overlay.replaceChildren(); showImage(`/api/documents/${state.doc.id}/preview?blob_hash=${state.digest}`); });
+  tabs.append(imageTab, textTab, tableTab); toolbar.append(tabs, pageField, preserved, original);
 
   const alert = element("div", "", "sv-alert");
   let pdf = element("iframe", "", "sv-pdf"); pdf.title = "Preserved PDF document"; pdf.hidden = true;
@@ -268,13 +270,23 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   const copy = element("button", "Copy text", "small sv-copy"); copy.type = "button";
   const viewTables = element("button", "View extracted tables", "small sv-copy"); viewTables.type = "button";
   viewTables.addEventListener("click", () => { select("tables"); tableTab.focus(); });
-  textPanel.append(viewTables, lines, copy);
+  const rawLabel = element("label", "", "inline-field"), rawOrder = document.createElement("input"); rawOrder.type = "checkbox";
+  rawLabel.append(rawOrder, document.createTextNode("Original text order"));
+  rawOrder.addEventListener("change", renderLines);
+  textPanel.append(viewTables, rawLabel, lines, copy);
   const extras = element("details", "", "sv-extras"), issues = element("ul", "", "sv-issues"), codes = element("div", "", "sv-codes");
   extras.append(element("summary", "Reading notes & codes"), issues, element("h3", "QR codes and barcodes"), codes);
   el.append(toolbar, imagePanel, textPanel, tablePanel, extras);
   select("image");
 
-  const textLines = () => state.reading?.result?.lines || [];
+  const textLines = () => (!rawOrder.checked && state.reading?.result?.layout_context?.lines) || state.reading?.result?.lines || [];
+  function renderLines() {
+    lines.replaceChildren();
+    textLines().forEach((line, index) => {
+      const item = element("li", line.text || " ", "sv-line"); item.dataset.lineId = line.id; item.tabIndex = index ? -1 : 0;
+      lines.append(item);
+    });
+  }
   const tell = (blockId, lineIds) => { for (const callback of state.callbacks) callback({blockId, lineIds}); };
   function showPdf(url) {
     // Navigating a frame already in the page adds a browser history entry, so Back would first rewind the PDF. A fresh
@@ -310,25 +322,28 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     lines.replaceChildren(); issues.replaceChildren(); codes.replaceChildren(); overlay.replaceChildren(); tablePanel.replaceChildren();
     pageField.hidden = true; pageSelect.replaceChildren();
     if (!result) lines.append(element("li", "Not read yet. The text appears here once the document is read.", "muted sv-empty"));
-    textLines().forEach((line, index) => {
-      const item = element("li", line.text || " ", "sv-line"); item.dataset.lineId = line.id; item.tabIndex = index ? -1 : 0;
-      lines.append(item);
-    });
+    rawLabel.hidden = !result?.layout_context;
+    if (result) renderLines();
     copy.disabled = !result;
     const sources = result?.pages || (result ? [result] : []);
-    const tables = sources.flatMap(source => (source.vision_tables?.tables || []).map(table => ({table, source})));
+    const nativeTables = result?.layout_context?.tables || [];
+    const tables = [...nativeTables.map(table => ({table, source: {number: table.page}, native: true})),
+      ...sources.filter(source => !nativeTables.some(table => table.page === source.number))
+        .flatMap(source => (source.vision_tables?.tables || []).map(table => ({table, source})))];
     viewTables.hidden = !tables.length;
     if (!tables.length) {
       const rejected = (result?.issues || []).some(issue => ["vision_table_invalid", "pdf_table_ambiguous"].includes(issue.code));
       tablePanel.append(element("p", !result ? "Not read yet. Tables appear here after text extraction."
         : rejected ? "The table structure could not be validated. The extracted text is available in Text; check the original columns."
-        : "No table structure was saved, and the text has no recognizable table separators. The extracted text is available in Text.", "muted sv-empty"));
+        : result.pages?.some(page => page.method === "embedded_text" && !page.layout)
+          ? "This older PDF reading has no saved text positions. Use Read again to recover its layout from the preserved PDF."
+          : "No reliable table structure was found. The extracted text is available in Text; check the original columns.", "muted sv-empty"));
     }
-    for (const [tableIndex, {table, source}] of tables.entries()) {
+    for (const [tableIndex, {table, source, native}] of tables.entries()) {
       const wrap = element("div", "", "sv-table-scroll"), grid = element("table", "", "sv-table");
       grid.dataset.tableId = table.id;
       grid.append(element("caption", `${source.number ? `Page ${source.number} · ` : ""}Table ${tableIndex + 1} · ${
-        source.vision_tables.origin === "text_separators" || source.method === "embedded_text" ? "From text separators" : "Reported by vision"}`));
+        native ? "From PDF text positions" : source.vision_tables.origin === "text_separators" || source.method === "embedded_text" ? "From text separators" : "Reported by vision"}`));
       for (const [tag, rows] of [["thead", table.header_rows], ["tbody", table.rows]]) {
         const section = element(tag);
         for (const row of rows) {
@@ -338,11 +353,20 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
             td.dataset.cellId = cell.id; td.title = `${cell.id} · ${cell.line_id}`;
             if (tag === "thead") td.scope = "col";
             if (!cell.quote) td.setAttribute("aria-label", "Blank source cell");
+            if (native) {
+              td.rowSpan = cell.row_span; td.colSpan = cell.column_span;
+              if (cell.word_ids.length) {
+                const findCell = element("button", cell.quote, "link-button"); findCell.type = "button";
+                findCell.setAttribute("aria-label", `Show ${cell.quote} on PDF page ${table.page}`);
+                findCell.addEventListener("click", () => { highlight([cell.id]); tell(null, [cell.line_id]); });
+                td.replaceChildren(findCell);
+              }
+            }
             tr.append(td);
           }
           const linkCell = element(tag === "thead" ? "th" : "td"), link = element("button", "Source", "link-button");
           link.type = "button"; link.setAttribute("aria-label", `Find ${row.line_id} in extracted text`);
-          link.addEventListener("click", () => { highlight([row.line_id]); select("text"); tell(null, [row.line_id]); });
+          link.addEventListener("click", () => { highlight([row.line_id]); if (!native) select("text"); tell(null, [row.line_id]); });
           linkCell.append(link); tr.append(linkCell); section.append(tr);
         }
         grid.append(section);
@@ -378,12 +402,45 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     }
     const path = result && state.runId && result.transcription_method !== "pdf_pages" ? `/api/receipt-runs/${state.runId}/preview`
       : `/api/documents/${state.doc.id}/preview?blob_hash=${state.digest}`;
-    return showImage(path);
+    const page = result?.pages?.[0];
+    return page && state.runId && (page.layout || page.method === "vision_model") ? showPage(page.number) : showImage(path);
+  }
+  function showPage(number, ids = []) {
+    const page = state.reading?.result?.pages?.find(page => page.number === number);
+    if (!page || !state.runId) return;
+    pageSelect.value = String(number); overlay.replaceChildren();
+    const layout = page.method === "embedded_text" ? page.layout : null;
+    if (layout) {
+      const wanted = new Set(ids), wordIds = new Set();
+      for (const table of layout.tables) for (const cell of table.cells) {
+        if (wanted.has(cell.id) || wanted.has(`${table.id}-row-${cell.row}`)) cell.word_ids.forEach(id => wordIds.add(id));
+      }
+      for (const line of layout.lines) if (wanted.has(line.id)) line.word_ids.forEach(id => wordIds.add(id));
+      for (const block of layout.blocks) if (wanted.has(block.id)) for (const line of layout.lines)
+        if (block.line_ids.includes(line.id)) line.word_ids.forEach(id => wordIds.add(id));
+      overlay.setAttribute("viewBox", `0 0 ${layout.preview_width} ${layout.preview_height}`);
+      const [a, b, c, d, e, f] = layout.page_to_preview;
+      for (const word of layout.words) if (wordIds.has(word.id) || wanted.has(word.id)) {
+        const [left, bottom, right, top] = word.bbox;
+        const polygon = document.createElementNS(SVG, "polygon");
+        polygon.setAttribute("points", [[left,bottom], [right,bottom], [right,top], [left,top]]
+          .map(([x,y]) => `${a*x+c*y+e},${b*x+d*y+f}`).join(" "));
+        polygon.classList.add("selected"); polygon.dataset.evidenceId = word.id;
+        const title = document.createElementNS(SVG, "title"); title.textContent = word.text; polygon.append(title);
+        overlay.append(polygon);
+      }
+    }
+    return showImage(`/api/receipt-runs/${state.runId}/pages/${number}`);
   }
   function highlight(ids) {
     const result = state.reading?.result;
     if (!result || !ids?.length) return;
     const wanted = new Set(ids);
+    const nativePage = result.pages?.find(page => page.method === "embedded_text" && page.layout && ids.some(id =>
+      page.layout.lines.some(line => line.id === id) || page.layout.blocks.some(block => block.id === id)
+      || page.layout.tables.some(table => table.cells.some(cell => cell.id === id || `${table.id}-row-${cell.row}` === id))));
+    const useRaw = !nativePage && ids.some(id => result.lines.some(line => line.id === id));
+    if (rawOrder.checked !== useRaw) { rawOrder.checked = useRaw; renderLines(); }
     for (const row of tablePanel.querySelectorAll("tr[data-line-id]")) row.classList.toggle("selected", wanted.has(row.dataset.lineId));
     let first = null;
     for (const item of lines.children) {
@@ -395,6 +452,7 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
       for (const other of lines.children) other.tabIndex = other === first ? 0 : -1;
       lines.scrollTop = Math.max(0, first.offsetTop - lines.clientHeight / 3);
     }
+    if (nativePage) { select("image"); showPage(nativePage.number, ids); return; }
     if (["vision_model", "pdf_pages"].includes(result.transcription_method) && !ids.some(id => id.startsWith("code-"))) { select("text"); return; }
     select("image");
     for (const line of result.lines) if (wanted.has(line.id)) for (const id of line.block_ids || []) wanted.add(id);
@@ -410,6 +468,8 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   });
   lines.addEventListener("click", event => { const item = event.target.closest(".sv-line"); if (item) focusLine(item); });
   pageSelect.addEventListener("change", () => {
+    const page = state.reading?.result?.pages?.find(page => page.number === Number(pageSelect.value));
+    if (page && (page.layout || page.method === "vision_model")) { select("image"); showPage(page.number); return; }
     const first = textLines().find(line => line.id.startsWith(`page-${pageSelect.value}-`));
     if (first) highlight([first.id]);
   });

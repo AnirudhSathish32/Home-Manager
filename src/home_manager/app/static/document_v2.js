@@ -110,7 +110,7 @@ function doc2Menu(state) {
   const read = asyncButton("Read again", () => doc2Read(true), ""); read.disabled = !canRead;
   const extract = asyncButton("Extract again", () => doc2Record(true), ""); extract.disabled = !ready || !state.extraction;
   const copy = asyncButton("Copy text", async () => {
-    try { await navigator.clipboard.writeText(state.result.lines.map(line => line.text).join("\n")); notice("Text copied."); }
+    try { await navigator.clipboard.writeText((state.result.layout_context?.lines || state.result.lines).map(line => line.text).join("\n")); notice("Text copied."); }
     catch { notice("Copying isn't available here. Use the source's Text tab and press Ctrl+C.", true); }
   }, "");
   copy.disabled = !state.result;
@@ -446,7 +446,8 @@ function doc2Fields(state, type, record) {
       find.addEventListener("click", async () => {
         try {
           const found = await api(`/api/provenance/${type}/${record.id}?field=${encodeURIComponent(correction?.field || field.replace(/_minor$/, ""))}`);
-          const lines = found.provenance.document?.lines || [];
+          const cells = found.provenance.document?.cells?.filter(cell => cell.source === "pdf_text") || [];
+          const lines = cells.length ? cells.map(cell => cell.cell_id) : found.provenance.document?.lines || [];
           if (lines.length) state.viewer.highlight(lines);
           else { find.disabled = true; $("doc2-status").textContent = `No source line is cited for ${label.toLowerCase()}.`; }
         } catch (error) { notice(error, true); }
@@ -608,7 +609,7 @@ async function doc2Split(target, state, publication) {
     picker.append(button);
   });
   panel.append(picker);
-  const starts = segments.map(segment => segment.first_line_id), lines = segmentLines(segments[chosen], state.result?.lines);
+  const starts = segments.map(segment => segment.first_line_id), lines = segmentLines(segments[chosen], state.result?.layout_context?.lines || state.result?.lines);
   const actions = element("div", "", "button-row");
   if (!split.confirmed) actions.append(asyncButton("Confirm split", async () => {
     await api(`/api/documents/${state.doc.id}/segments/confirm`, {method: "POST", body: "{}"});

@@ -92,6 +92,9 @@ class ReceiptService:
             evidence = read_result(result["result"])
             result["result"] = evidence.model_dump()
             result["result"]["lines"] = [line.model_dump() for line in evidence.lines]
+            if isinstance(evidence, PDFResult):
+                from .layout_context import viewer_context
+                result["result"]["layout_context"] = viewer_context(evidence)
         result["model_runs"] = self.store.model_runs(run_id)
         return result
 

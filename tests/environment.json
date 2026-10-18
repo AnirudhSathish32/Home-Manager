@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "isolation": "dedicated_test_instance",
+  "commands": {
+    "start": "python scripts/test_instance.py start",
+    "stop": "python scripts/test_instance.py stop",
+    "reset": "python scripts/test_instance.py reset",
+    "verify": "python scripts/test_instance.py verify"
+  },
+  "overrides": {
+    "root": "--root or HM_TEST_ROOT (default tests/.tmp)",
+    "port": "--port or HM_TEST_PORT (default 8775)",
+    "lmstudio": "--lmstudio or HM_TEST_LMSTUDIO (default http://127.0.0.1:1234/v1)"
+  },
+  "session_file": "tests/.tmp/session.json",
+  "protected_paths": [
+    "P:\\Finances",
+    "P:\\EvalCorpus",
+    "%LOCALAPPDATA%\\HomeManager"
+  ],
+  "storage": {
+    "database": "tests/.tmp/library/inventory.sqlite3",
+    "directory": "tests/.tmp/library"
+  },
+  "models": {"mode": "lmstudio", "live_inference_opt_in": true},
+  "browser": {"base_url": "http://127.0.0.1:8775"}
+}

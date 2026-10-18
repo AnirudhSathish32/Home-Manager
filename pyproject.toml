@@ -42,7 +42,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]  # "." for the eval suite (evals/), tested on synthetic data only.
-addopts = "-ra"
+# Tests against the developer's real LM Studio are opt-in: `-m lmstudio` replaces this default filter.
+addopts = "-ra -m \"not lmstudio\""
+markers = ["lmstudio: needs the developer's local LM Studio (opt-in: pytest -m lmstudio)"]
 
 [tool.coverage.run]
 source = ["home_manager"]

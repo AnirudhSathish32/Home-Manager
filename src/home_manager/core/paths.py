@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import stat
 
+from . import sandbox
+
 
 class PathError(ValueError):
     pass
@@ -31,6 +33,7 @@ def safe_path(path: Path) -> Path:
 
 
 def local_absolute(value: str) -> Path:
+    sandbox.check_path(value)  # Test mode only; lexical, so it runs before safe_path touches anything.
     path = Path(value).expanduser()
     if not path.is_absolute() or str(path).startswith(("\\\\", "//")):
         raise PathError("Choose an absolute path on a local drive (not a network share).")
@@ -57,8 +60,10 @@ def validate_managed(managed_value: str, control: Path) -> Path:
         raise PathError("The library path must be a directory.")
     if managed == Path(managed.anchor):
         raise PathError("Choose a dedicated folder, not a drive root.")
+    checkout = reserved_paths(control)[0]
     for reserved in reserved_paths(control):
-        if overlaps(managed, reserved):
+        # The harness's test instance (tests/environment.json) keeps its library inside the checkout's tests/.tmp.
+        if overlaps(managed, reserved) and not (reserved == checkout and checkout / "tests" / ".tmp" in managed.parents):
             raise PathError("Choose a library folder outside the application and its settings directory.")
     return managed
 
@@ -75,8 +80,10 @@ def separate_folder(value: str, control: Path, others=()) -> Path:
     path = local_absolute(value)
     if path == Path(path.anchor):
         raise PathError("Choose a dedicated folder, not a drive root.")
+    checkout = reserved_paths(control)[0]
     for reserved in (*reserved_paths(control), *(Path(item) for item in others if item)):
-        if overlaps(path, reserved):
+        # The agent test instance's root may sit inside the checkout (tests/.tmp), like validate_managed allows.
+        if overlaps(path, reserved) and not (reserved == checkout and sandbox.in_root(path)):
             raise PathError("Choose a folder outside the library, backups being read, and the application's own folders.")
     return path
 

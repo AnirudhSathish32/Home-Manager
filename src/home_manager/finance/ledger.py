@@ -1006,7 +1006,9 @@ class Ledger:
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
             for row in value.get(key, [])[:500]:
-                row["line_ids"] = [line for evidence in self.evidence(kind, row["id"]) for line in evidence["locator"].get("line_ids", [])]
+                evidence = self.evidence(kind, row["id"])
+                row["line_ids"] = [line for entry in evidence for line in entry["locator"].get("line_ids", [])]
+                row["cell_evidence"] = {name: cell for entry in evidence for name, cell in entry["locator"].get("cells", {}).items()}
         # Exact display strings: the browser never does money arithmetic.
         for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()

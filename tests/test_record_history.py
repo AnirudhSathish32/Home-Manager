@@ -62,14 +62,14 @@ def test_correctable_fields_per_record_type(app_client):
     client, manager, docs = app_client
     receipt_id = itemised_receipt(manager.ledger, docs["receipt.png"])
     correctable = {item["field"]: item for item in client.get(f"/api/finance/records/receipt/{receipt_id}").json()["correctable"]}
-    assert set(correctable) == {"purchase_date", "merchant", "location", "category", "direction", "subtotal", "tax", "tip", "total"}
+    assert set(correctable) == {"document_kind", "purchase_date", "merchant", "location", "category", "direction", "subtotal", "tax", "tip", "total"}
     assert correctable["merchant"]["value"] == "Fresh Market" and correctable["purchase_date"]["value"] == "2026-09-28"
     assert "groceries" in correctable["category"]["options"] and correctable["direction"]["options"] == ["sale", "return"]
     bill = manager.ledger.publish_bill({"provider": "City Water", "issue_date": "2026-09-01", "due_date": "2026-09-20", "period_start": None, "period_end": None,
                                         "amount_due_minor": 4500, "currency": "USD", "issues": [], "locator": {}}, source_of(docs["bill.png"], "extraction:bill"), "verified")["id"]
     # A bill is a receipt (docs/money.md "Bills and their lines") showing a bill's own fields.
     bill_fields = {item["field"]: item for item in client.get(f"/api/finance/records/receipt/{bill}").json()["correctable"]}
-    assert set(bill_fields) == {"merchant", "issue_date", "due_date", "period_start", "period_end", "total", "amount_due", "category"}
+    assert set(bill_fields) == {"document_kind", "merchant", "issue_date", "due_date", "period_start", "period_end", "total", "amount_due", "category"}
     assert (bill_fields["merchant"]["label"], bill_fields["merchant"]["value"], bill_fields["total"]["label"]) == ("Provider", "City Water", "New charges")
     statement = manager.ledger.publish_statement(bank_statement(150000), source_of(docs["statement.png"], "extraction:statement"), "verified")
     money = {item["field"]: item for item in client.get(f"/api/finance/records/statement/{statement['id']}").json()["correctable"]}

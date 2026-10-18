@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from conftest import inbox_scan
-from home_manager.core.paths import DirectoryLock, PathError, source_reader, validate_managed
+from home_manager.core.paths import DirectoryLock, PathError, reserved_paths, source_reader, validate_managed
 from home_manager.library.storage import Store
 
 
@@ -159,6 +159,12 @@ def test_library_folder_and_store_ownership(tmp_path):
     with pytest.raises(PathError):
         validate_managed("relative", control)
     assert validate_managed(str(tmp_path / "managed"), control) == tmp_path / "managed"
+    # Inside the checkout only a folder under tests/.tmp is allowed (the harness's test instance), never tests/.tmp itself.
+    checkout = reserved_paths(control)[0]
+    assert validate_managed(str(checkout / "tests" / ".tmp" / "library"), control) == checkout / "tests" / ".tmp" / "library"
+    for inside in (checkout / "tests" / ".tmp", checkout / "tests", checkout / "src" / "library"):
+        with pytest.raises(PathError):
+            validate_managed(str(inside), control)
     nonempty = tmp_path / "nonempty"
     nonempty.mkdir()
     (nonempty / "personal.txt").write_text("keep")

@@ -60,14 +60,28 @@ def library_file(manager, doc):
     return manager.store.document(doc["id"])
 
 
+def transcribe_table_stub(tmp_path, local_model):
+    """Arithmetic tests need known column evidence; flat multi-amount rows require review."""
+    lines = [*PAYSTUB]
+    lines[5] += " Description Current YTD"
+    tables = [{"header_rows": [{"line_index": 5, "cells": ["Description", "Current", "YTD"]}],
+               "rows": [{"line_index": i, "cells": line.rsplit(" ", 2)} for i, line in enumerate(lines) if i >= 6]}]
+    return transcribe(tmp_path, local_model, lines, tables=tables)
+
+
+def classified_stub_lines(skip=None):
+    return {"lines": [{key: value for key, value in row.items() if key not in ("current", "ytd")}
+                      for row in stub_lines(skip)["lines"]]}
+
+
 def test_a_pay_stub_files_under_its_employer_with_its_breakdown(tmp_path, local_model):
-    manager, doc, parse_id = transcribe(tmp_path, local_model, PAYSTUB)
+    manager, doc, parse_id = transcribe_table_stub(tmp_path, local_model)
     try:
-        local_model["outputs"] = [stub_classification(), stub_summary(), stub_lines()]
+        local_model["outputs"] = [stub_classification(), stub_summary(), {"lines": []}, classified_stub_lines()]
         run = extract(manager, doc, parse_id)
         assert run["status"] == "succeeded", run["error"]
-        assert [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][-3:]] == [
-            "Classification", "PaystubSummary", "PayLines"]
+        assert [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][-4:]] == [
+            "Classification", "PaystubSummary", "PayLines", "PayRowClasses"]
         publication = run["publication"]
         # Earnings add up to gross, and gross less deductions and taxes is net, this period and year to date.
         assert (publication["record_type"], publication["review_status"], publication["lines"]) == ("income_record", "verified", 11)
@@ -89,9 +103,9 @@ def test_a_pay_stub_files_under_its_employer_with_its_breakdown(tmp_path, local_
         assert folders["jobs"] == [{"id": filed["employer_id"], "name": "Google", "folder": "Google", "sections": {"Paystubs": 1, "Documents": 0}, "total": 1}]
         assert manager.store.documents(folder="Jobs", employer=filed["employer_id"], section="Paystubs")["total"] == 1
         # Reading it again, the model is told Google already has a folder; "Google LLC" still maps to it.
-        local_model["outputs"] = [stub_classification(employer="Google LLC"), stub_summary(employer="Google LLC"), stub_lines()]
+        local_model["outputs"] = [stub_classification(employer="Google LLC"), stub_summary(employer="Google LLC"), {"lines": []}, classified_stub_lines()]
         again = extract(manager, doc, parse_id, force=True)
-        assert 'Employers that already have a folder: ["Google"]' in local_model["requests"][-2]["messages"][0]["content"]
+        assert 'Employers that already have a folder: ["Google"]' in local_model["requests"][-3]["messages"][0]["content"]
         assert again["status"] == "succeeded" and library_file(manager, doc)["managed_path"].startswith("Jobs/Google/Paystubs/")
         assert len(manager.store.library.employers()) == 1
     finally:
@@ -99,9 +113,9 @@ def test_a_pay_stub_files_under_its_employer_with_its_breakdown(tmp_path, local_
 
 
 def test_a_misread_line_sends_the_stub_to_review(tmp_path, local_model):
-    manager, doc, parse_id = transcribe(tmp_path, local_model, PAYSTUB)
+    manager, doc, parse_id = transcribe_table_stub(tmp_path, local_model)
     try:
-        local_model["outputs"] = [stub_classification(), stub_summary(), stub_lines(skip=10)]
+        local_model["outputs"] = [stub_classification(), stub_summary(), {"lines": []}, classified_stub_lines(skip=10)]
         run = extract(manager, doc, parse_id)
         record = manager.ledger.record("income_record", run["publication"]["id"])
         assert record["review_status"] == "needs_review"

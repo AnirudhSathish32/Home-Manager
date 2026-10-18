@@ -80,6 +80,7 @@ def test_structured_paystub_cells_override_wrong_column_model_values(tmp_path, l
             {"document_type": "paystub", "evidence": cite(1, lines[0]), "issuer": value("EXAMPLE WIDGETS LLC", 1),
              "document_date": value("2026-09-20", 2, lines[1])},
             summary,
+            {"lines": []},  # Uncovered text is extracted separately, retaining its full amount schema.
             {"lines": [{"description": "Regular pay", "group": "earnings", "category": "regular_pay", "evidence": cite(5, lines[4])},
                        {"description": "Federal income tax", "group": "tax", "category": "federal_income_tax",
                         "evidence": cite(6, lines[5])}]},
@@ -93,7 +94,7 @@ def test_structured_paystub_cells_override_wrong_column_model_values(tmp_path, l
         assert record["net_pay_minor"] == 180000
         assert record["lines"][0]["cell_evidence"]["current"]["quote"] == "2000.00"
         assert [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][1:]] == [
-            "Classification", "PaystubSummary", "PayRowClasses"]
+            "Classification", "PaystubSummary", "PayLines", "PayRowClasses"]
         summary_input = json.loads(local_model["requests"][2]["messages"][1]["content"])
         assert summary_input["reported_tables"][0]["header_rows"][0]["cells"][1]["text"] == "This period"
         assert run["result"]["header"]["net_pay"]["evidence"] == cite(8, "1800.00")
@@ -126,12 +127,12 @@ def receipt_items():
                       for number, name, price in [(9, "LATTE", "5.00"), (10, "LATTE", "5.00"), (11, "SANDWICH", "10.00")]]}
 
 
-def transcribe(tmp_path, local_model, lines):
+def transcribe(tmp_path, local_model, lines, tables=None):
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     manager.configure(str(tmp_path / "managed"))
     month = manager.store.library.inbox
     make_receipt(month / "document.png")
-    local_model["output"] = {"full_text": "\n".join(lines)}
+    local_model["output"] = {"full_text": "\n".join(lines), **({"tables": tables} if tables is not None else {})}
     manager.configure_vision(local_model["config"])
     manager.start_inbox()
     manager.future.result(timeout=30)

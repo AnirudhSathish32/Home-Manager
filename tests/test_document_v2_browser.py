@@ -16,6 +16,51 @@ NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
 
 
 @browser_test
+def test_native_pdf_cells_highlight_transformed_words_and_keep_original_text(tmp_path):
+    from conftest import inbox_scan
+    from home_manager.core.jobs import Work
+    from test_pdf import make_pdf
+    from test_pdf_layout import payroll_items
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN) as (base, _, manager), playwright.sync_playwright() as driver:
+        make_pdf(manager.store.library.inbox / "positioned.pdf", [
+            {"items": payroll_items()}, {"items": payroll_items(), "rotation": 180, "crop": "20 30 580 760"}])
+        inbox_scan(manager.store)
+        doc = next(doc for doc in manager.store.documents()["items"] if doc["relative_path"].endswith("positioned.pdf"))
+        run_id, _ = manager.receipts.enqueue(doc["id"], vision=manager.vision)
+        manager.receipts.run(run_id, Work.detached())
+        result = manager.receipts.get(run_id)["result"]
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page()
+        page.goto(f"{base}/#token={TOKEN}")
+        open_document(page, base, doc["id"])
+        source = page.locator("#doc2-viewer")
+        expect(source.locator(".sv-img")).to_be_visible()
+        source.get_by_role("tab", name="Tables", exact=True).click()
+        expect(source.locator(".sv-table caption").first).to_contain_text("From PDF text positions")
+        source.get_by_role("button", name="Show 2000.00 on PDF page 1", exact=True).click()
+        expect(source.get_by_role("tab", name="Image", exact=True)).to_have_attribute("aria-selected", "true")
+        expect(source.locator(".sv-overlay polygon.selected")).to_have_count(1)
+        expect(source.locator(".sv-overlay polygon title")).to_have_text("2000.00")
+        source.locator(".sv-page select").select_option("2")
+        expect(source.locator(".sv-overlay polygon")).to_have_count(0)
+        source.get_by_role("tab", name="Tables", exact=True).click()
+        # Rotated text has no reconstructed table, but its layout line still locates real words.
+        line = result["pages"][1]["layout"]["lines"][0]
+        page.evaluate("id => doc2.viewer.highlight([id])", line["id"])
+        expect(source.locator(".sv-overlay polygon.selected")).to_have_count(len(line["word_ids"]))
+        assert source.locator(".sv-overlay").get_attribute("viewBox") == f"0 0 {result['pages'][1]['layout']['preview_width']} {result['pages'][1]['layout']['preview_height']}"
+        source.get_by_role("tab", name="Text", exact=True).click()
+        source.get_by_label("Original text order").check()
+        expect(source.locator(f'.sv-line[data-line-id="{result["lines"][0]["id"]}"]')).to_be_visible()
+        source.get_by_role("button", name="Original", exact=True).click()
+        expect(source.locator("iframe")).to_be_visible()
+        browser.close()
+
+
+@browser_test
 def test_invoice_bill_label_can_be_removed_without_losing_invoice_details(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     expect = playwright.expect

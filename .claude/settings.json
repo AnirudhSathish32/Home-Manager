@@ -26,7 +26,32 @@
       "PowerShell(git status)",
       "PowerShell(git status *)",
       "PowerShell(git show *)",
-      "PowerShell(git log *)"
+      "PowerShell(git log *)",
+      "PowerShell(python -m ruff check src)",
+      "PowerShell(.venv/Scripts/python.exe -m ruff check src)",
+      "PowerShell(Measure-Object *)",
+      "PowerShell(Get-ChildItem src/*)",
+      "PowerShell(Get-ChildItem tests/*)",
+      "PowerShell(Get-ChildItem docs/*)",
+      "PowerShell(Get-Content src/*)",
+      "PowerShell(Get-Content tests/*)",
+      "PowerShell(Get-Content docs/*)"
+    ],
+    "deny": [
+      "Edit(approvals/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$HOME/.agent-harness/hooks/guard_approvals.py\""
+          }
+        ]
+      }
     ]
   }
 }

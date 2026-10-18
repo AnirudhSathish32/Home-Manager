@@ -5,7 +5,7 @@ Run from the project root with the venv:
     .venv/Scripts/python.exe .claude/skills/ui-redesign/scripts/ui_shots.py --routes home,review --out DIR
 """
 import argparse
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import socket
 import sys
@@ -19,139 +19,12 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 import uvicorn  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-from conftest import inbox_scan  # noqa: E402
 from home_manager.app.api import create_app  # noqa: E402
-from home_manager.documents.reviewer import ReviewerConfig  # noqa: E402
-from home_manager.finance.forecast import AssetInput, Assets  # noqa: E402
-from home_manager.finance.reconcile import Reconciler  # noqa: E402
-from home_manager.finance.tools import FinanceTools  # noqa: E402
 from home_manager.library.scanner import ScanLimits  # noqa: E402
 from model_server import start_model_server  # noqa: E402
-from seed_documents import seed_documents, seed_review_items  # noqa: E402
-from seed_items import seed_items  # noqa: E402
-from seed_processing import seed_processing  # noqa: E402
-from seed_wealth import seed_investments, seed_plans  # noqa: E402
-from test_reconcile_tools import add, receipt  # noqa: E402
-from seed_taxes import seed_tax_year  # noqa: E402
+from seed_household import seed  # noqa: E402
 
 TOKEN = "ui-shots"
-
-
-def seed(manager, root, model):
-    """A small household: two accounts, a month of spending across categories, a budget, items left to review, and
-    read and recorded documents (tests/seed_documents.py). Returns those documents' ids for --routes placeholders."""
-    manager.configure(str(root / "managed"))
-    inbox_scan(manager.store, {"checking-statement.csv": b"Date,Description,Amount\n",
-                               "card-statement.csv": b"Date,Description,Amount\n"})
-    docs = manager.store.documents()["items"]
-    checking = manager.ledger.create_account("Household checking", "checking", "USD")
-    card = manager.ledger.create_account("Everyday card", "credit_card", "USD")
-    # Every date falls in this month, on or before today, so the Home period counts it.
-    first = date.today().replace(day=1)
-    day = lambda n: first.replace(day=min(n, date.today().day)).isoformat()  # noqa: E731
-    verified = add(manager.store, manager.ledger, checking, docs[0], [
-        (day(1), "PAYROLL ACME CORP", 412500), (day(1), "CITY UTILITIES", -8950),
-        (day(1), "Rent - Maple Street", -165000), (day(2), "Fresh Market", -12480),
-        (day(3), "Corner Cafe", -1860), (day(4), "Metro Transit", -4500)], status="verified")
-    proposed = add(manager.store, manager.ledger, card, docs[-1], [
-        (day(2), "Hardware Depot", -6342), (day(3), "Streaming Plus", -1599),
-        (day(4), "Fresh Market", -9875)])
-    receipt(manager.ledger, docs[0], "Fresh Market", day(4), 9875)
-    categories = ["income", "utilities", "housing", "groceries", "dining", "transport"]
-    with manager.store.connection() as db:
-        for txn_id, category in zip(verified, categories):
-            db.execute("UPDATE transactions SET category=?,category_source='user' WHERE id=?", (category, txn_id))
-        db.execute("UPDATE transactions SET category='groceries',category_source='user' WHERE id=?", (proposed[-1],))
-    manager.ledger.set_budget("groceries", "USD", "250.00")
-    manager.ledger.set_budget("dining", "USD", "120.00")
-    seed_today(manager, checking, card)
-    seed_money(manager, checking, card)
-    # This year's taxes (a pay stub, interest, the federal table), when the tax engine covers this year.
-    seed_tax_year(manager, manager.store, manager.ledger)
-    # Investment accounts of every kind (tests/seed_wealth.py); {ira_account}, {brokerage_account} and so on name them.
-    accounts = {f"{name}_account": account_id for name, account_id in seed_investments(manager).items()}
-    # Two What If plans (tests/seed_wealth.py); {plan} is Tom's move, {raise_plan} the raise.
-    accounts.update(seed_plans(manager))
-    # Last: once a reasoning model is set, newly captured documents are recorded as well as read. Then one of each other
-    # To check kind (a product, a warranty, a tax table, images that look like one document).
-    ids = seed_documents(manager, model)
-    review = seed_review_items(manager, ids)
-    # Household items after the To check kinds, so the Acme toaster gets its extended warranty (tests/seed_items.py);
-    # {drill_lot}, {towel_lot} and {cereal_lot} name lots.
-    items = seed_items(manager)
-    # Processing: a failed reading and model run, a watched folder and two health warnings (tests/seed_processing.py).
-    (root / "scanner").mkdir()
-    processing = seed_processing(manager, root / "scanner")
-    seed_settings(manager, model)
-    return {**ids, **review, **accounts, **items, **processing}
-
-
-def seed_settings(manager, model):
-    """Settings › Independent checks shows a second chat model as the reviewer, and Donate has one checked receipt."""
-    manager.configure_reviewer(ReviewerConfig(provider="chat", base_url=model["config"].base_url, model="synthetic-reasoning"))
-    donations = manager.donations()
-    receipt_row = next(row for row in donations.candidates() if row["record_type"] == "receipt")
-    check = donations.start("receipt", receipt_row["id"])
-    donations.save(check["id"], {"merchant": {"text": "Fresh Market", "state": "fixed"}}, finish=True)
-
-
-def seed_today(manager, checking, card):
-    """What Today shows beyond one month: statement balances (the card's over 35 days old), a car and its loan, a
-    confirmed monthly rent due in about ten days, and spending in the two months before, so the trend has bars."""
-    store, ledger = manager.store, manager.ledger
-    inbox_scan(store, {"checking-statement.pdf": b"synthetic checking statement", "card-statement.pdf": b"synthetic card statement",
-                       "rent-receipt.png": b"synthetic rent receipt", "history.csv": b"Date,Description,Amount\n"})
-    docs = {doc["relative_path"].rsplit("/", 1)[-1]: doc for doc in store.documents()["items"]}
-    today = date.today()
-    with store.connection() as db:
-        for account, name, back, closing, kind in ((checking, "checking-statement.pdf", 5, 841230, "bank"), (card, "card-statement.pdf", 60, 31245, "credit_card")):
-            doc = docs[name]
-            db.execute("INSERT INTO statements(account_id,document_id,blob_hash,statement_type,period_end,closing_balance_minor,currency,review_status,"
-                       "created_at,updated_at) VALUES(?,?,?,?,?,?,'USD','verified','t','t')",
-                       (account["id"], doc["id"], doc["current_hash"], kind, (today - timedelta(days=back)).isoformat(), closing))
-    assets = Assets(store)
-    assets.add(AssetInput(name="Family car", kind="vehicle", value="18000", currency="USD", as_of=today.isoformat()))
-    # A rate and payment so the forecast pays it down (at 0% its notes say the loan never shrinks).
-    assets.add(AssetInput(name="Car loan", kind="loan", value="6000", currency="USD", as_of=today.isoformat(),
-                          annual_rate_percent="6", monthly_payment="350.00"))
-    # A confirmed monthly rent paid 20 days ago, so it is next due in about ten.
-    rent = docs["rent-receipt.png"]
-    ledger.publish_receipt({"merchant": "Maple Street Rentals", "purchase_date": (today - timedelta(days=20)).isoformat(), "subtotal_minor": None,
-                            "tax_minor": None, "tip_minor": None, "total_minor": 165000, "currency": "USD", "issues": [], "items": [],
-                            "category": "housing", "recurrence": "monthly", "locator": {"line_ids": ["line-1"]}},
-                           {"document_id": rent["id"], "blob_hash": rent["current_hash"], "source_key": "extraction:rent", "run_id": "extraction:rent"}, "verified")
-    reconciler = Reconciler(store)
-    reconciler.run()
-    bill = next(row for row in FinanceTools(store).get_recurring_obligations()["obligations"] if row["merchant"] == "Maple Street Rentals")
-    reconciler.review_obligation(bill["id"], "verified")
-    earlier = lambda months: (today.replace(day=1) - timedelta(days=1 + 31 * (months - 1))).replace(day=12).isoformat()  # noqa: E731
-    add(store, ledger, checking, docs["history.csv"], [(earlier(1), "Fresh Market", -21040), (earlier(1), "Corner Cafe", -4210),
-                                                        (earlier(2), "Fresh Market", -18825), (earlier(2), "Metro Transit", -4500)], status="verified")
-
-
-def seed_money(manager, checking, card):
-    """What the Money screens show beyond Today's seed: a confirmed subscription, a proposed recurring payment, a refund
-    credit this month, a payment entered by hand, a bank export waiting in the inbox, and a category rule."""
-    store, ledger = manager.store, manager.ledger
-    inbox_scan(store, {"money-history.csv": b"Date,Description,Amount\n",
-                       "bank-export.csv": b"Date,Description,Amount\n2026-01-05,BAKERY ROW,-6.40\n2026-01-06,METRO TRANSIT,-45.00\n2026-01-07,PAYROLL ACME CORP,4125.00\n"})
-    docs = {doc["relative_path"].rsplit("/", 1)[-1]: doc for doc in store.documents()["items"]}
-    today = date.today()
-    first = today.replace(day=1)
-    def month_back(months, day):
-        year, month = divmod(first.year * 12 + first.month - 1 - months, 12)
-        return date(year, month + 1, day).isoformat()
-    add(store, ledger, checking, docs["money-history.csv"],
-        [(month_back(m, 5), "STREAMING PLUS", -1599) for m in (1, 2, 3)]
-        + [(month_back(m, 9), "HARBOR INSURANCE", -10000) for m in (1, 2, 3)], status="verified")
-    add(store, ledger, card, docs["money-history.csv"], [(first.replace(day=min(3, today.day)).isoformat(), "Fresh Market", 1248)], status="verified")
-    ledger.add_manual_transaction(checking["id"], first.replace(day=min(6, today.day)).isoformat(), "Farmers market", "23.00", "out", "groceries")
-    ledger.add_rule("METRO", "transport", None)
-    reconciler = Reconciler(store)
-    reconciler.run()
-    for row in FinanceTools(store).get_recurring_obligations()["obligations"]:
-        if row["merchant"].upper().startswith("STREAMING PLUS") and row["status"] == "proposed":
-            reconciler.review_obligation(row["id"], "verified", kind="subscription")
 
 
 def main():
@@ -184,7 +57,8 @@ def main():
             sys.exit("server did not start")
         model, stop_model = start_model_server()
         try:
-            ids = seed(app.state.manager, root, model)
+            app.state.manager.configure(str(root / "managed"))
+            ids, _ = seed(app.state.manager, root, model)
             routes = args.routes.format(**ids).split(",")
             with sync_playwright() as driver:
                 browser = driver.chromium.launch(channel="msedge", headless=True)

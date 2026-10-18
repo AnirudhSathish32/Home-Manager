@@ -99,7 +99,7 @@ def test_each_piece_of_paper_is_transcribed_on_its_own(tmp_path, monkeypatch):
 
     def transcribe(config, path, work=None):
         seen.append(path.name)
-        return type("Text", (), {"full_text": f"{path.stem.upper()}\nTotal 1.00"})()
+        return vision.VisionText(full_text=f"{path.stem.upper()}\nTotal 1.00", tables=[], table_issue=False)
     monkeypatch.setattr(vision, "transcribe", transcribe)
     vision.transcribe_preview(out, vision.VisionConfig(model="synthetic-vision"), None)
     result = ReceiptResult.model_validate_json((out / "result.json").read_bytes())

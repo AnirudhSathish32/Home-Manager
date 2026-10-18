@@ -1,0 +1,70 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: agent-test-instance
+plan_sha256: d788e425a9d7c03cb73ce4952b5fff15bb70bf7f07fbb16de5cadc9ee95d5424
+slices:
+  - id: SL-01
+    status: done
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_guards.py tests/test_capture.py tests/test_gpu_host.py tests/test_residency.py tests/test_family_hub.py -> 85 passed, 1 skipped (test_capture.py:196 symlink test, needs Windows developer mode; pre-existing)"
+      - "tests/test_agent_guards.py alone -> 12 passed, 0 skipped (incl. 8.3 short-name case, which ran)"
+      - "mutation check (scratch pytest plugin disabling one guard at a time): paths off -> 5 failed (SC-03 x2, SC-04, SC-14, passive-bind status); egress off -> 4 failed (double self-test, passive-bind, SC-05 x2); tailnet off -> 2 failed (hub, SC-08)"
+      - "neighbour suites: test_api, test_backup, test_family_inbox/ledger/routing, test_profiles, test_settings_api, test_share, test_sources, test_tax_family, test_vision_batch, test_vision_tables -> 83 passed, 1 skipped (opt-in browser test)"
+      - "ruff check on changed files -> all checks passed"
+      - "mypy on changed src files -> 2 errors at models/vision.py:177 and :214, pre-existing (not in this slice's 4-line diff)"
+    notes: >-
+      New core/sandbox.py; paths.local_absolute calls sandbox.check_path first; separate_folder exempts the checkout
+      for paths under the sandbox root; vision.endpoint_url refuses tailnet in test mode; family_hub skips
+      tailnet_address in test mode. SC-05 step 5 (browser) is SL-04. sandbox.py cites docs/development.md
+      "Agent test instance", which SL-06 writes. The SC-05 family-sync step has no retry run (the plan's retry variant
+      covers steps 1-3).
+  - id: SL-02
+    status: done
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_instance.py -> 4 passed (test_one_household_seed AST check; full in-process seed with manifest vs raw read-only counts; fail_step=seed_investments raises SeedStepFailed and later steps never ran; unknown step / no open library refused)"
+      - ".venv/Scripts/python.exe .claude/skills/ui-redesign/scripts/ui_shots.py --routes home,review --widths 1440 --themes light -> home-1440-light.png and review-1440-light.png saved, no page errors printed; screenshots inspected, seeded content shown (the logged 'text reading failed' is seed_processing's deliberate bad-scan.jpg)"
+      - "ruff on tests/seed_household.py, tests/test_agent_instance.py -> clean; ui_shots.py reports I001/B023 on unchanged lines (pre-existing)"
+    notes: >-
+      New tests/seed_household.py (STEPS, SeedStepFailed, SECTIONS/VALUES manifest, seed(manager, root, model, fail_step)).
+      seed() no longer calls configure; ui_shots.py calls configure(root/"managed") itself and keeps no seed of its own.
+      Manifest sections are plain table counts (documents = occurrences; to_check = proposed/needs_review receipts,
+      statements, income records + proposed item resolutions) so SL-03 can check them with raw SQL. SEED_CALLERS in
+      test_one_household_seed lists ui_shots.py only; SL-03 (scripts/test_instance.py) and SL-04 (browser fixture)
+      add theirs. ui-redesign SKILL.md now points new seeding at tests/seed_household.py.
+  - id: SL-03
+    status: done
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest --browser tests/test_agent_instance.py -> 31 passed, 0 skipped, 1 deselected (test_sc06_real_lmstudio, opt-in); run 3 times after the loopback fix, all green"
+      - "before the fix: 3 of 5 full runs failed one test each with verify 'server ... doesn't answer (TimeoutError)'; root-caused (see notes)"
+      - "manual, default root: python scripts/test_instance.py reset -> exit 0 (tests/.tmp did not exist before); start -> 127.0.0.1:8775; verify --fresh -> exit 0 (PASS server, seed manifest, path guard, network guard; WARN LM Studio not running, WARN no model IDs); stop -> port 8775 free; tests/.tmp is gitignored"
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_guards.py tests/test_settings_api.py tests/test_api.py tests/test_profiles.py tests/test_capture.py tests/test_gpu_host.py tests/test_residency.py tests/test_family_hub.py -> 96 passed, 1 skipped (pre-existing symlink test)"
+      - "ruff on scripts/test_instance.py, tests/test_agent_instance.py, tests/test_agent_guards.py, tests/seed_household.py, app/manager.py -> clean"
+      - "NOT RUN: -m lmstudio (real LM Studio at 127.0.0.1:1234 is not running; verify reported it unreachable)"
+    notes: >-
+      Deviations: (1) A2 (Manager.settings() test_instance key, planned in SL-04) built here, because verify's guard
+      check and test_verify_fails_without_guards need it; guard tests now ignore the status probe's own host
+      (Egress.outbound). (2) seed_household manifest gained a "recurring" section (SC-01 names recurring bills).
+      (3) test_pid_is_the_server reads the listening pid from netstat -ano, not GetExtendedTcpTable. (4) SC-12 and
+      test_start_warns_on_8765 are one test. (5) test_commands_refuse_root_without_sentinel covers start/stop/verify;
+      SL-05 adds finding. Root cause of the flaky verify: urllib sends Connection: close, so uvicorn closes right
+      behind index.html's multi-segment reply, which hits the documented Windows loopback segment loss (19 s stall,
+      then reset; docs/development.md "Windows loopback resets"). Reproduced 2 of 3 starts with urllib, 0 of 4 with a
+      keep-alive client that closes first; the harness and test clients now do that. The app's uvicorn still behaves
+      this way for any Connection: close client (curl, urllib): a live-app issue, not fixed in this slice.
+  - id: SL-04
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-05
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-06
+    status: todo
+    commit: null
+    verification: []
+    notes: null

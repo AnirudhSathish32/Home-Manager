@@ -10,11 +10,12 @@ import logging
 import re
 
 from ..core.logs import log_failure
+from ..documents.layout_context import saved_lines
 
 log = logging.getLogger(__name__)
 
 # Bump when the passage rules change: every reading is indexed again at the next start.
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 PASSAGE_LINES, OVERLAP = 8, 2
 MAX_WORDS = 12
 # The readings a library row shows as its text (storage.py text_run_id): finished, and not the retired OCR parser.
@@ -69,7 +70,7 @@ def index_run(db, run_id):
     if row is None:
         db.execute("DELETE FROM document_index_state WHERE parse_run_id=?", (run_id,))
         return 0
-    lines = (json.loads(row["result_json"]) if row["result_json"] else {}).get("lines") or []
+    lines = saved_lines(json.loads(row["result_json"]) if row["result_json"] else {})
     found = passages(lines)
     db.executemany("INSERT INTO document_passages(parse_run_id,ordinal,line_ids,text) VALUES(?,?,?,?)",
                    [(run_id, ordinal, json.dumps(line_ids), text) for ordinal, (line_ids, text) in enumerate(found, 1)])
@@ -172,7 +173,10 @@ def document_lines(store, document_id, around_line=None, count=40):
         raise ValueError("That document has no saved text yet.")
     with store.connection() as db:
         row = db.execute("SELECT result_json FROM parse_runs WHERE id=?", (document["text_run_id"],)).fetchone()
-    lines = [line for line in (json.loads(row["result_json"]).get("lines") or []) if str(line.get("text") or "").strip()]
+    value = json.loads(row["result_json"])
+    lines = [line for line in saved_lines(value) if str(line.get("text") or "").strip()]
+    if around_line and not any(line["id"] == around_line for line in lines):
+        lines = value.get("lines") or []  # Historical citations remain accessible.
     start = 0
     if around_line is not None:
         index = next((i for i, line in enumerate(lines) if line.get("id") == around_line), None)

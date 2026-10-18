@@ -10,7 +10,10 @@ dist/
 *.db
 .runtime/
 private-data/
+tests/.tmp/
 *.log
 
 .claude/settings.local.json
 .claude/memory/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/

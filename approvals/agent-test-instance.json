@@ -1,0 +1,14 @@
+{
+  "feature": "agent-test-instance",
+  "spec": {
+    "sha256": "b2834186f1660324f9d1dea1e61814598ef5ebcbe397aee2cef77c8efbdf5e76",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-17T22:59:31-04:00"
+  },
+  "plan": {
+    "sha256": "d788e425a9d7c03cb73ce4952b5fff15bb70bf7f07fbb16de5cadc9ee95d5424",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-18T00:12:33-04:00",
+    "spec_sha256": "b2834186f1660324f9d1dea1e61814598ef5ebcbe397aee2cef77c8efbdf5e76"
+  }
+}

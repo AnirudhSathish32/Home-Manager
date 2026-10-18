@@ -7,8 +7,8 @@ import pytest
 from home_manager.app.api import create_app
 from home_manager.app.manager import Manager
 from home_manager.documents.reasoning import ReasoningConfig
-from home_manager.models.model_client import request_completion
 from home_manager.library.scanner import ScanLimits
+from home_manager.models.model_client import request_completion
 from test_receipts import make_receipt
 
 

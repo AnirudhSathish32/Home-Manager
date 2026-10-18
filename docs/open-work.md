@@ -23,6 +23,9 @@ and link here for what isn't. When an item is built, remove it from this list an
   Grocery, dining and gas-station receipts should each get their own handling.
 - **Gas-station receipts.** The pump number is read as an item, and the gallons and price per gallon are lost. These
   receipts need their own extraction shape.
+- **Complex PDF layout:** merged/stacked headers, wrapped cells, rich form-field association, cross-page tables and
+  repeated-header/footer detection remain open. Shared native layout is connected to extraction, search and source
+  highlighting; see the [text extraction plan](../text_extraction_plan.md) for implemented behavior and limits.
 
 ## Models and evals
 

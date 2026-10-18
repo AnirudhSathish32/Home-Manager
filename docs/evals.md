@@ -50,6 +50,12 @@ current/YTD money from the named cells. The synthetic and private document suite
 money, missing values, table coverage and latency against earlier text-only runs. A valid JSON table only checks
 internal consistency with the model's transcription; it does not prove placement in the original image.
 
+The `transcription-v2-tables` task adds ten clear/faded synthetic table cases and reports correct, missing, wrong and
+extra cells, wrong-column values, table-review counts and transcription length. Its existing runner reports latency.
+Perfect flat text without the expected table fails the placement coverage check. Run with
+`python -m evals.tasks --tasks transcription --config evals/models.toml`; native PDF consumer tests run without a live model
+in `tests/test_layout_consumers.py`. No configured-model or private-corpus accuracy result is implied by these tests.
+
 ## Architecture
 
 - **Call the real code.** The runner calls the app's real task functions and never copies the prompts. So the eval

@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 
-from ..core import actor
+from ..core import actor, sandbox
 from ..core.formats import SUPPORTED, extension
 from ..core.jobs import QUEUES, Cancelled, Work
 from ..core.logs import log_failure
@@ -325,6 +325,8 @@ class Manager:
                 "people": self.people(),
                 "family": self.family.summary() if self.family else None,
                 "hub_status": self.hub.status(),  # Where the family hub listens, or why it can't (app/family_hub.py).
+                # The agent test instance: whether each guard refuses right now (core/sandbox.py); None in the live app.
+                "test_instance": sandbox.status() if sandbox.active() else None,
                 "managed_directory": str(self.session["home"] if self.session else self.store.root) if self.store else "",
                 "session": {key: value for key, value in self.session.items() if key != "home"} if self.session else None,
                 "session_opening": self.session_opening,

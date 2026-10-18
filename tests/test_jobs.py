@@ -53,6 +53,7 @@ def test_changed_weights_or_unknown_identity_never_reuse_results(prepared, local
     manager.future.result(timeout=10)
     assert not third["reused"]
     assert manager.reasoning.get(third["run_id"])["status"] == "succeeded"
+    local_model["output"] = {"full_text": "LOCAL TEST CAFE\nTotal 25.00", "tables": []}
     requests = len(local_model["requests"])
     batch = manager.start_receipt_batch()["batch_id"]
     manager.future.result(timeout=30)

@@ -30,6 +30,7 @@ import time
 from urllib.parse import urlsplit
 import uuid
 
+from ..core import sandbox
 from ..core.logs import log_failure
 from ..core.paths import PathError, path_key, safe_path
 from ..library.share import ShareError
@@ -105,7 +106,8 @@ class Hub:
             if not self.families:
                 self.reason = "No family folder on this computer." if not self.errors else next(iter(self.errors.values()))
                 return self.status()
-            address = "127.0.0.1" if self.loopback else tailnet_address()
+            # The agent test instance never listens on the tailnet (core/sandbox.py).
+            address = "127.0.0.1" if self.loopback else (None if sandbox.active() else tailnet_address())
             if not address:
                 self.reason = "Tailscale isn't running on this computer, so members' computers can't reach it."
                 return self.status()

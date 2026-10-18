@@ -12,12 +12,13 @@ from ..core.logs import log_failure
 from ..library.storage import now
 from ..models.model_client import request_completion, resolve_identity
 from ..models.vision import Sampling, VisionConfig
+from .layout_context import evidence_lines, evidence_tables
 from .pdf_reader import read_result
 from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-REASONING_VERSION = "financial-interpretation-v5"
+REASONING_VERSION = "financial-interpretation-v6-native-layout"
 
 
 class ReasoningConfig(Sampling):
@@ -100,22 +101,14 @@ def interpret(config, result, work=None):
     work = work or Work.detached()
     if result.transcription_method == "pdf_pages":
         from types import SimpleNamespace
-        chunks = []
-        current, size = [], 0
-        for line in result.lines:
-            amount = len(json.dumps({"line_id": line.id, "text": line.text}).encode())
-            if amount > 48000:
-                raise ValueError("One PDF evidence line exceeds the reasoning limit; no text was truncated.")
-            if current and (size + amount > 48000 or len(current) >= 150):
-                chunks.append(current)
-                current, size = [], 0
-            current.append(line)
-            size += amount
-        if current:
-            chunks.append(current)
+
+        from .extraction import paystub_chunks, paystub_table_context
+        tables = evidence_tables(result)
+        chunks = list(paystub_chunks(evidence_lines(result), tables))
         if not chunks:
             raise ValueError("PDF contains no readable evidence.")
-        results = [interpret(config, SimpleNamespace(transcription_method="vision_model", model_text=True, lines=chunk, issues=result.issues), work) for chunk in chunks]
+        results = [interpret(config, SimpleNamespace(transcription_method="vision_model", model_text=True, lines=chunk,
+                             issues=result.issues, table_context=paystub_table_context(tables, chunk)), work) for chunk in chunks]
         output = results[0].model_dump()
         for key in ("facts", "receipt_items", "other_lines", "insights", "classification_evidence"):
             output[key] = [value for item in results for value in item.model_dump()[key]]
@@ -130,7 +123,8 @@ def interpret(config, result, work=None):
         raise ValueError("Configure a local reasoning model in Settings first.")
     require_transcription(result)
     evidence = [{"line_id": line.id, "text": line.text} for line in result.lines]
-    content = json.dumps({"lines": evidence, "extraction_issues": [issue.message for issue in result.issues]}, ensure_ascii=False)
+    content = json.dumps({"lines": evidence, "reported_tables": getattr(result, "table_context", []),
+                          "extraction_issues": [issue.message for issue in result.issues]}, ensure_ascii=False)
     if len(content.encode("utf-8")) > 64 * 1024:
         raise ValueError("Transcription exceeds the 64 KiB reasoning input limit. Split the document; text was not truncated.")
     prompt = (
@@ -212,7 +206,7 @@ def validation_message(exc):
 
 def validate_interpretation(raw, result):
     output = Interpretation.model_validate_json(raw)
-    lines = {line.id: line.text for line in result.lines}
+    lines = {line.id: line.text for line in evidence_lines(result)}
     citations = list(output.classification_evidence)
     if output.document_type != "unknown" and not citations:
         raise ValueError("Document classification lacks supporting evidence.")

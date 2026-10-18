@@ -267,7 +267,9 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
       if (index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
                                                         : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     });
-    const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids, find)); tr.appendChild(source);
+    const cell = row.cell_evidence?.line_total || row.cell_evidence?.amount;
+    const sourceIds = cell?.source === "pdf_text" ? [cell.cell_id] : row.line_ids;
+    const source = document.createElement("td"); if (sourceIds?.length) source.appendChild(sourceButton(sourceIds, find)); tr.appendChild(source);
     body.appendChild(tr);
   }
   if (record.items) {
@@ -401,6 +403,11 @@ function paystubBreakdown(record, find, onChange = null) {
         if (cell) {
           tr.children[index].dataset.sourceCellId = cell.cell_id;
           tr.children[index].title = `Reported source cell: ${cell.quote} (${cell.line_id})`;
+          if (cell.source === "pdf_text") {
+            const source = element("button", tr.children[index].textContent, "link-button"); source.type = "button";
+            source.setAttribute("aria-label", `Find ${line.description} ${name === "current" ? "this period" : "year to date"} on the PDF`);
+            source.addEventListener("click", () => find([cell.cell_id])); tr.children[index].replaceChildren(source);
+          }
         }
       }
       if (onChange && record.review_status !== "rejected") {
