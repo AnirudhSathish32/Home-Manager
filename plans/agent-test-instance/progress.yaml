@@ -54,17 +54,65 @@ slices:
       keep-alive client that closes first; the harness and test clients now do that. The app's uvicorn still behaves
       this way for any Connection: close client (curl, urllib): a live-app issue, not fixed in this slice.
   - id: SL-04
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest --browser tests/test_agent_instance_browser.py tests/test_settings_browser.py -> 7 passed, 0 skipped (6 new + settings); rerun after the ruff import fix with tests/test_shell_browser.py added -> 8 passed, 0 skipped"
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_guards.py tests/test_agent_instance.py::test_one_household_seed -> 13 passed (sc05_setup refactor; browser module added to SEED_CALLERS)"
+      - "ruff check tests/test_agent_instance_browser.py tests/test_agent_guards.py tests/test_agent_instance.py -> all checks passed"
+      - "screenshots inspected: marker-{390,768,1024,1440}-{light,dark}.png (pill beside the brand in the top bar, under it in the full sidebar, 'Test' on the 64 px rail); SC-02 saved 96 shots (16 routes x 3 widths x 2 themes), home/taxes 1440 light and transactions 390 dark checked by eye"
+      - "NOT RUN: full test suite (targeted runs only)"
+    notes: >-
+      Marker: #test-instance-marker in aside.sidebar after .brand, outside #sidebar-sheet; app.js loadSettings toggles
+      body.test-instance and the marker's hidden from settings.test_instance (A2 was done in SL-03). Amber pill on
+      --warning/--warning-subtle (MASTER.md contrast 5.2 light / 7.8 dark); visible label "Test data", "Test" on the rail,
+      full "Test instance: synthetic Test data" for assistive technology. New tests/test_agent_instance_browser.py:
+      SC-02 (every .nav-link route x 390/768/1440 x light/dark, no overflow, no pageerror, seeded content on 8 screens,
+      reload keeps the marker, DB counts unchanged), test_marker_visible_everywhere (incl. 1024 rail),
+      test_models_show_lmstudio_address, SC-11 step 1, SC-14 screens, test_sc05_offline_screens. sc05_setup moved out of
+      test_sc05_outbound_calls_refused into a helper. Deviations: (1) Money has no USD-conversion UI (the rates line is
+      only on Taxes > CPA pack, and only with foreign amounts), so step 5 checks the Money routes render without
+      pageerror; the rate refusal itself is proven in SL-01. (2) The seeded household has a (fake) reasoning model, so the
+      browser SC-05 asserts the barcode host refused by the sandbox and price/rate row counts unchanged, not "no
+      proposal" (SL-01 asserts that). (3) SC-14 errors appear as the existing error toasts, not inline on the form; UI
+      unchanged. (4) The link opens Today at "/", not "#/home".
+      2026-10-18 (validation, user-approved option 1): tests/environment.json models.mode is now "live_opt_in" (the
+      harness preflight rejects "lmstudio"); test_sc01 asserts it (1 passed). plan.md still says "lmstudio": the user
+      updates it and re-approves if wanted. Preflight then: "Environment contract valid ... live inference: allowed". The marker comment cites docs/development.md
+      "Agent test instance", which SL-06 writes.
   - id: SL-05
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_findings.py tests/test_agent_instance.py::test_commands_refuse_root_without_sentinel tests/test_agent_instance.py::test_sc01_reset_start_verify tests/test_agent_instance.py::test_one_household_seed -> 23 passed (test_agent_findings.py: 20 passed, 0 skipped)"
+      - ".venv/Scripts/python.exe -m pytest --browser tests/test_agent_instance.py -> 31 passed, 1 deselected (test_sc06_real_lmstudio, opt-in); run because parse() changed for every subcommand"
+      - "ruff check scripts/test_instance.py tests/test_agent_findings.py tests/test_agent_instance.py -> all checks passed"
+      - "recorded sections inspected by eye (SC-09, text after the section, escaped heading): format, seen-again line, CRLF kept, ## Notes untouched"
+      - "the real docs/bugs.md was only read (as B0); never written"
+      - "2026-10-18 fix from validation: a repeat printed 'Recorded in ...' like a new entry; now 'Seen again (DATE) in <target>: <existing title>; no new entry.' and 'Recorded a new entry ...' for new ones. New test_seen_again_message. pytest tests/test_agent_findings.py -> 22 passed; ruff clean"
+    notes: >-
+      finding in scripts/test_instance.py, following A7: root and sentinel checks; the screenshot must be inside
+      <root>/evidence or nothing is touched; then missing fields (incl. an empty --agent), kind/severity, a loopback
+      session.json base_url, the target (docs/bugs.md or inside <root>), the page origin, and GET /api/settings
+      test_instance; each of those refusals deletes the screenshot (exit 2). <target>.lock (O_EXCL, 10 s, exit 3), a
+      re-read before write_atomic (exit 3 if the developer changed it), section bounds, keys only inside the section, `<!--`
+      and leading-# lines escaped, the same date is a no-op. Choices: the key is the first 16 hex chars of sha256; field
+      lines after the first are indented two spaces; base_url must be http://127.0.0.1:<any port> (not equal to --port,
+      so agents needn't pass it); a missing screenshot file is refused without deleting anything. .gitignore gained
+      docs/bugs.md.lock and docs/bugs.md.pending. sc05_setup etc. untouched; test_commands_refuse_root_without_sentinel
+      now covers finding. Test hook: module-level _before_replace.
   - id: SL-06
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: in_progress
+    commit: null  # not committed; commits not authorized
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_agent_findings.py -> 21 passed, 0 skipped (incl. test_skill_names_finding_command)"
+      - "ruff check tests/test_agent_findings.py -> all checks passed"
+      - "NOT RUN (required for done): FR-18 acceptance, one agent session following .claude/skills/agent-testing/SKILL.md, reviewed by the developer"
+    notes: >-
+      New .claude/skills/agent-testing/SKILL.md (verify, session.json base_url/link only, playwright-cli with
+      .playwright/cli.config.json, marker check via checkVisibility before every screenshot and finding, evidence/,
+      uploads/, reuse route+symptom for duplicates, finding as the only writer, never 8765 or protected paths).
+      docs/development.md: new "Agent test instance" section (the heading code cites), scripts list, opt-in tests note
+      (lmstudio marker; -m replaces the default). docs/README.md index line. Also, from SL-03's finding: corrected the
+      "uvicorn isn't affected" line in "Windows loopback resets" and added docs/open-work.md "App server" (Connection:
+      close clients still hit the loopback stall). test_skill_names_finding_command also checks the cited heading exists.

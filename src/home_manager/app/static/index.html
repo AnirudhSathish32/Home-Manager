@@ -49,6 +49,8 @@
 <div class="app-shell">
   <aside class="sidebar">
     <div class="brand"><span class="brand-mark" aria-hidden="true">HM</span><span class="brand-name">Home Manager</span></div>
+    <!-- Agent test instance only (docs/development.md "Agent test instance"): outside the sheet, so it shows at every width. -->
+    <p id="test-instance-marker" class="test-instance-marker" hidden><span class="visually-hidden">Test instance: synthetic </span><span class="test-instance-long">Test data</span><span class="test-instance-short" aria-hidden="true">Test</span></p>
     <!-- Under 820px the sidebar is a top bar; this opens its contents as a sheet (docs/ui.md "Accessibility"). -->
     <button id="nav-toggle" class="icon-button quiet" type="button" aria-expanded="false" aria-controls="sidebar-sheet" hidden><span class="visually-hidden">Menu</span></button>
     <div id="sidebar-sheet" class="sidebar-sheet">

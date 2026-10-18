@@ -4,11 +4,15 @@
     python scripts/test_instance.py start    # serve it on 127.0.0.1:<port> in the background; writes <root>/session.json
     python scripts/test_instance.py verify   # server, seed, guards, LM Studio
     python scripts/test_instance.py stop
+    python scripts/test_instance.py finding --url PAGE_URL --route R --symptom S --kind bug|friction|console-error
+        --severity low|medium|high --steps S --expected E --actual A --screenshot <root>/evidence/X.png --agent NAME
+        [--target docs/bugs.md]   # the only way agents record findings, under "## Agent findings"
 
 Settings, by flag or environment: --root / HM_TEST_ROOT (tests/.tmp), --port / HM_TEST_PORT (8775), --lmstudio /
 HM_TEST_LMSTUDIO (http://127.0.0.1:1234/v1), and for reset --vision-model / HM_TEST_VISION_MODEL and --reasoning-model /
 HM_TEST_REASONING_MODEL (default: the previous instance's). Tests only: HM_TEST_PROTECTED (extra protected folders,
-os.pathsep-separated), HM_TEST_SEED_FAIL (a seed step to break), HM_TEST_SERVE_FAIL (serve exits before listening).
+os.pathsep-separated), HM_TEST_SEED_FAIL (a seed step to break), HM_TEST_SERVE_FAIL (serve exits before listening),
+HM_TEST_FINDING_DATE (an ISO date that finding records instead of today).
 
 The server runs in test mode (core/sandbox.py): real data is off limits and nothing leaves this computer. Only this
 script turns test mode on; `python -m home_manager` never does.
@@ -16,10 +20,12 @@ script turns test mode on; `python -m home_manager` never does.
 
 import argparse
 from datetime import date
+import hashlib
 import http.client
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -34,6 +40,7 @@ CHECKOUT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(CHECKOUT / "src"), str(CHECKOUT / "tests"), str(CHECKOUT)]
 
 from home_manager.core import sandbox  # noqa: E402
+from home_manager.core.paths import write_atomic  # noqa: E402
 
 DEFAULT_ROOT = CHECKOUT / "tests" / ".tmp"
 DEFAULT_PORT = 8775
@@ -44,6 +51,11 @@ INCOMPLETE = ".seed-incomplete"
 SETTLE_SECONDS = 120
 START_SECONDS = 30
 STOP_SECONDS = 10
+DEFAULT_TARGET = CHECKOUT / "docs" / "bugs.md"
+FINDING_FIELDS = ("url", "route", "symptom", "kind", "severity", "steps", "expected", "actual", "screenshot", "agent")
+KINDS, SEVERITIES = ("bug", "friction", "console-error"), ("low", "medium", "high")
+SECTION = "## Agent findings"
+LOCK_SECONDS = 10
 SHARED_WARNING = ("Something is listening on 127.0.0.1:8765 (the live app?). It shares LM Studio with this instance: "
                   "don't upload documents here while it is scanning.")
 
@@ -58,13 +70,16 @@ class Refused(Exception):
 
 def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=["reset", "start", "serve", "stop", "verify"])
+    parser.add_argument("command", choices=["reset", "start", "serve", "stop", "verify", "finding"])
     parser.add_argument("--root", type=Path, default=Path(os.environ.get("HM_TEST_ROOT") or DEFAULT_ROOT))
     parser.add_argument("--port", type=int, default=int(os.environ.get("HM_TEST_PORT") or DEFAULT_PORT))
     parser.add_argument("--lmstudio", default=os.environ.get("HM_TEST_LMSTUDIO"))
     parser.add_argument("--vision-model", default=os.environ.get("HM_TEST_VISION_MODEL"))
     parser.add_argument("--reasoning-model", default=os.environ.get("HM_TEST_REASONING_MODEL"))
     parser.add_argument("--fresh", action="store_true", help="verify: seed counts must equal the manifest exactly (right after reset)")
+    for name in FINDING_FIELDS:  # finding; checked by finding itself, so a refusal can still delete the screenshot.
+        parser.add_argument(f"--{name}")
+    parser.add_argument("--target", type=Path, default=DEFAULT_TARGET)
     args = parser.parse_args(argv)
     args.root = Path(os.path.abspath(args.root))
     return args
@@ -535,10 +550,155 @@ def verify(args):
         raise Refused("verify failed")
 
 
+# finding -------------------------------------------------------------------------------------------------------------
+
+_before_replace = None  # Tests only: called between reading the target and replacing it.
+ENTRY_MARKER = re.compile(r"^<!-- finding:([0-9a-f]{16}) -->", re.M)
+
+
+def finding_key(route, symptom):
+    """The duplicate key: the route without spaces, case or a trailing slash, and the symptom lower-cased with its
+    whitespace collapsed."""
+    route = re.sub(r"\s+", "", route).lower().rstrip("/")
+    return hashlib.sha256(f"{route}\n{' '.join(symptom.lower().split())}".encode()).hexdigest()[:16]
+
+
+def field(value, newline):
+    """A field's text, unable to end the section or forge a marker: <!-- is escaped, a line starting # gets a backslash,
+    and later lines are indented under their bullet."""
+    lines = [("\\" + line if line.lstrip().startswith("#") else line) for line in value.replace("<!--", "&lt;!--").splitlines() or [""]]
+    return (newline + "  ").join(lines)
+
+
+def one_line(value):
+    return " ".join(value.replace("<!--", "&lt;!--").split())
+
+
+def shown_path(path):
+    """A path under the checkout as the repo writes it (tests/.tmp/evidence/x.png); anything else in full."""
+    try:
+        return path.relative_to(CHECKOUT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def section_bounds(text):
+    """(start, end) of the "## Agent findings" section, or None: from its header to the next "## " line or the end."""
+    header = re.search(rf"^{re.escape(SECTION)}[ \t]*\r?$", text, re.M)
+    if not header:
+        return None
+    following = re.compile(r"^## ", re.M).search(text, header.end())
+    return header.start(), following.start() if following else len(text)
+
+
+def add_finding(text, newline, key, today, seed_date, args, shot):
+    """(new text, the existing entry's title for a "Seen again" or None for a new entry), or None when this key was
+    already recorded on this date. Only the section's own bytes change."""
+    bounds = section_bounds(text)
+    if bounds is None:
+        text += ("" if not text or text.endswith(newline) else newline) + SECTION
+        bounds = (len(text) - len(SECTION), len(text))
+    start, end = bounds
+    markers = [(match.start() + start, match.group(1)) for match in ENTRY_MARKER.finditer(text[start:end])]
+    evidence = shown_path(shot)
+    for index, (at, found) in enumerate(markers):
+        if found != key:
+            continue
+        stop = markers[index + 1][0] if index + 1 < len(markers) else end
+        entry = text[at:stop]
+        if re.search(rf"^- (Date|Seen again): {today} ", entry, re.M):
+            return None
+        body = entry.rstrip("\r\n")
+        insert = at + len(body)
+        title = re.search(r"^### (.*?)\r?$", entry, re.M)
+        return (text[:insert] + f"{newline}- Seen again: {today} (seed {seed_date}) — evidence: {evidence}" + text[insert:],
+                title.group(1) if title else key)
+    lines = [f"<!-- finding:{key} -->", f"### {one_line(args.route)}: {one_line(args.symptom)}",
+             f"- Date: {today} (seed {seed_date})", f"- Agent: {one_line(args.agent)}", f"- Page: {one_line(args.url)}",
+             f"- Kind: {args.kind} · Severity: {args.severity}", f"- Steps: {field(args.steps, newline)}",
+             f"- Expected: {field(args.expected, newline)}", f"- Actual: {field(args.actual, newline)}", f"- Evidence: {evidence}"]
+    insert = start + len(text[start:end].rstrip("\r\n"))
+    return text[:insert] + newline + newline + newline.join(lines) + (text[insert:] or newline), None
+
+
+def finding(args):
+    """Record one finding in the target's "## Agent findings" section (FR-10, FR-16). Every refusal leaves the target as
+    it was and deletes the screenshot, but only one inside <root>/evidence; nothing else is ever deleted."""
+    check_root(args.root)
+    root = args.root
+    check_sentinel(root)
+    evidence = root / "evidence"
+    shot = Path(os.path.abspath(args.screenshot or evidence))
+    if not args.screenshot or shot == evidence or not sandbox.under(sandbox.norm(shot), sandbox.norm(evidence)):
+        raise Refused(f"the screenshot must be a file inside {evidence}; nothing was recorded or deleted", 2)
+
+    def refuse(message, code=2):
+        if shot.is_symlink() or shot.is_file():
+            shot.unlink()  # A link itself, never what it points at.
+        return Refused(f"{message}. The finding wasn't recorded and the screenshot was deleted.", code)
+
+    if not shot.is_file():
+        raise Refused(f"no screenshot at {shot}", 2)
+    missing = [f"--{name}" for name in FINDING_FIELDS if not (getattr(args, name) or "").strip()]
+    if missing:
+        raise refuse(f"missing {', '.join(missing)}")
+    if args.kind not in KINDS or args.severity not in SEVERITIES:
+        raise refuse(f"--kind must be one of {', '.join(KINDS)} and --severity one of {', '.join(SEVERITIES)}")
+    session = read_json(root / "session.json")
+    base = str((session or {}).get("base_url", ""))
+    if not re.fullmatch(r"http://127\.0\.0\.1:\d+", base):
+        raise refuse(f"no running test instance: {root / 'session.json'} is missing or doesn't name http://127.0.0.1:PORT")
+    target = Path(os.path.abspath(args.target))
+    if not (sandbox.norm(target) == sandbox.norm(DEFAULT_TARGET) or (target != root and sandbox.under(sandbox.norm(target), sandbox.norm(root)))):
+        raise refuse(f"findings go only to {DEFAULT_TARGET} or a file inside {root}, not {target}")
+    page = urlsplit(args.url)
+    if f"{page.scheme}://{page.netloc}".lower() != base:
+        raise refuse(f"not the test instance: the page {args.url} isn't on {base}")
+    try:
+        status, body = get(base + "/api/settings", str(session.get("link", "")).partition("#token=")[2])
+        marked = status == 200 and bool(json.loads(body).get("test_instance"))
+    except (OSError, http.client.HTTPException, ValueError):
+        marked = False
+    if not marked:
+        raise refuse(f"not the test instance: {base} doesn't report test mode, so its pages show no \"Test data\" marker")
+
+    today = os.environ.get("HM_TEST_FINDING_DATE") or date.today().isoformat()
+    lock = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + LOCK_SECONDS
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise refuse(f"{lock} is still held after {LOCK_SECONDS} s (another finding, or a crashed one: delete it if none is running)", 3) from None
+            time.sleep(0.1)
+    try:
+        before = target.read_bytes() if target.exists() else b""
+        text = before.decode("utf-8")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        updated = add_finding(text, newline, finding_key(args.route, args.symptom), today, session.get("seed_date", "unknown"), args, shot)
+        if updated is None:
+            print(f"already recorded today; the screenshot is kept: {shot}")
+            return
+        if _before_replace:
+            _before_replace(target)
+        if (target.read_bytes() if target.exists() else b"") != before:
+            raise refuse(f"{target} changed while recording; run again", 3)
+        updated, seen = updated
+        write_atomic(target, updated.encode("utf-8"))
+    finally:
+        lock.unlink(missing_ok=True)
+    if seen:
+        print(f"Seen again ({today}) in {target}: {seen}; no new entry.")
+    else:
+        print(f"Recorded a new entry in {target}: {one_line(args.route)}: {one_line(args.symptom)}")
+
+
 def main(argv=None):
     args = parse(argv)
     try:
-        {"reset": reset, "start": start, "serve": serve, "stop": stop, "verify": verify}[args.command](args)
+        {"reset": reset, "start": start, "serve": serve, "stop": stop, "verify": verify, "finding": finding}[args.command](args)
     except Refused as exc:
         print(exc, file=sys.stderr)
         return exc.code

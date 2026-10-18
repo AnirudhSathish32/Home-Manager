@@ -22,6 +22,6 @@
     "database": "tests/.tmp/library/inventory.sqlite3",
     "directory": "tests/.tmp/library"
   },
-  "models": {"mode": "lmstudio", "live_inference_opt_in": true},
+  "models": {"mode": "live_opt_in", "live_inference_opt_in": true},
   "browser": {"base_url": "http://127.0.0.1:8775"}
 }

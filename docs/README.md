@@ -7,7 +7,7 @@ is in [open work](open-work.md). Git history keeps the older plans and proposals
 | Doc | What it covers |
 |---|---|
 | [operations](operations.md) | Install, first start, local models and residency, commands, environment variables, where files live, backups, background work, the log and ledger health, troubleshooting. |
-| [development](development.md) | Code layout, architecture and security rules, tests, manual checks, ruff/mypy, adding a migration, the schema map (001–062), database checks. |
+| [development](development.md) | Code layout, architecture and security rules, tests, manual checks, ruff/mypy, adding a migration, the schema map (001–062), database checks; the agent test instance (synthetic, in test mode) and its findings command. |
 | [documents](documents.md) | The managed library, watched folders, duplicates, browsing and Trash, schema upgrades; reading images, PDFs and CSV/XLSX; several receipts in one file; several images as one document; typed extraction and review; decision models; document search. |
 | [money](money.md) | Money rules; what counts; statements and reconciliation; categories and item splits; rules and budgets; rewards; recurring bills; currency conversion; the money pages and Home. |
 | [planning](planning.md) | The forecast, assets and loans, retirement and RMDs; What If (paycheck planner, saved plans, following a plan); investments. |

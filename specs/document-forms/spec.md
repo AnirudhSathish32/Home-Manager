@@ -241,10 +241,10 @@ All scenarios run on synthetic transcriptions with stubbed model replies.
 | SC-21 | FR-20,21,19 | Pay stub: Regular 80.00 h × 31.25 = 2,500.00, YTD 32,500.00. PTO 56.00 hrs. Splits ****1234 1,500.00 and ****9876 412.34. Net 1,912.34. | Extract. Get the traces. Variant: rate 31.00. | Fields stored. Both checks pass and are traced. The variant gives `needs_review`. |
 | SC-22 | FR-25,26,19 | Bank: Everyday Checking. Opening 1,000.00, deposits 2,500.00, withdrawals 1,200.50, closing 2,299.50. Interest 0.42, APY 0.50%, fees 0.00. | Extract. Trace. Variant: closing 2,300.50. | Fields stored. Summary check passes and is traced. The variant gives `needs_review`. |
 | SC-23 | FR-27,28,19 | Card: previous 500.00, payments 500.00, credits 20.00, purchases 812.45, fees 0.00, interest 0.00, balance 792.45. APR 24.99%, limit 5,000.00, available 4,207.55, 812 points earned. | Extract. Trace. Variant: balance 795.45. | Fields stored. Check passes and is traced. The variant gives `needs_review`. |
-| SC-24 | FR-29 | SC-21, SC-22 and SC-23 records. | Read the month's spending, money in and balances. | Equal to the values worked out from the fixtures under today's rules. |
+| SC-24 | FR-29 | SC-21's pay stub dated in September 2026 (fixture P-sept), plus the SC-22 and SC-23 records. | Read September's spending, money in and balances. | Equal to the values worked out from the fixtures under today's rules. |
 | SC-25 | FR-30 | Pay stub and bank fixtures printing an SSN, employee ID, routing number and full account number. | Extract. | No identifier in any stored record field. Last four only. |
 | SC-26 | FR-14 | Bank statement whose new fields are invalid twice. | Extract. | Today's statement and transactions published, no new fields, review reason. |
-| SC-27 | FR-09,19,29 | Grocery receipt: total 8.55, gift card 5.00, VISA ****4242 3.55. A card statement with a −3.55 line at the same merchant two days later. | Extract both, reconcile, read October's spending. Correct the gift card to 4.00. | The line matches the receipt and replaces it. October spending is 3.55 (not 8.55 or 12.10), with the receipt's categories scaled to 3.55. After the correction, amount paid is 4.55 with `override` provenance in its trace, The link is kept, and the receipt goes to review with a note that amount paid (4.55) no longer equals the linked charge (3.55). |
+| SC-27 | FR-09,19,29 | Grocery receipt: total 8.55, gift card 5.00, VISA ****4242 3.55. A card statement with a −3.55 line at the same merchant two days later, and an unrelated −8.55 line at the same merchant (another purchase, with no receipt). | Extract both, reconcile, read October's spending. Correct the gift card to 4.00. | The −3.55 line matches the receipt and replaces it, and the −8.55 line is not matched to it. October groceries spending is 12.10: the linked −3.55 line counted once, with the receipt's categories scaled to 3.55, plus the unrelated 8.55 line. The receipt's printed 8.55 is never counted as well. After the correction, amount paid is 4.55 with `override` provenance in its trace, The link is kept, and the receipt goes to review with a note that amount paid (4.55) no longer equals the linked charge (3.55). |
 
 The scenarios are expanded in `test-contract.md`.
 
@@ -277,6 +277,14 @@ The scenarios are expanded in `test-contract.md`.
 - **D15 (2026-10-17).** A gift card is a way of paying. The amount charged to a card, and the amount that counts
   against budgets and spending, is the printed total minus gift card deductions. The printed total stays on the
   record and is shown beside it (FR-09). This is the one deliberate exception to D12.
+- **D16 (2026-10-18, from plan review E-1).** SC-24 uses fixture P-sept: fixture P with its period moved to 2026-09-01 –
+  2026-09-14 and its pay date to 2026-09-19, so the paycheck falls in the September month being read. Fixture P keeps
+  its June dates for SC-20 and SC-21. The SC-22 and SC-23 fixtures don't change.
+- **D17 (2026-10-18, from plan review E-2).** SC-27's statement has an unrelated −8.55 line beside the −3.55 one, as the
+  test contract says. That proves the receipt matches its amount paid and not its printed total. October groceries are
+  12.10 (3.55 linked + 8.55 unrelated). The earlier wording "(not 8.55 or 12.10)" meant the receipt's printed total
+  must not be counted on top of its charge. That rule is unchanged.
+- These amendments were made in place before any implementation and need a new spec approval.
 
 **Domain risk candidates (not yet in scope; accept or reject each):**
 1. **Mixed-purpose receipts.** Examples: a gas-station convenience store run that is mostly snacks, fuel points on

@@ -25,8 +25,8 @@ directly (`from ..core.money import format_minor`). `__main__.py` is the launche
 Outside `src/`:
 - `tests/`: flat pytest modules, synthetic data only;
 - `evals/`: the eval suite ([evals](evals.md));
-- `scripts/`: `db_checks.py`, `loopback_stress.py` and `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
-  [taxes](taxes.md#the-engines-worksheets));
+- `scripts/`: `db_checks.py`, `loopback_stress.py`, `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
+  [taxes](taxes.md#the-engines-worksheets)) and `test_instance.py` (the agent test instance, below);
 - `docs/`.
 
 ## Architecture rules
@@ -106,7 +106,8 @@ amounts, merchant names, file names or document text. Use `log_failure` for fail
 - **Decision models** (`test_decisions.py`) use the same synthetic server. Set `local_model["decide"]` to a function
   `(path, body) -> reply` that answers `/v1/responses` and `/v1/systemone`. Requests to those paths are kept in
   `local_model["decisions"]`, apart from chat requests.
-- **Opt-in tests.** There are no custom pytest markers; opt-in tests use `skipif` on those variables.
+- **Opt-in tests** use `skipif` on those variables. The one custom marker, `lmstudio`, is deselected by default
+  ("Agent test instance").
 - **Ledger health.** After a scenario that changes the ledger, call `conftest.assert_ledger_healthy(store)`.
 - **Run what you touched.** When changing a component, run that component's tests rather than the whole suite.
 - **Connection resets are bugs.** A connection reset in a loopback test is a bug now, not noise (see the next section).
@@ -145,11 +146,104 @@ Fixed 2026-10-01. For a long time a rare test failed with "Local model connectio
     exhausted Windows' client ports at about 16,000 requests in 2 minutes (WinError 10048).
   - A client that never closes gets an ordinary close after 10 s.
   - The GPU host relay (`RelayServer`) and the tests' synthetic model server both use it. FastAPI/uvicorn, the app's
-    own server, keeps connections alive and isn't affected. Tests: `tests/test_http_server.py`.
+    own server, keeps connections alive, so browsers aren't affected; a client that sends `Connection: close` still is
+    ([open work](open-work.md#app-server)). Tests: `tests/test_http_server.py`.
 - **Checking it again:** `.\.venv\Scripts\python.exe scripts\loopback_stress.py --requests 20000 --response-bytes 40000`
   must report 0 failures. Use `--mode app` to go through `request_completion`. `--backlog 5` reproduces the old listen
   queue.
 - **Any new HTTP server in this project,** test or product, should subclass `GracefulHTTPServer`.
+
+## Agent test instance
+
+A synthetic Home Manager that AI agents explore in a browser (Playwright, `playwright-cli`) and report on, without
+going near real data. Spec and plan: `specs/agent-test-instance/`, `plans/agent-test-instance/`. Agents follow the
+`agent-testing` skill (`.claude/skills/agent-testing/SKILL.md`).
+
+```powershell
+python scripts/test_instance.py reset    # rebuild the instance with the synthetic household (refused while it runs)
+python scripts/test_instance.py start    # serve it in the background; writes <root>/session.json
+python scripts/test_instance.py verify   # PASS/FAIL/WARN per check; --fresh also compares seed counts exactly
+python scripts/test_instance.py stop
+python scripts/test_instance.py finding ...   # record one finding in docs/bugs.md (below)
+```
+
+**Settings.** By flag or environment variable: `--root` / `HM_TEST_ROOT` (default `tests/.tmp`, gitignored), `--port`
+/ `HM_TEST_PORT` (8775), `--lmstudio` / `HM_TEST_LMSTUDIO` (`http://127.0.0.1:1234/v1`). `reset` also takes
+`--vision-model` / `--reasoning-model` (or `HM_TEST_VISION_MODEL` / `HM_TEST_REASONING_MODEL`); without them it keeps the
+previous instance's model IDs, and with none at all `verify` warns until you pick models in Settings › Models. Test-only
+variables: `HM_TEST_PROTECTED` (extra protected folders, `os.pathsep`-separated), `HM_TEST_SEED_FAIL` (break one seed
+step), `HM_TEST_SERVE_FAIL`, `HM_TEST_FINDING_DATE`. `tests/environment.json` names the same commands.
+
+**The instance folder.**
+- `.hm-test-instance` is the sentinel. `reset` deletes a root only if it is missing, holds the sentinel, or is
+  exactly `tests/.tmp`. Every other command refuses a root without it.
+- `control/` and `library/` hold the app's settings and the seeded library: one profile, "Test", at `library/`.
+- `uploads/` has one synthetic document per kind (see its `README.txt`), including a prompt-injection receipt.
+- `evidence/` holds agents' screenshots. `reset` keeps it, so the screenshots cited in `docs/bugs.md` stay valid.
+- `seed.json` has the seed date and manifest (counts per section and named values). `session.json` has `base_url`,
+  `link` (with a fresh token on every `start`), `seed_date`, `seed_counts` and the LM Studio address and models.
+- `server.pid` (pid plus process creation time, so a reused pid is never signalled), `server.log`,
+  `.seed-incomplete` while seeding, and `stop.request`, which `stop` writes to shut the server down from any console.
+- The app log is `control/logs/home-manager.log`.
+- A root that overlaps a protected folder, in either direction, is refused before any filesystem call.
+
+**The seed.** `tests/seed_household.py` `seed(manager, root, model, fail_step=None)` is the one household seed, used
+by `reset`, `ui_shots.py` and the browser tests (`test_one_household_seed` checks this). It runs named steps
+(`seed_ledger` … `seed_settings`) through the synthetic model server, then `reset` points every model setting at the
+LM Studio address. A failing step is named (`seed step failed: <step>`), and `start` refuses a half-seeded instance.
+Seeded taxes depend on Engine 1 covering this year (`taxes_seeded` in the manifest).
+
+**Test mode** (`core/sandbox.py`). Only `scripts/test_instance.py serve` turns it on; `python -m home_manager` never
+does, and nothing reads an environment variable for it. While it is on:
+- **Paths.** `core/paths.py` `local_absolute`, which every path input goes through, refuses anything under
+  `P:\Finances`, `P:\EvalCorpus` or `%LOCALAPPDATA%\HomeManager`, and anything outside the instance root. The check
+  is lexical, before any filesystem call, so 8.3 short names and links are refused without being touched.
+  `separate_folder` lets folders under the instance root sit inside the checkout (the default root does).
+- **Network.** A process-wide audit hook refuses `socket.getaddrinfo` and `socket.connect` for any host that isn't
+  loopback, and logs `test instance: refused outbound host=<host>` once per host. Prices, exchange rates, item lookups,
+  web search and family sync then show their existing offline states. It covers this process only: the app's child
+  processes (the OpenTax and Tax-Calculator runners, the PDF reader) make no network calls today, and a new child that
+  needs the network must be checked separately. It handles TCP and name lookups, not UDP `sendto`.
+- **Models and the hub.** The model computer refuses tailnet addresses (every other model setting already accepts
+  only `127.0.0.1`), and the family hub never asks for the tailnet address, so it stays off.
+- **Status.** `GET /api/settings` reports `test_instance: {"paths": bool, "egress": bool}`, which probes each guard
+  instead of reporting a flag. It is `null` in the live app.
+- **The marker.** The shell shows `#test-instance-marker`, an amber "Test data" pill ("Test" on the 64 px sidebar),
+  at every width. Agents check it before every screenshot and finding.
+
+**`verify`** checks that the server answers, that the seed is complete (exact counts only with `--fresh`, since agents'
+changes move them), and that both guards report true. It warns, and still exits 0, when LM Studio doesn't answer, when
+no model IDs are set, or when something listens on 8765. The developer's app may share LM Studio with the instance, so
+don't run agent uploads while it is scanning.
+
+**Findings.** `finding` is the only way agents write to `docs/bugs.md`. It takes `--url` (the page's current URL),
+`--route`, `--symptom`, `--kind bug|friction|console-error`, `--severity low|medium|high`, `--steps`, `--expected`,
+`--actual`, `--screenshot` (a file in `<root>/evidence/`) and `--agent`.
+- **Refusals.** It refuses with exit 2 when a field is missing or the session isn't on `http://127.0.0.1:<port>`. It
+  also refuses when the target isn't `docs/bugs.md` or a file in the root, when the page's origin isn't the session's
+  `base_url`, or when that server doesn't report test mode. It refuses with exit 3 when `<target>.lock` is held for
+  10 s or the file changed while it was writing.
+- **The screenshot on refusal.** Every refusal deletes the screenshot, but only one inside `evidence/`. A screenshot
+  elsewhere is refused and left alone.
+- **Where it writes.** Only in the `## Agent findings` section, from its header to the next `## ` line or the end. It
+  adds the header if it is missing and keeps the file's newline style. The bytes before the section never change, and
+  any text after it is kept.
+- **Duplicates.** Each entry starts with `<!-- finding:KEY -->`, where KEY comes from the route and the lower-cased,
+  whitespace-collapsed symptom. The same key on a later date adds `- Seen again: DATE (seed DATE) — evidence: <file>`.
+  On the same date it adds nothing.
+- **Field text** can't end the section or forge a marker: `<!--` and lines starting `#` are escaped.
+
+**Tests.**
+- `test_agent_guards.py` covers the guards in-process, with real-path spies that raise and a `no_egress` socket
+  double that never calls the real function for an outside host.
+- `test_agent_instance.py` covers the lifecycle in subprocesses at a `tmp_path` root on a free port, with
+  `LOCALAPPDATA` pointed at an empty decoy. It never uses `tests/.tmp` or 8775. A restored copy of one template reset
+  keeps it fast.
+- `test_agent_instance_browser.py` covers the marker, every route, and the refusals on screen.
+- `test_agent_findings.py` covers `finding`, against a copy of `docs/bugs.md`.
+- `test_sc06_real_lmstudio` uses the real LM Studio. It is marked `lmstudio` and deselected by default
+  (`addopts = -m "not lmstudio"`). Run it with `pytest -m lmstudio`. Any other `-m` on the command line replaces the
+  default, so `-m "not slow"` would bring it back.
 
 ## Manual checks
 

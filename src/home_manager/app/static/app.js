@@ -153,6 +153,8 @@ async function loadSettings() {
   const settings = await api("/api/settings");
   configured = settings.configured; familyMode = Boolean(settings.family);
   document.body.classList.toggle("family-mode", familyMode);
+  const testInstance = Boolean(settings.test_instance);  // Only scripts/test_instance.py serves this (core/sandbox.py).
+  document.body.classList.toggle("test-instance", testInstance); $("test-instance-marker").hidden = !testInstance;
   setBusy(settings); renderActivity(settings.activity); renderSession(settings); renderProfiles(settings);
   $("managed").value = settings.managed_directory;
   inboxDirectory = settings.inbox_directory || "";

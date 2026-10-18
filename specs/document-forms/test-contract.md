@@ -50,6 +50,9 @@ employer SYNTH WORKS. Its year-to-date column is exactly 13 periods:
 Also printed: `PTO BALANCE 56.00 HRS`, `DIRECT DEPOSIT CHECKING ****1234 1,500.00`, `SAVINGS ****9876 412.34`,
 `SSN XXX-XX-1234`, `EMPLOYEE ID 445566`.
 
+**Fixture P-sept** (used only by SC-24, decision D16): fixture P-table with period 2026-09-01 to 2026-09-14 and pay date
+2026-09-19. Every amount, line and layout is the same as P.
+
 Two layouts of P are used:
 - **P-table:** a validated vision table with headings `Description | This period | Year to date`.
 - **P-flat:** flat text with no table, in sections: a `THIS PERIOD` heading line followed by `GROSS PAY 2,500.00` …
@@ -369,10 +372,14 @@ Evidence: `pytest tests/test_statement_forms.py -k sc23`
 
 ## SC-24: counting is unchanged
 Requirement IDs: FR-29
-Initial state: the SC-21, SC-22 and SC-23 records in one library, with the bank statement released for reconciliation.
+Initial state: the pay stub from fixture P-sept, extracted with SC-21's correct stubs and verified, plus the SC-22 and
+SC-23 records, in one library, with the bank statement released for reconciliation.
 Expected:
-- September 2026 money in and spending equal what today's rules give from the fixture rows: the paycheck counted at
-  net 1,912.34, the bank's transactions, and the card purchase −812.45 net of its 20.00 refund.
+- September 2026 money in and spending equal what today's rules give from the fixture rows:
+  - the paycheck, paid 2026-09-19, counted at net 1,912.34. It counts on its own because the bank's
+    `PAYROLL +2,500.00` is not its net pay, so no deposit link forms (today's rule, `ledger.py` `STANDALONE_INCOME`);
+  - the bank's transactions;
+  - the card purchase −812.45 net of its 20.00 refund.
 - Interest 0.42 is counted only through its transaction row, if one exists, and never from the new summary field.
 - The account balance is 2,299.50.
 - The values are written into the test from this arithmetic. A second assertion runs the same figures with the
@@ -465,6 +472,8 @@ Also run the existing pay stub and table suites (`tests/test_vision_tables.py`, 
 ## Gaps in the spec
 
 Resolved by the user on 2026-10-17: G1 is D6, G2 is D7, G3 is D8 and G4 is D9.
+Resolved on 2026-10-18 from plan review: the SC-24 date mismatch is D16 (fixture P-sept), and the SC-27 spec/contract
+mismatch is D17 (the contract's −8.55 line and 12.10 stand; the spec now matches).
 
 Still open:
 - **G5, FR-17.** Covered by review only (SC-16).

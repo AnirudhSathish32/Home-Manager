@@ -137,6 +137,14 @@ and link here for what isn't. When an item is built, remove it from this list an
   - **Internal wording** in the document page's default tab and in Processing titles.
   - **Not built:** a first-run welcome, a `?` shortcut overlay, a non-modal drawer, and skeletons.
 
+## App server
+
+- **Uvicorn and `Connection: close` clients** (found 2026-10-18 while building the agent test instance): a client that
+  sends `Connection: close` (curl, urllib) asks uvicorn to close right behind a multi-segment reply such as
+  `index.html`, which hits the Windows loopback segment loss ([development](development.md#windows-loopback-resets)):
+  a 19 s stall, then a reset. Browsers and the project's own clients keep connections alive and aren't affected;
+  `scripts/test_instance.py` uses a keep-alive client that closes first.
+
 ## Database
 
 These are left over from the 2026-09-30 audit ([development](development.md#database-checks)):

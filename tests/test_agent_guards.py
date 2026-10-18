@@ -363,9 +363,9 @@ def refusals(caplog):
     return [record.getMessage() for record in caplog.records if record.getMessage().startswith(REFUSED_LOG)]
 
 
-def test_sc05_outbound_calls_refused(sandboxed, no_egress, caplog):
-    caplog.set_level(logging.WARNING, logger="home_manager.sandbox")
-    client, manager = sandboxed.client, sandboxed.manager
+def sc05_setup(client, manager):
+    """What SC-05 needs and the household seed lacks: crypto prices and exchange rates on, a crypto account holding BTC,
+    and a proposed receipt whose one line has a valid GTIN. Returns (crypto account id, receipt id)."""
     store = manager.store
     household = client.get("/api/settings").json()["household"]
     assert client.put("/api/household-settings", json={**household, "fetch_crypto_prices": True, "fetch_exchange_rates": True}).status_code == 200
@@ -384,6 +384,14 @@ def test_sc05_outbound_calls_refused(sandboxed, no_egress, caplog):
          "items": [{"description": "PENCILS", "product_code": GTIN, "quantity": "1", "unit_price_minor": 299, "line_total_minor": 299,
                     "discount_minor": None, "locator": {"line_ids": ["line-1"]}}]},
         {"document_id": doc["id"], "blob_hash": doc["current_hash"], "source_key": "shop.png", "run_id": "shop.png"}, "proposed")["id"]
+    return wallet["id"], receipt_id
+
+
+def test_sc05_outbound_calls_refused(sandboxed, no_egress, caplog):
+    caplog.set_level(logging.WARNING, logger="home_manager.sandbox")
+    client, manager = sandboxed.client, sandboxed.manager
+    store = manager.store
+    _, receipt_id = sc05_setup(client, manager)
     assert manager.reasoning_config.model == ""
     before = counts(store)
     for _ in range(2):  # The retry gives the same result.

@@ -11,6 +11,9 @@ dist/
 .runtime/
 private-data/
 tests/.tmp/
+# Left behind only if scripts/test_instance.py finding crashes mid-write
+docs/bugs.md.lock
+docs/bugs.md.pending
 *.log
 
 .claude/settings.local.json

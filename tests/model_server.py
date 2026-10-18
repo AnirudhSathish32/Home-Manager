@@ -93,7 +93,10 @@ def start_model_server():
             if "error_body" in state:
                 self.respond(state["status"], json.dumps({"error": state["error_body"]}).encode(), "text/event-stream")
                 return
-            output = state["outputs"].pop(0) if state.get("outputs") else state["output"]
+            # by_schema: {json_schema name: [replies]}, popped before the ordered outputs, so a test needn't fix the call order.
+            name = (body.get("response_format") or {}).get("json_schema", {}).get("name")
+            keyed = state.get("by_schema", {}).get(name)
+            output = keyed.pop(0) if keyed else state["outputs"].pop(0) if state.get("outputs") else state["output"]
             raw = state["raw_outputs"].pop(0) if state.get("raw_outputs") else json.dumps(output)
             event = {"choices": [{"finish_reason": state["finish_reason"],
                                   "delta": {"content": raw}}]}

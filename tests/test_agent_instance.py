@@ -35,7 +35,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_instance.py"
 PYTHON = sys.executable
 # Everything that seeds a whole household: each imports seed from seed_household and defines no seed of its own.
-SEED_CALLERS = [ROOT / ".claude" / "skills" / "ui-redesign" / "scripts" / "ui_shots.py", SCRIPT]
+SEED_CALLERS = [ROOT / ".claude" / "skills" / "ui-redesign" / "scripts" / "ui_shots.py", SCRIPT,
+                ROOT / "tests" / "test_agent_instance_browser.py"]
 SEED_FUNCTIONS = {"seed", "seed_ledger", "seed_today", "seed_money", "seed_settings"}
 SECTIONS = ("accounts", "transactions", "documents", "to_check", "investments", "plans", "items", "recurring")
 MODELS = ["--vision-model", "synthetic-vision", "--reasoning-model", "synthetic-reasoning"]
@@ -318,7 +319,7 @@ def test_sc01_reset_start_verify(fresh, tmp_path):
     environment = json.loads((ROOT / "tests" / "environment.json").read_text(encoding="utf-8"))
     for name in ("start", "stop", "reset", "verify"):
         assert environment["commands"][name] == f"python scripts/test_instance.py {name}"
-    assert environment["models"] == {"mode": "lmstudio", "live_inference_opt_in": True}
+    assert environment["models"] == {"mode": "live_opt_in", "live_inference_opt_in": True}  # The harness preflight's name for LM Studio.
     script = load_script()
     assert (script.DEFAULT_ROOT, script.DEFAULT_PORT, script.DEFAULT_LMSTUDIO) == (ROOT / "tests" / ".tmp", 8775, "http://127.0.0.1:1234/v1")
     args = script.parse(["start", "--root", str(tmp_path / "x"), "--port", "9999", "--lmstudio", "http://127.0.0.1:1/v1"])
@@ -472,8 +473,11 @@ def test_commands_refuse_root_without_sentinel(tmp_path, lmstudio):
         (folder / name).write_bytes(data)
     stamps = {name: (folder / name).stat().st_mtime_ns for name in decoys}
     harness = Harness(folder, tmp_path / "fake-localappdata", lmstudio["config"].base_url)
-    for command in ("start", "stop", "verify"):
-        result = harness.run(command)
+    finding = ["finding", "--screenshot", str(folder / "evidence" / "x.png"), "--target", str(folder / "bugs.md"), "--url", "http://127.0.0.1:1/",
+               "--route", "#/home", "--symptom", "s", "--kind", "bug", "--severity", "low", "--steps", "s", "--expected", "e",
+               "--actual", "a", "--agent", "agent"]
+    for command in (["start"], ["stop"], ["verify"], finding):
+        result = harness.run(*command)
         assert result.returncode == 2 and "not a test instance folder" in result.stderr, (command, result.stderr)
     for name, data in decoys.items():
         assert (folder / name).read_bytes() == data and (folder / name).stat().st_mtime_ns == stamps[name]
