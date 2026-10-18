@@ -77,6 +77,8 @@ P_LINES = [("Regular", "earnings", "regular_pay", "2,500.00", "32,500.00"),
            ("Medicare", "tax", "medicare", "36.25", "471.25"),
            ("GA state tax", "tax", "state_income_tax", "96.41", "1,253.33"),
            ("401(k)", "pre_tax", "retirement_pretax", "50.00", "650.00")]
+# P-flat prints one amount per line, so the 401(k) line's own digits are left out of its printed label.
+FLAT_LABELS = {"401(k)": "PRE-TAX RETIREMENT"}
 P_GROSS, P_NET = ("2,500.00", "32,500.00"), ("1,912.34", "24,860.42")
 P_TAXES, P_DEDUCTIONS = "537.66", "50.00"
 P_EXTRAS = ["PTO BALANCE 56.00 HRS", "DIRECT DEPOSIT CHECKING ****1234 1,500.00", "SAVINGS ****9876 412.34", "SSN XXX-XX-1234",
@@ -104,12 +106,17 @@ def p_flat(period=("2026-06-15", "2026-06-28"), pay_date="2026-07-03", frequency
         lines += ["REGULAR", P_LINES[0][3], P_LINES[0][4]]
     lines.append("THIS PERIOD")
     for name, _, _, current, _ in P_LINES[(1 if regular_unlabelled else 0):]:
-        lines.append(f"{name.upper()} {current}")
+        lines.append(f"{flat_label(name)} {current}")
     lines += [f"GROSS PAY {P_GROSS[0]}", f"NET PAY {P_NET[0]}", "YEAR TO DATE"]
     for name, _, _, current, ytd in P_LINES[(1 if regular_unlabelled else 0):]:
-        lines.append(f"{name.upper()} {current if ytd_equal else ytd}")
+        lines.append(f"{flat_label(name)} {current if ytd_equal else ytd}")
     lines += [f"GROSS PAY {P_GROSS[0] if ytd_equal else P_GROSS[1]}", f"NET PAY {P_NET[0] if ytd_equal else P_NET[1]}"]
     return lines + list(extra) + P_EXTRAS
+
+
+def flat_label(name):
+    """How P-flat prints a fixture P line's description."""
+    return FLAT_LABELS.get(name, name.upper())
 
 
 def section_line(lines, section, text):

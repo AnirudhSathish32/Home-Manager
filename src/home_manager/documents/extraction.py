@@ -39,7 +39,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v22-native-cells"
+EXTRACTION_VERSION = "typed-extraction-v23-document-forms"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -155,6 +155,17 @@ PAY_GROUPS = ("earnings", "pre_tax", "tax", "post_tax", "employer_paid")
 PAY_CATEGORIES = ("regular_pay", "overtime", "bonus", "commission", "other_earnings", "federal_income_tax", "state_income_tax", "local_tax",
                   "social_security", "medicare", "state_disability", "retirement_pretax", "retirement_roth", "health", "dental", "vision",
                   "hsa", "fsa", "life_insurance", "other")
+# Pay stub summary amounts read with the row label and column heading they were printed under (FR-20).
+PAY_VALUES = ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions")
+# This period never takes a year-to-date or annual amount (FR-22): (field, its year-to-date field).
+PAY_GUARDED = (("gross_pay", "gross_pay_ytd"), ("net_pay", "net_pay_ytd"), ("taxes", None), ("deductions", None))
+# What each is called where it is corrected (finance/ledger.py CORRECTABLE), so correcting it clears its notes.
+CORRECTION_LABELS = {"gross_pay": "Gross pay", "gross_pay_ytd": "Gross pay year to date", "net_pay": "Net pay",
+                     "net_pay_ytd": "Net pay year to date", "taxes": "Taxes this period", "deductions": "Deductions this period"}
+YEAR_WORDS = re.compile(r"\b(ytd|year[\s-]*to[\s-]*date|annual(?:ly)?|yearly|salary|per\s+year)\b", re.IGNORECASE)
+# Days in one pay period, by paychecks a year: the first period of a year starts within this many days of January 1.
+PERIOD_DAYS = {52: 7, 26: 14, 24: 15, 12: 31}
+GUARD_RULES = {"a": "reads as year to date or annual", "b": "is larger than its year to date", "c": "equals its year to date mid-year"}
 
 
 class Value(StrictModel):
@@ -169,6 +180,21 @@ class Value(StrictModel):
         if self.status != "proposed" and self.value is not None:
             raise ValueError("Ambiguous or missing values must be null.")
         return self
+
+
+class PayLabel(StrictModel):
+    """A printed row label or column heading a pay amount was read under, cited on its own (FR-20)."""
+    text: str = Field(min_length=1, max_length=200)
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
+
+
+ROW_LABEL = "The printed label of the row this amount is on, such as Gross Pay, cited; null when none is printed."
+COLUMN_HEADING = "The printed column heading this amount is under, such as Current or YTD, cited; null when none is printed."
+
+
+class PayValue(Value):
+    row_label: PayLabel | None = Field(default=None, description=ROW_LABEL)
+    column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
 
 
 class Classification(StrictModel):
@@ -258,6 +284,10 @@ class PayLine(StrictModel):
     current: str | None = Field(max_length=50, description="This pay period's amount as printed, or null.")
     ytd: str | None = Field(max_length=50, description="The year-to-date amount as printed, or null.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
+    current_row_label: PayLabel | None = Field(default=None, description=ROW_LABEL)
+    current_column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
+    ytd_row_label: PayLabel | None = Field(default=None, description=ROW_LABEL)
+    ytd_column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
 
 
 class PayRowClass(StrictModel):
@@ -337,7 +367,8 @@ class Reward(StrictModel):
 OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice_number", "bill_to", "invoice_total",
                    "invoice_subtotal", "invoice_tax", "payments_received", "balance_due", "payment_status"}
 HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", __base__=StrictModel,
-                                    **{name: (Value, Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
+                                    **{name: (PayValue if kind == "paystub" and name in PAY_VALUES else Value,
+                                              Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
                                        for name in fields})
                  for kind, fields in HEADERS.items()}
 Items = create_model("Items", __base__=StrictModel, items=(list[Item], Field(max_length=MAX_ITEMS)))
@@ -359,7 +390,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
-SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
+SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
                                                                        PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
                                                                        Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
@@ -566,6 +597,15 @@ def cell_amount(cell):
     return number
 
 
+def cell_labels(table, source, column):
+    """(row label, column heading) of a validated table cell: its row's first cell and its column's heading, each cited
+    from its own line (FR-20). The model's own labels are not used where a cell was copied."""
+    def label(cell):
+        return PayLabel(text=cell.quote.strip(), evidence=[EvidenceQuote(line_id=cell.line_id, quote=cell.quote)]) if cell.quote.strip() else None
+    heading = next((label(row.cells[column]) for row in table.header_rows if column is not None and row.cells[column].quote.strip()), None)
+    return (label(source.cells[0]) if column != 0 else None), heading
+
+
 def anchor_paystub(header, rows, tables, notes, source_lines=None):
     """Copy paystub money from validated cells after the model classifies cited rows."""
     by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
@@ -603,7 +643,8 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                     if getattr(table, "source", None) == "pdf_text":
                         from .native_values import reference as native_reference
                         reference[name] = native_reference(cell)
-                item = item.model_copy(update={name: amount})
+                row_label, heading = cell_labels(table, source, column) if amount is not None else (None, None)
+                item = item.model_copy(update={name: amount, f"{name}_row_label": row_label, f"{name}_column_heading": heading})
             rows[index - 1] = item
         elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence):
             rows[index - 1] = item.model_copy(update={"current": None, "ytd": None})
@@ -622,10 +663,11 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
             columns = paystub_columns(table)
             column = columns[0 if column_name == "current" else 1] if columns else None
             amount = cell_amount(source.cells[column]) if column is not None else None
+            row_label, heading = cell_labels(table, source, column) if amount is not None else (None, None)
             header = header.model_copy(update={name: field.model_copy(update={"value": amount,
                                     "status": "proposed" if amount is not None else "ambiguous",
                                     "evidence": [EvidenceQuote(line_id=source.line_id, quote=source.cells[column].quote)]
-                                    if amount is not None else field.evidence})})
+                                    if amount is not None else field.evidence, "row_label": row_label, "column_heading": heading})})
             if amount is None:
                 notes.append(f"{name.replace('_', ' ').capitalize()} has no unambiguous {column_name} source cell.")
         elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence):
@@ -952,8 +994,9 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency):
-    """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency."""
+def normalize(kind, header, rows, currency, lines=None):
+    """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
+    lines read, for checks of values cited outside the generic citation check (a pay amount's labels)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
     record["locator"] = locator(*(field.evidence for field in fields.values() if field.status == "proposed"))
@@ -1047,7 +1090,7 @@ def normalize(kind, header, rows, currency):
     elif kind == "bill":
         bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
-        paystub_lines(record, rows, money, issues, currency, total)
+        paystub_lines(record, rows, money, issues, currency, total, fields, {line.id: line.text for line in lines or []})
     elif kind == "investment_statement":
         # The kind (401(k), HSA, CD, …) is told apart only by printed words, never guessed; the user can change it.
         record["investment_kind"] = printed_kind(f"{record.get('account_name') or ''} {record.get('institution') or ''}")
@@ -1305,13 +1348,78 @@ def pay_frequency(printed, start, end):
     return None
 
 
-def paystub_lines(record, rows, money, issues, currency, total):
+def cited_label(label, what, line_text, issues):
+    """A printed row label or column heading as a stored detail, kept only when its text is in its own quote and that
+    quote is in its cited line (FR-20); otherwise dropped with a note. It never fails the document."""
+    if label is None:
+        return None
+    text = " ".join(label.text.split())
+    if not text or not any(text in " ".join(cite.quote.split()) for cite in label.evidence) or any(
+            cite.quote not in line_text.get(cite.line_id, "") for cite in label.evidence):
+        issues.append(f"{what} was not printed where it was cited.")
+        return None
+    return {"status": "proposed", "text": text[:200], "minor": None, "unit": None, "locator": locator(label.evidence)}
+
+
+def first_pay_period(record):
+    """True when the pay period starts within the first pay period of its year (the pay date's year, else the period's),
+    False when it starts later, None when the period start or how often it is paid isn't known (FR-22 c). A period that
+    starts in December before a January pay date counts as first."""
+    start, days = record.get("period_start"), PERIOD_DAYS.get(record.get("pay_frequency"))
+    if not start or not days:
+        return None
+    year = int((record.get("pay_date") or start)[:4])
+    return date.fromisoformat(start) <= date(year, 1, 1) + timedelta(days=days - 1)
+
+
+def this_period_guards(record, slots, issues):
+    """FR-22: a this-period amount is set to null and ambiguous, with a reason naming the rule, both values and the cited
+    lines, when (a) its row label, column heading or cited quote reads as year to date or annual, (b) it is larger than
+    its year to date, or (c) it equals its year to date after the year's first pay period. With the period or frequency
+    unknown, equality is kept with a reason instead. It is never filled in with a calculated value. slots: one per
+    amount, {"key", "label", "value", "ytd", "words", "line_ids", "clear"}; returns {key: guard result}."""
+    first, currency, fired = first_pay_period(record), record["currency"], {}
+
+    def shown(minor):
+        return format_minor(minor, currency) if currency else str(minor)
+    for slot in slots:
+        value, ytd = slot["value"], slot["ytd"]
+        if value is None:
+            continue
+        lines = ", ".join(slot["line_ids"])
+        equal = ytd is not None and value != 0 and abs(value) == abs(ytd)
+        rule = ("a" if any(YEAR_WORDS.search(text or "") for text in slot["words"]) else
+                "b" if ytd is not None and abs(value) > abs(ytd) else
+                "c" if equal and first is False else None)
+        if rule is None and equal and first is None:
+            issues.append(f"{slot['label']} {shown(value)} equals its year to date {shown(ytd)} and the pay period isn't known ({lines}); "
+                          "check that it is this paycheck's amount.")
+            continue
+        if rule is None:
+            continue
+        slot["clear"]()
+        compared = (f" (its year to date is {shown(ytd)})" if ytd is not None else "") if rule == "a" else f" {shown(ytd)}"
+        issues.append(f"{slot['label']} {shown(value)} {GUARD_RULES[rule].replace(' mid-year', '')}{compared}"
+                      f"{' mid-year' if rule == 'c' else ''} ({lines}); it was left out. Enter this paycheck's amount with Edit details.")
+        fired[slot["key"]] = {"rule": rule, "value_minor": value, "ytd_minor": ytd, "line_ids": slot["line_ids"]}
+    return fired
+
+
+def quotes_of(text, evidence):
+    """The cited quotes that print an amount: the citation of that one value, not the whole row's."""
+    printed = printed_decimal(text) if text else None
+    return [cite.quote for cite in evidence if printed is not None and printed in decimals_in(cite.quote)]
+
+
+def paystub_lines(record, rows, money, issues, currency, total, fields=None, line_text=None):
     """A pay stub's lines, how often it is paid and where tax is withheld, and its arithmetic checks: earnings add up
     to gross pay, and gross pay less pre-tax deductions, taxes and post-tax deductions is net pay (employer-paid
-    amounts are shown but never deducted). The same checks run on the year-to-date column when every line has one."""
+    amounts are shown but never deducted). The same checks run on the year-to-date column when every line has one.
+    Before them, this period's amounts are guarded against year-to-date and annual figures (this_period_guards)."""
     record["pay_frequency"] = pay_frequency(record.pop("pay_frequency", None), record.get("period_start"), record.get("period_end"))
     state = (record.pop("work_state", None) or "").strip().upper()
     record["work_state"] = state if state in US_STATES else None
+    fields, line_text = fields or {}, line_text or {}
     lines = []
     for index, row in enumerate(rows, 1):
         values = []
@@ -1322,6 +1430,44 @@ def paystub_lines(record, rows, money, issues, currency, total):
         lines.append({"description": " ".join(row.description.split())[:200], "line_group": row.group, "category": row.category,
                       "current_minor": values[0], "ytd_minor": values[1], "locator": locator(row.evidence)})
     record["lines"] = lines
+    # The printed row label and column heading of every pay amount (FR-20), then the FR-22 guards on this period's.
+    labels, slots = {}, []
+    for name in PAY_VALUES:
+        field = fields.get(name)
+        if field is None:
+            continue
+        what = CORRECTION_LABELS[name]
+        found = {key: cited_label(getattr(field, key, None), f"{what} {key.replace('_', ' ')}", line_text, issues) for key in ("row_label", "column_heading")}
+        if any(found.values()):
+            labels[name] = found
+    for name, ytd_name in PAY_GUARDED:
+        field = fields.get(name)
+        if field is None or field.status != "proposed":
+            continue
+        ytd_field = fields.get(ytd_name) if ytd_name else None
+        found = labels.get(name, {})
+        slots.append({"key": name, "label": CORRECTION_LABELS[name], "value": record.get(name + "_minor"),
+                      "ytd": record.get(ytd_name + "_minor") if ytd_name else None,
+                      "words": [*(item["text"] for item in found.values() if item), *(cite.quote for cite in field.evidence)],
+                      "line_ids": list(dict.fromkeys(cite.line_id for cite in [*field.evidence, *(ytd_field.evidence if ytd_field and ytd_field.status == "proposed" else [])])),
+                      "clear": lambda name=name: record.update({name + "_minor": None})})
+    for row, line in zip(rows, lines):
+        details = {}
+        for column in ("current", "ytd"):
+            for key in ("row_label", "column_heading"):
+                details[f"{column}_{key}"] = cited_label(getattr(row, f"{column}_{key}"), f"{'This period' if column == 'current' else 'Year to date'}: "
+                                                         f"{line['description']} {key.replace('_', ' ')}", line_text, issues)
+        line["details"] = {key: item for key, item in details.items() if item}
+        slots.append({"key": f"line:{len(slots)}", "label": f"This period: {line['description']}", "value": line["current_minor"], "ytd": line["ytd_minor"],
+                      "words": [*(item["text"] for key, item in line["details"].items() if key.startswith("current_")), *quotes_of(row.current, row.evidence)],
+                      "line_ids": locator(row.evidence)["line_ids"], "clear": lambda line=line: line.update(current_minor=None), "line": line})
+    by_key = {slot["key"]: slot for slot in slots}
+    guards = this_period_guards(record, slots, issues)
+    for key, result in guards.items():
+        if "line" in by_key[key]:
+            by_key[key]["line"]["details"].update(current_status="ambiguous", guard=result)
+    record["details"] = {key: value for key, value in (("labels", labels), ("guards", {key: value for key, value in guards.items() if "line" not in by_key[key]}))
+                         if value}
     if not lines:  # Only the printed totals: taxes and deductions against gross and net.
         net = total([record["gross_pay_minor"], -(record["taxes_minor"] or 0), -(record["deductions_minor"] or 0)])
         if net is not None and record["net_pay_minor"] is not None and record["taxes_minor"] is not None:
@@ -1716,7 +1862,7 @@ class ExtractionService:
             return record, None
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
-        record, issues = normalize(kind, header, rows, currency)
+        record, issues = normalize(kind, header, rows, currency, lines)
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:

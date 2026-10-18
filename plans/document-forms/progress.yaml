@@ -4,7 +4,7 @@ plan_sha256: 97e5e6496c74af34d051fcd2dcf0f712e7d50326d284881a960226e522f6ea7d
 slices:
   - id: SL-01
     status: done
-    commit: null
+    commit: f7461fa
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py -k \"document_forms or 070\" -q -> 1 passed, 11 deselected"
       - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py tests/test_extraction.py -q -> 38 passed (the by_schema harness leaves the outputs order intact)"
@@ -16,7 +16,26 @@ slices:
       fixture P as P-flat and P-table, bank, card, SC-27 statement) and stub helpers for today's schemas; later slices
       add the new forms' stubs. SC-11's last checkpoint (record view) is SL-07.
   - id: SL-02
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - "Characterization (FR-24), on the tree after SL-01 with none of SL-02's non-test changes: .venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k sc20_e -q -s -> 1 failed; printed 'characterization: verified 3250000 []' (AssertionError: assert 3250000 is None). First pre-change run printed 'needs_review 3250000' with 'Pay line 6 has multiple amounts…': fixture P-flat printed '401(K) 50.00' (two numbers), against the plan's one-amount-per-line premise; P-flat now prints that line as 'PRE-TAX RETIREMENT', and the rerun reproduced the defect."
+      - "After: .venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k \"sc20 or version\" -q -> 10 passed (20-a…20-h, 20-e follow-on, SC-15)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_vision_tables.py tests/test_pdf.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 51 passed"
+      - "Extra pay stub suites: test_employers, test_correction_preview, test_paycheck, test_investment_contributions, test_planned_bugfixes, test_evals, test_traces, test_family_routing (+ the four above) -> 128 passed, 1 skipped (opt-in browser); test_tax_family, test_tax_return, test_tax_year, test_withholding, test_plan_tracking, test_bills_ledger -> 39 passed, 1 skipped (opt-in browser). No existing fixture trips a guard (plan assumption holds)."
+      - "ruff check on touched files -> all checks passed; .venv/Scripts/python.exe -m mypy -> no issues in 69 files (documents/ is outside the configured scope)"
+    notes: >-
+      PayLabel and PayValue (Value + row_label, column_heading, defaults null) on the six pay summary amounts; PayLine
+      gains current/ytd row label and column heading. anchor_paystub builds labels from validated cells (row's first
+      cell, the column's header cell) and drops the model's where a cell was copied. normalize takes the transcription
+      lines; cited_label checks label text in its quote and the quote in its line (mask comes with SL-03), else drops it
+      with "<field> row label|column heading was not printed where it was cited." this_period_guards runs in
+      paystub_lines before the arithmetic. Issue texts start with the correction label ("Gross pay 32,500.00 USD equals
+      its year to date 32,500.00 USD mid-year (line-23); …"); rule (a) for a line looks only at the quotes that print its
+      current amount, not the whole row's. income_records.details_json = {labels, guards}; income_lines.details_json =
+      the line's labels, plus current_status/guard when guarded; null when empty. _correct_income_line clears and stores
+      the line's notes (undo restores them); apply_income_line_corrections clears them on a re-read.
+      EXTRACTION_VERSION = typed-extraction-v23-document-forms.
   - id: SL-03
     status: todo
   - id: SL-04

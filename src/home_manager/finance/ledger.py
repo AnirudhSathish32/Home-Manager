@@ -836,15 +836,18 @@ class Ledger:
                 "deductions_minor": record["deductions_minor"], "currency": record["currency"], "review_status": status,
                 "gross_pay_ytd_minor": record.get("gross_pay_ytd_minor"), "net_pay_ytd_minor": record.get("net_pay_ytd_minor"),
                 "work_state": record.get("work_state"), "pay_frequency": record.get("pay_frequency"),
-                "validation_json": json.dumps(record["issues"])})
+                "validation_json": json.dumps(record["issues"]),
+                # Printed labels and guard results (docs/documents.md "Pay stub and statement fields"), null when there are none.
+                "details_json": json.dumps(record["details"]) if record.get("details") else None})
             if written:
                 self.add_evidence(db, "income_record", income_id, source, record["locator"])
                 self.apply_corrections(db, "income_record", income_id)
                 db.execute("DELETE FROM income_lines WHERE income_record_id=?", (income_id,))
                 db.executemany("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json,"
-                               "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                               "details_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                                [(income_id, position, line["description"], line["line_group"], line["category"], line["current_minor"],
-                                 line["ytd_minor"], json.dumps(line["locator"]), now(), now()) for position, line in enumerate(record.get("lines", []), 1)])
+                                 line["ytd_minor"], json.dumps(line["locator"]), json.dumps(line["details"]) if line.get("details") else None, now(), now())
+                                for position, line in enumerate(record.get("lines", []), 1)])
                 self.apply_income_line_corrections(db, income_id)
         return self._published("income_record", income_id, written, lines=len(record.get("lines", [])))
 
@@ -1501,6 +1504,9 @@ class Ledger:
             for row in sorted(rows, key=lambda item: -item["id"]):
                 if row["record_type"] == "income_record" and row["field"].startswith("income_line:"):
                     self._correct_income_line(db, record_id, row["field"], row["previous"], UNDO_REASON)
+                    issues = json.loads(db.execute("SELECT validation_json FROM income_records WHERE id=?", (record_id,)).fetchone()[0])
+                    issues += [issue for issue in json.loads(row["resolved_issues_json"]) if issue not in issues]
+                    db.execute("UPDATE income_records SET validation_json=? WHERE id=?", (json.dumps(issues), record_id))
                     continue
                 if row["record_type"] == "receipt_item":
                     name, position = row["field"].split(":")
@@ -1600,10 +1606,20 @@ class Ledger:
         value, stored = self._correction_value(db, "money", name, text, currency=currency)
         previous = money(matched[column], currency)["decimal"] if matched[column] is not None else None
         db.execute(f"UPDATE income_lines SET {column}=?,updated_at=? WHERE id=?", (value, now(), matched["id"]))
-        db.execute("UPDATE income_records SET updated_at=? WHERE id=?", (now(), income_id))
+        # Notes about this line's amount clear as for other fields; undo puts them back (FR-23).
+        issues = json.loads(db.execute("SELECT validation_json FROM income_records WHERE id=?", (income_id,)).fetchone()[0])
+        label = self.income_line_label(matched, name)
+        resolved = [issue for issue in issues if issue.startswith(label)]
+        db.execute("UPDATE income_records SET validation_json=?,updated_at=? WHERE id=?",
+                   (json.dumps([issue for issue in issues if not issue.startswith(label)]), now(), income_id))
         return db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
                           "VALUES('income_record',?,?,?,?,?,?,?,?)",
-                          (income_id, field, stored, previous, "[]", clean_reason(reason), actor.current(), now())).lastrowid
+                          (income_id, field, stored, previous, json.dumps(resolved), clean_reason(reason), actor.current(), now())).lastrowid
+
+    @staticmethod
+    def income_line_label(line, name):
+        """What a pay line's amount is called in its notes and history: "This period: Regular" or "Year to date: Regular"."""
+        return f"{'This period' if name == 'current' else 'Year to date'}: {line['description']}"
 
     def correct_income_line(self, income_id, position, changes, reason=None):
         if not changes or set(changes) - {"current", "ytd"}:
@@ -1617,17 +1633,23 @@ class Ledger:
         return {**self.record("income_record", income_id), "correction_ids": ids}
 
     def apply_income_line_corrections(self, db, income_id):
-        keys = {key: line["id"] for line, key in self.income_line_keys(db, income_id)}
-        currency = db.execute("SELECT currency FROM income_records WHERE id=?", (income_id,)).fetchone()[0]
+        """Re-apply each pay line's latest correction after a reading; a corrected line's notes stay cleared."""
+        keys = {key: line for line, key in self.income_line_keys(db, income_id)}
+        currency, stored_json = db.execute("SELECT currency,validation_json FROM income_records WHERE id=?", (income_id,)).fetchone()
+        issues = json.loads(stored_json)
         latest = db.execute("SELECT field,value FROM record_corrections c WHERE record_type='income_record' AND record_id=? "
                             "AND field LIKE 'income_line:%' AND id=(SELECT max(id) FROM record_corrections "
-                            "WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)", (income_id,))
+                            "WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)", (income_id,)).fetchall()
         for field, text in latest:
             _, key, name = field.split(":")
             if key in keys and name in ("current", "ytd"):
                 column = "current_minor" if name == "current" else "ytd_minor"
                 value = to_minor(text, currency) if text is not None else None
-                db.execute(f"UPDATE income_lines SET {column}=?,updated_at=? WHERE id=?", (value, now(), keys[key]))
+                db.execute(f"UPDATE income_lines SET {column}=?,updated_at=? WHERE id=?", (value, now(), keys[key]["id"]))
+                label = self.income_line_label(keys[key], name)
+                issues = [issue for issue in issues if not issue.startswith(label)]
+        if latest:
+            db.execute("UPDATE income_records SET validation_json=? WHERE id=?", (json.dumps(issues), income_id))
 
     def correct_item(self, receipt_id, position, price, reason=None):
         """Keep an item price correction by printed position across re-readings (docs/money.md)."""
