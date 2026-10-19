@@ -38,6 +38,33 @@ def product(first_text, second_text, compared_minor, currency, label, recorder=N
     return computed, compared_minor, compared_minor is not None and abs(computed - compared_minor) <= TOLERANCE
 
 
+def fuel(volume_text, price_text, amount_minor, currency, recorder=NULL):
+    """A fuel receipt's volume × price per unit against its fuel amount (FR-07)."""
+    return product(volume_text, price_text, amount_minor, currency, f"{volume_text} × {price_text}", recorder)
+
+
+def unit_line(count_text, unit_price_text, line_minor, currency, recorder=NULL):
+    """A line sold as several units: its printed count × unit price against its line total (FR-09)."""
+    return product(count_text, unit_price_text, line_minor, currency, f"{count_text} × {unit_price_text}", recorder)
+
+
+def dining(subtotal, tax, tip, gratuity, total, currency, recorder=NULL):
+    """A dining receipt's subtotal + tax + tip + included gratuity against its total (FR-08): an included gratuity is part
+    of the sum, never on top of it, and an unprinted tip adds nothing (it isn't 0). None unless subtotal, tax and total
+    are printed."""
+    if None in (subtotal, tax, total):
+        return None
+    recorder.add("Subtotal", subtotal, currency)
+    recorder.add("Tax", tax, currency)
+    for label, amount in (("Gratuity", gratuity), ("Tip", tip)):
+        if amount is None:
+            recorder.step(f"{label} (not printed)", "+", 0, currency, missing=True)
+        else:
+            recorder.add(label, amount, currency)
+    computed = subtotal + tax + (tip or 0) + (gratuity or 0)
+    return computed, total, computed == total
+
+
 def hours_rate(hours_text, rate_text, amount_minor, currency, recorder=NULL):
     """A pay line's hours × rate against its this-period amount (FR-21)."""
     return product(hours_text, rate_text, amount_minor, currency, f"{hours_text} hours × {rate_text}", recorder)

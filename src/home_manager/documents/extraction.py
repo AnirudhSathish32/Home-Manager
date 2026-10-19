@@ -79,7 +79,9 @@ AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balanc
            "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due",
            # A statement's printed details (document forms): money, and rates printed with their % sign.
            "deposits_total", "withdrawals_total", "interest_earned", "fees_total", "apy", "purchase_apr", "cash_advance_apr", "credit_limit",
-           "available_credit"}
+           "available_credit",
+           # A receipt kind's money (document forms).
+           "fuel_amount", "gratuity", "savings_total"}
 # Kinds recorded in the ledger; the rest are read only for filing.
 PUBLISHED = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "investment_statement", "investment_confirmation", "investment_tax_form",
              "loan_document")
@@ -217,11 +219,18 @@ HOURS = "The hours printed for this earning line this period, exactly as printed
 RATE = "The hourly rate printed for this earning line, exactly as printed without a currency symbol (31.25), or null."
 
 
+RECEIPT_KINDS = ("fuel", "dining", "grocery", "general")
+
+
 class Classification(StrictModel):
     document_type: Literal[*DOCUMENT_TYPES]
     evidence: list[EvidenceQuote] = Field(max_length=10)
     issuer: Value
     document_date: Value
+    # Checked in code (receipt_kind), never by problems_in: an unusable kind means general, never a failed document (FR-02).
+    receipt_kind: str | None = Field(default=None, max_length=40, json_schema_extra={"enum": [*RECEIPT_KINDS, None]},
+                                     description="For a receipt only: fuel, dining, grocery or general; null for any other document.")
+    receipt_kind_evidence: list[EvidenceQuote] = Field(default_factory=list, max_length=10)
 
 
 class ReceiptIdentity(StrictModel):
@@ -272,6 +281,24 @@ class Item(StrictModel):
     returned: bool | None = Field(default=None, description="true for an item brought back for a refund (marked RETURN or REFUND, or "
                                                             "printed negative), otherwise false.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
+
+
+class GroceryItem(Item):
+    """A grocery receipt's row: an item priced by weight keeps its printed weight and price per weight (FR-09)."""
+    weight: str | None = Field(default=None, max_length=20, description="The printed weight of an item sold by weight (2.31), or null.")
+    weight_unit: str | None = Field(default=None, max_length=10, description="The printed unit of that weight (lb, kg, oz), or null.")
+    price_per_weight: str | None = Field(default=None, max_length=20, description="The printed price per weight unit (0.59 in @ 0.59/lb), or null.")
+
+
+TENDER_TYPES = ("gift_card", "ebt", "card", "cash", "other")
+
+
+class Tender(StrictModel):
+    """One way a grocery receipt was paid (FR-04): a gift card deduction is a tender, never an item or a discount."""
+    tender_type: Literal[*TENDER_TYPES] = Field(description="gift_card, ebt (EBT or SNAP), card, cash or other, from the printed words.")
+    amount: str | None = Field(max_length=50, description="The amount paid this way, exactly as printed, or null.")
+    last_four: str | None = Field(max_length=30, description="The card's last four digits as printed, or null; never more.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
 
 
 class Transaction(StrictModel):
@@ -411,8 +438,34 @@ HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", _
                                               Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
                                        for name in fields}, **DETAIL_FIELDS.get(kind, {}))
                  for kind, fields in HEADERS.items()}
+# Each receipt kind's form: the receipt summary plus its own printed fields, every one optional (FR-03, FR-04). A general
+# receipt keeps today's form.
+MISSING_VALUE = Value(value=None, status="missing", evidence=[])
+KIND_FIELDS = {"fuel": {name: (Value, MISSING_VALUE) for name in ("volume", "volume_unit", "price_per_unit", "fuel_grade", "pump_number", "fuel_amount")},
+               "dining": {name: (Value, MISSING_VALUE) for name in ("gratuity_included", "gratuity", "party_size", "server", "table")},
+               "grocery": {"savings_total": (Value, MISSING_VALUE), "tenders": (list[Tender], Field(default_factory=list, max_length=10))}}
+RECEIPT_FORMS = {kind: create_model(f"Receipt{kind.title()}Summary", __base__=HEADER_MODELS["receipt"], **fields) for kind, fields in KIND_FIELDS.items()}
+GroceryItems = create_model("GroceryItems", __base__=StrictModel, items=(list[GroceryItem], Field(max_length=MAX_ITEMS)))
+KIND_LABELS = {
+    "fuel": " This is a fuel receipt. volume: the gallons or litres sold, exactly as printed with every decimal; volume_unit: the printed "
+            "unit word (GAL, GALLON, L, LITRE); price_per_unit: the printed price per gallon or litre with every decimal; fuel_grade: the "
+            "printed grade (REG UNL, PREMIUM, DIESEL); pump_number: the pump's printed number; fuel_amount: the fuel sale's printed amount.",
+    "dining": " This is a dining receipt. gratuity_included: the printed words of a gratuity or service charge added to the bill "
+              "(GRATUITY 18% INCLUDED); gratuity: its printed amount; tip: only a tip amount written or printed on the tip line, missing "
+              "when that line is blank; party_size: the printed number of guests; server and table: as printed.",
+    "grocery": " This is a grocery receipt. savings_total: the printed member or loyalty savings total; tenders: each way it was paid "
+               "(gift_card, ebt for EBT or SNAP, card, cash, other) with its printed amount and the card's last four digits only."}
+KIND_ROWS = {
+    "fuel": " The fuel sale is one item: its grade as description, the fuel amount as line_total, citing its volume and amount lines. "
+            "Never list the pump number, the volume or the price per gallon as items of their own. A car wash or store goods are their own items.",
+    "dining": " A tip, gratuity or service charge is never an item.",
+    "grocery": " An item sold by weight gives weight, weight_unit and price_per_weight as printed (BANANAS 2.31 lb @ 0.59/lb 1.36). A line "
+               "sold as several units gives quantity, the printed count, and unit_price (2x CHIPS @ 2.00 4.00). Bottle deposits, bag fees "
+               "and member or loyalty savings are rows of their own, savings negative. Never list a gift card, EBT or any other payment as an item."}
 # The fields document forms added to each schema, left out together when only they fail validation twice (FR-14).
-NEW_FIELDS = {"PaystubSummary": {*DETAIL_FIELDS["paystub"], "row_label", "column_heading"},
+NEW_FIELDS = {**{form.__name__: set(KIND_FIELDS[kind]) for kind, form in RECEIPT_FORMS.items()},
+              "GroceryItems": {"weight", "weight_unit", "price_per_weight"},
+              "PaystubSummary": {*DETAIL_FIELDS["paystub"], "row_label", "column_heading"},
               "BankStatementSummary": set(DETAIL_FIELDS["bank_statement"]), "CreditCardStatementSummary": set(DETAIL_FIELDS["credit_card_statement"]),
               "PayLines": {"hours", "rate", "current_row_label", "current_column_heading", "ytd_row_label", "ytd_column_heading"},
               "PayRowClasses": {"hours", "rate"}}
@@ -436,7 +489,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
-SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
+SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Tender, GroceryItem, *RECEIPT_FORMS.values(), Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
                                                                        PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
                                                                        Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
@@ -519,7 +572,32 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "paystub: a pay stub or earnings statement for one paycheck. employment_document: an offer letter, employment agreement, "
             "benefits enrollment, separation letter or W-2 wage and tax statement from an employer. investment_tax_form: a 1099-INT, "
             "1099-DIV, 1099-B, 1099-R, 1099-SA, 1099-Q, 1099-DA, 5498 or 5498-SA from a bank, brokerage, retirement plan, HSA, 529 plan or "
-            "crypto exchange, including a consolidated 1099, or a 1098 mortgage interest statement from a lender. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. ")
+            "crypto exchange, including a consolidated 1099, or a 1098 mortgage interest statement from a lender. tax_document: a tax return or any other tax form, such as a 1040 or a property tax bill. "
+            "For a receipt, also give receipt_kind and cite the lines that show it in receipt_kind_evidence: fuel (a gas-station fuel purchase: "
+            "gallons or litres at a price per unit, a pump number, a fuel grade), dining (a restaurant, cafe, bar or takeout: food and drink, a "
+            "tip or gratuity line, a server or table), grocery (a supermarket or market: groceries, items priced by weight, loyalty savings, "
+            "bottle deposits, bag fees), or general for any other purchase. receipt_kind is null for anything that is not a receipt. ")
+
+
+def receipt_kind(classification, lines, notes, requested=None):
+    """The kind a receipt is read with (FR-01, FR-02): the one the run asks for (a kind change), else the model's proposal
+    when it is in the list and every citation is an exact quote of its line, else general with a note saying why. A
+    null or general proposal is general with no note: that is today's form."""
+    if requested:
+        return requested
+    proposed = classification.receipt_kind
+    if proposed is None or proposed == "general":
+        return "general"
+    shown = proposed if re.fullmatch(r"[a-z][a-z _-]{0,29}", proposed) else "an unlisted kind"
+    text = {line.id: line.text for line in lines}
+    why = ("it is not one of fuel, dining, grocery or general" if proposed not in RECEIPT_KINDS else
+           "no line was cited for it" if not classification.receipt_kind_evidence else
+           "a citation is not an exact quote of an existing line" if any(
+               not cite.quote.strip() or cite.quote not in text.get(cite.line_id, "") for cite in classification.receipt_kind_evidence) else None)
+    if why:
+        notes.append(f"Receipt kind: {shown} was not used: {why}. It was read as a general receipt.")
+        return "general"
+    return proposed
 
 
 def chunks(lines, limit=LINES_PER_CALL):
@@ -1015,7 +1093,7 @@ def base_answer(schema, raw, lines, amount_field):
 def scrubbed(result):
     """A reading's saved result with identifiers masked (FR-30) in the identifier fields and the new details: their values
     and quotes in the answer, and what was stored from them. Dates, names and item rows are left as read."""
-    summary_keys = {*IDENTIFIER_FIELDS, *PAY_VALUES, *set().union(*(fields for fields in DETAIL_FIELDS.values()))}
+    summary_keys = {*IDENTIFIER_FIELDS, *PAY_VALUES, *set().union(*DETAIL_FIELDS.values(), *KIND_FIELDS.values())}
     row_keys = set().union(*NEW_FIELDS.values())
     found = {**result, "header": scrub(result.get("header"), summary_keys),
              "rows": [scrub(row, row_keys) for row in result.get("rows") or []]}
@@ -1098,11 +1176,12 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency, lines=None, details=True):
+def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
-    when the reading's new fields could not be read (FR-14), so none is stored."""
+    when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
+    line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
     record["locator"] = locator(*(masked(field.evidence) if name in IDENTIFIER_FIELDS else field.evidence
                                   for name, field in fields.items() if field.status == "proposed"))
@@ -1142,8 +1221,14 @@ def normalize(kind, header, rows, currency, lines=None, details=True):
         return None if any(value is None for value in values) else sum(values)
 
     if kind == "receipt":
+        # The kind it was read with, and that kind's printed details (FR-01, FR-04); none when they couldn't be read (FR-14).
+        record["receipt_kind"], record["details"] = receipt_kind, {}
+        kind_fields = {name: getattr(header, name) for name in KIND_FIELDS.get(receipt_kind, {})} if details else {}
         record["items"] = []
         for index, row in enumerate(rows, 1):
+            if receipt_kind == "fuel" and pump_only(row, line_text):
+                issues.append(f"Item {index} is the pump number, not an item; it was left out.")
+                continue
             line = money(row.line_total, f"Item {index} line total")
             # A returned line is money back: negative whether or not its minus sign was printed (docs/money.md "Returns").
             if line is not None and row.returned and line > 0:
@@ -1151,11 +1236,17 @@ def normalize(kind, header, rows, currency, lines=None, details=True):
             record["items"].append({"description": " ".join(row.description.split()), "product_code": row.product_code, "quantity": row.quantity,
                                     "unit_price_minor": money(row.unit_price, f"Item {index} unit price"), "line_total_minor": line,
                                     "discount_minor": money(row.discount, f"Item {index} discount"), "taxed": row.taxed, "locator": locator(row.evidence)})
+            if receipt_kind == "grocery" and details:
+                grocery_item(record, record["items"][-1], row, index, line_text, issues, currency)
         sign_return(record, fields["return_marker"], issues)
-        charged = total([record["subtotal_minor"], record["tax_minor"], record["tip_minor"] or 0])
+        receipt_details(receipt_kind, record, kind_fields, money, issues, currency, line_text)
+        gratuity = (record["details"].get("gratuity") or {}).get("minor")
+        checked = document_checks.dining(record["subtotal_minor"], record["tax_minor"], record["tip_minor"], gratuity, record["total_minor"], currency)             if receipt_kind == "dining" and currency else None
+        charged = checked[0] if checked else total([record["subtotal_minor"], record["tax_minor"], record["tip_minor"] or 0])
         if charged is not None and record["total_minor"] is not None:
             if charged != record["total_minor"]:
-                issues.append(f"Subtotal, tax and tip ({format_minor(charged, currency)}) do not equal the total ({format_minor(record['total_minor'], currency)}).")
+                what = "Subtotal, tax, tip and gratuity" if checked else "Subtotal, tax and tip"
+                issues.append(f"{what} ({format_minor(charged, currency)}) do not equal the total ({format_minor(record['total_minor'], currency)}).")
             else:
                 record["cross_checks"] += 1
         lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
@@ -1193,13 +1284,11 @@ def normalize(kind, header, rows, currency, lines=None, details=True):
                 issues.append(f"Statement arithmetic does not reconcile: opening balance and transactions give {format_minor(expected, currency)}, "
                               f"but the closing balance is {format_minor(closing, currency)}. Rows may be missing or misread.")
         if details:
-            statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency,
-                              {line.id: line.text for line in lines or []})
+            statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency, line_text)
     elif kind == "bill":
         bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
-        paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields},
-                      {line.id: line.text for line in lines or []})
+        paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text)
     elif kind == "investment_statement":
         # The kind (401(k), HSA, CD, …) is told apart only by printed words, never guessed; the user can change it.
         record["investment_kind"] = printed_kind(f"{record.get('account_name') or ''} {record.get('institution') or ''}")
@@ -1302,6 +1391,121 @@ def statement_details(kind, record, fields, money, issues, currency, line_text):
         issues.append(f"Statement balance: previous {shown(previous)} − payments {shown(abs(payments))} − credits {shown(abs(credits))} + purchases "
                       f"{shown(abs(purchases))} + fees {shown(abs(fees))} + interest {shown(abs(interest))} = {format_minor(checked[0], currency)}, "
                       f"but the printed statement balance is {format_minor(checked[1], currency)}.")
+
+
+PUMP_LINE = re.compile(r"\s*PUMP\s*#?\s*\d+\s*", re.IGNORECASE)
+VOLUME_UNITS = {"gallon": re.compile(r"\b(gal|gals|gallons?)\b", re.IGNORECASE), "litre": re.compile(r"\b(l|ltr|litres?|liters?)\b", re.IGNORECASE)}
+
+
+def pump_only(row, line_text):
+    """A fuel receipt's row that cites only a pump-number line: a detail, never an item (FR-06)."""
+    return all(PUMP_LINE.fullmatch(line_text.get(cite.line_id, cite.quote)) for cite in row.evidence)
+
+
+def printed_text(text, evidence, what, line_text, issues):
+    """Free text read into a detail (a grade, a server, the gratuity's words): kept only when printed in its citation,
+    with any identifier masked (FR-30); otherwise dropped with a note naming it."""
+    shown = " ".join((text or "").split())
+    if not shown or not any(shown.casefold() in " ".join(cite.quote.split()).casefold() for cite in evidence) or not all(
+            cited_in(cite, line_text) for cite in evidence):
+        issues.append(f"{what} was not printed where it was cited and was left out.")
+        return None
+    return {"status": "proposed", "text": masked_text(shown, what, issues)[:200], "minor": None, "unit": None, "locator": locator(masked(evidence))}
+
+
+def grocery_item(record, item, row, index, line_text, issues, currency):
+    """A grocery row's printed weight and price per weight, and for a line sold as several units, its count × unit price
+    against its line total (FR-09). A line with no printed count skips that check."""
+    unit = " ".join((row.weight_unit or "").split()).lower()[:10] or None
+    if unit and not any(unit in cite.quote.lower() for cite in row.evidence):
+        unit = None
+    found = {name: text_detail(getattr(row, name), row.evidence, f"Item {index} {name.replace('_', ' ')}", line_text, issues, unit)
+             for name in ("weight", "price_per_weight")}
+    item["details"] = {name: value for name, value in found.items() if value}
+    count = row.quantity if row.quantity and printed_in(row.quantity, row.evidence) else None
+    if count and row.unit_price and item["unit_price_minor"] is not None and item["line_total_minor"] is not None and currency:
+        checked = document_checks.unit_line(count.strip(), row.unit_price.strip(), item["line_total_minor"], currency)
+        if checked and checked[2]:
+            record["cross_checks"] += 1
+        elif checked:
+            issues.append(f"Item {index} ({item['description']}): {count.strip()} × {row.unit_price.strip()} = {format_minor(checked[0], currency)}, "
+                          f"not the printed line total {format_minor(item['line_total_minor'], currency)}.")
+
+
+def receipt_details(receipt_kind, record, fields, money, issues, currency, line_text):
+    """A receipt kind's printed details (FR-04) and the fuel check they allow (FR-07): each kept only when printed in its
+    citation, never filled in; money as integer minor units, volumes and prices per unit as their exact printed text."""
+    details = record["details"]
+
+    def field(name):
+        found = fields.get(name)
+        return found if found is not None and found.status == "proposed" else None
+
+    def amount(name, what):
+        found = field(name)
+        minor = money(found.value.strip(), what) if found else None
+        if minor is not None:
+            details[name] = {"status": "proposed", "text": None, "minor": minor, "unit": None, "locator": locator(masked(found.evidence))}
+        return minor
+
+    def text(name, what, number=False, unit=None):
+        found = field(name)
+        if found is None:
+            return None
+        kept = (text_detail(found.value, found.evidence, what, line_text, issues, unit) if number
+                else printed_text(found.value, found.evidence, what, line_text, issues))
+        if kept:
+            details[name] = kept
+        return kept
+
+    def unit_in(text):
+        return next((name for name, words in VOLUME_UNITS.items() if words.search(text or "")), None)
+    if receipt_kind == "fuel":
+        # The unit printed beside the volume, else the volume unit's own printed word; unknown skips the check.
+        volume, unit_field = field("volume"), field("volume_unit")
+        unit = unit_in(" ".join(line_text.get(cite.line_id, "") for cite in volume.evidence)) if volume else None
+        if unit is None and unit_field and any(unit_field.value.strip().casefold() in cite.quote.casefold() for cite in unit_field.evidence):
+            unit = unit_in(unit_field.value)
+        found_volume = text("volume", "Fuel volume", number=True, unit=unit)
+        found_price = text("price_per_unit", "Fuel price per unit", number=True, unit=unit)
+        text("fuel_grade", "Fuel grade")
+        text("pump_number", "Pump number", number=True)
+        fuel_amount = amount("fuel_amount", "Fuel amount")
+        if found_volume and found_price and fuel_amount is not None and unit and currency:
+            checked = document_checks.fuel(found_volume["text"], found_price["text"], fuel_amount, currency)
+            if checked and checked[2]:
+                record["cross_checks"] += 1
+            elif checked:
+                issues.append(f"Fuel: {found_volume['text']} × {found_price['text']} = {format_minor(checked[0], currency)}, not the printed fuel amount "
+                              f"{format_minor(fuel_amount, currency)} ({', '.join(details['fuel_amount']['locator']['line_ids'])}).")
+        # The fuel purchase is one item: the one whose line total is the fuel amount (FR-06).
+        sale = next((item for item in record["items"] if fuel_amount is not None and item["line_total_minor"] == fuel_amount), None)
+        if sale is not None:
+            sale["fuel_sale"] = True
+    elif receipt_kind == "dining":
+        text("gratuity_included", "Gratuity included")
+        amount("gratuity", "Gratuity")
+        text("party_size", "Party size", number=True)
+        text("server", "Server")
+        text("table", "Table")
+    elif receipt_kind == "grocery":
+        if amount("savings_total", "Savings total") is not None:
+            details["savings_total"]["minor"] = -abs(details["savings_total"]["minor"])  # Savings are money off, however printed.
+        tenders = []
+        for index, tender in enumerate(fields.get("tenders") or [], 1):
+            what = f"Payment {index}"
+            minor = money(tender.amount, f"{what} amount") if tender.amount else None
+            if minor is not None and not amount_supported(tender.amount, tender.evidence):
+                issues.append(f"{what} amount was not printed where it was cited and was left out.")
+                minor = None
+            four = last_four(tender.last_four)
+            if four and four not in re.sub(r"\D", "", " ".join(cite.quote for cite in tender.evidence)):
+                issues.append(f"{what} card was not printed where it was cited and was left out.")
+                four = None
+            tenders.append({"tender_type": tender.tender_type, "minor": abs(minor) if minor is not None else None, "last_four": four,
+                            "locator": locator(masked(tender.evidence))})
+        if tenders:
+            details["tenders"] = tenders
 
 
 def bill_lines(record, rows, money, issues, currency, total):
@@ -1888,15 +2092,17 @@ class ExtractionService:
         with self.store.connection() as db:
             return [dict(row) for row in db.execute("SELECT id,status,document_type,created_at,error FROM extraction_runs WHERE parse_run_id=? ORDER BY created_at DESC", (parse_run_id,))]
 
-    def extract(self, config, work, lines, notes, classification=None, tables=()):
+    def extract(self, config, work, lines, notes, classification=None, tables=(), requested_kind=None):
         """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
-        classification: already asked of these same lines."""
+        classification: already asked of these same lines. A receipt is read with its kind's form (receipt_kind; requested_kind:
+        the kind this reading must use). Returns (classification, header, rows, identity, receipt kind or None)."""
         summary_lines, summary_context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
         classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes,
                                                table_context=summary_context)
         kind = classification.document_type
         if kind not in HEADERS:
-            return classification, None, [], None
+            return classification, None, [], None, None
+        chosen = receipt_kind(classification, lines, notes, requested_kind) if kind == "receipt" else None
         known = ""
         if kind in ("paystub", "employment_document"):
             # The model decides whether this is an employer that already has a folder under Jobs, possibly printed another way.
@@ -1908,9 +2114,9 @@ class ExtractionService:
         if tables:
             known += " Use reported_tables headings to identify each amount's column; cite its exact source line and cell text. "
         scope = "the whole document" if len(summary_lines) == len(lines) else "selected summary candidates from the document"
-        header = ask(config, work, HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. The lines are {scope}; "
-                     "rows are extracted separately. " + known, summary_lines, 4096 if kind == "bill" else 2048,
-                     notes=notes, table_context=summary_context)
+        header = ask(config, work, RECEIPT_FORMS.get(chosen) or HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. "
+                     f"The lines are {scope}; rows are extracted separately.{KIND_LABELS.get(chosen, '')} " + known, summary_lines,
+                     4096 if kind == "bill" else 2048, notes=notes, table_context=summary_context)
         identity = None
         if kind == "receipt":
             identity = self.identify(config, work, summary_lines)
@@ -1919,6 +2125,7 @@ class ExtractionService:
         rows = []
         if kind in ROWS:
             schema, key, amount_field, row_label = ROWS[kind]
+            schema = GroceryItems if chosen == "grocery" else schema
             direction = (" row_type holding: each position held at the statement date (a fund, stock, ETF, bond, CD, Treasury, or the cash or "
                          "money market sweep) with its quantity, price, market value (amount) and cost basis as printed; instrument_class from its "
                          "printed name or type; rate and maturity_date for CDs, bonds and Treasuries. row_type activity: each contribution, "
@@ -1966,7 +2173,7 @@ class ExtractionService:
                          "many receipts print a tax code beside each price (such as A or E, T or N, X, F): true when the code marks the item "
                          "taxed, false when it marks it untaxed or tax-exempt, null when no code is printed or its meaning is unclear. "
                          "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "
-                         "printed negative), false for an item bought. Copy its line_total as printed.")
+                         "printed negative), false for an item bought. Copy its line_total as printed." + KIND_ROWS.get(chosen, ""))
             if kind == "bill":
                 direction += (" For invoices, include goods and service lines, shipping, tax and discounts once each. "
                               "amount is the extended line total, never the unit price. Copy quantity and unit_price when printed. "
@@ -1992,7 +2199,7 @@ class ExtractionService:
                                         current=None, ytd=None, evidence=row.evidence, hours=row.hours, rate=row.rate) for row in answer.lines)
                 else:
                     rows.extend(getattr(answer, key))
-        return classification, header, rows, identity
+        return classification, header, rows, identity, chosen
 
     @staticmethod
     def identify(config, work, lines):
@@ -2126,7 +2333,8 @@ class ExtractionService:
         return None, None
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
-                category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None):
+                category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
+                receipt_kind=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -2141,7 +2349,7 @@ class ExtractionService:
             return record, None
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
-        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes)
+        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes, receipt_kind=receipt_kind)
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
@@ -2162,6 +2370,9 @@ class ExtractionService:
         record["description"], record["category"], record["recurrence"] = description, category or record.get("category"), recurrence or record.get("recurrence")
         for item, item_category in zip(record.get("items", []) if item_categories else [], item_categories or []):
             item["category"] = item_category
+        for item in record.get("items", []):
+            if item.get("fuel_sale"):  # A fuel receipt's fuel purchase is transportation, whatever the description model said (FR-06).
+                item["category"] = "transportation"
         record["location"] = (identity or {}).get("location")
         record["merchant_inferred_from"] = (identity or {}).get("inferred_from")
         if kind == "receipt":  # A return policy printed on the receipt; found in code, not by the model.
@@ -2271,13 +2482,14 @@ class ExtractionService:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='failed',error=?,updated_at=? WHERE id=?", (message[:1200], now(), run_id))
 
-    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None):
-        """Every model question for one document, or one receipt of a file holding several; nothing is published here."""
+    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None):
+        """Every model question for one document, or one receipt of a file holding several; nothing is published here.
+        requested_kind: the receipt kind this reading must use (a kind change)."""
         # Incomplete or ambiguous native source coverage requires review even when
         # the typed extractor can resolve individual cells.
         notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
         tables = reported_tables(evidence)
-        classification, header, rows, identity = self.extract(config, work, lines, notes, classification, tables)
+        classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
         cell_references, summary_references = [], {}
         has_table_contract = getattr(evidence, "vision_tables", None) is not None or any(
             getattr(page, "vision_tables", None) is not None or getattr(page, "layout", None) is not None
@@ -2339,7 +2551,7 @@ class ExtractionService:
             except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
                 checks = {"advisory": True, "model": decision.summary(), "error": str(exc)[:300]}
             work.check()
-        return {"classification": classification, "header": header, "rows": rows, "identity": identity, "description": description,
+        return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
                 "cell_references": cell_references, "summary_references": summary_references}
@@ -2371,7 +2583,8 @@ class ExtractionService:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
-                                                             reading.get("cell_references"), reading.get("summary_references"))
+                                                             reading.get("cell_references"), reading.get("summary_references"),
+                                                             reading.get("receipt_kind"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------

@@ -183,7 +183,7 @@ def test_missing_native_rows_are_reviewed_and_blank_current_is_not_ytd(tmp_path)
                   evidence=[{"line_id": bonus.line_id, "quote": "Bonus"}])
     header = HEADER_MODELS["paystub"](**{name: MISSING for name in HEADERS["paystub"]})
     classification = SimpleNamespace(document_type="paystub")
-    fake = SimpleNamespace(extract=lambda *args: (classification, header, [row], None))
+    fake = SimpleNamespace(extract=lambda *args: (classification, header, [row], None, None))
     reading = ExtractionService.read(fake, None, Work.detached(), "run", result, evidence_lines(result), None, [])
     assert reading["rows"][0].current is None and reading["rows"][0].ytd == "500.00"
     assert any("2 native table row(s)" in note for note in reading["notes"])

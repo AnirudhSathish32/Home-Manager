@@ -58,11 +58,13 @@ class Recorder(NullRecorder):
         self.steps, self.inputs, self.rule_card, self.rounding = [], [], None, None
         self.roundings = {}  # Currency -> its rounding, for a calculation that rounds each currency's total.
 
-    def step(self, label, op, amount_minor, currency, trace=None, count=None):
-        """One term of the result: op is "+" or "−" (U+2212); amount is positive as shown."""
+    def step(self, label, op, amount_minor, currency, trace=None, count=None, missing=False):
+        """One term of the result: op is "+" or "−" (U+2212); amount is positive as shown. missing: a term the document
+        doesn't print, shown with no value and adding nothing."""
         if op not in ("+", "−"):
             raise ValueError("A step adds (+) or takes away (−).")
-        self.steps.append({"label": label, "op": op, "minor": amount_minor, "currency": currency, "trace": trace, "count": count})
+        self.steps.append({"label": label, "op": op, "minor": 0 if missing else amount_minor, "currency": currency, "trace": trace, "count": count,
+                           "missing": missing})
 
     def add(self, label, signed_minor, currency, trace=None, count=None):
         """A step from a signed amount: a negative one takes away."""

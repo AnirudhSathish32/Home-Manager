@@ -60,7 +60,7 @@ slices:
       locator and details). NullRecorder gains a no-op input_text; the live one is SL-07.
   - id: SL-04
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 23f5e97
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_statement_forms.py -q -> 12 passed (SC-22 + 22a–c, SC-23 + 23a–b, SC-24, SC-25 statement, SC-26, unprinted details x2)"
       - "SC-24 asserts the hard-coded figures (money in 4,412.34, net spending 1,992.95, refunds 20.00, balance 2,299.50, no income link) and the same figures from a second library read with statement_details, pay_details and cited_label patched to do nothing"
@@ -78,7 +78,31 @@ slices:
       deviation: BANK, CARD and the SC-27 statement print "STATEMENT CURRENCY USD" (no currency and no $ printed
       would block publication); SC-24 releases both statements (reconcile_statement), since the card purchase must count.
   - id: SL-05
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc01 or sc02 or sc03 or sc04 or sc05 or sc07 or sc08 or version\" -q -> 20 passed, 2 deselected (whole file: 22 passed, incl. SC-06 and a fixture sanity test)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_segments.py -q -> 6 passed (incl. the new SC-12 kind test)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_invoice_ingestion.py tests/test_extraction.py tests/test_receipts.py -q -> 40 passed"
+      - "Wider: test_paystub_forms, test_statement_forms, test_family_routing, test_family_inbox, test_bills_ledger, test_returns, test_spending_splits, test_warranties, test_evals, test_eval_tasks, test_reconcile_tools, test_health, test_vision_tables, test_pdf, test_layout_consumers -> 153 passed, 1 failed, 1 skipped; the failure was test_layout_consumers' fake extract() returning the old 4-tuple (extract now also returns the receipt kind); its stub now returns 5 values -> test_layout_consumers 9 passed"
+      - "ruff check src/home_manager and touched tests -> all checks passed"
+    notes: >-
+      Classification gains receipt_kind (str, enum in the schema, checked in code) and receipt_kind_evidence; problems_in
+      never sees them. receipt_kind() chooses: requested (SL-08 passes it) > the proposal when listed and every citation
+      is an exact quote > general with "Receipt kind: X was not used: <why>. It was read as a general receipt." (null or
+      general proposals: general, no note; an unsafe value is shown as "an unlisted kind"). RECEIPT_FORMS
+      (ReceiptFuelSummary, ReceiptDiningSummary, ReceiptGrocerySummary) subclass ReceiptSummary with KIND_FIELDS;
+      grocery rows use GroceryItems; KIND_LABELS and KIND_ROWS add each kind's instructions. extract() returns the kind
+      as a 5th value; read() and record() carry it to publish() and normalize(). normalize: the pump-only row guard
+      (with a note), grocery_item (weights as text + unit, count × unit price check when the count is printed),
+      receipt_details (fuel: volume/price text with the unit from the volume's own line, grade, pump, fuel amount and the
+      FR-07 check, skipped with an unknown unit; dining: gratuity words and amount, party size, server, table; grocery:
+      savings total stored negative, tenders with last four only), and the dining sum including the gratuity in place of
+      today's sum. The fuel sale (line total = fuel amount) is set to transportation after the description model's
+      categories. fuel_amount, gratuity and savings_total joined AMOUNTS, so their citations are checked and a failure
+      takes the FR-14 path (the kind stays, its details are {}). Ledger: receipt_kind and details_json written by
+      publish_receipt (merged_details keeps other kinds' entries), receipt_items.details_json. Recorder.step gains
+      missing= (a 0 step flagged as not printed), used by document_checks.dining; build() shows it in SL-07.
   - id: SL-06
     status: todo
   - id: SL-07

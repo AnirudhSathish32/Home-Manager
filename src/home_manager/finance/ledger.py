@@ -479,7 +479,10 @@ class Ledger:
 
     def publish_receipt(self, record, source, status):
         with self.store.connection() as db:
+            kind = record.get("receipt_kind")
             receipt_id, written = self._upsert(db, "receipts", source, {
+                # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
+                "receipt_kind": kind, "details_json": self.merged_details(db, source, kind, record.get("details")),
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
@@ -508,6 +511,16 @@ class Ledger:
                                  json.dumps(reward["locator"]), now(), now()) for position, reward in enumerate(record.get("rewards", []), 1)])
                 self.refresh_splits(db, receipt_id)
         return self._published("receipt", receipt_id, written, items=len(record["items"]), kept=kept)
+
+    @staticmethod
+    def merged_details(db, source, kind, details):
+        """A receipt's details by kind: this reading replaces only the entry for the kind it read, so an earlier kind's
+        details come back with an undo of a kind change. None for a record not read with kinds (a bill)."""
+        if kind is None:
+            return None
+        row = db.execute("SELECT details_json FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+        found = json.loads(row["details_json"]) if row and row["details_json"] else {}
+        return json.dumps({**found, kind: details or {}})
 
     def retire_segments(self, blob_hash, keep, note="The latest reading of this file no longer finds this receipt; check how the file was split."):
         """Receipts of a file's segments that its latest reading no longer finds (keep: the segments it found; none when
@@ -577,7 +590,8 @@ class Ledger:
                 category, category_source = receipt_category(item.get("category")), "model"
             taxed = None if item.get("taxed") is None else int(item["taxed"])
             values = (item["description"], item.get("product_code"), item.get("quantity"), item.get("unit_price_minor"), item["line_total_minor"],
-                      item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"))
+                      item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"),
+                      json.dumps(item["details"]) if item.get("details") else None)
             # Whose line it is: as the family sent it, else the person's own choice from before, else nobody yet.
             member, member_source = item.get("member_id"), item.get("member_source") or ("configured" if item.get("member_id") else None)
             if position in matched:
@@ -587,13 +601,13 @@ class Ledger:
                 if member is None and earlier_item["member_source"] == "user":
                     member, member_source = earlier_item["member_id"], "user"
                 db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
-                           "line_holder=?,line_kind=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
+                           "line_holder=?,line_kind=?,details_json=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
                            (*values, category, category_source if category else None, member, member_source, status, now(), item_id))
                 db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
             else:
                 item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                     "taxed,line_holder,line_kind,category,category_source,member_id,member_source,review_status,created_at,updated_at) "
-                                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     "taxed,line_holder,line_kind,details_json,category,category_source,member_id,member_source,review_status,created_at,updated_at) "
+                                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                      (receipt_id, position, *values, category, category_source if category else None, member, member_source,
                                       status, now(), now())).lastrowid
             self.add_evidence(db, "receipt_item", item_id, source, item["locator"])

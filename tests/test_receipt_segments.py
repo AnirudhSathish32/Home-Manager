@@ -1,7 +1,9 @@
 """Several receipts in one file: split, read one receipt at a time, confirmed once (docs/documents.md)."""
 
+import json
 from types import SimpleNamespace
 
+from document_forms_fixtures import DINING, dining_replies, fuel, fuel_replies, joined, shifted
 from home_manager.documents.extraction import SPLIT_NOTE, codes_within, looks_like_several, merge_parts, unit_breaks
 from home_manager.documents.pdf_reader import PDFPage, PDFResult
 from home_manager.documents.receipt_schema import CodeEvidence, Region, TextLine
@@ -80,6 +82,27 @@ def test_two_receipts_in_one_file_are_recorded_and_confirmed_once(tmp_path, loca
         again = extract(manager, doc, parse_id, force=True)
         assert again["publication"]["split_confirmed"] is True
         assert [row["review_status"] for row in receipts(manager)] == ["verified", "verified"]
+    finally:
+        manager.close()
+
+
+def test_each_receipt_in_a_split_file_gets_its_own_kind(tmp_path, local_model):
+    """SC-12 (FR-15): a fuel receipt and a dining receipt in one file; each part's classification carries its own kind
+    and is read with that kind's form."""
+    first = fuel()
+    manager, doc, parse_id = transcribe(tmp_path, local_model, first + DINING)
+    try:
+        fuel_part, dining_part = fuel_replies(first), shifted(dining_replies(), len(first))
+        whole = fuel_part["Classification"][0]
+        starts = {"starts": [{"line_id": "line-1", "quote": first[0]}, {"line_id": f"line-{len(first) + 1}", "quote": DINING[0]}]}
+        local_model["by_schema"] = joined({"Classification": [whole], "ReceiptStarts": [starts]}, fuel_part, dining_part)
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        with manager.store.connection() as db:
+            rows = [dict(row) for row in db.execute("SELECT segment,receipt_kind,details_json,validation_json FROM receipts ORDER BY segment")]
+        assert [(row["segment"], row["receipt_kind"]) for row in rows] == [(0, "fuel"), (1, "dining")]
+        assert json.loads(rows[1]["details_json"])["dining"]["gratuity"]["minor"] == 900
+        assert all(SPLIT_NOTE in row["validation_json"] for row in rows)
     finally:
         manager.close()
 

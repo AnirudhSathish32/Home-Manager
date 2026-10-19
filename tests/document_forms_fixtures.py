@@ -15,11 +15,12 @@ IDENTIFIERS = ("445566", "021000021", "000123456789", "6006491234565555", "XXX-X
 
 
 def number_of(lines, text):
-    """The 1-based line number of the line that is exactly text, or that contains it when no line is exactly it."""
+    """The 1-based line number of the line that is exactly text, else the one that starts with it, else the one that
+    contains it."""
     for index, line in enumerate(lines, 1):
         if line == text:
             return index
-    matches = [index for index, line in enumerate(lines, 1) if text in line]
+    matches = [index for index, line in enumerate(lines, 1) if line.startswith(text)] or [index for index, line in enumerate(lines, 1) if text in line]
     assert len(matches) == 1, f"{text!r} is on {len(matches)} lines"
     return matches[0]
 
@@ -65,9 +66,99 @@ GIFT_RECEIPT = ["SYNTH MARKET", "2026-10-03", "GROCERIES 8.55", "SUBTOTAL 8.55",
                 "VISA ****4242 3.55"]
 
 
-def fuel(sale="35.67", total="37.86", volume="10.312 GAL"):
-    """SC-01 (SC-02: sale 36.67, total 38.86; 1b: volume 10.312 L)."""
-    return [*FUEL[:3], f"REG UNL {volume} @ 3.459", f"FUEL SALE {sale}", FUEL[5], f"TOTAL {total}", FUEL[7]]
+def fuel(sale="35.67", total="37.86", volume="10.312 GAL", grade="REG UNL "):
+    """SC-01 (SC-02: sale 36.67, total 38.86; 1a: no grade; 1b: volume 10.312 L)."""
+    return [*FUEL[:3], f"{grade}{volume} @ 3.459", f"FUEL SALE {sale}", FUEL[5], f"TOTAL {total}", FUEL[7]]
+
+
+def item(lines, description, line, line_total, **fields):
+    """A receipt row citing the line holding line (and any more lines in also)."""
+    also = fields.pop("also", ())
+    evidence = cite(lines, line) + [entry for extra in also for entry in cite(lines, extra)]
+    return {"description": description, "product_code": None, "quantity": None, "unit_price": None, "line_total": line_total, "discount": None,
+            "taxed": None, "evidence": evidence, **fields}
+
+
+def amount_on(lines, line):
+    """A proposed amount: the last number printed on the line holding line, cited by itself."""
+    text = lines[number_of(lines, line) - 1].split()[-1]
+    return value(lines, text, line, text)
+
+
+def receipt_replies(lines, kind, merchant, printed, date, summary, items, category=None, kind_evidence=None, form=None):
+    """Every reply a receipt reading asks for, keyed by schema name. kind: the classifier's receipt_kind (None: not given);
+    form: the summary schema answered (default: the kind's own form, or ReceiptSummary for general and unlisted kinds)."""
+    classified = {"document_type": "receipt", "evidence": cite(lines, printed), "issuer": value(lines, merchant, printed),
+                  "document_date": value(lines, date, date)}
+    if kind is not None:
+        classified.update(receipt_kind=kind, receipt_kind_evidence=kind_evidence if kind_evidence is not None else cite(lines, printed))
+    base = {"merchant": value(lines, merchant, printed), "purchase_date": value(lines, date, date), "currency": MISSING, "subtotal": MISSING,
+            "tax": MISSING, "tip": MISSING, "total": MISSING}
+    form = form or ({"fuel": "ReceiptFuelSummary", "dining": "ReceiptDiningSummary", "grocery": "ReceiptGrocerySummary"}.get(kind, "ReceiptSummary"))
+    rows = "GroceryItems" if form == "ReceiptGrocerySummary" else "Items"
+    return {"Classification": [classified], form: [{**base, **summary}],
+            "ReceiptIdentity": [{"seller": value(lines, merchant, printed), "seller_basis": "printed", "location": MISSING}],
+            rows: [{"items": items}], "PurchaseDescription": [description(category, len(items))], "Rewards": [NO_REWARDS]}
+
+
+def fuel_replies(lines, kind="fuel", **changes):
+    """SC-01's reading: the fuel form, the fuel sale and the coffee as items; changes replace summary fields."""
+    sale = next(line for line in lines if line.startswith("FUEL SALE"))
+    volume_line = lines[3]
+    volume = volume_line.split()[-4]
+    summary = {"total": amount_on(lines, "TOTAL "), "card_last_four": value(lines, "4242", "VISA ****4242", "4242"),
+               "volume": value(lines, volume, volume_line, volume), "volume_unit": value(lines, volume_line.split()[-3], volume_line, volume_line.split()[-3]),
+               "price_per_unit": value(lines, "3.459", volume_line, "3.459"),
+               "fuel_grade": value(lines, "REG UNL", volume_line, "REG UNL") if "REG UNL" in volume_line else MISSING,
+               "pump_number": value(lines, "17", "PUMP 17", "17"), "fuel_amount": amount_on(lines, "FUEL SALE")}
+    items = [item(lines, "REG UNL", sale, sale.split()[-1], also=[volume_line]), item(lines, "COFFEE", "COFFEE 2.19", "2.19")]
+    if kind != "fuel":
+        summary = {key: value for key, value in summary.items() if key in ("total", "card_last_four")}
+    return receipt_replies(lines, kind, "Synth Fuel", "SYNTH FUEL #12", "2026-10-01", {**summary, **changes}, items,
+                           kind_evidence=cite(lines, volume_line))
+
+
+def dining_replies(lines=DINING, **changes):
+    """SC-03's reading: the dining form with the included gratuity, a blank tip, and two items."""
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": amount_on(lines, "TAX "), "total": amount_on(lines, "TOTAL "),
+               "gratuity_included": value(lines, "GRATUITY 18% INCLUDED", "GRATUITY", "GRATUITY 18% INCLUDED") if any("GRATUITY" in line for line in lines) else MISSING,
+               "gratuity": amount_on(lines, "GRATUITY") if any("GRATUITY" in line for line in lines) else MISSING,
+               "party_size": value(lines, "4", "SERVER:", "GUESTS 4"), "server": value(lines, "SAM", "SERVER:", "SERVER: SAM"),
+               "table": value(lines, "9", "SERVER:", "TABLE 9")}
+    if any(line.startswith("TIP ") and line.split()[-1][0].isdigit() for line in lines):
+        summary["tip"] = amount_on(lines, "TIP ")
+    items = [item(lines, "PASTA", "PASTA 30.00", "30.00"), item(lines, "SALAD", "SALAD 20.00", "20.00")]
+    return receipt_replies(lines, "dining", "Synth Bistro", "SYNTH BISTRO", "2026-10-02", {**summary, **changes}, items, category="dining",
+                           kind_evidence=cite(lines, "SERVER:"))
+
+
+def grocery_items(lines):
+    """SC-04's rows: a weighed item, a multi-unit line, a deposit, a bag fee and the member savings, as printed."""
+    found = [item(lines, "MILK", "MILK 3.49", "3.49")]
+    bananas = next(line for line in lines if line.startswith("BANANAS"))
+    found.append(item(lines, "BANANAS", bananas, bananas.split()[-1], weight="2.31", weight_unit="lb",
+                      price_per_weight="0.59" if "0.59" in bananas else None))
+    chips = next(line for line in lines if "CHIPS" in line)
+    counted = chips.startswith("2x")
+    found.append(item(lines, "CHIPS", chips, chips.split()[-1], quantity="2" if counted else None, unit_price="2.00" if counted else None))
+    found += [item(lines, "BOTTLE DEPOSIT", "BOTTLE DEPOSIT", "0.10"), item(lines, "BAG FEE", "BAG FEE", "0.10"),
+              item(lines, "MEMBER SAVINGS", "MEMBER SAVINGS", "-0.50")]
+    return found
+
+
+def grocery_replies(lines=GROCERY, items=None, **changes):
+    """SC-04's reading: the grocery form with its savings and tenders (the gift card with its last four only)."""
+    tenders = []
+    gift = next((line for line in lines if line.startswith("GIFT CARD")), None)
+    if gift:
+        tenders.append({"tender_type": "gift_card", "amount": gift.split()[-1].lstrip("-"), "last_four": "5555", "evidence": cite(lines, gift)})
+    ebt = next((line for line in lines if line.startswith("EBT")), None)
+    if ebt:
+        tenders.append({"tender_type": "ebt", "amount": ebt.split()[-1], "last_four": None, "evidence": cite(lines, ebt)})
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": amount_on(lines, "TAX "), "total": amount_on(lines, "TOTAL "),
+               "savings_total": amount_on(lines, "MEMBER SAVINGS"), "tenders": tenders}
+    return receipt_replies(lines, "grocery", "Synth Market", "SYNTH MARKET", "2026-10-03", {**summary, **changes},
+                           grocery_items(lines) if items is None else items, category="groceries", kind_evidence=cite(lines, "MILK"))
 
 
 # Pay stubs (fixture P) -----------------------------------------------------------------------------------------
@@ -274,6 +365,24 @@ def card_replies(lines, **changes):
     classified = {"document_type": "credit_card_statement", "evidence": cite(lines, "SYNTH CARD"), "issuer": value(lines, "SYNTH CARD", "SYNTH CARD"),
                   "document_date": end}
     return {"Classification": [classified], "CreditCardStatementSummary": [{**summary, **changes}], "Transactions": [{"transactions": statement_rows(lines)}]}
+
+
+def shifted(replies, lines_before):
+    """replies for a receipt printed after lines_before other lines in the same transcription: every line id moved on."""
+    if isinstance(replies, dict):
+        return {key: f"line-{int(entry[5:]) + lines_before}" if key == "line_id" else shifted(entry, lines_before) for key, entry in replies.items()}
+    if isinstance(replies, list):
+        return [shifted(entry, lines_before) for entry in replies]
+    return replies
+
+
+def joined(*replies):
+    """Several readings' replies in the order they are asked: each schema's replies one after another."""
+    found = {}
+    for reply in replies:
+        for name, answers in reply.items():
+            found.setdefault(name, []).extend(answers)
+    return found
 
 
 # Several documents in one library ------------------------------------------------------------------------------
