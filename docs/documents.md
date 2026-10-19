@@ -365,6 +365,61 @@ Anything else goes to Needs review, with the reasons listed. Correcting a field 
 reasons about that field; when none remain, the record passes. Only your own decisions stop a later extraction from
 rewriting a record.
 
+### Receipt kinds
+
+Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_details`), `finance/ledger.py`,
+`app/manager.py` `change_receipt_kind`. Spec: `specs/document-forms`.
+
+- **Four kinds.** The classifier also proposes a receipt's kind, citing the lines that show it: `fuel`, `dining`,
+  `grocery` or `general` (no extra model call). A proposal that is uncited, cites a line that doesn't print its quote,
+  or isn't one of the four is read as `general`, with the note "Receipt kind: … was not used" and the receipt in Review.
+  No proposal at all is `general` with no note. Each receipt of a file split into several gets its own kind.
+- **Each kind has its own form**: the receipt summary plus its printed fields, each optional and never filled in.
+  - fuel: volume and its unit (gallon or litre), price per unit, grade, pump number, fuel amount. The fuel sale is one
+    item, in `transportation`; a row that cites only the pump line is left out, with a note. Check: volume × price,
+    rounded half-up to the cent, equals the fuel amount within a cent (skipped when the unit isn't printed).
+  - dining: the included gratuity's words and amount, party size, server, table. The check is subtotal + tax + tip +
+    included gratuity = total. A blank tip line stays missing, never 0.
+  - grocery: per item, weight, unit and price per weight; a line sold as several units checks count × unit price
+    against its line total. Deposits, bag fees and member savings are rows of their own; the savings total is kept.
+    Tenders (gift card, EBT, card, cash) are kept with their amounts and last four digits only, never as items. A gift
+    card lowers what the receipt counts ([money](money.md#gift-cards)).
+  - general: today's form.
+- **Stored** in `receipts.receipt_kind` and `details_json` (one entry per kind read, so an undo of a kind change brings
+  the earlier kind's details back), and `receipt_items.details_json` (migration 070). Decimals that aren't money keep
+  their printed text; amounts are integer minor units. Receipts read before migration 070 have no kind until read again.
+- **Changing the kind** (the document page, `PATCH /api/receipts/{id}/kind`) reads that receipt again from its saved
+  transcription with the new kind's form, never the image. The change is a correction with Undo, written with the
+  reading, and later readings keep it. It is refused (409) while any reading of the same file is queued or running.
+  On a receipt you reviewed, the amounts, items and review state stay; the new details wait as a proposal until
+  **Apply details** (`POST /api/receipts/{id}/details/apply`), itself a correction with Undo that changes no amount.
+- **Details that can't be read.** If the kind's new fields fail their checks after the one correction request, the
+  receipt is published with today's fields and rows only, and the note "Document details could not be read". The same
+  holds for the new pay stub and statement fields.
+
+### Pay stub and statement fields
+
+Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`, `statement_details`),
+`finance/document_checks.py`, `finance/document_traces.py`, `core/identifiers.py`.
+
+- **Pay stubs** keep, for each earning line, its printed hours and rate; the paid-time-off and sick-leave balances;
+  each direct-deposit split (account last four digits and amount); and for every pay amount the row label and column
+  heading it was printed under, each cited (from the validated table cell where there is one). Checks: hours × rate
+  per earning line, and the splits' sum against net pay. This period is guarded against year-to-date and annual
+  amounts ([money](money.md#money-in-and-paystubs)).
+- **Bank statements** keep the account type (from printed words only, else `other`; the account's own type doesn't
+  change), deposits, withdrawals, interest earned, fees and APY. Check: opening + deposits − withdrawals = closing,
+  only when all four are printed, beside the check from the transaction rows.
+- **Card statements** keep the purchase and cash-advance APRs, credit limit, available credit and rewards (points stay
+  text). Check: previous − payments − credits + purchases + fees + interest = statement balance, when all are printed.
+- **Nothing counts differently**: the new fields are shown, checked and traced only.
+- **Identifiers.** Account, card and routing numbers, employee IDs and SSNs are never stored outside the saved
+  transcription: only last four digits are kept, and identifier fields' citations, new details and their part of the
+  saved reading are masked to their last four digits (`core/identifiers.py`). The saved transcription and its search
+  index keep the document as printed.
+- **Each check is a figure** on the record (`checks`), traced by `receipt.fuel`, `receipt.dining`, `receipt.unit_line`,
+  `receipt.paid`, `paystub.hours`, `paystub.deposits` and `statement.summary` ([ui](ui.md#trace-contract)).
+
 ### Model runs, queues and cancellation
 
 - **Telemetry** (`model_runs`, migration 010). Every model request records:

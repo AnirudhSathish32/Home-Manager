@@ -319,6 +319,12 @@ returns to the list with its filters, page and scroll position.
     taxes and Checks.
     Receipt items show printed Price and, when different, Paid with tax. Correctable Subtotal, Tax, Tip and Total
     rows follow, plus any amount not matched to an item and an arithmetic mismatch message.
+    After the fields (`doc2Forms`, [documents](documents.md#receipt-kinds)): a reviewed receipt's waiting details with
+    **Apply details**; the **Receipt kind** row with a kind select and **Change kind…** (a preview, then one reading of
+    the saved text); "Total · Gift card · Paid" with Paid as a traced figure; **Printed details** (each with Find and,
+    for receipts, Correct; tenders, deposit splits, grocery weights and counts); a pay stub's **As printed on the stub**
+    (each amount's printed row and column, hours and rate); and **Arithmetic checks**, each a figure that opens its
+    trace. A receipt with a gift card shows its printed total as Total.
   - **History:** `historyList` with the record's changes, then the readings.
   - **Details:** where the file is, versions and how the text was read.
 - **Under 900px.** It's one column (header, source, tabs), and the decision pins to the bottom of the screen.
@@ -588,6 +594,17 @@ screen can be explained. These rules override visual or layout preferences.
   - **Family** (`finance/traces.py`): `family.spending.net`, `family.cashflow.net`, `family.cashflow.in`, `family.spending.category`,
     `family.spending.gross`, `family.spending.other` and `family.worth.today` add up each member's own figure. Any ref
     with `member=<id>` runs the same calculation on that member's read-only copy.
+  - **Document checks** (`finance/document_traces.py`, [documents](documents.md#pay-stub-and-statement-fields)): a
+    record's own arithmetic checks, each a figure in the record's `checks`: `receipt.fuel` (volume × price per unit),
+    `receipt.dining` (subtotal, tax, gratuity and tip; a tip that isn't printed is a step with no value),
+    `receipt.unit_line` (`&position=`; count × unit price), `receipt.paid` (the printed total less gift cards),
+    `paystub.hours` (`&position=`; hours × rate), `paystub.deposits` and `statement.summary` (a bank or card summary).
+    **The one exception to `reconciles`:** for these it is the check's outcome, the result against the printed amount in
+    `compared_with`, so it can be false by design (the parity loop must leave them out). A product is one step at its
+    rounded value, the exact product in the rounding note (`half_up_minor`). Non-money inputs are `input_text` (exact
+    text and unit; their text and unit are hashed, so a corrected volume makes the figure stale). Inputs are
+    `extracted` (document, cited lines, quote) or `override` (the reading's value, who and why). A ref for something the
+    record doesn't have is "This isn't worked out for this record." (400).
 - **Review state.** A breakdown takes its inputs as correct: figures don't carry whether an input still waits in To check
   (decided 2026-10-05). The trace's own `verification` roll-up is informational.
 - **Stale.** Opening a trace compares its `inputs_hash` with the one in `figure_snapshots` for that ref, then stores the

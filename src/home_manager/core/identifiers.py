@@ -1,5 +1,6 @@
-"""Sensitive identifiers kept out of stored records (specs/document-forms FR-30, docs/documents.md "Pay stub and statement
-fields"): full account, card and routing numbers, employee IDs and SSNs. Only their last four digits are kept.
+"""Sensitive identifiers kept out of stored records (specs/document-forms FR-30,
+docs/documents.md "Pay stub and statement fields"): full account, card and routing numbers, employee IDs and SSNs. Only
+their last four digits are kept.
 
 The saved transcription (parse_runs, document_passages and its search index) keeps the document as printed; everything
 read from it into a record goes through mask().

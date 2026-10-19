@@ -138,6 +138,22 @@ Paystub summaries receive the same table cells and headings as row classificatio
 amount citations use the exact cell quote after anchoring. The source viewer's Tables tab shows these cells and links
 back to the original lines. Saved readings with explicit separators can be reconstructed without another vision call.
 
+**This period never takes a year-to-date or annual amount** (`documents/extraction.py` `this_period_guards`, on every
+path: table cells, native PDF cells and flat text). Gross pay, net pay, taxes, deductions and each line's this-period
+amount are left out (null and ambiguous), with a reason naming the field, both amounts and the cited lines, when:
+- its printed row label, column heading or cited quote reads as year to date or annual (YTD, year to date, annual,
+  yearly, salary, per year);
+- it is larger than its own year-to-date amount;
+- it equals its year-to-date amount after the year's first pay period (worked out from the period start and the pay
+  frequency; a first paycheck of the year can equal its year to date). With the period or frequency unknown, the
+  amount is kept and the equality goes to review.
+
+A stub where any of these fired never counts automatically, even when its arithmetic agrees. Correcting the field (or
+the pay line) with **Edit details** clears its reason, and the correction outlives reading again. A guarded amount is
+never filled in with a calculated one. The rule errs toward review: an earnings line labelled "Salary", or a line
+printing a this-period amount beside "YTD", goes to review too. Hours × rate and the deposit splits are checked as well
+([documents](documents.md#pay-stub-and-statement-fields)).
+
 - **A verified pay stub counts as net pay on its pay date** (`STANDALONE_INCOME`) until the bank deposit that paid it is
   linked in `transaction_income_links` (migration 067). Then the deposit counts and the pay stub doesn't. Never both.
 - **The match** (`Reconciler.income`): a deposit (or other credit) of exactly the net pay, posted from two days before the
@@ -150,6 +166,22 @@ back to the original lines. Saved readings with explicit separators can be recon
 - **The page.** A pay stub's page shows its deposit under **Deposit**. Its correction preview shows the months whose money
   in moves.
 - Not built: manually linking a paystub deposit split across two accounts ([open work](open-work.md)).
+
+## Gift cards
+
+A gift card is a way of paying, not a discount (`finance/ledger.py` `refresh_paid`). A receipt with gift-card tenders
+keeps its printed total (`printed_total_minor`) and counts its **amount paid**, the printed total less the gift cards,
+in `total_minor`, so spending, budgets, category splits (each category scaled to keep its proportion) and the card or
+bank line it is matched to all use what was actually charged. The page shows "Total 8.55 · Gift card −5.00 · Paid 3.55",
+and Paid opens its trace (`receipt.paid`).
+- Deductions larger than the total count the printed total, with a note, until you correct them. A gift card on a
+  return isn't handled: the signed total counts, with a note.
+- Correcting the gift card amount, the total or sale or return works the amount paid out again. When it no longer equals
+  the linked charge, the receipt goes to review with "Amount paid (…) no longer equals the linked charge (…)"; when they
+  match again the note goes. It never verifies a receipt by itself.
+- A receipt with no gift card counts its total, exactly as before. A receipt you reviewed before its gift card was read
+  keeps counting its total; Apply details doesn't change that, and the page says so.
+- Not built: showing the printed total on a family member's copy, which carries the amount paid only.
 
 ## Returns
 
@@ -214,7 +246,12 @@ reading the document again.
   bill is a receipt (type `receipt`) with its own fields ([Bills and their lines](#bills-and-their-lines)).
 - **Pay stub lines:** `PATCH /api/paystubs/{id}/lines/{position}` with `changes.current` or `changes.ytd` and an optional
   `reason` corrects the amount in that column. Corrections follow the line's group, description and occurrence across
-  later readings and appear in the pay stub's history with Undo.
+  later readings and appear in the pay stub's history with Undo. Correcting a line clears its notes; Undo puts them back.
+- **Receipt details:** the same `PATCH` with `detail:<name>` (fuel volume, price per unit, pump, fuel amount, gratuity,
+  party size, savings total) or `detail:tenders.<n>.amount` (n from 1) corrects a printed detail of the receipt's
+  current kind ([documents](documents.md#receipt-kinds)). A gift card correction works the amount paid out again
+  ([Gift cards](#gift-cards)). A detail the reading no longer has (the kind changed since) can't be undone, and a
+  later reading skips it. The receipt's kind itself changes with `PATCH /api/receipts/{id}/kind`, which reads it again.
 - **Receipt item prices:** `PATCH /api/receipts/{id}/items/{position}` with `price` and optional `reason`. Correct
   opens beside the item. The price is kept by printed position across re-readings and refreshes category shares.
   Receipt history includes these changes, with Undo through the receipt's corrections endpoint.

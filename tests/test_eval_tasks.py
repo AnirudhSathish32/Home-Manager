@@ -60,6 +60,10 @@ def oracle(task, case):
         return {"table": expected["table"]}
     if task == "decisions":
         return {"answer": expected["label"], "probabilities": {expected["label"]: 1.0}, "coverage": 1.0}
+    if task == "receipt_kinds":
+        return {"kind": expected["kind"], "fields": {name: value for name, value in expected["fields"].items() if value is not None}}
+    if task == "document_forms":
+        return {"fields": {name: value for name, value in expected["fields"].items() if value is not None}, "counted": True, "wrong_column_counted": 0}
     raise AssertionError(task)
 
 
@@ -203,6 +207,67 @@ def test_the_decision_gates_ranks_and_breaks_ties():
 def config_for(local_model, decision=None):
     return {"base_url": local_model["config"].base_url, "timeout_seconds": 60, "sampling": {}, "decision": rules(decision),
             "candidates": [{"name": "synthetic", "vision": "synthetic-vision", "reasoning": "synthetic-reasoning"}]}
+
+
+def task_lines(folder):
+    return [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_the_receipt_kinds_task_reports_kind_accuracy_and_fields_per_kind(tmp_path, local_model):
+    """SC-17: one receipt of each kind, read with stubbed answers by the app's own extraction; the fuel answer gives a
+    grade that isn't printed, so it is left out and the field is reported missing."""
+    from document_forms_fixtures import amount_on, dining_replies, fuel_replies, grocery_replies, item, joined, receipt_replies, value
+    from evals.tasks.receipt_kinds import DINING, FUEL, GENERAL, GROCERY
+    general = receipt_replies(GENERAL, "general", "Synth Hardware", "SYNTH HARDWARE", "2026-10-04",
+                              {"subtotal": amount_on(GENERAL, "SUBTOTAL"), "tax": amount_on(GENERAL, "TAX "), "total": amount_on(GENERAL, "TOTAL ")},
+                              [item(GENERAL, "HAMMER", "HAMMER 12.00", "12.00"), item(GENERAL, "NAILS", "NAILS 3.00", "3.00")])
+    wrong = fuel_replies(FUEL, fuel_grade=value(FUEL, "PREMIUM", FUEL[3], "REG UNL"))
+    local_model["by_schema"] = joined(wrong, dining_replies(DINING), grocery_replies(GROCERY), general)
+    folder = run_tasks(config_for(local_model), ["receipt_kinds"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=4)
+    lines = task_lines(folder)
+    assert [(line["status"], line["grades"]["checks"]["kind"], line["grades"]["passed"]) for line in lines] == [
+        ("ok", True, False), ("ok", True, True), ("ok", True, True), ("ok", True, True)]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    for row in ("| synthetic | fuel | 1 of 1 | 4 of 5 | 4 of 5 | 0 |", "| synthetic | dining | 1 of 1 | 2 of 2 | 2 of 2 | 0 |",
+                "| synthetic | grocery | 1 of 1 | 2 of 2 | 2 of 2 | 0 |", "| synthetic | general | 1 of 1 | 0 of 0 | 0 of 0 | 0 |"):
+        assert row in report, report
+
+
+def test_the_document_forms_task_reports_fields_and_wrong_column_values(tmp_path, local_model):
+    """SC-17 and FR-24: P-table read correctly, P-flat answered with every this-period value copied from year to date,
+    and the bank and card statements. The year-to-date answer is left out by the FR-22 guards, so no wrong-column value
+    would count: the count is 0."""
+    from document_forms_fixtures import P_LINES, at, bank_replies, card_replies, cite, joined, number_of, paystub_summary, value
+    from evals.tasks.document_forms import BANK, CARD, P_FLAT, P_TABLE
+    from evals.tasks.document_forms import P_LINES as PRINTED
+    from test_paystub_forms import all_ytd_replies
+    rows = []
+    for (printed, current, ytd), (name, group, category, _, _) in zip(PRINTED, P_LINES):
+        number = number_of(P_TABLE, f"{printed} |")
+        rows.append({"description": name, "group": group, "category": category, "current": current, "ytd": ytd, "evidence": at(P_TABLE, number),
+                     **({"hours": "80.00", "rate": "31.25"} if name == "Regular" else {})})
+    gross, net = number_of(P_TABLE, "Gross pay |"), number_of(P_TABLE, "Net pay |")
+    pto = "PTO BALANCE 56.00 HRS"
+    table = {"PaystubSummary": [paystub_summary(P_TABLE, gross_pay={"value": "2,500.00", "status": "proposed", "evidence": at(P_TABLE, gross, "2,500.00")},
+                                                gross_pay_ytd={"value": "32,500.00", "status": "proposed", "evidence": at(P_TABLE, gross, "32,500.00")},
+                                                net_pay={"value": "1,912.34", "status": "proposed", "evidence": at(P_TABLE, net, "1,912.34")},
+                                                net_pay_ytd={"value": "24,860.42", "status": "proposed", "evidence": at(P_TABLE, net, "24,860.42")},
+                                                pto_balance=value(P_TABLE, "56.00 HRS", pto, "56.00 HRS"),
+                                                deposit_splits=[{"last_four": "1234", "amount": "1,500.00", "evidence": cite(P_TABLE, "DIRECT DEPOSIT")},
+                                                                {"last_four": "9876", "amount": "412.34", "evidence": cite(P_TABLE, "SAVINGS ****9876")}])],
+             "PayLines": [{"lines": rows}]}
+    flat = {key: answer for key, answer in all_ytd_replies(P_FLAT).items() if key != "Classification"}
+    bank, card = ({key: answer for key, answer in replies.items() if key != "Classification"} for replies in (bank_replies(BANK), card_replies(CARD)))
+    local_model["by_schema"] = joined(table, flat, bank, card)
+    folder = run_tasks(config_for(local_model), ["document_forms"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=4)
+    lines = task_lines(folder)
+    assert [(line["status"], line["grades"]["passed"], line["grades"]["checks"]["wrong_column_counted"]) for line in lines] == [
+        ("ok", True, 0), ("ok", False, 0), ("ok", True, 0), ("ok", True, 0)]
+    assert lines[1]["output"]["counted"] is False  # Sent to review by the guards, never counted.
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    for row in ("| synthetic | paystub (p_table) | 6 of 6 | 6 of 6 | 0 | 0 |", "| synthetic | paystub (p_flat) | 0 of 4 | 0 of 4 | 0 | 0 |",
+                "| synthetic | bank_statement | 5 of 5 | 5 of 5 | 0 | 0 |", "| synthetic | credit_card_statement | 5 of 5 | 5 of 5 | 0 | 0 |"):
+        assert row in report, report
 
 
 def test_a_task_run_grades_with_the_apps_own_code_and_writes_a_report(tmp_path, local_model):

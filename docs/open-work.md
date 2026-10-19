@@ -20,9 +20,28 @@ and link here for what isn't. When an item is built, remove it from this list an
 - **A native folder picker** for choosing the library folder (paths are pasted today).
 - **Ingestion by document content** ([bugs.md](bugs.md)). Today one pathway reads every document as if it might be a
   receipt. Offer letters, contracts and other keep-only documents should take a deterministic path to their folder.
-  Grocery, dining and gas-station receipts should each get their own handling.
-- **Gas-station receipts.** The pump number is read as an item, and the gallons and price per gallon are lost. These
-  receipts need their own extraction shape.
+  (Receipts now have kinds with their own forms: [documents](documents.md#receipt-kinds).)
+- **Analytics on document details** (specs/document-forms D4): fuel-price history, miles per gallon, dining per person,
+  grocery unit prices, rate history (APR, APY) and rewards tracking. The details are recorded and shown only.
+- **Pay stubs, beyond the guards** (specs/document-forms non-goals): a second, focused vision pass over a pay stub's
+  columns, and saved payroll templates per employer (`text_extraction_plan.md`).
+- **Document-forms risks not handled** (specs/document-forms domain risks, decision D-P6):
+  - mixed-purpose receipts (a gas-station store run, fuel points on a grocery receipt): the kind may flip between
+    readings;
+  - pump prepay or card holds: a prepay could be read as the total;
+  - two copies of one dining receipt (merchant copy with the tip, customer copy): left to duplicate handling;
+  - fuel prices printed with 9/10 of a cent, in litres, or with no unit: the fuel check is skipped when the unit isn't
+    printed;
+  - EBT/SNAP is sensitive: only the tender type is stored, and family routing and donation redaction don't treat it
+    specially yet;
+  - combined statements (several accounts or cardholders): the summary check may compare one account's totals with
+    another's;
+  - negative or retro pay lines have no rule of their own (the year-to-date comparison uses magnitudes).
+- **Document-forms follow-ups:** pay stub and statement details can't be corrected with Edit details (receipt details
+  can); a reviewed receipt's new kind proposes summary details only, never item details (weights); a family member's
+  copy of a gift-card receipt shows the amount paid, not the printed total; a full account number quoted inside an item
+  row's citation isn't masked (product codes look the same); a document in a running batch whose reading hasn't
+  started yet doesn't refuse a kind change (the kind still wins).
 - **Complex PDF layout:** merged/stacked headers, wrapped cells, rich form-field association, cross-page tables and
   repeated-header/footer detection remain open. Shared native layout is connected to extraction, search and source
   highlighting; see the [text extraction plan](../text_extraction_plan.md) for implemented behavior and limits.

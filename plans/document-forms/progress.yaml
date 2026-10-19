@@ -184,7 +184,7 @@ slices:
       receipt_kind (it isn't in CORRECTABLE). J-c simulated by a queued kind-change row set to running, then a restart.
   - id: SL-09
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 53b9cbe
     verification:
       - "RUN_BROWSER_TESTS=1 .venv/Scripts/python.exe -m pytest tests/test_document_v2_browser.py -k \"kind or forms or kind_trace\" --browser -q -> 2 passed (SC-14 steps 1–6 with no page errors or CSP violations; SC-19 step 8)"
       - "RUN_BROWSER_TESTS=1 ... tests/test_document_v2_browser.py tests/test_record_components_browser.py tests/test_ui_parity.py tests/test_review_v2_browser.py --browser -q -> 21 passed"
@@ -206,4 +206,22 @@ slices:
       document {id, lines}, which the breakdown's "Open source" link uses. seed_documents.seed_document_forms and
       document_server(forms=True), which leaves the fake model ready to read the fuel receipt as dining.
   - id: SL-10
-    status: todo
+    status: done
+    commit: null  # this slice's commit; see git log ("document-forms SL-10")
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_eval_tasks.py -k \"receipt_kind or document_forms\" -q -> passed (with every_task: 4 passed); tests/test_eval_tasks.py tests/test_evals.py -> 29 passed"
+      - "Full targeted run after SL-10 (the contract's command plus test_vision_tables, test_pdf, test_layout_consumers, test_traces, and test_identifiers): RUN_BROWSER_TESTS=1 pytest tests/test_receipt_kinds.py tests/test_paystub_forms.py tests/test_statement_forms.py tests/test_extraction.py tests/test_invoice_ingestion.py tests/test_receipt_segments.py tests/test_migrations.py tests/test_eval_tasks.py tests/test_document_v2_browser.py tests/test_vision_tables.py tests/test_pdf.py tests/test_layout_consumers.py tests/test_traces.py tests/test_identifiers.py --browser -q -> 204 passed"
+      - ".venv/Scripts/python.exe -m ruff check src tests evals -> all checks passed; mypy -> no issues in 72 files"
+      - "SC-16 (review of git diff docs/ text_extraction_plan.md against FR-17): docs/documents.md gains 'Receipt kinds' and 'Pay stub and statement fields' under 'Typed extraction' ('Typed extraction' and 'PDFs' unchanged); docs/money.md gains the guards in 'Money in and paystubs', a 'Gift cards' section and detail corrections in 'Corrections'; docs/ui.md lists the seven refs and the reconciles exception in 'What's built' and the new page parts in 'The document page'; docs/evals.md lists the two tasks; docs/open-work.md drops the gas-station item and the receipt-kinds sentence, adds D4 analytics, the pay stub alternatives, domain risks 1-7 and follow-ups; text_extraction_plan.md records what this closes. A scratch check of every docs/<doc>.md \"Heading\" citation in src/tests/evals/scripts finds none missing from this feature (6 older ones are missing: inventory.js, test_item_traces.py, and four tests citing open-work.md \"UI redesign\")."
+    notes: >-
+      evals/tasks/receipt_kinds.py (20 cases: the spec's four fixtures first, then 4 more of each kind) and
+      evals/tasks/document_forms.py (20 cases: P-table and P-flat as text, bank, card, and variants that leave a printed
+      detail out), registered in evals/tasks TASKS. Both read through the app's own ExtractionService.extract (an
+      instance with a store stub, since reading asks nothing of the library) and normalize; document_forms adds the
+      review rules to know whether a stub would count, and counts its wrong-column values (this period equal to year to
+      date on a stub that counts). Their report_lines add the per-kind and per-type/layout tables to report.md.
+      Deviation: the per-task runner writes results.jsonl and report.md, not summary.json (only the corpus runner,
+      evals.run, writes the shareable summary.json, which already reports pay stub field errors per field). So SC-17's
+      "summary.json reports …" is met by report.md and results.jsonl for these tasks; adding the new counts to the
+      allowlisted summary.json is not built. P-table in the eval is pipe-delimited text (no vision tables), so the
+      eval measures the model's column choice there, not the cell copy.

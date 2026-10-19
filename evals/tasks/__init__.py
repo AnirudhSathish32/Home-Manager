@@ -16,11 +16,13 @@ from . import (
                checkin,
                decisions,
                describe,
+               document_forms,
                identify,
                interpretation,
                item_lookup,
                payees,
                payment_terms,
+               receipt_kinds,
                reviewer,
                rewards,
                tax_table,
@@ -29,4 +31,4 @@ from . import (
 )
 
 TASKS = {module.NAME: module for module in (transcription, identify, describe, rewards, payment_terms, interpretation, reviewer, payees,
-                                            checkin, assistant, item_lookup, warranty, tax_table, decisions)}
+                                            checkin, assistant, item_lookup, warranty, tax_table, decisions, receipt_kinds, document_forms)}

@@ -2,6 +2,16 @@
 
 Status: native PDF layout is now connected to classification, typed extraction, general reasoning, search and the source viewer (2026-10-13). The user-visible wiring described below is implemented. The user's failing paystub has not been inspected, and synthetic tests do not establish its accuracy. No OCR dependency was added. Paths below are relative to the repository root.
 
+## Document forms: what it closes for pay stubs (2026-10-18)
+
+`typed-extraction-v23-document-forms` (specs/document-forms; docs/money.md "Money in and paystubs") closes these pay stub items:
+- **Wrong-column values counted automatically** (the paystub diagnosis below): a this-period value whose printed label or column heading reads as year to date or annual, that is larger than its year to date, or that equals it after the first pay period, is now left out and sent to review on every path (validated cells, native PDF cells and flat text). A characterization test reproduced the defect on the earlier code (an all-year-to-date stub was verified with gross 32,500.00) and passes now.
+- **Recording which row and column a value came from**: every pay amount keeps its printed row label and column heading, cited.
+- **Hours, rate, PTO and deposit splits** are kept, with hours × rate and the split sum as checks.
+- **Recording wrong-column values separately** (step 1 of the diagnosis): the `document_forms` eval task reports, per pay stub fixture, the wrong-column values that would have counted automatically (target 0).
+
+Still open from this plan: the user's own paystub reproduction (run in their terminal; only `summary.json` is shared), live-model evaluation, the focused vision pass and saved payroll templates ([open work](docs/open-work.md)).
+
 ## Consumer wiring implementation (2026-10-13)
 
 - `documents/layout_context.py` provides one readable projection and typed table adapter. Native rows have distinct IDs, even in side-by-side tables; cells retain their original native IDs, words and source lines. Native evidence never becomes a `VisionCell`. Historical text and citations stay accessible. Unsupported orientation, damaged Unicode/geometry and overlapping text use the original text with review issues instead of promoting a broken layout.

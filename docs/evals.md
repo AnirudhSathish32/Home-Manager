@@ -44,6 +44,15 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 | 13 | Free-text check-in | `finance/checkin.py` | `Reading` | `stage`: known lots, dates resolved in code | `checkin` |
 | 14 | Web agents: item names, warranties, tax tables | `household/resolver.py`, `warranty.py`, `tax_tables.py` | step loop | `propose_*`: quotes on the page, numbers in the quotes, brackets ascending | `item_lookup`, `warranty`, `tax_table` |
 | — | Decision model (probabilities) | `models/decisions.py` | probabilities | coverage ≥ 0.5 | `decisions` (with calibration) |
+| 15 | Receipt kind and its form | `ExtractionService.extract` (classify, `receipt_kind`, `RECEIPT_FORMS`), `normalize` | kind, `Receipt<Kind>Summary` | kind cited and listed; details printed in their citation | `receipt_kinds` |
+| 16 | Pay stub and statement fields | `ExtractionService.extract`, `normalize`, `review_reasons` | `PaystubSummary`, `PayLines`, statement summaries | FR-22 guards, hours × rate, splits, summary checks | `document_forms` |
+
+`receipt_kinds` reports, per receipt kind, how often the kind was right and how many printed fields were present and
+right (and how many were invented). `document_forms` reports the same per document type and pay stub layout, and per pay
+stub fixture the **wrong-column values that would count automatically** (a this-period amount equal to its year to
+date on a stub with no review reason); its target is 0, the only threshold set for these tasks (the rest are reported
+only). Both read the documents through the app's own extraction and checks. Run with
+`python -m evals.tasks --tasks receipt_kinds,document_forms --config evals/models.toml`.
 
 For paystubs with validated reported tables, extraction asks the reasoning model to classify rows and code copies
 current/YTD money from the named cells. The synthetic and private document suites should compare wrong-column
