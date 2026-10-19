@@ -131,7 +131,7 @@ slices:
       12.10). Counting rules unchanged.
   - id: SL-07
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: f42d672
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py -k \"document_forms or 070\" -q -> 2 passed (incl. the new record-view checkpoint of SC-11)"
       - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc19 or sc27\" -q -> 9 passed"
@@ -156,7 +156,32 @@ slices:
       in SL-06. Card statement terms come from summary_json (keys without _minor). The test client path is
       traces.trace(store, ref, manager), the function the API route calls.
   - id: SL-08
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"journey or sc18\" -q -> 6 passed (the journey with J-a, J-d, J-f inline; J-e, J-b, J-c; SC-18 and 18a)"
+      - "Also test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused -> passed"
+      - "Regression: test_receipt_kinds, test_paystub_forms, test_statement_forms, test_extraction, test_receipts, test_receipt_segments, test_invoice_ingestion, test_api, test_correction_preview, test_planned_bugfixes, test_family_routing, test_family_inbox, test_bills_ledger, test_layout_consumers, test_vision_tables, test_pdf, test_migrations, test_traces, test_vision_batch -> 231 passed, 1 skipped (opt-in browser)"
+      - "ruff check src and touched tests -> all checks passed; mypy -> no issues in 72 files"
+    notes: >-
+      enqueue(receipt_kind={segment, first_line_id, kind}) puts it in config_json only when given. run() pops it, and
+      requested_kinds() (after the part classification loop, before read) matches it to the part starting at that
+      line, else fails the run "The file's split changed; confirm the split, then change the kind again."; every other
+      part takes the user's latest receipt_kind correction (Ledger.chosen_kind, null = none). read() passes the kind
+      on; record()/publish() carry kind_change into source. publish_receipt writes the receipt_kind correction (previous
+      = the kind before) in its own transaction, and for a user-reviewed receipt sets the kind and
+      pending_details_json {kind, details, run_id, proposed_at} without touching amounts, items or review state; a
+      written publish clears pending. Ledger.apply_details (field receipt_details, value kind, previous the earlier
+      details JSON; no refresh_paid). undo_corrections: receipt_kind inserts an undo row with the earlier kind, sets it
+      and drops pending (then refresh_paid, as PAID_FIELDS includes receipt_kind); receipt_details moves the details
+      back to pending and records an undo row (value null; undoing that row is refused: apply again instead). History
+      labels "Receipt kind" and "Receipt details". Manager.change_receipt_kind under the mutex with require(False): 400
+      unknown receipt or bill, 409 "A reading is in progress; try again when it finishes" for a queued/running
+      extraction or parse of the same blob, unchanged no-op, first line from document_segments (400 "This receipt is no
+      longer in the file's split." when the file is split but this part isn't), else the parse's first line with text;
+      submitted on the inference queue without a busy check. API: PATCH /api/receipts/{id}/kind (Literal kind -> 422
+      for others; 202 with run_id or 200 unchanged), POST /api/receipts/{id}/details/apply. correct() still refuses
+      receipt_kind (it isn't in CORRECTABLE). J-c simulated by a queued kind-change row set to running, then a restart.
   - id: SL-09
     status: todo
   - id: SL-10

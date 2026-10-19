@@ -491,10 +491,12 @@ class Ledger:
     def publish_receipt(self, record, source, status):
         with self.store.connection() as db:
             kind = record.get("receipt_kind")
+            before = db.execute("SELECT receipt_kind FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
             receipt_id, written = self._upsert(db, "receipts", source, {
                 # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
                 # The printed total is written as the total; refresh_paid then counts what was paid after gift cards.
                 "receipt_kind": kind, "details_json": self.merged_details(db, source, kind, record.get("details")), "printed_total_minor": None,
+                "pending_details_json": None,
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
@@ -507,6 +509,15 @@ class Ledger:
                 "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("account_last_four"),
                 "invoice_json": json.dumps(record["invoice"]) if record.get("invoice") else None})
             kept = 0
+            if source.get("kind_change") and kind:
+                # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
+                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,actor,created_at) "
+                           "VALUES('receipt',?,'receipt_kind',?,?,'[]',?,?)", (receipt_id, kind, before["receipt_kind"] if before else None,
+                                                                              actor.current(), now()))
+                if not written:  # Reviewed: amounts, items and review state stay; the kind's details wait for Apply details.
+                    db.execute("UPDATE receipts SET receipt_kind=?,pending_details_json=?,updated_at=? WHERE id=?",
+                               (kind, json.dumps({"kind": kind, "details": record.get("details") or {}, "run_id": source["run_id"], "proposed_at": now()}),
+                                now(), receipt_id))
             if written:
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
                 kept = self._replace_items(db, receipt_id, record, source, status)
@@ -534,6 +545,56 @@ class Ledger:
         row = db.execute("SELECT details_json FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
         found = json.loads(row["details_json"]) if row and row["details_json"] else {}
         return json.dumps({**found, kind: details or {}})
+
+    def chosen_kind(self, blob_hash, segment):
+        """The kind the user last chose for the receipt at this file part, or None (none chosen, or undone back to none)."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT c.value FROM record_corrections c JOIN receipts r ON r.id=c.record_id WHERE c.record_type='receipt' "
+                             "AND c.field='receipt_kind' AND r.blob_hash=? AND r.segment=? ORDER BY c.id DESC LIMIT 1", (blob_hash, segment)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def apply_details(self, receipt_id):
+        """Apply details (FR-12): the details read for a reviewed receipt's new kind become current, as a correction with
+        Undo. Amounts and the review state don't change, even with a gift card (decision D-P4)."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+            if row is None:
+                raise ValueError("Financial record not found.")
+            pending = json.loads(row["pending_details_json"] or "null")
+            if not pending:
+                raise ValueError("There are no details waiting to be applied.")
+            everything = json.loads(row["details_json"] or "{}")
+            previous = everything.get(pending["kind"])
+            everything[pending["kind"]] = pending["details"]
+            db.execute("UPDATE receipts SET details_json=?,pending_details_json=NULL,updated_at=? WHERE id=?", (json.dumps(everything), now(), receipt_id))
+            correction = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,actor,created_at) "
+                                    "VALUES('receipt',?,'receipt_details',?,?,'[]',?,?)",
+                                    (receipt_id, pending["kind"], json.dumps(previous) if previous is not None else None, actor.current(), now())).lastrowid
+        return {**self.record("receipt", receipt_id), "correction_ids": [correction]}
+
+    def _undo_kind(self, db, receipt_id, row):
+        """Undo a kind change or an Apply details (undo_corrections). A kind change puts the earlier kind back, so its
+        details are current again, and drops any proposal for the undone kind; undoing Apply details puts them back to
+        wait. Each is recorded, so later readings see the undone choice."""
+        receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        if row["field"] == "receipt_kind":
+            db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
+                       "VALUES('receipt',?,'receipt_kind',?,?,'[]',?,?,?)", (receipt_id, row["previous"], row["value"], UNDO_REASON, actor.current(), now()))
+            db.execute("UPDATE receipts SET receipt_kind=?,pending_details_json=NULL,updated_at=? WHERE id=?", (row["previous"], now(), receipt_id))
+            return
+        if row["value"] is None:
+            raise ValueError("Those details were already put back to wait; apply them again instead.")
+        everything = json.loads(receipt["details_json"] or "{}")
+        applied = everything.get(row["value"])
+        if row["previous"] is None:
+            everything.pop(row["value"], None)
+        else:
+            everything[row["value"]] = json.loads(row["previous"])
+        pending = {"kind": row["value"], "details": applied or {}, "run_id": None, "proposed_at": now()}
+        db.execute("UPDATE receipts SET details_json=?,pending_details_json=?,updated_at=? WHERE id=?",
+                   (json.dumps(everything), json.dumps(pending), now(), receipt_id))
+        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
+                   "VALUES('receipt',?,'receipt_details',NULL,?,'[]',?,?,?)", (receipt_id, row["value"], UNDO_REASON, actor.current(), now()))
 
     @staticmethod
     def current_details(row):
@@ -1644,7 +1705,8 @@ class Ledger:
                 for line, key in self.income_line_keys(db, record_id):
                     income_labels.update({f"income_line:{key}:current": f"This period: {line['description']}",
                                           f"income_line:{key}:ytd": f"Year to date: {line['description']}"})
-            detail_labels = {field: label for field, (_, label) in self.detail_fields(row).items()} if record_type == "receipt" else {}
+            detail_labels = ({field: label for field, (_, label) in self.detail_fields(row).items()} | {"receipt_kind": "Receipt kind", "receipt_details": "Receipt details"}
+                             if record_type == "receipt" else {})
             for kind, target, shown_row in targets:
                 labels = field_labels(kind, bill=bill and kind == "receipt") | (income_labels if kind == "income_record" else {}) | (
                     detail_labels if kind == "receipt" else {})
@@ -1725,6 +1787,9 @@ class Ledger:
                     continue
                 if row["record_type"] == "transaction":
                     self._apply_transaction_correction(db, row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
+                    continue
+                if row["record_type"] == "receipt" and row["field"] in ("receipt_kind", "receipt_details"):
+                    self._undo_kind(db, record_id, row)
                     continue
                 self._apply_correction(db, row["record_type"], row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
                 table = RECORD_TABLES[row["record_type"]]

@@ -1505,6 +1505,53 @@ class Manager:
             parse_run_id = self.extractions.set_split(document_id, starts)
             return self.start_extraction(document_id, parse_run_id, force=True)
 
+    # Receipt kinds ------------------------------------------------------------------
+
+    def change_receipt_kind(self, receipt_id, kind):
+        """Read one receipt again with another kind's form, from its saved transcription (FR-11, FR-12, FR-18): refused
+        while any reading of the same file is queued or running; queued behind other model work, never refused for it.
+        The kind correction is written with the reading it asks for. Returns {"run_id"}, or unchanged for its own kind."""
+        with self.mutex:
+            store = self.require(False)
+            with store.connection() as db:
+                receipt = db.execute("SELECT id,document_id,blob_hash,segment,receipt_kind,document_kind FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+                if receipt is None:
+                    raise ValueError("Receipt not found.")
+                if receipt["document_kind"] == "bill":
+                    raise ValueError("A bill has no receipt kind.")
+                busy = db.execute("SELECT 1 FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE p.blob_hash=? AND e.status IN ('queued','running') "
+                                  "UNION SELECT 1 FROM parse_runs WHERE blob_hash=? AND status IN ('queued','running')",
+                                  (receipt["blob_hash"], receipt["blob_hash"])).fetchone()
+                if busy:
+                    raise RuntimeError("A reading is in progress; try again when it finishes")
+                if receipt["receipt_kind"] == kind:
+                    return {"run_id": None, "unchanged": True}
+                parse = db.execute("SELECT e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
+                                   "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (receipt["document_id"], receipt["blob_hash"])).fetchone()
+                if parse is None:
+                    raise ValueError("Record this document once before changing its receipt kind.")
+                parts = db.execute("SELECT ordinal,first_line_id FROM document_segments WHERE document_id=? AND blob_hash=?",
+                                   (receipt["document_id"], receipt["blob_hash"])).fetchall()
+            if parts:
+                first = next((part["first_line_id"] for part in parts if part["ordinal"] == receipt["segment"]), None)
+                if first is None:
+                    raise ValueError("This receipt is no longer in the file's split.")
+            else:  # One receipt in the file: it starts at the transcription's first line with text.
+                from ..documents.layout_context import evidence_lines
+                from ..documents.pdf_reader import read_result
+                lines = [line for line in evidence_lines(read_result(self.receipts.get(parse["parse_run_id"])["result"])) if line.text.strip()]
+                first = lines[0].id if lines else None
+            run_id, _ = self.extractions.enqueue(receipt["document_id"], parse["parse_run_id"], self.reasoning_config, True, self.household.home_currency,
+                                                 self.decision_config, receipt_kind={"segment": receipt["segment"], "first_line_id": first, "kind": kind})
+            self.future = self.submit("inference", "extraction", f"Reading the receipt again as {kind}", self.extract_and_file,
+                                      receipt["document_id"], run_id)
+            return {"run_id": run_id}
+
+    def apply_receipt_details(self, receipt_id):
+        with self.mutex:
+            self.require(False)
+            return self.ledger.apply_details(receipt_id)
+
     def extract_and_file(self, document_id, run_id, work):
         self.extractions.run(run_id, work)
         run = self.extractions.get(run_id)

@@ -3,7 +3,10 @@ checked, and what counts unchanged except where the spec says."""
 
 from contextlib import contextmanager
 import json
+import threading
+import time
 
+from fastapi.testclient import TestClient
 import pytest
 
 from document_forms_fixtures import (
@@ -23,6 +26,7 @@ from document_forms_fixtures import (
     grocery_items,
     grocery_replies,
     item,
+    joined,
     library,
     receipt_replies,
     record_document,
@@ -30,11 +34,16 @@ from document_forms_fixtures import (
     uncited,
     value,
 )
+from home_manager.app.api import create_app
 from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADERS
+from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance import traces
 from home_manager.finance.health import check_ledger
+from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.tools import FinanceTools, PeriodInput
+from home_manager.library.scanner import ScanLimits
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
+from test_receipts import make_receipt
 
 KIND_FORMS = ("ReceiptFuelSummary", "ReceiptDiningSummary", "ReceiptGrocerySummary")
 
@@ -574,3 +583,283 @@ def test_sc27_b_only_the_full_charge_printed_means_no_match(tmp_path, local_mode
         assert october(manager) == {"groceries": 355 + 855}
     finally:
         manager.close()
+
+
+# Changing the kind, reading again and review protection (journey SC-09, SC-10, SC-13; FR-11, FR-12, FR-18) -------------
+
+TOKEN = "kinds-token"
+
+
+@contextmanager
+def app_session(tmp_path, local_model, lines=None):
+    """The app and its API client on tmp_path's library; with lines, the library is set up and a document captured from
+    them first (as transcribe does), else the library opened before is opened again (a restart). Yields (client,
+    manager, document, parse run id)."""
+    app = create_app(tmp_path / "control", TOKEN, limits=ScanLimits(stability_seconds=0))
+    with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": f"Bearer {TOKEN}"}) as client:
+        manager = app.state.manager
+        if lines is not None:
+            manager.configure(str(tmp_path / "managed"))
+            make_receipt(manager.store.library.inbox / "document.png", lines)
+            local_model["output"] = {"full_text": "\n".join(lines)}
+            manager.configure_vision(local_model["config"])
+            manager.start_inbox()
+            manager.future.result(timeout=30)
+            manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+            manager.configure_household(HouseholdConfig(auto_identify_items=False))
+        doc = manager.store.documents()["items"][0]
+        yield client, manager, doc, manager.receipts.history(doc["id"])[0]["id"]
+
+
+def change_kind(client, manager, receipt_id, kind):
+    """PATCH the kind, and wait for the reading it starts."""
+    response = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": kind})
+    if response.status_code == 202:
+        manager.future.result(timeout=30)
+    return response
+
+
+def receipt_row(manager):
+    with manager.store.connection() as db:
+        return dict(db.execute("SELECT * FROM receipts").fetchone())
+
+
+def corrections_of(manager, field=None):
+    with manager.store.connection() as db:
+        return [dict(row) for row in db.execute("SELECT field,value,previous,reason FROM record_corrections WHERE record_type='receipt'"
+                                                + (" AND field=?" if field else "") + " ORDER BY id", (field,) if field else ())]
+
+
+def read_as(lines, kind):
+    """The fuel receipt's lines read with another kind's form (a kind change): the shared fields as printed, the kind's
+    own fields not printed; the classifier still says general."""
+    base = fuel_replies(lines, kind="general")
+    if kind == "fuel":
+        return {**base, **{key: value for key, value in fuel_replies(lines).items() if key != "Classification"}}
+    form = {"dining": "ReceiptDiningSummary", "grocery": "ReceiptGrocerySummary"}[kind]
+    own = {"dining": {name: MISSING for name in ("gratuity_included", "gratuity", "party_size", "server", "table")},
+           "grocery": {"savings_total": MISSING, "tenders": []}}[kind]
+    return {**base, form: [{**base["ReceiptSummary"][0], **own}], **({"GroceryItems": base["Items"]} if kind == "grocery" else {})}
+
+
+def v22_replies(lines):
+    """A reading from before receipt kinds: today's form, no kind, and the pump number read as an item."""
+    replies = fuel_replies(lines, kind="general")
+    replies["Classification"][0].pop("receipt_kind")
+    replies["Classification"][0].pop("receipt_kind_evidence")
+    replies["Items"][0]["items"].insert(1, item(lines, "PUMP 17", "PUMP 17", "17"))
+    return replies
+
+
+def test_journey_kind_change_reading_again_and_review_protection(tmp_path, local_model):
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        # A receipt read at v22: in Review, with a PUMP 17 item, no kind.
+        local_model["by_schema"] = v22_replies(lines)
+        first = extract(manager, doc, parse_id)
+        receipt_id = first["publication"]["id"]
+        with manager.store.connection() as db:
+            db.execute("UPDATE extraction_runs SET prompt_version='typed-extraction-v22-native-cells' WHERE id=?", (first["id"],))
+            db.execute("UPDATE receipts SET receipt_kind=NULL,details_json=NULL WHERE id=?", (receipt_id,))
+        assert "PUMP 17" in [entry["description"] for entry in manager.ledger.record("receipt", receipt_id)["items"]]
+        # 1. Read again at the new version (the model says general): a new run; PUMP 17 goes with its split rows.
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        started = manager.start_extraction(doc["id"], parse_id)
+        manager.future.result(timeout=30)
+        assert started["reused"] is False
+        record = manager.ledger.record("receipt", receipt_id)
+        assert [entry["description"] for entry in record["items"]] == ["REG UNL", "COFFEE"] and record["receipt_kind"] == "general"
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM category_splits s WHERE s.receipt_item_id IS NOT NULL AND NOT EXISTS("
+                              "SELECT 1 FROM receipt_items i WHERE i.id=s.receipt_item_id)").fetchone()[0] == 0
+            parses = db.execute("SELECT count(*) FROM parse_runs").fetchone()[0]
+        # 2. Change the kind to fuel: exactly one fuel-form reading of the saved transcription.
+        local_model["requests"].clear()
+        local_model["by_schema"] = read_as(lines, "fuel")
+        response = change_kind(client, manager, receipt_id, "fuel")
+        assert response.status_code == 202 and response.json()["run_id"]
+        assert asked(local_model).count("ReceiptFuelSummary") == 1 and "image_url" not in json.dumps(local_model["requests"])
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM parse_runs").fetchone()[0] == parses
+        # 3. The record is fuel with its details; history shows the change with Undo.
+        record = manager.ledger.record("receipt", receipt_id)
+        assert record["receipt_kind"] == "fuel" and record["details"]["volume"]["text"] == "10.312"
+        change = next(entry for entry in manager.ledger.history("receipt", receipt_id) if entry.get("field") == "receipt_kind")
+        assert (change["label"], change["from"], change["to"], change["undoable"]) == ("Receipt kind", "general", "fuel", True)
+        # 4. Read again, the model saying general: the user's kind stays, and the general entry is kept beside fuel.
+        local_model["by_schema"] = read_as(lines, "fuel")
+        extract(manager, doc, parse_id, force=True)
+        assert receipt_row(manager)["receipt_kind"] == "fuel"
+        assert set(json.loads(receipt_row(manager)["details_json"])) == {"general", "fuel"}
+        pump = manager.ledger.correct("receipt", receipt_id, {"detail:pump_number": "18"})
+        # 5. Undo the kind change: general again, and fuel details aren't current.
+        kind_change = next(entry for entry in manager.ledger.history("receipt", receipt_id) if entry.get("field") == "receipt_kind")
+        undone = manager.ledger.undo_corrections("receipt", receipt_id, [kind_change["id"]])
+        assert undone["receipt_kind"] == "general" and undone["details"] == {}
+        with pytest.raises(ValueError, match="This detail is no longer in the reading."):
+            manager.ledger.undo_corrections("receipt", receipt_id, pump["correction_ids"])
+        # 6. Verify it, then correct the total.
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        manager.ledger.correct("receipt", receipt_id, {"total": "38.00"})
+        # 7. Change the kind to dining: recorded; amounts, items and verified unchanged; dining details pending.
+        local_model["by_schema"] = read_as(lines, "dining")
+        assert change_kind(client, manager, receipt_id, "dining").status_code == 202
+        record = manager.ledger.record("receipt", receipt_id)
+        assert (record["receipt_kind"], record["total_minor"], record["review_status"]) == ("dining", 3800, "verified")
+        assert [entry["description"] for entry in record["items"]] == ["REG UNL", "COFFEE"]
+        assert record["pending_details"]["kind"] == "dining" and record["details"] is None
+        # J-a: the same kind again is a no-op.
+        requests = len(local_model["requests"])
+        again = change_kind(client, manager, receipt_id, "dining")
+        assert again.status_code == 200 and again.json() == {"run_id": None, "unchanged": True} and len(local_model["requests"]) == requests
+        # J-d: an unlisted kind is refused and changes nothing.
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "pharmacy"}).status_code == 422
+    # 8. Restart: a new manager on the same library; the proposal still waits.
+    with app_session(tmp_path, local_model) as (client, manager, _doc, _parse_id):
+        assert manager.ledger.record("receipt", receipt_id)["pending_details"]["kind"] == "dining"
+        # 9. Apply details: current, as a correction with Undo; total and verified unchanged.
+        applied = client.post(f"/api/receipts/{receipt_id}/details/apply")
+        assert applied.status_code == 200
+        record = applied.json()
+        assert record["pending_details"] is None and record["details"] == {} and (record["total_minor"], record["review_status"]) == (3800, "verified")
+        # 10. Undo the apply: waiting again.
+        undone = manager.ledger.undo_corrections("receipt", receipt_id, record["correction_ids"])
+        assert undone["pending_details"]["kind"] == "dining"
+        # J-f: Apply with nothing pending is refused.
+        manager.ledger.apply_details(receipt_id)
+        refused = client.post(f"/api/receipts/{receipt_id}/details/apply")
+        assert refused.status_code == 400 and refused.json()["detail"] == "There are no details waiting to be applied."
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+        assert [(row["field"], row["value"]) for row in corrections_of(manager) if row["field"] in ("receipt_kind", "receipt_details", "total")] == [
+            ("receipt_kind", "fuel"), ("receipt_kind", "general"), ("total", "38.00"), ("receipt_kind", "dining"), ("receipt_details", "dining"),
+            ("receipt_details", None), ("receipt_details", "dining")]
+        record = manager.ledger.record("receipt", receipt_id)
+        assert (record["review_status"], record["total_minor"]) == ("verified", 3800)
+
+
+def test_journey_a_second_kind_change_replaces_the_proposal(tmp_path, local_model):
+    """J-e: on a verified receipt, a second kind change before Apply leaves one proposal, for the newer kind."""
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        for kind in ("fuel", "grocery"):
+            local_model["by_schema"] = read_as(lines, kind)
+            assert change_kind(client, manager, receipt_id, kind).status_code == 202
+        row = receipt_row(manager)
+        assert row["receipt_kind"] == "grocery" and json.loads(row["pending_details_json"])["kind"] == "grocery"
+
+
+def test_journey_b_a_cancelled_kind_change_leaves_everything_as_it_was(tmp_path, local_model):
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        before, kinds = receipt_row(manager), corrections_of(manager, "receipt_kind")
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = read_as(lines, "fuel")
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"}).status_code == 202
+        manager.cancel()
+        gate.set()
+        manager.future.result(timeout=30)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT status FROM extraction_runs ORDER BY created_at DESC LIMIT 1").fetchone()[0] == "cancelled"
+        after = receipt_row(manager)
+        assert {key: after[key] for key in before if key != "updated_at"} == {key: before[key] for key in before if key != "updated_at"}
+        assert corrections_of(manager, "receipt_kind") == kinds
+        local_model.pop("response_gate")
+        local_model["by_schema"] = read_as(lines, "fuel")  # Retried: the same PATCH again.
+        assert change_kind(client, manager, receipt_id, "fuel").status_code == 202
+        assert receipt_row(manager)["receipt_kind"] == "fuel"
+
+
+def test_journey_c_a_restart_interrupts_a_kind_change(tmp_path, local_model):
+    """J-c: a restart while the kind change is running marks it interrupted; nothing partial is kept, and it can be retried."""
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (_client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        before = receipt_row(manager)
+        run_id, _ = manager.extractions.enqueue(doc["id"], parse_id, manager.reasoning_config, True, manager.household.home_currency,
+                                                manager.decision_config, receipt_kind={"segment": 0, "first_line_id": "line-1", "kind": "fuel"})
+        with manager.store.connection() as db:
+            db.execute("UPDATE extraction_runs SET status='running' WHERE id=?", (run_id,))  # A reading cut off by the restart.
+    with app_session(tmp_path, local_model) as (client, manager, _doc, _parse_id):
+        assert manager.extractions.get(run_id)["status"] == "interrupted"
+        after = receipt_row(manager)
+        assert (after["receipt_kind"], after["details_json"], after["pending_details_json"]) == (
+            before["receipt_kind"], before["details_json"], before["pending_details_json"])
+        local_model["by_schema"] = read_as(lines, "fuel")
+        assert change_kind(client, manager, receipt_id, "fuel").status_code == 202
+        assert receipt_row(manager)["receipt_kind"] == "fuel"
+
+
+def test_sc18_a_kind_change_waits_for_a_reading_of_the_same_document(tmp_path, local_model):
+    """FR-18: refused (409) while a reading of the same file is running or queued, with nothing written or asked;
+    accepted after."""
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        manager.configure_household(manager.household.model_copy(update={"home_currency": "USD"}))
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = joined(fuel_replies(lines, kind="general"), fuel_replies(lines, kind="general"))
+        running = manager.start_extraction(doc["id"], parse_id, force=True)["run_id"]
+        for _ in range(200):
+            if manager.extractions.get(running)["status"] == "running":
+                break
+            time.sleep(0.05)
+        requests = len(local_model["requests"])
+        refused = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "dining"})
+        assert refused.status_code == 409 and refused.json()["detail"] == "A reading is in progress; try again when it finishes"
+        # A second reading of the same file, queued behind it (other options, so it isn't the held run).
+        queued, _ = manager.extractions.enqueue(doc["id"], parse_id, manager.reasoning_config, True, None, manager.decision_config)
+        second = manager.submit("inference", "extraction", "Ledger extraction", manager.extract_and_file, doc["id"], queued)
+        assert manager.extractions.get(queued)["status"] == "queued"
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "dining"}).status_code == 409
+        assert corrections_of(manager, "receipt_kind") == [] and len(local_model["requests"]) == requests
+        gate.set()
+        second.result(timeout=30)
+        assert [manager.extractions.get(run)["status"] for run in (running, queued)] == ["succeeded", "succeeded"]
+        assert receipt_row(manager)["currency"] == "USD"
+        local_model.pop("response_gate")
+        local_model["requests"].clear()
+        local_model["by_schema"] = read_as(lines, "dining")
+        assert change_kind(client, manager, receipt_id, "dining").status_code == 202
+        assert asked(local_model).count("ReceiptDiningSummary") == 1 and receipt_row(manager)["receipt_kind"] == "dining"
+
+
+def test_sc18_a_another_documents_reading_doesnt_refuse_it(tmp_path, local_model):
+    """18a: the kind change waits in the queue behind the other document's reading."""
+    manager = library(tmp_path, local_model)
+    try:
+        _, _, fuel_run = record_document(manager, local_model, "fuel.png", fuel(), fuel_replies(fuel(), kind="general"))
+        other, other_parse, _ = record_document(manager, local_model, "dining.png", DINING, dining_replies())
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = joined(dining_replies(), read_as(fuel(), "fuel"))
+        manager.start_extraction(other["id"], other_parse, force=True)
+        started = manager.change_receipt_kind(fuel_run["publication"]["id"], "fuel")
+        assert started["run_id"]
+        gate.set()
+        manager.future.result(timeout=30)
+        assert manager.extractions.get(started["run_id"])["status"] == "succeeded"
+        with manager.store.connection() as db:
+            assert db.execute("SELECT receipt_kind FROM receipts WHERE id=?", (fuel_run["publication"]["id"],)).fetchone()[0] == "fuel"
+    finally:
+        manager.close()
+
+
+def test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused(tmp_path, local_model):
+    lines = fuel()
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        assert client.patch(f"/api/receipts/{receipt_id + 9}/kind", json={"kind": "fuel"}).status_code == 400
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET document_kind='bill' WHERE id=?", (receipt_id,))
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"}).json()["detail"] == "A bill has no receipt kind."

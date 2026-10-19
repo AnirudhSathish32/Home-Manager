@@ -9,7 +9,7 @@ import sqlite3
 from typing import Literal
 from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -196,6 +196,11 @@ class LineInput(BaseModel):
 class ShareRequestInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     requested: bool
+
+
+class ReceiptKindInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["fuel", "dining", "grocery", "general"]
 
 
 class ReceiptInput(BaseModel):
@@ -1004,6 +1009,19 @@ def create_app(control: Path | None = None, token: str | None = None,
         if value.field == "member":  # The family's inbox knows its people; a person's own library knows only its own lines.
             return manager().set_family_line_member(receipt_id, position, value.value)
         return manager().ledger.correct_line(receipt_id, position, value.field, value.value, value.reason)
+
+    @app.patch("/api/receipts/{receipt_id}/kind")
+    def change_receipt_kind(receipt_id: int, value: ReceiptKindInput, response: Response):
+        """Read the receipt again with another kind's form (docs/documents.md "Receipt kinds"): 202 with the run, or 200 unchanged."""
+        store()
+        found = manager().change_receipt_kind(receipt_id, value.kind)
+        response.status_code = 202 if found["run_id"] else 200
+        return found
+
+    @app.post("/api/receipts/{receipt_id}/details/apply")
+    def apply_receipt_details(receipt_id: int):
+        store()
+        return manager().apply_receipt_details(receipt_id)
 
     @app.put("/api/receipts/{receipt_id}/share-by-line")
     def share_by_line(receipt_id: int, value: ShareRequestInput):

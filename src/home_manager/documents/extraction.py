@@ -2047,8 +2047,9 @@ class ExtractionService:
             db.execute("UPDATE extraction_runs SET status='interrupted',error='Extraction interrupted before publication. Retry from the saved transcription.',updated_at=? "
                        "WHERE status IN ('queued','running')", (now(),))
 
-    def enqueue(self, document_id, parse_run_id, config, force=False, home_currency=None, decision=None):
-        """decision: the DecisionConfig whose advisory checks run on this extraction, or None."""
+    def enqueue(self, document_id, parse_run_id, config, force=False, home_currency=None, decision=None, receipt_kind=None):
+        """decision: the DecisionConfig whose advisory checks run on this extraction, or None. receipt_kind: a kind change
+        (Manager.change_receipt_kind), {"segment", "first_line_id", "kind"}: that receipt is read with that kind's form."""
         if not config.model:
             raise ValueError("Configure a local reasoning model in Settings first.")
         run = self.receipts.get(parse_run_id)
@@ -2060,7 +2061,8 @@ class ExtractionService:
         require_transcription(read_result(run["result"]))
         # The home currency and the decision model change publication, so they are part of the reuse key.
         checks = decision.model_dump() if decision is not None and decision.enabled else None
-        options = json.dumps({**config.model_dump(), "home_currency": home_currency, "decision": checks}, sort_keys=True)
+        options = json.dumps({**config.model_dump(), "home_currency": home_currency, "decision": checks,
+                              **({"receipt_kind": receipt_kind} if receipt_kind else {})}, sort_keys=True)
         identity = resolve_identity(self.store, config)
         with self.store.connection() as db:
             for row in db.execute("SELECT id,status,model_identity FROM extraction_runs WHERE parse_run_id=? AND document_id=? AND config_json=? AND prompt_version=? "
@@ -2334,7 +2336,7 @@ class ExtractionService:
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
-                receipt_kind=None):
+                receipt_kind=None, kind_change=False):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -2387,7 +2389,7 @@ class ExtractionService:
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
         source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
-                  "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment}
+                  "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment, "kind_change": kind_change}
         if currency is None:
             return record, {"status": "blocked", "reason": "Currency could not be resolved, so nothing was published. Check the currency in the document text and your home currency in Settings, then extract again."}
         if kind in ("bank_statement", "credit_card_statement") and not record["institution"]:
@@ -2423,6 +2425,7 @@ class ExtractionService:
             run = self.get(run_id)
             settings = dict(run["config"])
             home_currency, checks = settings.pop("home_currency", None), settings.pop("decision", None)
+            kind_change = settings.pop("receipt_kind", None)
             settings.pop("laya", None)  # Runs queued before decision models replaced Laya.
             decision = DecisionConfig.model_validate(checks) if checks else None
             config = ReasoningConfig.model_validate(settings)
@@ -2452,10 +2455,13 @@ class ExtractionService:
                         parts, kinds = [(0, len(lines))], []
                         break
                     kinds.append((kind, part_notes))
-                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind)
-                            for (first, last), (kind, part_notes) in zip(parts, kinds)]
+                requested = self.requested_kinds(parse, lines, parts, kind_change)
+                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0])
+                            for ordinal, ((first, last), (kind, part_notes)) in enumerate(zip(parts, kinds))]
                 if not readings:
-                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification)]
+                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0])]
+                for reading, (_, asked) in zip(readings, requested):
+                    reading["kind_change"] = asked  # Only the receipt this run was asked to read as a kind records the change (FR-11).
             work.check()  # Cancellation always wins: never publish after a cancel request.
             confirmed = self.split_confirmed(run, parse, lines, parts)  # Also true for the user's own choice of one receipt.
             outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
@@ -2481,6 +2487,18 @@ class ExtractionService:
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, ValidationError) else "Extraction failed; nothing was published."
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='failed',error=?,updated_at=? WHERE id=?", (message[:1200], now(), run_id))
+
+    def requested_kinds(self, parse, lines, parts, kind_change):
+        """[(kind or None, asked by this run)] per receipt: the kind a kind change asks for, matched to its receipt by its
+        first line; else the kind the user chose for that receipt last (a correction), so it outlives later readings;
+        else None, and the model proposes one (FR-11). A kind change whose receipt no longer starts a part fails the run."""
+        found = [(self.ledger.chosen_kind(parse["blob_hash"], ordinal), False) for ordinal in range(len(parts))]
+        if kind_change:
+            matched = [ordinal for ordinal, (first, _) in enumerate(parts) if lines[first].id == kind_change["first_line_id"]]
+            if not matched:
+                raise ValueError("The file's split changed; confirm the split, then change the kind again.")
+            found[matched[0]] = (kind_change["kind"], True)
+        return found
 
     def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here.
@@ -2584,7 +2602,7 @@ class ExtractionService:
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
                                                              reading.get("cell_references"), reading.get("summary_references"),
-                                                             reading.get("receipt_kind"))
+                                                             reading.get("receipt_kind"), reading.get("kind_change", False))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
