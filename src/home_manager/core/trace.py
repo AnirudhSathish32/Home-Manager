@@ -37,6 +37,9 @@ class NullRecorder:
     def input(self, *args, **kwargs):
         pass
 
+    def input_text(self, *args, **kwargs):
+        pass
+
     def rule(self, *args, **kwargs):
         pass
 

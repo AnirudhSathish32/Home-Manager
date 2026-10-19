@@ -20,9 +20,11 @@ import uuid
 from pydantic import Field, ValidationError, create_model, model_validator
 
 from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_CATEGORIES
+from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
+from ..finance import document_checks
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return
 from ..finance.reconcile import Reconciler, due_after
@@ -90,6 +92,8 @@ TERM_KINDS = {"housing_document": "lease, mortgage or housing document", "insura
 PERCENT = re.compile(r"(\d{1,2}(?:\.\d{1,4})?)\s*%")
 # A bill's period in days, and how often such a bill comes.
 BILL_PERIODS = {"weekly": (5, 9), "monthly": (25, 35), "quarterly": (85, 95), "semiannual": (175, 190), "annual": (355, 370)}
+# Fields that print an account or card number: only their last four digits are kept, and their citations are masked (FR-30).
+IDENTIFIER_FIELDS = ("account_reference", "card_last_four")
 DATES = {"purchase_date", "period_start", "period_end", "due_date", "issue_date", "pay_date", "document_date", "trade_date"}
 # Identity names must share a word with their citation; they feed filenames and merchants.
 NAMES = {"merchant", "institution", "issuer", "provider", "payer_or_employer", "employer"}
@@ -116,7 +120,11 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                      "or missing instead of copying YTD. Match values to their printed column headings, even when OCR spacing is imperfect. "
                      "Do not treat annual salary or annualized pay as gross_pay. pay_frequency: the printed pay frequency such as Biweekly or "
                      "Semi-monthly; work_state: the two-letter code of the US state whose income tax is withheld, from the state tax line "
-                     "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals)",
+                     "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals. For each amount, "
+                     "row_label and column_heading are the printed row label and column heading it is read under, each citing the "
+                     "line it is printed on; null when none is printed. pto_balance and sick_balance: the printed paid-time-off and "
+                     "sick-leave balances as printed, such as 56.00 HRS. deposit_splits: each direct deposit's account last four "
+                     "digits and amount; never a full account or routing number)",
           "employment_document": f"employment document such as an offer letter, employment agreement, benefits enrollment or W-2 wage "
                                  f"statement ({EMPLOYER_RULE}; document_name: the document's printed title, such as Offer Letter or W-2; "
                                  "document_date: its date)",
@@ -195,6 +203,10 @@ COLUMN_HEADING = "The printed column heading this amount is under, such as Curre
 class PayValue(Value):
     row_label: PayLabel | None = Field(default=None, description=ROW_LABEL)
     column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
+
+
+HOURS = "The hours printed for this earning line this period, exactly as printed (80.00), or null."
+RATE = "The hourly rate printed for this earning line, exactly as printed without a currency symbol (31.25), or null."
 
 
 class Classification(StrictModel):
@@ -288,6 +300,8 @@ class PayLine(StrictModel):
     current_column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
     ytd_row_label: PayLabel | None = Field(default=None, description=ROW_LABEL)
     ytd_column_heading: PayLabel | None = Field(default=None, description=COLUMN_HEADING)
+    hours: str | None = Field(default=None, max_length=20, description=HOURS)
+    rate: str | None = Field(default=None, max_length=20, description=RATE)
 
 
 class PayRowClass(StrictModel):
@@ -295,6 +309,15 @@ class PayRowClass(StrictModel):
     group: Literal[*PAY_GROUPS]
     category: Literal[*PAY_CATEGORIES]
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
+    hours: str | None = Field(default=None, max_length=20, description=HOURS)
+    rate: str | None = Field(default=None, max_length=20, description=RATE)
+
+
+class Split(StrictModel):
+    """One direct deposit of a paycheck (FR-20): only the account's last four digits are ever read."""
+    last_four: str | None = Field(max_length=20, description="The account's last four digits as printed, such as 1234 from ****1234, or null.")
+    amount: str | None = Field(max_length=50, description="The amount deposited to that account as printed, or null.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
 
 
 class InvestmentLine(StrictModel):
@@ -366,11 +389,21 @@ class Reward(StrictModel):
 # Optional summary fields: a model that leaves them out reads them as missing.
 OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice_number", "bill_to", "invoice_total",
                    "invoice_subtotal", "invoice_tax", "payments_received", "balance_due", "payment_status"}
+# Printed details a summary form adds beyond its HEADERS (document forms, FR-20): name -> (type, default). Each is
+# optional, checked in code (normalize) and stored as the record's details, never as a counted amount.
+DETAIL_FIELDS = {"paystub": {"pto_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
+                             "sick_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
+                             "deposit_splits": (list[Split], Field(default_factory=list, max_length=10))}}
 HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", __base__=StrictModel,
                                     **{name: (PayValue if kind == "paystub" and name in PAY_VALUES else Value,
                                               Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
-                                       for name in fields})
+                                       for name in fields}, **DETAIL_FIELDS.get(kind, {}))
                  for kind, fields in HEADERS.items()}
+# The fields document forms added to each schema, left out together when only they fail validation twice (FR-14).
+NEW_FIELDS = {"PaystubSummary": {*DETAIL_FIELDS["paystub"], "row_label", "column_heading"},
+              "PayLines": {"hours", "rate", "current_row_label", "current_column_heading", "ytd_row_label", "ytd_column_heading"},
+              "PayRowClasses": {"hours", "rate"}}
+DETAILS_FAILED = "Document details could not be read; the record was saved with its usual fields."
 Items = create_model("Items", __base__=StrictModel, items=(list[Item], Field(max_length=MAX_ITEMS)))
 Transactions = create_model("Transactions", __base__=StrictModel, transactions=(list[Transaction], Field(max_length=200)))
 BillLines = create_model("BillLines", __base__=StrictModel, line_items=(list[BillLine], Field(max_length=100)))
@@ -390,7 +423,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
-SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
+SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
                                                                        PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
                                                                        Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
@@ -931,11 +964,69 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
         except (ValidationError, ValueError) as exc:
             message = describe(exc)
             if attempt or len(raw.encode()) > 128 * 1024:
+                # Only the fields document forms added failed: the answer without them, and a note (FR-14).
+                base = base_answer(schema, raw, line_map, amount_field) if attempt and notes is not None else None
+                if base is not None:
+                    if DETAILS_FAILED not in notes:
+                        notes.append(DETAILS_FAILED)
+                    return base
                 raise ValueError(message + " Nothing from this document was published.") from exc
             work.report({"stage": "correcting_extraction", "characters": 0, "elapsed_seconds": 0})
             payload["messages"].extend([{"role": "assistant", "content": raw}, {"role": "user", "content":
                 "The previous JSON failed validation: " + message + " Return the complete corrected JSON for these lines only. "
                 "Keep every row, cite exact quotes, and use ambiguous or missing with null values instead of guessing."}])
+
+
+def without(data, names):
+    """JSON data with every key in names left out, at any depth."""
+    if isinstance(data, dict):
+        return {key: without(value, names) for key, value in data.items() if key not in names}
+    if isinstance(data, list):
+        return [without(value, names) for value in data]
+    return data
+
+
+def base_answer(schema, raw, lines, amount_field):
+    """The same answer with only the fields document forms added left out (NEW_FIELDS), when that passes every check;
+    otherwise None, and the answer fails as before (FR-14)."""
+    names = NEW_FIELDS.get(schema.__name__)
+    if not names:
+        return None
+    try:
+        output = repair_quotes(schema.model_validate(without(json.loads(raw), names)), lines)
+    except (ValidationError, ValueError):
+        return None
+    return None if problems_in(output, lines, amount_field) else output
+
+
+def scrubbed(result):
+    """A reading's saved result with identifiers masked (FR-30) in the identifier fields and the new details: their values
+    and quotes in the answer, and what was stored from them. Dates, names and item rows are left as read."""
+    summary_keys = {*IDENTIFIER_FIELDS, *PAY_VALUES, *set().union(*(fields for fields in DETAIL_FIELDS.values()))}
+    row_keys = set().union(*NEW_FIELDS.values())
+    found = {**result, "header": scrub(result.get("header"), summary_keys),
+             "rows": [scrub(row, row_keys) for row in result.get("rows") or []]}
+    normalized = result.get("normalized")
+    if isinstance(normalized, dict):
+        found["normalized"] = {**scrub(normalized, {"locator", "details"}),
+                               **({"lines": [scrub(line, {"details"}) for line in normalized["lines"]]} if normalized.get("lines") else {})}
+    return found
+
+
+def summary_parts(field):
+    """A summary field's cited parts: the value itself, or each row of a list (a pay stub's deposit splits)."""
+    return field if isinstance(field, list) else [field]
+
+
+def plain(model):
+    """A summary or row with every field document forms added back at its default: nothing new is kept for a record
+    whose details could not be read (FR-14)."""
+    return type(model).model_validate(without(model.model_dump(), set().union(*NEW_FIELDS.values())))
+
+
+def masked(evidence):
+    """Citations with identifiers masked to their last four digits (FR-30), for what is stored from them."""
+    return [EvidenceQuote(line_id=cite.line_id, quote=mask(cite.quote)) for cite in evidence]
 
 
 def locator(*evidence_lists):
@@ -999,7 +1090,8 @@ def normalize(kind, header, rows, currency, lines=None):
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
-    record["locator"] = locator(*(field.evidence for field in fields.values() if field.status == "proposed"))
+    record["locator"] = locator(*(masked(field.evidence) if name in IDENTIFIER_FIELDS else field.evidence
+                                  for name, field in fields.items() if field.status == "proposed"))
 
     def money(text, what, magnitude=False):
         if text is None or currency is None:
@@ -1024,10 +1116,9 @@ def normalize(kind, header, rows, currency, lines=None):
             record[name] = iso_date(text)
             if text and record[name] is None:
                 issues.append(f"{name.replace('_', ' ').capitalize()} is not an unambiguous ISO date.")
-        elif name in ("account_reference", "card_last_four"):
-            digits = re.sub(r"\D", "", text or "")
+        elif name in IDENTIFIER_FIELDS:
             # Never more than four digits. A receipt's card suggests whose it is in a family inbox (finance/family_routing.py).
-            record["last_four" if name == "account_reference" else "payment_last_four"] = digits[-4:] if len(digits) >= 4 else None
+            record["last_four" if name == "account_reference" else "payment_last_four"] = last_four(text)
         elif name != "currency":
             record[name] = " ".join(text.split())[:200] if text else None
     if currency is None and "currency" in HEADERS[kind]:
@@ -1090,7 +1181,8 @@ def normalize(kind, header, rows, currency, lines=None):
     elif kind == "bill":
         bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
-        paystub_lines(record, rows, money, issues, currency, total, fields, {line.id: line.text for line in lines or []})
+        paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields},
+                      {line.id: line.text for line in lines or []})
     elif kind == "investment_statement":
         # The kind (401(k), HSA, CD, …) is told apart only by printed words, never guessed; the user can change it.
         record["investment_kind"] = printed_kind(f"{record.get('account_name') or ''} {record.get('institution') or ''}")
@@ -1354,11 +1446,96 @@ def cited_label(label, what, line_text, issues):
     if label is None:
         return None
     text = " ".join(label.text.split())
-    if not text or not any(text in " ".join(cite.quote.split()) for cite in label.evidence) or any(
-            cite.quote not in line_text.get(cite.line_id, "") for cite in label.evidence):
+    if not text or not any(text in " ".join(cite.quote.split()) for cite in label.evidence) or not all(
+            cited_in(cite, line_text) for cite in label.evidence):
         issues.append(f"{what} was not printed where it was cited.")
         return None
-    return {"status": "proposed", "text": text[:200], "minor": None, "unit": None, "locator": locator(label.evidence)}
+    return {"status": "proposed", "text": masked_text(text, what, issues)[:200], "minor": None, "unit": None, "locator": locator(masked(label.evidence))}
+
+
+def cited_in(cite, line_text):
+    """The quote is printed in its cited line, compared as stored: with identifiers masked (FR-30)."""
+    line = line_text.get(cite.line_id)
+    return line is not None and bool(cite.quote.strip()) and (cite.quote in line or mask(cite.quote) in mask(line))
+
+
+def masked_text(text, what, issues):
+    """Free text read into a detail, with any identifier masked and a note when one was (FR-30)."""
+    shown = mask(text)
+    if shown != text:
+        issues.append(f"Digits of an identifier were dropped from {what}.")
+    return shown
+
+
+def text_detail(text, evidence, what, line_text, issues, unit=None):
+    """A printed number that isn't money (hours, a rate, a balance) as stored: its exact text and unit, never a float,
+    kept only when printed in its citation; otherwise dropped with a note naming it (FR-05, FR-20)."""
+    if text is None:
+        return None
+    number = next(iter(NUMBER.findall(text)), None)
+    if number is None or not printed_in(number, evidence) or not all(cited_in(cite, line_text) for cite in evidence):
+        issues.append(f"{what} was not printed where it was cited and was left out.")
+        return None
+    return {"status": "proposed", "text": number, "minor": None, "unit": unit, "locator": locator(masked(evidence))}
+
+
+BALANCE_UNITS = {"hrs": re.compile(r"\b(hours?|hrs?|h)\b", re.IGNORECASE), "days": re.compile(r"\bdays?\b", re.IGNORECASE)}
+
+
+def pay_details(record, rows, lines, fields, money, line_text, issues, currency):
+    """A pay stub's printed details beyond its counted amounts (FR-20): hours and rate per earning line, the paid-time-off
+    and sick-leave balances, and each direct-deposit split (its account's last four digits only, FR-30). Then the two
+    checks they allow (FR-21), each skipped when its values aren't all printed: hours × rate per earning line, and the
+    splits' sum against net pay. Nothing here changes what the stub counts."""
+    details = record["details"]
+    for name, what in (("pto_balance", "Paid time off balance"), ("sick_balance", "Sick leave balance")):
+        field = fields.get(name)
+        if field is None or field.status != "proposed":
+            continue
+        unit = next((unit for unit, words in BALANCE_UNITS.items() if words.search(field.value)), None)
+        found = text_detail(field.value, field.evidence, what, line_text, issues, unit)
+        if found:
+            found["label"] = cited_label(getattr(field, "row_label", None), f"{what} label", line_text, issues)
+            details[name] = found
+    splits = []
+    for index, split in enumerate(fields.get("deposit_splits") or [], 1):
+        what = f"Deposit split {index}"
+        digits = re.sub(r"\D", "", split.last_four or "")
+        four = last_four(split.last_four)
+        if split.last_four and four is None:
+            issues.append(f"{what} account was not an account number and was dropped.")
+        elif four and four not in re.sub(r"\D", "", " ".join(cite.quote for cite in split.evidence)):
+            issues.append(f"{what} account was not printed where it was cited and was left out.")
+            four = None
+        elif len(digits) > 4:
+            issues.append(f"Digits of an identifier were dropped from {what} account.")
+        amount = money(split.amount, f"{what} amount") if split.amount else None
+        if amount is not None and not amount_supported(split.amount, split.evidence):
+            issues.append(f"{what} amount was not printed where it was cited and was left out.")
+            amount = None
+        splits.append({"last_four": four, "minor": abs(amount) if amount is not None else None, "locator": locator(masked(split.evidence))})
+    if splits:
+        details["deposit_splits"] = splits
+    for index, (row, line) in enumerate(zip(rows, lines), 1):
+        for name in ("hours", "rate"):
+            found = text_detail(getattr(row, name, None), row.evidence, f"Pay line {index} {name}", line_text, issues, "h" if name == "hours" else None)
+            if found:
+                line["details"][name] = found
+        hours, rate = line["details"].get("hours"), line["details"].get("rate")
+        if line["line_group"] == "earnings" and hours and rate and line["current_minor"] is not None and currency:
+            checked = document_checks.hours_rate(hours["text"], rate["text"], line["current_minor"], currency)
+            if checked and checked[2]:
+                record["cross_checks"] += 1
+            elif checked:
+                issues.append(f"This period: {line['description']} {hours['text']} hours × {rate['text']} = {format_minor(checked[0], currency)}, not the "
+                              f"printed {format_minor(line['current_minor'], currency)} ({', '.join(line['locator']['line_ids'])}); check the hours, rate and amount.")
+    if splits and record.get("net_pay_minor") is not None and currency:
+        checked = document_checks.deposit_splits([split["minor"] for split in splits], record["net_pay_minor"], currency)
+        if checked and checked[2]:
+            record["cross_checks"] += 1
+        elif checked:
+            issues.append(f"Deposit splits add up to {format_minor(checked[0], currency)}, not net pay {format_minor(record['net_pay_minor'], currency)}; "
+                          "check each deposit's amount.")
 
 
 def first_pay_period(record):
@@ -1468,6 +1645,7 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
             by_key[key]["line"]["details"].update(current_status="ambiguous", guard=result)
     record["details"] = {key: value for key, value in (("labels", labels), ("guards", {key: value for key, value in guards.items() if "line" not in by_key[key]}))
                          if value}
+    pay_details(record, rows, lines, fields, money, line_text, issues, currency)
     if not lines:  # Only the printed totals: taxes and deductions against gross and net.
         net = total([record["gross_pay_minor"], -(record["taxes_minor"] or 0), -(record["deductions_minor"] or 0)])
         if net is not None and record["net_pay_minor"] is not None and record["taxes_minor"] is not None:
@@ -1551,7 +1729,7 @@ class ExtractionService:
         labels, claims = [], []
         for name in (type(header).model_fields if header else []):
             field = getattr(header, name)
-            if field.status == "proposed":
+            if isinstance(field, Value) and field.status == "proposed":
                 labels.append(name)
                 claims.append((f"{name.replace('_', ' ')}: {field.value}", [cite.quote for cite in field.evidence]))
         for index, row in enumerate(rows, 1):
@@ -1682,7 +1860,9 @@ class ExtractionService:
                          "commission); pre_tax (deducted before income tax: 401k or 403b, health, dental, vision, HSA, FSA); tax (federal, "
                          "state and local income tax, Social Security or OASDI, Medicare, state disability); post_tax (Roth 401k, after-tax "
                          "insurance, garnishments); employer_paid (paid by the employer and not taken from pay, such as a 401k match or the "
-                         "employer's share of health). Never list totals (gross pay, net pay, total deductions, total taxes) as lines."
+                         "employer's share of health). Never list totals (gross pay, net pay, total deductions, total taxes) as lines. "
+                         "hours and rate: an earning line's printed hours and hourly rate, or null; never worked out. "
+                         "For each amount, the row label and column heading it is printed under, each cited, or null."
                          if key == "lines" else " Missing fields are null; never assume a quantity of one. Some receipts print one item "
                          "across two lines, such as a department or name line with the price and a line with a product code and name: combine "
                          "them into one row citing both lines, use the product name as description, the number beside it as product_code, "
@@ -1703,6 +1883,7 @@ class ExtractionService:
                 row_direction = (" Classify each printed earning, deduction, tax and employer contribution row by group and "
                                  "category. Never list totals such as gross pay, net pay, total deductions or total taxes. "
                                  "Do not return money values; the application copies them from the cited reported table cells. "
+                                 "hours and rate: an earning row's printed hours and hourly rate, or null. "
                                  if classified_cells else direction)
                 answer = ask(config, work, answer_schema, f"List every {row_label} printed in these lines of a {LABELS[kind]}, in order, "
                                         f"one entry per printed row; repeated identical rows are separate entries. Do not skip rows.{row_direction} "
@@ -1712,7 +1893,7 @@ class ExtractionService:
                                         part, 8192, None if classified_cells else amount_field, notes, context)
                 if classified_cells:
                     rows.extend(PayLine(description=row.description, group=row.group, category=row.category,
-                                        current=None, ytd=None, evidence=row.evidence) for row in answer.lines)
+                                        current=None, ytd=None, evidence=row.evidence, hours=row.hours, rate=row.rate) for row in answer.lines)
                 else:
                     rows.extend(getattr(answer, key))
         return classification, header, rows, identity
@@ -1851,6 +2032,8 @@ class ExtractionService:
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None):
         record_notes = []
+        if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
+            header, rows = plain(header), [plain(row) for row in rows]
         name_field = IDENTITY[kind][0]
         if getattr(header, name_field).status != "proposed" and classification.issuer.status == "proposed":
             # The classifier's issuer already passed the same citation and name checks.
@@ -2026,7 +2209,7 @@ class ExtractionService:
             # Every native body row must be accounted for, including summary rows.
             # An omission cannot become an automatically accepted partial ledger.
             cited = {cite.line_id for row in rows for cite in row.evidence}
-            cited.update(cite.line_id for name in type(header).model_fields for cite in getattr(header, name).evidence)
+            cited.update(cite.line_id for name in type(header).model_fields for item in summary_parts(getattr(header, name)) for cite in item.evidence)
             supplied = {line.id for line in lines}
             native_ids = {row.line_id for table in tables if getattr(table, "source", None) == "pdf_text" for row in table.rows}
             used = set()
@@ -2093,7 +2276,7 @@ class ExtractionService:
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
                                                              reading.get("cell_references"), reading.get("summary_references"))
-        return result, publication
+        return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
 

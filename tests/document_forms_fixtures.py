@@ -5,6 +5,8 @@ Lines are exactly as the contract prints them. Stubs answer by json_schema name 
 transcription's line ids are (line-1, line-2, …).
 """
 
+from home_manager.core.identifiers import mask
+
 MISSING = {"value": None, "status": "missing", "evidence": []}
 AMBIGUOUS = {"value": None, "status": "ambiguous", "evidence": []}
 
@@ -136,18 +138,43 @@ def at(lines, number, quote=None):
 P_TABLE_HEADING = "Description | This period | Year to date"
 
 
-def p_table(period=("2026-06-15", "2026-06-28"), pay_date="2026-07-03", frequency="BIWEEKLY"):
+def p_table(period=("2026-06-15", "2026-06-28"), pay_date="2026-07-03", frequency="BIWEEKLY", regular="Regular 80.00 h @ 31.25", extras=None):
     """P-table: (lines, tables) with a validated vision table headed Description | This period | Year to date. The
-    Regular row prints its hours and rate in its description cell."""
+    Regular row prints its hours and rate in its description cell (regular: that cell's text)."""
     lines = p_header(period, pay_date, frequency)
     first = len(lines)
-    rows = [("Regular 80.00 h @ 31.25" if name == "Regular" else name, current, ytd) for name, _, _, current, ytd in P_LINES]
+    rows = [(regular if name == "Regular" else name, current, ytd) for name, _, _, current, ytd in P_LINES]
     rows += [("Gross pay", *P_GROSS), ("Net pay", *P_NET)]
     lines.append(P_TABLE_HEADING)
     lines += [" | ".join(cells) for cells in rows]
     tables = [{"header_rows": [{"line_index": first, "cells": ["Description", "This period", "Year to date"]}],
                "rows": [{"line_index": first + 1 + index, "cells": list(cells)} for index, cells in enumerate(rows)]}]
-    return lines + P_EXTRAS, tables
+    return lines + list(P_EXTRAS if extras is None else extras), tables
+
+
+# Final-state oracles ----------------------------------------------------------------------------------------------
+
+# The saved transcription keeps the document as printed (FR-30, docs/documents.md): the only tables C-ids skips.
+TRANSCRIPTION_STORES = ("parse_runs", "document_passages")
+
+
+def stored_identifiers(db, identifiers=IDENTIFIERS):
+    """(table, column, identifier) for every fixture identifier stored outside the saved transcription (C-ids)."""
+    found = []
+    tables = [row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+              if row[0] not in TRANSCRIPTION_STORES and not row[0].startswith("document_passages_fts")]
+    for table in tables:
+        for column in [row[1] for row in db.execute(f'PRAGMA table_info("{table}")') if row[2].upper() in ("TEXT", "", "ANY", "BLOB")]:
+            for identifier in identifiers:
+                if db.execute(f'SELECT 1 FROM "{table}" WHERE instr(CAST("{column}" AS TEXT), ?) LIMIT 1', (identifier,)).fetchone():
+                    found.append((table, column, identifier))
+    return found
+
+
+def uncited(detail, lines):
+    """C-cite: the quotes of a stored detail that aren't in any of its cited lines (compared masked, as stored)."""
+    texts = [mask(lines[int(line_id.split("-")[1]) - 1]) for line_id in detail["locator"]["line_ids"]]
+    return [quote for quote in detail["locator"]["quotes"] if not any(mask(quote) in text for text in texts)]
 
 
 def paystub_summary(lines, **changes):

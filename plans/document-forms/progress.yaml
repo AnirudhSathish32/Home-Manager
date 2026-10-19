@@ -17,7 +17,7 @@ slices:
       add the new forms' stubs. SC-11's last checkpoint (record view) is SL-07.
   - id: SL-02
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 0654788
     verification:
       - "Characterization (FR-24), on the tree after SL-01 with none of SL-02's non-test changes: .venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k sc20_e -q -s -> 1 failed; printed 'characterization: verified 3250000 []' (AssertionError: assert 3250000 is None). First pre-change run printed 'needs_review 3250000' with 'Pay line 6 has multiple amounts…': fixture P-flat printed '401(K) 50.00' (two numbers), against the plan's one-amount-per-line premise; P-flat now prints that line as 'PRE-TAX RETIREMENT', and the rerun reproduced the defect."
       - "After: .venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k \"sc20 or version\" -q -> 10 passed (20-a…20-h, 20-e follow-on, SC-15)"
@@ -37,7 +37,27 @@ slices:
       the line's notes (undo restores them); apply_income_line_corrections clears them on a re-read.
       EXTRACTION_VERSION = typed-extraction-v23-document-forms.
   - id: SL-03
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k \"sc21 or sc25 or fallback\" -q -> 7 passed (whole file: 17 passed)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_identifiers.py -q -> 21 passed"
+      - "SC-25's scan (tests/document_forms_fixtures.py stored_identifiers) covers every table and TEXT column except parse_runs, document_passages and document_passages_fts*; it found none"
+      - "Regression (ask, normalize and record() changed for every type): test_identifiers, test_extraction, test_vision_tables, test_pdf, test_layout_consumers, test_receipts, test_invoice_ingestion, test_receipt_segments, test_employers, test_investment_contributions, test_investment_confirmations, test_investments, test_reconcile_tools, test_statement_assets, test_family_routing, test_imports -> 162 passed, 1 skipped (opt-in browser)"
+      - "ruff check on touched files -> all checks passed; .venv/Scripts/python.exe -m mypy -> no issues in 71 files"
+    notes: >-
+      PayLine and PayRowClass gain hours and rate (rows read from table cells come through PayRowClasses, so it needs
+      them too); PaystubSummary gains pto_balance, sick_balance (PayValue) and deposit_splits (list[Split]) through
+      DETAIL_FIELDS. ask: after the second failure, base_answer() validates the same JSON with NEW_FIELDS left out; if
+      that passes every check it is used and DETAILS_FAILED noted; publish() then resets every new field (plain()) in
+      summary and rows. read() and assess() skip list fields of the summary. finance/document_checks.py: product
+      (half-up, within 1), hours_rate, deposit_splits. pay_details: text details (exact text + unit, never floats),
+      splits (last four only; under four digits dropped; more than four kept as the last four with a note), the two
+      checks. core/identifiers.py: mask/scrub/last_four. Deviation: IDENTIFIER also matches SSNs ([\dX]{3}-[\dX]{2}-\d{4}),
+      because C-ids names XXX-XX-1234 and the plan's pattern doesn't match it. Masking applies to the record locator's
+      identifier-field quotes, every new detail's text and quotes (cited_in compares quote in line or mask(quote) in
+      mask(line)), and result_json via scrubbed() (header identifier/pay/detail fields, rows' new fields, normalized
+      locator and details). NullRecorder gains a no-op input_text; the live one is SL-07.
   - id: SL-04
     status: todo
   - id: SL-05

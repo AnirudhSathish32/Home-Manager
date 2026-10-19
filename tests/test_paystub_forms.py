@@ -16,9 +16,11 @@ from document_forms_fixtures import (
     paystub_classification,
     paystub_summary,
     section_line,
+    stored_identifiers,
+    uncited,
     value,
 )
-from home_manager.documents.extraction import EXTRACTION_VERSION, GUARD_RULES
+from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, GUARD_RULES
 from test_extraction import extract, transcribe
 
 
@@ -180,18 +182,128 @@ def test_sc20_e_corrections_clear_their_reasons_and_outlive_reading_again(tmp_pa
         manager.close()
 
 
-def p_table_replies(lines, gross=None):
-    """P-table read correctly: the summary's money cited from its table rows, lines classified by their rows."""
+def p_table_replies(lines, gross=None, hours=None, rate=None, **details):
+    """P-table read correctly: the summary's money cited from its table rows, lines classified by their rows (Regular
+    with hours and rate when given), and the summary's details."""
     def row(text):
         return number_of(lines, text)
     summary = {"gross_pay": gross or {"value": "2,500.00", "status": "proposed", "evidence": at(lines, row("Gross pay |"), "2,500.00")},
                "gross_pay_ytd": {"value": "32,500.00", "status": "proposed", "evidence": at(lines, row("Gross pay |"), "32,500.00")},
                "net_pay": {"value": "1,912.34", "status": "proposed", "evidence": at(lines, row("Net pay |"), "1,912.34")},
                "net_pay_ytd": {"value": "24,860.42", "status": "proposed", "evidence": at(lines, row("Net pay |"), "24,860.42")}}
-    classes = [{"description": name, "group": group, "category": category, "evidence": at(lines, row(f"{name} " if name == "Regular" else f"{name} |"))}
+    classes = [{"description": name, "group": group, "category": category, "evidence": at(lines, row(f"{name} " if name == "Regular" else f"{name} |")),
+                **({"hours": hours, "rate": rate} if name == "Regular" else {})}
                for name, group, category, _, _ in P_LINES]
-    return {"Classification": [paystub_classification(lines)], "PaystubSummary": [paystub_summary(lines, **summary)],
+    return {"Classification": [paystub_classification(lines)], "PaystubSummary": [paystub_summary(lines, **summary, **details)],
             "PayRowClasses": [{"lines": classes}], "PayLines": [{"lines": []}] * 3}
+
+
+def p_details(lines, splits=(("1234", "1,500.00", "DIRECT DEPOSIT CHECKING"), ("9876", "412.34", "SAVINGS ****9876"))):
+    """Fixture P's printed details: the PTO balance with its label, and the deposit splits."""
+    pto = "PTO BALANCE 56.00 HRS"
+    return {"pto_balance": {**value(lines, "56.00 HRS", pto, "56.00 HRS"), "row_label": {"text": "PTO BALANCE", "evidence": cite(lines, pto, "PTO BALANCE")}},
+            "deposit_splits": [{"last_four": four, "amount": amount, "evidence": cite(lines, line)} for four, amount, line in splits]}
+
+
+def test_sc21_pay_stub_fields_and_checks(tmp_path, local_model):
+    lines, tables = p_table()
+    replies = p_table_replies(lines, hours="80.00", rate="31.25", **p_details(lines))
+    with read_stub(tmp_path, local_model, lines, replies, tables) as (manager, run, record):
+        assert record["review_status"] == "verified", record["issues"]
+        assert run["result"]["normalized"]["cross_checks"] == 6  # Earnings and net, both columns, plus hours × rate and the splits.
+        with manager.store.connection() as db:
+            details = json.loads(db.execute("SELECT details_json FROM income_records").fetchone()[0])
+            lines_details = [(row[0], row[1], json.loads(row[2])) for row in db.execute(
+                "SELECT current_minor,ytd_minor,details_json FROM income_lines ORDER BY position")]
+            assert tuple(db.execute("SELECT json_type(details_json,'$.deposit_splits[0].minor'),json_type(details_json,'$.pto_balance.text') "
+                                    "FROM income_records").fetchone()) == ("integer", "text")  # C-money
+            assert stored_identifiers(db, ("445566", "XXX-XX-1234")) == []  # C-ids
+        current, ytd, regular = lines_details[0]
+        assert (current, ytd, regular["hours"]["text"], regular["rate"]["text"]) == (250000, 3250000, "80.00", "31.25")
+        assert (details["pto_balance"]["text"], details["pto_balance"]["unit"], details["pto_balance"]["label"]["text"]) == ("56.00", "hrs", "PTO BALANCE")
+        assert [(split["last_four"], split["minor"]) for split in details["deposit_splits"]] == [("1234", 150000), ("9876", 41234)]
+        # Every amount's printed row label and column heading, each a substring of its own line (C-cite).
+        assert set(details["labels"]) == {"gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd"}
+        found = [label for pair in details["labels"].values() for label in pair.values()]
+        found += [line[2][key] for line in lines_details for key in ("current_row_label", "current_column_heading", "ytd_row_label", "ytd_column_heading")]
+        assert len(found) == 8 + 6 * 4 and all(uncited(label, lines) == [] for label in found)
+        assert [details["labels"]["net_pay_ytd"][key]["text"] for key in ("row_label", "column_heading")] == ["Net pay", "Year to date"]
+        assert all(uncited(item, lines) == [] for item in [details["pto_balance"], *details["deposit_splits"], regular["hours"]])
+
+
+def test_sc21_a_a_mismatching_rate_goes_to_review(tmp_path, local_model):
+    lines, tables = p_table(regular="Regular 80.00 h @ 31.00")
+    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, hours="80.00", rate="31.00", **p_details(lines)), tables) as (_, _run, record):
+        assert record["review_status"] == "needs_review"
+        [issue] = [issue for issue in record["issues"] if "hours ×" in issue]
+        assert issue.startswith("This period: Regular 80.00 hours × 31.00 = 2,480.00 USD, not the printed 2,500.00 USD")
+
+
+def test_sc21_b_a_salaried_line_has_no_hours_check(tmp_path, local_model):
+    lines, tables = p_table(regular="Regular")
+    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, **p_details(lines)), tables) as (_, run, record):
+        assert record["review_status"] == "verified", record["issues"]
+        assert run["result"]["normalized"]["cross_checks"] == 5 and "hours" not in run["result"]["normalized"]["lines"][0]["details"]
+
+
+def test_sc21_c_a_split_without_an_amount_skips_the_split_check(tmp_path, local_model):
+    lines, tables = p_table(extras=["PTO BALANCE 56.00 HRS", "DIRECT DEPOSIT CHECKING ****1234 1,500.00", "SAVINGS ****9876"])
+    replies = p_table_replies(lines, hours="80.00", rate="31.25", **p_details(lines, splits=(("1234", "1,500.00", "DIRECT DEPOSIT CHECKING"),
+                                                                                            ("9876", None, "SAVINGS ****9876"))))
+    with read_stub(tmp_path, local_model, lines, replies, tables) as (_, run, record):
+        assert record["review_status"] == "verified", record["issues"]
+        assert run["result"]["normalized"]["cross_checks"] == 5 and not any("Deposit splits" in issue for issue in record["issues"])
+
+
+def test_sc25_pay_stub_identifiers_are_never_stored(tmp_path, local_model):
+    """The stub returns more than four digits for a split and quotes the SSN and employee ID in free-text details."""
+    lines, tables = p_table()
+    details = p_details(lines, splits=(("000000001234", "1,500.00", "DIRECT DEPOSIT CHECKING"), ("9876", "412.34", "SAVINGS ****9876")))
+    details["pto_balance"]["row_label"] = {"text": "EMPLOYEE ID 445566", "evidence": cite(lines, "EMPLOYEE ID 445566")}
+    details["sick_balance"] = {**value(lines, "1234", "SSN XXX-XX-1234", "SSN XXX-XX-1234"),
+                               "row_label": {"text": "SSN XXX-XX-1234", "evidence": cite(lines, "SSN XXX-XX-1234")}}
+    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, hours="80.00", rate="31.25", **details), tables) as (manager, _run, record):
+        with manager.store.connection() as db:
+            assert stored_identifiers(db) == []
+            stored = json.loads(db.execute("SELECT details_json FROM income_records").fetchone()[0])
+        assert [split["last_four"] for split in stored["deposit_splits"]] == ["1234", "9876"]
+        assert stored["pto_balance"]["label"]["text"] == "EMPLOYEE ID **5566"
+        assert "Digits of an identifier were dropped from Deposit split 1 account." in record["issues"]
+        assert "Digits of an identifier were dropped from Paid time off balance label." in record["issues"]
+
+
+def test_fallback_pay_stub_details_that_fail_twice_are_left_out(tmp_path, local_model):
+    """FR-14: the summary's new fields fail twice (a split cites a quote that isn't in its line); the stub is published
+    with its usual fields, no new field of any kind (none partially stored), and the reason."""
+    lines, tables = p_table()
+    details = p_details(lines)
+    details["deposit_splits"][0]["evidence"] = [{"line_id": details["deposit_splits"][0]["evidence"][0]["line_id"], "quote": "CHECKING 9999 1,500.00"}]
+    replies = p_table_replies(lines, hours="80.00", rate="31.25", **details)
+    replies["PaystubSummary"] *= 2
+    with read_stub(tmp_path, local_model, lines, replies, tables) as (manager, run, record):
+        assert record["review_status"] == "needs_review" and DETAILS_FAILED in record["issues"]
+        assert (record["gross_pay_minor"], record["net_pay_minor"], len(record["lines"])) == (250000, 191234, 6)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT details_json FROM income_records").fetchone()[0] is None
+            assert {row[0] for row in db.execute("SELECT details_json FROM income_lines")} == {None}
+        assert len([request for request in local_model["requests"] if request["response_format"]["json_schema"]["name"] == "PaystubSummary"]) == 2
+
+
+def test_fallback_a_shared_field_that_fails_twice_still_fails_the_stub(tmp_path, local_model):
+    """Variant 8a for pay stubs: the base fields fail twice, so nothing is published, as today."""
+    lines, tables = p_table()
+    invented = {"value": "2,600.00", "status": "proposed", "evidence": at(lines, number_of(lines, "Gross pay |"))}
+    replies = p_table_replies(lines, gross=invented)
+    replies["PaystubSummary"] *= 2
+    manager, doc, parse_id = transcribe(tmp_path, local_model, lines, tables)
+    try:
+        local_model["by_schema"] = replies
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "failed" and run["publication"] is None
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM income_records").fetchone()[0] == 0
+    finally:
+        manager.close()
 
 
 def test_sc20_f_table_cells_are_copied_from_this_period(tmp_path, local_model):
