@@ -399,7 +399,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
   if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
-  parts.push(doc2Fields(state, type, record));
+  parts.push(doc2Fields(state, type, record), ...doc2Forms(state, type, record, find));
   const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
   if (doc2 !== state) return;
   const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
@@ -426,7 +426,9 @@ function doc2Fields(state, type, record) {
     const label = record.invoice && field === "total_minor" ? "Invoice total"
       : record.invoice && field === "amount_due_minor" ? "Remaining balance" : fieldLabel;
     if (end && !record[field] && !record[end] && !fix(field)) continue;  // A bill without a printed period.
-    const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : record.display[field] || record[field];
+    // A receipt's Total is its printed total; what was paid after gift cards is in its Paid line (doc2Forms).
+    const printed = type === "receipt" && field === "total_minor" && record.paid_summary ? record.printed_total?.display : null;
+    const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : printed || record.display[field] || record[field];
     const correction = fix(field);
     if (shown == null && !correction) continue;
     const value = element("dd", "", "doc2-value");
@@ -434,7 +436,7 @@ function doc2Fields(state, type, record) {
     const spread = type === "receipt" && field === "category" ? (record.splits || []).filter(row => row.amount_minor).map(row => row.category) : [];
     if (spread.length) value.append(...spread.map(name => element("span", categoryLabel(name === "uncategorized" ? null : name), "category-tag")));
     else if (shown == null) value.append(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
-    else value.append(record.display[field] ? amount(shown, {signed: false})
+    else value.append(record.display[field] || printed ? amount(shown, {signed: false})
       : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
         : field === "document_kind" ? DOCUMENT_KIND_LABELS[shown] || shown
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
@@ -482,6 +484,176 @@ function doc2Fields(state, type, record) {
   if (record.figures?.counts_in?.length) figureRow("Counts in", record.figures.counts_in);
   if (record.figures?.balance) figureRow("Account balance", [record.figures.balance]);
   return list;
+}
+// Document forms (docs/documents.md "Receipt kinds", "Pay stub and statement fields"): what the document printed beyond
+// its counted amounts, each with its source line; the receipt's kind and how to change it; the details a reviewed
+// receipt's new kind waits to apply; and the arithmetic checks, each a figure whose breakdown is its trace.
+const RECEIPT_KINDS = {fuel: "Fuel", dining: "Dining", grocery: "Grocery", general: "General"};
+const DETAIL_LABELS = {volume: "Volume", price_per_unit: "Price per unit", fuel_grade: "Grade", pump_number: "Pump", fuel_amount: "Fuel amount",
+                       gratuity_included: "Gratuity included", gratuity: "Gratuity", party_size: "Party size", server: "Server", table: "Table",
+                       savings_total: "Member savings", account_type: "Account type", deposits_total: "Deposits", withdrawals_total: "Withdrawals",
+                       interest_earned: "Interest earned", fees_total: "Fees", apy: "Interest rate (APY)", purchase_apr: "Purchase rate (APR)",
+                       cash_advance_apr: "Cash advance rate (APR)", credit_limit: "Credit limit", available_credit: "Available credit",
+                       rewards_earned: "Rewards earned", rewards_balance: "Rewards balance", pto_balance: "Paid time off", sick_balance: "Sick leave"};
+const ACCOUNT_TYPES = {checking: "Checking", savings: "Savings", money_market: "Money market", other: "Other"};
+const TENDER_LABELS = {gift_card: "Gift card", ebt: "EBT", card: "Card", cash: "Cash", other: "Payment"};
+const PAY_VALUE_LABELS = {gross_pay: "Gross pay", gross_pay_ytd: "Gross pay year to date", net_pay: "Net pay", net_pay_ytd: "Net pay year to date",
+                          taxes: "Taxes", deductions: "Deductions"};
+function doc2Forms(state, type, record, find) {
+  const parts = [];
+  if (type === "receipt" && record.document_kind !== "bill") {
+    if (record.pending_details) parts.push(doc2Pending(state, record));
+    parts.push(doc2Kind(state, record));
+  }
+  if (record.paid_summary) parts.push(doc2Paid(record.paid_summary));
+  const details = doc2DetailList(state, record, find);
+  if (details) parts.push(details);
+  if (type === "income_record") parts.push(...doc2PayDetails(record, find));
+  if (record.checks?.length) parts.push(doc2Checks(record.checks));
+  return parts;
+}
+// One detail's row: its shown value, Find (its cited line) and, when it can be corrected, Correct.
+function doc2DetailRow(state, record, list, label, detail, find, field = null) {
+  const value = element("dd", "", "doc2-value");
+  value.append(detail.minor != null ? amount(detail.display, {signed: false}) : document.createTextNode(detail.display ?? detail.text ?? "—"));
+  const actions = element("span", "", "doc2-field-actions");
+  if (detail.locator?.line_ids?.length) {
+    const button = element("button", "Find", "link-button"); button.type = "button";
+    button.setAttribute("aria-label", `Find ${label.toLowerCase()} in the source`);
+    button.addEventListener("click", () => find(detail.locator.line_ids));
+    actions.append(button);
+  }
+  const correction = field && (record.correctable || []).find(item => item.field === field);
+  if (correction && state.cc?.correctButton) {
+    const correct = element("button", "Correct", "link-button"); correct.type = "button"; correct.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
+    correct.addEventListener("click", () => state.cc.openCorrect(field));
+    actions.append(correct);
+  }
+  value.append(actions);
+  list.append(element("dt", label), value);
+}
+function doc2DetailList(state, record, find) {
+  const details = record.details;
+  if (!details || !Object.keys(details).length) return null;
+  const section = element("section", "", "doc2-section doc2-details-section"), list = element("dl", "", "doc2-detail-fields");
+  section.append(element("h3", "Printed details"), list);
+  for (const [name, detail] of Object.entries(details)) {
+    if (!DETAIL_LABELS[name] || !detail || typeof detail !== "object" || !("locator" in detail)) continue;
+    const shown = name === "account_type" ? {...detail, display: ACCOUNT_TYPES[detail.text] || detail.text} : detail;
+    doc2DetailRow(state, record, list, DETAIL_LABELS[name], shown, find, `detail:${name}`);
+    if (detail.label) list.lastElementChild.append(element("span", `printed as ${detail.label.text}`, "muted small"));
+  }
+  (details.tenders || []).forEach((tender, index) => {
+    const label = `${TENDER_LABELS[tender.tender_type] || "Payment"}${tender.last_four ? ` ****${tender.last_four}` : ""}`;
+    doc2DetailRow(state, record, list, label, tender, find, `detail:tenders.${index + 1}.amount`);
+  });
+  (details.deposit_splits || []).forEach(split => doc2DetailRow(state, record, list, `Direct deposit${split.last_four ? ` ****${split.last_four}` : ""}`, split, find));
+  // A grocery row's weight and price per weight, or its count and unit price, beside the item it belongs to.
+  for (const item of record.items || []) {
+    const weight = item.details?.weight, per = item.details?.price_per_weight;
+    if (weight) {
+      list.append(element("dt", item.description), element("dd", `${weight.display}${per ? ` @ ${per.text}/${per.unit || weight.unit || ""}` : ""}`, "doc2-value"));
+      continue;
+    }
+    if (item.quantity && item.display?.unit_price_minor && record.receipt_kind === "grocery") {
+      const value = element("dd", "", "doc2-value");
+      value.append(document.createTextNode(`${item.quantity} × `), amount(item.display.unit_price_minor, {signed: false}));
+      list.append(element("dt", item.description), value);
+    }
+  }
+  return list.children.length ? section : null;
+}
+// A pay stub's labels, hours and rates: each amount with the row label and column heading it was printed under.
+function doc2PayDetails(record, find) {
+  const parts = [], labels = record.details?.labels || {};
+  const heading = found => found ? found.text : "—";
+  const summary = Object.entries(labels).map(([name, pair]) => [PAY_VALUE_LABELS[name] || name, heading(pair.row_label), heading(pair.column_heading)]);
+  const lines = (record.lines || []).filter(line => line.details && Object.keys(line.details).length).map(line => [
+    line.description, line.details.hours?.display || "—", line.details.rate?.display || "—",
+    `${heading(line.details.current_column_heading)} · ${heading(line.details.ytd_column_heading)}`]);
+  if (summary.length || lines.length) {
+    const section = element("section", "", "doc2-section doc2-pay-details");
+    section.append(element("h3", "As printed on the stub"));
+    if (summary.length) section.append(dataTable([["Amount"], ["Printed row"], ["Printed column"]], summary, {caption: "Pay amounts and the labels they were printed under"}));
+    if (lines.length) section.append(dataTable([["Line", "doc2-pay-line"], ["Hours", "numeric"], ["Rate", "numeric"], ["Printed columns"]], lines,
+                                               {caption: "Pay lines as printed"}));
+    parts.push(section);
+  }
+  return parts;
+}
+// "Total 8.55 · Gift card −5.00 · Paid 3.55": Paid opens how it's worked out.
+function doc2Paid(summary) {
+  const section = element("section", "", "doc2-section doc2-paid"), line = element("p", "", "doc2-paid-line");
+  line.append(element("span", "Total ", "muted"), amount(summary.total, {signed: false}), element("span", " · Gift card ", "muted"),
+              amount(summary.gift_cards), element("span", " · Paid ", "muted"), figure(summary.paid, {size: "inline", signed: false}));
+  section.append(line);
+  if (!summary.counted)
+    section.append(element("p", `Paid ${summary.paid.display} isn't counted: this receipt was reviewed before its gift card was read. Correcting the gift card, `
+                                + "the total or sale or return with Edit details counts it.", "muted small"));
+  return section;
+}
+function doc2Checks(checks) {
+  const section = element("section", "", "doc2-section doc2-checks"), list = element("ul", "", "finance-list");
+  section.append(element("h3", "Arithmetic checks"));
+  for (const check of checks) {
+    const item = element("li", "", "doc2-check"); item.dataset.passes = String(check.passes);
+    item.append(icon(check.passes ? "check-circle" : "alert"), element("span", `${check.label} `), figure(check.figure, {size: "inline", signed: false}));
+    if (check.compared_with) item.append(element("span", check.passes ? " matches the printed " : " doesn't match the printed ", "muted"),
+                                         amount(check.compared_with, {signed: false}));
+    else if (!check.passes) item.append(element("span", " doesn't check out", "muted"));
+    list.append(item);
+  }
+  section.append(list);
+  return section;
+}
+// The receipt's kind, and reading it again as another kind: its details and rows, from the saved text only.
+function doc2Kind(state, record) {
+  const section = element("section", "", "doc2-section doc2-kind"), list = element("dl", "", "doc2-detail-fields");
+  const value = element("dd", "", "doc2-value");
+  value.append(document.createTextNode(record.receipt_kind ? RECEIPT_KINDS[record.receipt_kind] : "Not read with kinds"));
+  const select = document.createElement("select"); select.id = "doc2-kind-choice";
+  select.setAttribute("aria-label", "Receipt kind");
+  for (const [key, label] of Object.entries(RECEIPT_KINDS)) select.add(new Option(label, key, false, key === record.receipt_kind));
+  const reviewed = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
+  const change = asyncButton("Change kind…", async () => {
+    const kind = select.value, label = RECEIPT_KINDS[kind];
+    if (kind === record.receipt_kind) { notice(`This receipt is already read as ${label.toLowerCase()}.`); return; }
+    const message = `Its details and rows are read again from the saved text with the ${label.toLowerCase()} form; the image isn't read again, `
+      + "and your corrections stay. " + (reviewed ? "You reviewed this receipt, so its amounts and review stay as they are, and the new details wait for Apply details."
+        : "Its amounts and items follow the new reading.");
+    if (!await confirmAction({title: `Read this receipt as ${label.toLowerCase()}?`, message, confirmLabel: "Read again"})) return;
+    const started = await api(`/api/receipts/${record.id}/kind`, {method: "PATCH", body: JSON.stringify({kind})});
+    if (started.run_id) await doc2WaitForRun(started.run_id);
+    if (doc2 !== state) return;
+    state.renderedKey = "";
+    await doc2Extraction(state, state.runId);
+    notice(`Read as ${label.toLowerCase()}.`);
+  }, "link-button");
+  change.disabled = Boolean(busy.inference);
+  value.append(select, change);
+  list.append(element("dt", "Receipt kind"), value);
+  section.append(list);
+  return section;
+}
+async function doc2WaitForRun(runId) {
+  for (let tries = 0; tries < 240; tries += 1) {
+    const run = await api(`/api/extraction-runs/${runId}`);
+    if (!PENDING_RUN.includes(run.status)) {
+      if (run.status !== "succeeded") throw new Error(run.error || `Reading ${statusLabel(run.status).toLowerCase()}.`);
+      return run;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw new Error("The reading is taking a while; it continues in the sidebar.");
+}
+function doc2Pending(state, record) {
+  const kind = RECEIPT_KINDS[record.pending_details.kind] || record.pending_details.kind;
+  return alertBox(`${kind} details were read for this receipt after you reviewed it. Applying them changes no amount and keeps your review.`,
+                  {action: asyncButton("Apply details", async () => {
+                    await api(`/api/receipts/${record.id}/details/apply`, {method: "POST", body: "{}"});
+                    notice("Details applied.");
+                    await doc2Changed(state);
+                  }, "secondary")});
 }
 // A statement's rows each take a correction of their own, opened in a row under it.
 function doc2RowCorrect(state, rows, record, allowDelete = false) {

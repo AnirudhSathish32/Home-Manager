@@ -134,6 +134,25 @@ def seed_paystub(manager, model):
     return {"doc_id": doc_id, "record_id": _record_id(manager, "income_records", doc_id)}
 
 
+def seed_document_forms(manager, model):
+    """The document-forms records (specs/document-forms SC-14): SC-01's fuel receipt, SC-04's grocery receipt, SC-21's
+    pay stub (fixture P-table) and the SC-22 and SC-23 statements, each read and recorded. The fake model is left ready
+    to read the fuel receipt as dining, for a kind change. Returns their document and record ids."""
+    from document_forms_fixtures import BANK, CARD, GROCERY, bank_replies, card_replies, fuel, fuel_replies, grocery_replies, p_table, record_document
+    from test_paystub_forms import p_details, p_table_replies
+    from test_receipt_kinds import read_as
+    _models(manager, model)
+    stub, tables = p_table()
+    found = {}
+    for name, lines, replies, extra in (("fuel", fuel(), fuel_replies(fuel()), None), ("grocery", GROCERY, grocery_replies(), None),
+                                        ("paystub", stub, p_table_replies(stub, hours="80.00", rate="31.25", **p_details(stub)), tables),
+                                        ("bank", BANK, bank_replies(BANK), None), ("card", CARD, card_replies(CARD), None)):
+        doc, _, run = record_document(manager, model, f"forms-{name}.png", lines, replies, extra)
+        found[f"{name}_doc"], found[f"{name}_record"] = doc["id"], run["publication"]["id"]
+    model["by_schema"] = read_as(fuel(), "dining")
+    return found
+
+
 def seed_documents(manager, model):
     """The three documents the document page's states need: a recorded receipt, one that needs review, and a statement.
     Returns the ids ui_shots.py's --routes placeholders name."""
@@ -169,9 +188,9 @@ def seed_review_items(manager, ids):
 
 
 @contextmanager
-def document_server(tmp_path, token, review_items=False, paystub=False):
-    """The app on a free port with seed_documents' documents (and seed_review_items' when asked).
-    Yields (base, ids, manager)."""
+def document_server(tmp_path, token, review_items=False, paystub=False, forms=False):
+    """The app on a free port with seed_documents' documents (and seed_review_items', seed_paystub's or
+    seed_document_forms' when asked). Yields (base, ids, manager)."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -198,6 +217,8 @@ def document_server(tmp_path, token, review_items=False, paystub=False):
         if paystub:
             stub = seed_paystub(manager, model)
             ids.update(paystub_doc=stub["doc_id"], paystub_record=stub["record_id"])
+        if forms:
+            ids.update({f"forms_{key}": value for key, value in seed_document_forms(manager, model).items()})
         yield f"http://127.0.0.1:{port}", ids, manager
     finally:
         stop()

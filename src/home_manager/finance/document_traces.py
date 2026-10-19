@@ -46,8 +46,10 @@ def provenance(db, record_type, row, field, locator=None, result=None):
     if locator is None:
         evidence = ((result or {}).get("header") or {}).get(field.removeprefix("detail:") if field else "", {}) or {}
         locator = {"line_ids": [cite["line_id"] for cite in evidence.get("evidence", [])], "quotes": [cite["quote"] for cite in evidence.get("evidence", [])]}
-    return {"kind": "extracted", "record": {"type": record_type, "id": row["id"]}, "document_id": row["document_id"],
-            "line_ids": locator.get("line_ids", []), "quote": (locator.get("quotes") or [None])[0]}
+    line_ids, quote = locator.get("line_ids", []), (locator.get("quotes") or [None])[0]
+    # document: what the breakdown's "Open source" link opens (trace.js), the record's page with its cited lines lit.
+    return {"kind": "extracted", "record": {"type": record_type, "id": row["id"]}, "document_id": row["document_id"], "line_ids": line_ids,
+            "quote": quote, "document": {"id": row["document_id"], "lines": line_ids}}
 
 
 def current(row):

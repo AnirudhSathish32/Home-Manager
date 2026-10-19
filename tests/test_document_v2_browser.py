@@ -91,6 +91,109 @@ def test_invoice_bill_label_can_be_removed_without_losing_invoice_details(tmp_pa
         browser.close()
 
 
+def watch_errors(page):
+    """Page errors and Content Security Policy violations, as they happen."""
+    failures = []
+    page.on("pageerror", lambda error: failures.append(str(error)))
+    page.on("console", lambda message: failures.append(message.text) if "Content Security Policy" in message.text else None)
+    return failures
+
+
+@browser_test
+def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
+    """SC-14 (FR-10, FR-11): each record's printed details with their source, and changing a receipt's kind."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, forms=True) as (base, ids, _), playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        failures = watch_errors(page)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        details = page.locator(".doc2-details-section")
+        # 1. Fuel: its kind and details; volume's Find lights line-4.
+        open_document(page, base, ids["forms_fuel_doc"])
+        expect(page.locator("#doc2-kind-choice")).to_have_value("fuel")
+        for text in ("10.312 gal", "3.459", "REG UNL", "17", "35.67"):
+            expect(details).to_contain_text(text)
+        details.get_by_role("button", name="Find volume in the source").click()
+        expect(page.locator("#doc2-viewer .sv-line.selected")).to_contain_text("10.312")
+        assert page.evaluate(NO_OVERFLOW)
+        # 2. Grocery: weights and counts beside their items, tenders apart from the items, and Total · Gift card · Paid.
+        open_document(page, base, ids["forms_grocery_doc"])
+        expect(details).to_contain_text("2.31 lb @ 0.59/lb")
+        expect(details.locator("dd", has_text="2 ×")).to_contain_text("2.00")
+        for text in ("Gift card ****5555", "5.00", "EBT", "3.55"):
+            expect(details).to_contain_text(text)
+        items = page.locator("#doc2-panel-record .doc2-section", has=page.locator("h3", has_text="Items"))
+        expect(items).to_contain_text("BOTTLE DEPOSIT")
+        expect(items).to_contain_text("BAG FEE")
+        expect(items).not_to_contain_text("GIFT CARD")
+        paid = page.locator(".doc2-paid-line")
+        expect(paid).to_contain_text("Total")
+        expect(paid).to_contain_text("8.55")
+        expect(paid).to_contain_text("−5.00")
+        expect(paid).to_contain_text("3.55")
+        paid.locator("[data-figure-ref]").click()
+        expect(page.locator("#breakdown")).to_be_visible()
+        expect(page.locator("#breakdown-body")).to_contain_text("Gift card")
+        page.keyboard.press("Escape")
+        # 3. Pay stub: hours and rate, PTO, deposits, and each amount's printed column heading.
+        open_document(page, base, ids["forms_paystub_doc"])
+        pay = page.locator(".doc2-pay-details")
+        for text in ("80.00 h", "31.25", "This period", "Year to date"):
+            expect(pay).to_contain_text(text)
+        for text in ("56.00 hrs", "****1234", "****9876"):
+            expect(details).to_contain_text(text)
+        # 4. Bank statement, 5. card statement.
+        open_document(page, base, ids["forms_bank_doc"])
+        for text in ("Checking", "2,500.00", "1,200.50", "0.42", "0.50%", "Fees"):
+            expect(details).to_contain_text(text)
+        open_document(page, base, ids["forms_card_doc"])
+        for text in ("24.99%", "29.99%", "5,000.00", "4,207.55", "812 points"):
+            expect(details).to_contain_text(text)
+        # 6. Change the fuel receipt to dining: preview, save, one reading, and it stays dining.
+        open_document(page, base, ids["forms_fuel_doc"])
+        page.locator("#doc2-kind-choice").select_option("dining")
+        page.get_by_role("button", name="Change kind…").click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_contain_text("the image isn't read again")
+        dialog.get_by_role("button", name="Read again").click()
+        expect(page.locator(".toast", has_text="Read as dining.")).to_be_visible(timeout=30000)
+        expect(page.locator("#doc2-kind-choice")).to_have_value("dining")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("#doc2-kind-choice")).to_have_value("dining")
+        assert failures == [], failures
+        browser.close()
+
+
+@browser_test
+def test_kind_trace_opens_from_the_page_and_finds_its_line(tmp_path):
+    """SC-19 step 8: the fuel figure opens its trace, whose result is the page's figure; an input's source lights line-4."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, forms=True) as (base, ids, _), playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        failures = watch_errors(page)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["forms_fuel_doc"])
+        shown = page.locator(".doc2-checks [data-figure-ref]").first
+        display, ref = shown.get_attribute("data-figure-display"), shown.get_attribute("data-figure-ref")
+        assert ref.startswith("receipt.fuel")
+        result = page.request.get(f"{base}/api/traces/{quote(ref, safe='')}", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+        assert result["result"]["display"] == display and result["reconciles"]
+        shown.click()
+        inputs = page.locator("#breakdown .input-row", has_text="Volume")
+        expect(inputs).to_contain_text("10.312")
+        inputs.get_by_role("link", name="Open source").click()
+        expect(page.locator("#doc2-viewer .sv-line.selected")).to_contain_text("10.312")
+        assert failures == [], failures
+        browser.close()
+
+
 def open_document(page, base, doc_id, query=""):
     page.goto(f"{base}/#/documents/{doc_id}{query}")
     page.wait_for_load_state("networkidle")

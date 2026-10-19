@@ -1173,14 +1173,20 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .doc2-tabs { margin: 0; padding: 0 var(--space-4); }
 .doc2-tabpanel { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
 .doc2-tabpanel > h3, .doc2-section > h3, .doc2-readings > h3 { margin: 0 0 var(--space-2); }
-.doc2-fields { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; align-items: baseline; }
-.doc2-fields dt { font-size: var(--text-xs); color: var(--text-secondary); }
+.doc2-fields, .doc2-detail-fields { display: grid; grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; align-items: baseline; }
+.doc2-fields dt, .doc2-detail-fields dt { font-size: var(--text-xs); color: var(--text-secondary); }
 .doc2-value { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); font-size: var(--text-sm); min-width: 0; overflow-wrap: anywhere; }
 .doc2-counts { flex-direction: column; align-items: flex-start; }
 .doc2-count { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
 .doc2-field-actions { display: inline-flex; gap: var(--space-3); margin-left: auto; font-size: var(--text-xs); }
 .doc2-field-actions .link-button:disabled { color: var(--text-muted); }
 .doc2-section .table-wrap { margin: 0; }
+/* Document forms: a receipt's Paid line and the record's arithmetic checks, each a figure (document_v2.js doc2Forms). */
+.doc2-paid-line, .doc2-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); margin: 0; font-size: var(--text-sm); }
+.doc2-check .icon { align-self: center; color: var(--positive); }
+.doc2-check[data-passes="false"] .icon { color: var(--warning); }
+.doc2-kind select { max-width: 12rem; }
+.doc2-pay-details .doc2-pay-line { min-width: 8rem; }
 .doc2-links li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
 #doc2-panel-record tr.cited { background: var(--warning-subtle); }
 .doc2-row-correct { margin-left: var(--space-2); font-size: var(--text-xs); }

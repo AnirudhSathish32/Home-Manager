@@ -157,7 +157,7 @@ slices:
       traces.trace(store, ref, manager), the function the API route calls.
   - id: SL-08
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 563a156
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"journey or sc18\" -q -> 6 passed (the journey with J-a, J-d, J-f inline; J-e, J-b, J-c; SC-18 and 18a)"
       - "Also test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused -> passed"
@@ -183,6 +183,27 @@ slices:
       for others; 202 with run_id or 200 unchanged), POST /api/receipts/{id}/details/apply. correct() still refuses
       receipt_kind (it isn't in CORRECTABLE). J-c simulated by a queued kind-change row set to running, then a restart.
   - id: SL-09
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - "RUN_BROWSER_TESTS=1 .venv/Scripts/python.exe -m pytest tests/test_document_v2_browser.py -k \"kind or forms or kind_trace\" --browser -q -> 2 passed (SC-14 steps 1–6 with no page errors or CSP violations; SC-19 step 8)"
+      - "RUN_BROWSER_TESTS=1 ... tests/test_document_v2_browser.py tests/test_record_components_browser.py tests/test_ui_parity.py tests/test_review_v2_browser.py --browser -q -> 21 passed"
+      - "tests/test_browser.py::test_real_browser_configures_scans_and_inspects_versions FAILS, and is PRE-EXISTING: it failed 3 of 3 runs on dacf976 (the commit before SL-01, in a scratch git worktree with PYTHONPATH on its src) with the same 'Recorded, failed: Extraction output failed validation … document_type: missing' at varying lines (160/196/213/388). Not caused by this feature; not fixed here."
+      - "Synthetic screenshots (scratchpad forms_shots.py on document_server(forms=True)): fuel, grocery, pay stub, bank, card at 390 and 1440, light and dark -> no HORIZONTAL OVERFLOW, no page errors; inspected by eye. ui_shots.py's household seed has no document-forms records, so it wasn't used for these."
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py tests/test_paystub_forms.py tests/test_statement_forms.py tests/test_extraction.py tests/test_receipts.py -q -> 113 passed; ruff check src and touched tests -> all checks passed"
+    notes: >-
+      ui-redesign loaded (ui-ux-pro-max not queried: no new visual decisions; the page reuses the document page's
+      dl rows, Find/Correct link buttons, alertBox, dataTable, figure() and finance-list, with tokens only).
+      document_v2.js doc2Forms: the pending banner with Apply details; the Receipt kind row with a select and "Change
+      kind…" (a confirmAction preview, PATCH, wait for the run, re-render); "Total · Gift card · Paid" with Paid as the
+      amount-paid figure and the D-P4 note when it isn't counted; Printed details (each value with Find and, for
+      receipts, Correct on detail:* fields; tenders; deposit splits; grocery weights and count × unit price); "As
+      printed on the stub" tables (labels and headings); Arithmetic checks (each figure opening its trace). The new
+      lists use .doc2-detail-fields (styled with .doc2-fields), because tests expect .doc2-fields to be unique. A
+      receipt with a gift card shows its printed total as Total in the fields and the items table (receipt.js), and
+      totals_mismatch compares with the printed total. Server: Ledger.record adds display text to every detail
+      (shown_details: amounts, "10.312 gal", "3.459/gal", "56.00 hrs") and paid_summary; document-check provenance gains
+      document {id, lines}, which the breakdown's "Open source" link uses. seed_documents.seed_document_forms and
+      document_server(forms=True), which leaves the fake model ready to read the fuel receipt as dining.
   - id: SL-10
     status: todo

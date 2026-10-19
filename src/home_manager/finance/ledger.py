@@ -191,6 +191,28 @@ PAID_FIELDS = ("total", "direction", "document_kind", "receipt_kind")
 PAID_ISSUES = ("Gift card on a return", "Gift card deductions exceed", "Amount paid (")
 
 
+UNITS_SHOWN = {"gallon": "gal", "litre": "L"}
+
+
+def shown_details(found, currency):
+    """Printed details with the text the page shows for each value (the browser does no money formatting): an
+    amount's display, or a number's text with its unit ("10.312 gal", "56.00 hrs")."""
+    if isinstance(found, list):
+        return [shown_details(entry, currency) for entry in found]
+    if not isinstance(found, dict):
+        return found
+    shown = {key: shown_details(entry, currency) for key, entry in found.items()}
+    price = shown.get("price_per_unit")
+    if isinstance(price, dict) and price.get("unit"):  # A price per gallon or litre: "3.459/gal".
+        price["display"] = f"{price['text']}/{UNITS_SHOWN.get(price['unit'], price['unit'])}"
+    if "locator" in found and isinstance(found.get("minor"), int):
+        shown["display"] = format_minor(found["minor"], currency)
+    elif "locator" in found and found.get("text") is not None:
+        unit = found.get("unit")
+        shown["display"] = f"{found['text']} {UNITS_SHOWN.get(unit, unit)}" if unit else found["text"]
+    return shown
+
+
 def field_labels(record_type, bill=False):
     """What a record type's correctable fields are called (a bill's as BILL_SHOWN names them)."""
     if record_type == "transaction":
@@ -1124,14 +1146,16 @@ class Ledger:
                 value["issues"] = json.loads(value.pop("validation_json"))
             if "details_json" in value:  # Printed details (docs/documents.md "Typed extraction"): a receipt's for the kind it is read as now.
                 stored = json.loads(value.pop("details_json") or "null")
-                value["details"] = (stored or {}).get(row["receipt_kind"]) if record_type == "receipt" and stored is not None else stored
+                found = (stored or {}).get(row["receipt_kind"]) if record_type == "receipt" and stored is not None else stored
+                value["details"] = shown_details(found, row["currency"])
             if "pending_details_json" in value:
-                value["pending_details"] = json.loads(value.pop("pending_details_json") or "null")
+                pending = json.loads(value.pop("pending_details_json") or "null")
+                value["pending_details"] = {**pending, "details": shown_details(pending["details"], row["currency"])} if pending else None
             if record_type == "receipt":
                 value["invoice"] = json.loads(value.pop("invoice_json") or "null")
                 value["items"] = [dict(item) for item in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (record_id,))]
                 for item in value["items"]:
-                    item["details"] = json.loads(item.pop("details_json") or "null")
+                    item["details"] = shown_details(json.loads(item.pop("details_json") or "null"), row["currency"])
                 # Each item's share of what was paid (its price with its part of tax and discounts), and the totals by category.
                 shares = dict(db.execute("SELECT receipt_item_id,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                                          "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
@@ -1156,8 +1180,9 @@ class Ledger:
                     value["shareable_by_line"] = len(holders) > 1 or len({item["member_id"] for item in value["items"] if item["member_id"]}) > 1
                 value["unmatched_minor"] = db.execute("SELECT sum(amount_minor) FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                                                       "AND receipt_item_id IS NULL", (record_id,)).fetchone()[0]
-                value["totals_mismatch"] = (row["subtotal_minor"] is not None and row["total_minor"] is not None
-                                             and abs(row["subtotal_minor"] + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - row["total_minor"]) > 1)
+                printed_total = row["printed_total_minor"] if row["printed_total_minor"] is not None else row["total_minor"]  # Before gift cards.
+                value["totals_mismatch"] = (row["subtotal_minor"] is not None and printed_total is not None
+                                             and abs(row["subtotal_minor"] + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - printed_total) > 1)
                 value["splits"] = [dict(split) for split in db.execute(
                     "SELECT category,sum(amount_minor) AS amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                     "GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
@@ -1189,7 +1214,7 @@ class Ledger:
                 value["lines"] = []
                 for line in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY position", (record_id,)):
                     line = dict(line)
-                    line["details"] = json.loads(line.pop("details_json") or "null")
+                    line["details"] = shown_details(json.loads(line.pop("details_json") or "null"), row["currency"])
                     source = json.loads(line.pop("locator_json"))
                     line["line_ids"] = source.get("line_ids", [])
                     line["cell_evidence"] = source.get("cells", {})
@@ -1218,6 +1243,14 @@ class Ledger:
             # The document's own arithmetic checks, worked out here with the functions their traces run (FR-19).
             from .document_traces import checks
             value["checks"] = checks(db, record_type, row)
+            if record_type == "receipt":
+                # "Total 8.55 · Gift card −5.00 · Paid 3.55" (FR-09): Paid is the amount-paid check's figure. counted: whether
+                # what the receipt counts is that amount (a receipt reviewed before its gift card was read counts its total).
+                paid = next((check for check in value["checks"] if check["name"] == "paid"), None)
+                gifts = sum(abs(tender["minor"]) for tender in self.current_details(row).get("tenders", [])
+                            if tender.get("tender_type") == "gift_card" and tender.get("minor"))
+                value["paid_summary"] = {"total": value.get("printed_total"), "gift_cards": money(-gifts, row["currency"]), "paid": paid["figure"],
+                                         "counted": row["total_minor"] == paid["figure"]["minor"]} if paid else None
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
             for row in value.get(key, [])[:500]:
