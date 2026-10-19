@@ -23,7 +23,7 @@ from ..core.money import currency_code, format_minor, money, to_minor
 from ..core.trace import NULL
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import now
-from . import paystub, splits
+from . import document_checks, paystub, splits
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
@@ -568,7 +568,7 @@ class Ledger:
             total = printed
             issues.append("Gift card deductions exceed the total; the printed total is counted until you correct it.")
         elif gift:
-            total, kept = printed - gift, printed
+            total, kept = document_checks.amount_paid(printed, [gift], None, row["currency"])[0], printed
             charged = db.execute("SELECT -t.amount_minor FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
                                  "AND l.review_status<>'rejected' AND t.review_status<>'rejected' ORDER BY l.id LIMIT 1", (receipt_id,)).fetchone()
             if charged and charged[0] != total:
@@ -1061,9 +1061,16 @@ class Ledger:
             value = dict(row)
             if "validation_json" in value:
                 value["issues"] = json.loads(value.pop("validation_json"))
+            if "details_json" in value:  # Printed details (docs/documents.md "Typed extraction"): a receipt's for the kind it is read as now.
+                stored = json.loads(value.pop("details_json") or "null")
+                value["details"] = (stored or {}).get(row["receipt_kind"]) if record_type == "receipt" and stored is not None else stored
+            if "pending_details_json" in value:
+                value["pending_details"] = json.loads(value.pop("pending_details_json") or "null")
             if record_type == "receipt":
                 value["invoice"] = json.loads(value.pop("invoice_json") or "null")
                 value["items"] = [dict(item) for item in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (record_id,))]
+                for item in value["items"]:
+                    item["details"] = json.loads(item.pop("details_json") or "null")
                 # Each item's share of what was paid (its price with its part of tax and discounts), and the totals by category.
                 shares = dict(db.execute("SELECT receipt_item_id,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                                          "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
@@ -1121,6 +1128,7 @@ class Ledger:
                 value["lines"] = []
                 for line in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY position", (record_id,)):
                     line = dict(line)
+                    line["details"] = json.loads(line.pop("details_json") or "null")
                     source = json.loads(line.pop("locator_json"))
                     line["line_ids"] = source.get("line_ids", [])
                     line["cell_evidence"] = source.get("cells", {})
@@ -1146,6 +1154,9 @@ class Ledger:
                 value["family_corrections"] = [dict(row) for row in db.execute(
                     "SELECT key,field,value,previous,actor,status,created_at FROM family_corrections WHERE direction='received' AND record_type=? "
                     "AND record_id=? ORDER BY created_at", (record_type, record_id))]
+            # The document's own arithmetic checks, worked out here with the functions their traces run (FR-19).
+            from .document_traces import checks
+            value["checks"] = checks(db, record_type, row)
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
             for row in value.get(key, [])[:500]:

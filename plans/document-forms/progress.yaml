@@ -105,7 +105,7 @@ slices:
       missing= (a 0 step flagged as not printed), used by document_checks.dining; build() shows it in SL-07.
   - id: SL-06
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 05041ec
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc04 or sc27\" -q -> 11 passed (SC-04 gift checkpoints + 4d–4f + the plan's return variant, SC-27 journey + 27a + 27b; plus test_a_receipt_with_no_total_publishes_as_today)"
       - ".venv/Scripts/python.exe -m pytest tests/test_health.py tests/test_reconcile_tools.py tests/test_spending_splits.py tests/test_returns.py -q -> 43 passed"
@@ -130,7 +130,31 @@ slices:
       reading, and asserts {"groceries": 1210}. Without it the figures are groceries 3.55 + uncategorized 8.55 (total
       12.10). Counting rules unchanged.
   - id: SL-07
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_migrations.py -k \"document_forms or 070\" -q -> 2 passed (incl. the new record-view checkpoint of SC-11)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc19 or sc27\" -q -> 9 passed"
+      - ".venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k sc21 -q -> 5 passed"
+      - ".venv/Scripts/python.exe -m pytest tests/test_statement_forms.py -k \"sc22 or sc23\" -q -> 12 passed"
+      - ".venv/Scripts/python.exe -m pytest tests/test_traces.py tests/test_ui_parity.py -q -> 10 passed, 9 skipped (opt-in browser)"
+      - "Broad: test_receipt_kinds, test_paystub_forms, test_statement_forms, test_extraction, test_receipts, test_invoice_ingestion, test_receipt_segments, test_api, test_correction_preview, test_planned_bugfixes, test_family_routing, test_family_inbox, test_bills_ledger, test_health, test_reconcile_tools, test_item_traces, test_layout_consumers, test_vision_tables, test_pdf, test_share, test_returns, test_spending_splits, test_warranties, test_evals, test_eval_tasks, test_employers, test_paycheck -> 298 passed, 3 skipped (opt-in browser)"
+      - "ruff check src and touched tests -> all checks passed; mypy -> no issues in 72 files"
+    notes: >-
+      core/trace.py: Recorder.input_text (value {text, unit, display, minor None, currency None}); verification_of
+      sums only money inputs; inputs_hash adds text and unit for text inputs only (existing hashes unchanged);
+      build() shows a missing step with value null; only() keeps text inputs. finance/document_traces.py: one spec
+      per check (receipt fuel, dining, unit_line per grocery line, paid; pay stub hours per earning line, deposits;
+      statement summary for bank or card) used both by checks() for Ledger.record (NULL recorder) and by check_trace
+      (live recorder, inputs with provenance extracted (document, line ids, quote; the reading's own citation for
+      base fields) or override (original, value, reason, actor; an undo back to the reading's value counts as
+      extracted)); compared_with and reconciles = the check's outcome. Seven refs merged into finance/traces.py TRACES,
+      served by the existing GET /api/traces/{ref}; anything else is "This isn't worked out for this record." (400).
+      document_checks.amount_paid added, and refresh_paid uses it. Ledger.record: details (a receipt's for its current
+      kind), pending_details, items[].details, lines[].details parsed from JSON (raw *_json keys no longer returned),
+      and checks [{name, label, figure (with its trace ref), compared_with, passes}]. Ledger.shares routing was done
+      in SL-06. Card statement terms come from summary_json (keys without _minor). The test client path is
+      traces.trace(store, ref, manager), the function the API route calls.
   - id: SL-08
     status: todo
   - id: SL-09

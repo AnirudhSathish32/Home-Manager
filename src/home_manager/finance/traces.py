@@ -11,6 +11,7 @@ from ..core.money import currency_code
 from ..core.trace import Recorder, build, parse, ref, remember
 from ..household.item_traces import TRACES as ITEM_TRACES
 from .dashboard import group_categories
+from .document_traces import TRACES as DOCUMENT_TRACES
 from .fx import REPORTING
 from .ledger import Ledger
 from .reconcile import bill_payments, expected_amount
@@ -303,6 +304,7 @@ TRACES = {
 }
 TRACES.update(WEALTH_TRACES)
 TRACES.update(ITEM_TRACES)
+TRACES.update(DOCUMENT_TRACES)
 
 
 # The family view (finance/family.py) -------------------------------------------------------------------------------

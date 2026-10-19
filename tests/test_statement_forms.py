@@ -9,6 +9,7 @@ import pytest
 from document_forms_fixtures import BANK, CARD, MISSING, bank_replies, card_replies, cite, library, p_table, record_document, stored_identifiers, uncited, value
 from home_manager.documents import extraction
 from home_manager.documents.extraction import DETAILS_FAILED
+from home_manager.finance import traces
 from home_manager.finance.tools import AccountInput, FinanceTools, PeriodInput
 from test_extraction import extract, transcribe
 from test_paystub_forms import p_details, p_table_replies
@@ -55,6 +56,50 @@ def test_sc22_bank_statement_fields_and_summary_check(tmp_path, local_model):
                          .fetchone()) == ("integer", "text")  # C-money
             assert tuple(db.execute("SELECT account_last_four,account_type FROM accounts").fetchone()) == ("6789", "checking")
             assert stored_identifiers(db, ("000123456789", "021000021")) == []  # C-ids
+
+
+def summary_trace(manager, record):
+    [check] = [check for check in record["checks"] if check["name"] == "summary"]
+    trace = traces.trace(manager.store, check["figure"]["trace"], manager)
+    assert trace["result"]["minor"] == check["figure"]["minor"]
+    return trace
+
+
+def test_sc22_the_bank_summary_trace(tmp_path, local_model):
+    with read_statement(tmp_path, local_model, BANK, bank_replies(BANK)) as (manager, _run, record):
+        trace = summary_trace(manager, record)
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("2299.50", "2299.50", True)
+        assert [(step["label"], step["op"], step["value"]["decimal"]) for step in trace["steps"]] == [
+            ("Opening balance", "+", "1000.00"), ("Deposits", "+", "2500.00"), ("Withdrawals", "−", "1200.50")]
+        assert all(item["provenance"]["kind"] == "extracted" and item["provenance"]["line_ids"] for item in trace["inputs"])
+
+
+def test_sc22_a_the_bank_summary_trace_on_a_mismatch(tmp_path, local_model):
+    lines = replaced(BANK, "CLOSING BALANCE", "CLOSING BALANCE 2,300.50")
+    with read_statement(tmp_path, local_model, lines, bank_replies(lines)) as (manager, _run, record):
+        trace = summary_trace(manager, record)
+        assert (trace["compared_with"]["decimal"], trace["reconciles"]) == ("2300.50", False)
+
+
+def test_sc23_the_card_summary_trace(tmp_path, local_model):
+    with read_statement(tmp_path, local_model, CARD, card_replies(CARD)) as (manager, _run, record):
+        trace = summary_trace(manager, record)
+        assert (trace["result"]["decimal"], trace["reconciles"]) == ("792.45", True)
+        assert [step["value"]["decimal"] for step in trace["steps"]] == ["500.00", "500.00", "20.00", "812.45", "0.00", "0.00"]
+
+
+def test_sc23_a_the_card_summary_trace_on_a_mismatch(tmp_path, local_model):
+    lines = replaced(CARD, "NEW BALANCE", "NEW BALANCE 795.45")
+    with read_statement(tmp_path, local_model, lines, card_replies(lines)) as (manager, _run, record):
+        assert summary_trace(manager, record)["reconciles"] is False
+
+
+def test_sc22_a_statement_with_no_summary_terms_has_no_summary_figure(tmp_path, local_model):
+    lines = without(BANK, "WITHDRAWALS ")
+    with read_statement(tmp_path, local_model, lines, bank_replies(lines)) as (manager, _run, record):
+        assert record["checks"] == []
+        with pytest.raises(ValueError, match="This isn't worked out for this record."):
+            traces.trace(manager.store, f"statement.summary?statement_id={record['id']}", manager)
 
 
 def test_sc22_a_a_mismatching_closing_balance_fails_both_checks(tmp_path, local_model):

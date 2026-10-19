@@ -4,6 +4,8 @@ checked, and what counts unchanged except where the spec says."""
 from contextlib import contextmanager
 import json
 
+import pytest
+
 from document_forms_fixtures import (
     AMBIGUOUS,
     DINING,
@@ -29,6 +31,7 @@ from document_forms_fixtures import (
     value,
 )
 from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADERS
+from home_manager.finance import traces
 from home_manager.finance.health import check_ledger
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
@@ -222,7 +225,7 @@ def test_sc05_a_general_receipt_is_read_as_today(tmp_path, local_model):
         assert (record["subtotal_minor"], record["tax_minor"], record["tip_minor"], record["total_minor"]) == (2000, 200, 300, 2500)
         assert [(row["category"], row["amount_minor"]) for row in record["splits"]] == [("dining", 2500)]
         assert asked(local_model) == ["Classification", "ReceiptSummary", "ReceiptIdentity", "Items", "PurchaseDescription", "Rewards"]
-        assert record["receipt_kind"] == "general" and json.loads(record["details_json"]) == {"general": {}}
+        assert record["receipt_kind"] == "general" and record["details"] == {} and record["checks"] == []
     finally:
         manager.close()
 
@@ -430,10 +433,14 @@ def test_sc27_a_gift_card_lowers_what_is_charged_and_what_counts(tmp_path, local
             charged = db.execute("SELECT sum(s.amount_minor) FROM category_splits s JOIN transactions t ON t.id=s.transaction_id "
                                  "WHERE s.receipt_id=? AND t.amount_minor=-355", (receipt_id,)).fetchone()[0]
         assert charged == 355
+        paid = trace_of(manager, check_named(record, "paid")["figure"]["trace"])  # Compared with the VISA charge printed on it.
+        assert (paid["result"]["decimal"], paid["compared_with"]["decimal"], paid["reconciles"]) == ("3.55", "3.55", True)
         # Correct the gift card: what was paid follows, the link stays, and the receipt waits for the user.
         gift = next(entry["field"] for entry in record["correctable"] if entry["label"] == "Gift card amount")
         corrected = manager.ledger.correct("receipt", receipt_id, {gift: "4.00"})
         assert corrected["amount_paid"]["minor"] == 455 and corrected["printed_total"]["minor"] == 855
+        overridden = inputs_by_key(trace_of(manager, check_named(corrected, "paid")["figure"]["trace"]))["gift_card:1"]
+        assert (overridden["provenance"]["kind"], overridden["provenance"]["original"], overridden["value"]["decimal"]) == ("override", "5.00", "4.00")
         assert len(links(manager, receipt_id)) == 1 and corrected["review_status"] == "needs_review"
         assert "Amount paid (4.55) no longer equals the linked charge (3.55)." in corrected["issues"]
         entry = next(item for item in manager.ledger.history("receipt", receipt_id) if item.get("field") == gift)
@@ -446,6 +453,104 @@ def test_sc27_a_gift_card_lowers_what_is_charged_and_what_counts(tmp_path, local
             assert check_ledger(db) == []  # Every receipt's split rows sum to what it counts.
     finally:
         manager.close()
+
+
+def trace_of(manager, ref):
+    """GET /api/traces/{ref} as the API answers it (traces.trace with the app's manager)."""
+    return traces.trace(manager.store, ref, manager)
+
+
+def check_named(record, name):
+    return next(check for check in record["checks"] if check["name"] == name)
+
+
+def inputs_by_key(trace):
+    return {item["key"]: item for item in trace["inputs"]}
+
+
+def test_sc19_the_fuel_trace(tmp_path, local_model):
+    """Steps 1 and 3: the fuel figure, its inputs extracted from line-4, its rounding; a corrected volume is an override."""
+    lines = fuel()
+    with read_receipt(tmp_path, local_model, lines, fuel_replies(lines)) as (manager, _run, record, row):
+        shown = check_named(record, "fuel")
+        trace = trace_of(manager, shown["figure"]["trace"])
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("35.67", "35.67", True)
+        assert trace["result"] == {key: shown["figure"][key] for key in trace["result"]}  # The trace is the figure shown.
+        inputs = inputs_by_key(trace)
+        assert (inputs["volume"]["value"]["text"], inputs["price_per_unit"]["value"]["text"]) == ("10.312", "3.459")
+        for key in ("volume", "price_per_unit"):
+            provenance = inputs[key]["provenance"]
+            assert provenance["kind"] == "extracted" and provenance["line_ids"] == ["line-4"] and provenance["quote"] in lines[3]
+        assert trace["rounding"]["method"] == "half_up_minor" and trace["rounding"]["note"] == "10.312 × 3.459 = 35.669208"
+        corrected = manager.ledger.correct("receipt", row["id"], {"detail:volume": "10.000"})
+        again = trace_of(manager, check_named(corrected, "fuel")["figure"]["trace"])
+        volume = inputs_by_key(again)["volume"]
+        assert (volume["provenance"]["kind"], volume["provenance"]["original"], volume["value"]["text"]) == ("override", "10.312", "10.000")
+        assert (again["result"]["decimal"], again["reconciles"]) == ("34.59", False)
+        assert again["inputs_hash"] != trace["inputs_hash"]
+
+
+def test_sc19_a_fuel_mismatch_doesnt_reconcile(tmp_path, local_model):
+    lines = fuel(sale="36.67", total="38.86")
+    with read_receipt(tmp_path, local_model, lines, fuel_replies(lines)) as (manager, _run, record, _row):
+        trace = trace_of(manager, check_named(record, "fuel")["figure"]["trace"])
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("35.67", "36.67", False)
+        assert check_named(record, "fuel")["passes"] is False
+
+
+def test_sc19_the_dining_trace(tmp_path, local_model):
+    with read_receipt(tmp_path, local_model, DINING, dining_replies()) as (manager, _run, record, _row):
+        trace = trace_of(manager, check_named(record, "dining")["figure"]["trace"])
+        assert [(step["label"], step["value"]["decimal"] if step["value"] else None) for step in trace["steps"]] == [
+            ("Subtotal", "50.00"), ("Tax", "4.00"), ("Gratuity", "9.00"), ("Tip (not printed)", None)]
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("63.00", "63.00", True)
+
+
+def test_sc19_the_multi_unit_and_amount_paid_traces(tmp_path, local_model):
+    """Steps 5 and 6 on SC-04's receipt."""
+    with read_receipt(tmp_path, local_model, GROCERY, grocery_replies()) as (manager, _run, record, _row):
+        line = trace_of(manager, check_named(record, "unit_line:3")["figure"]["trace"])
+        inputs = inputs_by_key(line)
+        assert (inputs["count"]["value"]["text"], inputs["unit_price"]["value"]["decimal"]) == ("2", "2.00")
+        assert all(inputs[key]["provenance"]["kind"] == "extracted" and inputs[key]["provenance"]["line_ids"] == ["line-5"] for key in ("count", "unit_price"))
+        assert (line["result"]["decimal"], line["compared_with"]["decimal"], line["reconciles"]) == ("4.00", "4.00", True)
+        paid = trace_of(manager, check_named(record, "paid")["figure"]["trace"])
+        assert [(step["label"], step["op"], step["value"]["decimal"]) for step in paid["steps"]] == [("Total", "+", "8.55"), ("Gift card", "−", "5.00")]
+        inputs = inputs_by_key(paid)
+        assert (inputs["total"]["provenance"]["line_ids"], inputs["gift_card:1"]["provenance"]["line_ids"]) == (["line-11"], ["line-12"])
+        assert all(item["provenance"]["kind"] == "extracted" for item in paid["inputs"])
+        assert (paid["result"]["decimal"], paid["compared_with"]["decimal"], paid["reconciles"]) == ("3.55", "3.55", True)
+        assert inputs["tender:2"]["provenance"]["line_ids"] == ["line-13"]  # Compared with the other printed tender, EBT.
+        assert paid["result"]["minor"] == record["amount_paid"]["minor"]
+
+
+def test_sc19_b_the_multi_unit_trace_on_a_mismatch(tmp_path, local_model):
+    lines = [{"2x CHIPS @ 2.00 4.00": "2x CHIPS @ 2.00 4.50", "SUBTOTAL 8.55": "SUBTOTAL 9.05", "TOTAL 8.55": "TOTAL 9.05"}.get(line, line) for line in GROCERY]
+    with read_receipt(tmp_path, local_model, lines, grocery_replies(lines)) as (manager, _run, record, _row):
+        line = trace_of(manager, check_named(record, "unit_line:3")["figure"]["trace"])
+        assert (line["compared_with"]["decimal"], line["reconciles"]) == ("4.50", False)
+
+
+def test_sc19_a_figure_a_record_doesnt_have(tmp_path, local_model):
+    """Step 7: a fuel trace on a dining receipt, a dining trace on a fuel receipt, a multi-unit trace on MILK, and an
+    amount-paid trace on a receipt with no gift card."""
+    lines = fuel()
+    with read_receipt(tmp_path, local_model, lines, fuel_replies(lines)) as (manager, _run, _record, row):
+        for name in ("receipt.dining", "receipt.paid", "receipt.fuel"):
+            ref = f"{name}?receipt_id={row['id']}"
+            if name == "receipt.fuel":
+                trace_of(manager, ref)  # Its own figure is worked out.
+                continue
+            with pytest.raises(ValueError, match="This isn't worked out for this record."):
+                trace_of(manager, ref)
+        with pytest.raises(ValueError, match="This isn't worked out for this record."):
+            trace_of(manager, f"receipt.fuel?receipt_id={row['id'] + 99}")
+    with read_receipt(tmp_path / "dining", local_model, DINING, dining_replies()) as (manager, _run, _record, row):
+        with pytest.raises(ValueError, match="This isn't worked out for this record."):
+            trace_of(manager, f"receipt.fuel?receipt_id={row['id']}")
+    with read_receipt(tmp_path / "grocery", local_model, GROCERY, grocery_replies()) as (manager, _run, _record, row):
+        with pytest.raises(ValueError, match="This isn't worked out for this record."):
+            trace_of(manager, f"receipt.unit_line?receipt_id={row['id']}&position=1")
 
 
 def test_sc27_a_without_a_gift_card_it_links_to_the_full_charge(tmp_path, local_model):

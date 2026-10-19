@@ -21,6 +21,7 @@ from document_forms_fixtures import (
     value,
 )
 from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, GUARD_RULES
+from home_manager.finance import traces
 from test_extraction import extract, transcribe
 
 
@@ -231,12 +232,30 @@ def test_sc21_pay_stub_fields_and_checks(tmp_path, local_model):
         assert all(uncited(item, lines) == [] for item in [details["pto_balance"], *details["deposit_splits"], regular["hours"]])
 
 
+def test_sc21_the_hours_and_deposit_traces(tmp_path, local_model):
+    """Checkpoint 4: hours × rate gives 2,500.00 and the deposits 1,912.34, each reconciling, inputs extracted from their
+    lines; each trace's result is the record's check figure."""
+    lines, tables = p_table()
+    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, hours="80.00", rate="31.25", **p_details(lines)), tables) as (manager, _, record):
+        shown = {check["name"]: check for check in record["checks"]}
+        hours = traces.trace(manager.store, shown["hours:1"]["figure"]["trace"], manager)
+        assert (hours["result"]["decimal"], hours["compared_with"]["decimal"], hours["reconciles"]) == ("2500.00", "2500.00", True)
+        regular = number_of(lines, "Regular 80.00")
+        assert all(item["provenance"]["kind"] == "extracted" and item["provenance"]["line_ids"] == [f"line-{regular}"] for item in hours["inputs"])
+        deposits = traces.trace(manager.store, shown["deposits"]["figure"]["trace"], manager)
+        assert (deposits["result"]["decimal"], deposits["reconciles"]) == ("1912.34", True)
+        assert [item["value"]["decimal"] for item in deposits["inputs"]] == ["1500.00", "412.34", "1912.34"]
+        assert all(trace["result"]["minor"] == shown[name]["figure"]["minor"] for name, trace in (("hours:1", hours), ("deposits", deposits)))
+
+
 def test_sc21_a_a_mismatching_rate_goes_to_review(tmp_path, local_model):
     lines, tables = p_table(regular="Regular 80.00 h @ 31.00")
-    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, hours="80.00", rate="31.00", **p_details(lines)), tables) as (_, _run, record):
+    with read_stub(tmp_path, local_model, lines, p_table_replies(lines, hours="80.00", rate="31.00", **p_details(lines)), tables) as (manager, _run, record):
         assert record["review_status"] == "needs_review"
         [issue] = [issue for issue in record["issues"] if "hours ×" in issue]
         assert issue.startswith("This period: Regular 80.00 hours × 31.00 = 2,480.00 USD, not the printed 2,500.00 USD")
+        trace = traces.trace(manager.store, next(check for check in record["checks"] if check["name"] == "hours:1")["figure"]["trace"], manager)
+        assert (trace["result"]["decimal"], trace["reconciles"]) == ("2480.00", False)
 
 
 def test_sc21_b_a_salaried_line_has_no_hours_check(tmp_path, local_model):

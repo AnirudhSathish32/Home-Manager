@@ -65,6 +65,20 @@ def dining(subtotal, tax, tip, gratuity, total, currency, recorder=NULL):
     return computed, total, computed == total
 
 
+def amount_paid(printed, gifts, other_tenders, currency, recorder=NULL):
+    """What a receipt paid partly by gift card counts (FR-09, D15): its printed total less its gift-card deductions.
+    Compared with the other printed tenders' sum when there is one; with none, it passes exactly when the deductions
+    don't exceed the printed total. None without a printed total or a gift card."""
+    if printed is None or not gifts:
+        return None
+    recorder.step("Total", "+", abs(printed), currency)
+    for number, gift in enumerate(gifts, 1):
+        recorder.step("Gift card" + (f" {number}" if len(gifts) > 1 else ""), "−", abs(gift), currency)
+    computed = abs(printed) - sum(abs(gift) for gift in gifts)
+    passes = computed == other_tenders if other_tenders is not None else computed >= 0
+    return computed, other_tenders, passes
+
+
 def hours_rate(hours_text, rate_text, amount_minor, currency, recorder=NULL):
     """A pay line's hours × rate against its this-period amount (FR-21)."""
     return product(hours_text, rate_text, amount_minor, currency, f"{hours_text} hours × {rate_text}", recorder)

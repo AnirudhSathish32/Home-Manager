@@ -76,6 +76,14 @@ class Recorder(NullRecorder):
         self.inputs.append({"key": key, "label": label, "value": money(amount_minor, currency), "provenance": provenance,
                             "verification": verification, "trace": trace})
 
+    def input_text(self, key, label, text, unit, provenance, verification="confirmed", trace=None):
+        """A leaf value that isn't money, exactly as printed (a volume, a price per unit, hours, a rate), with its unit."""
+        if verification not in VERIFICATION:
+            raise ValueError(f"Unknown verification {verification}.")
+        self.inputs.append({"key": key, "label": label, "value": {"text": text, "unit": unit, "display": f"{text} {unit}" if unit else text,
+                                                                   "minor": None, "currency": None},
+                            "provenance": provenance, "verification": verification, "trace": trace})
+
     def rule(self, card):
         self.rule_card = card
 
@@ -87,7 +95,7 @@ class Recorder(NullRecorder):
         """What was recorded for one currency (a calculation that works every currency at once)."""
         kept = Recorder()
         kept.steps = [item for item in self.steps if item["currency"] == currency]
-        kept.inputs = [item for item in self.inputs if item["value"]["currency"] == currency]
+        kept.inputs = [item for item in self.inputs if item["value"]["currency"] in (currency, None)]
         kept.rule_card = self.rule_card
         kept.rounding = self.roundings.get(currency)
         return kept
@@ -116,17 +124,21 @@ def verification_of(inputs):
     automatic = sum(1 for item in inputs if item["verification"] == "checked_automatically")
     state = "verified" if not waiting else "unverified" if len(waiting) == len(inputs) else "partial"
     found = {"state": state, "unverified_count": len(waiting), "checked_automatically_count": automatic, "first": waiting[0]["key"] if waiting else None}
-    if waiting:
-        currencies = {item["value"]["currency"] for item in waiting}
+    money_waiting = [item for item in waiting if item["value"]["minor"] is not None]  # Text inputs (input_text) have no amount.
+    if money_waiting:
+        currencies = {item["value"]["currency"] for item in money_waiting}
         if len(currencies) == 1:
-            found["unverified_value"] = money(sum(item["value"]["minor"] for item in waiting), currencies.pop())
+            found["unverified_value"] = money(sum(item["value"]["minor"] for item in money_waiting), currencies.pop())
     return found
 
 
 def inputs_hash(inputs, result_minor, extra=None):
-    """A digest of what the figure was worked out from (each input's key and value), its result, and anything else it
-    depends on (extra: e.g. the tax engine's pinned SHA-256, so a changed engine marks the figure stale)."""
-    data = json.dumps([[item["key"], item["value"]["minor"], item["value"]["currency"]] for item in inputs] + [result_minor] + ([extra] if extra else []),
+    """A digest of what the figure was worked out from (each input's key and value, a text input's text and unit too, so
+    a corrected volume marks the figure stale even when the rounded result doesn't change), its result, and anything
+    else it depends on (extra: e.g. the tax engine's pinned SHA-256, so a changed engine marks the figure stale)."""
+    data = json.dumps([[item["key"], item["value"]["minor"], item["value"]["currency"], *([item["value"]["text"], item["value"]["unit"]]
+                                                                                           if "text" in item["value"] else [])]
+                       for item in inputs] + [result_minor] + ([extra] if extra else []),
                       separators=(",", ":"))
     return "sha256:" + hashlib.sha256(data.encode()).hexdigest()
 
@@ -137,7 +149,8 @@ def build(ref_text, label, result_minor, currency, formula, recorder, hash_extra
     running, steps = 0, []
     for number, item in enumerate(recorder.steps, 1):
         running += item["minor"] if item["op"] == "+" else -item["minor"]
-        steps.append({"n": number, "label": item["label"], "op": item["op"], "value": money(item["minor"], item["currency"]),
+        steps.append({"n": number, "label": item["label"], "op": item["op"],
+                      "value": None if item.get("missing") else money(item["minor"], item["currency"]),  # Not printed: no value, adds nothing.
                       "running": money(running, currency), "trace": item["trace"], "count": item["count"]})
     adjustment = recorder.rounding["adjustment"]["minor"] if recorder.rounding and recorder.rounding["adjustment"] else 0
     ordered = sorted(recorder.inputs, key=lambda item: VERIFICATION.index(item["verification"]), reverse=True)  # Waiting first.
