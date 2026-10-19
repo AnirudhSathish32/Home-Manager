@@ -8,9 +8,12 @@ from document_forms_fixtures import (
     AMBIGUOUS,
     DINING,
     FUEL,
+    GIFT_CARD_STATEMENT,
+    GIFT_RECEIPT,
     GROCERY,
     MISSING,
     amount_on,
+    card_replies,
     cite,
     dining_replies,
     fuel,
@@ -18,11 +21,16 @@ from document_forms_fixtures import (
     grocery_items,
     grocery_replies,
     item,
+    library,
+    receipt_replies,
+    record_document,
     stored_identifiers,
     uncited,
     value,
 )
 from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADERS
+from home_manager.finance.health import check_ledger
+from home_manager.finance.tools import FinanceTools, PeriodInput
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
 
 KIND_FORMS = ("ReceiptFuelSummary", "ReceiptDiningSummary", "ReceiptGrocerySummary")
@@ -167,9 +175,14 @@ def test_sc04_a_grocery_receipt_keeps_weights_units_and_tenders(tmp_path, local_
         assert "GIFT CARD" not in items and not any(entry["discount_minor"] for entry in record["items"])  # A tender, never an item or discount.
         # Subtotal, tax and total; items make the subtotal; 2 × 2.00 = 4.00.
         assert run["result"]["normalized"]["cross_checks"] == 3 and record["review_status"] == "verified", record["issues"]
-        assert record["total_minor"] == 855
+        # The gift card is a way of paying (D15): the printed total is kept, and the amount paid is what counts.
+        assert (row["printed_total_minor"], row["total_minor"]) == (855, 355)
+        assert (record["printed_total"]["minor"], record["amount_paid"]["minor"]) == (855, 355)
+        assert [(tender["label"], tender["amount"]["decimal"]) for tender in record["tenders"]] == [("Gift card", "5.00"), ("EBT", "3.55")]
+        assert sum(split["amount_minor"] for split in record["splits"]) == 355
         with manager.store.connection() as db:
             assert stored_identifiers(db, ("6006491234565555",)) == []  # C-ids
+            assert check_ledger(db) == []
 
 
 def test_sc04_a_no_printed_price_per_weight(tmp_path, local_model):
@@ -318,3 +331,141 @@ def test_version_changed_and_a_receipt_read_before_is_read_again(tmp_path, local
 def test_grocery_items_fixture_matches_the_printed_subtotal():
     """The fixture's rows add up to its printed subtotal (349 + 136 + 400 + 10 + 10 − 50 = 855)."""
     assert sum(round(float(row["line_total"]) * 100) for row in grocery_items(GROCERY)) == 855
+
+
+def test_sc04_d_a_gift_card_read_as_an_item_fails_the_item_sum(tmp_path, local_model):
+    replies = grocery_replies(items=[*grocery_items(GROCERY), item(GROCERY, "GIFT CARD", "GIFT CARD", "-5.00")])
+    replies["ReceiptGrocerySummary"][0]["tenders"] = [replies["ReceiptGrocerySummary"][0]["tenders"][1]]  # EBT only.
+    with read_receipt(tmp_path, local_model, GROCERY, replies) as (_, _run, record, row):
+        assert record["review_status"] == "needs_review" and any(issue.startswith("Item line totals") for issue in record["issues"])
+        assert (row["total_minor"], row["printed_total_minor"]) == (855, None)  # With no gift card tender, the total is what was paid.
+
+
+def test_sc04_e_gift_card_deductions_above_the_total(tmp_path, local_model):
+    lines = [line.replace("-5.00", "-9.00") for line in GROCERY]
+    replies = grocery_replies(lines)
+    replies["ReceiptGrocerySummary"][0]["tenders"][0]["amount"] = "9.00"
+    with read_receipt(tmp_path, local_model, lines, replies) as (_, _run, record, row):
+        assert record["review_status"] == "needs_review"
+        assert any("gift card deductions exceed the total" in issue.lower() for issue in record["issues"])
+        assert (row["total_minor"], row["printed_total_minor"]) == (855, None)
+
+
+def test_sc04_f_no_gift_card_counts_the_total_as_today(tmp_path, local_model):
+    lines = [line for line in GROCERY if not line.startswith("GIFT CARD")]
+    lines[-1] = "EBT SNAP 8.55"
+    with read_receipt(tmp_path, local_model, lines, grocery_replies(lines)) as (_, _run, record, row):
+        assert (row["total_minor"], row["printed_total_minor"], record["review_status"]) == (855, None, "verified")
+
+
+def test_sc04_a_gift_card_on_a_return_is_not_handled(tmp_path, local_model):
+    """Plan variant: correcting the receipt to a return counts the signed printed total with a note; undo puts the amount
+    paid back and the note goes."""
+    with read_receipt(tmp_path, local_model, GROCERY, grocery_replies()) as (manager, _run, _record, row):
+        returned = manager.ledger.correct("receipt", row["id"], {"direction": "return"})
+        assert returned["total_minor"] == -855 and any(issue.startswith("Gift card on a return") for issue in returned["issues"])
+        undone = manager.ledger.undo_corrections("receipt", row["id"], returned["correction_ids"])
+        assert undone["total_minor"] == 355 and not any(issue.startswith("Gift card on a return") for issue in undone["issues"])
+        with manager.store.connection() as db:
+            assert check_ledger(db) == []
+
+
+def test_a_receipt_with_no_total_publishes_as_today(tmp_path, local_model):
+    with read_receipt(tmp_path, local_model, GROCERY, grocery_replies(total=MISSING)) as (_, _run, _record, row):
+        assert (row["total_minor"], row["printed_total_minor"]) == (None, None)
+
+
+def october(manager):
+    """October 2026 spending by category, as the app counts it."""
+    found = FinanceTools(manager.store).get_spending_by_category(PeriodInput(start="2026-10-01", end="2026-10-31"))
+    return {row["category"]: row["spending"]["minor"] for row in found["categories"]}
+
+
+def gift_receipt_replies(lines=GIFT_RECEIPT):
+    gift = next((line for line in lines if line.startswith("GIFT CARD")), None)
+    visa = next(line for line in lines if line.startswith("VISA"))
+    tenders = ([{"tender_type": "gift_card", "amount": "5.00", "last_four": "5555", "evidence": cite(lines, gift)}] if gift else []) + [
+        {"tender_type": "card", "amount": visa.split()[-1], "last_four": "4242", "evidence": cite(lines, visa)}]
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": amount_on(lines, "TAX "), "total": amount_on(lines, "TOTAL "),
+               "card_last_four": value(lines, "4242", visa, "4242"), "tenders": tenders}
+    return receipt_replies(lines, "grocery", "Synth Market", "SYNTH MARKET", "2026-10-03", summary,
+                           [item(lines, "GROCERIES", "GROCERIES 8.55", "8.55")], category="groceries", kind_evidence=cite(lines, "GROCERIES"))
+
+
+def gift_card_library(tmp_path, local_model, receipt_lines=GIFT_RECEIPT, statement=GIFT_CARD_STATEMENT):
+    """SC-27's library: the receipt recorded, then the card statement recorded and reconciled. The household has a
+    category rule for the market: today a statement line with no receipt is uncategorized without one, and the
+    contract counts the unrelated -8.55 line as groceries."""
+    manager = library(tmp_path, local_model)
+    manager.ledger.add_rule("SYNTH MARKET", "groceries")
+    _, _, run = record_document(manager, local_model, "receipt.png", receipt_lines, gift_receipt_replies(receipt_lines))
+    receipt_id = run["publication"]["id"]
+    before = october(manager)
+    _, _, statement_run = record_document(manager, local_model, "card.png", statement, card_replies(statement))
+    manager.reconciler.reconcile_statement(statement_run["publication"]["id"])
+    return manager, receipt_id, before
+
+
+def links(manager, receipt_id):
+    with manager.store.connection() as db:
+        return [dict(row) for row in db.execute("SELECT t.amount_minor,l.match_method,l.match_score FROM transaction_receipt_links l "
+                                                "JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? AND l.review_status<>'rejected'",
+                                                (receipt_id,))]
+
+
+def test_sc27_a_gift_card_lowers_what_is_charged_and_what_counts(tmp_path, local_model):
+    """One library across the checkpoints (the contract's journey). Trace checkpoints are with the traces (SL-07)."""
+    manager, receipt_id, before = gift_card_library(tmp_path, local_model)
+    try:
+        record = manager.ledger.record("receipt", receipt_id)
+        assert (record["printed_total"]["minor"], record["amount_paid"]["minor"]) == (855, 355)
+        assert [tender["amount"]["minor"] for tender in record["tenders"] if tender["tender_type"] == "gift_card"] == [500]
+        assert before["groceries"] == 355  # Before reconciling, the receipt counts on its own, at what was paid.
+        # The receipt links to the -3.55 line, not the -8.55 one, as any exact match is linked.
+        [link] = links(manager, receipt_id)
+        assert link["amount_minor"] == -355 and link["match_method"] and link["match_score"]
+        # The linked line counts once with the receipt's categories, scaled to 3.55, and the other line on its own.
+        assert october(manager) == {"groceries": 1210}
+        with manager.store.connection() as db:
+            charged = db.execute("SELECT sum(s.amount_minor) FROM category_splits s JOIN transactions t ON t.id=s.transaction_id "
+                                 "WHERE s.receipt_id=? AND t.amount_minor=-355", (receipt_id,)).fetchone()[0]
+        assert charged == 355
+        # Correct the gift card: what was paid follows, the link stays, and the receipt waits for the user.
+        gift = next(entry["field"] for entry in record["correctable"] if entry["label"] == "Gift card amount")
+        corrected = manager.ledger.correct("receipt", receipt_id, {gift: "4.00"})
+        assert corrected["amount_paid"]["minor"] == 455 and corrected["printed_total"]["minor"] == 855
+        assert len(links(manager, receipt_id)) == 1 and corrected["review_status"] == "needs_review"
+        assert "Amount paid (4.55) no longer equals the linked charge (3.55)." in corrected["issues"]
+        entry = next(item for item in manager.ledger.history("receipt", receipt_id) if item.get("field") == gift)
+        assert (entry["label"], entry["from"], entry["to"], entry["undoable"]) == ("Gift card amount", "5.00 USD", "4.00 USD", True)
+        undone = manager.ledger.undo_corrections("receipt", receipt_id, corrected["correction_ids"])
+        assert undone["amount_paid"]["minor"] == 355 and not any(issue.startswith("Amount paid (") for issue in undone["issues"])
+        assert october(manager) == {"groceries": 1210} and len(links(manager, receipt_id)) == 1
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+            assert check_ledger(db) == []  # Every receipt's split rows sum to what it counts.
+    finally:
+        manager.close()
+
+
+def test_sc27_a_without_a_gift_card_it_links_to_the_full_charge(tmp_path, local_model):
+    lines = [line for line in GIFT_RECEIPT if not line.startswith("GIFT CARD")]
+    lines[-1] = "VISA ****4242 8.55"
+    manager, receipt_id, _ = gift_card_library(tmp_path, local_model, receipt_lines=lines)
+    try:
+        assert [link["amount_minor"] for link in links(manager, receipt_id)] == [-855]
+    finally:
+        manager.close()
+
+
+def test_sc27_b_only_the_full_charge_printed_means_no_match(tmp_path, local_model):
+    statement = [line for line in GIFT_CARD_STATEMENT if "-3.55" not in line]
+    statement[statement.index("NEW BALANCE 12.10")] = "NEW BALANCE 8.55"
+    manager, receipt_id, _ = gift_card_library(tmp_path, local_model, statement=statement)
+    try:
+        assert links(manager, receipt_id) == []
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0] == 0  # No near match either.
+        assert october(manager) == {"groceries": 355 + 855}
+    finally:
+        manager.close()

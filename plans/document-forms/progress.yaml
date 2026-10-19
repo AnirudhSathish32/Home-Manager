@@ -79,7 +79,7 @@ slices:
       would block publication); SC-24 releases both statements (reconcile_statement), since the card purchase must count.
   - id: SL-05
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 983d46a
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc01 or sc02 or sc03 or sc04 or sc05 or sc07 or sc08 or version\" -q -> 20 passed, 2 deselected (whole file: 22 passed, incl. SC-06 and a fixture sanity test)"
       - ".venv/Scripts/python.exe -m pytest tests/test_receipt_segments.py -q -> 6 passed (incl. the new SC-12 kind test)"
@@ -104,7 +104,31 @@ slices:
       publish_receipt (merged_details keeps other kinds' entries), receipt_items.details_json. Recorder.step gains
       missing= (a 0 step flagged as not printed), used by document_checks.dining; build() shows it in SL-07.
   - id: SL-06
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_receipt_kinds.py -k \"sc04 or sc27\" -q -> 11 passed (SC-04 gift checkpoints + 4d–4f + the plan's return variant, SC-27 journey + 27a + 27b; plus test_a_receipt_with_no_total_publishes_as_today)"
+      - ".venv/Scripts/python.exe -m pytest tests/test_health.py tests/test_reconcile_tools.py tests/test_spending_splits.py tests/test_returns.py -q -> 43 passed"
+      - ".venv/Scripts/python.exe -m pytest tests/test_extraction.py tests/test_receipts.py tests/test_invoice_ingestion.py tests/test_bills_ledger.py tests/test_family_routing.py tests/test_family_inbox.py -q -> 63 passed, 1 skipped (opt-in browser)"
+      - "Wider: test_receipt_kinds (all), test_traces, test_item_traces, test_correction_preview, test_planned_bugfixes, test_api, test_ui_parity, test_share, test_paystub_forms, test_statement_forms, test_receipt_segments -> 107 passed, 10 skipped (opt-in browser)"
+      - "ruff check src and touched tests -> all checks passed; mypy -> no issues in 71 files"
+    notes: >-
+      Ledger.refresh_paid as planned (rules in order, owns the PAID_ISSUES notes, never verifies, sends an unreviewed
+      receipt to needs_review when it adds one, refresh_splits when total changes); called last in publish_receipt
+      (after apply_corrections), in correct() before the auto-verify check when a total/direction/document_kind/detail
+      field changed, and once at the end of undo_corrections. publish writes printed_total_minor NULL first. A total
+      correction on a receipt with a printed total writes printed_total_minor (blank: both NULL); _field_text shows the
+      printed magnitude. shares(): with a printed total, allocate(printed) then scale(target, live recorder). Detail
+      corrections: fields "detail:<name>" (DETAIL_CORRECTABLE: volume, price_per_unit, pump_number, fuel_amount,
+      gratuity, party_size, savings_total) and "detail:tenders.<n>.amount" (n from 1; label "Gift card amount" etc.),
+      relative to the current kind's details (the plan's example detail:fuel.volume is detail:volume here); written
+      into details_json, history/correctable/undo/apply_corrections handle them; a detail the reading no longer has is
+      refused on undo ("This detail is no longer in the reading.") and skipped on re-apply. Receipts only: pay stub and
+      statement detail corrections aren't needed by any scenario and aren't built. Record view gains printed_total,
+      amount_paid, tenders. DEVIATION (test setup): SC-27 expects October groceries 12.10, but today a statement line
+      with no receipt is uncategorized; the SC-27 library adds a user category rule SYNTH MARKET -> groceries before
+      reading, and asserts {"groceries": 1210}. Without it the figures are groceries 3.55 + uncategorized 8.55 (total
+      12.10). Counting rules unchanged.
   - id: SL-07
     status: todo
   - id: SL-08

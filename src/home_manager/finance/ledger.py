@@ -6,6 +6,7 @@ never performs floating-point arithmetic.
 
 from collections import Counter
 from datetime import date
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
@@ -178,6 +179,16 @@ TRANSACTION_LABELS = {"posted_date": "Date", "amount": "Amount", "direction": "M
 # The review note when a correction clears a record's last issue; with no actor, the history shows it as automatic.
 AUTO_VERIFIED_NOTE = "Every automatic check passes after your correction."
 UNDO_REASON = "Undid a change"
+# A receipt's printed details a person may correct, as "detail:<name>" (docs/money.md "Corrections"): name -> (kind, label).
+# A tender's amount is "detail:tenders.<n>.amount", n counted from 1.
+DETAIL_CORRECTABLE = {"volume": ("decimal_text", "Fuel volume"), "price_per_unit": ("decimal_text", "Fuel price per unit"),
+                      "pump_number": ("decimal_text", "Pump number"), "fuel_amount": ("money", "Fuel amount"), "gratuity": ("money", "Gratuity"),
+                      "party_size": ("decimal_text", "Party size"), "savings_total": ("money", "Savings total")}
+TENDER_LABELS = {"gift_card": "Gift card", "ebt": "EBT", "card": "Card", "cash": "Cash", "other": "Payment"}
+# What decides a receipt's amount paid after gift cards (refresh_paid): corrections to these fields, or any detail.
+PAID_FIELDS = ("total", "direction", "document_kind", "receipt_kind")
+# The notes refresh_paid owns: each run removes them all and adds back only the current ones.
+PAID_ISSUES = ("Gift card on a return", "Gift card deductions exceed", "Amount paid (")
 
 
 def field_labels(record_type, bill=False):
@@ -482,7 +493,8 @@ class Ledger:
             kind = record.get("receipt_kind")
             receipt_id, written = self._upsert(db, "receipts", source, {
                 # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
-                "receipt_kind": kind, "details_json": self.merged_details(db, source, kind, record.get("details")),
+                # The printed total is written as the total; refresh_paid then counts what was paid after gift cards.
+                "receipt_kind": kind, "details_json": self.merged_details(db, source, kind, record.get("details")), "printed_total_minor": None,
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
@@ -504,6 +516,7 @@ class Ledger:
                     db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
                 # After the items: a sale-or-return correction signs them as well as the totals.
                 self.apply_corrections(db, "receipt", receipt_id)
+                self.refresh_paid(db, receipt_id)
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
                                "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -521,6 +534,105 @@ class Ledger:
         row = db.execute("SELECT details_json FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
         found = json.loads(row["details_json"]) if row and row["details_json"] else {}
         return json.dumps({**found, kind: details or {}})
+
+    @staticmethod
+    def current_details(row):
+        """A receipt's details for the kind it is read as now ({} when it has none)."""
+        if not row["details_json"] or not row["receipt_kind"]:
+            return {}
+        return json.loads(row["details_json"]).get(row["receipt_kind"]) or {}
+
+    def refresh_paid(self, db, receipt_id):
+        """What a receipt counts after gift cards (docs/money.md "Gift cards"; spec D15): the printed total less its gift-card
+        tenders, kept in total_minor, with the printed total in printed_total_minor as a magnitude. Idempotent; it never
+        sets a receipt verified. Rules, first match: a gift card on a return isn't handled (the signed printed total counts,
+        with a note); deductions above the total count the printed total, with a note; a gift card counts the amount paid;
+        otherwise the printed total counts as today. A linked charge that no longer equals the amount paid gets a note."""
+        row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        if row is None:
+            return
+        stored = json.loads(row["validation_json"])
+        issues = [issue for issue in stored if not issue.startswith(PAID_ISSUES)]
+        printed = row["printed_total_minor"] if row["printed_total_minor"] is not None else (abs(row["total_minor"]) if row["total_minor"] is not None else None)
+        gift = sum(abs(tender["minor"]) for tender in self.current_details(row).get("tenders", [])
+                   if tender.get("tender_type") == "gift_card" and tender.get("minor") is not None)
+        sign = -1 if self.effective_receipt_direction(db, row) == "return" else 1
+        total, kept = row["total_minor"], None
+        if row["document_kind"] == "bill" or printed is None or (not gift and row["printed_total_minor"] is None):
+            if row["document_kind"] == "bill" and row["printed_total_minor"] is not None:  # Recorded as a bill: it counts its total once more.
+                total = sign * printed
+        elif gift and sign == -1:
+            total = -printed
+            issues.append("Gift card on a return isn't handled; check the amount.")
+        elif gift > printed:
+            total = printed
+            issues.append("Gift card deductions exceed the total; the printed total is counted until you correct it.")
+        elif gift:
+            total, kept = printed - gift, printed
+            charged = db.execute("SELECT -t.amount_minor FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
+                                 "AND l.review_status<>'rejected' AND t.review_status<>'rejected' ORDER BY l.id LIMIT 1", (receipt_id,)).fetchone()
+            if charged and charged[0] != total:
+                issues.append(f"Amount paid ({money(total, row['currency'])['decimal']}) no longer equals the linked charge "
+                              f"({money(charged[0], row['currency'])['decimal']}).")
+        else:
+            total = sign * printed
+        added = [issue for issue in issues if issue.startswith(PAID_ISSUES) and issue not in stored]
+        review = ("needs_review", None) if added and row["review_source"] != "user" else (row["review_status"], row["review_source"])
+        db.execute("UPDATE receipts SET total_minor=?,printed_total_minor=?,validation_json=?,review_status=?,review_source=?,updated_at=? WHERE id=?",
+                   (total, kept, json.dumps(issues), *review, now(), receipt_id))
+        if total != row["total_minor"]:
+            self.refresh_splits(db, receipt_id)
+
+    def detail_fields(self, row):
+        """A receipt's current details a person may correct: {"detail:<path>": (kind, label)}."""
+        details = self.current_details(row) if row["document_kind"] != "bill" else {}
+        fields = {f"detail:{name}": entry for name, entry in DETAIL_CORRECTABLE.items() if name in details}
+        tenders = details.get("tenders", [])
+        for number, tender in enumerate(tenders, 1):
+            label = TENDER_LABELS.get(tender.get("tender_type"), "Payment")
+            same = [entry for entry in tenders if entry.get("tender_type") == tender.get("tender_type")]
+            fields[f"detail:tenders.{number}.amount"] = ("money", f"{label} amount" + (f" {same.index(tender) + 1}" if len(same) > 1 else ""))
+        return fields
+
+    @staticmethod
+    def detail_entry(details, field):
+        """(the dict holding a detail's value, value key) for "detail:<name>" or "detail:tenders.<n>.amount"; None when
+        the current details don't have it."""
+        parts = field.removeprefix("detail:").split(".")
+        if len(parts) == 1 and isinstance(details.get(parts[0]), dict):
+            return details[parts[0]], "minor" if DETAIL_CORRECTABLE.get(parts[0], ("",))[0] == "money" else "text"
+        if len(parts) == 3 and parts[0] == "tenders" and parts[1].isdigit() and parts[2] == "amount":
+            tenders = details.get("tenders", [])
+            if 1 <= int(parts[1]) <= len(tenders):
+                return tenders[int(parts[1]) - 1], "minor"
+        return None
+
+    def _set_detail(self, db, receipt_id, field, text, currency):
+        """Write one corrected detail into the receipt's current details; returns its text before. A detail the reading
+        no longer has is refused."""
+        row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        details = self.current_details(row)
+        found = self.detail_entry(details, field)
+        if found is None:
+            raise ValueError("This detail is no longer in the reading.")
+        entry, key = found
+        previous = (money(abs(entry[key]), currency)["decimal"] if entry.get(key) is not None else None) if key == "minor" else entry.get("text")
+        if key == "minor":
+            amount = abs(to_minor(text, currency)) if text is not None else None
+            entry["minor"] = -amount if amount is not None and field == "detail:savings_total" else amount  # Savings are money off.
+        else:
+            if text is not None:
+                try:
+                    if not Decimal(str(text).strip().replace(",", "")).is_finite():
+                        raise InvalidOperation
+                except InvalidOperation:
+                    raise ValueError("Enter a number as printed, such as 10.312.") from None
+            entry["text"] = str(text).strip() if text is not None else None
+        entry["status"] = "proposed" if entry.get(key) is not None else "missing"
+        everything = json.loads(row["details_json"])
+        everything[row["receipt_kind"]] = details
+        db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(everything), now(), receipt_id))
+        return previous
 
     def retire_segments(self, blob_hash, keep, note="The latest reading of this file no longer finds this receipt; check how the file was split."):
         """Receipts of a file's segments that its latest reading no longer finds (keep: the segments it found; none when
@@ -692,7 +804,11 @@ class Ledger:
         last pass: the one whose rounding gives the stored shares (finance/traces.py split)."""
         args = (items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"])
         last = lambda final: recorder if final else NULL
-        if currency == receipt["currency"]:
+        printed = receipt["printed_total_minor"] if "printed_total_minor" in receipt.keys() else None
+        if currency == receipt["currency"] and printed is not None:
+            # Paid partly by gift card: divided as printed, then resized to the amount paid, each category keeping its proportion.
+            shares = splits.scale(splits.allocate(*args, printed, receipt["category"]), target, last(not shared), items, currency)
+        elif currency == receipt["currency"]:
             shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency)
         else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
             shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"]), target, last(not shared), items, currency)
@@ -985,6 +1101,14 @@ class Ledger:
                 # Sale or return, as a correction sets it, and the tag the page shows (docs/money.md "Returns").
                 value["direction"] = self.effective_receipt_direction(db, row)
                 value["sale_label"] = sale_label(row["total_minor"], [item["line_total_minor"] for item in value["items"]])
+                # Printed total, gift cards and what was paid, worked out here ("Total 8.55 · Gift card −5.00 · Paid 3.55").
+                printed = row["printed_total_minor"] if row["printed_total_minor"] is not None else (abs(row["total_minor"]) if row["total_minor"] is not None else None)
+                sign = -1 if value["direction"] == "return" else 1
+                value["printed_total"] = money(sign * printed, row["currency"]) if printed is not None else None
+                value["amount_paid"] = money(row["total_minor"], row["currency"]) if row["total_minor"] is not None else None
+                value["tenders"] = [{**tender, "label": TENDER_LABELS.get(tender.get("tender_type"), "Payment"),
+                                     "amount": money(tender["minor"], row["currency"]) if tender.get("minor") is not None else None}
+                                    for tender in self.current_details(row).get("tenders", [])]
                 value["reconciled"] = db.execute("SELECT 1 FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id WHERE l.receipt_id=? "
                                                  "AND l.review_status<>'rejected' AND t.review_status<>'rejected'", (record_id,)).fetchone() is not None
             if record_type == "transaction":
@@ -1352,9 +1476,12 @@ class Ledger:
             if row is None:
                 raise ValueError("Financial record not found.")
             fields = fields_for(record_type, row)
-            if not changes or set(changes) - set(fields):
+            details = self.detail_fields(row) if record_type == "receipt" else {}
+            if not changes or set(changes) - set(fields) - set(details):
                 raise ValueError("Choose fields this record allows: " + ", ".join(field.replace("_", " ") for field in fields) + ".")
             ids = self._apply_correction(db, record_type, record_id, changes, reason)
+            if record_type == "receipt" and any(field in PAID_FIELDS or field.startswith("detail:") for field in changes):
+                self.refresh_paid(db, record_id)  # Its notes are in place before the automatic check below.
             table = RECORD_TABLES[record_type]
             row = db.execute(f"SELECT validation_json,review_status,review_source FROM {table} WHERE id=?", (record_id,)).fetchone()
             if not json.loads(row["validation_json"]) and row["review_status"] == "needs_review" and row["review_source"] != "user":
@@ -1372,8 +1499,20 @@ class Ledger:
         if row is None:
             raise ValueError("Financial record not found.")
         fields = fields_for(record_type, row)
+        details = self.detail_fields(row) if record_type == "receipt" else {}
         issues, ids = json.loads(row["validation_json"]), []
         for field, text in sorted(changes.items(), key=lambda pair: pair[0] == "direction"):
+            if field.startswith("detail:"):  # A printed detail (docs/money.md "Corrections"), kept as its text.
+                kind, label = details.get(field) or ("money" if field.endswith(".amount") else "decimal_text", self.detail_label(field))
+                text = " ".join(str(text).split()) if text is not None else None
+                previous = self._set_detail(db, record_id, field, text, row["currency"])
+                stored = money(abs(to_minor(text, row["currency"])), row["currency"])["decimal"] if text is not None and kind == "money" else text
+                resolved = [issue for issue in issues if issue.startswith(label)]
+                issues = [issue for issue in issues if not issue.startswith(label)]
+                ids.append(db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
+                                      "VALUES(?,?,?,?,?,?,?,?,?)", (record_type, record_id, field, stored, previous, json.dumps(resolved),
+                                                                    clean_reason(reason), actor.current(), now())).lastrowid)
+                continue
             column, kind, label = fields[field]
             value, stored = self._correction_value(db, kind, field, text, currency=row["currency"])
             current = db.execute(f"SELECT * FROM {table} WHERE id=?", (record_id,)).fetchone()
@@ -1384,6 +1523,10 @@ class Ledger:
             issues = [issue for issue in issues if not issue.startswith(label)]
             if kind == "sale_type":
                 self.set_receipt_direction(db, record_id, value)
+            elif record_type == "receipt" and field == "total" and current["printed_total_minor"] is not None:
+                # The printed total of a receipt paid partly by gift card; refresh_paid works out what was paid from it.
+                db.execute("UPDATE receipts SET printed_total_minor=?,total_minor=CASE WHEN ? IS NULL THEN NULL ELSE total_minor END,updated_at=? WHERE id=?",
+                           (abs(value) if value is not None else None, value, now(), record_id))
             else:
                 db.execute(f"UPDATE {table} SET {column}=?,updated_at=? WHERE id=?", (value, now(), record_id))
             ids.append(db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
@@ -1412,6 +1555,8 @@ class Ledger:
             return self._merchant_name(db, row[column])
         if kind in ("money", "receipt_money"):
             value = row[column]
+            if column == "total_minor" and "printed_total_minor" in row.keys() and row["printed_total_minor"] is not None:
+                value = row["printed_total_minor"]  # The printed total, not what was paid after gift cards.
             return money(abs(value) if kind == "receipt_money" else value, row["currency"])["decimal"] if value is not None else None
         if kind == "sale_type":
             return self.effective_receipt_direction(db, row)
@@ -1434,7 +1579,35 @@ class Ledger:
             if kind in options:
                 item["options"] = list(options[kind])
             found.append(item)
+        if record_type == "receipt":
+            details = self.current_details(row)
+            for field, (kind, label) in self.detail_fields(row).items():
+                entry, key = self.detail_entry(details, field)
+                shown = (money(abs(entry[key]), row["currency"])["decimal"] if entry.get(key) is not None else None) if key == "minor" else entry.get("text")
+                found.append({"field": field, "label": label, "kind": kind, "value": shown, "shown_as": field})
         return found
+
+    @staticmethod
+    def detail_label(field):
+        """What a detail correction is called once its detail is gone from the reading (its history still shows it)."""
+        name = field.removeprefix("detail:")
+        if name in DETAIL_CORRECTABLE:
+            return DETAIL_CORRECTABLE[name][1]
+        return "Payment amount" if name.startswith("tenders.") else name.replace("_", " ").capitalize()
+
+    @staticmethod
+    def detail_kind(field):
+        """How a detail correction's value is shown: money (an amount) or its printed text."""
+        name = field.removeprefix("detail:")
+        return "money" if name.endswith(".amount") or DETAIL_CORRECTABLE.get(name, ("",))[0] == "money" else "text"
+
+    def reapply_detail(self, db, receipt_id, field, text, currency):
+        """A saved detail correction written again after a reading; False when the reading no longer has that detail."""
+        row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        if self.detail_entry(self.current_details(row), field) is None:
+            return False
+        self._set_detail(db, receipt_id, field, text, currency)
+        return True
 
     def history(self, record_type, record_id):
         """A record's changes, newest first (docs/money.md "Corrections"): corrections (a statement's rows' too), review
@@ -1460,8 +1633,10 @@ class Ledger:
                 for line, key in self.income_line_keys(db, record_id):
                     income_labels.update({f"income_line:{key}:current": f"This period: {line['description']}",
                                           f"income_line:{key}:ytd": f"Year to date: {line['description']}"})
+            detail_labels = {field: label for field, (_, label) in self.detail_fields(row).items()} if record_type == "receipt" else {}
             for kind, target, shown_row in targets:
-                labels = field_labels(kind, bill=bill and kind == "receipt") | (income_labels if kind == "income_record" else {})
+                labels = field_labels(kind, bill=bill and kind == "receipt") | (income_labels if kind == "income_record" else {}) | (
+                    detail_labels if kind == "receipt" else {})
                 if kind == "receipt_item":
                     labels = {f"{field}:{item['position']}": f"{what} {item['description'] or 'item ' + str(item['position'])}"
                               for item in db.execute("SELECT position,description FROM receipt_items WHERE receipt_id=?", (target,))
@@ -1471,10 +1646,13 @@ class Ledger:
                 latest = dict(db.execute("SELECT field,max(id) FROM record_corrections WHERE record_type=? AND record_id=? GROUP BY field", (kind, target)).fetchall())
                 for item in db.execute("SELECT * FROM record_corrections WHERE record_type=? AND record_id=?", (kind, target)):
                     value_kind = ("money" if item["field"].startswith("price:") else "text") if kind == "receipt_item" else (
-                        "money" if kind == "income_record" and item["field"].startswith("income_line:") else kinds.get(item["field"], "text"))
+                        "money" if kind == "income_record" and item["field"].startswith("income_line:") else
+                        self.detail_kind(item["field"]) if item["field"].startswith("detail:") else kinds.get(item["field"], "text"))
                     shown = (lambda text: format_minor(to_minor(text, currency), currency) if text is not None else None) if value_kind in ("money", "amount", "receipt_money") else (lambda text: text)
                     entries.append({"kind": "correction", "id": item["id"], "at": item["created_at"], "who": item["actor"] or "Home Manager",
-                                    "field": item["field"], "label": labels.get(item["field"], "Item price" if kind == "receipt_item" else item["field"].replace("_", " ").capitalize()),
+                                    "field": item["field"], "label": labels.get(item["field"], "Item price" if kind == "receipt_item" else
+                                                                       self.detail_label(item["field"]) if item["field"].startswith("detail:") else
+                                                                       item["field"].replace("_", " ").capitalize()),
                                     "value_kind": value_kind, "from": shown(item["previous"]), "to": shown(item["value"]), "reason": item["reason"],
                                     "resolved_issues": json.loads(item["resolved_issues_json"]),
                                     "undoable": latest.get(item["field"]) == item["id"] and (kind != "transaction" or item["field"] in TRANSACTION_CORRECTABLE),
@@ -1552,6 +1730,8 @@ class Ledger:
                 db.execute(f"UPDATE {table} SET review_status='needs_review',updated_at=? WHERE id=?", (now(), record_id))
                 db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at,actor) VALUES(?,?,'verified','needs_review',?,?,?)",
                            (record_type, record_id, "Undid a correction", now(), actor.current()))
+            if record_type == "receipt" and any(row["field"] in PAID_FIELDS or row["field"].startswith("detail:") for row in rows):
+                self.refresh_paid(db, record_id)  # Last, after the restored notes and the revert above.
         return self.record(record_type, record_id)
 
     def apply_corrections(self, db, record_type, record_id):
@@ -1577,6 +1757,10 @@ class Ledger:
         stored_json, currency = db.execute(f"SELECT validation_json,currency FROM {table} WHERE id=?", (record_id,)).fetchone()
         issues = json.loads(stored_json)
         for field, text in sorted(latest, key=lambda pair: (pair[0] != "document_kind", pair[0] == "direction")):
+            if field.startswith("detail:"):
+                if record_type == "receipt" and self.reapply_detail(db, record_id, field, text, currency):
+                    issues = [issue for issue in issues if not issue.startswith(self.detail_label(field))]
+                continue
             if field == "document_kind":
                 value, _ = self._correction_value(db, "document_kind", field, text)
                 db.execute("UPDATE receipts SET document_kind=? WHERE id=?", (value, record_id))
