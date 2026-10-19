@@ -749,7 +749,9 @@ class Ledger:
                 "opening_balance_minor": record.get("opening_balance_minor"), "closing_balance_minor": record.get("closing_balance_minor"),
                 "statement_balance_minor": record.get("statement_balance_minor"), "minimum_payment_minor": record.get("minimum_payment_minor"),
                 "summary_json": json.dumps(record["summary"]), "currency": record["currency"], "review_status": status,
-                "validation_json": json.dumps(record["issues"]), "reconciliation": "awaiting"})
+                "validation_json": json.dumps(record["issues"]), "reconciliation": "awaiting",
+                # Printed summary details, shown and checked only: the account's type and what counts don't change (FR-29).
+                "details_json": json.dumps(record["details"]) if record.get("details") else None})
             if not written:
                 return self._published("statement", statement_id, False, account_id=account["id"])
             self.add_evidence(db, "statement", statement_id, source, record["locator"])

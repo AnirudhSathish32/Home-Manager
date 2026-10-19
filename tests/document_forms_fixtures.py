@@ -203,13 +203,105 @@ def paystub_classification(lines):
 
 # Statements ----------------------------------------------------------------------------------------------------
 
+# Each statement also prints its currency (STATEMENT CURRENCY USD): without one, and with no $ printed, a statement's
+# amounts can't be read as any currency and nothing is published (ExtractionService.currency_for).
 BANK = ["SYNTH BANK", "EVERYDAY CHECKING ACCOUNT 000123456789", "ROUTING 021000021", "STATEMENT PERIOD 2026-09-01 TO 2026-09-30",
-        "OPENING BALANCE 1,000.00", "DEPOSITS 2,500.00", "WITHDRAWALS 1,200.50", "CLOSING BALANCE 2,299.50", "INTEREST EARNED 0.42",
-        "APY 0.50%", "FEES 0.00", "09/03 PAYROLL SYNTH WORKS +2,500.00", "09/05 RENT -1,200.50"]
-CARD = ["SYNTH CARD", "ACCOUNT ENDING 4242", "STATEMENT PERIOD 2026-09-01 TO 2026-09-30", "PREVIOUS BALANCE 500.00", "PAYMENTS -500.00",
-        "CREDITS -20.00", "PURCHASES 812.45", "FEES CHARGED 0.00", "INTEREST CHARGED 0.00", "NEW BALANCE 792.45", "PURCHASE APR 24.99%",
-        "CASH ADVANCE APR 29.99%", "CREDIT LIMIT 5,000.00", "AVAILABLE CREDIT 4,207.55", "POINTS EARNED 812",
+        "STATEMENT CURRENCY USD", "OPENING BALANCE 1,000.00", "DEPOSITS 2,500.00", "WITHDRAWALS 1,200.50", "CLOSING BALANCE 2,299.50",
+        "INTEREST EARNED 0.42", "APY 0.50%", "FEES 0.00", "09/03 PAYROLL SYNTH WORKS +2,500.00", "09/05 RENT -1,200.50"]
+CARD = ["SYNTH CARD", "ACCOUNT ENDING 4242", "STATEMENT PERIOD 2026-09-01 TO 2026-09-30", "STATEMENT CURRENCY USD", "PREVIOUS BALANCE 500.00",
+        "PAYMENTS -500.00", "CREDITS -20.00", "PURCHASES 812.45", "FEES CHARGED 0.00", "INTEREST CHARGED 0.00", "NEW BALANCE 792.45",
+        "PURCHASE APR 24.99%", "CASH ADVANCE APR 29.99%", "CREDIT LIMIT 5,000.00", "AVAILABLE CREDIT 4,207.55", "POINTS EARNED 812",
         "09/10 PAYMENT THANK YOU +500.00", "09/12 SYNTH SHOP REFUND +20.00", "09/15 SYNTH SHOP -812.45"]
 # SC-27's card statement: the receipt's charge, and another purchase at the same merchant with no receipt.
-GIFT_CARD_STATEMENT = ["SYNTH CARD", "ACCOUNT ENDING 4242", "STATEMENT PERIOD 2026-10-01 TO 2026-10-31", "PREVIOUS BALANCE 0.00",
-                       "NEW BALANCE 12.10", "10/05 SYNTH MARKET -3.55", "10/06 SYNTH MARKET -8.55"]
+GIFT_CARD_STATEMENT = ["SYNTH CARD", "ACCOUNT ENDING 4242", "STATEMENT PERIOD 2026-10-01 TO 2026-10-31", "STATEMENT CURRENCY USD",
+                       "PREVIOUS BALANCE 0.00", "NEW BALANCE 12.10", "10/05 SYNTH MARKET -3.55", "10/06 SYNTH MARKET -8.55"]
+
+
+def amount_of(lines, text):
+    """The last amount printed on the line holding text, as printed (without its sign)."""
+    return lines[number_of(lines, text) - 1].split()[-1].lstrip("+-")
+
+
+def amount_value(lines, text):
+    line = lines[number_of(lines, text) - 1]
+    return value(lines, line.split()[-1], line, line.split()[-1])
+
+
+def statement_rows(lines, year="2026"):
+    """Transactions for every 'MM/DD TEXT ±AMOUNT' line: credits are printed with +, debits with -."""
+    rows = []
+    for number, line in enumerate(lines, 1):
+        words = line.split()
+        if len(words) >= 3 and len(words[0]) == 5 and words[0][2] == "/" and words[-1][0] in "+-":
+            rows.append({"posted_date": f"{year}-{words[0][:2]}-{words[0][3:]}", "transaction_date": None, "description": " ".join(words[1:-1]),
+                         "amount": words[-1].lstrip("+-"), "direction": "credit" if words[-1][0] == "+" else "debit", "evidence": at(lines, number)})
+    return rows
+
+
+def statement_period(lines):
+    line = next(line for line in lines if line.startswith("STATEMENT PERIOD "))
+    start, end = line.split()[2], line.split()[4]
+    return value(lines, start, line, start), value(lines, end, line, end)
+
+
+def bank_replies(lines, **changes):
+    """A bank statement read correctly, with every printed detail; changes replace summary fields."""
+    start, end = statement_period(lines)
+    account = next(line for line in lines if "ACCOUNT" in line)
+    summary = {"institution": value(lines, "SYNTH BANK", "SYNTH BANK"), "account_reference": value(lines, "6789", account, account.split()[-1]),
+               "period_start": start, "period_end": end, "currency": value(lines, "USD", "STATEMENT CURRENCY USD", "USD"),
+               "opening_balance": amount_value(lines, "OPENING BALANCE"), "closing_balance": amount_value(lines, "CLOSING BALANCE"),
+               "account_type": value(lines, "checking", account, "EVERYDAY CHECKING") if "CHECKING" in account else MISSING}
+    for name, text in (("deposits_total", "DEPOSITS "), ("withdrawals_total", "WITHDRAWALS "), ("interest_earned", "INTEREST EARNED"),
+                       ("fees_total", "FEES "), ("apy", "APY ")):
+        summary[name] = amount_value(lines, text) if any(line.startswith(text) for line in lines) else MISSING
+    classified = {"document_type": "bank_statement", "evidence": cite(lines, "SYNTH BANK"), "issuer": value(lines, "SYNTH BANK", "SYNTH BANK"),
+                  "document_date": end}
+    return {"Classification": [classified], "BankStatementSummary": [{**summary, **changes}], "Transactions": [{"transactions": statement_rows(lines)}]}
+
+
+def card_replies(lines, **changes):
+    """A card statement read correctly, with every printed detail; changes replace summary fields."""
+    start, end = statement_period(lines)
+    printed = {name: amount_value(lines, text) if any(line.startswith(text) for line in lines) else MISSING
+               for name, text in (("previous_balance", "PREVIOUS BALANCE"), ("payments", "PAYMENTS "), ("credits", "CREDITS "),
+                                  ("purchases", "PURCHASES "), ("fees", "FEES CHARGED"), ("interest", "INTEREST CHARGED"),
+                                  ("statement_balance", "NEW BALANCE"), ("purchase_apr", "PURCHASE APR"), ("cash_advance_apr", "CASH ADVANCE APR"),
+                                  ("credit_limit", "CREDIT LIMIT"), ("available_credit", "AVAILABLE CREDIT"), ("rewards_earned", "POINTS EARNED"))}
+    summary = {"issuer": value(lines, "SYNTH CARD", "SYNTH CARD"), "account_reference": value(lines, "4242", "ACCOUNT ENDING 4242", "4242"),
+               "period_start": start, "period_end": end, "minimum_payment": MISSING, "due_date": MISSING,
+               "currency": value(lines, "USD", "STATEMENT CURRENCY USD", "USD"), **printed}
+    classified = {"document_type": "credit_card_statement", "evidence": cite(lines, "SYNTH CARD"), "issuer": value(lines, "SYNTH CARD", "SYNTH CARD"),
+                  "document_date": end}
+    return {"Classification": [classified], "CreditCardStatementSummary": [{**summary, **changes}], "Transactions": [{"transactions": statement_rows(lines)}]}
+
+
+# Several documents in one library ------------------------------------------------------------------------------
+
+def library(tmp_path, model):
+    """A Manager on tmp_path with the fake vision and reasoning models: each document captured is also recorded."""
+    from home_manager.app.manager import Manager
+    from home_manager.documents.reasoning import ReasoningConfig
+    from home_manager.library.scanner import ScanLimits
+    manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
+    manager.configure(str(tmp_path / "managed"))
+    manager.configure_vision(model["config"])
+    manager.configure_reasoning(ReasoningConfig(base_url=model["config"].base_url, model="synthetic-reasoning"))
+    manager.configure_household(manager.household.model_copy(update={"auto_identify_items": False}))
+    return manager
+
+
+def record_document(manager, model, name, lines, replies, tables=None):
+    """Draw lines into the Inbox as name, capture it (the fake vision model reads lines) and record it with replies
+    keyed by schema name. Returns (document, parse run id, extraction run)."""
+    from test_receipts import make_receipt
+    make_receipt(manager.store.library.inbox / name, lines)
+    model["outputs"] = [{"full_text": "\n".join(lines), **({"tables": tables} if tables is not None else {})}]
+    model["by_schema"] = replies
+    manager.start_inbox()
+    manager.future.result(timeout=60)
+    doc = next(doc for doc in manager.store.documents()["items"] if doc["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] == name)
+    parse_id = manager.receipts.history(doc["id"])[0]["id"]
+    run = manager.extractions.get(manager.extractions.history(parse_id)[0]["id"])
+    assert run["status"] == "succeeded", run["error"]
+    return doc, parse_id, run

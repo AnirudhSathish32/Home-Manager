@@ -38,7 +38,7 @@ slices:
       EXTRACTION_VERSION = typed-extraction-v23-document-forms.
   - id: SL-03
     status: done
-    commit: null  # filled in by the next slice's commit
+    commit: 95fc5d4
     verification:
       - ".venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py -k \"sc21 or sc25 or fallback\" -q -> 7 passed (whole file: 17 passed)"
       - ".venv/Scripts/python.exe -m pytest tests/test_identifiers.py -q -> 21 passed"
@@ -59,7 +59,24 @@ slices:
       mask(line)), and result_json via scrubbed() (header identifier/pay/detail fields, rows' new fields, normalized
       locator and details). NullRecorder gains a no-op input_text; the live one is SL-07.
   - id: SL-04
-    status: todo
+    status: done
+    commit: null  # filled in by the next slice's commit
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_statement_forms.py -q -> 12 passed (SC-22 + 22a–c, SC-23 + 23a–b, SC-24, SC-25 statement, SC-26, unprinted details x2)"
+      - "SC-24 asserts the hard-coded figures (money in 4,412.34, net spending 1,992.95, refunds 20.00, balance 2,299.50, no income link) and the same figures from a second library read with statement_details, pay_details and cited_label patched to do nothing"
+      - "Regression: test_extraction, test_pdf, test_layout_consumers, test_vision_tables, test_reconcile_tools, test_statement_assets, test_imports, test_backend_dependencies, test_bills_ledger, test_family_routing, test_paystub_forms, test_invoice_ingestion -> 124 passed, 1 skipped (opt-in browser)"
+      - "ruff check on touched files -> all checks passed; mypy -> no issues in 71 files"
+    notes: >-
+      Bank summary gains account_type, deposits_total, withdrawals_total, interest_earned, fees_total, apy; card summary
+      gains purchase_apr, cash_advance_apr, credit_limit, available_credit, rewards_earned, rewards_balance (all
+      optional Values via DETAIL_FIELDS; the money and percent ones joined AMOUNTS so their citations are checked and
+      a failure takes the FR-14 path). statement_details: account type only from its printed word (else other; the
+      account's own type is unchanged), money by magnitude, percents as printed text, rewards as text with a points or
+      miles unit read from the cited line (money only when printed with a symbol). document_checks.bank_summary and
+      card_summary; notes start "Closing balance:" / "Statement balance:" and name every term. normalize(details=False)
+      when DETAILS_FAILED, so nothing new is stored. publish_statement writes statements.details_json. Fixture
+      deviation: BANK, CARD and the SC-27 statement print "STATEMENT CURRENCY USD" (no currency and no $ printed
+      would block publication); SC-24 releases both statements (reconcile_statement), since the card purchase must count.
   - id: SL-05
     status: todo
   - id: SL-06

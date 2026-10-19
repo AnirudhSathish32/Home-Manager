@@ -51,3 +51,31 @@ def deposit_splits(amounts_minor, net_minor, currency, recorder=NULL):
         recorder.add(f"Deposit {number}", amount, currency)
     computed = sum(amounts_minor)
     return computed, net_minor, net_minor is not None and computed == net_minor
+
+
+def bank_summary(opening, deposits, withdrawals, closing, currency, recorder=NULL):
+    """A bank statement's printed summary against itself (FR-26): opening + deposits − withdrawals = closing. Totals
+    count by magnitude, whatever sign was printed. None unless all four are printed."""
+    if None in (opening, deposits, withdrawals, closing):
+        return None
+    recorder.add("Opening balance", opening, currency)
+    recorder.step("Deposits", "+", abs(deposits), currency)
+    recorder.step("Withdrawals", "−", abs(withdrawals), currency)
+    computed = opening + abs(deposits) - abs(withdrawals)
+    return computed, closing, computed == closing
+
+
+CARD_TERMS = (("Payments", "−"), ("Credits", "−"), ("Purchases", "+"), ("Fees", "+"), ("Interest", "+"))
+
+
+def card_summary(previous, payments, credits, purchases, fees, interest, balance, currency, recorder=NULL):
+    """A card statement's printed summary against itself (FR-28): previous − payments − credits + purchases + fees +
+    interest = statement balance, by magnitude. A printed 0.00 counts as printed; None unless all are."""
+    if None in (previous, payments, credits, purchases, fees, interest, balance):
+        return None
+    recorder.add("Previous balance", previous, currency)
+    computed = previous
+    for (label, op), amount in zip(CARD_TERMS, (payments, credits, purchases, fees, interest)):
+        recorder.step(label, op, abs(amount), currency)
+        computed += abs(amount) if op == "+" else -abs(amount)
+    return computed, balance, computed == balance

@@ -76,7 +76,10 @@ HEADERS = {
 AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
            "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "new_charges", "gross_pay", "net_pay", "taxes", "deductions",
            "gross_pay_ytd", "net_pay_ytd", "ending_value", "principal_balance", "monthly_payment", "interest_rate",
-           "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due"}
+           "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due",
+           # A statement's printed details (document forms): money, and rates printed with their % sign.
+           "deposits_total", "withdrawals_total", "interest_earned", "fees_total", "apy", "purchase_apr", "cash_advance_apr", "credit_limit",
+           "available_credit"}
 # Kinds recorded in the ledger; the rest are read only for filing.
 PUBLISHED = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "investment_statement", "investment_confirmation", "investment_tax_form",
              "loan_document")
@@ -106,7 +109,12 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                       "missing when it was paid in cash or no card number is printed; return_marker: the printed words showing money "
                       "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
                       "missing for an ordinary sale, and never a return policy)",
-"bank_statement": "bank statement", "credit_card_statement": "credit card statement",
+"bank_statement": "bank statement (account_type: checking, savings, money_market or other, only from printed words such as "
+                            "Everyday Checking, citing them; missing when no type is printed. deposits_total, withdrawals_total, "
+                            "interest_earned and fees_total: the summary's printed totals; apy: the printed interest rate with its % sign)",
+          "credit_card_statement": "credit card statement (purchase_apr and cash_advance_apr: the printed rates with their % sign; "
+                                   "credit_limit and available_credit as printed; rewards_earned and rewards_balance: points, miles or cash "
+                                   "back exactly as printed with their unit, such as 812 points)",
           "bill": "bill or supplier invoice for goods or services, whether unpaid, partially paid or paid (provider: the supplier/seller, never the bill-to customer; account_reference: "
                   "the account number at the provider; amount_due: everything the bill asks for, past-due balance included; new_charges: "
                   "this period's new or current charges only, without any previous or past-due balance, payments or credits carried over. "
@@ -393,7 +401,11 @@ OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice
 # optional, checked in code (normalize) and stored as the record's details, never as a counted amount.
 DETAIL_FIELDS = {"paystub": {"pto_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
                              "sick_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
-                             "deposit_splits": (list[Split], Field(default_factory=list, max_length=10))}}
+                             "deposit_splits": (list[Split], Field(default_factory=list, max_length=10))},
+                 **{kind: {name: (Value, Value(value=None, status="missing", evidence=[])) for name in names} for kind, names in (
+                     ("bank_statement", ("account_type", "deposits_total", "withdrawals_total", "interest_earned", "fees_total", "apy")),
+                     ("credit_card_statement", ("purchase_apr", "cash_advance_apr", "credit_limit", "available_credit", "rewards_earned",
+                                                "rewards_balance")))}}
 HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", __base__=StrictModel,
                                     **{name: (PayValue if kind == "paystub" and name in PAY_VALUES else Value,
                                               Value(value=None, status="missing", evidence=[]) if name in OPTIONAL_FIELDS else ...)
@@ -401,6 +413,7 @@ HEADER_MODELS = {kind: create_model(kind.title().replace("_", "") + "Summary", _
                  for kind, fields in HEADERS.items()}
 # The fields document forms added to each schema, left out together when only they fail validation twice (FR-14).
 NEW_FIELDS = {"PaystubSummary": {*DETAIL_FIELDS["paystub"], "row_label", "column_heading"},
+              "BankStatementSummary": set(DETAIL_FIELDS["bank_statement"]), "CreditCardStatementSummary": set(DETAIL_FIELDS["credit_card_statement"]),
               "PayLines": {"hours", "rate", "current_row_label", "current_column_heading", "ytd_row_label", "ytd_column_heading"},
               "PayRowClasses": {"hours", "rate"}}
 DETAILS_FAILED = "Document details could not be read; the record was saved with its usual fields."
@@ -1085,9 +1098,10 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency, lines=None):
+def normalize(kind, header, rows, currency, lines=None, details=True):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
-    lines read, for checks of values cited outside the generic citation check (a pay amount's labels)."""
+    lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
+    when the reading's new fields could not be read (FR-14), so none is stored."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
     record["locator"] = locator(*(masked(field.evidence) if name in IDENTIFIER_FIELDS else field.evidence
@@ -1178,6 +1192,9 @@ def normalize(kind, header, rows, currency, lines=None):
             if expected != closing:
                 issues.append(f"Statement arithmetic does not reconcile: opening balance and transactions give {format_minor(expected, currency)}, "
                               f"but the closing balance is {format_minor(closing, currency)}. Rows may be missing or misread.")
+        if details:
+            statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency,
+                              {line.id: line.text for line in lines or []})
     elif kind == "bill":
         bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
@@ -1206,6 +1223,85 @@ def normalize(kind, header, rows, currency, lines=None):
     record.pop("interest_rate_text", None)
     record["issues"] = issues
     return record, issues
+
+
+ACCOUNT_WORDS = {"checking": re.compile(r"\bchecking\b", re.IGNORECASE), "savings": re.compile(r"\bsavings?\b", re.IGNORECASE),
+                 "money_market": re.compile(r"\bmoney[\s-]+market\b", re.IGNORECASE)}
+REWARD_UNITS = {"points": re.compile(r"\b(points?|pts)\b", re.IGNORECASE), "miles": re.compile(r"\bmiles?\b", re.IGNORECASE)}
+
+
+def statement_details(kind, record, fields, money, issues, currency, line_text):
+    """A statement's printed details (FR-25, FR-27) and the summary check they allow (FR-26, FR-28), run only when every
+    term is printed. They are shown, checked and traced; what the statement counts doesn't change (FR-29), and the
+    account's own type is left as it is."""
+    details = record["details"] = {}
+    card = kind == "credit_card_statement"
+
+    def amount(name, what):
+        field = fields.get(name)
+        if field is None or field.status != "proposed":
+            return None
+        minor = money(field.value.strip(), what, magnitude=True)
+        if minor is not None:
+            details[name] = {"status": "proposed", "text": None, "minor": minor, "unit": None, "locator": locator(masked(field.evidence))}
+        return minor
+
+    def percent(name, what):
+        field = fields.get(name)
+        if field is None or field.status != "proposed":
+            return
+        match = PERCENT.search(field.value)
+        if match is None:
+            issues.append(f"{what} is not printed as a percentage and was left out.")
+            return
+        details[name] = {"status": "proposed", "text": f"{match.group(1)}%", "minor": None, "unit": None, "locator": locator(masked(field.evidence))}
+
+    def shown(minor):
+        return format_minor(minor, currency).rsplit(" ", 1)[0]
+    if not card:
+        # Only from printed words, never guessed from the transactions: anything else is other.
+        field, found = fields.get("account_type"), "other"
+        if field is not None and field.status == "proposed":
+            proposed = field.value.strip().lower().replace(" ", "_").replace("-", "_")
+            quoted = " ".join(cite.quote for cite in field.evidence)
+            found = proposed if proposed in ACCOUNT_WORDS and ACCOUNT_WORDS[proposed].search(quoted) else "other"
+        details["account_type"] = {"status": "proposed", "text": found, "minor": None, "unit": None,
+                                   "locator": locator(masked(field.evidence)) if found != "other" else locator()}
+        totals = [amount(name, what) for name, what in (("deposits_total", "Deposits total"), ("withdrawals_total", "Withdrawals total"))]
+        amount("interest_earned", "Interest earned")
+        amount("fees_total", "Fees total")
+        percent("apy", "Interest rate (APY)")
+        checked = document_checks.bank_summary(record.get("opening_balance_minor"), *totals, record.get("closing_balance_minor"), currency) if currency else None
+        if checked and checked[2]:
+            record["cross_checks"] += 1
+        elif checked:
+            issues.append(f"Closing balance: opening {shown(record['opening_balance_minor'])} + deposits {shown(totals[0])} − withdrawals {shown(totals[1])} = "
+                          f"{format_minor(checked[0], currency)}, but the printed closing balance is {format_minor(checked[1], currency)}.")
+        return
+    percent("purchase_apr", "Purchase rate (APR)")
+    percent("cash_advance_apr", "Cash advance rate (APR)")
+    amount("credit_limit", "Credit limit")
+    amount("available_credit", "Available credit")
+    for name, what in (("rewards_earned", "Rewards earned"), ("rewards_balance", "Rewards balance")):
+        field = fields.get(name)
+        if field is None or field.status != "proposed":
+            continue
+        printed = f"{field.value} {' '.join(line_text.get(cite.line_id, cite.quote) for cite in field.evidence)}"  # The unit may be beside the quote.
+        unit = next((unit for unit, words in REWARD_UNITS.items() if words.search(printed)), None)
+        found = text_detail(field.value, field.evidence, what, line_text, issues, unit)
+        if found and unit is None and any(symbol in field.value for symbol in SYMBOLS):  # Cash back printed as money.
+            found["minor"] = money(field.value.strip(), what, magnitude=True)
+        if found:
+            details[name] = found
+    terms = [record.get(f"{name}_minor") for name in ("previous_balance", "payments", "credits", "purchases", "fees", "interest", "statement_balance")]
+    checked = document_checks.card_summary(*terms, currency) if currency else None
+    if checked and checked[2]:
+        record["cross_checks"] += 1
+    elif checked:
+        previous, payments, credits, purchases, fees, interest, _ = terms
+        issues.append(f"Statement balance: previous {shown(previous)} − payments {shown(abs(payments))} − credits {shown(abs(credits))} + purchases "
+                      f"{shown(abs(purchases))} + fees {shown(abs(fees))} + interest {shown(abs(interest))} = {format_minor(checked[0], currency)}, "
+                      f"but the printed statement balance is {format_minor(checked[1], currency)}.")
 
 
 def bill_lines(record, rows, money, issues, currency, total):
@@ -2045,7 +2141,7 @@ class ExtractionService:
             return record, None
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
-        record, issues = normalize(kind, header, rows, currency, lines)
+        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes)
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
