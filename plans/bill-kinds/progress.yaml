@@ -14,10 +14,15 @@ slices:
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
     notes: "Handoff deviations are non-blocking: handoff template unreadable by worker; old rent-like bill seeded with a line_kind correction as the plan says."
   - id: SL-02
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: d7bcb3fca724d6a54b20e213f7b89565c5613ac3
+    start_head: 99e24a58ae23431924d2cf9e9b5585fad952a747
+    end_head: d7bcb3fca724d6a54b20e213f7b89565c5613ac3
+    verification:
+      - "pytest tests/test_bill_kinds.py -k 'sc38 or sc43 or sc44' -> 20 passed (orchestrator)"
+      - "pytest test_bills_ledger test_invoice_ingestion test_extraction -> 43 passed, 1 skipped (opt-in browser test) (orchestrator)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "Escalations awaiting user decision: (1) edited tests/test_receipt_kinds.py sc06 assertion (invoice now bill_kind general, details_json {general:{}}); (2) previous_balance/monthly_rent not added to OPTIONAL_FIELDS, unlike plan line 103; (3) printed new_charges/previous_balance/payments_received not yet stored in details, unlike plan line 224, deferred to SL-04/SL-07; (4) interim requested-kind guard until SL-06."
   - id: SL-03
     status: todo
     commit: null
