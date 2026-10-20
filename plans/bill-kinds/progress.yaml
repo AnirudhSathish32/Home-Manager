@@ -65,10 +65,17 @@ slices:
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
     notes: "No escalations. Deviations: (1) tests/test_receipt_kinds.py edited: change_receipt_kind -> change_kind call, and fuel-on-a-bill message now the plan's 'Choose one of a bill's kinds: rent or general.' (orchestrator reviewed the diff); (2) docs/documents.md citation renamed to change_kind; (3) journey step 7 undoes Apply details before restart; (4) clearing a rent type keeps the current line_kind rather than restoring the earlier one; (5) RENT_LINE_TYPES/RENT_LINE_KINDS moved to core/categories.py (circular import); mypy errors in extraction/manager/api pre-existing per worker, not compared against the old code."
   - id: SL-07
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: blocked
+    commit: 01bc6f1ddea3836e20ba197e4a441df96e586945
+    start_head: 416af13
+    end_head: 01bc6f1ddea3836e20ba197e4a441df96e586945
+    verification:
+      - "RUN_BROWSER_TESTS=1 pytest test_bill_kinds_browser test_document_v2_browser test_bills_v2_browser -> 12 passed (orchestrator; without the flag all 12 skip)"
+      - "pytest tests/test_bill_kinds.py -k summary -> 6 passed (orchestrator)"
+      - "RUN_BROWSER_TESTS=1 pytest test_bills_ledger.py::test_bills_and_pay_stubs_on_transactions_and_the_document_page -> 1 FAILED at line 371: expects 'Only the new charges count', page now shows 'Earlier balance 12.00 USD' per FR-50 (orchestrator)"
+      - "ui_shots.py not re-run by orchestrator; worker reports 24 shots, no overflow, no page errors"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "Blocked on escalation 1: existing opt-in browser test in test_bills_ledger.py (outside plan R3's list) asserts the removed 'Only the new charges count' paragraph; SC-50 forbids silent test edits. Worker recommends asserting 'Earlier balance' instead. Other deviations: Not-accounted-for reason in the wide cell; bill before/after shots from a scratchpad script (household seed has no bill); invoices also lose Counts as; docs left for SL-08."
   - id: SL-08
     status: todo
     commit: null
