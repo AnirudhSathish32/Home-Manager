@@ -22,12 +22,17 @@ slices:
       - "pytest tests/test_bill_kinds.py -k 'sc38 or sc43 or sc44' -> 20 passed (orchestrator)"
       - "pytest test_bills_ledger test_invoice_ingestion test_extraction -> 43 passed, 1 skipped (opt-in browser test) (orchestrator)"
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
-    notes: "Escalations awaiting user decision: (1) edited tests/test_receipt_kinds.py sc06 assertion (invoice now bill_kind general, details_json {general:{}}); (2) previous_balance/monthly_rent not added to OPTIONAL_FIELDS, unlike plan line 103; (3) printed new_charges/previous_balance/payments_received not yet stored in details, unlike plan line 224, deferred to SL-04/SL-07; (4) interim requested-kind guard until SL-06."
+    notes: "Escalations awaiting user decision: (1) edited tests/test_receipt_kinds.py sc06 assertion (invoice now bill_kind general, details_json {general:{}}); (2) previous_balance/monthly_rent not added to OPTIONAL_FIELDS, unlike plan line 103; (3) printed new_charges/previous_balance/payments_received not yet stored in details, unlike plan line 224, deferred to SL-04/SL-07; (4) interim requested-kind guard until SL-06. User decisions 2026-10-20: (1) keep the test change; (2) accepted; (3) SL-03 picks up storing printed details."
   - id: SL-03
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: 05940e6125b2c37f8d1bb07dbd06ed533a8d7f74
+    start_head: 22e08a7
+    end_head: 05940e6125b2c37f8d1bb07dbd06ed533a8d7f74
+    verification:
+      - "pytest tests/test_bill_kinds.py -k 'sc39 or sc40 or sc41 or sc42 or sc46b or dates' -> 34 passed (orchestrator)"
+      - "pytest test_bills_ledger test_invoice_ingestion test_recurring_bills test_extraction -> 53 passed, 1 skipped (opt-in browser test) (orchestrator)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "Includes user-directed carry-over: printed new_charges/previous_balance/payments_received/monthly_rent in details. Escalations awaiting user decision: (1) SL-02 tests updated for new details; (2) SC-42b test reverses header and rent-line period (contract reverses header only) plus a general-bill variant; (3) invoices get no printed-amount details; (4) bills read without a kind turn notes into review issues."
   - id: SL-04
     status: todo
     commit: null
