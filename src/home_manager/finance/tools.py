@@ -815,6 +815,26 @@ class FinanceTools(ItemAnalysisTools):
         return {"first": value.first.model_dump(), "second": value.second.model_dump(), "categories": rows,
                 "notes": ["percent_change is null when the category had no spending in the first period."]}
 
+    def _bill_parts(self, bill):
+        """A confirmed recurring bill's projected amount by category: [(category, minor, receipt id that split it or None)].
+        One proposed from a rent bill is split by its latest verified rent bill's lines (specs/bill-kinds FR-45a): the lines
+        in utilities, up to the expected amount, go to utilities and the rest to the recurring bill's own category. Every
+        other recurring bill, and a rent one with no verified rent bill left, projects whole to its one category."""
+        expected = bill["expected_amount_minor"]
+        whole = [(bill["category"] or "bills", expected, None)]
+        if bill["source_receipt_id"] is None or not self.query(
+                "SELECT 1 FROM receipts WHERE id=? AND document_kind='bill' AND bill_kind='rent'", (bill["source_receipt_id"],)):
+            return whole
+        latest = self.query("SELECT r.id,(SELECT COALESCE(SUM(i.line_total_minor),0) FROM receipt_items i WHERE i.receipt_id=r.id "
+                            "AND i.review_status<>'rejected' AND i.category='utilities') AS utilities FROM receipts r "
+                            "WHERE r.merchant_id=? AND r.currency=? AND r.document_kind='bill' AND r.bill_kind='rent' AND r.review_status='verified' "
+                            "ORDER BY r.due_date DESC,r.id DESC LIMIT 1", (bill["merchant_id"], bill["currency"]))
+        if not latest:
+            return whole
+        utilities = max(min(expected, latest[0]["utilities"]), 0)
+        parts = [(bill["category"] or "housing", expected - utilities, latest[0]["id"]), ("utilities", utilities, latest[0]["id"])]
+        return [part for part in parts if part[1]]
+
     def get_budgets(self, value, recorder=NULL, only=None):
         """Each monthly budget against the month's counted category spending, with the pace so far.
         Integer arithmetic only: 'ahead_of_pace' means spent/budget exceeds elapsed days/days in the month.
@@ -830,10 +850,11 @@ class FinanceTools(ItemAnalysisTools):
         for bill in self.query("SELECT o.*,m.canonical_name AS merchant FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id "
                                "WHERE o.status='verified' AND o.next_due_date BETWEEN ? AND ? AND (o.last_paid_date IS NULL OR o.last_paid_date<?)",
                                (start, end, start)):
-            key = (bill["currency"], bill["category"] or "bills")
-            due[key][0] += bill["expected_amount_minor"]
-            due[key][1].append(bill["merchant"])
-            due[key][2].append(bill)
+            for category, part, source in self._bill_parts(bill):
+                key = (bill["currency"], category)
+                due[key][0] += part
+                due[key][1].append(bill["merchant"])
+                due[key][2].append((bill, category, part, source))
         rows = []
         for budget in self.ledger.budgets():
             amount, currency = budget["amount_minor"], budget["currency"]
@@ -848,11 +869,17 @@ class FinanceTools(ItemAnalysisTools):
                     recorder.add("Spent so far", -used, currency, trace=spent_ref, count=count)
                 else:
                     recorder.add("Spent so far", used, currency, trace=spent_ref, count=count)
-                    for bill in bills:
-                        recorder.step(f"{bill['merchant']} · due {bill['next_due_date']}", "+", bill["expected_amount_minor"], currency,
-                                      trace=ref("bill.expected", obligation_id=bill["id"]))
+                    for bill, category, part, source in bills:
+                        expected = ref("bill.expected", obligation_id=bill["id"])
+                        if source is None:
+                            recorder.step(f"{bill['merchant']} · due {bill['next_due_date']}", "+", part, currency, trace=expected)
+                        else:  # One part of a split bill: its own step, no drill-down (bill.expected is the whole amount).
+                            recorder.step(f"{bill['merchant']} · due {bill['next_due_date']} · {category} part", "+", part, currency)
                         recorder.input(f"recurring:{bill['id']}", f"{bill['merchant']} · expected", bill["expected_amount_minor"], currency,
-                                       light("recurring_obligation", bill["id"], kind="computed"), trace=ref("bill.expected", obligation_id=bill["id"]))
+                                       light("recurring_obligation", bill["id"], kind="computed"), trace=expected)
+                        if source is not None:
+                            recorder.input(f"receipt:{source}", f"{bill['merchant']} · latest bill's {category} part", part, currency,
+                                           light("receipt", source, kind="computed"))
             if used > amount:
                 status = "over"
             elif elapsed == 0:

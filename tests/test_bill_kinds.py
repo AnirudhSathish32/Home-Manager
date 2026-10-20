@@ -4,7 +4,9 @@ from contextlib import contextmanager
 from datetime import date
 import json
 from types import SimpleNamespace
+from urllib.parse import quote
 
+from fastapi.testclient import TestClient
 import pytest
 
 from bill_kinds_fixtures import (
@@ -27,11 +29,14 @@ from bill_kinds_fixtures import (
 )
 from conftest import assert_ledger_healthy
 from document_forms_fixtures import uncited
+from home_manager.app.api import create_app
 from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, LABELS, bill_kind, date_printed, due_labelled, printed_dates
 from home_manager.finance import document_checks, traces
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import BudgetInput, FinanceTools, PeriodInput
+from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
 from test_bills_ledger import PHONE_TEXT, bill, line, open_books
 from test_extraction import MISSING, cite, extract, transcribe, value
 from test_reconcile_tools import add, source_of
@@ -889,3 +894,148 @@ def test_sc46c_1_a_prorated_line_and_a_full_month(tmp_path, local_model):
     with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows, **placed(lines, "2,283.58"))) as (_manager, _run, record, row):
         assert (row["period_start"], row["period_end"], row["recurrence"]) == ("2026-10-15", "2026-11-30", "monthly")
         assert record["review_status"] == "verified"
+
+
+# SC-43a: budgets project a rent bill's recurring bill by line (FR-45a) --------------------------------------------------
+
+@contextmanager
+def api(tmp_path):
+    """The app on the library read_bill made (same control folder), as the page calls it."""
+    app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
+    with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
+        yield client
+
+
+def proposed(tmp_path, local_model, lines=RENT, replies=None):
+    """A bill read and verified, reconciled, with housing, utilities and bills budgets in USD. Returns (receipt id, obligations)."""
+    with read_bill(tmp_path, local_model, lines, replies or rent_replies()) as (manager, _run, record, row):
+        assert record["review_status"] == "verified"
+        Reconciler(manager.store).run()
+        for category, amount in (("housing", "2000.00"), ("utilities", "100.00"), ("bills", "500.00"), ("phone & internet", "200.00")):
+            manager.ledger.set_budget(category, "USD", amount)
+        return row["id"], FinanceTools(manager.store).get_recurring_obligations()["obligations"]
+
+
+def november(client):
+    """get_budgets for November 2026 before any payment: {category: row}."""
+    result = client.post("/api/finance/tools/get_budgets", json={"month": "2026-11", "as_of": "2026-11-01"})
+    assert result.status_code == 200, result.text
+    return {row["category"]: row for row in result.json()["budgets"]}
+
+
+def projected_steps(client, row):
+    answer = client.get("/api/traces/" + quote(row["projected"]["trace"], safe=""))
+    assert answer.status_code == 200, answer.text
+    trace = answer.json()
+    return [(step["label"], step["value"]["decimal"], step["trace"]) for step in trace["steps"]], trace
+
+
+def test_sc43a_a_rent_bills_recurring_bill_projects_by_line(tmp_path, local_model):
+    receipt_id, [bill] = proposed(tmp_path, local_model)
+    # Step 1: one proposal, monthly, the whole bill, next due 2026-11-01, from the rent bill.
+    assert (bill["merchant"], bill["status"], bill["frequency"], bill["expected_amount_minor"], bill["next_due_date"], bill["source_receipt_id"]) == (
+        "SYNTH PROPERTY MANAGEMENT", "proposed", "monthly", 148842, "2026-11-01", receipt_id)
+    with api(tmp_path) as client:
+        # Step 2: confirmed over the API.
+        confirmed = client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
+        assert confirmed.status_code == 200 and confirmed.json()["status"] == "verified"
+        # Step 3: housing 1,450.00 and utilities 38.42; neither holds 1,488.42 and no bills row picks it up.
+        rows = november(client)
+        assert {name: row["projected"]["minor"] for name, row in rows.items()} == {
+            "housing": 145000, "utilities": 3842, "bills": 0, "phone & internet": 0}
+        assert rows["housing"]["recurring_payees"] == rows["utilities"]["recurring_payees"] == ["SYNTH PROPERTY MANAGEMENT"]
+        assert rows["bills"]["recurring_payees"] == []
+        # Step 4: each budget's projected trace names the payee and its part, with the expected amount and the bill as inputs.
+        for category, amount in (("housing", "1450.00"), ("utilities", "38.42")):
+            steps, trace = projected_steps(client, rows[category])
+            assert steps[0][:2] == ("Spent so far", "0.00")
+            assert steps[1:] == [(f"SYNTH PROPERTY MANAGEMENT · due 2026-11-01 · {category} part", amount, None)]  # No drill-down.
+            assert trace["result"]["decimal"] == amount
+            inputs = {item["key"]: item for item in trace["inputs"]}
+            assert inputs[f"recurring:{bill['id']}"]["value"]["decimal"] == "1488.42"
+            assert inputs[f"recurring:{bill['id']}"]["trace"] == f"bill.expected?obligation_id={bill['id']}"
+            assert (inputs[f"receipt:{receipt_id}"]["value"]["decimal"], inputs[f"receipt:{receipt_id}"]["provenance"]["record"]) == (
+                amount, {"type": "receipt", "id": receipt_id})
+        # Final state: one confirmed recurring bill; the budgets' amounts unchanged.
+        obligations = client.post("/api/finance/tools/get_recurring_obligations", json={}).json()["obligations"]
+        assert [(row["id"], row["status"], row["expected_amount_minor"]) for row in obligations] == [(bill["id"], "verified", 148842)]
+        assert {name: row["budget"]["minor"] for name, row in november(client).items()} == {
+            "housing": 200000, "utilities": 10000, "bills": 50000, "phone & internet": 20000}
+
+
+def test_sc43a_2_the_categories_decide_the_split(tmp_path, local_model):
+    """With the Water line corrected to housing (SC-43 step 5's category correction), November's housing holds it all."""
+    receipt_id, [bill] = proposed(tmp_path, local_model)
+    with api(tmp_path) as client:
+        client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
+        items = client.get(f"/api/receipts/{receipt_id}/items").json()
+        water = next(item["position"] for item in items if item["description"] == "Water Usage")
+        corrected = client.put(f"/api/receipts/{receipt_id}/items/{water}/category", json={"category": "housing"})
+        assert corrected.status_code == 200, corrected.text
+        rows = november(client)
+        assert (rows["housing"]["projected"]["minor"], rows["utilities"]["projected"]["minor"]) == (148842, 0)
+        assert rows["utilities"]["recurring_payees"] == []
+        steps, _trace = projected_steps(client, rows["housing"])
+        assert steps[1:] == [("SYNTH PROPERTY MANAGEMENT · due 2026-11-01 · housing part", "1488.42", None)]
+
+
+def test_sc43a_1_a_phone_bills_recurring_bill_projects_whole(tmp_path, local_model):
+    """Regression: a recurring bill from a general (PHONE) bill projects its whole amount to its one category, as today."""
+    manager, doc, parse_id = transcribe(tmp_path, local_model, PHONE_TEXT)
+    try:
+        local_model["outputs"] = phone_outputs()
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        Reconciler(manager.store).run()
+        manager.ledger.set_budget("phone & internet", "USD", "200.00")
+        manager.ledger.set_budget("subscriptions", "USD", "50.00")
+        tools = FinanceTools(manager.store)
+        [bill] = tools.get_recurring_obligations()["obligations"]
+        assert bill["source_receipt_id"] == run["publication"]["id"]
+        Reconciler(manager.store).review_obligation(bill["id"], "verified")
+        month = bill["next_due_date"][:7]
+        rows = {row["category"]: row for row in tools.get_budgets(BudgetInput(month=month, as_of=f"{month}-01"))["budgets"]}
+        category = bill["category"] or "bills"
+        assert rows[category]["recurring_due"]["minor"] == bill["expected_amount_minor"]
+        assert {name: row["recurring_due"]["minor"] for name, row in rows.items() if name != category} == {
+            name: 0 for name in rows if name != category}  # Its subscription line isn't split out.
+        steps, _ = projected_steps_local(manager, rows[category])
+        assert steps[1:] == [(f"{bill['merchant']} · due {bill['next_due_date']}", f"{bill['expected_amount_minor'] / 100:.2f}",
+                              f"bill.expected?obligation_id={bill['id']}")]
+    finally:
+        manager.close()
+
+
+def projected_steps_local(manager, row):
+    trace = trace_of(manager, row["projected"]["trace"])
+    return [(step["label"], step["value"]["decimal"], step["trace"]) for step in trace["steps"]], trace
+
+
+def test_sc43a_a_recurring_bill_proposed_from_a_bank_payment_stays_whole(tmp_path, local_model):
+    """Plan R2-m4: only a recurring bill proposed from a rent bill is split. One proposed from a bank payment to the same
+    payee projects whole, even with a verified rent bill on file. (The bank-payment origin is set directly: the receipt loop
+    proposes first and a payee gets one recurring bill.)"""
+    receipt_id, [bill] = proposed(tmp_path, local_model)
+    with api(tmp_path) as client:
+        client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
+    store = Store(tmp_path / "managed")
+    try:
+        with store.connection() as db:
+            db.execute("UPDATE recurring_obligations SET source_receipt_id=NULL,confidence_source='category_single_payment' WHERE id=?", (bill["id"],))
+        rows = {row["category"]: row for row in FinanceTools(store).get_budgets(BudgetInput(month="2026-11", as_of="2026-11-01"))["budgets"]}
+        assert (rows["housing"]["projected"]["minor"], rows["utilities"]["projected"]["minor"]) == (148842, 0)
+    finally:
+        store.close()
+
+
+def test_sc46c_2_confirmed_a_prorated_bills_recurring_bill_projects_by_line(tmp_path, local_model):
+    """46c-2 projection: the rate plus the utility lines, confirmed, splits 1,450.00 / 38.42 for November as in SC-43a."""
+    lines = rent_prorated(rate=True)
+    monthly = number_of(lines, "Monthly Rent")
+    replies = rent_replies(lines, rows=prorated_rows(lines), monthly_rent=value("1,450.00", monthly, lines[monthly - 1]), **placed(lines, "833.58"))
+    receipt_id, [bill] = proposed(tmp_path, local_model, lines, replies)
+    assert (bill["frequency"], bill["expected_amount_minor"], bill["next_due_date"], bill["source_receipt_id"]) == ("monthly", 148842, "2026-11-01", receipt_id)
+    with api(tmp_path) as client:
+        client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
+        rows = november(client)
+        assert (rows["housing"]["projected"]["minor"], rows["utilities"]["projected"]["minor"], rows["bills"]["projected"]["minor"]) == (145000, 3842, 0)
