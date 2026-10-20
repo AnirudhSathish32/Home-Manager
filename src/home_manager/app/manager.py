@@ -26,7 +26,7 @@ from ..core.logs import log_failure
 from ..core.money import currency_code, money
 from ..core.paths import DirectoryLock, PathError, safe_path, separate_folder, validate_managed, write_atomic
 from ..core.trace import figure, ref
-from ..documents.extraction import ExtractionService
+from ..documents.extraction import BILL_KINDS, RECEIPT_KINDS, ExtractionService
 from ..documents.grouping import Groups
 from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
@@ -1507,24 +1507,32 @@ class Manager:
 
     # Receipt kinds ------------------------------------------------------------------
 
-    def change_receipt_kind(self, receipt_id, kind):
-        """Read one receipt again with another kind's form, from its saved transcription (FR-11, FR-12, FR-18): refused
-        while any reading of the same file is queued or running; queued behind other model work, never refused for it.
-        The kind correction is written with the reading it asks for. Returns {"run_id"}, or unchanged for its own kind."""
+    def change_kind(self, receipt_id, kind):
+        """Read one receipt or bill again with another kind's form, from its saved transcription (document-forms FR-11,
+        FR-12, FR-18; specs/bill-kinds FR-42): a receipt takes a receipt kind, a bill rent or general, and an invoice
+        general only. Refused while any reading of the same file is queued or running; queued behind other model work,
+        never refused for it. The kind correction is written with the reading it asks for. Returns {"run_id"}, or
+        unchanged for its own kind."""
         with self.mutex:
             store = self.require(False)
             with store.connection() as db:
-                receipt = db.execute("SELECT id,document_id,blob_hash,segment,receipt_kind,document_kind FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+                receipt = db.execute("SELECT id,document_id,blob_hash,segment,receipt_kind,bill_kind,document_kind,invoice_json FROM receipts WHERE id=?",
+                                     (receipt_id,)).fetchone()
                 if receipt is None:
                     raise ValueError("Receipt not found.")
-                if receipt["document_kind"] == "bill":
-                    raise ValueError("A bill has no receipt kind.")
+                bill = receipt["document_kind"] == "bill"
+                if bill and kind not in BILL_KINDS:
+                    raise ValueError("Choose one of a bill's kinds: rent or general.")
+                if not bill and kind not in RECEIPT_KINDS:
+                    raise ValueError("Choose one of a receipt's kinds: fuel, dining, grocery or general.")
+                if bill and receipt["invoice_json"] and kind != "general":
+                    raise ValueError("An invoice is read as a general bill only.")
                 busy = db.execute("SELECT 1 FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE p.blob_hash=? AND e.status IN ('queued','running') "
                                   "UNION SELECT 1 FROM parse_runs WHERE blob_hash=? AND status IN ('queued','running')",
                                   (receipt["blob_hash"], receipt["blob_hash"])).fetchone()
                 if busy:
                     raise RuntimeError("A reading is in progress; try again when it finishes")
-                if receipt["receipt_kind"] == kind:
+                if receipt["bill_kind" if bill else "receipt_kind"] == kind:
                     return {"run_id": None, "unchanged": True}
                 parse = db.execute("SELECT e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
                                    "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (receipt["document_id"], receipt["blob_hash"])).fetchone()
@@ -1543,7 +1551,7 @@ class Manager:
                 first = lines[0].id if lines else None
             run_id, _ = self.extractions.enqueue(receipt["document_id"], parse["parse_run_id"], self.reasoning_config, True, self.household.home_currency,
                                                  self.decision_config, receipt_kind={"segment": receipt["segment"], "first_line_id": first, "kind": kind})
-            self.future = self.submit("inference", "extraction", f"Reading the receipt again as {kind}", self.extract_and_file,
+            self.future = self.submit("inference", "extraction", f"Reading the {'bill' if bill else 'receipt'} again as {kind}", self.extract_and_file,
                                       receipt["document_id"], run_id)
             return {"run_id": run_id}
 

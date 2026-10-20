@@ -30,6 +30,11 @@ SUBSCRIPTION_CATEGORIES = ("subscriptions", "entertainment")
 # What a bill's line is (docs/money.md "Bills and their lines"): an add-on such as Apple TV+ is a subscription line,
 # and taxes and fees are lines of their own, shared out by the other lines.
 LINE_KINDS = ("service", "usage", "subscription", "device", "tax_fee", "credit", "other")
+# A rent bill's line types (specs/bill-kinds FR-44), and the general line kind each is stored with, so every reader of
+# line_kind (the credit sign, splits, the Bills page) is unchanged (specs/bill-kinds plan P2).
+RENT_LINE_TYPES = ("rent", "parking", "pet", "utility", "fee", "credit", "other")
+RENT_LINE_KINDS = {"rent": "service", "parking": "service", "pet": "service", "utility": "usage", "fee": "tax_fee", "credit": "credit",
+                   "other": "other"}
 
 
 def suggested_kind(category):

@@ -17,7 +17,7 @@ import uuid
 from pydantic import Field, field_validator, model_validator
 
 from ..core import actor
-from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, receipt_category
+from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, RENT_LINE_KINDS, RENT_LINE_TYPES, receipt_category
 from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..core.trace import NULL
@@ -167,7 +167,8 @@ BILL_FIELDS = ("issue_date", "due_date", "period_start", "period_end", "amount_d
 BILL_SHOWN = {"document_kind": "Record as", "merchant": "Provider", "issue_date": "Issue date", "due_date": "Due date", "period_start": "Period start",
               "period_end": "Period end", "total": "New charges", "amount_due": "Amount due", "category": "Category"}
 # A bill line's own corrections, kept by printed position like an item's price ("line_kind:3", "member:3"): field -> column.
-LINE_FIELDS = {"line_kind": "line_kind", "member": "member_id"}
+# A rent bill's line has a rent type ("line_type:3", specs/bill-kinds FR-45), which also sets its mapped line_kind.
+LINE_FIELDS = {"line_kind": "line_kind", "line_type": "line_type", "member": "member_id"}
 TRANSACTION_TYPES = ("purchase", "refund", "payment", "transfer", "deposit", "fee", "interest", "withdrawal", "other")
 # A transaction's fields a person may correct when the import or the reading got them wrong (docs/money.md "Corrections"):
 # field -> (column, kind). The amount is entered positive, and its direction is a field of its own.
@@ -578,11 +579,14 @@ class Ledger:
         found = json.loads(row["details_json"]) if row and row["details_json"] else {}
         return json.dumps({**found, kind: details or {}})
 
-    def chosen_kind(self, blob_hash, segment):
-        """The kind the user last chose for the receipt at this file part, or None (none chosen, or undone back to none)."""
+    def chosen_kind(self, blob_hash, segment, field="receipt_kind"):
+        """The kind the user last chose for the receipt or bill at this file part, or None (none chosen, or undone back
+        to none). field: the kind correction that fits the reading, receipt_kind or bill_kind (kind_column)."""
+        if field not in ("receipt_kind", "bill_kind"):
+            raise ValueError("Unknown kind field.")
         with self.store.connection() as db:
             row = db.execute("SELECT c.value FROM record_corrections c JOIN receipts r ON r.id=c.record_id WHERE c.record_type='receipt' "
-                             "AND c.field='receipt_kind' AND r.blob_hash=? AND r.segment=? ORDER BY c.id DESC LIMIT 1", (blob_hash, segment)).fetchone()
+                             "AND c.field=? AND r.blob_hash=? AND r.segment=? ORDER BY c.id DESC LIMIT 1", (field, blob_hash, segment)).fetchone()
         return row[0] if row and row[0] else None
 
     def apply_details(self, receipt_id):
@@ -607,12 +611,16 @@ class Ledger:
     def _undo_kind(self, db, receipt_id, row):
         """Undo a kind change or an Apply details (undo_corrections). A kind change puts the earlier kind back, so its
         details are current again, and drops any proposal for the undone kind; undoing Apply details puts them back to
-        wait. Each is recorded, so later readings see the undone choice."""
+        wait. Each is recorded, so later readings see the undone choice. A bill put back to a kind other than rent loses
+        its lines' rent types; each line keeps its line_kind (specs/bill-kinds FR-42)."""
         receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
-        if row["field"] == "receipt_kind":
+        if row["field"] in ("receipt_kind", "bill_kind"):
+            column = row["field"]
             db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
-                       "VALUES('receipt',?,'receipt_kind',?,?,'[]',?,?,?)", (receipt_id, row["previous"], row["value"], UNDO_REASON, actor.current(), now()))
-            db.execute("UPDATE receipts SET receipt_kind=?,pending_details_json=NULL,updated_at=? WHERE id=?", (row["previous"], now(), receipt_id))
+                       f"VALUES('receipt',?,'{column}',?,?,'[]',?,?,?)", (receipt_id, row["previous"], row["value"], UNDO_REASON, actor.current(), now()))
+            db.execute(f"UPDATE receipts SET {column}=?,pending_details_json=NULL,updated_at=? WHERE id=?", (row["previous"], now(), receipt_id))
+            if column == "bill_kind" and row["previous"] != "rent":
+                db.execute("UPDATE receipt_items SET line_type=NULL,updated_at=? WHERE receipt_id=? AND line_type IS NOT NULL", (now(), receipt_id))
             return
         if row["value"] is None:
             raise ValueError("Those details were already put back to wait; apply them again instead.")
@@ -834,8 +842,8 @@ class Ledger:
                                  (receipt_id, position, key)).fetchone()[0]
             db.execute("INSERT INTO deleted_receipt_items(receipt_id,position,description,description_key,ordinal,actor,created_at) "
                        "VALUES(?,?,?,?,?,?,?)", (receipt_id, position, item["description"], key, before, actor.current(), now()))
-            db.execute("DELETE FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field IN (?,?,?)",
-                       (receipt_id, f"price:{position}", f"line_kind:{position}", f"member:{position}"))
+            db.execute("DELETE FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field IN (?,?,?,?)",
+                       (receipt_id, f"price:{position}", f"line_kind:{position}", f"line_type:{position}", f"member:{position}"))
             db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item["id"],))
             # Keep a product already added to the household, but detach it from this removed line.
             db.execute("UPDATE inventory_lots SET position=NULL,updated_at=? WHERE receipt_id=? AND position=?", (now(), receipt_id, position))
@@ -1767,7 +1775,7 @@ class Ledger:
                 for line, key in self.income_line_keys(db, record_id):
                     income_labels.update({f"income_line:{key}:current": f"This period: {line['description']}",
                                           f"income_line:{key}:ytd": f"Year to date: {line['description']}"})
-            detail_labels = ({field: label for field, (_, label) in self.detail_fields(row).items()} | {"receipt_kind": "Receipt kind", "receipt_details": "Receipt details"}
+            detail_labels = ({field: label for field, (_, label) in self.detail_fields(row).items()} | {"receipt_kind": "Receipt kind", "bill_kind": "Bill kind", "receipt_details": "Receipt details"}
                              if record_type == "receipt" else {})
             for kind, target, shown_row in targets:
                 labels = field_labels(kind, bill=bill and kind == "receipt") | (income_labels if kind == "income_record" else {}) | (
@@ -1775,7 +1783,7 @@ class Ledger:
                 if kind == "receipt_item":
                     labels = {f"{field}:{item['position']}": f"{what} {item['description'] or 'item ' + str(item['position'])}"
                               for item in db.execute("SELECT position,description FROM receipt_items WHERE receipt_id=?", (target,))
-                              for field, what in (("price", "Price of"), ("line_kind", "Type of"), ("member", "Person for"))}
+                              for field, what in (("price", "Price of"), ("line_kind", "Type of"), ("line_type", "Type of"), ("member", "Person for"))}
                 kinds = ({field: value_kind for field, (_, value_kind) in TRANSACTION_CORRECTABLE.items()} | {"category": "category"} if kind == "transaction"
                          else {field: value_kind for field, (_, value_kind, _) in CORRECTABLE.get(kind, {}).items()})
                 latest = dict(db.execute("SELECT field,max(id) FROM record_corrections WHERE record_type=? AND record_id=? GROUP BY field", (kind, target)).fetchall())
@@ -1850,7 +1858,7 @@ class Ledger:
                 if row["record_type"] == "transaction":
                     self._apply_transaction_correction(db, row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
                     continue
-                if row["record_type"] == "receipt" and row["field"] in ("receipt_kind", "receipt_details"):
+                if row["record_type"] == "receipt" and row["field"] in ("receipt_kind", "bill_kind", "receipt_details"):
                     self._undo_kind(db, record_id, row)
                     continue
                 self._apply_correction(db, row["record_type"], row["record_id"], {row["field"]: row["previous"]}, UNDO_REASON)
@@ -1875,10 +1883,16 @@ class Ledger:
     def apply_corrections(self, db, record_type, record_id):
         """Re-apply the latest correction of each field after an extraction rewrote the model's values."""
         if record_type == "receipt":
-            for item in db.execute("SELECT field,value FROM record_corrections c WHERE record_type='receipt_item' AND record_id=? "
-                                   "AND id=(SELECT max(id) FROM record_corrections WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)",
-                                   (record_id,)).fetchall():
+            rent = db.execute("SELECT bill_kind FROM receipts WHERE id=?", (record_id,)).fetchone()[0] == "rent"
+            found = db.execute("SELECT field,value FROM record_corrections c WHERE record_type='receipt_item' AND record_id=? "
+                               "AND id=(SELECT max(id) FROM record_corrections WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)",
+                               (record_id,)).fetchall()
+            # A rent type first (only on a bill read as rent), then a line kind, so a person's line kind wins over the
+            # rent type's mapping (specs/bill-kinds plan "Replaying line corrections on a re-read").
+            for item in sorted(found, key=lambda row: not row["field"].startswith("line_type:")):
                 name, position = item["field"].split(":")
+                if name == "line_type" and not rent:
+                    continue
                 if name in LINE_FIELDS:  # A bill line's type or person, as the person set it.
                     self._set_line(db, record_id, int(position), name, item["value"])
                     continue
@@ -1998,17 +2012,25 @@ class Ledger:
     def correct_line(self, receipt_id, position, field, value, reason=None, members=None):
         """A bill line's type (line_kind) or whose it is (member: a family member's id, or None for nobody), kept by printed
         position across re-readings like a price (docs/money.md "Bills and their lines"). members: the ids a person may be
-        given, when the family is known here; otherwise any id the line already had or none."""
+        given, when the family is known here; otherwise any id the line already had or none. A rent bill's line takes a
+        rent type (line_type, which also sets its line_kind); its line_kind is refused once it has a rent type
+        (specs/bill-kinds FR-45)."""
         if field not in LINE_FIELDS:
             raise ValueError("Choose the line's type or person.")
         value = " ".join(str(value).split()) or None if value is not None else None
         if field == "line_kind" and value not in (None, *LINE_KINDS):
             raise ValueError("Choose one of the listed line types.")
+        if field == "line_type" and value not in (None, *RENT_LINE_TYPES):
+            raise ValueError("Choose one of the rent bill's line types.")
         with self.store.connection() as db:
-            row = db.execute("SELECT i.* FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id WHERE i.receipt_id=? AND i.position=? "
+            row = db.execute("SELECT i.*,r.bill_kind FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id WHERE i.receipt_id=? AND i.position=? "
                              "AND r.document_kind='bill'", (receipt_id, position)).fetchone()
             if row is None:
                 raise ValueError("Bill line not found.")
+            if field == "line_type" and row["bill_kind"] != "rent":
+                raise ValueError("Only a rent bill's lines have a rent type.")
+            if field == "line_kind" and row["bill_kind"] == "rent" and row["line_type"] is not None:
+                raise ValueError("Choose one of the rent bill's line types.")
             if field == "member" and value is not None and value not in (members or ()) and value != row["member_id"]:
                 raise ValueError("Choose someone in the family.")
             correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
@@ -2021,6 +2043,9 @@ class Ledger:
         if field == "member":
             db.execute("UPDATE receipt_items SET member_id=?,member_source=CASE WHEN ? IS NULL THEN NULL ELSE 'user' END,updated_at=? "
                        "WHERE receipt_id=? AND position=?", (value, value, now(), receipt_id, position))
+        elif field == "line_type":  # A rent type and the line kind it is stored with; cleared, the line keeps its line kind.
+            db.execute("UPDATE receipt_items SET line_type=?,line_kind=coalesce(?,line_kind),updated_at=? WHERE receipt_id=? AND position=?",
+                       (value, RENT_LINE_KINDS.get(value) if value else None, now(), receipt_id, position))
         else:
             db.execute("UPDATE receipt_items SET line_kind=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
         self.refresh_splits(db, receipt_id)

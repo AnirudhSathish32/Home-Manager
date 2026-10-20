@@ -188,7 +188,7 @@ class LineMemberInput(BaseModel):
 
 class LineInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    field: Literal["line_kind", "member"]
+    field: Literal["line_kind", "line_type", "member"]
     value: str | None = Field(default=None, max_length=32)
     reason: str | None = None
 
@@ -200,7 +200,7 @@ class ShareRequestInput(BaseModel):
 
 class ReceiptKindInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    kind: Literal["fuel", "dining", "grocery", "general"]
+    kind: Literal["fuel", "dining", "grocery", "general", "rent"]
 
 
 class ReceiptInput(BaseModel):
@@ -1004,7 +1004,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.patch("/api/receipts/{receipt_id}/lines/{position}")
     def correct_bill_line(receipt_id: int, position: int, value: LineInput):
-        """A bill line's type or person (docs/money.md "Bills and their lines")."""
+        """A bill line's type, rent type or person (docs/money.md "Bills and their lines"; specs/bill-kinds FR-45)."""
         store()
         if value.field == "member":  # The family's inbox knows its people; a person's own library knows only its own lines.
             return manager().set_family_line_member(receipt_id, position, value.value)
@@ -1012,9 +1012,10 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.patch("/api/receipts/{receipt_id}/kind")
     def change_receipt_kind(receipt_id: int, value: ReceiptKindInput, response: Response):
-        """Read the receipt again with another kind's form (docs/documents.md "Receipt kinds"): 202 with the run, or 200 unchanged."""
+        """Read the receipt or bill again with another kind's form (docs/documents.md "Receipt kinds"; specs/bill-kinds FR-42):
+        202 with the run, or 200 unchanged."""
         store()
-        found = manager().change_receipt_kind(receipt_id, value.kind)
+        found = manager().change_kind(receipt_id, value.kind)
         response.status_code = 202 if found["run_id"] else 200
         return found
 

@@ -3,6 +3,8 @@
 from contextlib import contextmanager
 from datetime import date
 import json
+import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -28,7 +30,7 @@ from bill_kinds_fixtures import (
     with_line,
 )
 from conftest import assert_ledger_healthy
-from document_forms_fixtures import uncited
+from document_forms_fixtures import fuel, fuel_replies, joined, library, record_document, uncited
 from home_manager.app.api import create_app
 from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, LABELS, bill_kind, date_printed, due_labelled, printed_dates
 from home_manager.finance import document_checks, traces
@@ -39,6 +41,7 @@ from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from test_bills_ledger import PHONE_TEXT, bill, line, open_books
 from test_extraction import MISSING, cite, extract, transcribe, value
+from test_receipt_kinds import app_session, change_kind, corrections_of
 from test_reconcile_tools import add, source_of
 
 V30 = "typed-extraction-v30-pre-tax-deductions"
@@ -1039,3 +1042,270 @@ def test_sc46c_2_confirmed_a_prorated_bills_recurring_bill_projects_by_line(tmp_
         client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
         rows = november(client)
         assert (rows["housing"]["projected"]["minor"], rows["utilities"]["projected"]["minor"], rows["bills"]["projected"]["minor"]) == (145000, 3842, 0)
+
+
+# Journey (SC-45): changing a bill's kind (FR-42), and SC-43 step 5: a line's category and rent type corrected -----------
+
+@contextmanager
+def bill_session(tmp_path, local_model, replies=None, lines=RENT):
+    """The app on a new library with lines captured and read once with replies (default: a general reading of a bill
+    the classifier calls general), home currency USD. Yields (client, manager, doc, parse run id, the bill's id)."""
+    with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
+        manager.configure_household(HouseholdConfig(auto_identify_items=False, home_currency="USD"))
+        local_model["by_schema"] = replies or general_replies(lines)
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        yield client, manager, doc, parse_id, run["publication"]["id"]
+
+
+def bill_row(manager, receipt_id):
+    with manager.store.connection() as db:
+        return dict(db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone())
+
+
+def line_types(manager, receipt_id):
+    """Each line's (description, line_type, line_kind)."""
+    return [(entry[0], entry[2], entry[3]) for entry in stored_lines(manager, receipt_id)]
+
+
+def kind_corrections(manager):
+    return [(row["value"], row["previous"], row["reason"]) for row in corrections_of(manager, "bill_kind")]
+
+
+def wait_running(manager, run_id):
+    for _ in range(200):
+        if manager.extractions.get(run_id)["status"] == "running":
+            return
+        time.sleep(0.05)
+    raise AssertionError("the reading never started")
+
+
+def test_journey_changing_a_bills_kind(tmp_path, local_model):
+    with bill_session(tmp_path, local_model) as (client, manager, doc, parse_id, receipt_id):
+        assert bill_row(manager, receipt_id)["bill_kind"] == "general"
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", None, "usage")]
+        # 1. PATCH rent: 202 with a run; exactly one rent-form reading of the saved transcription.
+        local_model["requests"].clear()
+        local_model["by_schema"] = rent_replies(kind="general")
+        response = change_kind(client, manager, receipt_id, "rent")
+        assert response.status_code == 202 and response.json()["run_id"]
+        assert asked(local_model) == ["Classification", "BillRentSummary", "RentBillLines"]
+        assert manager.extractions.get(response.json()["run_id"])["status"] == "succeeded"
+        # 2. Rent, two typed lines as SC-38; history shows "Bill kind: general -> rent" with Undo.
+        row = bill_row(manager, receipt_id)
+        assert (row["bill_kind"], row["receipt_kind"], row["period_start"], row["period_end"]) == ("rent", None, "2026-10-01", "2026-10-31")
+        assert line_types(manager, receipt_id) == [("Rent", "rent", "service"), ("Water Usage", "utility", "usage")]
+        assert_published_bill(manager, RENT, receipt_id)
+        change = next(entry for entry in manager.ledger.history("receipt", receipt_id) if entry.get("field") == "bill_kind")
+        assert (change["label"], change["from"], change["to"], change["undoable"]) == ("Bill kind", "general", "rent", True)
+        # 3. The same kind again: 200 unchanged, no request, no correction.
+        requests, kinds = len(local_model["requests"]), kind_corrections(manager)
+        again = change_kind(client, manager, receipt_id, "rent")
+        assert again.status_code == 200 and again.json() == {"run_id": None, "unchanged": True}
+        assert len(local_model["requests"]) == requests and kind_corrections(manager) == kinds
+        # 4. Read again, the classifier saying general: the person's kind stays (read with the rent form).
+        local_model["requests"].clear()
+        local_model["by_schema"] = rent_replies(kind="general")
+        assert extract(manager, doc, parse_id, force=True)["status"] == "succeeded"
+        assert "BillRentSummary" in asked(local_model) and bill_row(manager, receipt_id)["bill_kind"] == "rent"
+        # 5. A reading of the same file held: PATCH general is refused (409), nothing written or asked; released, it succeeds.
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = rent_replies(kind="general")
+        running = manager.start_extraction(doc["id"], parse_id, force=True)["run_id"]
+        wait_running(manager, running)
+        requests = len(local_model["requests"])
+        refused = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "general"})
+        assert refused.status_code == 409 and refused.json()["detail"] == "A reading is in progress; try again when it finishes"
+        assert kind_corrections(manager) == kinds and len(local_model["requests"]) == requests
+        gate.set()
+        manager.future.result(timeout=30)
+        local_model.pop("response_gate")
+        assert manager.extractions.get(running)["status"] == "succeeded" and bill_row(manager, receipt_id)["bill_kind"] == "rent"
+        # 6. Undo the kind change: general, and no line keeps a rent type (each keeps its line kind).
+        manager.ledger.undo_corrections("receipt", receipt_id, [change["id"]])
+        assert bill_row(manager, receipt_id)["bill_kind"] == "general"
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", None, "usage")]
+        # 7. Verify, correct the amount due, then PATCH rent: the correction and verified stay, the rent details wait, and
+        #    the lines are unchanged (no rent type) until a line's rent type is corrected; Apply details leaves them.
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        manager.ledger.correct("receipt", receipt_id, {"amount_due": "1500.00"})
+        local_model["by_schema"] = rent_replies(kind="general")
+        assert change_kind(client, manager, receipt_id, "rent").status_code == 202
+        row = bill_row(manager, receipt_id)
+        assert (row["bill_kind"], row["review_status"], row["amount_due_minor"]) == ("rent", "verified", 150000)
+        assert json.loads(row["pending_details_json"])["kind"] == "rent"
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", None, "usage")]
+        typed = client.patch(f"/api/receipts/{receipt_id}/lines/2", json={"field": "line_type", "value": "utility"})
+        assert typed.status_code == 200, typed.text
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", "utility", "usage")]
+        applied = client.post(f"/api/receipts/{receipt_id}/details/apply")
+        assert applied.status_code == 200 and applied.json()["pending_details"] is None
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", "utility", "usage")]
+        manager.ledger.undo_corrections("receipt", receipt_id, applied.json()["correction_ids"])  # The details wait again, for step 8.
+    # 8. Restart: a new manager on the same library; the rent details still wait.
+    with app_session(tmp_path, local_model) as (_client, manager, _doc, _parse_id):
+        row = bill_row(manager, receipt_id)
+        assert (row["bill_kind"], row["review_status"], row["amount_due_minor"]) == ("rent", "verified", 150000)
+        assert json.loads(row["pending_details_json"])["kind"] == "rent"
+        # Final state: one bill; the corrections hold the kind changes, the undo and the amount; the ledger is healthy.
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+        assert kind_corrections(manager) == [("rent", "general", None), ("general", "rent", "Undid a change"), ("rent", "general", None)]
+        assert [row["value"] for row in corrections_of(manager, "amount_due")] == ["1500.00"]
+        assert_ledger_healthy(manager.store)
+
+
+def test_journey_a_a_kind_that_doesnt_fit_is_refused(tmp_path, local_model):
+    """J-a: a receipt kind on a bill, rent on an invoice and rent on a receipt are each refused (400); nothing changes."""
+    with bill_session(tmp_path, local_model) as (client, manager, _doc, _parse_id, receipt_id):
+        before, requests = bill_row(manager, receipt_id), len(local_model["requests"])
+        refused = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"})
+        assert refused.status_code == 400 and refused.json()["detail"] == "Choose one of a bill's kinds: rent or general."
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET invoice_json=? WHERE id=?", (json.dumps({"number": "INV-1"}), receipt_id))
+        refused = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "rent"})
+        assert refused.status_code == 400 and refused.json()["detail"] == "An invoice is read as a general bill only."
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET invoice_json=NULL WHERE id=?", (receipt_id,))
+        after = bill_row(manager, receipt_id)
+        assert {key: after[key] for key in before if key != "updated_at"} == {key: before[key] for key in before if key != "updated_at"}
+        assert kind_corrections(manager) == [] and len(local_model["requests"]) == requests
+    lines = fuel()
+    with app_session(tmp_path / "receipt", local_model, lines) as (client, manager, doc, parse_id):
+        local_model["by_schema"] = fuel_replies(lines, kind="general")
+        receipt_id = extract(manager, doc, parse_id)["publication"]["id"]
+        refused = client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "rent"})
+        assert refused.status_code == 400 and refused.json()["detail"] == "Choose one of a receipt's kinds: fuel, dining, grocery or general."
+        assert corrections_of(manager, "receipt_kind") == []
+
+
+def test_journey_a_kind_change_that_doesnt_fit_the_reading_is_left_out(tmp_path, local_model):
+    """A rent kind change on a file the reading now sorts as a receipt isn't used: a note in its part's notes, and it
+    isn't marked as asked, so no kind correction is written."""
+    with bill_session(tmp_path, local_model) as (_client, manager, _doc, _parse_id, receipt_id):
+        parse = {"blob_hash": bill_row(manager, receipt_id)["blob_hash"]}
+        lines = [SimpleNamespace(id=f"line-{number}", text=text) for number, text in enumerate(RENT, 1)]
+        change = {"segment": 0, "first_line_id": "line-1", "kind": "rent"}
+        notes = [[]]
+        assert manager.extractions.requested_kinds(parse, lines, [(0, len(lines))], change, "receipt", notes) == [(None, False)]
+        assert notes == [["Rent was not used: this document was read as a receipt."]]
+        assert manager.extractions.requested_kinds(parse, lines, [(0, len(lines))], change, "bill", [[]]) == [("rent", True)]
+
+
+def test_journey_b_a_cancelled_kind_change_leaves_the_bill_as_it_was(tmp_path, local_model):
+    with bill_session(tmp_path, local_model) as (client, manager, _doc, _parse_id, receipt_id):
+        before, kinds = bill_row(manager, receipt_id), kind_corrections(manager)
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = rent_replies(kind="general")
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "rent"}).status_code == 202
+        manager.cancel()
+        gate.set()
+        manager.future.result(timeout=30)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT status FROM extraction_runs ORDER BY created_at DESC LIMIT 1").fetchone()[0] == "cancelled"
+        after = bill_row(manager, receipt_id)
+        assert {key: after[key] for key in before if key != "updated_at"} == {key: before[key] for key in before if key != "updated_at"}
+        assert kind_corrections(manager) == kinds
+        local_model.pop("response_gate")
+        local_model["by_schema"] = rent_replies(kind="general")  # Retried: the same PATCH again.
+        assert change_kind(client, manager, receipt_id, "rent").status_code == 202
+        assert bill_row(manager, receipt_id)["bill_kind"] == "rent"
+
+
+def test_journey_c_a_restart_interrupts_a_bills_kind_change(tmp_path, local_model):
+    with bill_session(tmp_path, local_model) as (_client, manager, doc, parse_id, receipt_id):
+        before = bill_row(manager, receipt_id)
+        run_id, _ = manager.extractions.enqueue(doc["id"], parse_id, manager.reasoning_config, True, manager.household.home_currency,
+                                                manager.decision_config, receipt_kind={"segment": 0, "first_line_id": "line-1", "kind": "rent"})
+        with manager.store.connection() as db:
+            db.execute("UPDATE extraction_runs SET status='running' WHERE id=?", (run_id,))  # A reading cut off by the restart.
+    with app_session(tmp_path, local_model) as (client, manager, _doc, _parse_id):
+        assert manager.extractions.get(run_id)["status"] == "interrupted"
+        after = bill_row(manager, receipt_id)
+        assert (after["bill_kind"], after["details_json"], after["pending_details_json"]) == (
+            before["bill_kind"], before["details_json"], before["pending_details_json"])
+        local_model["by_schema"] = rent_replies(kind="general")
+        assert change_kind(client, manager, receipt_id, "rent").status_code == 202
+        assert bill_row(manager, receipt_id)["bill_kind"] == "rent"
+
+
+def test_journey_d_another_documents_reading_doesnt_refuse_it(tmp_path, local_model):
+    manager = library(tmp_path, local_model)
+    try:
+        manager.configure_household(manager.household.model_copy(update={"home_currency": "USD"}))
+        _, _, bill_run = record_document(manager, local_model, "rent.png", RENT, general_replies())
+        other, other_parse, _ = record_document(manager, local_model, "fuel.png", fuel(), fuel_replies(fuel(), kind="general"))
+        gate = threading.Event()
+        local_model["response_gate"] = gate
+        local_model["by_schema"] = joined(fuel_replies(fuel(), kind="general"), rent_replies(kind="general"))
+        manager.start_extraction(other["id"], other_parse, force=True)
+        started = manager.change_kind(bill_run["publication"]["id"], "rent")
+        assert started["run_id"]
+        gate.set()
+        manager.future.result(timeout=30)
+        assert manager.extractions.get(started["run_id"])["status"] == "succeeded"
+        assert bill_row(manager, bill_run["publication"]["id"])["bill_kind"] == "rent"
+    finally:
+        manager.close()
+
+
+def test_journey_rent_line_types_corrected_and_refused(tmp_path, local_model):
+    """A rent bill's line takes a rent type, which sets its line kind; its line kind is refused once typed; a general
+    bill's line takes no rent type; an undo puts the rent type back; removing the line drops its rent type correction."""
+    with bill_session(tmp_path, local_model, rent_replies()) as (client, manager, _doc, _parse_id, receipt_id):
+        refused = client.patch(f"/api/receipts/{receipt_id}/lines/1", json={"field": "line_kind", "value": "usage"})
+        assert refused.status_code == 400 and refused.json()["detail"] == "Choose one of the rent bill's line types."
+        assert client.patch(f"/api/receipts/{receipt_id}/lines/1", json={"field": "line_type", "value": "lease"}).status_code == 400
+        corrected = manager.ledger.correct_line(receipt_id, 1, "line_type", "parking")
+        assert line_types(manager, receipt_id)[0] == ("Rent", "parking", "service")
+        entry = next(item for item in manager.ledger.history("receipt", receipt_id) if item.get("field") == "line_type:1")
+        assert (entry["label"], entry["from"], entry["to"]) == ("Type of Rent", "rent", "parking")
+        manager.ledger.undo_corrections("receipt", receipt_id, corrected["correction_ids"])
+        assert line_types(manager, receipt_id)[0] == ("Rent", "rent", "service")
+        manager.ledger.correct_line(receipt_id, 2, "line_type", "fee")
+        manager.ledger.delete_item(receipt_id, 2)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM record_corrections WHERE field='line_type:2'").fetchone()[0] == 0
+    with bill_session(tmp_path / "general", local_model) as (client, manager, _doc, _parse_id, receipt_id):
+        refused = client.patch(f"/api/receipts/{receipt_id}/lines/1", json={"field": "line_type", "value": "rent"})
+        assert refused.status_code == 400 and refused.json()["detail"] == "Only a rent bill's lines have a rent type."
+
+
+def test_sc43_step_5_a_persons_category_and_rent_type_outlive_a_reading(tmp_path, local_model):
+    rows = [rent_row(category=None), water_row(category=None)]
+    with bill_session(tmp_path, local_model, rent_replies(rows=rows)) as (client, manager, doc, parse_id, receipt_id):
+        water = next(item["position"] for item in client.get(f"/api/receipts/{receipt_id}/items").json() if item["description"] == "Water Usage")
+        category = client.put(f"/api/receipts/{receipt_id}/items/{water}/category", json={"category": "housing"})
+        assert category.status_code == 200, category.text
+        typed = client.patch(f"/api/receipts/{receipt_id}/lines/{water}", json={"field": "line_type", "value": "other"})
+        assert typed.status_code == 200, typed.text
+        # Read again with Water answered utilities and utility: the person's housing and other stay.
+        local_model["by_schema"] = rent_replies()
+        assert extract(manager, doc, parse_id, force=True)["status"] == "succeeded"
+        assert [(entry[0], entry[2], entry[3], entry[4]) for entry in stored_lines(manager, receipt_id)] == [
+            ("Rent", "rent", "service", "housing"), ("Water Usage", "other", "other", "housing")]
+        spent = {entry["category"]: entry["spending"]["minor"] for entry in FinanceTools(manager.store).get_spending_by_category(OCTOBER)["categories"]}
+        assert (spent.get("housing"), spent.get("utilities", 0)) == (148842, 0)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM receipt_items WHERE receipt_id=?", (receipt_id,)).fetchone()[0] == 2
+        assert_ledger_healthy(manager.store)
+
+
+def test_sc43_step_5_a_rent_type_does_nothing_on_a_bill_read_again_as_general(tmp_path, local_model):
+    """Plan "Replaying line corrections": a line's rent type applies only while the bill is read as rent, and a line kind
+    correction applies on any bill and wins over the rent type's mapping."""
+    with bill_session(tmp_path, local_model, rent_replies()) as (client, manager, doc, parse_id, receipt_id):
+        manager.ledger.correct_line(receipt_id, 2, "line_type", "other")
+        with manager.store.connection() as db:  # A line kind correction kept from before the bill had kinds (SC-49 step 3).
+            db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,actor,created_at) "
+                       "VALUES('receipt_item',?,'line_kind:1','device','service',NULL,'2026-10-01T00:00:00')", (receipt_id,))
+        local_model["by_schema"] = rent_replies()
+        assert extract(manager, doc, parse_id, force=True)["status"] == "succeeded"
+        assert line_types(manager, receipt_id) == [("Rent", "rent", "device"), ("Water Usage", "other", "other")]
+        local_model["by_schema"] = general_replies()
+        assert change_kind(client, manager, receipt_id, "general").status_code == 202
+        assert bill_row(manager, receipt_id)["bill_kind"] == "general"
+        assert line_types(manager, receipt_id) == [("Rent", None, "device"), ("Water Usage", None, "usage")]

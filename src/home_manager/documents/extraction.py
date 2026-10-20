@@ -19,7 +19,7 @@ import uuid
 
 from pydantic import Field, ValidationError, create_model, model_validator
 
-from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_CATEGORIES
+from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_CATEGORIES, RENT_LINE_KINDS, RENT_LINE_TYPES
 from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
@@ -341,11 +341,6 @@ class BillLine(StrictModel):
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
 
 
-# A rent bill's line types (FR-44), and the general line kind each is stored with, so every reader of line_kind (the
-# credit sign, splits, the Bills page) is unchanged (specs/bill-kinds plan P2).
-RENT_LINE_TYPES = ("rent", "parking", "pet", "utility", "fee", "credit", "other")
-RENT_LINE_KINDS = {"rent": "service", "parking": "service", "pet": "service", "utility": "usage", "fee": "tax_fee", "credit": "credit",
-                   "other": "other"}
 # A rent line naming one of these is a utility line, whatever its layout or the model's type (FR-45b).
 UTILITY_WORDS = re.compile(r"\b(water|sewer|trash|garbage|refuse|gas|electric(?:ity)?)\b", re.IGNORECASE)
 # A rent line's category comes from its type (FR-45, D25); credit and other keep the model's.
@@ -2729,7 +2724,7 @@ class ExtractionService:
 
     def enqueue(self, document_id, parse_run_id, config, force=False, home_currency=None, decision=None, receipt_kind=None):
         """decision: the DecisionConfig whose advisory checks run on this extraction, or None. receipt_kind: a kind change
-        (Manager.change_receipt_kind), {"segment", "first_line_id", "kind"}: that receipt is read with that kind's form."""
+        (Manager.change_kind), {"segment", "first_line_id", "kind"}: that receipt or bill is read with that kind's form."""
         if not config.model:
             raise ValueError("Configure a local reasoning model in Settings first.")
         run = self.receipts.get(parse_run_id)
@@ -3156,7 +3151,8 @@ class ExtractionService:
                         parts, kinds = [(0, len(lines))], []
                         break
                     kinds.append((kind, part_notes))
-                requested = self.requested_kinds(parse, lines, parts, kind_change)
+                requested = self.requested_kinds(parse, lines, parts, kind_change, "receipt" if kinds else classification.document_type,
+                                                 [part_notes for _, part_notes in kinds] or [notes])
                 readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0])
                             for ordinal, ((first, last), (kind, part_notes)) in enumerate(zip(parts, kinds))]
                 if not readings:
@@ -3189,16 +3185,24 @@ class ExtractionService:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='failed',error=?,updated_at=? WHERE id=?", (message[:1200], now(), run_id))
 
-    def requested_kinds(self, parse, lines, parts, kind_change):
-        """[(kind or None, asked by this run)] per receipt: the kind a kind change asks for, matched to its receipt by its
-        first line; else the kind the user chose for that receipt last (a correction), so it outlives later readings;
-        else None, and the model proposes one (FR-11). A kind change whose receipt no longer starts a part fails the run."""
-        found = [(self.ledger.chosen_kind(parse["blob_hash"], ordinal), False) for ordinal in range(len(parts))]
+    def requested_kinds(self, parse, lines, parts, kind_change, document_type, notes):
+        """[(kind or None, asked by this run)] per receipt or bill: the kind a kind change asks for, matched to its part by
+        its first line; else the kind the user chose for that part last (a correction of the kind that fits the reading's
+        type: receipt_kind or bill_kind), so it outlives later readings; else None, and the model proposes one (FR-11;
+        specs/bill-kinds FR-42). A kind change that doesn't fit the type is left out with a note in that part's notes
+        (notes: one list per part). A kind change whose part no longer starts a part fails the run."""
+        allowed = {"receipt": RECEIPT_KINDS, "bill": BILL_KINDS}.get(document_type, ())
+        field = "bill_kind" if document_type == "bill" else "receipt_kind"
+        found = [(self.ledger.chosen_kind(parse["blob_hash"], ordinal, field) if allowed else None, False) for ordinal in range(len(parts))]
         if kind_change:
             matched = [ordinal for ordinal, (first, _) in enumerate(parts) if lines[first].id == kind_change["first_line_id"]]
             if not matched:
                 raise ValueError("The file's split changed; confirm the split, then change the kind again.")
-            found[matched[0]] = (kind_change["kind"], True)
+            if kind_change["kind"] in allowed:
+                found[matched[0]] = (kind_change["kind"], True)
+            else:
+                notes[matched[0]].append(f"{kind_change['kind'].capitalize()} was not used: this document was read as a "
+                                         f"{(document_type or 'document').replace('_', ' ')}.")
         return found
 
     def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None):

@@ -844,7 +844,7 @@ def test_sc18_a_another_documents_reading_doesnt_refuse_it(tmp_path, local_model
         local_model["response_gate"] = gate
         local_model["by_schema"] = joined(dining_replies(), read_as(fuel(), "fuel"))
         manager.start_extraction(other["id"], other_parse, force=True)
-        started = manager.change_receipt_kind(fuel_run["publication"]["id"], "fuel")
+        started = manager.change_kind(fuel_run["publication"]["id"], "fuel")
         assert started["run_id"]
         gate.set()
         manager.future.result(timeout=30)
@@ -863,4 +863,5 @@ def test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused(tmp_path, loca
         assert client.patch(f"/api/receipts/{receipt_id + 9}/kind", json={"kind": "fuel"}).status_code == 400
         with manager.store.connection() as db:
             db.execute("UPDATE receipts SET document_kind='bill' WHERE id=?", (receipt_id,))
-        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"}).json()["detail"] == "A bill has no receipt kind."
+        # A bill takes a bill's kinds only (specs/bill-kinds FR-42, J-a).
+        assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"}).json()["detail"] == "Choose one of a bill's kinds: rent or general."

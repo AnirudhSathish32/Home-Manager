@@ -382,7 +382,7 @@ rewriting a record.
 ### Receipt kinds
 
 Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_details`), `finance/ledger.py`,
-`app/manager.py` `change_receipt_kind`. Spec: `specs/document-forms`.
+`app/manager.py` `change_kind`. Spec: `specs/document-forms`.
 
 - **Four kinds.** The classifier also proposes a receipt's kind, citing the lines that show it: `fuel`, `dining`,
   `grocery` or `general` (no extra model call). A proposal that is uncited, cites a line that doesn't print its quote,
