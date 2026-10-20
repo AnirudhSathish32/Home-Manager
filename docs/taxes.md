@@ -772,6 +772,16 @@ year-to-date amount and a group:
 The page shows the lines grouped from gross pay down to net pay, with subtotals, and FICA as Social Security plus
 Medicare. Each line's this-period and year-to-date amounts can be corrected on the document page. Gross/net totals,
 including their year-to-date values, can be corrected there too; saved corrections survive another reading.
+When a stub prints no total for taxes or pre-tax deductions this period, the record's fields (**Taxes this period**,
+**Pre-tax deductions this period**) show the subtotals of those lines instead, marked "Worked out from the pay lines".
+Only the display changes: the stored field stays empty, so a printed total or a correction replaces it. The model reads
+the pre-tax field only from a printed pre-tax total, never from a total that includes taxes or post-tax deductions;
+the app enforces it too: a value cited from a "Total deductions" or "Total taxes" line (not labelled pre-tax), or equal to
+every tax and deduction line added up, is left empty and worked out.
+**Total deductions this period** (taxes plus pre-tax and post-tax deductions: everything taken from gross pay) is only
+ever worked out this way, never stored or corrected itself; correct a line to change it. A table row with no amount in
+any column (a section heading such as "Statutory") is never a pay line, so it can't leave a subtotal blank; nor is a
+totals line (Gross pay, Net payment (A-B), Total deductions), even when it sits outside the table.
 
 Two checks run on each column: earnings add up to gross pay, and gross pay less pre-tax deductions, taxes and post-tax
 deductions equals net pay. A stub that fails either check waits in Review with the difference named. One that passes

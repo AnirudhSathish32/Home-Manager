@@ -91,6 +91,12 @@ def test_a_pay_stub_files_under_its_employer_with_its_breakdown(tmp_path, local_
         assert groups["pre_tax"]["current_minor"] == 35500 and groups["tax"]["fica"]["display"]["current_minor"] == "297.20 USD"
         assert groups["employer_paid"]["lines"][0]["description"] == "Employer 401(k) Match"
         assert [(check["label"], check["matches"]) for check in record["breakdown"]["checks"]] == [("This period", True), ("Year to date", True)]
+        # Taxes and deductions aren't printed as totals: shown from the lines' subtotals (pre-tax 355.00 + Roth 40.00), never stored.
+        assert (record["taxes_minor"], record["deductions_minor"]) == (None, None)
+        assert record["worked_out"] == ["taxes_minor", "deductions_minor", "total_deductions_minor"]
+        # Pre-tax deductions alone (not the Roth 40.00), and everything taken from gross pay: taxes 847.20 + 355.00 + 40.00.
+        assert (record["display"]["taxes_minor"], record["display"]["deductions_minor"]) == ("847.20 USD", "355.00 USD")
+        assert record["display"]["total_deductions_minor"] == "1,242.20 USD" and "total_deductions_minor" not in record
         # No tax table yet (no web search key in tests): the page says so rather than guessing.
         assert [part["status"] for part in record["withholding"]["jurisdictions"]] == ["missing", "missing"]
         filed = library_file(manager, doc)

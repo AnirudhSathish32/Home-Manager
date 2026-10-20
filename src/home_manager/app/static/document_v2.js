@@ -378,9 +378,28 @@ function doc2RecordTitle(type, record) {
   const from = record.merchant || record.account || record.institution;
   return from ? `${kind} from ${from}` : kind;
 }
+// Warnings, one bullet each, behind a Hide/Show button whose choice this browser remembers for every document.
+const WARNINGS_HIDDEN_KEY = "home-manager-doc-warnings-hidden";
 function doc2Why(issues) {
-  const row = element("div", "", "needs-row attention doc2-why-row"), text = element("div");
-  text.append(element("strong", issues[0]), element("small", issues.slice(1).join(" ") || "Check it against the source, then confirm, correct or reject it.", "muted"));
+  const row = element("div", "", "needs-row attention doc2-why-row"), text = element("div", "", "doc2-why-text");
+  const heading = element("strong", `${issues.length} ${issues.length === 1 ? "warning" : "warnings"} to check`);
+  const list = element("ul", "", "doc2-why-list"); list.id = "doc2-why-list";
+  list.append(...issues.map(issue => element("li", issue)));
+  const hint = element("small", "Check them against the source, then confirm, correct or reject the record.", "muted");
+  const toggle = element("button", "", "link-button doc2-why-toggle"); toggle.type = "button"; toggle.setAttribute("aria-controls", list.id);
+  const show = hidden => {
+    list.hidden = hint.hidden = hidden;
+    toggle.textContent = hidden ? "Show" : "Hide"; toggle.setAttribute("aria-expanded", String(!hidden));
+  };
+  let hidden;
+  try { hidden = localStorage.getItem(WARNINGS_HIDDEN_KEY) === "1"; } catch { hidden = false; }
+  show(hidden);
+  toggle.addEventListener("click", () => {
+    hidden = !hidden; show(hidden);
+    try { if (hidden) localStorage.setItem(WARNINGS_HIDDEN_KEY, "1"); else localStorage.removeItem(WARNINGS_HIDDEN_KEY); } catch { /* This page only. */ }
+  });
+  const top = element("div", "", "doc2-why-top"); top.append(heading, toggle);
+  text.append(top, list, hint);
   row.append(icon("alert", "icon needs-icon"), text);
   return row;
 }
@@ -440,10 +459,12 @@ function doc2Fields(state, type, record) {
       : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
         : field === "document_kind" ? DOCUMENT_KIND_LABELS[shown] || shown
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
+    // Not printed as a total: the server's subtotal of the lines in From gross pay to net pay.
+    if (record.worked_out?.includes(field)) value.append(element("small", " Worked out from the pay lines", "muted"));
     const change = correction && corrected(correction.field);
     if (change) value.append(provenanceBadge({kind: "override", actor: {person: change.actor}, override: {reason: change.reason}}));
     const links = element("span", "", "doc2-field-actions");
-    if (state.result && field !== "document_kind") {
+    if (state.result && field !== "document_kind" && field in record) {  // A field shown only (worked out) has no source of its own.
       const find = element("button", "Find", "link-button"); find.type = "button"; find.setAttribute("aria-label", `Find ${label.toLowerCase()} in the source`);
       find.addEventListener("click", async () => {
         try {
@@ -497,8 +518,6 @@ const DETAIL_LABELS = {volume: "Volume", price_per_unit: "Price per unit", fuel_
                        rewards_earned: "Rewards earned", rewards_balance: "Rewards balance", pto_balance: "Paid time off", sick_balance: "Sick leave"};
 const ACCOUNT_TYPES = {checking: "Checking", savings: "Savings", money_market: "Money market", other: "Other"};
 const TENDER_LABELS = {gift_card: "Gift card", ebt: "EBT", card: "Card", cash: "Cash", other: "Payment"};
-const PAY_VALUE_LABELS = {gross_pay: "Gross pay", gross_pay_ytd: "Gross pay year to date", net_pay: "Net pay", net_pay_ytd: "Net pay year to date",
-                          taxes: "Taxes", deductions: "Deductions"};
 function doc2Forms(state, type, record, find) {
   const parts = [];
   if (type === "receipt" && record.document_kind !== "bill") {
@@ -508,7 +527,6 @@ function doc2Forms(state, type, record, find) {
   if (record.paid_summary) parts.push(doc2Paid(record.paid_summary));
   const details = doc2DetailList(state, record, find);
   if (details) parts.push(details);
-  if (type === "income_record") parts.push(...doc2PayDetails(record, find));
   if (record.checks?.length) parts.push(doc2Checks(record.checks));
   return parts;
 }
@@ -562,24 +580,6 @@ function doc2DetailList(state, record, find) {
     }
   }
   return list.children.length ? section : null;
-}
-// A pay stub's labels, hours and rates: each amount with the row label and column heading it was printed under.
-function doc2PayDetails(record, find) {
-  const parts = [], labels = record.details?.labels || {};
-  const heading = found => found ? found.text : "—";
-  const summary = Object.entries(labels).map(([name, pair]) => [PAY_VALUE_LABELS[name] || name, heading(pair.row_label), heading(pair.column_heading)]);
-  const lines = (record.lines || []).filter(line => line.details && Object.keys(line.details).length).map(line => [
-    line.description, line.details.hours?.display || "—", line.details.rate?.display || "—",
-    `${heading(line.details.current_column_heading)} · ${heading(line.details.ytd_column_heading)}`]);
-  if (summary.length || lines.length) {
-    const section = element("section", "", "doc2-section doc2-pay-details");
-    section.append(element("h3", "As printed on the stub"));
-    if (summary.length) section.append(dataTable([["Amount"], ["Printed row"], ["Printed column"]], summary, {caption: "Pay amounts and the labels they were printed under"}));
-    if (lines.length) section.append(dataTable([["Line", "doc2-pay-line"], ["Hours", "numeric"], ["Rate", "numeric"], ["Printed columns"]], lines,
-                                               {caption: "Pay lines as printed"}));
-    parts.push(section);
-  }
-  return parts;
 }
 // "Total 8.55 · Gift card −5.00 · Paid 3.55": Paid opens how it's worked out.
 function doc2Paid(summary) {

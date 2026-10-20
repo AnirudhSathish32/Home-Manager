@@ -22,6 +22,7 @@ from it.
 ## Exploring
 
 - Open the `link` with the `playwright-cli` skill, using the project's config:
+
   `playwright-cli open --config=.playwright/cli.config.json "<link>"` (Edge, headless). Its output folder,
   `.playwright-cli/`, may hold the token and is gitignored; don't copy from it into files that are tracked.
 - **Check the marker before every screenshot and every finding.** `#test-instance-marker` ("Test data", or "Test" on

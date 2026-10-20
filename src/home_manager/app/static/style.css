@@ -1169,7 +1169,14 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .doc2-step[data-state="running"] .icon { color: var(--accent); }
 .doc2-next-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
 .doc2-next-row p { margin: 0; flex: 1 1 100%; }
-.doc2-why-row { padding: var(--space-2) var(--space-3); grid-template-columns: 20px minmax(0, 1fr); }
+.doc2-why-row { padding: var(--space-2) var(--space-3); grid-template-columns: 20px minmax(0, 1fr); align-items: start; }
+.doc2-why-row .needs-icon { margin-top: 2px; }
+.doc2-why-text { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.doc2-why-top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.doc2-why-row .doc2-why-top strong { display: inline; }
+.doc2-why-toggle { flex: none; min-height: 24px; }
+.doc2-why-list { margin: 0; padding-left: var(--space-5); font-size: var(--text-sm); line-height: 1.5; }
+.doc2-why-list li + li { margin-top: var(--space-1); }
 .doc2-tabs { margin: 0; padding: 0 var(--space-4); }
 .doc2-tabpanel { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
 .doc2-tabpanel > h3, .doc2-section > h3, .doc2-readings > h3 { margin: 0 0 var(--space-2); }
@@ -1186,7 +1193,6 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .doc2-check .icon { align-self: center; color: var(--positive); }
 .doc2-check[data-passes="false"] .icon { color: var(--warning); }
 .doc2-kind select { max-width: 12rem; }
-.doc2-pay-details .doc2-pay-line { min-width: 8rem; }
 .doc2-links li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
 #doc2-panel-record tr.cited { background: var(--warning-subtle); }
 .doc2-row-correct { margin-left: var(--space-2); font-size: var(--text-xs); }

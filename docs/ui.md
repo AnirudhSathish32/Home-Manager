@@ -306,7 +306,9 @@ returns to the list with its filters, page and scroll position.
   - the record's title and status;
   - the steps (Read → Recorded), each with an icon and a hidden state word;
   - the one next action: **Read document**, **Record it** (was "Extract to ledger") or **Try again**;
-  - the *why* as a needs-attention row;
+  - the *why* as a needs-attention row: a count ("3 warnings to check") over one bullet per warning, with
+    **Hide / Show** (`aria-expanded`). The count stays when hidden, and this browser remembers the choice for every
+    document (`localStorage`);
   - the decision (`confirmCorrect`): **Confirm / Reject / Correct…**.
 
   The Correct form opens in the header, and the header stops being sticky while the form is open, so Save stays
@@ -322,8 +324,7 @@ returns to the list with its filters, page and scroll position.
     After the fields (`doc2Forms`, [documents](documents.md#receipt-kinds)): a reviewed receipt's waiting details with
     **Apply details**; the **Receipt kind** row with a kind select and **Change kind…** (a preview, then one reading of
     the saved text); "Total · Gift card · Paid" with Paid as a traced figure; **Printed details** (each with Find and,
-    for receipts, Correct; tenders, deposit splits, grocery weights and counts); a pay stub's **As printed on the stub**
-    (each amount's printed row and column, hours and rate); and **Arithmetic checks**, each a figure that opens its
+    for receipts, Correct; tenders, deposit splits, grocery weights and counts); and **Arithmetic checks**, each a figure that opens its
     trace. A receipt with a gift card shows its printed total as Total.
   - **History:** `historyList` with the record's changes, then the readings.
   - **Details:** where the file is, versions and how the text was read.

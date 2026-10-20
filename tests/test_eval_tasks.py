@@ -63,7 +63,9 @@ def oracle(task, case):
     if task == "receipt_kinds":
         return {"kind": expected["kind"], "fields": {name: value for name, value in expected["fields"].items() if value is not None}}
     if task == "document_forms":
-        return {"fields": {name: value for name, value in expected["fields"].items() if value is not None}, "counted": True, "wrong_column_counted": 0}
+        columns = {"kept": len(expected["columns"]), "blanked": 0} if expected.get("columns") else {}
+        return {"fields": {name: value for name, value in expected["fields"].items() if value is not None}, "counted": True, "wrong_column_counted": 0,
+                **columns}
     raise AssertionError(task)
 
 
@@ -233,10 +235,9 @@ def test_the_receipt_kinds_task_reports_kind_accuracy_and_fields_per_kind(tmp_pa
         assert row in report, report
 
 
-def test_the_document_forms_task_reports_fields_and_wrong_column_values(tmp_path, local_model):
-    """SC-17 and FR-24: P-table read correctly, P-flat answered with every this-period value copied from year to date,
-    and the bank and card statements. The year-to-date answer is left out by the FR-22 guards, so no wrong-column value
-    would count: the count is 0."""
+def document_forms_replies():
+    """Stub answers for the task's first four cases: P-table read correctly, P-flat answered with every this-period value
+    copied from year to date, and the bank and card statements read correctly."""
     from document_forms_fixtures import P_LINES, at, bank_replies, card_replies, cite, joined, number_of, paystub_summary, value
     from evals.tasks.document_forms import BANK, CARD, P_FLAT, P_TABLE
     from evals.tasks.document_forms import P_LINES as PRINTED
@@ -258,16 +259,58 @@ def test_the_document_forms_task_reports_fields_and_wrong_column_values(tmp_path
              "PayLines": [{"lines": rows}]}
     flat = {key: answer for key, answer in all_ytd_replies(P_FLAT).items() if key != "Classification"}
     bank, card = ({key: answer for key, answer in replies.items() if key != "Classification"} for replies in (bank_replies(BANK), card_replies(CARD)))
-    local_model["by_schema"] = joined(table, flat, bank, card)
+    return joined(table, flat, bank, card)
+
+
+FOUR_FORMS_ROWS = ("| synthetic | paystub (p_table) | 6 of 6 | 6 of 6 | 0 | – | – | 0 |", "| synthetic | paystub (p_flat) | 0 of 4 | 0 of 4 | 0 | – | – | 0 |",
+                   "| synthetic | bank_statement | 5 of 5 | 5 of 5 | 0 | – | – | 0 |", "| synthetic | credit_card_statement | 5 of 5 | 5 of 5 | 0 | – | – | 0 |")
+
+
+def test_the_document_forms_task_reports_fields_and_wrong_column_values(tmp_path, local_model):
+    """SC-17 and FR-24: P-table read correctly, P-flat answered with every this-period value copied from year to date,
+    and the bank and card statements. The year-to-date answer is left out by the FR-22 guards, so no wrong-column value
+    would count: the count is 0."""
+    local_model["by_schema"] = document_forms_replies()
     folder = run_tasks(config_for(local_model), ["document_forms"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=4)
     lines = task_lines(folder)
     assert [(line["status"], line["grades"]["passed"], line["grades"]["checks"]["wrong_column_counted"]) for line in lines] == [
         ("ok", True, 0), ("ok", False, 0), ("ok", True, 0), ("ok", True, 0)]
     assert lines[1]["output"]["counted"] is False  # Sent to review by the guards, never counted.
     report = (folder / "report.md").read_text(encoding="utf-8")
-    for row in ("| synthetic | paystub (p_table) | 6 of 6 | 6 of 6 | 0 | 0 |", "| synthetic | paystub (p_flat) | 0 of 4 | 0 of 4 | 0 | 0 |",
-                "| synthetic | bank_statement | 5 of 5 | 5 of 5 | 0 | 0 |", "| synthetic | credit_card_statement | 5 of 5 | 5 of 5 | 0 | 0 |"):
+    for row in FOUR_FORMS_ROWS:
         assert row in report, report
+
+
+def test_the_document_forms_task_reports_a_photo_stub_kept_and_blanked(tmp_path, local_model):
+    """SC-36 (paystub-columns FR-38): the photographed layout answered correctly keeps every printed value, blanks none,
+    and counts no wrong-column value."""
+    from document_forms_fixtures import joined
+    from evals.tasks.document_forms import P_PHOTO
+    from test_paystub_forms import side_replies
+    photo = {key: answer for key, answer in side_replies(P_PHOTO).items() if key != "Classification"}
+    local_model["by_schema"] = joined(document_forms_replies(), photo)
+    folder = run_tasks(config_for(local_model), ["document_forms"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=5)
+    line = task_lines(folder)[4]
+    assert "p_photo" in line["tags"] and line["status"] == "ok" and line["grades"]["passed"], line
+    checks = line["grades"]["checks"]
+    assert (checks["kept"], checks["values_printed"], checks["blanked"], checks["wrong_column_counted"]) == (9, 9, 0, 0)
+    assert line["output"]["counted"] is True
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    for row in (*FOUR_FORMS_ROWS, "| synthetic | paystub (p_photo) | 2 of 2 | 2 of 2 | 0 | 9 of 9 | 0 | 0 |"):
+        assert row in report, report
+
+
+def test_document_forms_column_values_match_rows_side_by_side():
+    """Two rows printed on one line are told apart by the line's description; a swapped kept value counts as wrong column."""
+    from types import SimpleNamespace
+
+    from evals.tasks.document_forms import PHOTO_COLUMNS, column_values, other_column
+    lines = [SimpleNamespace(id="line-1", text="REGULAR 2,500.00 32,500.00 FEDERAL INCOME TAX 250.00 3,250.00")]
+    record = {"lines": [{"description": "Regular", "current_minor": 250000, "ytd_minor": 3250000, "locator": {"line_ids": ["line-1"]}},
+                        {"description": "Federal income tax", "current_minor": 325000, "ytd_minor": 25000, "locator": {"line_ids": ["line-1"]}}]}
+    values = column_values(record, lines, PHOTO_COLUMNS)
+    assert (values["REGULAR:current"], values["FEDERAL INCOME TAX:current"], values["FEDERAL INCOME TAX:ytd"]) == ("2500.00", "3250.00", "250.00")
+    assert other_column("REGULAR:current") == "REGULAR:ytd" and other_column("gross_pay_ytd") == "gross_pay"
 
 
 def test_a_task_run_grades_with_the_apps_own_code_and_writes_a_report(tmp_path, local_model):

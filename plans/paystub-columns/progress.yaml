@@ -1,0 +1,68 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: paystub-columns
+plan_sha256: 0d52944facb86f99ee0c9a2116332a7d86cf45dff6e9beb8c38efc77296e569f
+slices:
+  - id: SL-01
+    status: done
+    commit: null
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py tests/test_layout_consumers.py tests/test_vision_tables.py tests/test_pdf.py tests/test_extraction.py -q -> 99 passed (run once with SL-02's code in place; covers SL-01's and SL-02's commands, SC-33)"
+      - "ruff check src/home_manager/documents/extraction.py tests/test_paystub_forms.py tests/test_layout_consumers.py -> All checks passed"
+    notes: >-
+      Built together with SL-02 and left uncommitted (R1-03; no commit was authorized). line_amounts next to
+      paystub_columns; read() routes pay stubs on bool(tables), sets reading["printed_columns"], has_table_contract
+      deleted; anchor_paystub's two multi-amount checks count with line_amounts; flag plumbed record -> publish ->
+      normalize -> paystub_lines (default False). Strict xfail removed from the SC-28 test, which now also asserts no
+      "multiple amounts" and no column note. SC-32 b: fixture P-table already prints "401(k) | 50.00 | 650.00" (kept
+      5000/65000, asserted), so the added row is "Roth 401(k) | 184.98 | 2,404.74" (number_of needs a unique line). The
+      anchor-counter test cites "401K 184.98" after the table; its stub answers on the second PayLines call (lines
+      outside the table are read in two chunks). P6 test in test_layout_consumers asserts evidence_tables == [] first.
+      line_amounts unit cases include the plan's six plus "401(k) 10.00", "W2 5.00", "REGULAR2,500.00" and a header line.
+  - id: SL-02
+    status: done
+    commit: null
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_paystub_forms.py tests/test_layout_consumers.py tests/test_vision_tables.py tests/test_pdf.py tests/test_extraction.py -q -> 99 passed"
+      - ".venv/Scripts/python.exe -m pytest tests/test_eval_tasks.py -k document_forms -q -> 1 passed, 12 deselected"
+      - ".venv/Scripts/python.exe -m pytest tests/test_employers.py tests/test_paycheck.py tests/test_correction_preview.py -q -> 32 passed, 1 skipped (opt-in local browser test)"
+      - "ruff check (same files as SL-01) -> All checks passed"
+    notes: >-
+      printed_header, COLUMN_WORDS/COLUMN_NAMES and column_checks in extraction.py. column_checks takes issues as an extra
+      argument (the plan's signature had none; notes are added at decision time, clears returned as callables and run
+      after record["details"] is rebuilt, so FR-22 judges the model's values first, P5). The this-period note carries
+      ": it is printed under <col>" only when that value failed itself; a value cleared as its pair's partner gets the
+      note without it. Line markers current_status/ytd_status + column {rule, line_ids, value_minor, ytd_minor};
+      summary markers in record["details"]["columns"]. EXTRACTION_VERSION = typed-extraction-v24-paystub-columns; the
+      version test marks the run v23. Deviation from the plan's SC-34 wording: SIDE_BY_SIDE prints a 14-day period, so
+      pay_frequency is inferred (26) and FR-22 fires rule (c) "mid-year" (5 notes), not "pay period isn't known"; the
+      spec's SC-34 end state (null, ambiguous, needs_review) holds and is asserted. FR-22 still sees the swapped
+      Regular (SC-29 asserts its rule (b) note). Tests: SC-29 (with correction, stored resolved_issues_json, re-read),
+      SC-30, SC-31, SC-34, header-ambiguous, no-header, summary pair + P8, printed_header unit cases.
+  - id: SL-03
+    status: done
+    commit: null
+    verification:
+      - ".venv/Scripts/python.exe -m pytest tests/test_eval_tasks.py -q -> 15 passed (incl. the perfect-answer test over every case, the updated four-forms report rows, the new p_photo run and column_values unit test)"
+      - "ruff check evals/tasks/document_forms.py tests/test_eval_tasks.py -> All checks passed"
+    notes: >-
+      P_PHOTO (= SIDE_BY_SIDE) inserted at index 4, so the first four cases (and --limit 4) are unchanged; measured
+      variants appended at the end, tagged p_photo + measured: two blocks on one line, SECTION 125 with two amounts and
+      with one, each column's amount on its own line. Expected values by "<ROW>:current|ytd" plus gross/net field names;
+      column_values maps a record's pay line to a row by the row label printed in its cited lines, using the description
+      when one line prints two rows. run() passes printed_columns only for p_photo; outputs kept/blanked/values, and on a
+      counted stub wrong_column_counted also counts a kept value equal to its row's other column. kept/blanked/
+      values_printed are reported, not pass criteria (the measured variants blank by design). Report gains Kept and Blanked
+      ("–" elsewhere). VERSION document-forms-v2. Not run: the measured variants with stubbed answers (only P_PHOTO is
+      run end to end; the variants are graded by the perfect-answer test) and any live model (U1 is the user's run).
+  - id: SL-04
+    status: done
+    commit: null
+    verification:
+      - "git diff --stat -- docs/ text_extraction_plan.md -> docs/evals.md 7, docs/money.md 30, text_extraction_plan.md 10 lines changed (docs/bugs.md diff is the user's earlier edit, untouched)"
+      - "Grep of docs/<doc>.md \"Heading\" citations in extraction.py, evals/tasks/document_forms.py, docs/evals.md, text_extraction_plan.md -> every cited heading exists (Money in and paystubs at docs/money.md:129)"
+    notes: >-
+      docs/money.md "Money in and paystubs": the flat-text path (photos, scans, text PDFs with no rebuilt table; pipe
+      stubs keep cells), kept values, column position, one-amount rule, label digits, notes clearing on correction and
+      P8, Extract again for old records. text_extraction_plan.md: dated 2026-10-19 section. docs/evals.md: p_photo,
+      variants, Kept/Blanked, measures the rule not FR-31 routing. Code comments cite docs/money.md "Money in and
+      paystubs" (extraction.py line_amounts, column_checks, read).

@@ -138,11 +138,9 @@ def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
         expect(page.locator("#breakdown")).to_be_visible()
         expect(page.locator("#breakdown-body")).to_contain_text("Gift card")
         page.keyboard.press("Escape")
-        # 3. Pay stub: hours and rate, PTO, deposits, and each amount's printed column heading.
+        # 3. Pay stub: PTO and deposits; no "As printed on the stub" section (removed 2026-10-19).
         open_document(page, base, ids["forms_paystub_doc"])
-        pay = page.locator(".doc2-pay-details")
-        for text in ("80.00 h", "31.25", "This period", "Year to date"):
-            expect(pay).to_contain_text(text)
+        expect(page.locator(".doc2-pay-details")).to_have_count(0)
         for text in ("56.00 hrs", "****1234", "****9876"):
             expect(details).to_contain_text(text)
         # 4. Bank statement, 5. card statement.
@@ -267,8 +265,18 @@ def test_document_page_states_find_correct_and_decide(tmp_path):
         expect(page.locator("#doc2-title")).to_have_text("Hardware Depot - Tools")
         expect(page.locator("#doc2-record-title")).to_have_text("Receipt from Hardware Depot")
         expect(page.locator('#doc2-steps li[data-state="attention"]')).to_contain_text("Recorded")
-        expect(page.locator("#doc2-why")).to_contain_text("do not equal the total")
-        confirm = page.locator("#doc2-decision").get_by_role("button", name="Confirm", exact=True)
+        expect(page.locator("#doc2-why li", has_text="do not equal the total")).to_be_visible()  # One bullet per warning.
+        # Hide folds the bullets away, Show brings them back, and the choice holds on the next page load.
+        toggle = page.locator("#doc2-why").get_by_role("button", name="Hide")
+        toggle.click()
+        expect(page.locator("#doc2-why-list")).to_be_hidden()
+        expect(page.locator("#doc2-why")).to_contain_text("to check")
+        page.reload(); page.wait_for_load_state("networkidle")
+        expect(page.locator("#doc2-why-list")).to_be_hidden()
+        page.locator("#doc2-why").get_by_role("button", name="Show").click()
+        expect(page.locator("#doc2-why li", has_text="do not equal the total")).to_be_visible()
+        expect(page.locator("#doc2-why").get_by_role("button", name="Hide")).to_have_attribute("aria-expanded", "true")
+        confirm =page.locator("#doc2-decision").get_by_role("button", name="Confirm", exact=True)
         expect(confirm).to_be_visible()
         box = confirm.bounding_box()
         assert box["y"] + box["height"] <= 768, box

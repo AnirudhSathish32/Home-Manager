@@ -2,6 +2,16 @@
 
 Status: native PDF layout is now connected to classification, typed extraction, general reasoning, search and the source viewer (2026-10-13). The user-visible wiring described below is implemented. The user's failing paystub has not been inspected, and synthetic tests do not establish its accuracy. No OCR dependency was added. Paths below are relative to the repository root.
 
+## Pay stub columns on photos (2026-10-19)
+
+`typed-extraction-v24-paystub-columns` (specs/paystub-columns; docs/money.md "Money in and paystubs") replaces blanking on
+pay stubs with no validated table. Previously a photographed stub, whose vision reading had no table, still went through
+cell anchoring, and every line printing two amounts lost both: only a one-column bonus survived (the user's report).
+Such a stub is now read like flat text. The model's values are kept when printed in their cited line. The wrong-column
+protection is the FR-22 guards plus a check of position against the printed column header, and a one-amount line under
+both headings is kept only as year to date. The `document_forms` eval's `p_photo` fixtures measure kept, blanked and
+wrong-column values. Still open: the user's own stub needs **Extract again**, and live-model numbers come from their run.
+
 ## Document forms: what it closes for pay stubs (2026-10-18)
 
 `typed-extraction-v23-document-forms` (specs/document-forms; docs/money.md "Money in and paystubs") closes these pay stub items:

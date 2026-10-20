@@ -223,6 +223,16 @@ Classification, typed extraction, general reasoning and search now use the same 
 are repeated with each extraction chunk. Code copies monetary values from recognized printed columns, keeping
 Current separate from YTD, quantities separate from prices, and debits/credits separate from running balances.
 Ambiguous roles and unaccounted native rows require review. Nearby non-table pay lines are extracted separately.
+Columns may be packed tightly, as payroll sites print This period and YTD: an amount never shares a cell with the
+amount or label after it, and a heading that runs into the next ("this period year to date") is split where the
+cells below it fall into separate columns (right-aligned amounts may reach past their heading). A label wider than its
+heading may run right (and a wide amount left) as long as it stays clear of the neighbouring headings. Two tables
+sharing rows (a payslip's Earnings beside its Deductions) are read as two tables. A section label alone on its row
+("Statutory", "Voluntary") stays in its table when amount rows follow it, and needs no record. Rows after a blank
+stretch (a section after a blank row, the totals at the foot of a mostly empty box) continue the table above when
+they line up with its columns and each prints two amounts or more or is a section label; a details box right above
+the heading row isn't part of it. One body row is a table when it prints two amounts or more (a benefits table's Co
+Match 401K).
 
 **Tables** shows native cells as **From PDF text positions**. Click a value to highlight its actual words on the saved
 page preview. **Original** opens the preserved PDF; **Text → Original text order** shows historical text and citations.
@@ -324,7 +334,11 @@ Code: `documents/extraction.py`, `finance/ledger.py`.
   provider, account digits, dates, period, amount due and new charges, and recorded as a receipt with
   `document_kind='bill'` ([money](money.md#bills-and-their-lines)).
 - **Deterministic checks:**
-  - every citation is an exact quote;
+  - every citation is an exact quote. How a citation is written is repaired first, never what it says
+    (`repair_quotes`): one layer of wrapping quotation marks is dropped; a table cell's id cited as the line becomes
+    its row's line; and a quote that is in its line once spacing and the " | " cell separators are ignored (a table
+    row quoted with plain spaces) becomes the line's exact text there, when found in one place only. The error names
+    which way a citation failed: a line id that isn't in the lines, or a quote that isn't in its line;
   - every amount is printed in its cited line;
   - names appear in their citation;
   - dates are unambiguous ISO dates;

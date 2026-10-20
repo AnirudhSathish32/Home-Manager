@@ -91,6 +91,118 @@ def test_title_and_footer_do_not_become_table_rows(tmp_path):
     assert grid(layout)[0] == ["Description", "YTD", "Current"]
 
 
+def tight_payroll_items():
+    """A payroll site's packed columns: right-aligned amounts and headings less than 1.5 font sizes apart."""
+    def right(x, y, text):
+        return (round(x - len(text) * 5.0, 1), y, text)
+    items = [(40, 700, "Earnings"), (170, 700, "rate"), (230, 700, "hours"), (300, 700, "this period"), (358, 700, "year to date")]
+    for row, (label, rate, hours, current, ytd) in enumerate([("Regular", "50.0000", "80.00", "4,000.00", "52,000.00"),
+                                                              ("Relocation Bonus", "", "", "", "4,000.00"),
+                                                              ("Gross Pay", "", "", "$4,000.00", "56,000.00")], 1):
+        items.append((40, 700 - 14 * row, label))
+        items += [right(x, 700 - 14 * row, value) for x, value in ((205, rate), (260, hours), (350, current), (400, ytd)) if value]
+    return items
+
+
+def test_packed_amount_columns_and_run_together_headings_stay_separate_columns(tmp_path):
+    """Two amounts side by side are never one cell, and a heading that runs into the next is split where the amounts
+    below it split (docs/documents.md "Native PDF layout")."""
+    layout = read_layout(tmp_path, tight_payroll_items())
+    assert grid(layout) == [["Earnings", "rate", "hours", "this period", "year to date"],
+                            ["Regular", "50.0000", "80.00", "4,000.00", "52,000.00"],
+                            ["Relocation Bonus", "", "", "", "4,000.00"],
+                            ["Gross Pay", "", "", "$4,000.00", "56,000.00"]]
+
+
+def payslip_items(pad=6):
+    """A payslip's Earnings and Deductions side by side on the same rows, cells padded by pad points, labels wider than
+    their headings, and the totals row after a blank stretch at the foot of both, as in ruled payslip templates."""
+    def right(x, y, text):
+        return (round(x - len(text) * 5.0, 1), y, text)
+    second = 290 + pad
+    items = [(40, 700, "Earnings"), (155, 700, "Current"), (262, 700, "YTD"), (second, 700, "Deductions"), (second + 115, 700, "Current"),
+             (second + 222, 700, "YTD")]
+    earnings = [("Regular Salary", "4,000.00", "52,000.00"), ("Relocation Bonus", "", "4,000.00"), ("Overtime", "300.00", "1,200.00")]
+    deductions = [("Federal Income Tax", "500.00", "6,500.00"), ("Social Security", "248.00", "3,224.00"), ("Medicare", "58.00", "754.00"),
+                  ("401K", "200.00", "2,600.00"), ("Dental", "12.00", "156.00")]
+    rows = [(earnings[r] if r < len(earnings) else ("", "", ""), deductions[r], 700 - 16 * (r + 1)) for r in range(len(deductions))]
+    rows.append((("Gross Pay", "4,300.00", "57,200.00"), ("Total Deductions", "1,018.00", "13,234.00"), 700 - 16 * (len(deductions) + 2)))
+    for left, other, y in rows:
+        for (label, current, ytd), (x, current_right, ytd_right) in ((left, (40, 200, 290)), (other, (second, second + 160, second + 250))):
+            if label:
+                items += [(x, y, label), *[right(edge, y, value) for edge, value in ((current_right, current), (ytd_right, ytd)) if value]]
+    return items
+
+
+@pytest.mark.parametrize("pad", [6, 20, 40])
+def test_side_by_side_payslip_tables_are_read_as_two_tables_with_their_totals(tmp_path, pad):
+    """Labels wider than their headings, an amount padded close to the next table's label, two tables sharing rows and
+    a totals row after a blank stretch: two tables, each with its own Current and YTD (docs/documents.md "PDFs")."""
+    layout = read_layout(tmp_path, payslip_items(pad))
+    assert len(layout.tables) == 2
+    assert grid(layout, 0) == [["Earnings", "Current", "YTD"], ["Regular Salary", "4,000.00", "52,000.00"], ["Relocation Bonus", "", "4,000.00"],
+                               ["Overtime", "300.00", "1,200.00"], ["Gross Pay", "4,300.00", "57,200.00"]]
+    assert grid(layout, 1) == [["Deductions", "Current", "YTD"], ["Federal Income Tax", "500.00", "6,500.00"], ["Social Security", "248.00", "3,224.00"],
+                               ["Medicare", "58.00", "754.00"], ["401K", "200.00", "2,600.00"], ["Dental", "12.00", "156.00"],
+                               ["Total Deductions", "1,018.00", "13,234.00"]]
+
+
+def sectioned_payslip_items():
+    """A ruled payslip template: a details box right above one heading row for Earnings and Deductions side by side,
+    Statutory and Voluntary section labels (the second after a blank row), and the totals at the foot of a mostly
+    empty box. Amounts are invented; one is printed without cents."""
+    def right(x, y, text):
+        return (round(x - len(text) * 5.0, 1), y, text)
+    items = [(30, 660, "Pay Date"), (130, 660, "10/09/2026"), (276, 660, "Federal Allowances"),
+             (30, 645, "Period Beginning"), (130, 645, "09/19/2026"), (276, 645, "Federal Additional Withholding"),
+             (30, 630, "Period Ending"), (130, 630, "10/02/2026"), (276, 630, "Federal Standard Withholding Table"),
+             (30, 615, "Earnings"), (142, 615, "Rate"), (175, 615, "Hours"), (212, 615, "This Period"), (276, 615, "Year To Date"),
+             (340, 615, "Deductions"), (463, 615, "This Period"), (520, 615, "Year To Date")]
+    earnings = {600: ("Regular Salary", ["50.00", "80", "4,000.00", "84,000.00"]), 585: ("Relocation Bonus", ["", "", "", "4,000"])}
+    deductions = {600: ("Statutory", []), 585: ("Federal Tax", ["500.00", "10,500.00"]), 570: ("Social Security Tax", ["248.00", "5,208.00"]),
+                  555: ("Medicare Tax", ["58.00", "1,218.00"]), 540: ("GA State Tax", ["190.00", "3,990.00"]), 510: ("Voluntary", []),
+                  495: ("Medical HDP", ["90.00", "1,890.00"]), 480: ("Vision Insurance", ["6.00", "6.00"]), 465: ("Dental PPO", ["12.00", "252.00"]),
+                  450: ("HSA Additional", ["50.00", "1,050.00"]), 435: ("401K Plan", ["200.00", "4,200.00"])}
+    for y, (label, values) in earnings.items():
+        items += [(30, y, label), *[right(edge, y, value) for edge, value in zip((170, 203, 268, 334), values) if value]]
+    for y, (label, values) in deductions.items():
+        items += [(340, y, label), *[right(edge, y, value) for edge, value in zip((516, 578), values)]]
+    items += [(30, 120, "Total Earnings (A)"), right(268, 120, "4,000.00"), right(334, 120, "88,000.00"),
+              (340, 120, "Total Deductions (B)"), right(516, 120, "1,354.00"), right(578, 120, "28,434.00"),
+              (30, 105, "Net Payment (A-B)"), right(268, 105, "2,646.00"), right(334, 105, "59,566.00")]
+    return items
+
+
+def test_sectioned_payslip_keeps_section_labels_blank_rows_and_foot_totals_in_its_tables(tmp_path):
+    """Statutory and Voluntary label rows, a blank row before Voluntary and the totals at the foot of the box stay in
+    their tables; the details box above isn't part of them (docs/documents.md "PDFs")."""
+    layout = read_layout(tmp_path, sectioned_payslip_items())
+    assert len(layout.tables) == 2
+    assert grid(layout, 0) == [["Earnings", "Rate", "Hours", "This Period", "Year To Date"],
+                               ["Regular Salary", "50.00", "80", "4,000.00", "84,000.00"], ["Relocation Bonus", "", "", "", "4,000"],
+                               ["Total Earnings (A)", "", "", "4,000.00", "88,000.00"], ["Net Payment (A-B)", "", "", "2,646.00", "59,566.00"]]
+    assert grid(layout, 1) == [["Deductions", "This Period", "Year To Date"], ["Statutory", "", ""], ["Federal Tax", "500.00", "10,500.00"],
+                               ["Social Security Tax", "248.00", "5,208.00"], ["Medicare Tax", "58.00", "1,218.00"], ["GA State Tax", "190.00", "3,990.00"],
+                               ["Voluntary", "", ""], ["Medical HDP", "90.00", "1,890.00"], ["Vision Insurance", "6.00", "6.00"],
+                               ["Dental PPO", "12.00", "252.00"], ["HSA Additional", "50.00", "1,050.00"], ["401K Plan", "200.00", "4,200.00"],
+                               ["Total Deductions (B)", "1,354.00", "28,434.00"]]
+
+
+def test_a_one_row_table_with_two_amount_columns_is_a_table(tmp_path):
+    """Other Benefit And Information | This Period | Year to Date over one Co Match 401K row is still a table."""
+    layout = read_layout(tmp_path, [(60, 400, "Other Benefit And Information"), (250, 400, "This Period"), (320, 400, "Year to Date"),
+                                    (60, 385, "Co Match 401K"), (265, 385, "160.00"), (330, 385, "3,360.00")])
+    assert grid(layout) == [["Other Benefit And Information", "This Period", "Year to Date"], ["Co Match 401K", "160.00", "3,360.00"]]
+
+
+def test_a_run_together_heading_splits_at_its_widest_gap_between_the_columns_below(tmp_path):
+    """"This Period" and "Year to Date" run together over two narrow amount columns, and "Year" sits over neither
+    column's amounts: the heading splits at the widest gap between the words over each column, not by distance."""
+    layout = read_layout(tmp_path, [(60, 400, "Other Benefit And Information"), (250, 400, "This Period"), (304, 400, "Year to Date"),
+                                    (60, 385, "Co Match 401K"), (270, 385, "160.00"), (339, 385, "336.00")])
+    assert grid(layout) == [["Other Benefit And Information", "This Period", "Year to Date"], ["Co Match 401K", "160.00", "336.00"]]
+
+
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
 def test_crop_rotation_transform_matches_pdfium_rendered_ink(tmp_path, rotation):
     layout = read_layout(tmp_path, payroll_items(), rotation=rotation, crop="20 30 580 760")

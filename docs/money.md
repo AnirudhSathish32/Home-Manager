@@ -130,9 +130,36 @@ invoice charge, never a smaller remaining balance; matching deposits plus multip
 
 For new readings, a pay stub's reported table cells carry source line and cell IDs. The reasoning model classifies
 earning and deduction rows; code maps the copied Current/This period and YTD/Year to date headings, then copies each
-amount from its named cell. A blank current cell stays blank even when YTD has a value. Conflicting headings or a
-multi-amount line without a validated row require review. The vision model's placement is still unverified against
-image pixels, so this contract is being evaluated before relying on it as a default accuracy guarantee.
+amount from its named cell. A blank current cell stays blank even when YTD has a value. Conflicting headings, or a
+line printing several amounts outside the validated table, require review. A gross or net pay total on such a line is
+kept when the table's own cells add up to it in its column (earnings, less taxes and deductions for net pay), or when
+this period and year to date are the same amount printed twice in the cited lines (a first paycheck; either column
+gives the right value). The vision model's placement is still
+unverified against image pixels, so this contract is being evaluated before relying on it as a default accuracy guarantee.
+
+**A stub with no validated table is read like flat text** (`documents/extraction.py` `read`, `column_checks`). That
+covers photos and scans whose vision reading found no table, and text PDFs where no table could be rebuilt. Stubs
+transcribed with `|` separators rebuild a table and keep the cell path above. On these stubs:
+- **Values are kept as the model read them** when each is printed in its cited line, including a line that prints this
+  period beside year to date. The guards below then judge them.
+- **Column position.** When a line prints no amount and names both columns (Current or This period, and YTD or Year to
+  date), its column words left to right (Hours and Rate count too) give the columns. A line printing exactly that many
+  amounts must have its this-period value in the this-period position and its year to date in the year-to-date position.
+  Otherwise both of its values are left out (null and ambiguous). Each gets a note, such as "This period: Regular
+  32,500.00 USD doesn't match the printed columns (pay line 1, line-7): it is printed under YTD; …". Gross and net pay
+  are checked as pairs, and taxes and deductions in the this-period position. The check is skipped when the counts
+  differ (two rows side by side, say) or the header lines disagree.
+- **One amount under both headings.** A pay line printing one amount on such a stub keeps it only as year to date. A
+  this-period value there is left out with "… prints one amount; check whether it is this period or year to date".
+  Summary amounts are exempt, and with no header the model's choice is kept.
+- **Label digits aren't amounts** (`line_amounts`): digits joined to letters or opening a lettered parenthesis
+  ("401K", "403(b)") and an amount joined to letters ("50.00CR") aren't counted. A number standing alone ("SECTION 125")
+  is, so such a line usually skips the position check. The anchoring rule above counts the same way.
+- Each note starts with its value's correction label, so correcting the value with **Edit details** clears it and the
+  correction outlives reading again. Correcting one side of a gross or net pair clears both of that pair's notes; the
+  other side stays empty until you enter it.
+- Readings made before this rule (before extraction version `typed-extraction-v24-paystub-columns`) aren't reused. Their
+  records keep the blanked amounts until you use **Extract again**, and reviewed records aren't rewritten.
 
 Paystub summaries receive the same table cells and headings as row classification, within the input budget. Summary
 amount citations use the exact cell quote after anchoring. The source viewer's Tables tab shows these cells and links
@@ -142,16 +169,29 @@ back to the original lines. Saved readings with explicit separators can be recon
 path: table cells, native PDF cells and flat text). Gross pay, net pay, taxes, deductions and each line's this-period
 amount are left out (null and ambiguous), with a reason naming the field, both amounts and the cited lines, when:
 - its printed row label, column heading or cited quote reads as year to date or annual (YTD, year to date, annual,
-  yearly, salary, per year);
+  yearly, per year). "Salary" alone doesn't: a stub's "Regular Salary" line is this paycheck's pay, and "Annual
+  salary" is still caught by "annual";
 - it is larger than its own year-to-date amount;
-- it equals its year-to-date amount after the year's first pay period (worked out from the period start and the pay
-  frequency; a first paycheck of the year can equal its year to date). With the period or frequency unknown, the
-  amount is kept and the equality goes to review.
+- every this-period amount on the stub equals its year-to-date amount after the year's first pay period: year to date
+  copied into this period throughout (worked out from the period start and the pay frequency; a first paycheck of the
+  year can equal its year to date). Some equal amounts alone are kept, since a pay line or benefit can start mid-year.
+  An amount the stub itself prints twice in its cited lines (in both columns or both sections) is kept: that is a new
+  job's first paycheck mid-year, not a copy, which prints the amount once. When every pay line prints its amount
+  that way, the equal totals are kept too. With the period or frequency unknown,
+  all-equal amounts printed once are kept and go to review.
 
 A stub where any of these fired never counts automatically, even when its arithmetic agrees. Correcting the field (or
 the pay line) with **Edit details** clears its reason, and the correction outlives reading again. A guarded amount is
-never filled in with a calculated one. The rule errs toward review: an earnings line labelled "Salary", or a line
-printing a this-period amount beside "YTD", goes to review too. Hours × rate and the deposit splits are checked as well
+never filled in with a calculated one. The rule errs toward review: a line printing a this-period amount beside "YTD"
+goes to review too.
+
+On a stub read from table cells, gross and net pay come from the stub's own totals row (Gross Pay, Total Earnings,
+Net Pay, Net Payment, lettered or not, such as "Total Earnings (A)") when it prints exactly one, whichever row the model
+cited. Hours and rate come from their own Hours and Rate columns. One printed row is one pay line: a row the model lists
+again (each part of the text is asked for its pay lines) is left out, and so is a line citing nothing that prints an
+amount, with a note unless a line of the same name has its row. A printed totals row the model didn't cite (Total
+Deductions) doesn't count as an unaccounted row. Taxes and deductions this period stay "Not found" when the stub
+prints only one combined total (Total Deductions): it covers both, and a total is never split by calculation. Hours × rate and the deposit splits are checked as well
 ([documents](documents.md#pay-stub-and-statement-fields)).
 
 - **A verified pay stub counts as net pay on its pay date** (`STANDALONE_INCOME`) until the bank deposit that paid it is

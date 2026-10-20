@@ -28,3 +28,114 @@ When reading a receipt from the inbox -> the document disappears from view and i
 When taking a grocery reciept lets say it has 3 items. One for 12.99, one for 6.99 and one for 11.79. The taxes for these items are 1.19. The current system shows in the paid category 13.48, 7.25 and 12.23. Instead is should show the tax as its own line item of 1.19 and show 12.99 (13.48 with tax), 6.99 (7.25 with tax) etc. In the ledger we can keep the 13.48 but when opening up the document i want to see this information.
 
 Adding a budget brings up a drop down menu that appears in the middle of the screen. 
+## Agent findings
+
+<!-- finding:61c3f8eee8040a9b -->
+### #P:/Dev Environment/Git/documents/ID: kind change and Apply details offer no Undo
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/36?tab=history
+- Kind: bug · Severity: medium
+- Steps: 1. Open a receipt's document page. 2. Pick another kind in Receipt kind and press Change kind..., then Read again. 3. Look at the toast and the History tab.
+- Expected: FR-11/FR-12: the kind change (and Apply details) appears in history with Undo, as a field correction's toast does.
+- Actual: Toast 'Read as fuel.' has no Undo; History lists 'Receipt kind: general -> fuel' with no Undo; the user can't undo it from the page (the API can: undo_corrections).
+- Evidence: tests/.tmp/evidence/kind-change-history-no-undo.png
+
+<!-- finding:de00e63a8b71470e -->
+### #/documents/ID: kind change history says Home Manager, not the person
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/36?tab=history
+- Kind: bug · Severity: low
+- Steps: 1. Open a receipt's document page. 2. Change its kind and confirm Read again. 3. Open the History tab.
+- Expected: The correction names the person who changed the kind, like other corrections (record_corrections.actor).
+- Actual: The Receipt kind row's who is 'Home Manager': the correction is written by the background reading, where no actor is set.
+- Evidence: tests/.tmp/evidence/kind-change-history-who.png
+
+<!-- finding:263db311b9774968 -->
+### #/documents/ID: tender kept that the receipt doesn't print
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/37
+- Kind: bug · Severity: medium
+- Steps: 1. Add uploads/grocery-receipt.png (prints no payment line) and let it be read. 2. Open its document page.
+- Expected: FR-04: a tender is kept only when its payment is printed; a tender's type word (gift card, EBT, VISA, cash) must be in its citation, like account_type.
+- Actual: Printed details shows 'Cash 18.24 USD', cited to 'Total USD 18.24'. Only the amount is checked; a gift_card answered the same way would make the receipt count 0.00 (refresh_paid).
+- Evidence: tests/.tmp/evidence/grocery-invented-tender.png
+
+<!-- finding:f0a75f11314255fd -->
+### #/documents/ID: deposit split read from the net pay line passes its own check
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/41
+- Kind: bug · Severity: medium
+- Steps: 1. Add uploads/pay-stub.png (prints no direct deposit) and let it be read. 2. Open its document page: Printed details and Arithmetic checks.
+- Expected: FR-20/FR-21: a deposit split is kept only from a printed deposit line; the splits check never compares net pay with itself.
+- Actual: Direct deposit 2,739.81 USD is stored, cited to 'Net pay 2,739.81' (its account was dropped), and 'Direct deposits 2,739.81 matches the printed 2,739.81' counts as a passed cross-check.
+- Evidence: tests/.tmp/evidence/paystub-invented-deposit.png
+
+<!-- finding:f9fd85ff793e1178 -->
+### #/documents/ID: 401k line amount dropped as multiple amounts
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/41
+- Kind: bug · Severity: medium
+- Steps: 1. Add uploads/pay-stub.png (prints '401k 184.98') and let it be read. 2. Open its document page: From gross pay to net pay.
+- Expected: The 401k line keeps 184.98: the digits in the label '401k' aren't a second amount.
+- Actual: 401k shows no amount, with 'Pay line 2 has multiple amounts without a validated source row' (extraction.anchor_paystub counts 401 as a number). Pre-existing, not from document forms.
+- Evidence: tests/.tmp/evidence/paystub-401k-and-totals.png
+
+<!-- finding:c6b704fd82020a31 -->
+### #/documents/ID: Gross pay and Net pay read as earnings lines
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/41
+- Kind: bug · Severity: low
+- Steps: 1. Add uploads/pay-stub.png and let it be read. 2. Open its document page: From gross pay to net pay, and the why.
+- Expected: Totals (gross pay, net pay) are never pay lines, on the flat-text path too, so earnings equal gross.
+- Actual: Earnings list Gross pay and Net pay as lines; 'Earnings (10,139.37 USD) do not add up to gross pay (3,699.78 USD)' sends it to review. The exclusion only runs for cited table rows. Pre-existing, not from document forms.
+- Evidence: tests/.tmp/evidence/paystub-totals-as-lines.png
+
+<!-- finding:95740f2e301c56cb -->
+### #/documents/ID: failing check's breakdown says it's a bug and hides the printed amount
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/documents/35
+- Kind: bug · Severity: medium
+- Steps: 1. Open a dining receipt's document page. 2. Correct Tip to 1.00 and Save (the check now reads 9.06 doesn't match the printed 8.06). 3. Open the check figure under Arithmetic checks.
+- Expected: FR-19: the breakdown shows the printed amount it is compared with (compared_with) and whether the check passes; reconciles false is a check's outcome, not a bug.
+- Actual: The steps add up to 9.06, but the panel shows 'These steps don't add up to the figure. This is a bug; please report it.' and never shows 8.06: trace.js treats reconciles=false as a bug and ignores compared_with.
+- Evidence: tests/.tmp/evidence/check-breakdown-calls-mismatch-a-bug.png
+
+<!-- finding:1e6bf83b66ff7528 -->
+### #/processing: Scan now right after Watch folder shows a lasting error
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude-validate-document-forms
+- Page: http://127.0.0.1:8775/#/processing
+- Kind: friction · Severity: low
+- Steps: 1. Processing > Watched folders > Watch a folder, add a folder. 2. Press its Scan now at once.
+- Expected: Scan now while the new folder's own first scan runs says it is already scanning, or is disabled until it finishes; no error.
+- Actual: Error toast 'Wait for the current scan before scanning a watched folder.' stays on screen across pages for the rest of the session.
+- Evidence: tests/.tmp/evidence/scan-now-after-watch-error.png
+
+<!-- finding:c82c59a7eae2c950 -->
+### #/documents/ID: one-amount note stays after entering the line's year to date
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude validate-feature paystub-columns
+- Page: http://127.0.0.1:8775/#/documents/46
+- Kind: bug · Severity: medium
+- Steps: 1. Add a photographed pay stub printing DESCRIPTION CURRENT YTD and a one-amount line RELOCATION BONUS 5,000.00. 2. The model reads the bonus as this period; the stub needs review with 'This period: RELOCATION BONUS 5,000.00 USD: pay line 2 prints one amount; check whether it is this period or year to date'. 3. Correct RELOCATION BONUS: Year to date 5000.00, This period left empty, Save.
+- Expected: Answering the note's question (it is year to date) clears the note; with no other notes the stub can be recorded.
+- Actual: Year to date is saved (5,000.00 USD) but the note stays and the stub stays Needs review: the note starts with 'This period: RELOCATION BONUS', and a year-to-date correction only clears notes starting 'Year to date: RELOCATION BONUS'.
+- Evidence: tests/.tmp/evidence/paystub-columns-bonus-note-stays.png
+
+<!-- finding:1b2990d5f27113a7 -->
+### #/documents/ID: pay line with no amounts recorded on a verified stub
+- Date: 2026-10-19 (seed 2026-10-18)
+- Agent: claude validate-feature paystub-columns
+- Page: http://127.0.0.1:8775/#/documents/43
+- Kind: bug · Severity: low
+- Steps: 1. Add a photographed pay stub headed HARBOR TOOLS INC with REGULAR, FEDERAL INCOME TAX and 401K lines, each printing CURRENT and YTD. 2. The model also returns a pay line 'HARBOR TOOLS INC' (employer_paid) citing the employer name line, with no this-period or year-to-date amount. 3. Open the stub.
+- Expected: A pay line with neither amount (citing a line that prints no amount) is left out or sends the stub to review.
+- Actual: The stub is Recorded and verified, and the record lists 'Paid by your employer: HARBOR TOOLS INC' with no amounts.
+- Evidence: tests/.tmp/evidence/paystub-amountless-employer-line.png

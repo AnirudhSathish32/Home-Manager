@@ -41,7 +41,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v23-document-forms"
+EXTRACTION_VERSION = "typed-extraction-v30-pre-tax-deductions"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -130,7 +130,9 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                      "or missing instead of copying YTD. Match values to their printed column headings, even when OCR spacing is imperfect. "
                      "Do not treat annual salary or annualized pay as gross_pay. pay_frequency: the printed pay frequency such as Biweekly or "
                      "Semi-monthly; work_state: the two-letter code of the US state whose income tax is withheld, from the state tax line "
-                     "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals. For each amount, "
+                     "such as GA STATE TAX or GA SIT; gross_pay_ytd and net_pay_ytd: the year-to-date totals; deductions: the printed "
+                     "total of pre-tax deductions this period only, never a total that includes taxes or post-tax deductions "
+                     "(missing when none is printed). For each amount, "
                      "row_label and column_heading are the printed row label and column heading it is read under, each citing the "
                      "line it is printed on; null when none is printed. pto_balance and sick_balance: the printed paid-time-off and "
                      "sick-leave balances as printed, such as 56.00 HRS. deposit_splits: each direct deposit's account last four "
@@ -179,11 +181,15 @@ PAY_VALUES = ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "
 PAY_GUARDED = (("gross_pay", "gross_pay_ytd"), ("net_pay", "net_pay_ytd"), ("taxes", None), ("deductions", None))
 # What each is called where it is corrected (finance/ledger.py CORRECTABLE), so correcting it clears its notes.
 CORRECTION_LABELS = {"gross_pay": "Gross pay", "gross_pay_ytd": "Gross pay year to date", "net_pay": "Net pay",
-                     "net_pay_ytd": "Net pay year to date", "taxes": "Taxes this period", "deductions": "Deductions this period"}
-YEAR_WORDS = re.compile(r"\b(ytd|year[\s-]*to[\s-]*date|annual(?:ly)?|yearly|salary|per\s+year)\b", re.IGNORECASE)
+                     "net_pay_ytd": "Net pay year to date", "taxes": "Taxes this period", "deductions": "Pre-tax deductions this period"}
+# "Salary" alone isn't annual: stubs print this paycheck's pay as "Regular Salary" (docs/money.md "Money in and paystubs").
+YEAR_WORDS = re.compile(r"\b(ytd|year[\s-]*to[\s-]*date|annual(?:ly)?|yearly|per\s+year)\b", re.IGNORECASE)
 # Days in one pay period, by paychecks a year: the first period of a year starts within this many days of January 1.
 PERIOD_DAYS = {52: 7, 26: 14, 24: 15, 12: 31}
-GUARD_RULES = {"a": "reads as year to date or annual", "b": "is larger than its year to date", "c": "equals its year to date mid-year"}
+# A printed total of taxes and deductions together, which is never the pre-tax deductions field.
+DEDUCTIONS_TOTAL = re.compile(r"\btotal\s+(?:employee\s+)?(?:deductions|taxes)\b", re.IGNORECASE)
+PRE_TAX_WORDS = re.compile(r"\bpre[\s-]?tax\b|\bbefore[\s-]+tax\b", re.IGNORECASE)
+GUARD_RULES = {"a":"reads as year to date or annual", "b": "is larger than its year to date", "c": "equals its year to date mid-year"}
 
 
 class Value(StrictModel):
@@ -638,6 +644,139 @@ def paystub_columns(table):
     return (current[0] if current else None, ytd[0] if ytd else None) if current or ytd else None
 
 
+def line_amounts(text):
+    """A line's amounts, left to right, as absolute Decimals (FR-34). Digits joined to letters or opening a lettered
+    parenthesis are part of a label ("401k", "403(b)", "W2"), and an amount joined to letters ("50.00CR") isn't counted
+    either; "(50.00)" and a standalone "125" are amounts (docs/money.md "Money in and paystubs")."""
+    text = text or ""
+    found = []
+    for match in NUMBER.finditer(text):
+        before, after = text[match.start() - 1:match.start()], text[match.end():match.end() + 2]
+        if before.isalpha() or after[:1].isalpha() or re.match(r"\([A-Za-z]", after):
+            continue
+        found.append(Decimal(match.group(0).replace(",", "")))
+    return found
+
+
+COLUMN_WORDS = re.compile(r"\b(?:(?P<current>current|this\s+(?:pay\s+)?period)|(?P<ytd>ytd|year[ -]?to[ -]?date)|(?P<hours>hours?|hrs)|(?P<rate>rate))\b",
+                          re.IGNORECASE)
+COLUMN_NAMES = {"current": "Current", "ytd": "YTD", "hours": "Hours", "rate": "Rate"}
+
+
+def printed_header(line_texts):
+    """(columns, both_named) of a stub read like flat text: a header line prints no amount and names this period and year
+    to date; columns are its column words left to right, or None when header lines disagree or repeat a word."""
+    found = []
+    for text in line_texts:
+        columns = [match.lastgroup for match in COLUMN_WORDS.finditer(text or "")]
+        if "current" in columns and "ytd" in columns and not line_amounts(text):
+            found.append(columns)
+    if not found:
+        return None, False
+    shared = found[0] if all(columns == found[0] for columns in found) and len(set(found[0])) == len(found[0]) else None
+    return shared, True
+
+
+def column_checks(rows, fields, record, lines, line_text, issues):
+    """FR-33 and FR-35 on a stub read like flat text (docs/money.md "Money in and paystubs"): a value printed beside
+    another must sit in its own column's position, and a pay line printing one amount keeps it only as year to date.
+    Notes are added now, each starting with its value's correction label; the returned clears null the values later,
+    after FR-22 has judged the model's values. A value that can't be located in exactly one cited line is skipped."""
+    columns, both_named = printed_header(line_text.values())
+    currency, clears = record["currency"], []
+
+    def located(text, evidence):
+        printed = printed_decimal(text) if text else None
+        ids = list(dict.fromkeys(cite.line_id for cite in evidence))
+        found = [(id, line_amounts(line_text.get(id, ""))) for id in ids]
+        found = [(id, amounts) for id, amounts in found if printed is not None and printed in amounts]
+        return (*found[0], printed) if len(found) == 1 else None
+
+    def misplaced(spot, column):
+        """None when the value sits in column's position, else the column it is printed under."""
+        if spot is None or columns is None or len(spot[1]) != len(columns) or not {"current", "ytd"} <= set(columns):
+            return None
+        _, amounts, printed = spot
+        if amounts[columns.index(column)] == printed:
+            return None
+        return COLUMN_NAMES[columns[amounts.index(printed)]] if printed in amounts else "another column"
+
+    def left_out(label, minor, where, under, ytd):
+        """The note for one cleared value; under is the column it is printed under, when it failed itself."""
+        if ytd:
+            return f"{label} {format_minor(minor, currency)} doesn't match the printed columns ({where}); it was left out. Enter the year-to-date amount with Edit details."
+        return (f"{label} {format_minor(minor, currency)} doesn't match the printed columns ({where}){f': it is printed under {under}' if under else ''}; "
+                "it was left out. Enter this paycheck's amount with Edit details.")
+
+    for index, (row, line) in enumerate(zip(rows, lines), 1):
+        values = {"current": line["current_minor"], "ytd": line["ytd_minor"]}
+        spots = {"current": located(row.current, row.evidence) if values["current"] is not None else None,
+                 "ytd": located(row.ytd, row.evidence) if values["ytd"] is not None else None}
+        wrong = {name: misplaced(spot, name) for name, spot in spots.items()}
+        if any(wrong.values()):  # FR-33: both of the line's values go.
+            cleared = [name for name, minor in values.items() if minor is not None]
+            for name in cleared:
+                where = f"pay line {index}, {spots[name][0] if spots[name] else ', '.join(line['locator']['line_ids'])}"
+                issues.append(left_out(f"{'This period' if name == 'current' else 'Year to date'}: {line['description']}", values[name],
+                                       where, wrong[name], name == "ytd"))
+            marker = {"rule": "position", "line_ids": list(dict.fromkeys(spot[0] for spot in spots.values() if spot)) or line["locator"]["line_ids"],
+                      "value_minor": values["current"], "ytd_minor": values["ytd"]}
+            clears.append(lambda line=line, cleared=cleared, marker=marker: (
+                line.update({f"{name}_minor": None for name in cleared}),
+                line["details"].update({f"{name}_status": "ambiguous" for name in cleared}, column=marker)))
+        elif both_named and spots["current"] and len(spots["current"][1]) == 1:  # FR-35: one amount is year to date only.
+            spot = spots["current"]
+            issues.append(f"This period: {line['description']} {format_minor(values['current'], currency)}: pay line {index} prints one amount; "
+                          f"check whether it is this period or year to date ({spot[0]}). It was left out; enter it with Edit details.")
+            marker = {"rule": "one_amount", "line_ids": [spot[0]], "value_minor": values["current"], "ytd_minor": values["ytd"]}
+            clears.append(lambda line=line, marker=marker: (line.update(current_minor=None),
+                                                            line["details"].update(current_status="ambiguous", column=marker)))
+
+    # FR-33 on summary amounts: a pair fails together; taxes and deductions are this period's only.
+    for names in (("gross_pay", "gross_pay_ytd"), ("net_pay", "net_pay_ytd"), ("taxes",), ("deductions",)):
+        proposed = {name: fields[name] for name in names if fields.get(name) is not None and fields[name].status == "proposed"
+                    and record.get(name + "_minor") is not None}
+        spots = {name: located(field.value, field.evidence) for name, field in proposed.items()}
+        wrong = {name: misplaced(spot, "ytd" if name.endswith("_ytd") else "current") for name, spot in spots.items()}
+        if not any(wrong.values()):
+            continue
+        for name, field in proposed.items():
+            line_ids = [spots[name][0]] if spots[name] else list(dict.fromkeys(cite.line_id for cite in field.evidence))
+            issues.append(left_out(CORRECTION_LABELS[name], record[name + "_minor"], ", ".join(line_ids), wrong[name], name.endswith("_ytd")))
+            marker = {"rule": "position", "line_ids": line_ids, "value_minor": record[name + "_minor"]}
+            clears.append(lambda name=name, marker=marker: (record.update({name + "_minor": None}),
+                                                            record["details"].setdefault("columns", {}).update({name: marker})))
+    return clears
+
+
+PAY_PAIRS = {"gross_pay": "gross_pay_ytd", "gross_pay_ytd": "gross_pay", "net_pay": "net_pay_ytd", "net_pay_ytd": "net_pay"}
+
+
+def same_both_columns(current, ytd, evidence, line_text):
+    """This period and year to date are the same amount, printed at least twice in the cited lines: whichever column
+    the model read it from, the value is right, so a line printing several amounts needn't blank it (a first paycheck)."""
+    printed = printed_decimal(current) if current else None
+    return printed is not None and printed == (printed_decimal(ytd) if ytd else None) and printed_twice(current, evidence, line_text)
+
+
+def cells_total(name, rows, references):
+    """Gross or net pay (name, this period or _ytd) worked out from pay lines whose amounts were all copied from
+    validated cells: earnings, less taxes and deductions for net pay. None when any line didn't come from a cell or
+    lacks that column's amount."""
+    column = "ytd" if name.endswith("_ytd") else "current"
+    if name.removesuffix("_ytd") not in ("gross_pay", "net_pay") or not rows:
+        return None
+    total = Decimal(0)
+    for row, reference in zip(rows, references):
+        if row.group == "employer_paid" or (name.startswith("gross") and row.group != "earnings"):
+            continue
+        amount = printed_decimal(getattr(row, column)) if reference.get(column) else None
+        if amount is None:
+            return None
+        total += amount if row.group == "earnings" else -abs(amount)
+    return total if any(row.group == "earnings" for row in rows) else None
+
+
 def paystub_table_context(tables, part):
     ids = {line.id for line in part}
     context = []
@@ -730,8 +869,26 @@ def cell_labels(table, source, column):
     return (label(source.cells[0]) if column != 0 else None), heading
 
 
+# A pay stub's printed totals row, which may be lettered: "Total Earnings (A)", "Net Payment (A-B)".
+LETTERED = r"(?:\s*\([A-Z](?:\s*-\s*[A-Z])?\))?"
+TOTAL_LABEL = re.compile(r"(?:gross pay|net pay(?:ment)?|total (?:earnings|gross(?: pay)?|pay|taxes|deductions|employee deductions|employer contributions))"
+                         + LETTERED, re.IGNORECASE)
+# The totals row a summary amount is copied from when the stub prints exactly one (docs/money.md "Money in and paystubs").
+TOTAL_ROWS = {"gross_pay": re.compile(r"(?:gross pay|total (?:earnings|gross(?: pay)?))" + LETTERED, re.IGNORECASE),
+              "net_pay": re.compile(r"net pay(?:ment)?" + LETTERED, re.IGNORECASE)}
+PAY_ROLES = {"hours": re.compile(r"\bhours?\b|\bhrs\b", re.IGNORECASE), "rate": re.compile(r"\brate\b", re.IGNORECASE)}
+
+
+def role_column(table, pattern):
+    """The one column whose heading matches pattern (Hours, Rate), or None."""
+    found = [index for index in range(len(table.header_rows[0].cells)) if pattern.search(" ".join(row.cells[index].quote for row in table.header_rows))]
+    return found[0] if len(found) == 1 else None
+
+
 def anchor_paystub(header, rows, tables, notes, source_lines=None):
-    """Copy paystub money from validated cells after the model classifies cited rows."""
+    """Copy paystub money, hours and rates from validated cells after the model classifies cited rows. Gross and net
+    pay come from the stub's own totals row when it prints exactly one, whichever row the model cited: a total equal
+    to its first earning this period would otherwise take that earning's year to date."""
     by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
     line_text = {line.id: line.text for line in source_lines or []}
     references = []
@@ -740,13 +897,33 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
         matches = {cite.line_id for cite in evidence if cite.line_id in by_line}
         return by_line[next(iter(matches))] if len(matches) == 1 else None
 
-    kept = []
+    def totals_row(name):
+        pattern = TOTAL_ROWS.get(name.removesuffix("_ytd"))
+        found = [(table, row) for table in tables for row in table.rows if pattern and row.cells and pattern.fullmatch(row.cells[0].quote.strip())]
+        return found[0] if len(found) == 1 else None
+
+    # One printed row is one pay line. Each part of the text is asked for its pay lines, and a table's heading invites
+    # listing its rows again: a row listed again is left out, as is a line citing nothing that prints an amount, which
+    # needs a note unless a line of the same name has its row (nothing is lost then).
+    def named(item):
+        return " ".join(item.description.lower().split())
+    with_rows = {named(item) for item in rows if cited_row(item.evidence)}
+    kept, used = [], set()
     for item in rows:
         found = cited_row(item.evidence)
-        label = found[1].cells[0].quote.strip() if found else ""
-        if re.fullmatch(r"(?:gross pay|net pay|total (?:earnings|pay|taxes|deductions|employee deductions|employer contributions))", label, re.I):
+        # A totals line outside the table (Gross pay, Net payment (A-B)) is named by the line's own description.
+        label = found[1].cells[0].quote.strip() if found else " ".join(item.description.split())
+        if TOTAL_LABEL.fullmatch(label):
             notes.append("A pay summary total was returned as an individual pay line; it was excluded. Check the breakdown.")
+        elif found and found[1].id in used:
+            continue
+        elif found and not any(line_amounts(cell.quote) for cell in found[1].cells[1:]):
+            continue  # A section heading row such as "Statutory": no amount in any column.
+        elif not found and not any(line_amounts(line_text.get(cite.line_id, cite.quote)) for cite in item.evidence):
+            if named(item) not in with_rows:
+                notes.append(f"{item.description} cites no printed row with an amount; it was left out. Check the breakdown.")
         else:
+            used.update([found[1].id] if found else [])
             kept.append(item)
     rows = kept
 
@@ -769,8 +946,18 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                         reference[name] = native_reference(cell)
                 row_label, heading = cell_labels(table, source, column) if amount is not None else (None, None)
                 item = item.model_copy(update={name: amount, f"{name}_row_label": row_label, f"{name}_column_heading": heading})
+            # Hours and rate as printed in their own columns, cited by their cells, never the model's reading of them.
+            for name, pattern in PAY_ROLES.items():
+                column = role_column(table, pattern) if columns else None
+                if column is not None:
+                    cell = source.cells[column]
+                    numbers = NUMBER.findall(cell.quote)
+                    number = numbers[0] if len(numbers) == 1 else None
+                    cites = [EvidenceQuote(line_id=cell.line_id, quote=cell.quote)] if number else []
+                    item = item.model_copy(update={name: number, "evidence": [*item.evidence, *cites]})
             rows[index - 1] = item
-        elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence):
+        elif (any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence)
+              and not same_both_columns(item.current, item.ytd, item.evidence, line_text)):
             rows[index - 1] = item.model_copy(update={"current": None, "ytd": None})
             notes.append(f"Pay line {index} has multiple amounts without a validated source row; check its columns.")
         references.append(reference)
@@ -781,7 +968,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
         field = getattr(header, name)
         if field.status != "proposed":
             continue
-        found = cited_row(field.evidence)
+        found = totals_row(name) or cited_row(field.evidence)
         if found:
             table, source = found
             columns = paystub_columns(table)
@@ -794,7 +981,12 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                                     if amount is not None else field.evidence, "row_label": row_label, "column_heading": heading})})
             if amount is None:
                 notes.append(f"{name.replace('_', ' ').capitalize()} has no unambiguous {column_name} source cell.")
-        elif any(len(NUMBER.findall(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence):
+        elif any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence):
+            pair = getattr(header, PAY_PAIRS[name]) if name in PAY_PAIRS else None
+            if pair is not None and pair.status == "proposed" and same_both_columns(field.value, pair.value, [*field.evidence, *pair.evidence], line_text):
+                continue
+            if printed_decimal(field.value) is not None and printed_decimal(field.value) == cells_total(name, rows, references):
+                continue  # The table's own cells add up to it: which column it was read from doesn't matter.
             header = header.model_copy(update={name: field.model_copy(update={"value": None, "status": "ambiguous"})})
             notes.append(f"{name.replace('_', ' ').capitalize()} has multiple amounts without a validated source cell.")
     return header, rows, references
@@ -920,14 +1112,30 @@ def amount_supported(value, evidence):
 WRAPPERS = ('"', "'", "“", "”", "‘", "’", "`")
 
 
-def repair_quotes(output, lines):
-    """Some models wrap quotes in quotation marks ("\\"TOTAL $13.52\\""). Remove one wrapping layer
-    only when the inner text is then an exact substring of the cited line; nothing else changes."""
+def loose(text):
+    """Text without spacing or table cell separators ("|"), with each kept character's index in text."""
+    kept = [(char, index) for index, char in enumerate(text) if not char.isspace() and char != "|"]
+    return "".join(char for char, _ in kept), [index for _, index in kept]
+
+
+def repair_quotes(output, lines, cells=None):
+    """Fix how a citation is written, never what it says; the quote is still checked against its line after:
+    - a quote wrapped in quotation marks ("\\"TOTAL $13.52\\"") loses one wrapping layer when the inner text is in the line;
+    - a reported table cell's id cited as the line becomes its row's line (cells: {cell id: line id});
+    - a quote that is in its line once spacing and cell separators are ignored ("Regular Salary 50.00" for the row
+      "Regular Salary | 50.00") becomes the line's exact text there, when it is found in one place only."""
     def fix(cite):
+        if cite.line_id not in lines and cite.line_id in (cells or {}):
+            cite.line_id = cells[cite.line_id]
         text = lines.get(cite.line_id)
         quote = cite.quote.strip()
         if text is not None and cite.quote not in text and len(quote) > 2 and quote[0] in WRAPPERS and quote[-1] in WRAPPERS and quote[1:-1] in text:
             cite.quote = quote[1:-1]
+        if text is not None and cite.quote not in text:
+            wanted, (printed, where) = loose(cite.quote)[0], loose(text)
+            start = printed.find(wanted) if wanted else -1
+            if start >= 0 and printed.find(wanted, start + 1) < 0:
+                cite.quote = text[where[start]:where[start + len(wanted) - 1] + 1]
 
     for name in type(output).model_fields:
         item = getattr(output, name)
@@ -964,7 +1172,9 @@ def problems_in(output, lines, amount_field=None):
     problems = []
 
     def check(path, evidence, amount=None, name=None):
-        if any(cite.line_id not in lines or not cite.quote.strip() or cite.quote not in lines[cite.line_id] for cite in evidence):
+        if any(cite.line_id not in lines for cite in evidence):
+            problems.append((path, "a citation names a line id that isn't in these lines"))
+        elif any(not cite.quote.strip() or cite.quote not in lines[cite.line_id] for cite in evidence):
             problems.append((path, "a citation is not an exact quote of an existing line"))
         elif amount is not None and not amount_supported(amount, evidence):
             problems.append((path, "the amount is not printed in its cited evidence"))
@@ -1025,6 +1235,9 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
     document. Amount and row problems always fail: money is never dropped silently.
     """
     line_map = {line.id: line.text for line in lines}
+    # Each reported table cell's row line, for a model that cites a cell id as the line (repair_quotes).
+    cell_lines = {cell["cell_id"]: row.get("line_id", row["row_id"]) for table in table_context or []
+                  for row in [*table["header_rows"], *table["rows"]] for cell in row["cells"]}
     content = json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in lines],
                           **({"reported_tables": table_context} if table_context else {})}, ensure_ascii=False)
     payload = {"max_tokens": max_tokens, "messages": [{"role": "system", "content": instruction + RULES}, {"role": "user", "content": content}],
@@ -1032,7 +1245,7 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
     for attempt in range(2):
         raw = request_completion(config, payload, work)
         try:
-            output = repair_quotes(schema.model_validate_json(raw), line_map)
+            output = repair_quotes(schema.model_validate_json(raw), line_map, cell_lines)
             problems = problems_in(output, line_map, amount_field)
             if problems and attempt and schema is PayLines and notes is not None and all(
                     path.startswith("lines.") and message == "the amount is not printed in its cited evidence" for path, message in problems):
@@ -1176,10 +1389,11 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None):
+def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
-    when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with."""
+    when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
+    printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -1288,7 +1502,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
     elif kind == "bill":
         bill_lines(record, rows, money, issues, currency, total)
     elif kind == "paystub":
-        paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text)
+        paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
+                      printed_columns)
     elif kind == "investment_statement":
         # The kind (401(k), HSA, CD, …) is told apart only by printed words, never guessed; the user can change it.
         record["investment_kind"] = printed_kind(f"{record.get('account_name') or ''} {record.get('institution') or ''}")
@@ -1804,7 +2019,8 @@ def pay_details(record, rows, lines, fields, money, line_text, issues, currency)
         four = last_four(split.last_four)
         if split.last_four and four is None:
             issues.append(f"{what} account was not an account number and was dropped.")
-        elif four and four not in re.sub(r"\D", "", " ".join(cite.quote for cite in split.evidence)):
+        # Printed in a cited line: the model may quote only the amount from a row that also prints the account.
+        elif four and four not in re.sub(r"\D", "", " ".join(line_text.get(cite.line_id, cite.quote) for cite in split.evidence)):
             issues.append(f"{what} account was not printed where it was cited and was left out.")
             four = None
         elif len(digits) > 4:
@@ -1852,10 +2068,19 @@ def first_pay_period(record):
 def this_period_guards(record, slots, issues):
     """FR-22: a this-period amount is set to null and ambiguous, with a reason naming the rule, both values and the cited
     lines, when (a) its row label, column heading or cited quote reads as year to date or annual, (b) it is larger than
-    its year to date, or (c) it equals its year to date after the year's first pay period. With the period or frequency
-    unknown, equality is kept with a reason instead. It is never filled in with a calculated value. slots: one per
-    amount, {"key", "label", "value", "ytd", "words", "line_ids", "clear"}; returns {key: guard result}."""
+    its year to date, or (c) every this-period amount on the stub equals its year to date after the year's first pay
+    period: year to date copied into this period throughout. Some equal amounts alone are kept, since a pay line or
+    benefit can start mid-year (amended 2026-10-19). An amount the stub itself prints twice in its cited lines (once
+    per column or section) is kept: a new job's first paycheck mid-year; so is every amount when all pay lines are
+    printed that way. With the period or frequency unknown, all-equal
+    amounts are kept with a reason instead. It is never filled in with a calculated value. slots: one per amount,
+    {"key", "label", "value", "ytd", "words", "line_ids", "clear", "printed_twice"}; returns {key: guard result}."""
     first, currency, fired = first_pay_period(record), record["currency"], {}
+    compared = [slot for slot in slots if slot["value"] is not None and slot["ytd"] is not None]
+    # Pay lines that print the same amount in both columns show a first paycheck: the totals' equality follows from them.
+    lines_shown = any("line" in slot for slot in compared) and all(slot.get("printed_twice") for slot in compared if "line" in slot)
+    all_equal = (bool(compared) and all(slot["value"] != 0 and abs(slot["value"]) == abs(slot["ytd"]) for slot in compared)
+                 and not all(slot.get("printed_twice") for slot in compared) and not lines_shown)
 
     def shown(minor):
         return format_minor(minor, currency) if currency else str(minor)
@@ -1864,7 +2089,7 @@ def this_period_guards(record, slots, issues):
         if value is None:
             continue
         lines = ", ".join(slot["line_ids"])
-        equal = ytd is not None and value != 0 and abs(value) == abs(ytd)
+        equal = all_equal and ytd is not None and not slot.get("printed_twice")
         rule = ("a" if any(YEAR_WORDS.search(text or "") for text in slot["words"]) else
                 "b" if ytd is not None and abs(value) > abs(ytd) else
                 "c" if equal and first is False else None)
@@ -1875,11 +2100,23 @@ def this_period_guards(record, slots, issues):
         if rule is None:
             continue
         slot["clear"]()
-        compared = (f" (its year to date is {shown(ytd)})" if ytd is not None else "") if rule == "a" else f" {shown(ytd)}"
-        issues.append(f"{slot['label']} {shown(value)} {GUARD_RULES[rule].replace(' mid-year', '')}{compared}"
+        compared_text = (f" (its year to date is {shown(ytd)})" if ytd is not None else "") if rule == "a" else f" {shown(ytd)}"
+        issues.append(f"{slot['label']} {shown(value)} {GUARD_RULES[rule].replace(' mid-year', '')}{compared_text}"
                       f"{' mid-year' if rule == 'c' else ''} ({lines}); it was left out. Enter this paycheck's amount with Edit details.")
         fired[slot["key"]] = {"rule": rule, "value_minor": value, "ytd_minor": ytd, "line_ids": slot["line_ids"]}
     return fired
+
+
+def printed_twice(text, evidence, line_text):
+    """True when the amount is printed at least twice across its cited lines: this period and year to date both on the
+    stub, not year to date copied into this period (FR-22 c)."""
+    printed = printed_decimal(text) if text else None
+    if printed is None:
+        return False
+    texts = {}
+    for cite in evidence:
+        texts.setdefault(cite.line_id, line_text.get(cite.line_id, cite.quote))
+    return sum(line_amounts(text).count(abs(printed)) for text in texts.values()) >= 2
 
 
 def quotes_of(text, evidence):
@@ -1888,11 +2125,12 @@ def quotes_of(text, evidence):
     return [cite.quote for cite in evidence if printed is not None and printed in decimals_in(cite.quote)]
 
 
-def paystub_lines(record, rows, money, issues, currency, total, fields=None, line_text=None):
+def paystub_lines(record, rows, money, issues, currency, total, fields=None, line_text=None, printed_columns=False):
     """A pay stub's lines, how often it is paid and where tax is withheld, and its arithmetic checks: earnings add up
     to gross pay, and gross pay less pre-tax deductions, taxes and post-tax deductions is net pay (employer-paid
     amounts are shown but never deducted). The same checks run on the year-to-date column when every line has one.
-    Before them, this period's amounts are guarded against year-to-date and annual figures (this_period_guards)."""
+    Before them, this period's amounts are guarded against year-to-date and annual figures (this_period_guards), and
+    on a stub read like flat text (printed_columns) against the printed columns (column_checks)."""
     record["pay_frequency"] = pay_frequency(record.pop("pay_frequency", None), record.get("period_start"), record.get("period_end"))
     state = (record.pop("work_state", None) or "").strip().upper()
     record["work_state"] = state if state in US_STATES else None
@@ -1907,6 +2145,15 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
         lines.append({"description": " ".join(row.description.split())[:200], "line_group": row.group, "category": row.category,
                       "current_minor": values[0], "ytd_minor": values[1], "locator": locator(row.evidence)})
     record["lines"] = lines
+    # Pre-tax deductions this period is never a total that includes taxes (docs/taxes.md "Jobs and pay stubs"): left
+    # empty, so the page works it out from the pre-tax lines.
+    field = fields.get("deductions")
+    if record.get("deductions_minor") is not None and field is not None:
+        texts = [line_text.get(cite.line_id, cite.quote) for cite in field.evidence] + [getattr(field.row_label, "text", None) or ""]
+        taken = [line["current_minor"] for line in lines if line["line_group"] in ("tax", "pre_tax", "post_tax")]
+        if (any(DEDUCTIONS_TOTAL.search(text) and not PRE_TAX_WORDS.search(text) for text in texts)
+                or (any(line["line_group"] == "tax" for line in lines) and None not in taken and abs(record["deductions_minor"]) == sum(taken))):
+            record["deductions_minor"] = None
     # The printed row label and column heading of every pay amount (FR-20), then the FR-22 guards on this period's.
     labels, slots = {}, []
     for name in PAY_VALUES:
@@ -1922,11 +2169,13 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
         if field is None or field.status != "proposed":
             continue
         ytd_field = fields.get(ytd_name) if ytd_name else None
+        ytd_evidence = ytd_field.evidence if ytd_field and ytd_field.status == "proposed" else []
         found = labels.get(name, {})
         slots.append({"key": name, "label": CORRECTION_LABELS[name], "value": record.get(name + "_minor"),
                       "ytd": record.get(ytd_name + "_minor") if ytd_name else None,
                       "words": [*(item["text"] for item in found.values() if item), *(cite.quote for cite in field.evidence)],
-                      "line_ids": list(dict.fromkeys(cite.line_id for cite in [*field.evidence, *(ytd_field.evidence if ytd_field and ytd_field.status == "proposed" else [])])),
+                      "line_ids": list(dict.fromkeys(cite.line_id for cite in [*field.evidence, *ytd_evidence])),
+                      "printed_twice": printed_twice(field.value, [*field.evidence, *ytd_evidence], line_text),
                       "clear": lambda name=name: record.update({name + "_minor": None})})
     for row, line in zip(rows, lines):
         details = {}
@@ -1937,14 +2186,19 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
         line["details"] = {key: item for key, item in details.items() if item}
         slots.append({"key": f"line:{len(slots)}", "label": f"This period: {line['description']}", "value": line["current_minor"], "ytd": line["ytd_minor"],
                       "words": [*(item["text"] for key, item in line["details"].items() if key.startswith("current_")), *quotes_of(row.current, row.evidence)],
-                      "line_ids": locator(row.evidence)["line_ids"], "clear": lambda line=line: line.update(current_minor=None), "line": line})
+                      "line_ids": locator(row.evidence)["line_ids"], "printed_twice": printed_twice(row.current, row.evidence, line_text),
+                      "clear": lambda line=line: line.update(current_minor=None), "line": line})
     by_key = {slot["key"]: slot for slot in slots}
+    # Decided on the model's values before FR-22 judges them, applied after (FR-33 and FR-35).
+    clears = column_checks(rows, fields, record, lines, line_text, issues) if printed_columns else []
     guards = this_period_guards(record, slots, issues)
     for key, result in guards.items():
         if "line" in by_key[key]:
             by_key[key]["line"]["details"].update(current_status="ambiguous", guard=result)
     record["details"] = {key: value for key, value in (("labels", labels), ("guards", {key: value for key, value in guards.items() if "line" not in by_key[key]}))
                          if value}
+    for clear in clears:
+        clear()
     pay_details(record, rows, lines, fields, money, line_text, issues, currency)
     if not lines:  # Only the printed totals: taxes and deductions against gross and net.
         net = total([record["gross_pay_minor"], -(record["taxes_minor"] or 0), -(record["deductions_minor"] or 0)])
@@ -2336,7 +2590,7 @@ class ExtractionService:
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
-                receipt_kind=None, kind_change=False):
+                receipt_kind=None, kind_change=False, printed_columns=False):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -2351,7 +2605,8 @@ class ExtractionService:
             return record, None
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
-        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes, receipt_kind=receipt_kind)
+        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes, receipt_kind=receipt_kind,
+                                   printed_columns=printed_columns)
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
@@ -2509,10 +2764,10 @@ class ExtractionService:
         tables = reported_tables(evidence)
         classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
         cell_references, summary_references = [], {}
-        has_table_contract = getattr(evidence, "vision_tables", None) is not None or any(
-            getattr(page, "vision_tables", None) is not None or getattr(page, "layout", None) is not None
-            for page in getattr(evidence, "pages", []))
-        if classification.document_type == "paystub" and has_table_contract:
+        # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
+        # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
+        printed_columns = classification.document_type == "paystub" and not tables
+        if classification.document_type == "paystub" and tables:
             header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines)
             by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
             for name in ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions"):
@@ -2545,8 +2800,11 @@ class ExtractionService:
                     notes.append("Several extracted records cite the same native table row; check for duplicate records.")
                     break
                 used.update(ids)
+            # A section label row ("Statutory", "Voluntary") prints no amount, and a pay stub's printed totals row (Total
+            # Deductions) is checked against its lines, not recorded; neither needs a record of its own.
             omitted = [row.line_id for table in tables if getattr(table, "source", None) == "pdf_text"
-                       for row in table.rows if row.line_id in supplied and row.line_id not in cited]
+                       for row in table.rows if row.line_id in supplied and row.line_id not in cited and any(cell_amount(cell) for cell in row.cells)
+                       and not (classification.document_type == "paystub" and row.cells and TOTAL_LABEL.fullmatch(row.cells[0].quote.strip()))]
             if omitted:
                 notes.append(f"{len(omitted)} native table row(s) were not accounted for in the extracted fields; review the source tables.")
         description = category = recurrence = item_categories = rewards = checks = None
@@ -2572,7 +2830,7 @@ class ExtractionService:
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
-                "cell_references": cell_references, "summary_references": summary_references}
+                "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns}
 
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
@@ -2602,7 +2860,8 @@ class ExtractionService:
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
                                                              reading.get("cell_references"), reading.get("summary_references"),
-                                                             reading.get("receipt_kind"), reading.get("kind_change", False))
+                                                             reading.get("receipt_kind"), reading.get("kind_change", False),
+                                                             reading.get("printed_columns", False))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------

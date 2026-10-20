@@ -153,7 +153,7 @@ CORRECTABLE = {
                       "gross_pay_ytd": ("gross_pay_ytd_minor", "money", "Gross pay year to date"),
                       "net_pay_ytd": ("net_pay_ytd_minor", "money", "Net pay year to date"),
                       "taxes": ("taxes_minor", "money", "Taxes this period"),
-                      "deductions": ("deductions_minor", "money", "Deductions this period")},
+                      "deductions": ("deductions_minor", "money", "Pre-tax deductions this period")},
     "statement": {"period_start": ("period_start", "date", "Period start"), "period_end": ("period_end", "date", "Period end"),
                   "issue_date": ("issue_date", "date", "Issue date"), "due_date": ("due_date", "date", "Due date"),
                   "opening_balance": ("opening_balance_minor", "money", "Opening balance"),
@@ -1263,6 +1263,21 @@ class Ledger:
                               if key.endswith("_minor") and isinstance(amount, int)}
         if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).
             value["breakdown"] = paystub.with_display(paystub.breakdown(value, value["lines"]), value["currency"])
+            # Taxes and deductions the stub doesn't print as totals are shown from the breakdown's subtotals; the record keeps
+            # them empty, so a correction or a reading that finds a printed total still wins.
+            subtotals = {group["group"]: group["current_minor"] for group in value["breakdown"]["groups"]}
+            value["worked_out"] = []
+            for field, groups in (("taxes_minor", ("tax",)), ("deductions_minor", ("pre_tax",))):
+                present = [subtotals[group] for group in groups if group in subtotals]
+                if value[field] is None and present and None not in present:
+                    value["display"][field] = format_minor(sum(present), value["currency"])
+                    value["worked_out"].append(field)
+            # Shown only, never stored: everything taken from gross pay (taxes and all deductions).
+            for field, groups in (("total_deductions_minor", ("tax", "pre_tax", "post_tax")),):
+                present = [subtotals[group] for group in groups if group in subtotals]
+                if present and None not in present:
+                    value["display"][field] = format_minor(sum(present), value["currency"])
+                    value["worked_out"].append(field)
         value["evidence"] = self.evidence(record_type, record_id)
         value["review_history"] = self.review_history(record_type, record_id)
         return value

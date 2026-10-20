@@ -42,7 +42,8 @@ const RECORD_FIELDS = {
   income_record: [["Employer", "merchant"], ["Pay date", "pay_date"], ["Pay period", "period_start", "period_end"], ["Paid", "pay_frequency"],
                   ["Work state", "work_state"], ["Gross pay this period", "gross_pay_minor"], ["Net pay this period", "net_pay_minor"],
                   ["Gross pay year to date", "gross_pay_ytd_minor"], ["Net pay year to date", "net_pay_ytd_minor"],
-                  ["Taxes this period", "taxes_minor"], ["Deductions this period", "deductions_minor"]],
+                  ["Taxes this period", "taxes_minor"], ["Pre-tax deductions this period", "deductions_minor"],
+                  ["Total deductions this period", "total_deductions_minor"]],
 };
 const PAY_FREQUENCIES = {52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"};
 const DOCUMENT_KIND_LABELS = {receipt: "Purchase", bill: "Bill"};

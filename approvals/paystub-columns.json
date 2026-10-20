@@ -1,0 +1,14 @@
+{
+  "feature": "paystub-columns",
+  "spec": {
+    "sha256": "52016f01e73580fb41013e6fb4acef4ef6152ee6c5c077562fb69541f352c5f8",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-19T00:42:29-04:00"
+  },
+  "plan": {
+    "sha256": "0d52944facb86f99ee0c9a2116332a7d86cf45dff6e9beb8c38efc77296e569f",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-19T01:23:45-04:00",
+    "spec_sha256": "52016f01e73580fb41013e6fb4acef4ef6152ee6c5c077562fb69541f352c5f8"
+  }
+}

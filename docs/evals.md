@@ -51,7 +51,12 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 right (and how many were invented). `document_forms` reports the same per document type and pay stub layout, and per pay
 stub fixture the **wrong-column values that would count automatically** (a this-period amount equal to its year to
 date on a stub with no review reason); its target is 0, the only threshold set for these tasks (the rest are reported
-only). Both read the documents through the app's own extraction and checks. Run with
+only). Its `p_photo` fixtures print this period beside year to date with no table, plus measured variants: two rows on
+one line, a "SECTION 125" label with two amounts and with one, and each column's amount on its own transcribed line.
+They are read with the column checks on (docs/money.md "Money in and paystubs"). For these fixtures the report adds
+**Kept** and **Blanked**, the printed values kept and left out ("–" for other fixtures). There, a kept value equal to its
+row's other column also counts as wrong column. This measures the rule itself, not which stubs the app sends to it.
+Both read the documents through the app's own extraction and checks. Run with
 `python -m evals.tasks --tasks receipt_kinds,document_forms --config evals/models.toml`.
 
 For paystubs with validated reported tables, extraction asks the reasoning model to classify rows and code copies

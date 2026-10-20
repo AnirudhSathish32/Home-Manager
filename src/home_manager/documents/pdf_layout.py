@@ -368,37 +368,90 @@ def reconstruct(characters, matrix, number, issues):
     lines, blocks, tables = [], [], []
     word_boxes = {word.id: visual_box(matrix, word.bbox) for word in words}
 
+    amount = re.compile(r"[$€£(+\-]*[\d.,]*\d[\d.,]*%?\)?")
+    numeric = lambda group: bool(re.fullmatch(r"[\s\d.,+\-()%$€£/]+", " ".join(w.text for w in group)))
+    textual = lambda group: bool(group) and not numeric(group) and any(char.isalpha() for word in group for char in word.text)
+
     def segments(row):
+        """Cells of a row: words closer than 1.5 font sizes, except that an amount never shares a cell with the amount
+        or label after it (a payroll site packs This period and YTD, and a payslip's Earnings and Deductions side by
+        side, tightly; docs/documents.md "PDFs"). A currency code after an amount stays with it."""
         groups = []
         for word in row:
-            if not groups or word_boxes[word.id][0] - word_boxes[groups[-1][-1].id][2] > size*1.5:
+            previous = groups[-1][-1].text if groups else ""
+            if not groups or word_boxes[word.id][0] - word_boxes[groups[-1][-1].id][2] > size*1.5 or amount.fullmatch(previous) and (
+                    amount.fullmatch(word.text) or re.match(r"[A-Za-z]{2}", word.text) and not re.fullmatch(r"[A-Z]{3}", word.text)):
                 groups.append([])
             groups[-1].append(word)
         return groups
+
+    def split_headings(header, body):
+        """A heading that ran into the next ("Rate Hours", "this period year to date") is split where the cells below
+        it fall into separate columns: overlapping cells form one column, and a heading word belongs to the column it
+        sits over most. Between the last word over one column and the first over the next, the heading splits at the
+        widest gap, so a word over no column's cells ("Year" above short amounts) goes with the words beside it.
+        Right-aligned amounts may reach past their heading, so the gap between headings alone doesn't decide."""
+        spans = [(word_boxes[group[0].id][0], word_boxes[group[-1].id][2]) for row in body for group in row]
+        result = []
+        for group in header:
+            start, end = word_boxes[group[0].id][0], word_boxes[group[-1].id][2]
+            columns: list[list[float]] = []
+            for left, right in sorted(span for span in spans if span[0] < end and span[1] > start):
+                if columns and left <= columns[-1][1]:
+                    columns[-1][1] = max(columns[-1][1], right)
+                else:
+                    columns.append([left, right])
+
+            def column_of(word, columns=columns):
+                left, right = word_boxes[word.id][0], word_boxes[word.id][2]
+                overlap, index = max((min(right, column[1]) - max(left, column[0]), index) for index, column in enumerate(columns))
+                return index if overlap > 0 else None
+            owners = [column_of(word) for word in group] if len(columns) > 1 else []
+            placed = [index for index, owner in enumerate(owners) if owner is not None]
+            # Each split falls between two words; between words over different columns, at the widest gap.
+            cuts = {max(range(first + 1, second + 1), key=lambda at: word_boxes[group[at].id][0] - word_boxes[group[at-1].id][2])
+                    for first, second in zip(placed, placed[1:]) if owners[first] != owners[second]}
+            result.append([group[0]])
+            for at, word in enumerate(group[1:], 1):
+                if at in cuts:
+                    result.append([])
+                result[-1].append(word)
+        return result
 
     def table_grid(region):
         """Require a printed textual header and repeated numeric body alignment.
         Headerless, spanning and wrapped candidates stay text with a review issue.
         """
         groups = [segments(row) for row in region]
+        groups[0] = split_headings(groups[0], groups[1:])
         header = groups[0]
-        if len(region) < 3 or not 2 <= len(header) <= 40:
+        # One body row is enough when it prints two amounts or more (a benefits table's single Co Match 401K row).
+        if not 2 <= len(header) <= 40 or len(region) < 2 or len(region) == 2 and sum(map(numeric, groups[1])) < 2:
             return None
-        numeric = lambda group: bool(re.fullmatch(r"[\s\d.,+\-()%$€£/]+", " ".join(w.text for w in group)))
+        # A body row prints an amount and a label, or is a section label alone ("Statutory", "Voluntary") with amount
+        # rows after it; a footer line after the last amount row isn't part of the table.
+        body = groups[1:]
+        priced = [any(numeric(group) for group in row) for row in body]
         if any(numeric(group) for group in header) or any(
-            not any(numeric(group) for group in row) or not any(any(char.isalpha() for word in group for char in word.text) for group in row)
-            for row in groups[1:]
+            not (len(row) == 1 and textual(row[0]) and any(priced[index+1:])) and (
+                not priced[index] or not any(any(char.isalpha() for word in group for char in word.text) for group in row))
+            for index, row in enumerate(body)
         ):
             return None
         starts = [word_boxes[group[0].id][0] for group in header]
         ends = [word_boxes[group[-1].id][2] for group in header]
         bands = [-math.inf] + [(ends[i]+starts[i+1])/2 for i in range(len(header)-1)] + [math.inf]
+        last = len(header) - 1
         grid = []
         for groups_row in groups:
             cells = [[] for _ in header]
             for group in groups_row:
                 left, right = word_boxes[group[0].id][0], word_boxes[group[-1].id][2]
                 candidates = [i for i in range(len(header)) if left >= bands[i]-size*0.2 and right <= bands[i+1]+size*0.2]
+                # A label wider than its heading runs right, a wide amount left: it starts or ends in one column's
+                # band and stays clear of the neighbouring headings.
+                candidates = candidates or [i for i in range(len(header)) if (bands[i]-size*0.2 <= left < bands[i+1] or bands[i] < right <= bands[i+1]+size*0.2)
+                                            and (i == 0 or left > ends[i-1]) and (i == last or right < starts[i+1])]
                 if len(candidates) != 1 or cells[candidates[0]]:
                     return None
                 cells[candidates[0]] = group
@@ -407,6 +460,14 @@ def reconstruct(characters, matrix, number, issues):
         if any(sum(bool(row[c]) for row in grid[1:]) < 1 for c in range(len(header))):
             return None
         return grid
+
+    def side_table(grid):
+        """The column where a second table sharing the rows starts: a label column after the first, with amount columns
+        both before and after it. None when the first column isn't labels (a statement's Date | Description)."""
+        body, width = grid[1:], len(grid[0])
+        labels = lambda c: any(row[c] for row in body) and all(textual(row[c]) for row in body if row[c])
+        amounts = lambda columns: any(numeric(row[c]) for c in columns for row in body)
+        return next((c for c in range(2, width) if labels(0) and labels(c) and amounts(range(1, c)) and amounts(range(c+1, width))), None)
 
     def add_line(row):
         line = PDFLayoutLine(id=f"{prefix}line-{len(lines)+1}", word_ids=[w.id for w in row],
@@ -420,14 +481,21 @@ def reconstruct(characters, matrix, number, issues):
         # Persistent whitespace separates columns/side-by-side tables. Only cut
         # a table when both sides are independently supported tables.
         grid = table_grid(region)
+        # Two tables sharing rows (a payslip's Earnings beside its Deductions): each is read on its own.
+        second = side_table(grid) if grid and depth < 12 else None
+        if second is not None:
+            cut = min(word_boxes[row[second][0].id][0] for row in grid if row[second])
+            emit([row for row in ([w for w in row if word_boxes[w.id][2] < cut] for row in region) if row], depth+1)
+            emit([row for row in ([w for w in row if word_boxes[w.id][0] >= cut] for row in region) if row], depth+1)
+            return
         # Isolate a supported table before a page-wide gutter can split its
         # title and footnote from the numeric columns.
         if grid is None and depth < 12 and len(region) > 3:
             for start in range(len(region)-2):
                 stop = start+3
                 if table_grid(region[start:stop]) is not None:
-                    while stop < len(region) and stop-start < 500 and table_grid(region[start:stop+1]) is not None:
-                        stop += 1
+                    # The longest table from here: a section label row only fits once the amount rows after it do.
+                    stop = max(end for end in range(stop, min(len(region), start+500)+1) if table_grid(region[start:end]) is not None)
                     if start or stop < len(region):
                         emit(region[:start], depth+1)
                         emit(region[start:stop], depth+1)
@@ -475,6 +543,25 @@ def reconstruct(characters, matrix, number, issues):
         if not regions or min(word_boxes[w.id][1] for w in row) - max(word_boxes[w.id][3] for w in regions[-1][-1]) > size*1.8:
             regions.append([])
         regions[-1].append(row)
+    # Rows after a blank stretch continue the table above them when they line up with its columns: a section after a
+    # blank row, or the totals at the foot of a mostly empty box (Total Earnings, Net Pay). Each row prints two amounts
+    # or more, or is a section label alone, and one prints amounts, so a lone figure (a Net Pay box) never takes a column
+    # it may not belong to.
+    def continues(region):
+        counts = [sum(bool(amount.fullmatch(word.text)) for word in row) for row in region]
+        return any(counts) and all(count >= 2 or count == 0 and len(segments(row)) == 1 for count, row in zip(counts, region))
+
+    def table_at_end(region):
+        """Where the table ending this region starts (a details box can sit right above its heading row), or None."""
+        return next((start for start in range(len(region) - 1) if table_grid(region[start:])), None)
+
+    merged = []
     for region in regions:
+        start = table_at_end(merged[-1]) if merged and continues(region) else None
+        if start is not None and table_grid(merged[-1][start:] + region):
+            merged[-1] = merged[-1] + region
+        else:
+            merged.append(region)
+    for region in merged:
         emit(region)
     return words, lines, blocks, tables
