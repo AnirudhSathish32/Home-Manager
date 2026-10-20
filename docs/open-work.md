@@ -170,3 +170,10 @@ These are left over from the 2026-09-30 audit ([development](development.md#data
 - **`library_query()`** is one 70-line SQL string with about 30 correlated subqueries. It was left alone on purpose;
   revisit only if the library page gets slow with real data.
 - **Run `scripts/db_checks.py` on your live data** yourself, and paste the output redacted as you like.
+
+## Tests
+
+- **`test_receipt_kinds.py::test_sc18_a_kind_change_waits_for_a_reading_of_the_same_document` fails now and then**
+  (found 2026-10-20 while building bill kinds): it counted 8 model requests instead of 7 in a broad run, then passed
+  alone. It likely counts requests as soon as the run reports `running`, before the held request reaches the stub;
+  wait for the stub to receive it before counting.

@@ -43,7 +43,7 @@ slices:
       - "pytest test_traces test_recurring_bills test_bills_ledger -> 32 passed, 1 skipped (opt-in browser test) (orchestrator)"
       - "pytest tests/test_receipt_kinds.py -> 43 passed (orchestrator; worker saw sc18 fail once in a broad run)"
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
-    notes: "Escalations awaiting user decision: (1) added reconcile.usual_payments + traces.bill_expected rule (prorated rent bills left out of expected-amount average), outside the plan's file list; (2) test_receipt_kinds sc18 intermittent request-count race (8 vs 7), not changed."
+    notes: "Escalations awaiting user decision: (1) added reconcile.usual_payments + traces.bill_expected rule (prorated rent bills left out of expected-amount average), outside the plan's file list; (2) test_receipt_kinds sc18 intermittent request-count race (8 vs 7), not changed. User decisions 2026-10-20: (1) accepted; (2) noted in docs/open-work.md \"Tests\". Paused here by the user; next is SL-05."
   - id: SL-05
     status: todo
     commit: null
