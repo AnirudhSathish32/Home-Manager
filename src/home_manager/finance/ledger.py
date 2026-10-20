@@ -1187,8 +1187,11 @@ class Ledger:
                     item["correctable"] = [{"field": "price", "label": "Price", "kind": "receipt_money",
                                             "value": money(abs(item["line_total_minor"]), row["currency"])["decimal"] if item["line_total_minor"] is not None else None}]
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
-                        item["correctable"] += [{"field": "line_kind", "label": "Type", "kind": "choice", "value": item["line_kind"], "options": list(LINE_KINDS)},
-                                                {"field": "member_id", "label": "Person", "kind": "member", "value": item["member_id"]}]
+                        # A rent bill's line takes a rent type (specs/bill-kinds FR-45), which sets its line kind.
+                        kind = ({"field": "line_type", "label": "Type", "kind": "choice", "value": item["line_type"], "options": list(RENT_LINE_TYPES)}
+                                if row["bill_kind"] == "rent" else
+                                {"field": "line_kind", "label": "Type", "kind": "choice", "value": item["line_kind"], "options": list(LINE_KINDS)})
+                        item["correctable"] += [kind, {"field": "member_id", "label": "Person", "kind": "member", "value": item["member_id"]}]
                 if bill:
                     # Subscription lines inside a bill aren't recurring payments of their own; the Bills page lists them under it.
                     value["includes"] = [item["description"] for item in value["items"] if item["line_kind"] == "subscription" and item["review_status"] != "rejected"]
@@ -1273,6 +1276,7 @@ class Ledger:
                             if tender.get("tender_type") == "gift_card" and tender.get("minor"))
                 value["paid_summary"] = {"total": value.get("printed_total"), "gift_cards": money(-gifts, row["currency"]), "paid": paid["figure"],
                                          "counted": row["total_minor"] == paid["figure"]["minor"]} if paid else None
+                value["bill_summary"] = self.bill_summary(db, row, value["items"], value["checks"], value.get("issues") or [])
         # Source lines per row, so every item or transaction can be found in the transcription.
         for key, kind in (("items", "receipt_item"), ("transactions", "transaction")):
             for row in value.get(key, [])[:500]:
@@ -1685,6 +1689,44 @@ class Ledger:
         self.add_evidence(db, record_type, record_id, {"document_id": row["document_id"], "blob_hash": row["blob_hash"],
                                                        "source_key": f"user:correction:{ids[-1]}"}, {"entered_by_user": sorted(changes)})
         return ids
+
+    def bill_summary(self, db, row, items, checks, issues):
+        """A kinded bill's rows under its lines (specs/bill-kinds FR-50): the printed previous balance and payments, then
+        what's left between those rows and the amount due, then the amount due. The left-over is the Earlier balance
+        when nothing carried is printed and the lines add up to the printed new charges; otherwise it is Not accounted
+        for, with the failing check's reason. None for invoices and bills read before kinds (plan P7)."""
+        if row["document_kind"] != "bill" or not row["bill_kind"] or row["invoice_json"]:
+            return None
+        from .document_traces import provenance, reading
+        currency, details = row["currency"], self.current_details(row)
+        shown = lambda minor: money(minor, currency)  # noqa: E731
+        carried = []
+        for name, label, sign in (("previous_balance", "Previous balance", 1), ("payments_received", "Payment received", -1)):
+            detail = details.get(name) or {}
+            if detail.get("minor") is not None:
+                carried.append({"label": label, **shown(sign * abs(detail["minor"]) if sign < 0 else detail["minor"]), "field": f"detail:{name}",
+                                "line_ids": (detail.get("locator") or {}).get("line_ids", [])})
+        due = row["amount_due_minor"]
+        source = provenance(db, "receipt", row, "amount_due", result=reading(db, row))
+        summary = {"carried": carried, "earlier_balance": None, "gap": None,
+                   "amount_due": {**(shown(due) if due is not None else {"minor": None, "display": None}), "line_ids": source.get("line_ids", [])}}
+        amounts = [item["line_total_minor"] for item in items if item["review_status"] != "rejected"]
+        if due is None or any(amount is None for amount in amounts):
+            return summary
+        remainder = due - sum(amounts) - sum(item["minor"] for item in carried)
+        if not remainder:
+            return summary
+        lines = next((check for check in checks if check["name"] == "lines"), None)
+        new = (details.get("new_charges") or {}).get("minor")
+        if not carried and new is not None and lines and lines["passes"]:
+            summary["earlier_balance"] = shown(remainder)
+            return summary
+        failed = [check["name"] for check in checks if not check["passes"]]
+        prefixes = (("Amount due: previous balance",) if "carried" in failed else ()) + ("Amount due: the lines", "New charges: the lines", "Amount due:")
+        reason = next((issue for prefix in prefixes for issue in issues if issue.startswith(prefix)),
+                      f"The rows above add up to {format_minor(due - remainder, currency)}, but the amount due is {format_minor(due, currency)}.")
+        summary["gap"] = {**shown(remainder), "reason": reason}
+        return summary
 
     @staticmethod
     def bill_counts_on_due_date(db, receipt_id):

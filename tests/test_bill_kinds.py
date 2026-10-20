@@ -1309,3 +1309,79 @@ def test_sc43_step_5_a_rent_type_does_nothing_on_a_bill_read_again_as_general(tm
         assert change_kind(client, manager, receipt_id, "general").status_code == 202
         assert bill_row(manager, receipt_id)["bill_kind"] == "general"
         assert line_types(manager, receipt_id) == [("Rent", None, "device"), ("Water Usage", None, "usage")]
+
+
+# The page's rows under a kinded bill's lines (Ledger.bill_summary; FR-50, SC-46 2/4, SC-46e b, SC-50) -----------------
+
+def summary_rows(record):
+    """The summary as the page shows it: (label, minor) for each row, then the left-over's kind and the amount due."""
+    summary = record["bill_summary"]
+    rows = [(item["label"], item["minor"]) for item in summary["carried"]]
+    if summary["earlier_balance"]:
+        rows.append(("Earlier balance", summary["earlier_balance"]["minor"]))
+    if summary["gap"]:
+        rows.append(("Not accounted for", summary["gap"]["minor"]))
+    return [*rows, ("Amount due", summary["amount_due"]["minor"])]
+
+
+def test_summary_a_rent_bill_adds_up_to_its_amount_due(tmp_path, local_model):
+    with read_bill(tmp_path, local_model, RENT, rent_replies()) as (_manager, _run, record, _row):
+        assert summary_rows(record) == [("Amount due", 148842)]
+        assert record["bill_summary"]["amount_due"]["line_ids"] == [f"line-{AMOUNT_LINE}"]
+        assert record["bill_summary"]["amount_due"]["display"] == "1,488.42 USD"
+        # A rent line's Type is its rent type (FR-51).
+        types = [next(item for item in line["correctable"] if item["label"] == "Type") for line in record["items"]]
+        assert [(item["field"], item["value"]) for item in types] == [("line_type", "rent"), ("line_type", "utility")]
+        assert types[0]["options"] == ["rent", "parking", "pet", "utility", "fee", "credit", "other"]
+
+
+@pytest.mark.parametrize("due, rows", [
+    ("1,488.42", [("Previous balance", 10000), ("Payment received", -10000), ("Amount due", 148842)]),
+    ("1,588.42", [("Previous balance", 10000), ("Payment received", -10000), ("Not accounted for", 10000), ("Amount due", 158842)])], ids=["a", "b"])
+def test_summary_carried_rows_and_what_isnt_accounted_for(tmp_path, local_model, due, rows):
+    lines = with_line(rent_carried(), 10, f"Amount Due......................................................... ${due}")
+    with read_bill(tmp_path, local_model, lines, carried_replies(lines, due)) as (_manager, _run, record, _row):
+        assert summary_rows(record) == rows
+        summary = record["bill_summary"]
+        assert [item["line_ids"] for item in summary["carried"]] == [["line-6"], ["line-7"]]
+        assert [item["display"] for item in summary["carried"]] == ["100.00 USD", "-100.00 USD"]
+        if summary["gap"]:  # The failing cross-check's reason, naming the four values.
+            assert summary["gap"]["reason"] == ("Amount due: previous balance 100.00 USD less payments 100.00 USD plus new charges 1,488.42 USD is "
+                                                "1,488.42 USD, but the amount due is 1,588.42 USD.")
+
+
+def test_summary_a_fee_read_from_a_warning_is_not_accounted_for(tmp_path, local_model):
+    lines = [*RENT, "A late fee of $75.00 applies after 10/05/2026"]
+    rows = [rent_row(lines=lines), water_row(lines), rent_row(description="Late fee", amount="75.00", line=8, lines=lines, rent_type="fee", period=None)]
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows)) as (_manager, _run, record, _row):
+        assert summary_rows(record) == [("Not accounted for", -7500), ("Amount due", 148842)]
+        assert record["bill_summary"]["gap"]["reason"] == \
+            "Amount due: the lines add up to 1,563.42 USD, but the amount due is 1,488.42 USD. A line may be missing or misread."
+
+
+def test_summary_a_phone_bills_earlier_balance_is_worked_out(tmp_path, local_model):
+    """SC-50 (FR-50 as amended): nothing carried is printed and the lines add up to the new charges, so the rest of the
+    amount due is the Earlier balance, with no review reason."""
+    manager, doc, parse_id = transcribe(tmp_path, local_model, PHONE_TEXT)
+    try:
+        local_model["outputs"] = phone_outputs()
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        record = manager.ledger.record("receipt", run["publication"]["id"])
+        assert summary_rows(record) == [("Earlier balance", 1200), ("Amount due", 7999)]
+        assert (record["review_status"], record["review_source"], record["issues"]) == ("verified", "automatic", [])
+        assert [next(item for item in line["correctable"] if item["label"] == "Type")["field"] for line in record["items"]] == ["line_kind"] * 3
+    finally:
+        manager.close()
+
+
+def test_summary_none_for_a_bill_read_before_kinds_or_an_invoice(tmp_path):
+    store, ledger, docs = open_books(tmp_path)
+    try:
+        receipt_id = bill(ledger, docs["rent.png"], "SYNTH PROPERTY MANAGEMENT", "2026-10-01", [line("Rent", 145000, "housing")])
+        assert ledger.record("receipt", receipt_id)["bill_summary"] is None  # Today's rows until it is read again (P7).
+        with store.connection() as db:
+            db.execute("UPDATE receipts SET bill_kind='general',invoice_json=? WHERE id=?", (json.dumps({"number": "INV-1"}), receipt_id))
+        assert ledger.record("receipt", receipt_id)["bill_summary"] is None  # An invoice keeps Invoice total and Remaining balance.
+    finally:
+        store.close()

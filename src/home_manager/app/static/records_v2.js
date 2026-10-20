@@ -435,7 +435,7 @@ function rc2Row(doc) {
   day.append(doc.document_date ? dateDisplay(doc.document_date) : element("span", "—", "muted"));
   if (doc.ledger_kind === "bill") {  // A bill counts on its due date (docs/money.md "Bills and their lines").
     day.prepend(element("small", "Due", "muted block"));
-    if (doc.bill_period_start && doc.bill_period_end) day.append(element("small", `For ${dateText(doc.bill_period_start)} – ${dateText(doc.bill_period_end)}`, "muted block"));
+    if (doc.bill_period_start && doc.bill_period_end) day.append(element("small", `For ${dateRangeText(doc.bill_period_start, doc.bill_period_end)}`, "muted block"));
   }
   const value = cell(tr, ""); value.className = "numeric rc2-amount";
   if (doc.ledger_amount) value.append(amount(doc.ledger_amount, {signed: false}));

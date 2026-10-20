@@ -217,6 +217,12 @@ function dateText(iso) {
   const [, year, month, day] = match;
   return `${MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
 }
+// A period: "Aug 15 – Sep 14, 2026" within one year, "Dec 15, 2026 – Jan 14, 2027" across two.
+function dateRangeText(start, end) {
+  const from = /^(\d{4})-\d{2}-\d{2}/.exec(start || ""), to = /^(\d{4})-\d{2}-\d{2}/.exec(end || "");
+  if (!from || !to) return `${dateText(start)} – ${dateText(end)}`;
+  return from[1] === to[1] ? `${dateText(start).replace(/, \d{4}$/, "")} – ${dateText(end)}` : `${dateText(start)} – ${dateText(end)}`;
+}
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 function monthText(iso) {
   // A YYYY-MM month (or a date's month): "September 2026".

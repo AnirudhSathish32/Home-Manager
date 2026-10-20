@@ -441,9 +441,12 @@ function doc2Fields(state, type, record) {
   const list = element("dl", "", "doc2-fields");
   const fix = field => (record.correctable || []).find(item => item.shown_as === field || `${item.shown_as}_minor` === field);
   const corrected = field => (record.corrections || []).filter(item => item.field === field).at(-1);
+  // A kinded bill's money is in its rows under the lines, and an Issued it doesn't print is left out (specs/bill-kinds FR-46, FR-50).
+  const kinded = Boolean(record.bill_summary);
   for (const [fieldLabel, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
     const label = record.invoice && field === "total_minor" ? "Invoice total"
       : record.invoice && field === "amount_due_minor" ? "Remaining balance" : fieldLabel;
+    if (kinded && (["total_minor", "amount_due_minor"].includes(field) || (field === "issue_date" && !record.issue_date))) continue;
     if (end && !record[field] && !record[end] && !fix(field)) continue;  // A bill without a printed period.
     // A receipt's Total is its printed total; what was paid after gift cards is in its Paid line (doc2Forms).
     const printed = type === "receipt" && field === "total_minor" && record.paid_summary ? record.printed_total?.display : null;
@@ -461,6 +464,9 @@ function doc2Fields(state, type, record) {
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
     // Not printed as a total: the server's subtotal of the lines in From gross pay to net pay.
     if (record.worked_out?.includes(field)) value.append(element("small", " Worked out from the pay lines", "muted"));
+    // A rent bill's period is its rent lines' (FR-47); a month printed without days is worked out to the whole month.
+    const period = end && kinded ? record.details?.period : null;
+    if (period?.from === "rent_lines" && period.how === "whole_month") value.append(element("small", ` Worked out from “${period.locator?.quotes?.[0] || "the rent line"}”`, "muted"));
     const change = correction && corrected(correction.field);
     if (change) value.append(provenanceBadge({kind: "override", actor: {person: change.actor}, override: {reason: change.reason}}));
     const links = element("span", "", "doc2-field-actions");
@@ -501,7 +507,7 @@ function doc2Fields(state, type, record) {
     }
     list.append(element("dt", label), value);
   };
-  if (record.figures?.split) figureRow("Counts as", [record.figures.split]);
+  if (record.figures?.split && !(record.document_kind === "bill" && record.bill_kind)) figureRow("Counts as", [record.figures.split]);
   if (record.figures?.counts_in?.length) figureRow("Counts in", record.figures.counts_in);
   if (record.figures?.balance) figureRow("Account balance", [record.figures.balance]);
   return list;
@@ -520,7 +526,16 @@ const ACCOUNT_TYPES = {checking: "Checking", savings: "Savings", money_market: "
 const TENDER_LABELS = {gift_card: "Gift card", ebt: "EBT", card: "Card", cash: "Cash", other: "Payment"};
 function doc2Forms(state, type, record, find) {
   const parts = [];
-  if (type === "receipt" && record.document_kind !== "bill") {
+  // A bill's notes, under its fields: what its reading left out or worked out, with no review needed (plan P9).
+  const notes = record.document_kind === "bill" ? record.details?.notes : null;
+  if (Array.isArray(notes) && notes.length) {
+    const list = element("ul", "", "doc2-notes muted small");
+    list.setAttribute("aria-label", "Notes from the reading");
+    list.append(...notes.map(note => element("li", note)));
+    parts.push(list);
+  }
+  // A receipt's kind, or a bill's (specs/bill-kinds FR-42); an invoice is read as general only, so it has no choice.
+  if (type === "receipt" && !(record.document_kind === "bill" && record.invoice)) {
     if (record.pending_details) parts.push(doc2Pending(state, record));
     parts.push(doc2Kind(state, record));
   }
@@ -606,22 +621,30 @@ function doc2Checks(checks) {
   section.append(list);
   return section;
 }
-// The receipt's kind, and reading it again as another kind: its details and rows, from the saved text only.
+// A bill's kinds (specs/bill-kinds FR-42; documents/extraction.py BILL_KINDS).
+const BILL_KINDS = {rent: "Rent", general: "General"};
+// What a record's kind control offers: a bill's kinds or a receipt's, its current kind and what it's called.
+function doc2Kinds(record) {
+  const bill = record.document_kind === "bill";
+  return {kinds: bill ? BILL_KINDS : RECEIPT_KINDS, current: bill ? record.bill_kind : record.receipt_kind, noun: bill ? "bill" : "receipt"};
+}
+// The receipt's or bill's kind, and reading it again as another kind: its details and rows, from the saved text only.
 function doc2Kind(state, record) {
+  const {kinds, current, noun} = doc2Kinds(record);
   const section = element("section", "", "doc2-section doc2-kind"), list = element("dl", "", "doc2-detail-fields");
   const value = element("dd", "", "doc2-value");
-  value.append(document.createTextNode(record.receipt_kind ? RECEIPT_KINDS[record.receipt_kind] : "Not read with kinds"));
+  value.append(document.createTextNode(current ? kinds[current] || current : "Not read with kinds"));
   const select = document.createElement("select"); select.id = "doc2-kind-choice";
-  select.setAttribute("aria-label", "Receipt kind");
-  for (const [key, label] of Object.entries(RECEIPT_KINDS)) select.add(new Option(label, key, false, key === record.receipt_kind));
+  select.setAttribute("aria-label", noun === "bill" ? "Bill kind" : "Receipt kind");
+  for (const [key, label] of Object.entries(kinds)) select.add(new Option(label, key, false, key === current));
   const reviewed = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
   const change = asyncButton("Change kind…", async () => {
-    const kind = select.value, label = RECEIPT_KINDS[kind];
-    if (kind === record.receipt_kind) { notice(`This receipt is already read as ${label.toLowerCase()}.`); return; }
+    const kind = select.value, label = kinds[kind];
+    if (kind === current) { notice(`This ${noun} is already read as ${label.toLowerCase()}.`); return; }
     const message = `Its details and rows are read again from the saved text with the ${label.toLowerCase()} form; the image isn't read again, `
-      + "and your corrections stay. " + (reviewed ? "You reviewed this receipt, so its amounts and review stay as they are, and the new details wait for Apply details."
-        : "Its amounts and items follow the new reading.");
-    if (!await confirmAction({title: `Read this receipt as ${label.toLowerCase()}?`, message, confirmLabel: "Read again"})) return;
+      + "and your corrections stay. " + (reviewed ? `You reviewed this ${noun}, so its amounts and review stay as they are, and the new details wait for Apply details.`
+        : `Its amounts and ${noun === "bill" ? "lines" : "items"} follow the new reading.`);
+    if (!await confirmAction({title: `Read this ${noun} as ${label.toLowerCase()}?`, message, confirmLabel: "Read again"})) return;
     const started = await api(`/api/receipts/${record.id}/kind`, {method: "PATCH", body: JSON.stringify({kind})});
     if (started.run_id) await doc2WaitForRun(started.run_id);
     if (doc2 !== state) return;
@@ -631,7 +654,7 @@ function doc2Kind(state, record) {
   }, "link-button");
   change.disabled = Boolean(busy.inference);
   value.append(select, change);
-  list.append(element("dt", "Receipt kind"), value);
+  list.append(element("dt", noun === "bill" ? "Bill kind" : "Receipt kind"), value);
   section.append(list);
   return section;
 }
@@ -647,8 +670,8 @@ async function doc2WaitForRun(runId) {
   throw new Error("The reading is taking a while; it continues in the sidebar.");
 }
 function doc2Pending(state, record) {
-  const kind = RECEIPT_KINDS[record.pending_details.kind] || record.pending_details.kind;
-  return alertBox(`${kind} details were read for this receipt after you reviewed it. Applying them changes no amount and keeps your review.`,
+  const {kinds, noun} = doc2Kinds(record), kind = kinds[record.pending_details.kind] || record.pending_details.kind;
+  return alertBox(`${kind} details were read for this ${noun} after you reviewed it. Applying them changes no amount and keeps your review.`,
                   {action: asyncButton("Apply details", async () => {
                     await api(`/api/receipts/${record.id}/details/apply`, {method: "POST", body: "{}"});
                     notice("Details applied.");

@@ -139,6 +139,50 @@ function itemCategorySelect(receiptId, row, categories, onSaved) {
 }
 // What a bill's line is (docs/money.md "Bills and their lines"); core/categories.py LINE_KINDS.
 const LINE_KIND_LABELS = {service: "Service", usage: "Usage", subscription: "Subscription", device: "Device", tax_fee: "Tax or fee", credit: "Credit", other: "Other"};
+// A rent bill's line types (specs/bill-kinds FR-44; core/categories.py RENT_LINE_TYPES).
+const RENT_TYPE_LABELS = {rent: "Rent", parking: "Parking", pet: "Pet", utility: "Utility", fee: "Fee", credit: "Credit", other: "Other"};
+// A rent line's printed period (or its one date) and usage under its description, each with Find on its cited line.
+function billLineFacts(row, find) {
+  const facts = [], details = row.details || {};
+  const fact = (text, detail, what) => {
+    const small = element("small", text, "muted block bill-line-fact");
+    const ids = detail.locator?.line_ids?.length ? detail.locator.line_ids : row.line_ids;
+    if (ids?.length) { const button = sourceButton(ids, find); button.setAttribute("aria-label", `Find the ${what} of ${row.description}`); small.append(" ", button); }
+    facts.push(small);
+  };
+  if (details.period?.start && details.period?.end) fact(dateRangeText(details.period.start, details.period.end), details.period, "period");
+  else if (details.date?.value) fact(dateText(details.date.value), details.date, "date");
+  if (details.usage?.text) fact(details.usage.text, details.usage, "usage");
+  return facts;
+}
+// A kinded bill's rows under its lines (Ledger.bill_summary): carried amounts, the earlier balance or what isn't
+// accounted for, then the amount due last under a rule. Every amount is the server's.
+function billSummaryRows(foot, record, find, correctField) {
+  const summary = record.bill_summary;
+  const row = (label, value, className = "", note = null) => {
+    const tr = element("tr", "", className), name = element("th", label); name.scope = "row";
+    const cell = element("td", "", "numeric"); cell.append(amount(value?.display || "—", {signed: false}));
+    // The note sits in the wide cell beside the amount, where it wraps (a row header doesn't).
+    const actions = element("td"); actions.colSpan = 5;
+    if (note) actions.append(element("small", note, "muted block bill-row-note"));
+    tr.append(name, cell, actions); foot.append(tr);
+    return actions;
+  };
+  for (const item of summary.carried) {
+    const actions = row(item.label, item);
+    if (item.line_ids?.length) actions.append(sourceButton(item.line_ids, find));
+  }
+  if (summary.earlier_balance) row("Earlier balance", summary.earlier_balance, "bill-earlier", "Worked out: the amount due less the new charges");
+  if (summary.gap) row("Not accounted for", summary.gap, "bill-gap", summary.gap.reason);
+  const actions = row("Amount due", summary.amount_due, "bill-total");
+  if (summary.amount_due.line_ids?.length) {
+    const button = sourceButton(summary.amount_due.line_ids, find); button.setAttribute("aria-label", "Find the amount due in the source"); actions.append(button);
+  }
+  if (correctField) {
+    const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", "Correct amount due");
+    button.addEventListener("click", () => correctField("amount_due")); actions.append(button);
+  }
+}
 // A bill's lines: each line's price, category, type and person, then its new charges and amount due. The person is chosen
 // from the family where its people are known (the family's inbox); elsewhere it shows who the line is for as printed.
 function invoiceDetails(record, find) {
@@ -159,6 +203,7 @@ function billLines(record, categories, onSaved, find, correctField = null) {
   const people = familyMode ? (familyView?.members || []) : [];
   const nameOf = id => people.find(person => person.member_id === id)?.name;
   const wrap = element("div", "", "table-wrap"), table = element("table", "", "ledger-rows bill-lines");
+  const rent = record.bill_kind === "rent" && Boolean(record.bill_summary);
   if (record.invoice) wrap.append(invoiceDetails(record, find));
   const head = document.createElement("tr");
   for (const [title, className] of [["Line", ""], ["Price", "numeric"], ["Category", ""], ["Type", ""], ["Person", ""], ["Paid", "numeric"], ["", ""]]) {
@@ -180,11 +225,21 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     if (row.quantity != null || row.unit_price_minor != null) line.append(element("small",
       `Quantity: ${row.quantity ?? "not printed"} · Unit price: ${row.display.unit_price_minor ?? "not printed"}`, "muted block"));
     if (row.line_holder) line.append(element("small", row.line_holder, "muted block"));
+    if (rent) line.append(...billLineFacts(row, find));
     const price = element("td", "", "numeric"); price.append(amount(row.display.line_total_minor || "—", {signed: false}));
     const category = element("td");
     category.append(categories.length ? itemCategorySelect(record.id, row, categories, onSaved) : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     const kind = element("td"), person = element("td");
-    if (categories.length) {
+    if (rent) {  // A rent type, which sets the line's kind; a line from before it was read as rent shows its kind until one is chosen.
+      if (categories.length) {
+        const types = document.createElement("select"); types.setAttribute("aria-label", `Type of ${row.description}`);
+        types.append(new Option("Not set", ""), ...Object.entries(RENT_TYPE_LABELS).map(([key, label]) => new Option(label, key)));
+        types.value = row.line_type || "";
+        types.addEventListener("change", () => save(row, "line_type", types.value, types));
+        kind.append(types);
+      } else kind.textContent = RENT_TYPE_LABELS[row.line_type] || "Not set";
+      if (!row.line_type && row.line_kind) kind.append(element("small", LINE_KIND_LABELS[row.line_kind] || row.line_kind, "muted block"));
+    } else if (categories.length) {
       const kinds = document.createElement("select"); kinds.setAttribute("aria-label", `Type of ${row.description}`);
       kinds.append(new Option("Not set", ""), ...Object.entries(LINE_KIND_LABELS).map(([key, label]) => new Option(label, key)));
       kinds.value = row.line_kind || "";
@@ -206,7 +261,8 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     body.appendChild(tr);
   }
   const foot = table.appendChild(element("tfoot"));
-  for (const [label, field] of [[record.invoice ? "Invoice total" : "New charges", "total"], [record.invoice ? "Remaining balance" : "Amount due", "amount_due"]]) {
+  if (record.bill_summary) billSummaryRows(foot, record, find, correctField);
+  else for (const [label, field] of [[record.invoice ? "Invoice total" : "New charges", "total"], [record.invoice ? "Remaining balance" : "Amount due", "amount_due"]]) {
     const tr = element("tr"), name = element("th", label); name.scope = "row";
     const value = element("td", "", "numeric"); value.append(amount(record.display[`${field}_minor`] || "—", {signed: false}));
     const actions = element("td"); actions.colSpan = 5;
@@ -217,7 +273,7 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     tr.append(name, value, actions); foot.append(tr);
   }
   wrap.appendChild(table);
-  if (record.amount_due_minor != null && record.total_minor != null && record.amount_due_minor !== record.total_minor) {
+  if (!record.bill_summary && record.amount_due_minor != null && record.total_minor != null && record.amount_due_minor !== record.total_minor) {
     wrap.append(element("p", record.invoice ? "The full invoice charge and its remaining balance are recorded separately. Payments do not reduce the purchase total."
       : "Only the new charges count; the rest of the amount due is from an earlier bill.", "muted small"));
   }

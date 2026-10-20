@@ -188,9 +188,9 @@ def seed_review_items(manager, ids):
 
 
 @contextmanager
-def document_server(tmp_path, token, review_items=False, paystub=False, forms=False):
+def document_server(tmp_path, token, review_items=False, paystub=False, forms=False, seed=None):
     """The app on a free port with seed_documents' documents (and seed_review_items', seed_paystub's or
-    seed_document_forms' when asked). Yields (base, ids, manager)."""
+    seed_document_forms' when asked; seed(manager, model) adds more and returns their ids). Yields (base, ids, manager)."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -219,6 +219,8 @@ def document_server(tmp_path, token, review_items=False, paystub=False, forms=Fa
             ids.update(paystub_doc=stub["doc_id"], paystub_record=stub["record_id"])
         if forms:
             ids.update({f"forms_{key}": value for key, value in seed_document_forms(manager, model).items()})
+        if seed:
+            ids.update(seed(manager, model))
         yield f"http://127.0.0.1:{port}", ids, manager
     finally:
         stop()
