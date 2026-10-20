@@ -55,10 +55,15 @@ slices:
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
     notes: "No escalations. Deviations: (1) 43a-2 built now via the existing category correction (FR-45a split is by category, not line_type); (2) bank-payment test clears source_receipt_id with SQL, since the real path can't produce it once a rent bill exists; (3) utilities part floored at 0."
   - id: SL-06
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: 47b04d86241e8b4e258804467f5d77c3debe4599
+    start_head: 8603849
+    end_head: 47b04d86241e8b4e258804467f5d77c3debe4599
+    verification:
+      - "pytest tests/test_bill_kinds.py -k 'journey or sc43' -> 22 passed (orchestrator)"
+      - "pytest test_receipt_kinds test_bills_ledger -> 55 passed, 1 skipped (opt-in browser test) (orchestrator)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "No escalations. Deviations: (1) tests/test_receipt_kinds.py edited: change_receipt_kind -> change_kind call, and fuel-on-a-bill message now the plan's 'Choose one of a bill's kinds: rent or general.' (orchestrator reviewed the diff); (2) docs/documents.md citation renamed to change_kind; (3) journey step 7 undoes Apply details before restart; (4) clearing a rent type keeps the current line_kind rather than restoring the earlier one; (5) RENT_LINE_TYPES/RENT_LINE_KINDS moved to core/categories.py (circular import); mypy errors in extraction/manager/api pre-existing per worker, not compared against the old code."
   - id: SL-07
     status: todo
     commit: null
