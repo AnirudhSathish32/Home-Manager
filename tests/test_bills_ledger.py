@@ -368,7 +368,7 @@ def test_bills_and_pay_stubs_on_transactions_and_the_document_page(tmp_path, loc
         expect(page.locator("#doc2-record-title")).to_have_text("Bill from ACME WIRELESS")
         expect(page.locator('#doc2-record-badge [data-status="bill_doc"]')).to_be_visible()
         notes = page.locator(".table-wrap", has=lines)
-        expect(notes).to_contain_text("Only the new charges count")
+        expect(notes).to_contain_text("Earlier balance")  # A bill with a kind shows its summary rows (specs/bill-kinds FR-50).
         expect(notes).to_contain_text("Includes: Apple TV+")
         apple = lines.get_by_role("combobox", name="Type of Apple TV+")
         apple.select_option("service")
