@@ -3,10 +3,16 @@ feature: bill-kinds
 plan_sha256: c7d91530ee2f7c4edc57953b1a3f88a6ccdf6bb8c8e5fa9f7cffd6182a3c2138
 slices:
   - id: SL-01
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: 6adbe168565e5d3855891794db25f6d432164a85
+    start_head: 4d9a3e27bb55d8beca0b88d1a0eca4f7c11afadb
+    end_head: 6adbe168565e5d3855891794db25f6d432164a85
+    verification:
+      - "pytest tests/test_migrations.py -k bill_kinds -> 2 passed (orchestrator)"
+      - "pytest tests/test_bill_kinds.py -k version -> 2 passed (orchestrator)"
+      - "pytest test_receipt_kinds test_traces test_migrations test_bills_ledger test_invoice_ingestion -> 85 passed, 1 skipped (opt-in browser test) (orchestrator)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "Handoff deviations are non-blocking: handoff template unreadable by worker; old rent-like bill seeded with a line_kind correction as the plan says."
   - id: SL-02
     status: todo
     commit: null
