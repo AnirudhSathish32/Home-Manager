@@ -126,7 +126,10 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                   "invoice_total is the full price including tax BEFORE payments or deposits, even when balance_due is zero. "
                   "invoice_subtotal and invoice_tax are printed totals; payments_received is the printed combined amount already paid, including deposits; "
                   "balance_due is the remaining unpaid amount; payment_status is the printed paid/unpaid/partial wording. "
-                  "Do not subtract payments from invoice_total or put payments/deposits into new_charges. Missing values stay missing)",
+                  "Do not subtract payments from invoice_total or put payments/deposits into new_charges. "
+                  # Dates on every bill (specs/bill-kinds FR-46, FR-47).
+                  "issue_date: a printed statement, bill or invoice date only, never the due date or a date on a Due line or heading; "
+                  "missing when none is printed. period_start and period_end: the printed billing or service period. Missing values stay missing)",
           "paystub": f"pay stub (payer_or_employer: {EMPLOYER_RULE}; gross_pay and net_pay: amounts for this single paycheck "
                      "under Current or This period, never Year to date; if only YTD is legible, mark the current amount ambiguous "
                      "or missing instead of copying YTD. Match values to their printed column headings, even when OCR spacing is imperfect. "
@@ -704,37 +707,42 @@ DATE_FORMS = (("iso", re.compile(r"(?<![\d/-])(\d{4})-(\d{2})-(\d{2})(?![\d/-])"
               ("numeric_month", re.compile(r"(?<![\d/])(\d{1,2})/(\d{4})(?![\d/])")))
 
 
-def printed_dates(text):
-    """Every date written in text, as (value, form): a date for a full date; (month, day) for a yearless one (form
-    "yearless"); (year, month) for a month alone (form "month"). A numeric M/D/YYYY gives both the M/D and the D/M
-    reading when each is a valid date: the model already resolved the order under RULES (plan R4)."""
+def dates_in(text):
+    """printed_dates with where each date starts in text: (value, form, start)."""
     found = []
 
-    def full(year, month, day, form):
+    def full(year, month, day, form, start):
         try:
-            found.append((date(int(year), int(month), int(day)), form))
+            found.append((date(int(year), int(month), int(day)), form, start))
         except ValueError:
             pass
     for form, pattern in DATE_FORMS:
         for match in pattern.finditer(text or ""):
-            groups = match.groups()
+            groups, start = match.groups(), match.start()
             if form == "iso":
-                full(*groups, form)
+                full(*groups, form, start)
             elif form == "numeric":
-                full(groups[2], groups[0], groups[1], form)
+                full(groups[2], groups[0], groups[1], form, start)
                 if groups[0] != groups[1]:
-                    full(groups[2], groups[1], groups[0], form)
+                    full(groups[2], groups[1], groups[0], form, start)
             elif form == "named":
-                full(groups[2], MONTH_NAMES[groups[0].lower()], groups[1], form)
+                full(groups[2], MONTH_NAMES[groups[0].lower()], groups[1], form, start)
             elif form == "day_named":
-                full(groups[2], MONTH_NAMES[groups[1].lower()], groups[0], form)
+                full(groups[2], MONTH_NAMES[groups[1].lower()], groups[0], form, start)
             elif form == "yearless" and 1 <= int(groups[0]) <= 12 and 1 <= int(groups[1]) <= 31:
-                found.append(((int(groups[0]), int(groups[1])), "yearless"))
+                found.append(((int(groups[0]), int(groups[1])), "yearless", start))
             elif form == "month":
-                found.append(((int(groups[1]), MONTH_NAMES[groups[0].lower()]), "month"))
+                found.append(((int(groups[1]), MONTH_NAMES[groups[0].lower()]), "month", start))
             elif form == "numeric_month" and 1 <= int(groups[0]) <= 12:
-                found.append(((int(groups[1]), int(groups[0])), "month"))
+                found.append(((int(groups[1]), int(groups[0])), "month", start))
     return found
+
+
+def printed_dates(text):
+    """Every date written in text, as (value, form): a date for a full date; (month, day) for a yearless one (form
+    "yearless"); (year, month) for a month alone (form "month"). A numeric M/D/YYYY gives both the M/D and the D/M
+    reading when each is a valid date: the model already resolved the order under RULES (plan R4)."""
+    return [(value, form) for value, form, _ in dates_in(text)]
 
 
 def date_printed(value, evidence, due=None):
@@ -758,6 +766,82 @@ def date_printed(value, evidence, due=None):
 def month_printed(year, month, evidence):
     """A cited quote prints this month on its own (Rent for October 2026, 10/2026)."""
     return any(form == "month" and printed == (year, month) for cite in evidence for printed, form in printed_dates(cite.quote))
+
+
+# Words that label a date on a bill (FR-46): a due date, or a statement, bill or invoice date.
+ISSUE_WORDS = r"statement|bill(?:ing)?\s+date|invoice\s+date|issued?|date\s+of\s+bill"
+DUE_WORD, ISSUED_WORD = re.compile(r"\bdue\b", re.IGNORECASE), re.compile(rf"\b(?:{ISSUE_WORDS})\b", re.IGNORECASE)
+DATE_LABEL = re.compile(rf"\b(?:due|{ISSUE_WORDS})\b", re.IGNORECASE)
+
+
+def due_labelled(value, evidence):
+    """Every place a cited quote prints value has Due as the nearest date label before it (Due Date 10/01/2026
+    Statement Date 09/15/2026 labels 10/01 due and 09/15 a statement date; plan R3-m3)."""
+    try:
+        wanted = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    labels = []
+    for cite in evidence:
+        for printed, form, start in dates_in(cite.quote):
+            if printed == wanted or form == "yearless" and printed == (wanted.month, wanted.day):
+                before = DATE_LABEL.findall(cite.quote[:start])
+                labels.append(before[-1].casefold() if before else None)
+    return bool(labels) and all(label == "due" for label in labels)
+
+
+def bill_dates(record, fields, issues, notes):
+    """A bill's header dates must be printed where they are cited, and in order (specs/bill-kinds FR-46, FR-48, FR-55), on
+    every bill kind. A dropped due date or period, or dates out of order, is an issue (review); a dropped Issued or a year
+    taken from the due date is a note only (plan P9). Issued is never a due date. A yearless date takes the due date's
+    year; the due date itself must print its year. Returns the period's own (issues, notes): they count only when the
+    bill's period is the header's, not its rent lines' (FR-47; bill_lines)."""
+    def cited(name):
+        found = fields.get(name)
+        return found if found is not None and found.status == "proposed" and record.get(name) else None
+
+    answered_due = record.get("due_date")
+    due = cited("due_date")
+    if due and date_printed(answered_due, due.evidence)[0] is None:
+        issues.append(f"Due date: the cited line doesn't print {answered_due}; it was left out.")
+        record["due_date"] = None
+    years, period_issues = set(), []
+    issued = cited("issue_date")
+    if issued:
+        value, quotes = record["issue_date"], [cite.quote for cite in issued.evidence]
+        names_due = [quote for quote in quotes if DUE_WORD.search(quote)]
+        if (quotes and len(names_due) == len(quotes) and not any(ISSUED_WORD.search(quote) for quote in quotes)
+                or due_labelled(value, issued.evidence) or value == answered_due and names_due):
+            notes.append("Issued: the cited line is a due date.")
+            record["issue_date"] = None
+        else:
+            kept, how = date_printed(value, issued.evidence, record["due_date"])
+            if kept is None:
+                notes.append(f"Issued: the cited line doesn't print {value}; it was left out.")
+                record["issue_date"] = None
+            elif how == "year_from_due":
+                years.add("Issued")
+    for name in ("period_start", "period_end"):
+        found = cited(name)
+        if found:
+            kept, how = date_printed(record[name], found.evidence, record["due_date"])
+            if kept is None:
+                period_issues.append(f"Period: the cited line doesn't print {record[name]}; it was left out.")
+                record[name] = None
+            elif how == "year_from_due":
+                years.add("Period")
+    if record.get("period_start") and record.get("period_end") and record["period_start"] > record["period_end"]:
+        period_issues.append("Period: the printed period starts after it ends; it was left out.")
+        record["period_start"] = record["period_end"] = None
+        years.discard("Period")
+    if record.get("issue_date") and record.get("due_date") and record["issue_date"] > record["due_date"]:
+        # Starts with "Due date", so review_reasons adds no "Due date was not found" beside it (plan R2-m5).
+        issues.append(f"Due date: the issued date ({record['issue_date']}) is after the due date; both were left out.")
+        record["issue_date"] = record["due_date"] = None
+        years.discard("Issued")
+    if "Issued" in years:
+        notes.append("Issued: year taken from the due date.")
+    return period_issues, ["Period: year taken from the due date."] if "Period" in years else []
 
 
 def chunks(lines, limit=LINES_PER_CALL):
@@ -1656,7 +1740,9 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency, line_text)
     elif kind == "bill":
         kind_fields = {name: getattr(header, name) for name in BILL_KIND_FIELDS.get(bill_kind or "", ()) if hasattr(header, name)}
-        bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields}, bill_kind)
+        notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
+        header_period = bill_dates(record, fields, issues, notes)
+        bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields}, bill_kind, notes, header_period)
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
                       printed_columns)
@@ -1935,16 +2021,18 @@ def rent_line(item, row, due, notes):
     item["details"] = details or None
 
 
-def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None):
+def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ())):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
     charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note.
     bill_kind: the form it was read with (specs/bill-kinds), or None for a bill read without kinds; an invoice is always
-    general (FR-40). fields: the summary's fields, for the kind's printed details."""
+    general (FR-40). fields: the summary's fields, for the kind's printed details. notes: the bill's notes so far
+    (bill_dates); a bill read without kinds has no details to keep them in, so they are issues there. header_period:
+    bill_dates' (issues, notes) on the header period, kept unless the period is the rent lines'."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     rent = bill_kind == "rent" and not invoice
     due_date = record.get("due_date")
-    notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
+    notes = notes if notes is not None else []
     if bill_kind is not None:
         record["bill_kind"], record["details"] = "general" if invoice else bill_kind, {}
     record["items"] = []
@@ -1975,16 +2063,33 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
         item["line_total_minor"] = -amount if amount is not None and item["line_kind"] == "credit" else amount
         record["items"].append(item)
     if rent:
-        if not any(item.get("line_type") == "rent" for item in record["items"]):
+        # The bill's period is its rent lines' printed period, never a utility line's or the model's header (FR-47, SC-40).
+        periods = [item["details"]["period"] for item in record["items"] if item.get("line_type") == "rent" and (item.get("details") or {}).get("period")]
+        if periods:
+            record["period_start"], record["period_end"] = min(period["start"] for period in periods), max(period["end"] for period in periods)
+            how = next((how for how in ("whole_month", "year_from_due") if any(period["how"] == how for period in periods)), "printed")
+            record["details"]["period"] = {"from": "rent_lines", "how": how, "locator": {
+                "line_ids": list(dict.fromkeys(id for period in periods for id in period["locator"]["line_ids"])),
+                "quotes": list(dict.fromkeys(quote for period in periods for quote in period["locator"].get("quotes", [])))}}
+        elif not any(item.get("line_type") == "rent" for item in record["items"]):
             notes.append("No rent line was read.")
-        # The rent form's printed details (FR-43): kept only when read, so an unprinted one stays missing, never 0.
-        for name in ("previous_balance", "payments_received", "monthly_rent"):
+    if not (rent and "period" in record["details"]):
+        issues.extend(header_period[0])
+        notes.extend(header_period[1])
+    if bill_kind is not None and not invoice:
+        # The printed amounts carried and charged (FR-43, FR-49), on every bill kind: kept only when printed, so an
+        # unprinted one stays missing, never 0, and a bill printing none has no details. An invoice keeps its own.
+        printed = {"new_charges": record.get("new_charges_minor"), "payments_received": record.get("payments_received_minor")}
+        for name in ("previous_balance", "payments_received", "monthly_rent", "new_charges"):
             field = (fields or {}).get(name)
-            if field is not None and field.status == "proposed":
-                minor = money(field.value.strip(), name.replace("_", " ").capitalize(), magnitude=name == "payments_received")
-                if minor is not None:
-                    record["details"][name] = {"minor": minor, "locator": locator(field.evidence)}
-    if notes:
+            if field is None or field.status != "proposed":
+                continue
+            minor = printed[name] if name in printed else money(field.value.strip(), name.replace("_", " ").capitalize())
+            if minor is not None:
+                record["details"][name] = {"minor": abs(minor) if name == "payments_received" else minor, "locator": locator(field.evidence)}
+    if notes and bill_kind is None:
+        issues.extend(notes)
+    elif notes:
         record["details"]["notes"] = notes
     new, due = record.pop("new_charges_minor", None), record.get("amount_due_minor")
     if invoice:

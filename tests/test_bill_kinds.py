@@ -9,26 +9,34 @@ import pytest
 
 from bill_kinds_fixtures import (
     AMOUNT_LINE,
+    DUE_LINE,
     RENT,
     RENT_LINE,
     WATER_LINE,
     general_replies,
+    rent_carried,
+    rent_month,
+    rent_noyear,
     rent_plain,
     rent_replies,
     rent_row,
     water_row,
     with_line,
 )
+from conftest import assert_ledger_healthy
 from document_forms_fixtures import uncited
-from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, bill_kind, date_printed, printed_dates
+from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, LABELS, bill_kind, date_printed, due_labelled, printed_dates
 from home_manager.finance.ledger import HouseholdConfig
+from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import BudgetInput, FinanceTools, PeriodInput
 from test_bills_ledger import PHONE_TEXT, bill, line, open_books
 from test_extraction import MISSING, cite, extract, transcribe, value
-from test_reconcile_tools import source_of
+from test_reconcile_tools import add, source_of
 
 V30 = "typed-extraction-v30-pre-tax-deductions"
 OCTOBER = PeriodInput(start="2026-10-01", end="2026-10-31")
+# A RENT bill's period, worked out from its rent line (FR-47).
+RENT_PERIOD = {"from": "rent_lines", "how": "printed", "locator": {"line_ids": ["line-4"], "quotes": [RENT[3]]}}
 
 
 @contextmanager
@@ -88,7 +96,7 @@ def assert_published_bill(manager, lines, receipt_id):
         assert set(usage) <= {"text"}  # Usage is its printed text, never a number.
         details = json.loads(row[2])[row[3]] if row[2] else {}
         for name, detail in details.items():
-            if isinstance(detail, dict) and "locator" in detail:
+            if isinstance(detail, dict) and "locator" in detail and "minor" in detail:
                 assert db.execute(f"SELECT json_type(details_json,'$.{row[3]}.{name}.minor') FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0] == "integer"
     for _, _, _, _, _, item in stored_lines(manager, receipt_id):
         for name, detail in (item or {}).items():
@@ -210,6 +218,27 @@ def test_dates_a_yearless_date_takes_its_year_from_the_due_date_within_a_month_e
     assert date_printed("2026-05-15", quotes("Water Usage 5/15 - 6/14"), "2026-10-01") == (None, None)  # Too far from the due month.
 
 
+def test_dates_yearless_forms_are_found_and_never_read_inside_other_dates():
+    assert printed_dates("Due Date 10/01") == [((10, 1), "yearless")]
+    assert printed_dates("Gas 12/15 - 1/14") == [((12, 15), "yearless"), ((1, 14), "yearless")]
+    assert printed_dates("Usage 5/15/26") == []  # A two-digit year is no form, and 5/15 inside it is no yearless date.
+    assert printed_dates("Meter 13/40 read") == []  # Not a month and day.
+    assert date_printed("2026-09-30", quotes("Paid 9/30"), "2026-10-01") == ("2026-09-30", "year_from_due")  # The month before.
+
+
+def test_dates_a_date_is_due_labelled_only_when_due_is_its_nearest_label():
+    assert due_labelled("2026-10-01", quotes("Due Date 10/01/2026 Statement Date 09/15/2026"))
+    assert not due_labelled("2026-09-15", quotes("Due Date 10/01/2026 Statement Date 09/15/2026"))
+    assert not due_labelled("2026-09-15", quotes("Statement 09/15/2026"))
+    assert not due_labelled("2026-09-15", quotes("09/15/2026"))  # No label: not a due date.
+    assert not due_labelled("not a date", quotes("Due 10/01/2026"))
+
+
+def test_dates_the_bill_form_says_what_issued_and_the_period_are():
+    assert "issue_date: a printed statement, bill or invoice date only, never the due date" in LABELS["bill"]
+    assert "period_start and period_end: the printed billing or service period" in LABELS["bill"]
+
+
 # SC-38 and its variants: a rent bill is read with the rent form ---------------------------------------------------
 
 def test_sc38_a_rent_bill_is_read_with_the_rent_form(tmp_path, local_model):
@@ -236,7 +265,8 @@ def test_sc38_a_rent_bill_is_read_with_the_rent_form(tmp_path, local_model):
         # Final state.
         assert (row["due_date"], row["issue_date"], row["period_start"], row["period_end"], row["recurrence"]) == (
             "2026-10-01", None, "2026-10-01", "2026-10-31", "monthly")
-        assert bill_details(row) == {}  # Previous balance, payments and monthly rent are missing, not 0.
+        # Previous balance, payments and monthly rent are missing, not 0; the period is the rent line's (FR-47).
+        assert bill_details(row) == {"period": RENT_PERIOD}
         assert stored_lines(manager, row["id"]) == [
             ("Rent", 145000, "rent", "service", "housing",
              {"period": {"start": "2026-10-01", "end": "2026-10-31", "how": "printed", "locator": {"line_ids": ["line-4"], "quotes": [RENT[3]]}}}),
@@ -309,7 +339,7 @@ def test_sc43_each_line_counts_under_its_types_category(tmp_path, local_model):
     with read_bill(tmp_path, local_model, RENT, rent_replies(rows=rows)) as (manager, _run, record, row):
         # Step 1: Rent housing, Water utilities, the bill's own category housing (most of its money), no note about categories.
         assert [(entry[0], entry[4]) for entry in stored_lines(manager, row["id"])] == [("Rent", "housing"), ("Water Usage", "utilities")]
-        assert row["category"] == "housing" and bill_details(row) == {}
+        assert row["category"] == "housing" and bill_details(row) == {"period": RENT_PERIOD}
         # Step 2: it is already verified.
         assert (record["review_status"], record["review_source"]) == ("verified", "automatic")
         # Step 3: October spending by category.
@@ -330,7 +360,7 @@ def test_sc43_each_line_counts_under_its_types_category(tmp_path, local_model):
 def test_sc43_variants_the_type_decides_a_disagreeing_category(tmp_path, local_model, rows, expected):
     with read_bill(tmp_path, local_model, RENT, rent_replies(rows=rows)) as (manager, _run, record, row):
         assert [(entry[0], entry[4]) for entry in stored_lines(manager, row["id"])] == expected
-        assert bill_details(row) == {} and record["review_status"] == "verified"  # No note when the type overrides.
+        assert bill_details(row) == {"period": RENT_PERIOD} and record["review_status"] == "verified"  # No note when the type overrides.
 
 
 # SC-43b: a bare water line is still a utility line -----------------------------------------------------------------
@@ -340,7 +370,7 @@ def test_sc43b_a_bare_water_line_is_a_utility_line(tmp_path, local_model):
     rows = [rent_row(lines=lines), water_row(lines, description="Water", period=None, usage=None)]
     with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows)) as (manager, _run, record, row):
         assert stored_lines(manager, row["id"])[1] == ("Water", 3842, "utility", "usage", "utilities", None)
-        assert bill_details(row) == {}  # No note: what the line doesn't print stays empty.
+        assert bill_details(row) == {"period": RENT_PERIOD}  # No note: what the line doesn't print stays empty.
         assert (record["review_status"], record["review_source"]) == ("verified", "automatic")
         assert_published_bill(manager, lines, row["id"])
 
@@ -416,10 +446,230 @@ def test_sc50_a_phone_bill_is_read_general_with_its_lines_unchanged(tmp_path, lo
         record = manager.ledger.record("receipt", run["publication"]["id"])
         with manager.store.connection() as db:
             row = db.execute("SELECT bill_kind,details_json FROM receipts WHERE id=?", (record["id"],)).fetchone()
-        assert (row["bill_kind"], json.loads(row["details_json"])) == ("general", {"general": {}})
+        # Its printed new charges are kept in its details (plan "bill_lines"); nothing else is printed.
+        assert (row["bill_kind"], json.loads(row["details_json"])) == ("general", {"general": {
+            "new_charges": {"minor": 6799, "locator": {"line_ids": ["line-9"], "quotes": ["New charges 67.99"]}}}})
         assert (record["review_status"], record["review_source"], record["total_minor"], record["amount_due_minor"]) == ("verified", "automatic", 6799, 7999)
         assert [(item["line_holder"], item["line_kind"], item["line_type"], item["category"]) for item in record["items"]] == [
             ("Alex 555-201-1111", "service", None, "phone & internet"), (None, "subscription", None, "subscriptions"), (None, "tax_fee", None, None)]
         assert {entry["category"]: entry["amount_minor"] for entry in record["splits"]} == {"phone & internet": 5800, "subscriptions": 999}
     finally:
         manager.close()
+
+
+# Printed amounts in a bill's details (plan "bill_lines": new charges, previous balance, payments, monthly rent) ---------
+
+def test_details_printed_amounts_are_kept_on_both_kinds_and_a_bill_printing_none_has_none(tmp_path, local_model):
+    lines = rent_carried()
+    due, amount = len(lines) - 1, len(lines)
+    printed = {"due_date": value("2026-10-01", due, lines[due - 1]), "amount_due": value("1,488.42", amount, lines[amount - 1]),
+               "payments_received": value("100.00", 7, lines[6]), "new_charges": value("1,488.42", 8, lines[7])}
+    replies = rent_replies(lines, previous_balance=value("100.00", 6, lines[5]), **printed)
+    with read_bill(tmp_path / "rent", local_model, lines, replies) as (manager, _run, record, row):
+        details = bill_details(row)
+        assert {name: details[name]["minor"] for name in ("previous_balance", "payments_received", "new_charges")} == {
+            "previous_balance": 10000, "payments_received": 10000, "new_charges": 148842}  # Payments as a magnitude.
+        assert details["payments_received"]["locator"]["line_ids"] == ["line-7"] and "monthly_rent" not in details
+        assert record["review_status"] == "verified"
+        assert_published_bill(manager, lines, row["id"])
+    with read_bill(tmp_path / "general", local_model, lines, general_replies(lines, kind=None, **printed)) as (_manager, _run, record, row):
+        assert row["bill_kind"] == "general"
+        assert {name: entry["minor"] for name, entry in bill_details(row).items()} == {"payments_received": 10000, "new_charges": 148842}
+    # A general bill printing none of them has no details at all (no empty entries, nothing for the page to show).
+    with read_bill(tmp_path / "none", local_model, RENT, general_replies(kind=None)) as (_manager, _run, record, row):
+        assert json.loads(row["details_json"]) == {"general": {}} and record["details"] == {}
+
+
+# SC-39: Issued is never a due date, and early rent is matched --------------------------------------------------------
+
+def pay_and_reconcile(store, ledger, doc, day="2026-09-28"):
+    """A checking line paying the RENT bill, then reconcile; returns the line's id."""
+    checking = ledger.create_account("First Local Bank", "checking", "USD")
+    [payment] = add(store, ledger, checking, doc, [(day, "SYNTH PROPERTY MGMT", -148842)])
+    Reconciler(store).run()
+    return payment
+
+
+def bill_links(store, receipt_id):
+    with store.connection() as db:
+        return [tuple(row) for row in db.execute("SELECT transaction_id,review_status FROM transaction_receipt_links WHERE receipt_id=?", (receipt_id,))]
+
+
+def test_sc39_issued_is_never_a_due_date_and_early_rent_is_matched(tmp_path, local_model):
+    replies = rent_replies(issue_date=value("2026-10-01", 3, RENT[2]))
+    with read_bill(tmp_path, local_model, RENT, replies) as (manager, _run, record, row):
+        # Step 1: Issued dropped with the note; no review reason comes from it.
+        assert row["issue_date"] is None and bill_details(row)["notes"] == ["Issued: the cited line is a due date."]
+        assert (record["review_status"], record["review_source"], record["issues"]) == ("verified", "automatic", [])
+        # Step 2: the early payment is inside the window that starts a month before the due date.
+        payment = pay_and_reconcile(manager.store, manager.ledger, manager.store.documents()["items"][0])
+        assert bill_links(manager.store, row["id"]) == [(payment, "proposed")]
+        assert_ledger_healthy(manager.store)
+
+
+def test_sc39_a_a_bill_issued_on_its_due_date_is_not_matched_to_an_early_payment(tmp_path):
+    """39a (control): the window, not the name match, decides. The same bill without Issued is matched."""
+    for issued, matched in (("2026-10-01", False), (None, True)):
+        store, ledger, docs = open_books(tmp_path / str(issued))
+        try:
+            rent = bill(ledger, docs["rent.png"], "SYNTH PROPERTY MANAGEMENT", "2026-10-01",
+                        [line("Rent", 145000, "housing"), line("Water Usage", 3842, "utilities", "usage")], issue=issued)
+            payment = pay_and_reconcile(store, ledger, docs["export.csv"])
+            assert bill_links(store, rent) == ([(payment, "proposed")] if matched else [])
+        finally:
+            store.close()
+
+
+def test_sc39_b_issued_citing_the_due_date_line_is_dropped(tmp_path, local_model):
+    replies = rent_replies(issue_date=value("2026-10-01", DUE_LINE, RENT[DUE_LINE - 1]))
+    with read_bill(tmp_path, local_model, RENT, replies) as (_manager, _run, record, row):
+        assert row["issue_date"] is None and bill_details(row)["notes"] == ["Issued: the cited line is a due date."]
+        assert record["review_status"] == "verified"
+
+
+def test_sc39_c_a_printed_statement_date_is_kept(tmp_path, local_model):
+    lines = [*RENT, "Statement Date 09/12/2026"]
+    with read_bill(tmp_path, local_model, lines, general_replies(lines, kind=None, issue_date=value("2026-09-12", 8, lines[7]))) as (
+            _manager, _run, record, row):
+        assert row["issue_date"] == "2026-09-12" and "notes" not in bill_details(row)
+        assert record["review_status"] == "verified"
+
+
+@pytest.mark.parametrize("quote", ["Due Date 10/01/2026 Statement Date 09/15/2026", "Rent and Leasing Charges Due 10/01/2026 Statement 10/01/2026"],
+                         ids=["nearest_label_due", "the_due_date_on_a_due_line"])
+def test_sc39_issued_answered_as_the_due_date_of_a_line_printing_both_is_dropped(tmp_path, local_model, quote):
+    """Plan R3-m3, R2-m3: a line printing both dates keeps only a statement date as Issued."""
+    lines = with_line(RENT, 3, quote)
+    replies = rent_replies(lines, issue_date=value("2026-10-01", 3, lines[2]))
+    with read_bill(tmp_path, local_model, lines, replies) as (_manager, _run, _record, row):
+        assert row["issue_date"] is None and bill_details(row)["notes"] == ["Issued: the cited line is a due date."]
+
+
+def test_sc39_issued_labelled_as_a_statement_date_beside_a_due_date_is_kept(tmp_path, local_model):
+    lines = with_line(RENT, 3, "Due Date 10/01/2026 Statement Date 09/15/2026")
+    replies = rent_replies(lines, issue_date=value("2026-09-15", 3, lines[2]))
+    with read_bill(tmp_path, local_model, lines, replies) as (_manager, _run, _record, row):
+        assert row["issue_date"] == "2026-09-15" and "notes" not in bill_details(row)
+
+
+# SC-40, SC-41: the bill's period is the rent line's -----------------------------------------------------------------
+
+def test_sc40_a_water_period_never_becomes_the_bills_period(tmp_path, local_model):
+    replies = rent_replies(period_start=value("2026-08-15", WATER_LINE, "08/15/2026"), period_end=value("2026-09-14", WATER_LINE, "09/14/2026"))
+    with read_bill(tmp_path, local_model, RENT, replies) as (manager, _run, record, row):
+        assert (row["period_start"], row["period_end"], row["recurrence"]) == ("2026-10-01", "2026-10-31", "monthly")
+        assert bill_details(row) == {"period": RENT_PERIOD}
+        water = stored_lines(manager, row["id"])[1][5]["period"]
+        assert (water["start"], water["end"]) == ("2026-08-15", "2026-09-14")
+        assert record["review_status"] == "verified"
+
+
+@pytest.mark.parametrize("period", [("2026-10", "2026-10"), ("2026-10-01", "2026-10-31")], ids=["month_answered", "days_answered_41a"])
+def test_sc41_a_month_without_days_becomes_the_whole_month(tmp_path, local_model, period):
+    lines = rent_month()
+    rows = [rent_row(lines=lines, period=period), water_row(lines)]
+    # The summary's period cites the month too; the rent line's period is the bill's (FR-47), so it is not checked on its own.
+    replies = rent_replies(lines, rows=rows, period_start=value("2026-10-01", RENT_LINE, "October 2026"),
+                           period_end=value("2026-10-31", RENT_LINE, "October 2026"))
+    with read_bill(tmp_path, local_model, lines, replies) as (manager, _run, record, row):
+        rent = stored_lines(manager, row["id"])[0][5]["period"]
+        assert (rent["start"], rent["end"], rent["how"]) == ("2026-10-01", "2026-10-31", "whole_month")  # Worked out, not printed.
+        assert (row["period_start"], row["period_end"], row["recurrence"]) == ("2026-10-01", "2026-10-31", "monthly")
+        assert bill_details(row)["period"] == {"from": "rent_lines", "how": "whole_month",
+                                               "locator": {"line_ids": ["line-4"], "quotes": ["Rent for October 2026 $1,450.00"]}}
+        assert (record["review_status"], record["issues"]) == ("verified", [])
+        assert_published_bill(manager, lines, row["id"])
+
+
+# SC-42: dates must be printed where cited, and in order ---------------------------------------------------------------
+
+def test_sc42_a_a_due_date_not_printed_where_cited_is_dropped(tmp_path, local_model):
+    replies = rent_replies(due_date=value("2026-10-02", DUE_LINE, RENT[DUE_LINE - 1]))
+    with read_bill(tmp_path, local_model, RENT, replies) as (_manager, _run, record, row):
+        assert row["due_date"] is None and record["review_status"] == "needs_review"
+        assert [issue for issue in record["issues"] if issue.startswith("Due date")] == [
+            "Due date: the cited line doesn't print 2026-10-02; it was left out."]
+
+
+def test_sc42_b_a_period_out_of_order_is_dropped(tmp_path, local_model):
+    """The summary and the rent line both answer 10/31 – 10/01: no period is kept, and the bill needs review."""
+    rows = [rent_row(period=("2026-10-31", "2026-10-01")), water_row()]
+    replies = rent_replies(rows=rows, period_start=value("2026-10-31", RENT_LINE, "10/31/2026"), period_end=value("2026-10-01", RENT_LINE, "10/01/2026"))
+    with read_bill(tmp_path, local_model, RENT, replies) as (manager, _run, record, row):
+        assert (row["period_start"], row["period_end"], record["review_status"]) == (None, None, "needs_review")
+        assert "Period: the printed period starts after it ends; it was left out." in record["issues"]
+        assert bill_details(row)["notes"] == ["Rent: its printed period starts after it ends; it was left out."]
+        assert stored_lines(manager, row["id"])[0][5] is None
+
+
+def test_sc42_b_a_general_bills_period_out_of_order_is_dropped(tmp_path, local_model):
+    replies = general_replies(kind=None, period_start=value("2026-10-31", RENT_LINE, "10/31/2026"), period_end=value("2026-10-01", RENT_LINE, "10/01/2026"))
+    with read_bill(tmp_path, local_model, RENT, replies) as (_manager, _run, record, row):
+        assert (row["period_start"], row["period_end"], record["review_status"]) == (None, None, "needs_review")
+        assert "Period: the printed period starts after it ends; it was left out." in record["issues"]
+
+
+def test_sc42_c_an_issued_date_after_the_due_date_drops_both(tmp_path, local_model):
+    lines = [*RENT, "Statement Date 10/05/2026"]
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, issue_date=value("2026-10-05", 8, lines[7]))) as (_manager, _run, record, row):
+        assert (row["issue_date"], row["due_date"], record["review_status"]) == (None, None, "needs_review")
+        assert [issue for issue in record["issues"] if issue.startswith("Due date")] == [
+            "Due date: the issued date (2026-10-05) is after the due date; both were left out."]
+
+
+@pytest.mark.parametrize("form", ["10/1/2026", "Oct 1, 2026", "2026-10-01"])
+def test_sc42_d_every_printed_form_of_the_due_date_is_kept(tmp_path, local_model, form):
+    lines = with_line(RENT, DUE_LINE, f"Due Date {form}")
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines)) as (_manager, _run, record, row):
+        assert row["due_date"] == "2026-10-01" and record["review_status"] == "verified"
+
+
+def test_sc42_e_a_general_bills_issued_date_not_printed_where_cited_is_a_note(tmp_path, local_model):
+    manager, doc, parse_id = transcribe(tmp_path, local_model, PHONE_TEXT)
+    try:
+        outputs = phone_outputs()
+        outputs[1]["issue_date"] = value("2026-09-06", 3, "Bill date 2026-09-05")
+        local_model["outputs"] = outputs
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        record = manager.ledger.record("receipt", run["publication"]["id"])
+        assert record["issue_date"] is None and record["details"]["notes"] == ["Issued: the cited line doesn't print 2026-09-06; it was left out."]
+        assert record["review_status"] == "verified"  # A dropped Issued is a note only (FR-48).
+    finally:
+        manager.close()
+
+
+# SC-46b: dates without a year ---------------------------------------------------------------------------------------
+
+def test_sc46b_dates_without_a_year_take_the_due_dates(tmp_path, local_model):
+    lines = rent_noyear()
+    rows = [rent_row(lines=lines), water_row(lines, period=("2026-05-15", "2026-06-14"))]
+    replies = rent_replies(lines, rows=rows, period_start=value("2026-10-01", RENT_LINE, "10/1"), period_end=value("2026-10-31", RENT_LINE, "10/31"))
+    with read_bill(tmp_path, local_model, lines, replies) as (manager, _run, record, row):
+        rent, water = (entry[5] for entry in stored_lines(manager, row["id"]))
+        assert (rent["period"]["start"], rent["period"]["end"], rent["period"]["how"]) == ("2026-10-01", "2026-10-31", "year_from_due")
+        assert (row["period_start"], row["period_end"], bill_details(row)["period"]["how"]) == ("2026-10-01", "2026-10-31", "year_from_due")
+        assert "period" not in water and water["usage"]["text"] == "3,200 GAL"
+        assert bill_details(row)["notes"] == ["Rent: year taken from the due date.", "Water Usage: its period isn't printed in its line; it was left out."]
+        assert (record["review_status"], record["review_source"]) == ("verified", "automatic")
+        assert_published_bill(manager, lines, row["id"])
+
+
+def test_sc46b_1_next_months_dates_take_the_due_dates_year(tmp_path, local_model):
+    lines = with_line(RENT, RENT_LINE, "Rent 11/1 - 11/30 $1,450.00")
+    rows = [rent_row(lines=lines, period=("2026-11-01", "2026-11-30")), water_row(lines)]
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows, period_start=MISSING, period_end=MISSING)) as (manager, _run, record, row):
+        assert (row["period_start"], row["period_end"]) == ("2026-11-01", "2026-11-30")
+        assert bill_details(row)["notes"] == ["Rent: year taken from the due date."] and record["review_status"] == "verified"
+
+
+def test_sc46b_2_a_due_date_without_a_year_is_dropped_and_lends_no_year(tmp_path, local_model):
+    lines = with_line(rent_noyear(), DUE_LINE, "Due Date 10/01")
+    rows = [rent_row(lines=lines), water_row(lines, period=("2026-05-15", "2026-06-14"))]
+    replies = rent_replies(lines, rows=rows, due_date=value("2026-10-01", DUE_LINE, lines[DUE_LINE - 1]), period_start=MISSING, period_end=MISSING)
+    with read_bill(tmp_path, local_model, lines, replies) as (manager, _run, record, row):
+        assert (row["due_date"], row["period_start"], record["review_status"]) == (None, None, "needs_review")
+        assert "Due date: the cited line doesn't print 2026-10-01; it was left out." in record["issues"]
+        assert [entry[5] for entry in stored_lines(manager, row["id"])][0] is None
+        assert bill_details(row)["notes"] == ["Rent: its period isn't printed in its line; it was left out.",
+                                              "Water Usage: its period isn't printed in its line; it was left out."]

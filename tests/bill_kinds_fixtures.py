@@ -21,6 +21,21 @@ def rent_plain():
     return [*RENT[:4], "Water $38.42", *RENT[5:]]
 
 
+def rent_month():
+    """RENT-MONTH: the rent line prints only its month."""
+    return with_line(RENT, RENT_LINE, "Rent for October 2026 $1,450.00")
+
+
+def rent_noyear():
+    """RENT-NOYEAR: the rent and water lines print their periods without a year."""
+    return with_line(with_line(RENT, RENT_LINE, "Rent 10/1 - 10/31 $1,450.00"), WATER_LINE, "Water Usage 5/15 - 6/14 3,200 GAL $38.42")
+
+
+def rent_carried():
+    """RENT-CARRIED (a): a previous balance, a payment and the new charges printed before the due date line."""
+    return [*RENT[:5], "Previous Balance $100.00", "Payment Received 09/03/2026 -$100.00", "New Charges $1,488.42", *RENT[5:]]
+
+
 def with_line(lines, number, text):
     """lines with line number replaced by text."""
     return [*lines[:number - 1], text, *lines[number:]]
