@@ -73,13 +73,13 @@ Nondeterministic components: model stubbed with correct answers (classification,
 Initial state: empty library, RENT transcription.
 Actions/checkpoints:
 1. Extract → run `succeeded`.
-2. Requests → exactly one bill-form request, and its schema is the rent schema: it has `previous_balance` and
-   `payments_received` with their own instructions, the rent line types, a line period and a line usage. It has no
+2. Requests → exactly one bill-form request, and its schema is the rent schema: it has `previous_balance`,
+   `payments_received` and `monthly_rent` with their own instructions, the rent line types, a line period and a line usage. It has no
    fuel, dining or grocery field. No general-bill request is made. C-calls holds.
 3. Record → `document_kind = bill`, bill kind `rent`, with its kind citation on line 3 passing C-cite.
 Expected final state:
 - Database: one bill. Due 2026-10-01. Issued null. Period 2026-10-01 – 2026-10-31. Recurrence `monthly`. Previous
-  balance and payments **null** (not 0). Two lines in printed order: `Rent` 145000, type `rent`, period
+  balance, payments and monthly rent **null** (not 0). Two lines in printed order: `Rent` 145000, type `rent`, period
   2026-10-01 – 2026-10-31; `Water Usage` 3842, type `utility`, period 2026-08-15 – 2026-09-14, usage `3,200 GAL`.
   `total_minor = amount_due_minor = 148842`. Cross-checks ≥ 1. `verified`, `review_source = automatic`. No issues.
   Account last four `4821`. C-cite, C-date, C-money, C-ids hold.
@@ -174,6 +174,8 @@ Actions/checkpoints:
 4. Trace `budget.projected` for each → the step names the payee and its amount (1,450.00 and 38.42).
 Expected final state: one confirmed recurring bill; the budgets' amounts unchanged.
 Failure variants:
+- 43a-2 (categories decide): with SC-43 step 5 done (Water corrected to `housing`), November's housing projected is
+  1,488.42 and utilities projected 0.
 - 43a-1 (regression): a recurring bill confirmed from a PHONE bill → its whole expected amount projects to its one
   category, as today (`test_recurring_bills.py::test_confirmed_bills_are_forecast_on_schedule_and_budgeted`).
 Evidence: `pytest tests/test_bill_kinds.py -k sc43a`
@@ -214,7 +216,9 @@ Actions/checkpoints:
    request. Release → the run succeeds.
 6. Undo the kind correction → `general`.
 7. Verify, correct the Amount due, then `PATCH` `rent` → the correction stays and the record stays `verified`; the rent
-   details wait as pending, as document-forms D7.
+   details wait as pending, as document-forms D7. Its lines are unchanged (FR-42): `line_type` null on each, and a
+   `line_type` correction on a line is accepted. Apply details leaves the lines as they are.
+   (Step 6's undo back to `general` leaves every line's `line_type` null.)
 8. Restart (a new manager on the same database) → still pending.
 Expected final state: one bill row. Corrections hold the kind changes, the undo and the amount. The ledger health check
 passes.
@@ -241,7 +245,8 @@ Evidence: `pytest tests/test_bill_kinds.py -k sc46`, `pytest tests/test_bill_kin
 ## SC-46a: a resident ledger counts only this bill's lines
 Requirement IDs: FR-54
 Expected final state:
-- RENT-LEDGER → lines: October rent 145000 and water 3842 only. The water line stays, with its own period
+- RENT-LEDGER → the September lines end before October (the due date's month), so they are left out and the bill's
+  period is October's. Lines: October rent 145000 and water 3842 only. The water line stays, with its own period
   2026-08-15 – 2026-09-14, although that period ends before the bill's. A note naming each September line (the rent
   and the payment). `verified`.
 - RENT-LEDGER-NOPREV → the same two lines and notes, `needs_review`.
@@ -329,7 +334,10 @@ Evidence: `pytest tests/test_migrations.py -k bill_kinds`, `pytest tests/test_bi
 
 ## SC-50: existing bill suites (regression)
 Expected: pass unchanged. A PHONE bill is read with kind `general`; its lines, holders, categories and splits are as in
-`test_a_bill_is_read_by_line_and_counts_its_new_charges`.
+`test_a_bill_is_read_by_line_and_counts_its_new_charges`. Its document page (FR-50 as amended): the three lines, then
+"Earlier balance 12.00" (amount due 79.99 − new charges 67.99, marked worked out), then Amount due 79.99 last; no Not
+accounted for, New charges or Counts as row; `verified`, `review_source = automatic`.
+Evidence also: `pytest tests/test_bill_kinds_browser.py -k phone`
 Evidence: `pytest tests/test_bills_ledger.py tests/test_recurring_bills.py tests/test_invoice_ingestion.py
 tests/test_bills_v2_browser.py`
 
@@ -362,7 +370,7 @@ Evidence: `pytest tests/test_eval_tasks.py -k "document_forms and rent"`
 | FR-47 | SC-38, SC-40, SC-41, 46c-1 | `tests/test_bill_kinds.py -k "sc40 or sc41"` |
 | FR-48 | SC-39, SC-42, SC-46b | `tests/test_bill_kinds.py -k "sc42 or sc46b"` |
 | FR-49 | SC-38, SC-46, SC-46e | `tests/test_bill_kinds.py -k "sc46"` |
-| FR-50 | SC-46, SC-46e, SC-47, SC-48 | `tests/test_bill_kinds_browser.py`, `tests/test_document_v2_browser.py -k invoice` |
+| FR-50 | SC-46, SC-46e, SC-47, SC-48, SC-50 (PHONE page) | `tests/test_bill_kinds_browser.py`, `tests/test_document_v2_browser.py -k invoice` |
 | FR-51 | SC-48 | `tests/test_bill_kinds_browser.py -k sc48` |
 | FR-52 | SC-49 | `tests/test_migrations.py -k bill_kinds`, `tests/test_bill_kinds.py -k version` |
 | FR-53 | SC-51 | `tests/test_eval_tasks.py -k document_forms`, review of `git diff docs/` |

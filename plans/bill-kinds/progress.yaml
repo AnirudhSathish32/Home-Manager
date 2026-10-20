@@ -1,0 +1,44 @@
+# plans/bill-kinds/progress.yaml — execution state, kept out of the hashed plan.
+feature: bill-kinds
+plan_sha256: c7d91530ee2f7c4edc57953b1a3f88a6ccdf6bb8c8e5fa9f7cffd6182a3c2138
+slices:
+  - id: SL-01
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-02
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-03
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-04
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-05
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-06
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-07
+    status: todo
+    commit: null
+    verification: []
+    notes: null
+  - id: SL-08
+    status: todo
+    commit: null
+    verification: []
+    notes: null
