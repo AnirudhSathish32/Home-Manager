@@ -17,6 +17,7 @@ import json
 from ..core.money import money
 from ..core.trace import NULL, Recorder, build, figure, ref
 from . import document_checks
+from .ledger import kind_column
 from .provenance import verification_of
 
 NOT_WORKED_OUT = "This isn't worked out for this record."
@@ -53,11 +54,12 @@ def provenance(db, record_type, row, field, locator=None, result=None):
 
 
 def current(row):
-    """A receipt's details for the kind it is read as now."""
+    """A receipt's or bill's details for the kind it is read as now (kind_column)."""
     if "receipt_kind" in row.keys():
-        if not row["details_json"] or not row["receipt_kind"]:
+        kind = row[kind_column(row)]
+        if not row["details_json"] or not kind:
             return {}
-        return json.loads(row["details_json"]).get(row["receipt_kind"]) or {}
+        return json.loads(row["details_json"]).get(kind) or {}
     return json.loads(row["details_json"]) if row["details_json"] else {}
 
 

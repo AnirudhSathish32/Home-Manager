@@ -41,7 +41,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v30-pre-tax-deductions"
+EXTRACTION_VERSION = "typed-extraction-v31-bill-kinds"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024

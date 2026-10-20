@@ -421,6 +421,106 @@ def test_070_document_forms_record_view_shows_nothing_new(tmp_path):
         store.close()
 
 
+def pre_bill_kinds(db):
+    """A library at the last version before bill kinds (070), as read under typed-extraction-v30: a verified phone bill
+    and a rent-like bill in Review whose Trash line's type the user corrected. Returns their ids."""
+    for digest in ("e" * 64, "f" * 64):
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", (digest,))
+    db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
+    phone_doc, rent_doc = (db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                                      "VALUES('root',?,?,?,'t','t','job')", (name, name, digest)).lastrowid
+                           for name, digest in (("phone.png", "e" * 64), ("rent.png", "f" * 64)))
+    provider = db.execute("INSERT INTO merchants(canonical_name,normalized_name,created_at,updated_at) VALUES('Acme Wireless','ACME WIRELESS','t','t')").lastrowid
+    landlord = db.execute("INSERT INTO merchants(canonical_name,normalized_name,created_at,updated_at) VALUES('Synth Property','SYNTH PROPERTY','t','t')").lastrowid
+    ids = {}
+    for name, doc, digest, merchant, total, due, issue, status, source, category, lines in (
+            ("phone", phone_doc, "e" * 64, provider, 6799, "2026-09-28", "2026-09-05", "verified", "automatic", "phone & internet",
+             (("Unlimited", 4000, "phone & internet", "service"), ("Apple TV+", 999, "subscriptions", "subscription"), ("Taxes and fees", 1800, None, "tax_fee"))),
+            ("rent", rent_doc, "f" * 64, landlord, 148842, "2026-10-01", None, "needs_review", None, "housing",
+             (("Rent", 145000, "housing", "service"), ("Water", 3842, "utilities", "tax_fee")))):
+        receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,merchant_id,purchase_date,total_minor,currency,category,recurrence,review_status,"
+                             "review_source,validation_json,document_kind,issue_date,due_date,amount_due_minor,account_last_four,created_at,updated_at) "
+                             "VALUES(?,?,?,?,?,'USD',?,'monthly',?,?,'[]','bill',?,?,?,'4821','t','t')",
+                             (doc, digest, merchant, due, total, category, status, source, issue, due, total + (1200 if name == "phone" else 0))).lastrowid
+        for position, (description, amount, line_category, kind) in enumerate(lines, 1):
+            item = db.execute("INSERT INTO receipt_items(receipt_id,position,description,line_total_minor,category,category_source,line_kind,review_status) "
+                              "VALUES(?,?,?,?,?,'model',?,?)", (receipt, position, description, amount, line_category, kind,
+                                                                 "verified" if status == "verified" else "proposed")).lastrowid
+            db.execute("INSERT INTO category_splits(receipt_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?)",
+                       (receipt, item, line_category or category, amount))
+        ids[name] = receipt
+    # The user's type for the Water line ("line_kind:2"), as Ledger.correct_line keeps it.
+    db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,created_at) "
+               "VALUES('receipt_item',?,'line_kind:2','usage','tax_fee','[]','t')", (ids["rent"],))
+    db.execute("UPDATE receipt_items SET line_kind='usage' WHERE receipt_id=? AND position=2", (ids["rent"],))
+    return ids
+
+
+def test_071_bill_kinds_leaves_existing_bills_untouched():
+    """SC-49 step 1 (FR-52): bills read before bill kinds keep every value and correction; bill kind and line type are
+    null, nothing is read or queued, and the ledger health check still passes."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    try:
+        for number, script in MIGRATIONS:
+            if number < 71:
+                db.executescript(script.read_text())
+        ids = pre_bill_kinds(db)
+        db.commit()
+        before = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+                  for table in ("receipts", "receipt_items", "category_splits", "record_corrections")}
+        storage.apply_migrations(db, 70)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        for table, rows in before.items():
+            after = [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY id")]
+            assert len(after) == len(rows) and [{key: row[key] for key in old} for row, old in zip(after, rows)] == rows, table
+        assert [tuple(row) for row in db.execute("SELECT id,bill_kind,receipt_kind FROM receipts ORDER BY id")] == [
+            (ids["phone"], None, None), (ids["rent"], None, None)]
+        assert db.execute("SELECT count(*) FROM receipt_items WHERE line_type IS NOT NULL").fetchone()[0] == 0
+        assert db.execute("SELECT line_kind FROM receipt_items WHERE receipt_id=? AND position=2", (ids["rent"],)).fetchone()[0] == "usage"
+        assert db.execute("SELECT count(*) FROM extraction_runs").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM jobs WHERE status<>'completed'").fetchone()[0] == 0
+        from home_manager.finance.health import check_ledger
+        assert [problem for problem in check_ledger(db) if problem.severity == "error"] == []
+        for statement in ("UPDATE receipts SET bill_kind='utility' WHERE id=?", "UPDATE receipt_items SET line_type='snacks' WHERE receipt_id=?"):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(statement, (ids["rent"],))
+        db.execute("UPDATE receipts SET bill_kind='rent' WHERE id=?", (ids["rent"],))
+        db.execute("UPDATE receipt_items SET line_type='utility' WHERE receipt_id=? AND position=2", (ids["rent"],))
+        assert db.execute("SELECT strict FROM pragma_table_list WHERE name='receipts'").fetchone()[0] == 1
+    finally:
+        db.close()
+
+
+def test_071_bill_kinds_record_view_of_an_old_bill(tmp_path):
+    """SC-49 step 1, through the ledger: an old bill's record shows no kind, no details and no line types."""
+    root = tmp_path / "managed"
+    Store(root).close()
+    for name in ("inventory.sqlite3", "inventory.sqlite3-wal", "inventory.sqlite3-shm"):
+        (root / name).unlink(missing_ok=True)
+    db = sqlite3.connect(root / "inventory.sqlite3")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 71:
+                db.executescript(script.read_text())
+        ids = pre_bill_kinds(db)
+        db.commit()
+    finally:
+        db.close()
+    store = Store(root)
+    try:
+        from home_manager.finance.ledger import Ledger
+        ledger = Ledger(store)
+        for name in ("phone", "rent"):
+            record = ledger.record("receipt", ids[name])
+            assert (record["bill_kind"], record["receipt_kind"], record["details"]) == (None, None, None), name
+            assert all(item["line_type"] is None and item["details"] is None for item in record["items"]), name
+        assert [item["line_kind"] for item in ledger.record("receipt", ids["rent"])["items"]] == ["service", "usage"]
+        assert ledger.record("receipt", ids["phone"])["review_status"] == "verified"
+    finally:
+        store.close()
+
+
 def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
     control, managed = tmp_path / "control", tmp_path / "managed"
     manager = Manager(control, ScanLimits(stability_seconds=0))

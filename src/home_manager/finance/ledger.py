@@ -191,6 +191,12 @@ PAID_FIELDS = ("total", "direction", "document_kind", "receipt_kind")
 PAID_ISSUES = ("Gift card on a return", "Gift card deductions exceed", "Amount paid (")
 
 
+def kind_column(row):
+    """The column holding a receipts row's kind: bill_kind for a bill, receipt_kind otherwise (specs/bill-kinds P1).
+    Its details are details_json[<that kind>]."""
+    return "bill_kind" if row["document_kind"] == "bill" else "receipt_kind"
+
+
 UNITS_SHOWN = {"gallon": "gal", "litre": "L"}
 
 
@@ -512,12 +518,15 @@ class Ledger:
 
     def publish_receipt(self, record, source, status):
         with self.store.connection() as db:
-            kind = record.get("receipt_kind")
-            before = db.execute("SELECT receipt_kind FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            # A bill's kind is in bill_kind, a receipt's in receipt_kind (kind_column); the other stays empty.
+            column = kind_column({"document_kind": record.get("document_kind", "receipt")})
+            kind = record.get(column)
+            before = db.execute(f"SELECT {column} FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
             receipt_id, written = self._upsert(db, "receipts", source, {
                 # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
                 # The printed total is written as the total; refresh_paid then counts what was paid after gift cards.
-                "receipt_kind": kind, "details_json": self.merged_details(db, source, kind, record.get("details")), "printed_total_minor": None,
+                "receipt_kind": kind if column == "receipt_kind" else None, "bill_kind": kind if column == "bill_kind" else None,
+                "details_json": self.merged_details(db, source, kind, record.get("details")), "printed_total_minor": None,
                 "pending_details_json": None,
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
@@ -534,10 +543,10 @@ class Ledger:
             if source.get("kind_change") and kind:
                 # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
                 db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,actor,created_at) "
-                           "VALUES('receipt',?,'receipt_kind',?,?,'[]',?,?)", (receipt_id, kind, before["receipt_kind"] if before else None,
-                                                                              actor.current(), now()))
+                           f"VALUES('receipt',?,'{column}',?,?,'[]',?,?)", (receipt_id, kind, before[column] if before else None,
+                                                                             actor.current(), now()))
                 if not written:  # Reviewed: amounts, items and review state stay; the kind's details wait for Apply details.
-                    db.execute("UPDATE receipts SET receipt_kind=?,pending_details_json=?,updated_at=? WHERE id=?",
+                    db.execute(f"UPDATE receipts SET {column}=?,pending_details_json=?,updated_at=? WHERE id=?",
                                (kind, json.dumps({"kind": kind, "details": record.get("details") or {}, "run_id": source["run_id"], "proposed_at": now()}),
                                 now(), receipt_id))
             if written:
@@ -561,7 +570,8 @@ class Ledger:
     @staticmethod
     def merged_details(db, source, kind, details):
         """A receipt's details by kind: this reading replaces only the entry for the kind it read, so an earlier kind's
-        details come back with an undo of a kind change. None for a record not read with kinds (a bill)."""
+        details come back with an undo of a kind change. None for a record not read with kinds (a bill read before bill kinds).
+        kind is the receipt kind or, for a bill, the bill kind (kind_column)."""
         if kind is None:
             return None
         row = db.execute("SELECT details_json FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
@@ -620,10 +630,11 @@ class Ledger:
 
     @staticmethod
     def current_details(row):
-        """A receipt's details for the kind it is read as now ({} when it has none)."""
-        if not row["details_json"] or not row["receipt_kind"]:
+        """A receipt's or bill's details for the kind it is read as now ({} when it has none)."""
+        kind = row[kind_column(row)]
+        if not row["details_json"] or not kind:
             return {}
-        return json.loads(row["details_json"]).get(row["receipt_kind"]) or {}
+        return json.loads(row["details_json"]).get(kind) or {}
 
     def refresh_paid(self, db, receipt_id):
         """What a receipt counts after gift cards (docs/money.md "Gift cards"; spec D15): the printed total less its gift-card
@@ -713,7 +724,7 @@ class Ledger:
             entry["text"] = str(text).strip() if text is not None else None
         entry["status"] = "proposed" if entry.get(key) is not None else "missing"
         everything = json.loads(row["details_json"])
-        everything[row["receipt_kind"]] = details
+        everything[row[kind_column(row)]] = details
         db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(everything), now(), receipt_id))
         return previous
 
@@ -785,7 +796,7 @@ class Ledger:
                 category, category_source = receipt_category(item.get("category")), "model"
             taxed = None if item.get("taxed") is None else int(item["taxed"])
             values = (item["description"], item.get("product_code"), item.get("quantity"), item.get("unit_price_minor"), item["line_total_minor"],
-                      item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"),
+                      item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"), item.get("line_type"),
                       json.dumps(item["details"]) if item.get("details") else None)
             # Whose line it is: as the family sent it, else the person's own choice from before, else nobody yet.
             member, member_source = item.get("member_id"), item.get("member_source") or ("configured" if item.get("member_id") else None)
@@ -796,13 +807,13 @@ class Ledger:
                 if member is None and earlier_item["member_source"] == "user":
                     member, member_source = earlier_item["member_id"], "user"
                 db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
-                           "line_holder=?,line_kind=?,details_json=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
+                           "line_holder=?,line_kind=?,line_type=?,details_json=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
                            (*values, category, category_source if category else None, member, member_source, status, now(), item_id))
                 db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
             else:
                 item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                     "taxed,line_holder,line_kind,details_json,category,category_source,member_id,member_source,review_status,created_at,updated_at) "
-                                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     "taxed,line_holder,line_kind,line_type,details_json,category,category_source,member_id,member_source,review_status,"
+                                     "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                      (receipt_id, position, *values, category, category_source if category else None, member, member_source,
                                       status, now(), now())).lastrowid
             self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
@@ -1023,8 +1034,9 @@ class Ledger:
         date, by its lines' categories, until the payment that paid it replaces it. A bill sent by a family before bills had
         lines carries only its amount due, which is then its total."""
         items = [{"description": line["description"], "line_total_minor": line["line_total_minor"], "category": line.get("category"),
-                  "line_kind": line.get("line_kind"), "line_holder": line.get("line_holder"), "member_id": line.get("member_id"),
-                  "member_source": line.get("member_source"), "quantity": line.get("quantity"), "unit_price_minor": line.get("unit_price_minor"),
+                  "line_kind": line.get("line_kind"), "line_type": line.get("line_type"), "line_holder": line.get("line_holder"),
+                  "member_id": line.get("member_id"), "member_source": line.get("member_source"), "quantity": line.get("quantity"),
+                  "unit_price_minor": line.get("unit_price_minor"), "details": line.get("details"),
                   "locator": line.get("locator") or {}} for line in record.get("items", [])]
         total = record.get("total_minor", record.get("amount_due_minor"))
         # The bill's own category, for lines that have none: the category most of its money is in.
@@ -1039,7 +1051,9 @@ class Ledger:
                    "document_kind": "bill", "issue_date": record.get("issue_date"), "due_date": record.get("due_date"),
                    "period_start": record.get("period_start"), "period_end": record.get("period_end"),
                    "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("last_four") or record.get("account_last_four"),
-                   "invoice": record.get("invoice")}
+                   "invoice": record.get("invoice"),
+                   # Its kind and that kind's printed details (docs/documents.md "Bill kinds"); None for a bill read without kinds.
+                   "bill_kind": record.get("bill_kind"), "details": record.get("details")}
         return {**self.publish_receipt(receipt, source, status), "document_kind": "bill"}
 
     def publish_income(self, record, source, status):
@@ -1146,7 +1160,7 @@ class Ledger:
                 value["issues"] = json.loads(value.pop("validation_json"))
             if "details_json" in value:  # Printed details (docs/documents.md "Typed extraction"): a receipt's for the kind it is read as now.
                 stored = json.loads(value.pop("details_json") or "null")
-                found = (stored or {}).get(row["receipt_kind"]) if record_type == "receipt" and stored is not None else stored
+                found = (stored or {}).get(row[kind_column(row)]) if record_type == "receipt" and stored is not None else stored
                 value["details"] = shown_details(found, row["currency"])
             if "pending_details_json" in value:
                 pending = json.loads(value.pop("pending_details_json") or "null")
