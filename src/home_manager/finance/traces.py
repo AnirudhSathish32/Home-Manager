@@ -14,7 +14,7 @@ from .dashboard import group_categories
 from .document_traces import TRACES as DOCUMENT_TRACES
 from .fx import REPORTING
 from .ledger import Ledger
-from .reconcile import bill_payments, expected_amount
+from .reconcile import bill_payments, expected_amount, usual_payments
 from .tax_traces import TRACES as TAX_TRACES
 from .tools import AccountInput, BudgetInput, FinanceTools, PeriodInput
 from .wealth_traces import CONTEXT_TRACES as WEALTH_CONTEXT_TRACES
@@ -252,7 +252,7 @@ def bill_expected(store, ref_text, params):
         if bill is None:
             raise ValueError("Recurring payment not found.")
         bill = dict(bill)
-        paid = bill_payments(db, bill)
+        paid = usual_payments(db, bill_payments(db, bill))  # As track_bills: a prorated rent bill isn't a usual amount.
     recorder, currency = Recorder(), bill["currency"]
     if paid:
         expected_amount(paid, currency, recorder)

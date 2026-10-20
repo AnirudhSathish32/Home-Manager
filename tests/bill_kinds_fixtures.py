@@ -36,6 +36,20 @@ def rent_carried():
     return [*RENT[:5], "Previous Balance $100.00", "Payment Received 09/03/2026 -$100.00", "New Charges $1,488.42", *RENT[5:]]
 
 
+def rent_ledger(previous=True):
+    """RENT-LEDGER: September's rent and payment above October's lines, and Previous Balance $0.00 after the water line;
+    RENT-LEDGER-NOPREV (previous=False) leaves that line out."""
+    return [*RENT[:3], "Rent 09/01/2026 - 09/30/2026 $1,450.00", "Payment 09/01/2026 -$1,450.00", *RENT[3:5],
+            *(["Previous Balance $0.00"] if previous else []), *RENT[5:]]
+
+
+def rent_prorated(rate=False):
+    """RENT-PRORATED: a 17-day rent line and Amount Due $833.58; RENT-PRORATED-RATE (rate=True) adds Monthly Rent $1,450.00."""
+    lines = with_line(with_line(RENT, RENT_LINE, "Rent 10/15/2026 - 10/31/2026 $795.16"), AMOUNT_LINE,
+                      "Amount Due......................................................... $833.58")
+    return [*lines[:4], "Monthly Rent $1,450.00", *lines[4:]] if rate else lines
+
+
 def with_line(lines, number, text):
     """lines with line number replaced by text."""
     return [*lines[:number - 1], text, *lines[number:]]

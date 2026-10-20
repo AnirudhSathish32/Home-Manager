@@ -15,9 +15,11 @@ from bill_kinds_fixtures import (
     WATER_LINE,
     general_replies,
     rent_carried,
+    rent_ledger,
     rent_month,
     rent_noyear,
     rent_plain,
+    rent_prorated,
     rent_replies,
     rent_row,
     water_row,
@@ -26,6 +28,7 @@ from bill_kinds_fixtures import (
 from conftest import assert_ledger_healthy
 from document_forms_fixtures import uncited
 from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, LABELS, bill_kind, date_printed, due_labelled, printed_dates
+from home_manager.finance import document_checks, traces
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import BudgetInput, FinanceTools, PeriodInput
@@ -673,3 +676,216 @@ def test_sc46b_2_a_due_date_without_a_year_is_dropped_and_lends_no_year(tmp_path
         assert [entry[5] for entry in stored_lines(manager, row["id"])][0] is None
         assert bill_details(row)["notes"] == ["Rent: its period isn't printed in its line; it was left out.",
                                               "Water Usage: its period isn't printed in its line; it was left out."]
+
+
+# SC-38 trace, SC-46, SC-46e: the lines and carried checks (FR-49, FR-58) ----------------------------------------------
+
+def trace_of(manager, ref):
+    """GET /api/traces/{ref} as the API answers it."""
+    return traces.trace(manager.store, ref, manager)
+
+
+def check_named(record, name):
+    return next(check for check in record["checks"] if check["name"] == name)
+
+
+def number_of(lines, start):
+    """The 1-based line number of the line starting with start."""
+    return next(number for number, text in enumerate(lines, 1) if text.startswith(start))
+
+
+def placed(lines, amount_due="1,488.42", rent="Rent 10/"):
+    """Summary answers citing a variant's own line numbers: due date, amount due and the period on the rent line."""
+    due, amount, rent_at = number_of(lines, "Due Date"), number_of(lines, "Amount Due"), number_of(lines, rent)
+    start, end = lines[rent_at - 1].split()[1], lines[rent_at - 1].split()[3]
+    return {"due_date": value("2026-10-01", due, lines[due - 1]), "amount_due": value(amount_due, amount, lines[amount - 1]),
+            "period_start": value(f"{start[6:]}-{start[:2]}-{start[3:5]}", rent_at, start), "period_end": value(f"{end[6:]}-{end[:2]}-{end[3:5]}", rent_at, end)}
+
+
+def test_sc38_the_lines_check_is_a_traceable_figure(tmp_path, local_model):
+    with read_bill(tmp_path, local_model, RENT, rent_replies()) as (manager, _run, record, _row):
+        assert [check["name"] for check in record["checks"]] == ["lines"]  # Nothing carried is printed: no carried check.
+        figure = check_named(record, "lines")
+        assert (figure["figure"]["minor"], figure["compared_with"]["minor"], figure["passes"]) == (148842, 148842, True)
+        trace = trace_of(manager, figure["figure"]["trace"])
+        assert [(step["label"], step["value"]["decimal"]) for step in trace["steps"]] == [("Rent", "1450.00"), ("Water Usage", "38.42")]
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("1488.42", "1488.42", True)
+        inputs = {item["key"]: item for item in trace["inputs"]}
+        assert inputs["amount_due"]["label"] == "Amount due" and inputs["amount_due"]["provenance"]["line_ids"] == [f"line-{AMOUNT_LINE}"]
+        assert (inputs["line:1"]["provenance"]["line_ids"], inputs["line:2"]["provenance"]["line_ids"]) == ([f"line-{RENT_LINE}"], [f"line-{WATER_LINE}"])
+
+
+def carried_replies(lines, amount_due="1,488.42"):
+    """RENT-CARRIED answered correctly: the previous balance, the payment and the new charges as printed."""
+    return rent_replies(lines, previous_balance=value("100.00", 6, lines[5]), payments_received=value("100.00", 7, lines[6]),
+                        new_charges=value("1,488.42", 8, lines[7]), **placed(lines, amount_due))
+
+
+@pytest.mark.parametrize("due, status", [("1,488.42", "verified"), ("1,588.42", "needs_review")], ids=["a", "b"])
+def test_sc46_carried_amounts_and_the_cross_check(tmp_path, local_model, due, status):
+    lines = with_line(rent_carried(), 10, f"Amount Due......................................................... ${due}")
+    with read_bill(tmp_path, local_model, lines, carried_replies(lines, due)) as (manager, run, record, row):
+        details = bill_details(row)
+        assert (details["previous_balance"]["minor"], details["payments_received"]["minor"], details["new_charges"]["minor"]) == (10000, 10000, 148842)
+        assert record["review_status"] == status
+        carried = trace_of(manager, check_named(record, "carried")["figure"]["trace"])
+        # The trace lists the four values: previous balance, payments, new charges and the amount due it's compared with.
+        assert [item["value"]["decimal"] for item in carried["inputs"]] == ["100.00", "100.00", "1488.42", due.replace(",", "")]
+        assert [(step["op"], step["value"]["decimal"]) for step in carried["steps"]] == [("+", "100.00"), ("−", "100.00"), ("+", "1488.42")]
+        assert carried["result"]["decimal"] == "1488.42" and carried["reconciles"] is (status == "verified")
+        assert check_named(record, "lines")["passes"] is True  # The lines add up to the printed new charges either way.
+        if status == "verified":
+            assert run["result"]["normalized"]["cross_checks"] >= 2 and record["issues"] == []
+        else:
+            assert "Amount due: previous balance 100.00 USD less payments 100.00 USD plus new charges 1,488.42 USD is 1,488.42 USD, " \
+                   "but the amount due is 1,588.42 USD." in record["issues"]
+        assert_published_bill(manager, lines, row["id"])
+
+
+def test_sc46e_a_printed_warning_is_not_a_charge(tmp_path, local_model):
+    lines = [*RENT, "A late fee of $75.00 applies after 10/05/2026"]
+    with read_bill(tmp_path / "a", local_model, lines, rent_replies(lines)) as (manager, _run, record, row):
+        assert "never a warning, a term or a fee that may apply later" in request_for(local_model, "RentBillLines")["messages"][0]["content"]
+        assert len(stored_lines(manager, row["id"])) == 2 and bill_details(row) == {"period": RENT_PERIOD}
+        assert (record["review_status"], record["issues"]) == ("verified", [])
+    rows = [rent_row(lines=lines), water_row(lines), rent_row(description="Late fee", amount="75.00", line=8, lines=lines, rent_type="fee", period=None)]
+    with read_bill(tmp_path / "b", local_model, lines, rent_replies(lines, rows=rows)) as (manager, _run, record, row):
+        assert record["review_status"] == "needs_review"
+        assert "Amount due: the lines add up to 1,563.42 USD, but the amount due is 1,488.42 USD. A line may be missing or misread." in record["issues"]
+        trace = trace_of(manager, check_named(record, "lines")["figure"]["trace"])
+        assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("1563.42", "1488.42", False)
+
+
+def test_bill_checks_on_their_own():
+    """document_checks.bill_lines / bill_carried: credits take away, a printed 0.00 counts, a missing amount gives None."""
+    assert document_checks.bill_lines([("Rent", 145000), ("Water", 3842), ("Credit", -2000)], 146842, "USD") == (146842, 146842, True)
+    assert document_checks.bill_lines([("Rent", 145000), ("Water", None)], 148842, "USD") is None
+    assert document_checks.bill_lines([], 148842, "USD") is None
+    assert document_checks.bill_carried(0, 0, 148842, 148842, "USD") == (148842, 148842, True)
+    assert document_checks.bill_carried(10000, -10000, 148842, 158842, "USD") == (148842, 158842, False)  # Payments by magnitude.
+    assert document_checks.bill_carried(None, 10000, 148842, 148842, "USD") is None
+
+
+def test_sc46_a_bill_read_before_kinds_and_an_invoice_have_no_bill_checks(tmp_path):
+    store, ledger, docs = open_books(tmp_path)
+    try:
+        receipt_id = bill(ledger, docs["rent.png"], "SYNTH PROPERTY MANAGEMENT", "2026-10-01", [line("Rent", 145000, "housing")])
+        assert ledger.record("receipt", receipt_id)["checks"] == []
+        with pytest.raises(ValueError, match="This isn't worked out for this record."):
+            traces.trace(store, f"bill.lines?receipt_id={receipt_id}", None)
+    finally:
+        store.close()
+
+
+# SC-46a: a resident ledger counts only this bill's lines (FR-54) ------------------------------------------------------
+
+def ledger_rows(lines):
+    september, payment = number_of(lines, "Rent 09/"), number_of(lines, "Payment")
+    return [rent_row(line=september, lines=lines, period=("2026-09-01", "2026-09-30")),
+            rent_row(description="Payment", line=payment, lines=lines, rent_type="credit", category=None, period=("2026-09-01", "2026-09-01")),
+            rent_row(line=number_of(lines, "Rent 10/"), lines=lines), water_row(lines, line=number_of(lines, "Water"))]
+
+
+@pytest.mark.parametrize("previous, status", [(True, "verified"), (False, "needs_review")], ids=["ledger", "noprev"])
+def test_sc46a_a_resident_ledger_counts_only_this_bills_lines(tmp_path, local_model, previous, status):
+    lines = rent_ledger(previous)
+    changes = placed(lines)
+    if previous:
+        changes["previous_balance"] = value("0.00", number_of(lines, "Previous"), lines[number_of(lines, "Previous") - 1])
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=ledger_rows(lines), **changes)) as (manager, _run, record, row):
+        stored = stored_lines(manager, row["id"])
+        assert [(entry[0], entry[1], entry[2]) for entry in stored] == [("Rent", 145000, "rent"), ("Water Usage", 3842, "utility")]
+        water = stored[1][5]["period"]
+        assert (water["start"], water["end"]) == ("2026-08-15", "2026-09-14")  # A utility line keeps its earlier period (G2).
+        assert (row["period_start"], row["period_end"], row["total_minor"]) == ("2026-10-01", "2026-10-31", 148842)
+        assert bill_details(row)["notes"] == [
+            "Rent (2026-09-01 – 2026-09-30) is from an earlier month; the printed previous balance stands for it.",
+            "Payment (2026-09-01) is from an earlier month; the printed previous balance stands for it."]
+        assert record["review_status"] == status
+        missing = "Earlier months' lines were left out, but no previous balance is printed; check this bill's charges."
+        assert (missing in record["issues"]) is not previous
+        if previous:
+            assert bill_details(row)["previous_balance"]["minor"] == 0 and record["issues"] == []
+        assert_published_bill(manager, lines, row["id"])
+
+
+def test_sc46a_a_dated_rent_line_is_kept_with_no_period_and_no_prorated_note(tmp_path, local_model):
+    """Plan R3-M1: `10/01/2026 Rent $1,450.00` is a dated line: kept, its date stored, no period, no prorated note."""
+    lines = with_line(RENT, RENT_LINE, "10/01/2026 Rent $1,450.00")
+    rows = [rent_row(lines=lines, period=("2026-10-01", "2026-10-01")), water_row(lines)]
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows, period_start=MISSING, period_end=MISSING)) as (manager, _run, record, row):
+        rent = stored_lines(manager, row["id"])[0]
+        assert (rent[1], rent[5]["date"]["value"], "period" in rent[5]) == (145000, "2026-10-01", False)
+        assert (row["period_start"], row["period_end"], row["recurrence"]) == (None, None, "monthly")
+        assert not any(note.startswith("Prorated") for note in (bill_details(row) or {}).get("notes", []))
+        assert record["review_status"] == "verified"
+
+
+# SC-46c: prorated rent (FR-56) ------------------------------------------------------------------------------------------
+
+def proposals(store):
+    with store.connection() as db:
+        return [(row["frequency"], row["expected_amount_minor"]) for row in db.execute(
+            "SELECT o.* FROM recurring_obligations o JOIN merchants m ON m.id=o.merchant_id WHERE m.canonical_name LIKE 'SYNTH PROPERTY%'")]
+
+
+def prorated_rows(lines, amount="795.16", period=("2026-10-15", "2026-10-31")):
+    return [rent_row(lines=lines, amount=amount, period=period), water_row(lines, line=number_of(lines, "Water"))]
+
+
+def test_sc46c_prorated_rent_proposes_no_recurring_bill_until_a_full_month(tmp_path, local_model):
+    lines = rent_prorated()
+    replies = rent_replies(lines, rows=prorated_rows(lines), **placed(lines, "833.58"))
+    with read_bill(tmp_path / "prorated", local_model, lines, replies) as (manager, _run, record, row):
+        # Step 1: monthly, the bill's period the rent line's, the prorated note; the lines add up, so it counts.
+        assert (row["recurrence"], row["period_start"], row["period_end"], row["total_minor"]) == ("monthly", "2026-10-15", "2026-10-31", 83358)
+        assert bill_details(row)["notes"] == ["Prorated rent: 17 days. The recurring bill is proposed from the next full month."]
+        assert bill_details(row)["prorated"] == {"days": 17} and record["review_status"] == "verified"
+        # Step 2: no recurring bill is proposed from it.
+        Reconciler(manager.store).run()
+        assert proposals(manager.store) == []
+    # Step 3: RENT-NOV, extracted and verified, proposes one monthly recurring bill expecting 1,488.42 (its own library:
+    # one transcription per library in these helpers).
+    nov = [{RENT[2]: "Rent and Leasing Charges Due 11/01/2026", RENT[3]: "Rent 11/01/2026 - 11/30/2026 $1,450.00",
+            RENT[5]: RENT[5].replace("10/01/2026", "11/01/2026")}.get(text, text) for text in RENT]
+    rows = [rent_row(lines=nov, period=("2026-11-01", "2026-11-30")), water_row(nov)]
+    changes = {**placed(nov, rent="Rent 11/"), "due_date": value("2026-11-01", DUE_LINE, nov[DUE_LINE - 1])}
+    with read_bill(tmp_path / "nov", local_model, nov, rent_replies(nov, rows=rows, **changes)) as (manager, _run, record, row):
+        assert record["review_status"] == "verified" and "notes" not in (bill_details(row) or {})
+        Reconciler(manager.store).run()
+        assert proposals(manager.store) == [("monthly", 148842)]
+
+
+def test_sc46c_2_a_printed_monthly_rate_proposes_the_rate_plus_utilities(tmp_path, local_model):
+    lines = rent_prorated(rate=True)
+    monthly = number_of(lines, "Monthly Rent")
+    replies = rent_replies(lines, rows=prorated_rows(lines), monthly_rent=value("1,450.00", monthly, lines[monthly - 1]), **placed(lines, "833.58"))
+    with read_bill(tmp_path, local_model, lines, replies) as (manager, _run, record, row):
+        assert bill_details(row)["notes"] == ["Prorated rent: 17 days."] and bill_details(row)["monthly_rent"]["minor"] == 145000
+        assert record["review_status"] == "verified"
+        Reconciler(manager.store).run()
+        assert proposals(manager.store) == [("monthly", 148842)]
+        # The bill's own part-month amount isn't a usual amount: tracking keeps the rate, and the trace agrees.
+        with manager.store.connection() as db:
+            obligation = db.execute("SELECT id FROM recurring_obligations").fetchone()[0]
+        assert trace_of(manager, f"bill.expected?obligation_id={obligation}")["result"]["minor"] == 148842
+
+
+def test_sc46c_an_eight_day_move_in_is_monthly_with_the_prorated_note(tmp_path, local_model):
+    """Plan R2-M2: 8 days falls in the weekly range, but a prorated line shows no schedule."""
+    lines = with_line(with_line(RENT, RENT_LINE, "Rent 10/24/2026 - 10/31/2026 $374.19"), AMOUNT_LINE,
+                      "Amount Due......................................................... $412.61")
+    replies = rent_replies(lines, rows=prorated_rows(lines, "374.19", ("2026-10-24", "2026-10-31")), **placed(lines, "412.61"))
+    with read_bill(tmp_path, local_model, lines, replies) as (_manager, _run, record, row):
+        assert (row["recurrence"], record["review_status"]) == ("monthly", "verified")
+        assert bill_details(row)["notes"] == ["Prorated rent: 8 days. The recurring bill is proposed from the next full month."]
+
+
+def test_sc46c_1_a_prorated_line_and_a_full_month(tmp_path, local_model):
+    lines = rent_prorated()
+    lines = [*lines[:4], "Rent 11/01/2026 - 11/30/2026 $1,450.00", *with_line(lines, AMOUNT_LINE,
+             "Amount Due......................................................... $2,283.58")[4:]]
+    rows = [*prorated_rows(lines)[:1], rent_row(lines=lines, line=5, period=("2026-11-01", "2026-11-30")), water_row(lines, line=6)]
+    with read_bill(tmp_path, local_model, lines, rent_replies(lines, rows=rows, **placed(lines, "2,283.58"))) as (_manager, _run, record, row):
+        assert (row["period_start"], row["period_end"], row["recurrence"]) == ("2026-10-15", "2026-11-30", "monthly")
+        assert record["review_status"] == "verified"

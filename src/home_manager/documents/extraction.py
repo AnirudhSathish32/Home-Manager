@@ -2021,6 +2021,67 @@ def rent_line(item, row, due, notes):
     item["details"] = details or None
 
 
+PAYMENT_WORDS = re.compile(r"\b(payment|paid)\b", re.IGNORECASE)
+
+
+def earlier_lines(record, issues, notes):
+    """A resident ledger's earlier months (specs/bill-kinds FR-54): a rent, credit or payment line whose kept period ends
+    (or whose date falls) before the first day of the due date's month isn't one of this bill's lines; the printed
+    previous balance stands for it. A utility line keeps its earlier period and stays. With no kept due date nothing is
+    left out (the bill is already in review)."""
+    due = record.get("due_date")
+    if not due:
+        return
+    first = date.fromisoformat(due).replace(day=1).isoformat()
+    kept, left = [], 0
+    for item in record["items"]:
+        details = item.get("details") or {}
+        ended = (details.get("period") or {}).get("end") or (details.get("date") or {}).get("value")
+        if item.get("line_type") != "utility" and (item.get("line_type") in ("rent", "credit") or PAYMENT_WORDS.search(item["description"])) \
+                and ended and ended < first:
+            shown = f"{details['period']['start']} – {ended}" if "period" in details else ended
+            notes.append(f"{item['description']} ({shown}) is from an earlier month; the printed previous balance stands for it.")
+            left += 1
+        else:
+            kept.append(item)
+    record["items"] = kept
+    if left and record["details"].get("previous_balance") is None:  # A printed 0.00 counts (R5-m2).
+        issues.append("Earlier months' lines were left out, but no previous balance is printed; check this bill's charges.")
+
+
+def rent_periods(record):
+    """Each rent line's kept period as (start, end, days, prorated): prorated when it sits inside one calendar month but
+    is shorter than it (FR-56)."""
+    found = []
+    for item in record["items"]:
+        period = (item.get("details") or {}).get("period")
+        if item.get("line_type") != "rent" or not period:
+            continue
+        start, end = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+        month_days = ((start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)).day
+        days = (end - start).days + 1
+        found.append((start, end, days, (start.year, start.month) == (end.year, end.month) and days < month_days))
+    return found
+
+
+def prorated_rent(record, notes):
+    """A prorated or move-in rent line's note (FR-56): with no printed monthly rent, the recurring bill waits for the next
+    full month (Reconciler.propose_bills)."""
+    for _, _, days, prorated in rent_periods(record):
+        if prorated:
+            record["details"].setdefault("prorated", {"days": days})
+            later = "" if "monthly_rent" in record["details"] else " The recurring bill is proposed from the next full month."
+            notes.append(f"Prorated rent: {days} days.{later}")
+
+
+def rent_recurrence(record):
+    """A rent bill is monthly unless every non-prorated rent line's period shows one other schedule (FR-56): a prorated
+    line shows none, so an 8-day move-in is never weekly."""
+    names = {next((name for name, (low, high) in BILL_PERIODS.items() if low <= days <= high), None)
+             for _, _, days, prorated in rent_periods(record) if not prorated}
+    return names.pop() if len(names) == 1 and None not in names else "monthly"
+
+
 def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ())):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
@@ -2028,7 +2089,9 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     bill_kind: the form it was read with (specs/bill-kinds), or None for a bill read without kinds; an invoice is always
     general (FR-40). fields: the summary's fields, for the kind's printed details. notes: the bill's notes so far
     (bill_dates); a bill read without kinds has no details to keep them in, so they are issues there. header_period:
-    bill_dates' (issues, notes) on the header period, kept unless the period is the rent lines'."""
+    bill_dates' (issues, notes) on the header period, kept unless the period is the rent lines'. A rent bill also leaves
+    out a ledger's earlier months (FR-54) and notes prorated rent (FR-56); every non-invoice bill gets the lines and
+    carried checks (FR-49, finance/document_checks.py)."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     rent = bill_kind == "rent" and not invoice
     due_date = record.get("due_date")
@@ -2062,7 +2125,19 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             rent_line(item, row, due_date, notes)
         item["line_total_minor"] = -amount if amount is not None and item["line_kind"] == "credit" else amount
         record["items"].append(item)
+    if bill_kind is not None and not invoice:
+        # The printed amounts carried and charged (FR-43, FR-49), on every bill kind: kept only when printed, so an
+        # unprinted one stays missing, never 0, and a bill printing none has no details. An invoice keeps its own.
+        printed = {"new_charges": record.get("new_charges_minor"), "payments_received": record.get("payments_received_minor")}
+        for name in ("previous_balance", "payments_received", "monthly_rent", "new_charges"):
+            field = (fields or {}).get(name)
+            if field is None or field.status != "proposed":
+                continue
+            minor = printed[name] if name in printed else money(field.value.strip(), name.replace("_", " ").capitalize())
+            if minor is not None:
+                record["details"][name] = {"minor": abs(minor) if name == "payments_received" else minor, "locator": locator(field.evidence)}
     if rent:
+        earlier_lines(record, issues, notes)
         # The bill's period is its rent lines' printed period, never a utility line's or the model's header (FR-47, SC-40).
         periods = [item["details"]["period"] for item in record["items"] if item.get("line_type") == "rent" and (item.get("details") or {}).get("period")]
         if periods:
@@ -2076,17 +2151,8 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     if not (rent and "period" in record["details"]):
         issues.extend(header_period[0])
         notes.extend(header_period[1])
-    if bill_kind is not None and not invoice:
-        # The printed amounts carried and charged (FR-43, FR-49), on every bill kind: kept only when printed, so an
-        # unprinted one stays missing, never 0, and a bill printing none has no details. An invoice keeps its own.
-        printed = {"new_charges": record.get("new_charges_minor"), "payments_received": record.get("payments_received_minor")}
-        for name in ("previous_balance", "payments_received", "monthly_rent", "new_charges"):
-            field = (fields or {}).get(name)
-            if field is None or field.status != "proposed":
-                continue
-            minor = printed[name] if name in printed else money(field.value.strip(), name.replace("_", " ").capitalize())
-            if minor is not None:
-                record["details"][name] = {"minor": abs(minor) if name == "payments_received" else minor, "locator": locator(field.evidence)}
+    if rent:
+        prorated_rent(record, notes)
     if notes and bill_kind is None:
         issues.extend(notes)
     elif notes:
@@ -2095,26 +2161,44 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     if invoice:
         new = record.get("invoice_total_minor")
     lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
+    # The lines add up to the new charges, or to the amount due when none are printed (FR-49, plan P8), with the
+    # function the check's trace runs (finance/document_traces.py "bill.lines").
+    labelled = [(item["description"], item["line_total_minor"]) for item in record["items"]]
     if new is not None:
         record["total_minor"] = new
         if lines is not None:
-            if lines == new:
+            if document_checks.bill_lines(labelled, new, currency)[2]:
                 record["cross_checks"] += 1
             else:
                 issues.append(f"New charges: the lines add up to {format_minor(lines, currency)}, but the bill's new charges are "
                               f"{format_minor(new, currency)}. A line may be missing or misread.")
     elif lines is not None:
         record["total_minor"] = lines
-        if due is not None and lines == due:
+        if due is not None and document_checks.bill_lines(labelled, due, currency)[2]:
             record["cross_checks"] += 1
+        elif due is not None and not invoice:
+            issues.append(f"Amount due: the lines add up to {format_minor(lines, currency)}, but the amount due is {format_minor(due, currency)}. "
+                          "A line may be missing or misread.")
     else:
         record["total_minor"] = None if invoice else due
         if due is not None and not invoice:
             issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
+    carried = record.get("details") or {}
+    if not invoice and currency:
+        # Previous balance − payments + new charges = amount due, when all are printed (FR-49).
+        previous, payments = ((carried.get(name) or {}).get("minor") for name in ("previous_balance", "payments_received"))
+        checked = document_checks.bill_carried(previous, payments, new, due, currency)
+        if checked and checked[2]:
+            record["cross_checks"] += 1
+        elif checked:
+            issues.append(f"Amount due: previous balance {format_minor(previous, currency)} less payments {format_minor(payments, currency)} plus new "
+                          f"charges {format_minor(new, currency)} is {format_minor(checked[0], currency)}, but the amount due is {format_minor(due, currency)}.")
     # A bill is for an ongoing service: how often it comes, from the length of its period (monthly when none is printed).
     start, end = (date.fromisoformat(record[key]) if record.get(key) else None for key in ("period_start", "period_end"))
     days = (end - start).days + 1 if start and end and start <= end else None
     record["recurrence"] = next((name for name, (low, high) in BILL_PERIODS.items() if days and low <= days <= high), "monthly")
+    if rent:
+        record["recurrence"] = rent_recurrence(record)
     if invoice:
         record["recurrence"] = None
         invoice_total = record.get("invoice_total_minor")

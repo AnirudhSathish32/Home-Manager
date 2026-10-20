@@ -1,4 +1,5 @@
-"""The arithmetic checks document forms add (specs/document-forms FR-07 – FR-09, FR-21, FR-26, FR-28): each a function of
+"""The arithmetic checks document forms add (specs/document-forms FR-07 – FR-09, FR-21, FR-26, FR-28; specs/bill-kinds
+FR-49): each a function of
 printed values, run with the NULL recorder when a document is read (documents/extraction.py normalize) and with a live
 one for its trace (finance/document_traces.py), so the page's figure and its trace are the same calculation.
 
@@ -104,6 +105,30 @@ def bank_summary(opening, deposits, withdrawals, closing, currency, recorder=NUL
     recorder.step("Withdrawals", "−", abs(withdrawals), currency)
     computed = opening + abs(deposits) - abs(withdrawals)
     return computed, closing, computed == closing
+
+
+def bill_lines(lines, compared_minor, currency, recorder=NULL):
+    """A bill's charge lines added up (specs/bill-kinds FR-49), against its printed new charges, or its amount due when
+    no new charges are printed. lines: (label, signed minor) pairs, a credit negative. None without lines, or when a
+    line has no amount."""
+    if not lines or any(minor is None for _, minor in lines):
+        return None
+    for label, minor in lines:
+        recorder.add(label, minor, currency)
+    computed = sum(minor for _, minor in lines)
+    return computed, compared_minor, compared_minor is not None and computed == compared_minor
+
+
+def bill_carried(previous, payments, new, due, currency, recorder=NULL):
+    """A bill's carried amounts against its amount due (FR-49): previous balance − payments + new charges = amount due.
+    Payments count by magnitude. A printed 0.00 counts as printed; None unless all four are."""
+    if None in (previous, payments, new, due):
+        return None
+    recorder.add("Previous balance", previous, currency)
+    recorder.step("Payments", "−", abs(payments), currency)
+    recorder.add("New charges", new, currency)
+    computed = previous - abs(payments) + new
+    return computed, due, computed == due
 
 
 CARD_TERMS = (("Payments", "−"), ("Credits", "−"), ("Purchases", "+"), ("Fees", "+"), ("Interest", "+"))

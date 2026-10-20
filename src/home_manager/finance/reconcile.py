@@ -99,6 +99,16 @@ def bill_payments(db, bill, start=None, end=None):
     return [dict(row) for row in rows if bill_matches(bill, row["name"], bill["currency"])]
 
 
+def usual_payments(db, paid):
+    """The payments a bill's usual amount is worked out from: every one but a prorated rent bill, whose part-month amount
+    isn't the usual one (specs/bill-kinds FR-56). It still counts as a payment for when the bill was last paid."""
+    receipts = [payment["id"] for payment in paid if payment["record_type"] == "receipt"]
+    prorated = {row[0] for row in db.execute(
+        f"SELECT id FROM receipts WHERE id IN ({','.join('?' * len(receipts))}) AND document_kind='bill' AND bill_kind='rent' "
+        "AND json_extract(details_json,'$.rent.prorated') IS NOT NULL", receipts)} if receipts else set()
+    return [payment for payment in paid if not (payment["record_type"] == "receipt" and payment["id"] in prorated)]
+
+
 def expected_amount(paid, currency=None, recorder=NULL):
     """A bill's usual amount: the average of its last three payments (or fewer, when that's all there are), rounded half
     to even. A live recorder gets each payment's share rounded down, and the rest of the rounding."""
@@ -648,8 +658,19 @@ class Reconciler:
                                   f"WHERE (r.recurrence IS NOT NULL OR r.category IN ({marks})) AND r.review_status='verified' AND r.total_minor>0 "
                                   "AND (r.invoice_json IS NULL OR r.recurrence IS NOT NULL) "
                                   "AND r.purchase_date IS NOT NULL ORDER BY r.purchase_date DESC,r.id", BILL_CATEGORIES).fetchall():
+            expected = receipt["total_minor"]
+            if receipt["document_kind"] == "bill" and receipt["bill_kind"] == "rent":
+                # Prorated or move-in rent (specs/bill-kinds FR-56): with a printed monthly rate, that rate plus the bill's
+                # lines in utilities (as FR-45a splits it); without one, the next full month's bill proposes it.
+                details = (json.loads(receipt["details_json"]) if receipt["details_json"] else {}).get("rent") or {}
+                monthly = (details.get("monthly_rent") or {}).get("minor")
+                if monthly is not None:
+                    expected = monthly + db.execute("SELECT COALESCE(SUM(line_total_minor),0) FROM receipt_items WHERE receipt_id=? "
+                                                    "AND review_status<>'rejected' AND category='utilities'", (receipt["id"],)).fetchone()[0]
+                elif details.get("prorated"):
+                    continue
             if not any(bill_matches(bill, receipt["merchant"], receipt["currency"]) for bill in known):
-                propose(receipt["merchant_id"], None, receipt["total_minor"], receipt["currency"], receipt["recurrence"] or "monthly",
+                propose(receipt["merchant_id"], None, expected, receipt["currency"], receipt["recurrence"] or "monthly",
                         receipt["purchase_date"], receipt["category"], "receipt_single_payment", receipt["id"])
         for row in db.execute(f"SELECT t.*,m.canonical_name AS merchant,{TRANSACTION_CATEGORY} AS spending_category FROM transactions t "
                               f"LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND t.amount_minor<0 AND t.transaction_type IN ('purchase','fee') "
@@ -731,8 +752,8 @@ class Reconciler:
             paid = bill_payments(db, bill)
             if not paid:
                 continue
-            latest = paid[-1]["day"]
-            update = (expected_amount(paid), latest, due_after(latest, bill["frequency"]))
+            latest, usual = paid[-1]["day"], usual_payments(db, paid)
+            update = (expected_amount(usual) if usual else bill["expected_amount_minor"], latest, due_after(latest, bill["frequency"]))
             if update != (bill["expected_amount_minor"], bill["last_paid_date"], bill["next_due_date"]):
                 db.execute("UPDATE recurring_obligations SET expected_amount_minor=?,last_paid_date=?,next_due_date=?,updated_at=? WHERE id=?",
                            (*update, now(), bill["id"]))
