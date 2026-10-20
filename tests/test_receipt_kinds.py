@@ -259,9 +259,10 @@ def test_sc06_an_invoice_stays_a_bill_with_no_receipt_kind(tmp_path, local_model
         run = extract(manager, doc, parse_id)
         assert run["status"] == "succeeded", run["error"]
         with manager.store.connection() as db:
-            row = db.execute("SELECT document_kind,invoice_json,receipt_kind,details_json FROM receipts").fetchone()
+            row = db.execute("SELECT document_kind,invoice_json,receipt_kind,bill_kind,details_json FROM receipts").fetchone()
         assert row["document_kind"] == "bill" and json.loads(row["invoice_json"])["number"] == "INV-104"
-        assert (row["receipt_kind"], row["details_json"]) == (None, None)
+        # No receipt kind and no receipt kind's details; an invoice is a general bill (specs/bill-kinds FR-40).
+        assert (row["receipt_kind"], row["bill_kind"], json.loads(row["details_json"])) == (None, "general", {"general": {}})
         assert not set(KIND_FORMS) & set(asked(local_model))
     finally:
         manager.close()

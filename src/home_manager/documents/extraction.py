@@ -81,7 +81,9 @@ AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balanc
            "deposits_total", "withdrawals_total", "interest_earned", "fees_total", "apy", "purchase_apr", "cash_advance_apr", "credit_limit",
            "available_credit",
            # A receipt kind's money (document forms).
-           "fuel_amount", "gratuity", "savings_total"}
+           "fuel_amount", "gratuity", "savings_total",
+           # A rent bill's printed monthly rate (bill kinds FR-43).
+           "monthly_rent"}
 # Kinds recorded in the ledger; the rest are read only for filing.
 PUBLISHED = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "investment_statement", "investment_confirmation", "investment_tax_form",
              "loan_document")
@@ -226,6 +228,8 @@ RATE = "The hourly rate printed for this earning line, exactly as printed withou
 
 
 RECEIPT_KINDS = ("fuel", "dining", "grocery", "general")
+# A bill's kinds (specs/bill-kinds FR-40): rent has its own form; general is today's bill form.
+BILL_KINDS = ("rent", "general")
 
 
 class Classification(StrictModel):
@@ -237,6 +241,10 @@ class Classification(StrictModel):
     receipt_kind: str | None = Field(default=None, max_length=40, json_schema_extra={"enum": [*RECEIPT_KINDS, None]},
                                      description="For a receipt only: fuel, dining, grocery or general; null for any other document.")
     receipt_kind_evidence: list[EvidenceQuote] = Field(default_factory=list, max_length=10)
+    # The same for a bill (bill_kind): an unusable kind means a general bill (FR-41).
+    bill_kind: str | None = Field(default=None, max_length=40, json_schema_extra={"enum": [*BILL_KINDS, None]},
+                                  description="For a bill only: rent or general; null for any other document.")
+    bill_kind_evidence: list[EvidenceQuote] = Field(default_factory=list, max_length=10)
 
 
 class ReceiptIdentity(StrictModel):
@@ -327,6 +335,36 @@ class BillLine(StrictModel):
                                                         "installment), tax_fee (a tax, surcharge or regulatory fee), credit (a discount or credit), other.")
     line_holder: str | None = Field(max_length=80, description="Who the line is for exactly as printed, such as a phone line's name and number "
                                                                "(Alex 555-123-4567), or null when the bill doesn't say.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
+
+
+# A rent bill's line types (FR-44), and the general line kind each is stored with, so every reader of line_kind (the
+# credit sign, splits, the Bills page) is unchanged (specs/bill-kinds plan P2).
+RENT_LINE_TYPES = ("rent", "parking", "pet", "utility", "fee", "credit", "other")
+RENT_LINE_KINDS = {"rent": "service", "parking": "service", "pet": "service", "utility": "usage", "fee": "tax_fee", "credit": "credit",
+                   "other": "other"}
+# A rent line naming one of these is a utility line, whatever its layout or the model's type (FR-45b).
+UTILITY_WORDS = re.compile(r"\b(water|sewer|trash|garbage|refuse|gas|electric(?:ity)?)\b", re.IGNORECASE)
+# A rent line's category comes from its type (FR-45, D25); credit and other keep the model's.
+RENT_CATEGORIES = {"utility": "utilities", "rent": "housing", "parking": "housing", "pet": "housing", "fee": "housing"}
+
+
+class RentBillLine(StrictModel):
+    """One charge line of a rent bill (FR-44): its rent type, its printed period and, for a utility, its printed usage."""
+    description: str = Field(min_length=1, max_length=500)
+    amount: str | None = Field(max_length=50)
+    quantity: str | None = Field(default=None, max_length=50)
+    unit_price: str | None = Field(default=None, max_length=50)
+    category: Literal[*RECEIPT_CATEGORIES] | None = Field(description="The spending category of this line from the list, or null if unclear.")
+    rent_type: Literal[*RENT_LINE_TYPES] = Field(description="rent (the rent charge), parking, pet (pet rent or a pet fee), utility (water, sewer, "
+                                                             "trash, gas or electric), fee (a late, admin or amenity fee), credit (a concession, "
+                                                             "discount or credit) or other.")
+    line_holder: str | None = Field(max_length=80, description="Who the line is for exactly as printed, or null when the bill doesn't say.")
+    period_start: str | None = Field(default=None, max_length=20, description="The start of this line's own printed period as YYYY-MM-DD, or "
+                                                                             "YYYY-MM when the line prints only a month (Rent for October 2026); null when none is printed.")
+    period_end: str | None = Field(default=None, max_length=20, description="The end of this line's own printed period as YYYY-MM-DD, or "
+                                                                           "YYYY-MM when the line prints only a month; null when none is printed.")
+    usage: str | None = Field(default=None, max_length=50, description="The printed usage with its unit, such as 3,200 GAL, or null.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
 
 
@@ -468,6 +506,24 @@ KIND_ROWS = {
     "grocery": " An item sold by weight gives weight, weight_unit and price_per_weight as printed (BANANAS 2.31 lb @ 0.59/lb 1.36). A line "
                "sold as several units gives quantity, the printed count, and unit_price (2x CHIPS @ 2.00 4.00). Bottle deposits, bag fees "
                "and member or loyalty savings are rows of their own, savings negative. Never list a gift card, EBT or any other payment as an item."}
+# Each bill kind's form (specs/bill-kinds FR-43): the bill summary plus the kind's own printed fields, every one optional.
+# payments_received is already a bill field. A general bill keeps today's form.
+BILL_KIND_FIELDS = {"rent": ("previous_balance", "monthly_rent")}
+BILL_FORMS = {kind: create_model(f"Bill{kind.title()}Summary", __base__=HEADER_MODELS["bill"], **{name: (Value, MISSING_VALUE) for name in names})
+              for kind, names in BILL_KIND_FIELDS.items()}
+BillRentSummary = BILL_FORMS["rent"]
+BILL_KIND_LABELS = {
+    "rent": " This is a rent or resident bill. previous_balance: the printed balance carried from before this bill, missing when none "
+            "is printed; payments_received: the printed payments or credits received since the last bill, as one amount; monthly_rent: "
+            "the printed monthly rent rate, only when printed apart from this bill's rent charge; period_start and period_end: the rent "
+            "line's printed period. Never calculate a missing amount."}
+RENT_ROWS = (" One entry per charge on this bill: rent, parking, pet rent, each utility, each fee and each credit, with its amount as "
+             "printed. A water, sewer, trash, gas or electric charge is its own utility line, never folded into rent. Only charges on "
+             "this bill are lines, never a warning, a term or a fee that may apply later (a late fee of 75.00 applies after a date). "
+             "Never list the amount due, the new charges total, the previous balance or the payments-received total as lines. A dated "
+             "payment row in a resident ledger is a line. period_start and period_end: the line's own printed period; a line printing "
+             "one date (a payment or a past charge) gives that date as both. usage: a utility line's printed usage with its unit. "
+             f"category, from this list or null: {CATEGORY_GUIDE}.")
 # The fields document forms added to each schema, left out together when only they fail validation twice (FR-14).
 NEW_FIELDS = {**{form.__name__: set(KIND_FIELDS[kind]) for kind, form in RECEIPT_FORMS.items()},
               "GroceryItems": {"weight", "weight_unit", "price_per_weight"},
@@ -479,6 +535,7 @@ DETAILS_FAILED = "Document details could not be read; the record was saved with 
 Items = create_model("Items", __base__=StrictModel, items=(list[Item], Field(max_length=MAX_ITEMS)))
 Transactions = create_model("Transactions", __base__=StrictModel, transactions=(list[Transaction], Field(max_length=200)))
 BillLines = create_model("BillLines", __base__=StrictModel, line_items=(list[BillLine], Field(max_length=100)))
+RentBillLines = create_model("RentBillLines", __base__=StrictModel, line_items=(list[RentBillLine], Field(max_length=100)))
 PayLines = create_model("PayLines", __base__=StrictModel, lines=(list[PayLine], Field(max_length=100)))
 PayRowClasses = create_model("PayRowClasses", __base__=StrictModel, lines=(list[PayRowClass], Field(max_length=100)))
 InvestmentLines = create_model("InvestmentLines", __base__=StrictModel, entries=(list[InvestmentLine], Field(max_length=200)))
@@ -495,7 +552,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
-SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Tender, GroceryItem, *RECEIPT_FORMS.values(), Classification, Item, Transaction, BillLine, EvidenceQuote, Items, Transactions, BillLines,
+SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Tender, GroceryItem, *RECEIPT_FORMS.values(), *BILL_FORMS.values(), Classification, Item, Transaction, BillLine, RentBillLine, RentBillLines, EvidenceQuote, Items, Transactions, BillLines,
                                                                        PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
                                                                        Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
@@ -582,7 +639,10 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "For a receipt, also give receipt_kind and cite the lines that show it in receipt_kind_evidence: fuel (a gas-station fuel purchase: "
             "gallons or litres at a price per unit, a pump number, a fuel grade), dining (a restaurant, cafe, bar or takeout: food and drink, a "
             "tip or gratuity line, a server or table), grocery (a supermarket or market: groceries, items priced by weight, loyalty savings, "
-            "bottle deposits, bag fees), or general for any other purchase. receipt_kind is null for anything that is not a receipt. ")
+            "bottle deposits, bag fees), or general for any other purchase. receipt_kind is null for anything that is not a receipt. "
+            "For a bill, also give bill_kind and cite the lines that show it in bill_kind_evidence: rent (a rent or resident bill from a "
+            "landlord or property manager: rent, a resident or lease charge, utilities billed by the property), or general for any other "
+            "bill. bill_kind is null for anything that is not a bill. ")
 
 
 def receipt_kind(classification, lines, notes, requested=None):
@@ -604,6 +664,100 @@ def receipt_kind(classification, lines, notes, requested=None):
         notes.append(f"Receipt kind: {shown} was not used: {why}. It was read as a general receipt.")
         return "general"
     return proposed
+
+
+def bill_kind(classification, lines, notes, requested=None):
+    """The kind a bill is read with (specs/bill-kinds FR-40, FR-41): receipt_kind's rules over BILL_KINDS. The requested
+    kind wins; a null or general proposal is general with no note; an unlisted, uncited or mis-cited one is general with
+    a note saying why."""
+    if requested:
+        return requested
+    proposed = classification.bill_kind
+    if proposed is None or proposed == "general":
+        return "general"
+    shown = proposed if re.fullmatch(r"[a-z][a-z _-]{0,29}", proposed) else "an unlisted kind"
+    text = {line.id: line.text for line in lines}
+    why = ("it is not one of rent or general" if proposed not in BILL_KINDS else
+           "no line was cited for it" if not classification.bill_kind_evidence else
+           "a citation is not an exact quote of an existing line" if any(
+               not cite.quote.strip() or cite.quote not in text.get(cite.line_id, "") for cite in classification.bill_kind_evidence) else None)
+    if why:
+        notes.append(f"Bill kind: {shown} was not used: {why}. It was read as a general bill.")
+        return "general"
+    return proposed
+
+
+# Printed date forms (specs/bill-kinds FR-48, FR-55; plan P5): ISO, numeric M/D/YYYY, a month name with day and year,
+# a yearless M/D, and a month alone. Two-digit years and MM-DD-YYYY are not forms. A numeric match never touches
+# another digit or slash, so 01/2026 inside 10/01/2026 is not a match.
+MONTH_NAMES = {name: number for number, names in enumerate((("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
+                                                              ("may",), ("jun", "june"), ("jul", "july"), ("aug", "august"),
+                                                              ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+                                                              ("dec", "december")), 1) for name in names}
+MONTH = r"(" + "|".join(sorted(MONTH_NAMES, key=len, reverse=True)) + r")\.?"
+DATE_FORMS = (("iso", re.compile(r"(?<![\d/-])(\d{4})-(\d{2})-(\d{2})(?![\d/-])")),
+              ("numeric", re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})/(\d{4})(?![\d/])")),
+              ("named", re.compile(rf"\b{MONTH}\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})\b", re.IGNORECASE)),
+              ("day_named", re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{MONTH},?\s+(\d{{4}})\b", re.IGNORECASE)),
+              ("yearless", re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?![\d/])")),
+              ("month", re.compile(rf"\b{MONTH},?\s+(\d{{4}})\b", re.IGNORECASE)),
+              ("numeric_month", re.compile(r"(?<![\d/])(\d{1,2})/(\d{4})(?![\d/])")))
+
+
+def printed_dates(text):
+    """Every date written in text, as (value, form): a date for a full date; (month, day) for a yearless one (form
+    "yearless"); (year, month) for a month alone (form "month"). A numeric M/D/YYYY gives both the M/D and the D/M
+    reading when each is a valid date: the model already resolved the order under RULES (plan R4)."""
+    found = []
+
+    def full(year, month, day, form):
+        try:
+            found.append((date(int(year), int(month), int(day)), form))
+        except ValueError:
+            pass
+    for form, pattern in DATE_FORMS:
+        for match in pattern.finditer(text or ""):
+            groups = match.groups()
+            if form == "iso":
+                full(*groups, form)
+            elif form == "numeric":
+                full(groups[2], groups[0], groups[1], form)
+                if groups[0] != groups[1]:
+                    full(groups[2], groups[1], groups[0], form)
+            elif form == "named":
+                full(groups[2], MONTH_NAMES[groups[0].lower()], groups[1], form)
+            elif form == "day_named":
+                full(groups[2], MONTH_NAMES[groups[1].lower()], groups[0], form)
+            elif form == "yearless" and 1 <= int(groups[0]) <= 12 and 1 <= int(groups[1]) <= 31:
+                found.append(((int(groups[0]), int(groups[1])), "yearless"))
+            elif form == "month":
+                found.append(((int(groups[1]), MONTH_NAMES[groups[0].lower()]), "month"))
+            elif form == "numeric_month" and 1 <= int(groups[0]) <= 12:
+                found.append(((int(groups[1]), int(groups[0])), "month"))
+    return found
+
+
+def date_printed(value, evidence, due=None):
+    """(the ISO date kept, how) for a date answered as value: "printed" when a cited quote prints that date; "year_from_due"
+    when a quote prints it without a year, the month is the due date's or one either side, and value's year is the one
+    that puts it there (FR-55); else (None, None). due: the bill's due date (ISO text or a date), or None."""
+    try:
+        wanted = date.fromisoformat((value or "").strip())
+    except ValueError:
+        return None, None
+    found = [entry for cite in evidence for entry in printed_dates(cite.quote)]
+    if any(form not in ("yearless", "month") and printed == wanted for printed, form in found):
+        return wanted.isoformat(), "printed"
+    due = date.fromisoformat(due) if isinstance(due, str) else due
+    if due is not None and abs((wanted.year * 12 + wanted.month) - (due.year * 12 + due.month)) <= 1 and any(
+            form == "yearless" and printed == (wanted.month, wanted.day) for printed, form in found):
+        return wanted.isoformat(), "year_from_due"
+    return None, None
+
+
+def month_printed(year, month, evidence):
+    """A cited quote prints this month on its own (Rent for October 2026, 10/2026)."""
+    return any(form == "month" and printed == (year, month) for cite in evidence for printed, form in printed_dates(cite.quote))
 
 
 def chunks(lines, limit=LINES_PER_CALL):
@@ -1389,11 +1543,12 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False):
+def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
     when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
-    printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks)."""
+    printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks). bill_kind: the
+    form a bill was read with (specs/bill-kinds), or None for a bill read without kinds."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -1500,7 +1655,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         if details:
             statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency, line_text)
     elif kind == "bill":
-        bill_lines(record, rows, money, issues, currency, total)
+        kind_fields = {name: getattr(header, name) for name in BILL_KIND_FIELDS.get(bill_kind or "", ()) if hasattr(header, name)}
+        bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields}, bill_kind)
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
                       printed_columns)
@@ -1723,11 +1879,74 @@ def receipt_details(receipt_kind, record, fields, money, issues, currency, line_
             details["tenders"] = tenders
 
 
-def bill_lines(record, rows, money, issues, currency, total):
+def rent_line(item, row, due, notes):
+    """A rent bill line's type, category, printed period and usage (specs/bill-kinds FR-44, FR-45, FR-45b, FR-47).
+    The type is the model's, except a line naming water, sewer, trash, gas or electric is a utility. The category comes
+    from the type. A period or usage is kept only when printed in the line's citation; otherwise it is left out with a
+    note (a note only: the bill can still count). A month printed alone becomes the whole month, marked as worked out."""
+    description = item["description"]
+    line_type = "utility" if UTILITY_WORDS.search(description) else row.rent_type
+    item.update(line_type=line_type, line_kind=RENT_LINE_KINDS[line_type], category=RENT_CATEGORIES.get(line_type, item["category"]))
+    details = {}
+    start, end = ((text or "").strip() or None for text in (row.period_start, row.period_end))
+    if start or end:
+        month = next((re.fullmatch(r"(\d{4})-(\d{2})", text) for text in (start, end) if text and re.fullmatch(r"\d{4}-\d{2}", text)), None)
+        kept_start, how_start = date_printed(start, row.evidence, due) if start and not month else (None, None)
+        kept_end, how_end = date_printed(end, row.evidence, due) if end and not month else (None, None)
+        if not month and start and end and not (kept_start and kept_end):
+            # Full dates that are a month's first and last day, while the line prints only that month (Rent for October 2026).
+            try:
+                first, last = date.fromisoformat(start), date.fromisoformat(end)
+                if first.day == 1 and (first.year, first.month) == (last.year, last.month) and (last + timedelta(days=1)).day == 1:
+                    month = re.fullmatch(r"(\d{4})-(\d{2})", start[:7])
+            except ValueError:
+                pass
+        if month:
+            year, number = int(month.group(1)), int(month.group(2))
+            if 1 <= number <= 12 and month_printed(year, number, row.evidence) and all(
+                    not text or text[:7] == month.group(0) for text in (start, end)):
+                last = (date(year + number // 12, number % 12 + 1, 1) - timedelta(days=1))
+                details["period"] = {"start": date(year, number, 1).isoformat(), "end": last.isoformat(), "how": "whole_month",
+                                     "locator": locator(row.evidence)}
+            else:
+                notes.append(f"{description}: its period isn't printed in its line; it was left out.")
+        elif not (start and end) or start == end:
+            # A dated line (a payment, a past charge): one date, no period (plan R3-M1).
+            kept, how = (kept_start, how_start) if start else (kept_end, how_end)
+            if kept:
+                details["date"] = {"value": kept, "how": how, "locator": locator(row.evidence)}
+            else:
+                notes.append(f"{description}: its date isn't printed in its line; it was left out.")
+        elif not (kept_start and kept_end):
+            notes.append(f"{description}: its period isn't printed in its line; it was left out.")
+        elif kept_start > kept_end:
+            notes.append(f"{description}: its printed period starts after it ends; it was left out.")
+        else:
+            how = "year_from_due" if "year_from_due" in (how_start, how_end) else "printed"
+            details["period"] = {"start": kept_start, "end": kept_end, "how": how, "locator": locator(row.evidence)}
+        if "year_from_due" in (how_start, how_end) and ("period" in details or "date" in details):
+            notes.append(f"{description}: year taken from the due date.")
+    usage = " ".join((row.usage or "").split())
+    if usage:
+        if any(usage.casefold() in " ".join(cite.quote.split()).casefold() for cite in row.evidence):
+            details["usage"] = {"text": usage[:50], "locator": locator(row.evidence)}
+        else:
+            notes.append(f"{description}: its usage isn't printed in its line; it was left out.")
+    item["details"] = details or None
+
+
+def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
-    charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note."""
+    charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note.
+    bill_kind: the form it was read with (specs/bill-kinds), or None for a bill read without kinds; an invoice is always
+    general (FR-40). fields: the summary's fields, for the kind's printed details."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
+    rent = bill_kind == "rent" and not invoice
+    due_date = record.get("due_date")
+    notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
+    if bill_kind is not None:
+        record["bill_kind"], record["details"] = "general" if invoice else bill_kind, {}
     record["items"] = []
     for index, row in enumerate(rows, 1):
         amount = money(row.amount, f"Charge line {index}", magnitude=True)
@@ -1746,9 +1965,27 @@ def bill_lines(record, rows, money, issues, currency, total):
                     issues.append(f"Charge line {index}: quantity times unit price does not equal its line total; check discounts and columns.")
             except (ValueError, ArithmeticError):
                 issues.append(f"Charge line {index}: quantity could not be checked.")
-        record["items"].append({"description": " ".join(row.description.split()), "line_total_minor": -amount if amount is not None and row.line_kind == "credit" else amount,
-                                "quantity": quantity, "unit_price_minor": unit,
-                                "category": row.category, "line_kind": row.line_kind, "line_holder": holder, "locator": locator(row.evidence)})
+        # A rent row's type maps to a line kind (RENT_LINE_KINDS); on an invoice read as rent it is only that (FR-40).
+        rent_type = getattr(row, "rent_type", None)
+        line_kind = RENT_LINE_KINDS[rent_type] if rent_type else row.line_kind
+        item = {"description": " ".join(row.description.split()), "quantity": quantity, "unit_price_minor": unit,
+                "category": row.category, "line_kind": line_kind, "line_holder": holder, "locator": locator(row.evidence)}
+        if rent and rent_type:
+            rent_line(item, row, due_date, notes)
+        item["line_total_minor"] = -amount if amount is not None and item["line_kind"] == "credit" else amount
+        record["items"].append(item)
+    if rent:
+        if not any(item.get("line_type") == "rent" for item in record["items"]):
+            notes.append("No rent line was read.")
+        # The rent form's printed details (FR-43): kept only when read, so an unprinted one stays missing, never 0.
+        for name in ("previous_balance", "payments_received", "monthly_rent"):
+            field = (fields or {}).get(name)
+            if field is not None and field.status == "proposed":
+                minor = money(field.value.strip(), name.replace("_", " ").capitalize(), magnitude=name == "payments_received")
+                if minor is not None:
+                    record["details"][name] = {"minor": minor, "locator": locator(field.evidence)}
+    if notes:
+        record["details"]["notes"] = notes
     new, due = record.pop("new_charges_minor", None), record.get("amount_due_minor")
     if invoice:
         new = record.get("invoice_total_minor")
@@ -2351,14 +2588,30 @@ class ExtractionService:
     def extract(self, config, work, lines, notes, classification=None, tables=(), requested_kind=None):
         """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
         classification: already asked of these same lines. A receipt is read with its kind's form (receipt_kind; requested_kind:
-        the kind this reading must use). Returns (classification, header, rows, identity, receipt kind or None)."""
+        the kind this reading must use). A bill is read with its bill kind's form (bill_kind), and a rent bill whose form fails
+        is read again with the general form (specs/bill-kinds "Errors"). Returns (classification, header, rows, identity,
+        receipt or bill kind, or None)."""
         summary_lines, summary_context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
         classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes,
                                                table_context=summary_context)
         kind = classification.document_type
         if kind not in HEADERS:
             return classification, None, [], None, None
-        chosen = receipt_kind(classification, lines, notes, requested_kind) if kind == "receipt" else None
+        chosen = (receipt_kind(classification, lines, notes, requested_kind) if kind == "receipt" else
+                  bill_kind(classification, lines, notes, requested_kind if requested_kind in BILL_KINDS else None) if kind == "bill" else None)
+        if chosen == "rent":
+            before = len(notes)
+            try:
+                return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context), chosen)
+            except ValueError as exc:
+                # The rent form failed after its correction: never lost, read as a general bill with a note (review).
+                del notes[before:]
+                notes.append("Read as a general bill: " + str(exc).removesuffix(" Nothing from this document was published."))
+                chosen = "general"
+        return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context), chosen)
+
+    def read_form(self, config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context):
+        """(header, rows, identity) of one document read with the form for its kind (chosen: its receipt or bill kind)."""
         known = ""
         if kind in ("paystub", "employment_document"):
             # The model decides whether this is an employer that already has a folder under Jobs, possibly printed another way.
@@ -2370,8 +2623,9 @@ class ExtractionService:
         if tables:
             known += " Use reported_tables headings to identify each amount's column; cite its exact source line and cell text. "
         scope = "the whole document" if len(summary_lines) == len(lines) else "selected summary candidates from the document"
-        header = ask(config, work, RECEIPT_FORMS.get(chosen) or HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. "
-                     f"The lines are {scope}; rows are extracted separately.{KIND_LABELS.get(chosen, '')} " + known, summary_lines,
+        forms, labels = (BILL_FORMS, BILL_KIND_LABELS) if kind == "bill" else (RECEIPT_FORMS, KIND_LABELS)
+        header = ask(config, work, forms.get(chosen) or HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. "
+                     f"The lines are {scope}; rows are extracted separately.{labels.get(chosen, '')} " + known, summary_lines,
                      4096 if kind == "bill" else 2048, notes=notes, table_context=summary_context)
         identity = None
         if kind == "receipt":
@@ -2381,7 +2635,8 @@ class ExtractionService:
         rows = []
         if kind in ROWS:
             schema, key, amount_field, row_label = ROWS[kind]
-            schema = GroceryItems if chosen == "grocery" else schema
+            rent = kind == "bill" and chosen == "rent"
+            schema = GroceryItems if chosen == "grocery" and kind == "receipt" else RentBillLines if rent else schema
             direction = (" row_type holding: each position held at the statement date (a fund, stock, ETF, bond, CD, Treasury, or the cash or "
                          "money market sweep) with its quantity, price, market value (amount) and cost basis as printed; instrument_class from its "
                          "printed name or type; rate and maturity_date for CDs, bonds and Treasuries. row_type activity: each contribution, "
@@ -2403,7 +2658,7 @@ class ExtractionService:
                          if kind == "investment_tax_form" else
                          " direction is debit when money leaves the account holder (purchase, fee, withdrawal or card charge) and credit when money "
                          "arrives (deposit, refund, or a payment received by a card). Resolve the year from the statement period or use null."
-                         if key == "transactions" else
+                         if key == "transactions" else RENT_ROWS if rent else
                          " One entry per charge that makes up this period's new charges: each service, plan, usage, add-on, device installment, "
                          "tax, surcharge, fee, discount and credit, with its amount as printed. A phone or family plan prints charges per line "
                          "or per person: list each line's charges separately, with line_holder as printed for that line (its name and number), "
@@ -2455,7 +2710,7 @@ class ExtractionService:
                                         current=None, ytd=None, evidence=row.evidence, hours=row.hours, rate=row.rate) for row in answer.lines)
                 else:
                     rows.extend(getattr(answer, key))
-        return classification, header, rows, identity, chosen
+        return header, rows, identity
 
     @staticmethod
     def identify(config, work, lines):
@@ -2605,8 +2860,10 @@ class ExtractionService:
             return record, None
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
-        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes, receipt_kind=receipt_kind,
-                                   printed_columns=printed_columns)
+        # receipt_kind is the form the reading chose: a receipt kind, or for a bill its bill kind (extract).
+        record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes,
+                                   receipt_kind=receipt_kind if kind == "receipt" else None, printed_columns=printed_columns,
+                                   bill_kind=receipt_kind if kind == "bill" else None)
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
