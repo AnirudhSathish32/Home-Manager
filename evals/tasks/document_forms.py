@@ -10,6 +10,9 @@ The photographed layout (p_photo, specs/paystub-columns FR-38) prints this perio
 cases are read with the column checks on (normalize's printed_columns), as the app reads a stub with no validated table;
 this measures the rule, not which stubs reach it. Each expects every printed value by row and column, and reports how many
 were kept and how many blanked; a kept value equal to its row's other column is a wrong-column value too.
+
+The RENT bill (specs/bill-kinds FR-53) is read whole, its kind asked of the sorting step, and reported field by field:
+kind, Issued (not printed), period, due date, line count, the water line's type and the amount due.
 """
 
 from home_manager.core.money import as_decimal_text
@@ -18,7 +21,7 @@ from home_manager.documents.extraction import EXTRACTION_VERSION, MISSING_VALUE,
 from .common import make_case, result, text_lines
 from .receipt_kinds import reader, shown
 
-NAME, ROLE, VERSION, PROMPT_VERSION = "document_forms", "reasoning", "document-forms-v2", EXTRACTION_VERSION
+NAME, ROLE, VERSION, PROMPT_VERSION = "document_forms", "reasoning", "document-forms-v3", EXTRACTION_VERSION
 TYPES = ("paystub", "bank_statement", "credit_card_statement")
 
 # Fixture P (specs/document-forms test contract): this period and year to date per line.
@@ -69,6 +72,15 @@ def photo_variants():
           "3,250.00", "GROSS PAY 2,500.00", "37,500.00", "NET PAY 2,250.00", "34,250.00"], PHOTO_COLUMNS, "2250.00")]
 BANK_FIELDS = {"account_type": "checking", "deposits_total": "2500.00", "withdrawals_total": "1200.50", "interest_earned": "0.42", "apy": "0.50%"}
 CARD_FIELDS = {"purchase_apr": "24.99%", "cash_advance_apr": "29.99%", "credit_limit": "5000.00", "available_credit": "4207.55", "rewards_earned": "812"}
+# Fixture RENT (specs/bill-kinds test contract; tests/bill_kinds_fixtures.py prints the same lines): no Issued date is
+# printed, the period is the rent line's, and the water line is a utility with its own earlier period.
+RENT = ["SYNTH PROPERTY MANAGEMENT", "Resident Account ****4821", "Rent and Leasing Charges Due 10/01/2026", "Rent 10/01/2026 - 10/31/2026 $1,450.00",
+        "Water Usage 08/15/2026 - 09/14/2026 3,200 GAL $38.42", "Due Date ........................................................... 10/01/2026",
+        "Amount Due......................................................... $1,488.42"]
+RENT_FIELDS = {"bill_kind": "rent", "issue_date": None, "period": "2026-10-01 – 2026-10-31", "due_date": "2026-10-01", "lines": "2", "water": "utility",
+               "amount_due": "1488.42"}
+BILL_FIELDS = {"bill_kind": "Kind", "issue_date": "Issued", "period": "Period", "due_date": "Due", "lines": "Lines", "water": "Water line",
+               "amount_due": "Amount due"}
 
 
 def cases():
@@ -99,11 +111,15 @@ def cases():
     for lines, columns, net in photo_variants():
         out.append(make_case(NAME, {"type": "paystub", "lines": lines}, {"fields": {**PHOTO_FIELDS, "net_pay": net}, "columns": columns},
                              ["paystub", "p_photo", "measured"]))
+    # A bill read as the app reads one (its kind from the sorting step), after the photographed stub (specs/bill-kinds FR-53).
+    out.insert(5, make_case(NAME, {"type": "bill", "lines": RENT}, {"fields": RENT_FIELDS}, ["bill", "rent"]))
     return out
 
 
 def run(case, config, work):
     kind, lines, notes = case["input"]["type"], text_lines(case["input"]["lines"]), []
+    if kind == "bill":
+        return bill_output(config, work, lines, notes)
     known = Classification(document_type=kind, evidence=[], issuer=MISSING_VALUE, document_date=MISSING_VALUE)
     _, header, rows, _, _ = reader().extract(config, work, lines, notes, known)
     record, issues = normalize(kind, header, rows, "USD", lines, printed_columns="p_photo" in case["tags"])
@@ -131,6 +147,24 @@ def run(case, config, work):
             output["wrong_column_counted"] = len(set(swapped) | set(wrong_keys(values))) if counted else 0
         return output
     return {"fields": {name: shown(detail) for name, detail in details.items() if isinstance(detail, dict)}, "counted": not issues, "wrong_column_counted": 0}
+
+
+def bill_output(config, work, lines, notes):
+    """A bill's kind, Issued, period, due date, line count, the water line's type and the amount due, as the app records
+    them (docs/money.md "Bills and their lines"). The kind comes from the sorting step, so it is asked, not given."""
+    classification, header, rows, _, bill_kind = reader().extract(config, work, lines, notes)
+    if classification.document_type != "bill" or header is None:
+        return {"fields": {}, "counted": False, "wrong_column_counted": 0}
+    record, issues = normalize("bill", header, rows, "USD", lines, bill_kind=bill_kind)
+    issues = [*issues, *notes]
+    issues += review_reasons("bill", record, None, issues)
+    items = record.get("items") or []
+    water = next((item for item in items if "water" in (item.get("description") or "").casefold()), None)
+    start, end = record.get("period_start"), record.get("period_end")
+    fields = {"bill_kind": bill_kind, "issue_date": record.get("issue_date"), "period": f"{start} – {end}" if start and end else None,
+              "due_date": record.get("due_date"), "lines": str(len(items)) if items else None, "water": water and water.get("line_type"),
+              "amount_due": money(record.get("amount_due_minor"))}
+    return {"fields": fields, "counted": not issues, "wrong_column_counted": 0}
 
 
 def other_column(key):
@@ -179,6 +213,8 @@ def grade(case, output):
               "fields_printed": len(printed),
               "invented": sum(1 for name, want in expected.items() if want is None and output["fields"].get(name) is not None),
               "wrong_column_counted": output["wrong_column_counted"]}
+    if "bill" in case["tags"]:  # Each reported field right or wrong, a field not printed (Issued on RENT) included.
+        checks["right"] = {name: output["fields"].get(name) == want for name, want in expected.items()}
     if case["expected"].get("columns"):  # Measured on p_photo, not part of passing: a blanked value goes to review, never counts wrong.
         checks.update(values_printed=len(case["expected"]["columns"]), kept=output.get("kept", 0), blanked=output.get("blanked", 0))
     checks["all_fields"] = checks["fields_correct"] == len(printed) and not checks["invented"]
@@ -207,4 +243,13 @@ def report_lines(rows_by_candidate):
                 lines.append(f"| {candidate} | {kind}{f' ({layout})' if layout else ''} | {sum(check['fields_present'] for check in checks)} of {printed} | "
                              f"{sum(check['fields_correct'] for check in checks)} of {printed} | {sum(check['invented'] for check in checks)} | "
                              f"{kept} | {blanked} | {sum(check['wrong_column_counted'] for check in checks)} |")
+    bills = []
+    for candidate, rows in rows_by_candidate.items():
+        read = [row for row in rows if "bill" in row["tags"] and row["status"] == "ok"]
+        for kind in dict.fromkeys(tag for row in read for tag in row["tags"] if tag != "bill"):
+            right = [row["grades"]["checks"]["right"] for row in read if kind in row["tags"]]
+            bills.append(f"| {candidate} | {kind} | " + " | ".join(f"{sum(check[name] for check in right)} of {len(right)}" for name in BILL_FIELDS) + " |")
+    if bills:
+        lines += ["", "Bills: each field right per bill read (Issued is right when it is left out, as RENT prints none).", "",
+                  "| Candidate | Bill | " + " | ".join(BILL_FIELDS.values()) + " |", "|---|---|" + "---|" * len(BILL_FIELDS), *bills]
     return lines

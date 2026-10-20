@@ -411,6 +411,29 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
   receipt is published with today's fields and rows only, and the note "Document details could not be read". The same
   holds for the new pay stub and statement fields.
 
+### Bill kinds
+
+Code: `documents/extraction.py` (`bill_kind`, `BILL_KINDS`, `BILL_FORMS`, `RENT_ROWS`, `bill_dates`, `bill_lines`),
+`finance/ledger.py` (`bill_summary`), `app/manager.py` `change_kind`. Spec: `specs/bill-kinds`. What a rent bill reads
+and how it counts: [money](money.md#bills-and-their-lines).
+
+- **Two kinds.** The classifier also proposes a bill's kind, citing the lines that show it (a heading or line naming
+  rent, a resident or a lease charge): `rent` or `general` (no extra model call). An uncited, mis-cited or unlisted
+  proposal is read as `general`, with the note "Bill kind: … was not used" and the bill in Review; no proposal is
+  `general` with no note. An invoice is always `general`.
+- **Each kind has its own form.** `rent` is the bill summary plus previous balance, payments received and monthly
+  rent, and its lines carry a rent type, period and usage (`RentBillLines`). `general` is the bill form as before. A
+  rent form that fails after its correction request is read with the general form, with a note and the bill in Review.
+- **Stored** in `receipts.bill_kind` and `receipt_items.line_type` (migration 071, two nullable columns, no rebuild);
+  the kind's details in `details_json` under the kind, as a receipt kind's are. Bills read before migration 071 have no
+  kind, keep their values and keep the page's old rows until read again; the extraction version changed, so Extract
+  again reads them anew, keeping a person's line corrections.
+- **Changing the kind** works as for receipts: the document page's **Bill kind** control (`PATCH /api/receipts/{id}/kind`
+  with `rent` or `general`) reads the bill again from its saved transcription with that form, is refused (409) while a
+  reading of the same file is queued or running, is kept across readings and can be undone. A bill's lines change only
+  when it is read: a reviewed bill's kind change and Apply details leave its lines as they are, and undoing back to
+  general clears its lines' rent types. Invoices have no kind control.
+
 ### Pay stub and statement fields
 
 Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`, `statement_details`),

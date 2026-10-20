@@ -73,6 +73,13 @@ and link here for what isn't. When an item is built, remove it from this list an
     library shows who each line is for as printed.
   - A member's request to share a bill by line reaches the family's inbox when the inbox is next opened on the family
     computer, not at the moment their copy arrives.
+- **Bill kinds, still open** ([documents](documents.md#bill-kinds)):
+  - Only `rent` has its own form. Utility (electric, gas, water: meter reads and usage), phone (per-line plans and
+    devices) and insurance (policy period and coverage) bills are read with the general form.
+  - Family routing doesn't carry a bill's `bill_kind`, its lines' `line_type` or the bill's details yet: a rent bill
+    sent to a member arrives with no kind, with the same lines, categories and amounts.
+  - The rent form's live accuracy is measured only by the `document_forms` eval on synthetic RENT; run it on your own
+    bill and compare ([evals](evals.md)).
 - **Family corrections.** Records corrected in the family library after they were sent need **Send** again.
 - **Returns** ([money](money.md#returns)):
   - A credit smaller than its return receipt (a restocking fee kept) isn't matched automatically. The user links it by

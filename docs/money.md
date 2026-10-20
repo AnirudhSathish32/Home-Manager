@@ -106,16 +106,52 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
 - **Recurring bills.** A verified bill proposes its recurring bill, like a receipt with a recurrence. Subscription lines
   inside a bill aren't recurring payments of their own: the Bills page lists them under the bill as "Includes: …"
   (`includes`, from the payee's latest bill).
+- **Bill kinds** (`bill_kind`, migration 071; [documents](documents.md#bill-kinds)): `rent` or `general`. A rent bill
+  is read with the rent form; every other bill, and every invoice, with the general form described above.
+- **The rent form** (`BillRentSummary`, `RentBillLines`) asks for the bill's fields plus the printed previous balance,
+  payments received and monthly rent rate (kept in `details_json`, missing when not printed, never 0). Each line has a
+  rent type (`line_type`): rent, parking, pet, utility (water, sewer, trash, gas, electric), fee, credit or other. Its
+  `line_kind` follows the type (`core/categories.py` `RENT_LINE_KINDS`), so splits, credits and the Bills page read it
+  as before. The type decides the category: utility is `utilities`; rent, parking, pet and fee are `housing`. A line
+  naming water, sewer, trash, gas or electric is a utility line whatever else it prints, and stays one of the bill's
+  lines. Each line keeps its printed period and, for a utility, its printed usage (such as `3,200 GAL`), in
+  `receipt_items.details_json`. Fees printed as warnings ("a late fee applies after …") are never lines. A rent form
+  that fails after its correction is read with the general form, with the note "Read as a general bill: …".
+- **Rent checks.** The lines must add up to the new charges, or the amount due when none are printed. When the
+  previous balance, payments and new charges are all printed, previous balance − payments + new charges = amount due
+  is one more check. A mismatch is a review reason naming the values. Both are traceable figures (`bill.lines`,
+  `bill.carried`). On a resident ledger, a rent or payment line for a month before the due date's month isn't this
+  bill's line: it is left out with a note, and the printed previous balance stands for it (without one, the bill needs
+  review). A rent line shorter than its month gets the note "Prorated rent: N days"; its recurring bill is proposed
+  from the printed monthly rent plus the utility lines, or else from the next full month.
+- **Dates on every bill.** Issued is a printed statement, bill or invoice date only, never a due date or a date on a
+  "Due" line; when none is printed it is missing, with no review. A rent bill's period is its rent line's, never a
+  utility line's; a rent line printing only its month ("Rent for October 2026") gives the whole month, marked as worked
+  out. Every date, on the bill and on its lines, must be printed in the line it cites (10/01/2026, 10/1/2026, Oct 1,
+  2026 or 2026-10-01), and in order. A dropped due date or period, or dates out of order, send the bill to review; a
+  dropped line date or Issued is a note only. A date printed without its year ("10/1") takes the due date's year when
+  its month is within a month of the due date's, with the note "… year taken from the due date"; otherwise it is
+  dropped.
 - **Corrections.** A bill corrects as a receipt with its own fields (`ledger.fields_for`): provider, issue and due dates,
   period, new charges, amount due and category. Each line's type and person are corrected by printed position
-  (`PATCH /api/receipts/{id}/lines/{position}` with `field` `line_kind` or `member`), kept across readings and undoable
-  like a price.
+  (`PATCH /api/receipts/{id}/lines/{position}` with `field` `line_kind`, `line_type` (a rent bill's lines) or
+  `member`), kept across readings and undoable like a price. A line's rent type applies only while the bill is read as
+  rent; a line kind correction applies on any bill and wins over the type's mapping.
+- **Budgets.** A confirmed recurring bill proposed from a rent bill projects its expected amount by its latest bill's
+  lines: the `utilities` lines into utilities, the rest into the recurring bill's own category (`tools.get_budgets`).
 - **Family.** A shared bill's payment counts only the payer's part, and a bill can be shared by its lines
-  ([family](family.md#sharing-a-bill-by-line)).
+  ([family](family.md#sharing-a-bill-by-line)). A rent bill shares by line the same way.
 - **The page.** Records and the document page show a **Bill** tag and the due date; Records adds the period. The
-  document page shows the lines table: line, price, category, type, person and what each paid, then new charges and
-  amount due. The person is chosen from the family in the family's inbox; elsewhere it shows who the line is for as
-  printed. A bill with lines for more than one person offers **Ask the family to share by line**.
+  document page shows the bill's fields at the top (provider, due, issued when printed, period, billed) and the lines
+  table: line, price, category, type, person and what each paid. The person is chosen from the family in the family's
+  inbox; elsewhere it shows who the line is for as printed. A bill with lines for more than one person offers **Ask the
+  family to share by line**. A rent line also shows its period and usage, each with Find.
+- **The earlier balance row.** Under a kinded bill's lines (`Ledger.bill_summary`) come the printed previous balance and
+  payments received, then one **Amount due** row last, under a rule, with Find and Correct; there is no New charges or
+  Counts as row. When nothing carried is printed and the lines add up to the printed new charges, the rest of the
+  amount due is shown as **Earlier balance**, worked out, with no review. Otherwise any difference is **Not accounted
+  for** (the amount due less the rows above, negative when they add up to more), with the check's review reason.
+  Invoices keep Invoice total and Remaining balance, and bills read before kinds keep their old rows until read again.
 
 Supplier invoices use the existing bill path, including paid invoices and invoices for goods. The record retains
 the supplier, bill-to customer, invoice number, printed subtotal/tax/full total, payments or deposits, remaining

@@ -300,6 +300,47 @@ def test_the_document_forms_task_reports_a_photo_stub_kept_and_blanked(tmp_path,
         assert row in report, report
 
 
+def rent_run(tmp_path, local_model, **changes):
+    """The task's first six cases with the RENT bill (the sixth) answered by the bill-kinds stubs; changes replace its
+    summary answers. Returns (the RENT row, the report)."""
+    import bill_kinds_fixtures
+    from document_forms_fixtures import joined
+    from evals.tasks.document_forms import P_PHOTO, RENT
+    from test_paystub_forms import side_replies
+    assert RENT == bill_kinds_fixtures.RENT  # The task reads the contract's fixture.
+    rent_replies = bill_kinds_fixtures.rent_replies
+    photo = {key: answer for key, answer in side_replies(P_PHOTO).items() if key != "Classification"}
+    local_model["by_schema"] = joined(document_forms_replies(), photo, rent_replies(RENT, **changes))
+    folder = run_tasks(config_for(local_model), ["document_forms"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=6)
+    line = task_lines(folder)[5]
+    assert "rent" in line["tags"] and line["status"] == "ok", line
+    return line, (folder / "report.md").read_text(encoding="utf-8")
+
+
+def test_the_document_forms_task_reads_the_rent_bill_field_by_field(tmp_path, local_model):
+    """SC-51 (bill-kinds FR-53): RENT answered correctly is right on every reported field, Issued left out."""
+    line, report = rent_run(tmp_path, local_model)
+    assert line["output"]["fields"] == {"bill_kind": "rent", "issue_date": None, "period": "2026-10-01 – 2026-10-31", "due_date": "2026-10-01",
+                                        "lines": "2", "water": "utility", "amount_due": "1488.42"}
+    assert line["output"]["counted"] is True and line["grades"]["passed"], line
+    assert "| synthetic | rent | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 |" in report, report
+    for row in FOUR_FORMS_ROWS:
+        assert row in report, report
+
+
+def test_the_document_forms_task_reports_a_rent_bills_wrong_issued_date_and_nothing_else(tmp_path, local_model):
+    """SC-51: one wrong answer, an Issued date the bill doesn't print as one (2026-10-01 cited on the rent line, where it
+    is printed but not labelled due): only Issued is wrong."""
+    from bill_kinds_fixtures import RENT_LINE
+    from evals.tasks.document_forms import RENT
+    from test_extraction import value
+    line, report = rent_run(tmp_path, local_model, issue_date=value("2026-10-01", RENT_LINE, "10/01/2026"))
+    right = line["grades"]["checks"]["right"]
+    assert [name for name, ok in right.items() if not ok] == ["issue_date"] and not line["grades"]["passed"], line
+    assert line["output"]["fields"]["issue_date"] == "2026-10-01" and RENT[RENT_LINE - 1].startswith("Rent 10/01/2026")
+    assert "| synthetic | rent | 1 of 1 | 0 of 1 | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 | 1 of 1 |" in report, report
+
+
 def test_document_forms_column_values_match_rows_side_by_side():
     """Two rows printed on one line are told apart by the line's description; a swapped kept value counts as wrong column."""
     from types import SimpleNamespace

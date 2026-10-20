@@ -1691,7 +1691,7 @@ class Ledger:
         return ids
 
     def bill_summary(self, db, row, items, checks, issues):
-        """A kinded bill's rows under its lines (specs/bill-kinds FR-50): the printed previous balance and payments, then
+        """A kinded bill's rows under its lines (docs/money.md "Bills and their lines"; specs/bill-kinds FR-50): the printed previous balance and payments, then
         what's left between those rows and the amount due, then the amount due. The left-over is the Earlier balance
         when nothing carried is printed and the lines add up to the printed new charges; otherwise it is Not accounted
         for, with the failing check's reason. None for invoices and bills read before kinds (plan P7)."""

@@ -45,7 +45,7 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 | 14 | Web agents: item names, warranties, tax tables | `household/resolver.py`, `warranty.py`, `tax_tables.py` | step loop | `propose_*`: quotes on the page, numbers in the quotes, brackets ascending | `item_lookup`, `warranty`, `tax_table` |
 | — | Decision model (probabilities) | `models/decisions.py` | probabilities | coverage ≥ 0.5 | `decisions` (with calibration) |
 | 15 | Receipt kind and its form | `ExtractionService.extract` (classify, `receipt_kind`, `RECEIPT_FORMS`), `normalize` | kind, `Receipt<Kind>Summary` | kind cited and listed; details printed in their citation | `receipt_kinds` |
-| 16 | Pay stub and statement fields | `ExtractionService.extract`, `normalize`, `review_reasons` | `PaystubSummary`, `PayLines`, statement summaries | FR-22 guards, hours × rate, splits, summary checks | `document_forms` |
+| 16 | Pay stub, statement and rent bill fields | `ExtractionService.extract`, `normalize`, `review_reasons` | `PaystubSummary`, `PayLines`, statement summaries, `BillRentSummary`, `RentBillLines` | FR-22 guards, hours × rate, splits, summary checks, bill dates and lines | `document_forms` |
 
 `receipt_kinds` reports, per receipt kind, how often the kind was right and how many printed fields were present and
 right (and how many were invented). `document_forms` reports the same per document type and pay stub layout, and per pay
@@ -56,6 +56,10 @@ one line, a "SECTION 125" label with two amounts and with one, and each column's
 They are read with the column checks on (docs/money.md "Money in and paystubs"). For these fixtures the report adds
 **Kept** and **Blanked**, the printed values kept and left out ("–" for other fixtures). There, a kept value equal to its
 row's other column also counts as wrong column. This measures the rule itself, not which stubs the app sends to it.
+Its **RENT** case is the synthetic rent bill of `specs/bill-kinds` (docs/documents.md "Bill kinds"), read whole, its
+kind asked of the sorting step. A Bills table reports, field by field, how often each was right: kind (`rent`), Issued
+(right when left out, as RENT prints none), period (2026-10-01 – 2026-10-31), due date, line count (2), the water
+line's type (`utility`) and amount due (1,488.42). Measure the rent form on your own bill by comparing the same fields.
 Both read the documents through the app's own extraction and checks. Run with
 `python -m evals.tasks --tasks receipt_kinds,document_forms --config evals/models.toml`.
 

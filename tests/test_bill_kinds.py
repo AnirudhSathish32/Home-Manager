@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import date
+import hashlib
 import json
 import threading
 import time
@@ -29,17 +30,18 @@ from bill_kinds_fixtures import (
     water_row,
     with_line,
 )
-from conftest import assert_ledger_healthy
+from conftest import assert_ledger_healthy, documents_by_name
 from document_forms_fixtures import fuel, fuel_replies, joined, library, record_document, uncited
 from home_manager.app.api import create_app
 from home_manager.documents.extraction import EXTRACTION_VERSION, HEADERS, LABELS, bill_kind, date_printed, due_labelled, printed_dates
 from home_manager.finance import document_checks, traces
-from home_manager.finance.ledger import HouseholdConfig
+from home_manager.finance.family_routing import FamilyRouting, apply_delivery
+from home_manager.finance.ledger import HouseholdConfig, Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import BudgetInput, FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
-from test_bills_ledger import PHONE_TEXT, bill, line, open_books
+from test_bills_ledger import PHONE_TEXT, WHO, bill, line, open_books
 from test_extraction import MISSING, cite, extract, transcribe, value
 from test_receipt_kinds import app_session, change_kind, corrections_of
 from test_reconcile_tools import add, source_of
@@ -189,6 +191,31 @@ def test_version_changed_and_a_bill_read_under_v30_is_read_again(tmp_path, local
             assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1  # The same bill, read again.
     finally:
         manager.close()
+
+
+def test_version_a_v30_bills_line_kind_correction_survives_reading_it_again_as_rent(tmp_path, local_model):
+    """SC-49 step 3 (FR-52): a rent-like bill read under v30 (no kind, in Review) with a person's line_kind:2 correction is
+    read again because the version changed. It becomes rent; the water line keeps the person's line kind and takes the
+    reading's rent type (plan "Replaying line corrections")."""
+    with bill_session(tmp_path, local_model, general_replies(kind=None)) as (client, manager, doc, parse_id, receipt_id):
+        with manager.store.connection() as db:  # As v30 left it: no kind, no details, no line types.
+            db.execute("UPDATE receipts SET bill_kind=NULL,details_json=NULL,review_status='needs_review' WHERE id=?", (receipt_id,))
+            db.execute("UPDATE receipt_items SET line_type=NULL,details_json=NULL WHERE receipt_id=?", (receipt_id,))
+            db.execute("UPDATE extraction_runs SET prompt_version=?", (V30,))
+        manager.ledger.correct_line(receipt_id, 2, "line_kind", "service")
+        assert line_types(manager, receipt_id) == [("Rent", None, "service"), ("Water Usage", None, "service")]
+        local_model["by_schema"] = rent_replies()
+        started = manager.start_extraction(doc["id"], parse_id)
+        manager.future.result(timeout=30)
+        assert started["reused"] is False
+        assert manager.extractions.get(started["run_id"])["status"] == "succeeded"
+        assert bill_row(manager, receipt_id)["bill_kind"] == "rent"
+        assert line_types(manager, receipt_id) == [("Rent", "rent", "service"), ("Water Usage", "utility", "service")]
+        with manager.store.connection() as db:
+            assert [tuple(row) for row in db.execute("SELECT field,value FROM record_corrections WHERE record_type='receipt_item' AND record_id=?",
+                                                     (receipt_id,))] == [("line_kind:2", "service")]
+            assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+        assert_ledger_healthy(manager.store)
 
 
 # Printed dates (plan "Date checks"): unit tests --------------------------------------------------------------------
@@ -1042,6 +1069,56 @@ def test_sc46c_2_confirmed_a_prorated_bills_recurring_bill_projects_by_line(tmp_
         client.post(f"/api/finance/recurring/{bill['id']}/review", json={"status": "verified"})
         rows = november(client)
         assert (rows["housing"]["projected"]["minor"], rows["utilities"]["projected"]["minor"], rows["bills"]["projected"]["minor"]) == (145000, 3842, 0)
+
+
+def test_sc46d_a_rent_bill_is_shared_by_line_and_the_payers_payment_counts_only_their_part(tmp_path):
+    """SC-46d (FR-57): as test_bills_ledger's phone bill shared by line: Rent to Alex and Water to Blair; Alex pays the
+    whole bill, and only Alex's part counts."""
+    inbox, ledger, docs = open_books(tmp_path / "family")
+    people = {name: open_books(tmp_path / name)[0] for name in ("alex", "blair")}
+    members = list(people)
+    try:
+        items = [{**line("Rent", 145000, "housing"), "line_type": "rent"}, {**line("Water Usage", 3842, "utilities", "usage"), "line_type": "utility"}]
+        record = {"provider": "Synth Property Management", "issue_date": None, "due_date": "2026-10-01", "period_start": "2026-10-01",
+                  "period_end": "2026-10-31", "amount_due_minor": 148842, "total_minor": 148842, "currency": "USD", "issues": [],
+                  "locator": {"line_ids": ["line-1"]}, "items": items, "category": None, "recurrence": "monthly", "bill_kind": "rent",
+                  "details": {"notes": []}}
+        rent = ledger.publish_bill(record, source_of(docs["rent.png"], "extraction:rent.png"), "verified")["id"]
+        routing = FamilyRouting(inbox)
+        routing.refresh({}, WHO[:2])
+        for position, member in ((1, "alex"), (2, "blair")):
+            routing.set_line_member(rent, position, member, members)
+        routing.assign("receipt", rent, "lines", [], members)
+        assignment, plan = routing.deliveries("receipt", rent)
+        assert plan == [("alex", "record", 145000), ("blair", "record", 3842)]  # Each person's own line; nothing left to share out.
+        payload, name, document = routing.payload("receipt", rent)
+        for member, _, share in plan:
+            apply_delivery(people[member], {"key": assignment["family_record_key"], "action": "record", "record_type": "receipt", "record": payload,
+                                            "name": name, "blob_hash": hashlib.sha256(document).hexdigest(), "share": share,
+                                            "people": ["Alex", "Blair"], "share_member": member}, document)
+        spent = {member: october_spending(store) for member, store in people.items()}
+        assert spent == {"alex": (145000, {"housing": 145000}), "blair": (3842, {"utilities": 3842})}
+        # Alex's card pays the whole bill: the charge replaces Alex's bill and counts only Alex's part.
+        card = Ledger(people["alex"]).create_account("Card Co", "credit_card", "USD")
+        add(people["alex"], Ledger(people["alex"]), card, documents_by_name(people["alex"])["export.csv"],
+            [("2026-10-01", "SYNTH PROPERTY MANAGEMENT RENT", -148842)])
+        Reconciler(people["alex"]).run()
+        totals = FinanceTools(people["alex"]).get_spending(OCTOBER)["by_currency"][0]
+        assert (totals["spending"]["minor"], totals["from_receipts"]["minor"]) == (145000, 0)
+        assert october_spending(people["alex"]) == (145000, {"housing": 145000})
+        for store in people.values():
+            assert_ledger_healthy(store)
+    finally:
+        for store in (inbox, *people.values()):
+            store.close()
+
+
+def october_spending(store):
+    """(spending, {category: spending}) in October 2026."""
+    tools = FinanceTools(store)
+    rows = tools.get_spending(OCTOBER)["by_currency"]
+    return (rows[0]["spending"]["minor"] if rows else 0,
+            {row["category"]: row["spending"]["minor"] for row in tools.get_spending_by_category(OCTOBER)["categories"]})
 
 
 # Journey (SC-45): changing a bill's kind (FR-42), and SC-43 step 5: a line's category and rent type corrected -----------

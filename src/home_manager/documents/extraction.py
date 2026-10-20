@@ -231,7 +231,7 @@ RATE = "The hourly rate printed for this earning line, exactly as printed withou
 
 
 RECEIPT_KINDS = ("fuel", "dining", "grocery", "general")
-# A bill's kinds (specs/bill-kinds FR-40): rent has its own form; general is today's bill form.
+# A bill's kinds (docs/documents.md "Bill kinds"; specs/bill-kinds FR-40): rent has its own form; general is today's bill form.
 BILL_KINDS = ("rent", "general")
 
 
@@ -786,7 +786,8 @@ def due_labelled(value, evidence):
 
 
 def bill_dates(record, fields, issues, notes):
-    """A bill's header dates must be printed where they are cited, and in order (specs/bill-kinds FR-46, FR-48, FR-55), on
+    """A bill's header dates must be printed where they are cited, and in order (docs/money.md "Bills and their lines";
+    specs/bill-kinds FR-46, FR-48, FR-55), on
     every bill kind. A dropped due date or period, or dates out of order, is an issue (review); a dropped Issued or a year
     taken from the due date is a note only (plan P9). Issued is never a due date. A yearless date takes the due date's
     year; the due date itself must print its year. Returns the period's own (issues, notes): they count only when the
