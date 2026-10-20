@@ -45,10 +45,15 @@ slices:
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
     notes: "Escalations awaiting user decision: (1) added reconcile.usual_payments + traces.bill_expected rule (prorated rent bills left out of expected-amount average), outside the plan's file list; (2) test_receipt_kinds sc18 intermittent request-count race (8 vs 7), not changed. User decisions 2026-10-20: (1) accepted; (2) noted in docs/open-work.md \"Tests\". Paused here by the user; next is SL-05."
   - id: SL-05
-    status: todo
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: f666829e61fcc1617af1fe13072d3a2fc9085b1e
+    start_head: f3c3a00dbd572bfe84ec1ab2c41213fcd9d1df2e
+    end_head: f666829e61fcc1617af1fe13072d3a2fc9085b1e
+    verification:
+      - "pytest tests/test_bill_kinds.py -k 'sc43a or sc46c' -> 9 passed (orchestrator)"
+      - "pytest test_budgets test_recurring_bills -> 15 passed (orchestrator)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "No escalations. Deviations: (1) 43a-2 built now via the existing category correction (FR-45a split is by category, not line_type); (2) bank-payment test clears source_receipt_id with SQL, since the real path can't produce it once a rent bill exists; (3) utilities part floored at 0."
   - id: SL-06
     status: todo
     commit: null
