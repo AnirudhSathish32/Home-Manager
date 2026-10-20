@@ -78,7 +78,12 @@ slices:
       - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
     notes: "User decision 2026-10-20: change test_bills_ledger.py:371 to assert 'Earlier balance' (cc8ed91); RUN_BROWSER_TESTS=1 pytest tests/test_bills_ledger.py -> 13 passed (orchestrator). Was blocked on escalation 1: existing opt-in browser test in test_bills_ledger.py (outside plan R3's list) asserts the removed 'Only the new charges count' paragraph; SC-50 forbids silent test edits. Worker recommends asserting 'Earlier balance' instead. Other deviations: Not-accounted-for reason in the wide cell; bill before/after shots from a scratchpad script (household seed has no bill); invoices also lose Counts as; docs left for SL-08."
   - id: SL-08
-    status: in_progress
-    commit: null
-    verification: []
-    notes: null
+    status: done
+    commit: cfaf0f8c25c057917979523195bd2c7fc06ba091
+    start_head: b208ad1
+    end_head: cfaf0f8c25c057917979523195bd2c7fc06ba091
+    verification:
+      - "RUN_BROWSER_TESTS=1 pytest test_bill_kinds test_bill_kinds_browser test_bills_ledger test_recurring_bills test_invoice_ingestion test_migrations test_eval_tasks test_document_v2_browser test_budgets -> 167 passed, 0 skipped (orchestrator)"
+      - "git diff docs/ reviewed by orchestrator (documents.md Bill kinds, evals.md RENT case, open-work.md bill kinds open items, money.md)"
+      - "commit is HEAD and descends from START_HEAD; plan hash unchanged"
+    notes: "No escalations. Choices: wrong-Issued eval test cites the rent line (a due-line citation would drop the date); v30 state set by SQL as in SC-43 step 5; SC-46d assigns lines with set_line_member. mypy: 3 errors in evals/tasks/library.py and evals/corpus.py, untouched by this slice."
