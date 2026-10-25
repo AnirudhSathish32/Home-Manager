@@ -623,7 +623,7 @@ def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", si
                     mapping, last_fours(result), found_currency, default, used_sign)
 
 
-# --- Import index (migration 071; docs/documents.md "PDFs") -------------------------------------------------------------
+# --- Import index (migration 072; docs/documents.md "PDFs") -------------------------------------------------------------
 # Derived and rebuildable from the saved reading, like the text index. It is read by the Import picker and the library
 # listing, never by an import: an import always analyzes the reading itself.
 

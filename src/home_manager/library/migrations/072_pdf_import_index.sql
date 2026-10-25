@@ -10,4 +10,4 @@ CREATE TABLE pdf_import_index (
     error TEXT,
     created_at TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version=71;
+PRAGMA user_version=72;

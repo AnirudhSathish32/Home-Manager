@@ -537,14 +537,14 @@ def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
         manager.close()
 
 
-def test_071_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
-    """The PDF import index (specs/account-import-pdf): the upgrade from 070 leaves every existing table's rows as they were, sets
-    user_version=71 and adds a STRICT table that follows its reading. Nothing is backfilled by the migration."""
+def test_072_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
+    """The PDF import index (specs/account-import-pdf): the upgrade from 071 leaves every existing table's rows as they were, sets
+    user_version=72 and adds a STRICT table that follows its reading. Nothing is backfilled by the migration."""
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
     try:
         for number, script in MIGRATIONS:
-            if number < 71:
+            if number < 72:
                 db.executescript(script.read_text())
         pre_document_forms(db)
         db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at) "
@@ -552,9 +552,9 @@ def test_071_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
         db.commit()
         names = [row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
         before = {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names}
-        assert "pdf_import_index" not in names and db.execute("PRAGMA user_version").fetchone()[0] == 70
-        storage.apply_migrations(db, 70)
-        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST == 71
+        assert "pdf_import_index" not in names and db.execute("PRAGMA user_version").fetchone()[0] == 71
+        storage.apply_migrations(db, 71)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST == 72
         assert {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names} == before
         assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # No backfill in the migration.
         assert db.execute("SELECT strict FROM pragma_table_list WHERE name='pdf_import_index'").fetchone()[0] == 1
@@ -569,3 +569,19 @@ def test_071_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
         assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # ON DELETE CASCADE.
     finally:
         db.close()
+
+
+def test_migration_numbers_are_unique_and_a_new_library_has_every_step(tmp_path):
+    """Two branches once both added an 071; the runner applies one script per number, so a new library lacked
+    pdf_import_index and every open failed. Each number appears once, and a new library has both 071 and 072."""
+    numbers = [number for number, _ in MIGRATIONS]
+    assert len(numbers) == len(set(numbers))
+    store = Store(tmp_path / "managed")
+    try:
+        with store.connection() as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+            assert {"bill_kind"} <= {row[1] for row in db.execute("PRAGMA table_info(receipts)")}
+            assert {"line_type"} <= {row[1] for row in db.execute("PRAGMA table_info(receipt_items)")}
+            assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0
+    finally:
+        store.close()

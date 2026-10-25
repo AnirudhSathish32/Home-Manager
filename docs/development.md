@@ -338,7 +338,7 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 ## Schema map
 
 Each library holds one SQLite database, `inventory.sqlite3`, built by the forward-only scripts in
-`src/home_manager/library/migrations/` (001–071). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
+`src/home_manager/library/migrations/` (001–072). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
 `.sql` file is the source of truth for columns and constraints. A table that was later rebuilt is listed under the
 migration that first created it.
 
@@ -456,11 +456,11 @@ migration that first created it.
 | 065 | `account_names` | | Renames `accounts.display_name` from the old generated form that doubled the type ("Household checking checking") to the institution alone; names the user chose stay ([money](money.md#money-pages)) |
 | 067 | `bills_as_receipts` | `share_requests`, `transaction_income_links` | `receipts.document_kind`, `issue_date`, `due_date`, `period_start`, `period_end`, `amount_due_minor`, `account_last_four`; `receipt_items.line_holder`, `member_id`, `member_source`, `line_kind`; `record_shares.member_id`; `bills` copied into receipts and dropped, its typed-id rows renamed, a named payment made a verified match; `family_assignments` rebuilt to allow mode `lines`; model-assigned `housing` items marked `legacy` for re-sorting ([money](money.md#bills-and-their-lines)) |
 
-**PDF import (071)**
+**PDF import (072)**
 
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
-| 071 | `pdf_import_index` | `pdf_import_index` | Derived and rebuildable from the reading, keyed by `parse_runs.id` (`ON DELETE CASCADE`): table count, printed last fours, currency, `analyzer_version`, `error`. No money or row data; nothing backfilled by the migration ([documents](documents.md#transaction-imports)) |
+| 072 | `pdf_import_index` | `pdf_import_index` | Derived and rebuildable from the reading, keyed by `parse_runs.id` (`ON DELETE CASCADE`): table count, printed last fours, currency, `analyzer_version`, `error`. No money or row data; nothing backfilled by the migration ([documents](documents.md#transaction-imports)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture
