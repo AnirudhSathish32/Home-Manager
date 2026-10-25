@@ -4,7 +4,7 @@ plan_sha256: a2a6038955da26e0040d29d17e3ebc2472842c0096c87fbbc3c70b1ca79b7b3a
 slices:
   - id: SL-01
     status: in_progress
-    start_head: 00dc9a2
+    start_head: 7314d0e
   - id: SL-02
     status: todo
   - id: SL-03
