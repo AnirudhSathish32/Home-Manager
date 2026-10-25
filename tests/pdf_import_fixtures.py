@@ -202,8 +202,12 @@ def r_pages():
 
 
 def x_cells(*ids, only_withdrawals=False):
+    """X's data cells (date, description, withdrawal, deposit, balance). `only_withdrawals` (7-c) prints every amount in the
+    Withdrawals column and leaves Deposits blank on every row, so A2's 20.00 is a withdrawal, as the contract says."""
     rows = [row for row in X_ROWS if row[0] in ids]
-    return [(row[2], row[3], row[4], "" if only_withdrawals else row[5], row[6]) for row in rows]
+    if only_withdrawals:
+        return [(row[2], row[3], row[4] or row[5], "", row[6]) for row in rows]
+    return [(row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
 
 def x_pages(variant=None, b2_x=None):
@@ -411,15 +415,46 @@ def cells_by_column(result, number, row, heading):
     return {index: " ".join(words) for index, words in found.items()}, straddling
 
 
-DATE_WORD = re.compile(r"\d{1,2}/\d{1,2}(?:/\d{2,4})?")
-AMOUNT_WORD = re.compile(r"-?\d[\d,]*\.\d+(?:\.\d+)?")
+# The plan's shapes ("Rows"): a date-like word fully matches one of FR-06's printed dates, an amount-like word is a digit-led
+# run of digits, commas and periods (so `1.2.3` and `12345` are amount-like) with an optional sign, currency symbol and suffix.
+DATE_WORD = re.compile(r"\d{1,2}/\d{1,2}(?:/\d{2}|/\d{4})?|\d{4}-\d{2}-\d{2}")
+AMOUNT_WORD = re.compile(r"[-+(]?[$\u20ac\u00a3\u00a5]?\d[\d,.]*(?:\)|-|CR|DR|[A-Za-z]{3})?")
 
 
 def data_rows(result, number):
-    """The visual rows holding a date-like word and an amount-like word: the candidate rows of a page (plan "Rows"). A
-    title such as the statement period has dates but no amount."""
+    """The visual rows holding a date-like word and an amount-like word anywhere: the shape-only candidates of a page. A
+    title such as the statement period has dates but no amount. `candidate_rows` applies the plan's column rule."""
     return [row for row in visual_rows(result, number)
             if any(DATE_WORD.fullmatch(word.text) for word in row) and any(AMOUNT_WORD.fullmatch(word.text) for word in row)]
+
+
+def candidate_rows(result, number, heading, rows=None):
+    """The plan's candidate rule (FR-08 "Rows"): a date-like word in, or straddling, the Date span and an amount-like word
+    in, or straddling, an Amount, Debit, Credit, Withdrawals or Deposits span. A Balance-only amount makes no candidate."""
+    page_layout = layout(result, number)
+    columns = spans(heading)
+    names = [text.strip().lower() for text, _, _ in heading]
+    date_columns = {index for index, name in enumerate(names) if name in DATE_NAMES}
+    amount_columns = {index for index, name in enumerate(names) if name in AMOUNT_NAMES}
+    candidates = []
+    for row in visual_rows(result, number) if rows is None else rows:
+        placed = [(word, column_of(columns, word_box(page_layout, word))[0]) for word in row]
+        if (any(DATE_WORD.fullmatch(word.text) and index in date_columns for word, index in placed)
+                and any(AMOUNT_WORD.fullmatch(word.text) and index in amount_columns for word, index in placed)):
+            candidates.append(row)
+    return candidates
+
+
+def below_table_rows(result, number):
+    """The visual rows whose baseline is below the last row of the page's native transactions table (plan "Rows below a
+    native table"): its below-table region, up to the page end."""
+    page_layout = layout(result, number)
+    [grid] = [table for table in page_layout.tables if is_transactions_heading(
+        [next(cell.text for cell in table.cells if cell.row == 0 and cell.column == c) for c in range(table.columns)])]
+    words = {word.id: word for word in page_layout.words}
+    last = max(baseline(page_layout, words[word_id]) for cell in grid.cells if cell.row == grid.rows - 1 for word_id in cell.word_ids)
+    size = font_size(page_layout)
+    return [row for row in visual_rows(result, number) if baseline(page_layout, row[0]) - last > size * 0.25]
 
 
 def heading_of(result, number):

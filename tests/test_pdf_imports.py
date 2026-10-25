@@ -58,9 +58,10 @@ def assert_heading_is_one_visual_row(result, number, names):
 
 
 def assert_row_cells(result, number, heading, expected):
-    """The page's candidate rows (a date-like word) are exactly `expected`, each cell inside the column span of its
-    heading: a list of {column: text}. No word straddles two spans."""
-    rows = fx.data_rows(result, number)
+    """The page's candidate rows (plan "Rows": a date-like word in the Date span and an amount-like word in an amount span)
+    are exactly `expected`, each cell inside the column span of its heading: a list of {column: text}. No word straddles
+    two spans."""
+    rows = fx.candidate_rows(result, number, heading)
     assert len(rows) == len(expected)
     for row, cells in zip(rows, expected):
         found, straddling = fx.printed_cells(result, number, heading, row)
@@ -323,29 +324,39 @@ def test_pcheck_sc16_long_cell_reads_as_one_native_cell_without_a_layout_review(
     assert_heading_is_one_visual_row(result, 1, fx.HEADING3)
 
 
-def test_pcheck_sc25_v_v5_cell_is_one_native_cell_without_a_layout_review(tmp_path):
-    """Plan gate: V's v5 description reads as one native cell, with no pdf_layout_review.
+def v_cells(*ids):
+    """V's printed cells as {column: text}: a blank cell (v3's description) prints nothing."""
+    return [as_cells(row[1:6]) for row in fx.V_ROWS if row[0] in ids]
 
-    Does not hold for V as the contract defines it: v3 prints no description, so the reader's table needs a label on
-    every row and builds a native table of the heading, v1 and v2 only (v3-v5 stay loose lines), and raises
-    unresolved_columns. See plans/account-import-pdf/handoffs/slice-SL-01.md."""
+
+def test_pcheck_sc25_v_native_table_is_the_heading_v1_and_v2_and_v3_to_v5_are_one_visual_row_each_below_it(tmp_path):
+    """Plan "SL-01 details" Gate, V (P13). v3 prints no description, and the reader's table needs a label on every row,
+    so its native table is the heading, v1 and v2 only. v3 to v5 stay loose lines, and the import's below-table rows
+    read them from the saved words."""
     result = read(tmp_path, fx.v_pages())
-    assert fx.page_issue_codes(result, 1) == [] and fx.layout(result, 1).issues == []
-    [grid] = fx.native_transactions_tables(result, 1)
-    assert grid[0] == list(fx.HEADING5)
-    assert [row[1] for row in grid[1:]] == [row[2] for row in fx.V_ROWS]
-    assert grid[-1][1] == fx.V_LONG_DESCRIPTION and len(grid[-1][1]) == 480
-
-
-def test_pcheck_sc25_v_page_keeps_the_long_cell_clear_of_the_other_columns(tmp_path):
-    """What does hold for V: the 480-character description is one run of words on one visual row, with Withdrawals,
-    Deposits and Balance past its right edge, so the reader sees no glyph_outside_page or overlapping_text."""
-    result = read(tmp_path, fx.v_pages())
-    assert not set(fx.layout(result, 1).issues) & {"glyph_outside_page", "overlapping_text", "unsupported_text_rotation"}
+    # The reader's native table is the heading, v1 and v2, and the page's only layout issue is unresolved_columns.
+    assert fx.native_transactions_tables(result, 1) == [[list(fx.HEADING5), *[list(row[1:6]) for row in fx.V_ROWS[:2]]]]
+    assert len(fx.native_grids(result, 1)) == 1
+    assert fx.layout(result, 1).issues == ["unresolved_columns"]
+    assert fx.page_issue_codes(result, 1) == ["pdf_layout_review"]
+    # Its heading is one visual row, and equals the table's row 0 (the import takes the columns from there).
     heading = assert_heading_is_one_visual_row(result, 1, fx.HEADING5)
-    v5 = fx.data_rows(result, 1)[-1]
-    found, straddling = fx.printed_cells(result, 1, heading, v5)
-    assert straddling == [] and found == {0: "08/05/2026", 1: fx.V_LONG_DESCRIPTION, 2: "2.00", 4: "987.00"}
+    assert [text for text, _, _ in heading] == fx.native_grids(result, 1)[0][0]
+    # v3, v4 and v5 are each one visual row below the table's last row, then the footer: nothing else is down there.
+    below = fx.below_table_rows(result, 1)
+    assert len(below) == 4 and fx.footer_text(result, 1) == " ".join(word.text for word in below[-1])
+    assert fx.candidate_rows(result, 1, heading, below) == below[:3] == fx.data_rows(result, 1)[2:]
+    # Each maps to the heading's column spans with no straddling word. v3 has no description, v4's amount is 1.2.3.
+    for row, cells in zip(below[:3], v_cells("v3", "v4", "v5")):
+        assert fx.printed_cells(result, 1, heading, row) == (cells, []), cells
+    assert v_cells("v3")[0] == {0: "08/03/2026", 2: "1.00", 4: "989.00"}
+    assert v_cells("v4")[0][2] == "1.2.3" and v_cells("v5")[0][1] == fx.V_LONG_DESCRIPTION and len(fx.V_LONG_DESCRIPTION) == 480
+    # v5's 480-character description is one text, inside the Description span.
+    [description] = [(text, left, right) for text, left, right in fx.texts(result, 1, below[2]) if text == fx.V_LONG_DESCRIPTION]
+    span = fx.spans(heading)[1]
+    assert span[0] <= description[1] and description[2] <= span[1]
+    # No glyph is outside the page, no text overlaps, and nothing is rotated.
+    assert not set(fx.layout(result, 1).issues) & {"glyph_outside_page", "overlapping_text", "unsupported_text_rotation"}
 
 
 # --- The helpers themselves ------------------------------------------------------------------------------------------
@@ -356,7 +367,7 @@ def test_pcheck_visual_rows_and_heading_texts_equal_every_native_table_in_the_fi
     the reader also splits at the column of the amounts below it, so `Fee summary` and `Count` sit within 1.5 font
     sizes: a non-transactions table, whose heading text is never used."""
     cases = {"x": fx.x_pages(), "r": fx.r_pages(), "f": fx.f_pages(), "fn": fx.fn_pages(), "long": fx.long_cell_pages(),
-             "d": fx.one_page(fx.D_NY), "x7b": fx.x_pages("7b")}
+             "d": fx.one_page(fx.D_NY), "x7b": fx.x_pages("7b"), "v": fx.v_pages()}
     for name, pages in cases.items():
         directory = tmp_path / name
         directory.mkdir()
