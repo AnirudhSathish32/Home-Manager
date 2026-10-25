@@ -112,6 +112,23 @@ slices:
       says "CSV or XLSX". FOR REVIEW: pdf_import.refused is parsed from pdf_refusal's message text (pinned by a test).
       The 250-PDF tests take ~100 s (API) and ~85 s (browser).
   - id: SL-07
-    status: in_progress
+    status: done
+    start_head: c979bf2
+    end_head: a392742
+    commit: a392742
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py tests/test_accounts_v2_browser.py -q -> 10 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -q -> 140 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_transactions_v2_browser.py -q -> 1 failed (test_transactions_v2_filters_categorises_adds_and_imports, 390px .tx2-name), 1 passed; the same test fails at 803c588 (before feature code; worktree, PYTHONPATH=<worktree>/src)"
+      - "screenshots /tmp/sl07/ (before/after K, R, CSV; after U unread) checked: after-K-pdf.png shows match, tables, server totals, statuses and continued labels"
+    notes: >-
+      Dialog PDF mode in library.js/index.html/style.css: account from the server's account_match (not localStorage),
+      New account fieldset (new_account in preview/import requests, no separate account call), tables, year (no default),
+      date order, sign (server default; hidden for Debit/Credit), ticks, server statuses/labels/totals, re-preview on change,
+      Read-then-preview for an unread PDF. Hint copy moved to index.html; money_v2.js rewrite line removed.
+      FOR REVIEW: the unread case is detected by matching the error text "Read this document first."; status badges reuse
+      existing STATUS keys. SC-21's "More actions" entry is SL-08.
   - id: SL-08
-    status: todo
+    status: in_progress
