@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import re
 import socket
+import time
 
 from fastapi.testclient import TestClient
 import pytest
@@ -842,14 +843,14 @@ class Env:
 
     def add(self, name, pages, read=True, config=None, **options):
         """Put a synthetic PDF in the Inbox, capture it and (by default) read it with the real reader; returns the library row."""
-        before = {doc["id"] for doc in self.store.documents()["items"]}
+        before = {doc["id"] for doc in self.store.documents(limit=100_000)["items"]}
         if isinstance(pages, bytes):
             (self.store.library.inbox / name).write_bytes(pages)
         else:
             make_pdf(self.store.library.inbox / name, pages, **options)
         self.manager.start_inbox()
         self.manager.future.result(timeout=30)
-        [doc] = [doc for doc in self.store.documents()["items"] if doc["id"] not in before]
+        [doc] = [doc for doc in self.store.documents(limit=100_000)["items"] if doc["id"] not in before]
         self.names[doc["id"]] = name
         # Capture already reads a native PDF (no model); the reader runs again here only for a model's page or when none was saved.
         if read and (config or not self.sql("SELECT 1 FROM parse_runs WHERE blob_hash=? AND status='succeeded'", doc["current_hash"])):
@@ -1891,3 +1892,191 @@ def test_sc22_a_csv_rows_provenance_is_unchanged(env):
     [txn] = transaction_ids(env, a)
     found = env.client.get(f"/api/provenance/transaction/{txn}").json()["provenance"]
     assert found["kind"] == "imported" and found["import"] == {"file": "bank.csv", "row": 2} and found["document"] is None
+
+
+# --- SC-19 and the import index (SL-06) --------------------------------------------------------------------------------------
+
+def text_only_pages():
+    """A read PDF with text and no table at all."""
+    return [{"items": [fx.footer("A letter about the garden fence, kept with the house papers for later", 700)]}]
+
+
+def shop_pages(number):
+    """K's page 1 with one row whose description is its own: a PDF with a transactions table and a distinct text."""
+    return [fx.page([fx.HEADING5, ("08/03/2026", f"SHOP NUMBER {number}", "4.50", "", "1,000.00")], above=fx.K_TEXT, number=1, total=1)]
+
+
+def candidates(env_):
+    response = env_.client.get("/api/finance/import-candidates")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def index_rows(env_):
+    return env_.sql("SELECT parse_run_id,analyzer_version,transactions_tables,last_fours_json,document_currency,error FROM pdf_import_index ORDER BY parse_run_id")
+
+
+def test_sc19_the_picker_endpoint_lists_a_csv_and_all_250_table_pdfs_and_nothing_else(env):
+    inbox = env.store.library.inbox
+    for number in range(250):
+        make_pdf(inbox / f"shop-{number:03d}.pdf", shop_pages(number))
+    env.manager.start_inbox()
+    env.manager.future.result(timeout=300)
+    kc = env.add("Kc.csv", fx.kc_csv(), read=False)
+    unread = env.add("unread.pdf", fx.m_pages(), read=False)
+    plain = env.add("plain.pdf", text_only_pages())
+    found = candidates(env)
+    names = [item["relative_path"].rsplit("/", 1)[-1] for item in found["items"]]
+    assert found["indexing"] is False
+    assert len(names) == 251 and len(set(names)) == 251 and "Kc.csv" in names
+    assert names[0] == "Kc.csv"  # Newest first: added after the PDFs, and not cut off behind them.
+    assert {item["import_kind"] for item in found["items"] if item["relative_path"].endswith(".pdf")} == {"pdf"}
+    assert [item["import_kind"] for item in found["items"] if item["id"] == kc["id"]] == ["csv"]
+    assert unread["relative_path"].rsplit("/", 1)[-1] not in names and plain["relative_path"].rsplit("/", 1)[-1] not in names
+    assert env.sql("SELECT transactions_tables FROM pdf_import_index WHERE parse_run_id=?", env.reading(plain)) == [(0,)]
+
+
+def test_sc19_the_list_is_filtered_before_the_cap_and_leaves_out_refused_pdfs(env):
+    kc = env.add("Kc.csv", fx.kc_csv(), read=False)
+    docs = [env.add(f"s{number}.pdf", shop_pages(number)) for number in range(3)]
+    env.add("plain.pdf", text_only_pages())
+    refusal = lambda db, digest: "This PDF is recorded as a bill." if digest == docs[0]["current_hash"] else None
+    found = env.store.import_candidates(refusal)
+    assert {item["id"] for item in found} == {docs[1]["id"], docs[2]["id"], kc["id"]}  # The refused bill and the table-less PDF are out.
+    assert {item["import_kind"] for item in found} == {"csv", "pdf"}
+    # The cap counts what is listed, not what was looked at: a limit of 2 still fills from the documents that qualify.
+    assert len(env.store.import_candidates(refusal, limit=2)) == 2
+    assert len(env.store.import_candidates(lambda db, digest: None, limit=10)) == 4
+
+
+def test_sc19_a_pdf_that_is_recorded_or_imported_keeps_the_listing_rules(env):
+    a = env.account("A")
+    k = env.add("K.pdf", fx.k_pages())
+    ids = lambda: {item["id"] for item in candidates(env)["items"]}
+    assert ids() == {k["id"]}
+    assert env.ok_import(k, account_id=a)["inserted"] == 9
+    assert ids() == {k["id"]}  # Imported, and still ready: Record is its next step (plan P5).
+    env.manager.ledger.publish_bill({"provider": "City Power", "issue_date": "2026-09-10", "due_date": "2026-09-20", "period_start": None, "period_end": None,
+                                     "amount_due_minor": 12000, "currency": "USD", "issues": [], "locator": {}}, record_source(k), "proposed")
+    assert ids() == set()
+
+
+def test_index_listing_rows_carry_pdf_import_computed_on_the_server(env):
+    a = env.account("A")
+    k = env.add("K.pdf", fx.k_pages())
+    k0 = env.add("K0.pdf", fx.k0_pages())
+    unread = env.add("unread.pdf", fx.m_pages(), read=False)
+    kc = env.add("Kc.csv", fx.kc_csv(), read=False)
+    plain = env.add("plain.pdf", text_only_pages())
+    shown = {item["relative_path"].rsplit("/", 1)[-1]: item["pdf_import"] for item in env.client.get("/api/documents").json()["items"]}
+    assert shown["K.pdf"] == {"tables": 1, "match": {"account_id": a, "last_four": "4821", "page": 1}, "refused": None}
+    assert shown["K0.pdf"] == {"tables": 1, "match": None, "refused": None}  # No last four printed: nothing to match.
+    assert shown["unread.pdf"] is None and shown["Kc.csv"] is None  # Only an indexed reading has a summary.
+    assert shown["plain.pdf"] == {"tables": 0, "match": None, "refused": None}
+    assert env.client.get(f"/api/documents/{k['id']}").json()["pdf_import"] == shown["K.pdf"]
+    assert unread and kc and plain and k0
+    # Two active accounts print the same last four in the same currency: not one match.
+    env.client.post("/api/finance/accounts", json={"institution": "ANOTHER BANK", "account_type": "savings", "currency": "USD", "last_four": "4821"})
+    assert env.client.get(f"/api/documents/{k['id']}").json()["pdf_import"]["match"] is None
+    # What the PDF is recorded as is named by kind.
+    env.manager.ledger.publish_bill({"provider": "City Power", "issue_date": "2026-09-10", "due_date": "2026-09-20", "period_start": None, "period_end": None,
+                                     "amount_due_minor": 12000, "currency": "USD", "issues": [], "locator": {}}, record_source(k), "proposed")
+    assert env.client.get(f"/api/documents/{k['id']}").json()["pdf_import"]["refused"] == "bill"
+
+
+def test_index_row_counts_tables_and_keeps_only_last_fours_and_a_currency(env):
+    k = env.add("K.pdf", fx.k_pages())
+    keur = env.add("Keur.pdf", fx.keur_pages())
+    x = env.add("X.pdf", fx.x_pages())
+    rows = {run: rest for run, *rest in index_rows(env)}
+    [version, tables, fours, currency, error] = rows[env.reading(k)]
+    assert (version, tables, json.loads(fours), currency, error) == (pdf_import.ANALYZER_VERSION, 1, {"4821": 1}, None, None)
+    assert rows[env.reading(keur)][1:] == [1, '{"4821": 1}', "EUR", None]  # In euros: indexed as a table PDF, whatever the household's currency.
+    assert rows[env.reading(x)][1] >= 1
+    # Only counts, last fours and a code: no description, date or amount of any row is in the index.
+    dump = " ".join(str(value) for row in index_rows(env) for value in row)
+    assert "COFFEE" not in dump and "08/03" not in dump and fx.K_ACCOUNT_NUMBER not in dump
+
+
+def test_index_is_written_when_a_reading_is_saved_and_again_on_request(env):
+    k = env.add("K.pdf", fx.k_pages())
+    run = env.reading(k)
+    assert [row[0] for row in index_rows(env)] == [run]
+    with env.store.connection() as db:
+        db.execute("DELETE FROM pdf_import_index")
+    pdf_import.index_quietly(env.store, run)
+    assert [row[0] for row in index_rows(env)] == [run]
+
+
+def test_index_a_failing_analysis_still_writes_a_row_so_the_backfill_neither_stops_nor_repeats(env, monkeypatch):
+    env.add("K.pdf", fx.k_pages())
+    bad = env.add("bad.pdf", fx.k_pages(above=(*fx.K_TEXT, "Second copy")))
+    with env.store.connection() as db:
+        db.execute("DELETE FROM pdf_import_index")
+        assert len(pdf_import.pending(db)) == 2
+
+    real = pdf_import.analyze
+
+    def analyze(result, **options):
+        if any("Second copy" in page.layout.raw_text for page in result.pages):
+            raise RuntimeError("boom with COFFEE SHOP 4.50 in it")
+        return real(result, **options)
+    monkeypatch.setattr(pdf_import, "analyze", analyze)
+    assert pdf_import.backfill(env.store) == 2
+    rows = {run: rest for run, *rest in index_rows(env)}
+    assert rows[env.reading(bad)][1] == 0 and rows[env.reading(bad)][4] == "The reading could not be analyzed (RuntimeError)."
+    assert "COFFEE" not in str(rows[env.reading(bad)])  # Row contents are not kept in the index.
+    assert sorted(row[1] for row in rows.values()) == [0, 1]
+    with env.store.connection() as db:
+        assert pdf_import.pending(db) == []
+    assert pdf_import.backfill(env.store) == 0
+
+
+def test_index_a_reading_without_layout_or_over_a_limit_is_indexed_with_its_reason(env, monkeypatch):
+    k = env.add("K.pdf", fx.k_pages())
+    run = env.reading(k)
+    saved = json.loads(env.sql("SELECT result_json FROM parse_runs WHERE id=?", run)[0][0])
+    for page in saved["pages"]:
+        page["layout"] = None
+    with env.store.connection() as db:
+        db.execute("UPDATE parse_runs SET result_json=? WHERE id=?", (json.dumps(saved), run))
+        assert pdf_import.index_row(db, run)["error"] == pdf_import.NO_LAYOUT
+    assert env.sql("SELECT transactions_tables,error FROM pdf_import_index WHERE parse_run_id=?", run) == [(0, pdf_import.NO_LAYOUT)]
+    assert candidates(env)["items"] == []
+    other = env.add("K2.pdf", fx.k_pages(above=(*fx.K_TEXT, "Another copy")))
+    monkeypatch.setattr(pdf_import, "MAX_ROWS", 3)
+    with env.store.connection() as db:
+        row = pdf_import.index_row(db, env.reading(other))
+    assert row["transactions_tables"] == 0 and "exceeds 3 data rows" in row["error"]
+
+
+def test_index_pending_follows_the_analyzer_version_and_ignores_other_readings(env, monkeypatch):
+    k = env.add("K.pdf", fx.k_pages())
+    with env.store.connection() as db:
+        assert pdf_import.pending(db) == []
+    monkeypatch.setattr(pdf_import, "ANALYZER_VERSION", pdf_import.ANALYZER_VERSION + 1)
+    with env.store.connection() as db:
+        assert pdf_import.pending(db) == [env.reading(k)]
+    assert pdf_import.backfill(env.store) == 1
+    assert env.sql("SELECT analyzer_version FROM pdf_import_index") == [(pdf_import.ANALYZER_VERSION,)]
+    with env.store.connection() as db:
+        assert pdf_import.pending(db) == []
+        assert pdf_import.index_row(db, "0" * 32) is None  # Not a reading: nothing is written.
+
+
+def test_index_the_next_start_indexes_readings_saved_before_the_feature_and_the_picker_says_so(tmp_path):
+    with opened(tmp_path) as first:
+        k = first.add("K.pdf", fx.k_pages())
+        first.add("Kn.pdf", fx.k0_pages())
+        with first.store.connection() as db:
+            db.execute("DELETE FROM pdf_import_index")  # As if the readings were saved before the feature.
+        assert candidates(first) == {"items": [], "indexing": True}
+        assert k
+    with opened(tmp_path, configure=False) as second:
+        for _ in range(600):  # The backfill runs on the capture queue, started by opening the library.
+            if not second.manager.busy():
+                break
+            time.sleep(.05)
+        found = candidates(second)
+        assert found["indexing"] is False and {item["relative_path"].rsplit("/", 1)[-1] for item in found["items"]} == {"K.pdf", "Kn.pdf"}
+        assert [row[2] for row in index_rows(second)] == [1, 1]

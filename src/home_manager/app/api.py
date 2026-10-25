@@ -22,7 +22,7 @@ from ..core.formats import IMAGES, extension
 from ..core.logs import attach_server, log_failure
 from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
-from ..finance import rules, traces
+from ..finance import pdf_import, rules, traces
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
 from ..finance.health import check_ledger, record_links, summary
 from ..finance.investments import AccountInput as InvestmentAccountInput
@@ -1924,11 +1924,26 @@ def create_app(control: Path | None = None, token: str | None = None,
                   date_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"), category: str | None = Query(None, max_length=40),
                   scope: Literal["money", "documents"] | None = None, employer: int | None = Query(None, ge=1),
                   section: Literal["Paystubs", "Documents"] | None = None):
-        return store().documents(offset, limit, folder, status, q, sort, date_from, date_to, category, scope, employer, section)
+        found = store().documents(offset, limit, folder, status, q, sort, date_from, date_to, category, scope, employer, section)
+        with store().connection() as db:
+            pdf_import.summaries(db, manager().ledger, found["items"], manager().household.home_currency)
+        return found
+
+    @app.get("/api/finance/import-candidates")
+    def import_candidates():
+        """What the Import picker lists: ready CSV/XLSX exports and PDFs with a transactions table, filtered before the cap.
+        `indexing` is true while older PDF readings are still being checked, so a short list is not mistaken for a complete one."""
+        library, ledger = store(), manager().ledger
+        items = library.import_candidates(ledger.pdf_refusal)
+        with library.connection() as db:
+            return {"items": items, "indexing": bool(pdf_import.pending(db))}
 
     @app.get("/api/documents/{document_id}")
     def document(document_id: int):
-        return store().document(document_id)
+        found = store().document(document_id)
+        with store().connection() as db:
+            pdf_import.summaries(db, manager().ledger, [found], manager().household.home_currency)
+        return found
 
     @app.put("/api/documents/{document_id}/description")
     def describe_document(document_id: int, value: DescriptionInput):

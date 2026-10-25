@@ -32,7 +32,7 @@ from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
 from ..documents.reviewer import ReviewerConfig, review
-from ..finance import correction_preview, paycheck, paystub, plan_tracking, scenarios, traces
+from ..finance import correction_preview, paycheck, paystub, pdf_import, plan_tracking, scenarios, traces
 from ..finance.assistant import AssistantService
 from ..finance.charts import chart_key, tax_buckets_svg
 from ..finance.checkin import CheckinService
@@ -1150,6 +1150,10 @@ class Manager:
                 unindexed = bool(text_index.pending(db))
             if unindexed:  # Readings saved before the text index existed, or under older passage rules.
                 self.submit("capture", "text_index", "Indexing document text for search", lambda work: text_index.backfill(store, work))
+            with store.connection() as db:
+                unchecked = bool(pdf_import.pending(db))
+            if unchecked:  # PDF readings saved before transaction import existed, or under an older analyzer (the Import picker waits for them).
+                self.submit("capture", "pdf_import_index", "Checking PDFs for transactions", lambda work: pdf_import.backfill(store, work))
             return self.settings()
 
     def load_setting(self, name, model):

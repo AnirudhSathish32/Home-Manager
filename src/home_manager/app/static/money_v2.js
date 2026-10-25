@@ -79,23 +79,26 @@ async function importPicker({onImported = null} = {}) {
   money2.onImported = onImported; money2.opener = document.activeElement;
   const list = $("money2-import-list");
   list.replaceChildren(element("li", "Looking for exports …", "muted small"));
+  list.previousElementSibling.textContent = "Files arrive through the Inbox or a watched folder: PDF statements, and CSV or XLSX exports. Choose one to import.";
   $("money2-import").showModal();
   $("money2-import-close").focus();
   try {
-    const {items} = await api(`/api/documents?${new URLSearchParams({status: "ready_for_ledger", sort: "added", limit: 200})}`);
-    // A filter on the file type, not arithmetic: only table files can be imported.
-    const exports = items.filter(doc => /\.(csv|xlsx)$/i.test(doc.relative_path));
+    // The server lists ready CSV and XLSX files and PDFs with a transactions table, filtered before it cuts the list.
+    const {items: exports, indexing} = await api("/api/finance/import-candidates");
+    const checking = indexing ? element("li", "Still checking older PDFs …", "muted small") : null;
     if (!exports.length) {
       const inbox = element("button", "Open Inbox", "secondary"); inbox.type = "button";
       inbox.addEventListener("click", () => { $("money2-import").close(); showFolder("Inbox"); });
-      list.replaceChildren(emptyState("No bank or card exports waiting. Put a CSV or XLSX export in the Inbox folder.", inbox));
+      list.replaceChildren(emptyState("No bank or card exports waiting. Put a PDF, CSV or XLSX statement or export in the Inbox folder.", inbox), ...(checking ? [checking] : []));
       return;
     }
     list.replaceChildren(...exports.map(doc => {
       const parts = doc.relative_path.split("/"), name = parts.pop();
       const li = element("li", "", "dated-row money2-import-row"), when = element("span", "", "dated-when"), text = element("div");
       if (doc.first_seen) when.append(dateDisplay(doc.first_seen.slice(0, 10)));
-      text.append(element("strong", name), element("small", parts.join("/") || "Library", "muted"));
+      const where = element("small", "", "muted");
+      where.append(element("span", doc.import_kind.toUpperCase(), "status-badge"), ` ${parts.join("/") || "Library"}`);
+      text.append(element("strong", name), where);
       const choose = element("button", "Import", "secondary"); choose.type = "button";
       choose.setAttribute("aria-label", `Import ${name}`);
       choose.addEventListener("click", () => {
@@ -104,7 +107,7 @@ async function importPicker({onImported = null} = {}) {
       });
       li.append(when, text, choose);
       return li;
-    }));
+    }), ...(checking ? [checking] : []));
     list.querySelector("button")?.focus();
   } catch (error) {
     list.replaceChildren(alertBox(`Couldn't list the exports. ${error.message}`, {tone: "error"}));

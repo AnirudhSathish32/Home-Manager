@@ -670,6 +670,23 @@ class Store:
             row["match"] = found.get(row["text_run_id"])
         return {"total": total, "items": [self.display_amount(row) for row in rows]}
 
+    def import_candidates(self, refusal, limit=500):
+        """The documents the Import picker offers, newest first: ready CSV/XLSX files and PDFs whose current reading has a transactions
+        table (pdf_import_index) and that `refusal(db, hash)` does not refuse. Everything is filtered before the cap, so a CSV is
+        never hidden behind PDFs. Each item has import_kind: csv, xlsx or pdf."""
+        clause = (f"deleted_at IS NULL AND grouped_under IS NULL AND {WORK_FILTERS['ready_for_ledger']} AND ({TABLE_FILE} OR "
+                  "(lower(relative_path) LIKE '%.pdf' AND text_run_id IN (SELECT parse_run_id FROM pdf_import_index WHERE transactions_tables>0)))")
+        items = []
+        with self.connection() as db:
+            for row in db.execute(self.library_query() + "SELECT * FROM library WHERE " + clause + f" ORDER BY {DOCUMENT_SORTS['added']}"):
+                kind = row["relative_path"].lower().rsplit(".", 1)[-1]
+                if kind == "pdf" and refusal(db, row["current_hash"]):
+                    continue
+                items.append({**self.display_amount(dict(row)), "import_kind": kind})
+                if len(items) >= limit:
+                    break
+        return items
+
     def document(self, document_id: int):
         """One library row (including Trash), shaped like a documents() item."""
         with self.connection() as db:

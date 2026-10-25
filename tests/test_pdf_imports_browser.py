@@ -121,3 +121,85 @@ def test_sc22_a_below_table_row_links_to_its_lines_and_a_csv_badge_is_unchanged(
         assert page.evaluate("""() => provenanceBadge({kind: "imported", import: {file: "export.csv", row: 14}}).textContent""") == "Imported · export.csv row 14"
         assert not failures
         browser.close()
+
+
+def put(manager, files):
+    """Put synthetic files in the Inbox and capture them (a native PDF is read on the way in; a scan is not, with no model)."""
+    for name, content in files:
+        path = manager.store.library.inbox / name
+        if isinstance(content, list):
+            make_pdf(path, content)
+        else:
+            path.write_bytes(content)
+    manager.start_inbox()
+    manager.future.result(timeout=600)
+
+
+def shop_pages(number):
+    return [fx.page([fx.HEADING5, ("08/03/2026", f"SHOP NUMBER {number}", "4.50", "", "1,000.00")], above=fx.K_TEXT, number=1, total=1)]
+
+
+@browser_test
+def test_sc19_the_import_picker_lists_pdfs_with_a_transactions_table_beside_csv_files(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "pdf-picker-test"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        put(manager, [(f"shop-{number:03d}.pdf", shop_pages(number)) for number in range(250)])  # Added before the CSV.
+        put(manager, [("Kc.csv", fx.kc_csv()), ("unread.pdf", fx.m_pages()),
+                      ("plain.pdf", [{"items": [fx.footer("A letter about the garden fence, kept with the house papers for later", 700)]}])])
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        picker = page.locator("#money2-import")
+        rows = picker.locator("#money2-import-list > li")
+
+        def check_list():
+            expect(picker).to_be_visible()
+            expect(picker).to_contain_text("PDF")
+            expect(rows.filter(has_text="Kc.csv")).to_have_count(1, timeout=30000)  # Not hidden behind 250 PDFs.
+            expect(rows).to_have_count(251)
+            expect(rows.filter(has_text="Kc.csv").locator(".status-badge")).to_have_text("CSV")
+            expect(rows.filter(has_text="shop-000.pdf").locator(".status-badge")).to_have_text("PDF")
+            expect(rows.filter(has_text="shop-249.pdf").locator(".status-badge")).to_have_text("PDF")
+            expect(rows.filter(has_text="unread.pdf")).to_have_count(0)
+            expect(rows.filter(has_text="plain.pdf")).to_have_count(0)
+            expect(rows.locator(".status-badge", has_text="PDF")).to_have_count(250)
+
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.locator("#tx2-import").click()
+        check_list()
+        page.locator("#money2-import-close").click()
+        expect(picker).to_be_hidden()
+        page.goto(f"{base}/#/accounts")
+        page.locator("#accounts2-import").click()
+        check_list()
+        page.locator("#money2-import-close").click()
+        # The per-account button: with no account yet, the empty state offers it.
+        expect(page.locator("#accounts2-groups").get_by_role("button", name="Import an export")).to_be_visible()
+        page.locator("#accounts2-groups").get_by_role("button", name="Import an export").click()
+        check_list()
+        # A PDF opens the import dialog like a CSV does.
+        picker.get_by_role("button", name="Import shop-007.pdf").click()
+        expect(page.locator("#import-dialog")).to_be_visible()
+        assert not failures
+
+
+@browser_test
+def test_sc19_an_empty_library_names_pdf_csv_and_xlsx_in_the_picker(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "pdf-picker-empty"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.locator("#tx2-import").click()
+        expect(page.locator("#money2-import-list")).to_contain_text("No bank or card exports waiting")
+        for kind in ("PDF", "CSV", "XLSX"):
+            expect(page.locator("#money2-import-list")).to_contain_text(kind)

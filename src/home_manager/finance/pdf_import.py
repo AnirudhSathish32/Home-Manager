@@ -10,16 +10,23 @@ reason. The row limits and the account lookup live elsewhere (`ledger.py`).
 
 from dataclasses import dataclass, field
 from datetime import date
+import json
+import logging
 import math
 import re
 from statistics import median
 
+from ..core.logs import log_failure
 from ..core.money import MoneyError, currency_code, to_minor
 from ..documents.pdf_layout import PDFTable, point, visual_box
-from ..documents.pdf_reader import PDFResult
+from ..documents.pdf_reader import PDF_VERSIONS, PDFResult, read_result
 from .tabular import DATE_FORMATS, HEADER_NAMES
 
+log = logging.getLogger(__name__)
+
 MAX_ROWS, MAX_CELL, MAX_ISSUES = 20_000, 2000, 200
+# Bump when what the analyzer finds changes (tables, last fours, currency): every PDF reading is indexed again at the next start.
+ANALYZER_VERSION = 1
 BALANCE_NAMES = ("balance", "running balance", "new balance", "ending balance")  # Never an amount (PDF import only).
 ROLES = ("date", "description", "amount", "debit", "credit")
 AMOUNT_ROLES = ("amount", "debit", "credit")
@@ -614,3 +621,102 @@ def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", si
     mapping: dict[str, str] = next((entry.table.columns for entry in used if not entry.parent), {})
     return Analysis([entry.table for entry in entries], rows, issues[:MAX_ISSUES], counts, [item for item in ("year", "date_format", "sign") if item in required],
                     mapping, last_fours(result), found_currency, default, used_sign)
+
+
+# --- Import index (migration 071; docs/documents.md "PDFs") -------------------------------------------------------------
+# Derived and rebuildable from the saved reading, like the text index. It is read by the Import picker and the library
+# listing, never by an import: an import always analyzes the reading itself.
+
+PDF_READINGS = f"p.status IN ('succeeded','partial') AND p.parser_version IN ({','.join(repr(version) for version in PDF_VERSIONS)})"
+
+
+def index_row(db, run_id):
+    """Write (replace) one PDF reading's index row and return it as a dict, or None for a reading that is not a finished PDF reading.
+    A row is written even when the analysis fails: no tables and the reason in `error`, so the backfill never stops on or repeats it."""
+    from ..library.storage import now
+    run = db.execute(f"SELECT p.result_json FROM parse_runs p WHERE p.id=? AND {PDF_READINGS}", (run_id,)).fetchone()
+    if run is None:
+        db.execute("DELETE FROM pdf_import_index WHERE parse_run_id=?", (run_id,))
+        return None
+    tables, fours, found_currency, error = 0, {}, None, None
+    try:
+        result = read_result(json.loads(run["result_json"])) if run["result_json"] else None
+        if not isinstance(result, PDFResult):
+            error = NO_LAYOUT
+        else:
+            analysis = analyze(result, currency="USD")  # A document in another currency is blocked for this one, but is still importable.
+            if any(issue.code == "reading_without_layout" for issue in analysis.issues):
+                error = NO_LAYOUT
+            else:
+                tables = sum(1 for table in analysis.tables if table.selectable)
+                fours, found_currency = analysis.last_fours, analysis.document_currency
+    except PDFImportError as exc:
+        error = str(exc)
+    except Exception as exc:  # A bad reading must not stop the others (the cause is in the log, not in the row).
+        log_failure(log, "pdf import index", exc, run=run_id)
+        error = f"The reading could not be analyzed ({type(exc).__name__})."
+    row = dict(parse_run_id=run_id, analyzer_version=ANALYZER_VERSION, transactions_tables=tables, last_fours_json=json.dumps(fours),
+               document_currency=found_currency, error=error, created_at=now())
+    db.execute("INSERT OR REPLACE INTO pdf_import_index(parse_run_id,analyzer_version,transactions_tables,last_fours_json,document_currency,error,created_at) "
+               "VALUES(:parse_run_id,:analyzer_version,:transactions_tables,:last_fours_json,:document_currency,:error,:created_at)", row)
+    return row
+
+
+def index_quietly(store, run_id):
+    """Index a reading just saved. A failure is logged and left to the next start's backfill; it never fails the reading."""
+    try:
+        with store.connection() as db:
+            index_row(db, run_id)
+    except Exception as exc:
+        log_failure(log, "pdf import index", exc, run=run_id)
+
+
+def pending(db):
+    """The PDF readings with no index row, or one made by an older analyzer."""
+    return [row[0] for row in db.execute(f"SELECT p.id FROM parse_runs p LEFT JOIN pdf_import_index x ON x.parse_run_id=p.id "
+                                         f"WHERE {PDF_READINGS} AND (x.parse_run_id IS NULL OR x.analyzer_version<>?) ORDER BY p.created_at",
+                                         (ANALYZER_VERSION,))]
+
+
+def backfill(store, work=None):
+    """Index every PDF reading not yet indexed with the current analyzer. Returns how many."""
+    with store.connection() as db:
+        waiting = pending(db)
+    for run_id in waiting:
+        if work is not None:
+            work.check()
+        with store.connection() as db:
+            index_row(db, run_id)
+    if waiting:
+        log.info("pdf import indexed readings=%s", len(waiting))
+    return len(waiting)
+
+
+REFUSED = re.compile(r"This PDF is recorded as an? (.+)\.")
+
+
+def summaries(db, ledger, rows, home_currency=None):
+    """Set `pdf_import` on each library row (a dict): null when its current reading has no index row, else
+    {"tables", "match": {"account_id","last_four","page"} | null, "refused": "<kind>" | null}. Computed here so the browser copies no rule.
+    `ledger` supplies the account match and what a PDF is recorded as (finance/ledger.py), so those rules stay in one place."""
+    runs = sorted({row.get("text_run_id") for row in rows if row.get("text_run_id") and str(row.get("relative_path", "")).lower().endswith(".pdf")})
+    index = {}
+    for start in range(0, len(runs), 500):
+        chunk = runs[start:start + 500]
+        index.update({row["parse_run_id"]: row for row in db.execute(
+            f"SELECT * FROM pdf_import_index WHERE parse_run_id IN ({','.join('?' * len(chunk))})", chunk)})
+    for row in rows:
+        found = index.get(row.get("text_run_id"))
+        row["pdf_import"] = None
+        if found is None:
+            continue
+        tables, match, refused = found["transactions_tables"], None, None
+        if tables:
+            fours = json.loads(found["last_fours_json"])
+            matched = ledger.account_match(db, fours, found["document_currency"], home_currency) if fours else None
+            match = {key: matched[key] for key in ("account_id", "last_four", "page")} if matched else None
+            reason = ledger.pdf_refusal(db, row["current_hash"])
+            parsed = REFUSED.fullmatch(reason) if reason else None
+            refused = parsed.group(1) if parsed else reason
+        row["pdf_import"] = {"tables": tables, "match": match, "refused": refused}
+    return rows
