@@ -20,9 +20,24 @@ slices:
     attempts:
       - "r1 (plan a2a60389): commit abc1509, blocked on the V gate; plan revised to P13 (below-table rows), spec re-approved ed41557b825f, plan re-approved 4cf1c8e861f8"
   - id: SL-02
-    status: in_progress
+    status: done
+    start_head: c0d3c0a
+    end_head: c35f404
+    commit: c35f404
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k \"analyzer or sc07 or sc24 or sc25 or sc16\" -q -> 57 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_pdf.py tests/test_pdf_layout.py tests/test_tabular.py -q -> 132 passed (orchestrator rerun)"
+      - "ruff check on touched files -> all checks passed; mypy -> 8 errors, all in core/paths.py (pre-existing, Windows-only), none in pdf_import.py"
+    notes: >-
+      analyze(result, *, tables, year, date_format, sign, account_type, currency) -> Analysis (dataclasses Analysis,
+      ImportTable, ImportRow, ImportIssue; PDFImportError(ValueError)). Pure: imports only core.money, documents.pdf_layout,
+      documents.pdf_reader and finance.tabular. Choices where the plan was silent: continuation entries selectable=False;
+      unresolved sign -> amount_minor None; unresolved year/date order -> posted_date None, row not rejected; a rebuilt
+      heading with no rows adds a no_rows issue. Index functions are SL-06.
   - id: SL-03
-    status: todo
+    status: in_progress
   - id: SL-04
     status: todo
   - id: SL-05
