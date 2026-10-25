@@ -1826,3 +1826,68 @@ def test_sc10_manual_candidates_counts_stored_lines_and_the_lines_an_import_woul
     with env.store.connection() as db:
         manual = db.execute("SELECT * FROM transactions WHERE origin='manual'").fetchone()
         assert manual_candidates(db, manual) == [] and [line["key"] for line in manual_candidates(db, manual, extra)] == ["x"]
+
+
+# --- SC-22: where a PDF-imported row came from (FR-24) -----------------------------------------------------------------------
+
+def transaction_ids(env_, account_id):
+    return [row[0] for row in env_.sql("SELECT id FROM transactions WHERE account_id=? ORDER BY id", account_id)]
+
+
+def test_sc22_the_provenance_of_a_pdf_row_names_its_file_page_table_row_and_cited_lines(env):
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    env.ok_import(doc, account_id=a)
+    k = dict(zip((row[0] for row in fx.K_ROWS), transaction_ids(env, a)))
+    links = {txn: json.loads(locator) for txn, locator in env.sql("SELECT record_id,locator_json FROM financial_evidence_links WHERE record_type='transaction'")}
+    # 1. k5 is the second row of page 2's rebuilt table, which continues page 1's (pass-5 MINOR-4): file, page, table, row, lines and words, not only {"rows": [n]}.
+    response = env.client.get(f"/api/provenance/transaction/{k['k5']}")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    found, locator = body["provenance"], links[k["k5"]]
+    assert found["kind"] == "imported" and body["verification"] == "confirmed"
+    assert found["import"] == {"file": "K.pdf", "row": 1, "page": 2, "table": "page-2-import-continuation", "continued_from": 1}
+    assert locator["table_id"] == "page-2-import-continuation" and locator["row"] == 1 and locator["continued_from"] == 1
+    assert "cell_ids" not in locator and all(re.fullmatch(r"page-2-layout-word-\d+", word) for word in locator["word_ids"]) and locator["word_ids"]
+    assert locator["line_ids"] and all(re.fullmatch(r"page-2-layout-line-\d+", line) for line in locator["line_ids"])
+    assert found["document"] == {"id": doc["id"], "page": 2, "lines": locator["line_ids"], "cells": locator["word_ids"]}
+    assert found["model"] is None and found["override"] is None
+    # 2. k1 is on page 1 and is not continued from anywhere.
+    first = env.client.get(f"/api/provenance/transaction/{k['k1']}").json()["provenance"]
+    assert first["import"]["page"] == 1 and first["import"]["row"] == 0 and first["import"]["continued_from"] is None and first["import"]["file"] == "K.pdf"
+    assert first["document"]["page"] == 1 and first["document"]["lines"] == links[k["k1"]]["line_ids"] and first["document"]["id"] == doc["id"]
+    # Every row of every page names its own page, and only rows after page 1's table are continued.
+    for key, page in ((row[0], row[1]) for row in fx.K_ROWS):
+        imported = env.client.get(f"/api/provenance/transaction/{k[key]}").json()["provenance"]["import"]
+        assert imported["page"] == page and (imported["continued_from"] is not None) == (page > 1)
+
+
+def test_sc22_a_below_table_row_keeps_its_native_table_row_number_and_cites_lines_not_cells(env):
+    a = env.account("A")
+    doc = env.add("v.pdf", fx.v_pages())
+    env.ok_import(doc, account_id=a, date_format="MM/DD/YYYY")
+    [v1, v5] = transaction_ids(env, a)
+    links = {txn: json.loads(locator) for txn, locator in env.sql("SELECT record_id,locator_json FROM financial_evidence_links WHERE record_type='transaction'")}
+    native = env.client.get(f"/api/provenance/transaction/{v1}").json()["provenance"]
+    assert native["import"]["row"] == 1 and native["document"]["lines"] == links[v1]["cell_ids"] and links[v1]["cell_ids"]  # v1 is a native row: its cells.
+    found = env.client.get(f"/api/provenance/transaction/{v5}").json()["provenance"]
+    locator = links[v5]
+    assert "cell_ids" not in locator and locator["word_ids"] and locator["line_ids"]
+    assert found["import"] == {"file": "v.pdf", "row": 5, "page": 1, "table": native["import"]["table"], "continued_from": None}
+    assert locator["table_id"] == native["import"]["table"] and not locator["table_id"].endswith("import-continuation")  # The native table's id.
+    assert found["document"] == {"id": doc["id"], "page": 1, "lines": locator["line_ids"], "cells": locator["word_ids"]}
+
+
+def test_sc22_a_csv_rows_provenance_is_unchanged(env):
+    a = env.account("A")
+    inbox = env.store.library.inbox
+    (inbox / "bank.csv").write_bytes(b"Date,Description,Amount\n2026-09-01,COFFEE,-4.50\n")
+    env.manager.start_inbox()
+    env.manager.future.result(timeout=30)
+    [csv] = [doc for doc in env.store.documents()["items"] if doc["relative_path"].endswith("bank.csv")]
+    response = env.client.post(f"/api/documents/{csv['id']}/transaction-imports", json={"expected_hash": csv["current_hash"], "account_id": a,
+                                                                                         "mapping": {"date": "Date", "description": "Description", "amount": "Amount"}})
+    assert response.status_code == 201, response.text
+    [txn] = transaction_ids(env, a)
+    found = env.client.get(f"/api/provenance/transaction/{txn}").json()["provenance"]
+    assert found["kind"] == "imported" and found["import"] == {"file": "bank.csv", "row": 2} and found["document"] is None

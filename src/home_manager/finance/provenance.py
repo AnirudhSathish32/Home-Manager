@@ -93,9 +93,18 @@ def provenance_for(db, record_type, record_id, field=None):
     if origin == "import":
         link = db.execute("SELECT e.locator_json,o.relative_path FROM financial_evidence_links e JOIN occurrences o ON o.id=e.document_id "
                           "WHERE e.record_type=? AND e.record_id=? ORDER BY e.id LIMIT 1", (record_type, record_id)).fetchone()
-        rows = json.loads(link["locator_json"]).get("rows", []) if link else []
-        found.update(kind="imported", **{"import": {"file": link["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] if link else None,
-                                                    "row": rows[0] if rows else None}})
+        locator = json.loads(link["locator_json"]) if link else {}
+        file = link["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] if link else None
+        found["kind"] = "imported"
+        if "table_id" in locator:  # A PDF row (ledger.import_pdf_transactions): its page, table and row, and the cells or lines it cites (FR-24).
+            found["import"] = {"file": file, "row": locator.get("row"), "page": locator.get("page"), "table": locator["table_id"],
+                               "continued_from": locator.get("continued_from")}
+            # A native row cites its table cells; a rebuilt, continuation or below-table row cites its words and lines instead.
+            found["document"] = {"id": locator.get("document_id"), "page": locator.get("page"), "cells": locator.get("cell_ids") or locator.get("word_ids", []),
+                                 "lines": locator.get("cell_ids") or locator.get("line_ids", [])}
+        else:
+            rows = locator.get("rows", [])
+            found["import"] = {"file": file, "row": rows[0] if rows else None}
     elif origin == "manual" or source == "manual":
         found.update(kind="manual", actor={"person": row["actor"] if "actor" in keys else None, "at": row["created_at"]})
     elif source == "quote":  # A market price times the units held (finance/prices.py).
