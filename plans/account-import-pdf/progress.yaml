@@ -75,9 +75,25 @@ slices:
       J1 is one stateful test with the J1-a restart after step 4; step 9 uses the publish_statement fallback.
       The slice's -k command filters every path (13 tests); the suites were run unfiltered too.
   - id: SL-05
-    status: in_progress
+    status: done
+    start_head: 58d9796
+    end_head: da955c4
+    commit: da955c4
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -q -> 130 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py tests/test_trace_components_browser.py -q -> 4 passed (orchestrator rerun)"
+      - "tests/test_provenance.py tests/test_traces.py -> 3 failed, 23 passed; the same 3 test_traces tests fail at 803c588 (before feature code; node rejects --allow-fs-read)"
+    notes: >-
+      provenance_for: PDF locator -> import {file,row,page,table,continued_from}, document {id,page,cells,lines}; native rows
+      cite cell ids in both; word-based rows (rebuilt, continuation, below-table) put word ids in cells and line ids in
+      lines. CSV unchanged. trace.js: showPdfSources fetches /api/provenance/transaction/<id> per imported input (3 at a
+      time, up to 200 per open breakdown) because trace inputs carry no import data; FOR REVIEW: server-side enrichment
+      would avoid N requests (needs tools.py/core/trace.py). Browser test uses k6 (k5 is a transfer, in no spending trace);
+      API test uses k5. docs/ui.md and docs/documents.md left for SL-08.
   - id: SL-06
-    status: todo
+    status: in_progress
   - id: SL-07
     status: todo
   - id: SL-08
