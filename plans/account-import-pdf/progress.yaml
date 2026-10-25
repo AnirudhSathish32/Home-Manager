@@ -152,5 +152,6 @@ slices:
       transactions is in More actions (also for an unread PDF, for SC-21/FR-27). Document page: Import primary with Record
       beside it when one account matches, reversed otherwise. Docs: documents.md "Transaction imports" (renamed; no code
       cited the old heading), money.md, development.md (071), ui.md, open-work.md (incl. the three FOR-REVIEW follow-ups).
-      OPEN for the user: after a PDF import, Import stays the row's step (FR-26 read literally); docs/README.md still says
-      schema map 001-062 (pre-existing).
+      DECIDED (user left it to the orchestrator, 2026-10-25): after a PDF import, Import stays the row's step, as FR-26
+      says, with Record under More actions. Making Record the step would amend FR-26 and need a new spec approval.
+      docs/README.md still says schema map 001-062 (pre-existing).
