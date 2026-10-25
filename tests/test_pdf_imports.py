@@ -1,15 +1,18 @@
 """Import account transactions from PDF documents (specs/account-import-pdf/test-contract.md).
 
-This file holds the P-check tests: they read each synthetic fixture with the real reader and assert the shape the
-contract says it has (methods per page, where the transactions heading is, which pages have no native transactions
-table, the page issues), before any scenario step. A failure here is a fixture or reader problem, never a reason to
-change an expected value (contract "Fixture preconditions"). Expected values come from tests/pdf_import_fixtures.py.
+The P-check tests read each synthetic fixture with the real reader and assert the shape the contract says it has (methods
+per page, where the transactions heading is, which pages have no native transactions table, the page issues), before any
+scenario step. A failure there is a fixture or reader problem, never a reason to change an expected value (contract
+"Fixture preconditions"). The analyzer tests (`test_analyzer_*`) run `finance/pdf_import.analyze` on real readings of the same
+fixtures: they are the analyzer-level checkpoints of SC-05, SC-07, SC-08, SC-09, SC-16, SC-18, SC-24 and SC-25, and the
+import steps of those scenarios are tested with the ledger. Expected values come from tests/pdf_import_fixtures.py.
 """
 
 import pytest
 
 from home_manager.core.jobs import Work
 from home_manager.documents.receipt_service import ReceiptService
+from home_manager.finance import pdf_import
 import pdf_import_fixtures as fx
 from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
 
@@ -379,4 +382,397 @@ def test_pcheck_visual_rows_and_heading_texts_equal_every_native_table_in_the_fi
                     printed = [cell for cell in cells if cell]
                     if printed == ["Fee summary", "Count", "Total"]:
                         printed = ["Fee summary Count", "Total"]
+                    assert printed in rows, (name, number, printed)
+
+
+# --- The analyzer on real readings (SL-02) ---------------------------------------------------------------------------------
+
+def analyze(tmp_path, pages, **choices):
+    """Read the fixture with the real reader and analyze it. USD unless the test says otherwise."""
+    return pdf_import.analyze(read(tmp_path, pages), **{"currency": "USD", **choices})
+
+
+def totals(analysis):
+    """Money out and in of the ticked, parsed rows, in minor units."""
+    minors = [row.amount_minor for row in analysis.rows if row.ticked and row.amount_minor is not None]
+    return sum(minor for minor in minors if minor < 0), sum(minor for minor in minors if minor > 0)
+
+
+def printed(row):
+    return row.description, row.date, row.amount
+
+
+def test_analyzer_j1_k_rows_are_rebuilt_on_page_one_and_linked_across_pages(tmp_path):
+    """J1 step 3 at analyzer level: K's page 1 is a rebuilt table (no native table), pages 2 and 3 continue it."""
+    analysis = analyze(tmp_path, fx.k_pages())
+    assert [(row.page, row.date, row.description, row.amount, row.posted_date, row.amount_minor) for row in analysis.rows] == \
+        [(r[1], r[2], r[3], r[4] or r[5], posted, r[7]) for r, posted in zip(fx.K_ROWS, fx.K_POSTED)]
+    assert [(table.kind, table.linked_to, table.row_count, table.selected, table.selectable) for table in analysis.tables] == [
+        ("rebuilt", None, 3, True, True), ("continuation", "page-1-import-table-1", 3, True, False), ("continuation", "page-1-import-table-1", 3, True, False)]
+    assert [table.id for table in analysis.tables] == ["page-1-import-table-1", "page-2-import-continuation", "page-3-import-continuation"]
+    assert [row.labels for row in analysis.rows] == [[]] * 3 + [["continued from page 1"]] * 6  # k4, page 2's first row, included.
+    assert all(row.ticked and row.rejected is None and row.currency == "USD" for row in analysis.rows)
+    assert analysis.issues == [] and analysis.required == [] and analysis.blocked is None  # unresolved_columns alone is not listed.
+    assert analysis.counts == dict(seen=9, parsed=9, rejected=0, left_out=0, pages_without_rows=0)
+    assert analysis.mapping == {"date": "Date", "description": "Description", "debit": "Withdrawals", "credit": "Deposits"}  # No Balance.
+    assert analysis.last_fours == {"4821": 1} and analysis.document_currency is None
+    assert totals(analysis) == (-fx.K_OUT_MINOR, fx.K_IN_MINOR)
+    # Rebuilt and continuation rows cite words and lines, never native cells; row numbers count from 0 on each page (SC-22).
+    assert all(row.word_ids and row.line_ids and not row.cell_ids for row in analysis.rows)
+    assert [row.key for row in analysis.rows[3:6]] == ["page-2-import-continuation:0", "page-2-import-continuation:1", "page-2-import-continuation:2"]
+    assert [row.continued_from for row in analysis.rows] == [None] * 3 + [1] * 6
+    assert analysis.tables[0].rows == [row.key for row in analysis.rows[:3]]
+
+
+def test_analyzer_is_deterministic_and_selection_follows_the_transactions_table(tmp_path):
+    result = read(tmp_path, fx.k_pages())
+    assert pdf_import.analyze(result, currency="USD") == pdf_import.analyze(result, currency="USD", tables=["page-1-import-table-1"])
+    none = pdf_import.analyze(result, currency="USD", tables=[])
+    assert none.rows == [] and none.counts["seen"] == 0 and not any(table.selected for table in none.tables)
+    assert [table.row_count for table in none.tables] == [3, 3, 3]  # The preview still shows what an unticked table holds.
+    with pytest.raises(pdf_import.PDFImportError, match="not in this reading"):
+        pdf_import.analyze(result, currency="USD", tables=["page-9-import-table-1"])
+
+
+def test_analyzer_k2_prints_two_last_fours_and_k0_none(tmp_path):
+    (tmp_path / "k2").mkdir()
+    assert analyze(tmp_path / "k2", fx.k2_pages()).last_fours == {"4821": 1, "7700": 1}
+    (tmp_path / "k0").mkdir()
+    k0 = analyze(tmp_path / "k0", fx.k0_pages())
+    assert k0.last_fours == {} and len(k0.rows) == 9  # The account number line alone gives no last four.
+
+
+@pytest.mark.parametrize("line", fx.PATTERN_MATCHES + fx.PATTERN_MISSES)
+def test_analyzer_sc05_last_four_patterns(tmp_path, line):
+    analysis = analyze(tmp_path, fx.pattern_page(line))
+    assert analysis.last_fours == ({"4821": 1} if line in fx.PATTERN_MATCHES else {})
+
+
+def test_analyzer_sc02_r_year_is_required_and_the_card_sign_follows_the_account_type(tmp_path):
+    result = read(tmp_path, fx.r_pages())
+    before = pdf_import.analyze(result, currency="USD", account_type="credit_card")
+    assert before.required == ["year"] and before.sign_default == "positive_is_outflow" == before.sign
+    assert [row.date for row in before.rows] == [r[2] for r in fx.R_ROWS] and all(row.posted_date is None for row in before.rows)
+    assert [row.amount_minor for row in before.rows] == [r[5] for r in fx.R_ROWS] and totals(before) == fx.R_TOTALS_C
+    assert before.last_fours == {"7700": 1}
+    after = pdf_import.analyze(result, currency="USD", account_type="credit_card", year=2025)
+    assert after.required == [] and [row.posted_date for row in after.rows] == fx.R_POSTED_2025
+    assert not any(row.posted_date.startswith("2026") for row in after.rows)
+    # Page 1's table is native (its rows keep the reader's row numbers); page 2 continues it.
+    assert [(table.kind, table.linked_to) for table in after.tables] == [("transactions", None), ("continuation", after.tables[0].id)]
+    assert [row.key for row in after.rows] == [f"{after.tables[0].id}:{n}" for n in (1, 2, 3)] + ["page-2-import-continuation:0", "page-2-import-continuation:1"]
+    assert all(row.cell_ids and row.line_ids and not row.word_ids for row in after.rows[:3])
+    assert all(row.word_ids and not row.cell_ids for row in after.rows[3:])
+
+
+@pytest.mark.parametrize("account_type, default, column, expected", [
+    ("credit_card", "positive_is_outflow", 5, fx.R_TOTALS_C), ("checking", "negative_is_outflow", 6, fx.R_TOTALS_A),
+    ("savings", "negative_is_outflow", 6, fx.R_TOTALS_A), ("loan", None, None, None), ("other", None, None, None), ("brokerage", None, None, None), (None, None, None, None)])
+def test_analyzer_sc03_the_sign_default_follows_the_account_type(tmp_path, account_type, default, column, expected):
+    result = read(tmp_path, fx.r_pages())
+    analysis = pdf_import.analyze(result, currency="USD", account_type=account_type, year=2025)
+    assert analysis.sign_default == default and analysis.sign == default
+    if default is None:
+        assert analysis.required == ["sign"] and all(row.amount_minor is None and row.rejected is None for row in analysis.rows)
+        chosen = pdf_import.analyze(result, currency="USD", account_type=account_type, year=2025, sign="positive_is_outflow")
+        assert analysis.rows[0].amount_minor is None and chosen.required == [] and [row.amount_minor for row in chosen.rows] == [r[5] for r in fx.R_ROWS]
+    else:
+        assert analysis.required == [] and [row.amount_minor for row in analysis.rows] == [r[column] for r in fx.R_ROWS] and totals(analysis) == expected
+    # A choice beats the default: checking with positive_is_outflow gives the card column, and the reverse.
+    flipped = pdf_import.analyze(result, currency="USD", account_type="checking", year=2025, sign="positive_is_outflow")
+    assert [row.amount_minor for row in flipped.rows] == [r[5] for r in fx.R_ROWS] and totals(flipped) == fx.R_TOTALS_C
+
+
+def test_analyzer_sc03_debit_credit_tables_need_no_sign(tmp_path):
+    assert analyze(tmp_path, fx.k_pages()).required == []  # K has Withdrawals and Deposits columns and no account type.
+
+
+# --- SC-07: cross-page linking, rebuilt rows and pages without a transactions table -----------------------------------------
+
+X_CHOICES = dict(date_format="MM/DD/YYYY", account_type="checking")  # Fixture rule: X's dates are ambiguous (no value above 12).
+
+
+def test_analyzer_sc07_x_summary_and_fee_summary_are_listed_and_page_three_is_reported(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages(), **X_CHOICES)
+    assert [(table.page, table.kind, table.selected, table.selectable) for table in analysis.tables] == [
+        (1, "other", False, False), (1, "transactions", True, True), (2, "continuation", True, False), (3, "other", False, False)]
+    assert [table.headings for table in analysis.tables if table.kind == "other"] == [["Summary", "Amount"], ["Fee summary", "Count", "Total"]]
+    assert analysis.tables[2].linked_to == analysis.tables[1].id
+    assert [(row.page, row.description, row.amount_minor) for row in analysis.rows] == [(r[1], r[3], r[7]) for r in fx.X_ROWS]
+    assert [row.labels for row in analysis.rows] == [[], [], ["continued from page 1"], ["continued from page 1"]]  # B1, page 2's first line, too.
+    assert [(issue.page, issue.message) for issue in analysis.issues] == [(3, "Page 3: no transactions table found")]
+    assert totals(analysis) == fx.X_TOTALS
+    # FR-10: every page is a row source or in the issue list, and the identity holds (footer lines are not rows).
+    assert analysis.counts == dict(seen=4, parsed=4, rejected=0, left_out=0, pages_without_rows=1)
+    assert {row.page for row in analysis.rows} | {issue.page for issue in analysis.issues} == {1, 2, 3}
+    assert analysis.counts["parsed"] + analysis.counts["rejected"] == analysis.counts["seen"]
+    # Without the date order chosen, the day/month order is required (nothing is above 12).
+    assert pdf_import.analyze(read(tmp_path, fx.x_pages()), currency="USD", account_type="checking").required == ["date_format"]
+
+
+def test_analyzer_sc07_7a_a_payment_schedule_page_is_counted(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages("7a"), **X_CHOICES)
+    schedule = analysis.rows[4:]
+    assert [(row.page, row.date, row.description, row.amount_minor, row.labels) for row in schedule] == [
+        (3, "10/01/2026", "Scheduled payment", -2500, ["continued from page 1"]), (3, "11/01/2026", "Scheduled payment", -2500, ["continued from page 1"])]
+    assert [row.posted_date for row in schedule] == ["2026-10-01", "2026-11-01"] and all(row.ticked for row in schedule)
+    assert totals(analysis) == (fx.X_TOTALS[0] - 5000, fx.X_TOTALS[1]) and analysis.issues == []  # The title line has no date: not a row.
+
+
+def test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages("7b"), **X_CHOICES)
+    assert [(table.page, table.kind, table.linked_to) for table in analysis.tables if table.kind != "other"] == [
+        (1, "transactions", None), (2, "transactions", None), (3, "continuation", analysis.tables[-2].id)]
+    assert [row.labels for row in analysis.rows] == [[]] * 4 + [["continued from page 2"]] * 2
+    assert [(row.description, row.amount_minor) for row in analysis.rows[4:]] == [("C1", -300), ("C2", 400)]
+
+
+def test_analyzer_sc07_7c_a_column_blank_on_every_row_is_rebuilt_from_the_words(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages("7c"), **X_CHOICES)
+    assert [(table.page, table.kind, table.selected) for table in analysis.tables] == [(1, "other", False), (1, "rebuilt", True), (2, "continuation", True), (3, "other", False)]
+    assert [(row.description, row.amount_minor) for row in analysis.rows] == [("A1", -1000), ("A2", -2000), ("B1", -100), ("B2", 200)]
+    assert totals(analysis) == fx.X_7C_TOTALS and [issue.message for issue in analysis.issues] == ["Page 3: no transactions table found"]
+
+
+def test_analyzer_sc07_7d_an_amount_straddling_two_columns_rejects_its_row(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages("7d"), **X_CHOICES)
+    b1, b2 = analysis.rows[2:]
+    assert b1.rejected is None and b1.amount_minor == -100
+    assert b2.rejected == "The amount doesn't fit a column." and b2.amount_minor is None and not b2.ticked and b2.page == 2
+    assert (b2.date, b2.description, b2.amount) == ("09/04/2026", "B2", "2.00")  # Still shown as printed.
+    assert analysis.counts == dict(seen=4, parsed=3, rejected=1, left_out=0, pages_without_rows=1)
+    assert ("rejected_row", 2, 1) in [(issue.code, issue.page, issue.row) for issue in analysis.issues]
+
+
+def test_analyzer_sc07_7e_two_amounts_in_one_amount_column_reject_the_row(tmp_path):
+    analysis = analyze(tmp_path, fx.x_pages("7e"), **X_CHOICES)
+    b1, b2 = analysis.rows[2:]
+    assert b1.rejected == "More than one amount sits in the Withdrawals column." and b1.page == 2 and b1.amount_minor is None
+    assert b1.description == "B1 REF" and b1.amount == "12345 1.00"  # Nothing is joined or guessed.
+    assert b2.rejected is None and b2.amount_minor == 200 and analysis.counts["rejected"] == 1
+
+
+def test_analyzer_sc07_a_summary_below_a_transactions_table_is_listed_and_nothing_is_absorbed(tmp_path):
+    """Plan "Native tables" (pass-6 MAJOR-2): a Summary printed below a native transactions table shares no baseline with any
+    below-table candidate row, so it stays listed as `not a transactions table`."""
+    result = read(tmp_path, fx.summary_below_pages())
+    assert len(fx.native_transactions_tables(result, 1)) == 1 and len(fx.native_grids(result, 1)) == 2  # P-check: the reader built both.
+    analysis = pdf_import.analyze(result, currency="USD", **X_CHOICES)
+    assert [(table.kind, table.headings) for table in analysis.tables] == [
+        ("transactions", ["Date", "Description", "Withdrawals", "Deposits", "Balance"]), ("other", ["Summary", "Amount"])]
+    assert [row.description for row in analysis.rows] == ["A1", "A2"] and analysis.issues == []
+
+
+def test_analyzer_sc07_a_second_heading_below_a_native_table_is_reported_and_its_rows_are_not_read(tmp_path):
+    """Plan "Rows below a native table": the visual rows after a second transactions heading are reported, not guessed. The
+    blank-description row before the heading is a below-table row (row 3, rejected)."""
+    result = read(tmp_path, fx.second_heading_pages())
+    assert len(fx.native_transactions_tables(result, 1)) == 1 and len(fx.heading_rows(result, 1)) == 2  # P-check: the second heading is a visual row.
+    analysis = pdf_import.analyze(result, currency="USD", **X_CHOICES)
+    assert [(row.row, row.description, row.rejected) for row in analysis.rows] == [(1, "A1", None), (2, "A2", None), (3, "", "The description is blank.")]
+    assert "C2" not in [row.description for row in analysis.rows] and "C3" not in [row.description for row in analysis.rows]
+    assert [issue.message for issue in analysis.issues if issue.code == "second_heading"] == ["Page 1: rows after a second transactions heading on this page were not read."]
+
+
+# --- SC-08: flagged pages ----------------------------------------------------------------------------------------------------
+
+def test_analyzer_sc08_rows_from_a_flagged_page_start_unticked(tmp_path):
+    analysis = analyze(tmp_path, fx.f_pages(), **X_CHOICES)
+    assert [row.ticked for row in analysis.rows] == [True, True] + [False] * 4
+    flagged = analysis.rows[2:]
+    assert all(len(row.labels) == 2 and row.labels[0] == "continued from page 1" and row.labels[1].startswith("Page 2 PDF layout needs review: possible_image_content") for row in flagged)
+    assert [row.posted_date for row in flagged] == ["2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06"]
+    assert [row.amount_minor for row in flagged] == [100, 200, 300, 400]  # Parsed, with the checking default.
+    assert totals(analysis) == (0, 3000)  # Only the ticked rows count: F1 and F2.
+    assert analysis.counts == dict(seen=6, parsed=6, rejected=0, left_out=4, pages_without_rows=0)
+    [issue] = analysis.issues
+    assert (issue.page, issue.code) == (2, "pdf_layout_review") and issue.message == flagged[0].labels[1]
+
+
+def test_analyzer_sc08_8a_a_page_footer_alone_does_not_flag_a_native_page(tmp_path):
+    analysis = analyze(tmp_path, fx.fn_pages(), **X_CHOICES)
+    assert [row.ticked for row in analysis.rows] == [True, True] and all(row.labels == [] for row in analysis.rows) and analysis.issues == []
+    assert analysis.counts["left_out"] == 0
+
+
+# --- SC-09: a scanned page --------------------------------------------------------------------------------------------------
+
+def read_with_scan(pdf_store, local_model, name, pages):
+    source, store = pdf_store
+    make_pdf(source / name, pages)
+    doc = capture(source, store)
+    local_model["output"] = {"full_text": "SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00"}
+    service = ReceiptService(store)
+    run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
+    service.run(run_id, Work("inference", "transcription", "PDF", sink=store.record_model_run))
+    run = service.get(run_id)
+    assert run["status"] == "succeeded", run["error"]
+    from home_manager.documents.pdf_reader import read_result
+    return read_result(run["result"])
+
+
+def test_analyzer_sc09_a_scanned_page_is_reported_and_contributes_no_row(pdf_store, local_model):
+    result = read_with_scan(pdf_store, local_model, "m.pdf", fx.m_pages())
+    requests = len(local_model["requests"])
+    analysis = pdf_import.analyze(result, currency="USD", **X_CHOICES)
+    assert [row.description for row in analysis.rows] == ["COFFEE SHOP", "COFFEE SHOP", "GROCERY MART"] and {row.page for row in analysis.rows} == {1}
+    assert [(issue.page, issue.code, issue.message) for issue in analysis.issues] == [
+        (2, "scanned_page", "Page 2 is a scanned page; no rows imported. Use Record for scanned statements.")]
+    assert "SCANNED CAFE" not in repr(analysis.rows) and analysis.counts["pages_without_rows"] == 1
+    assert len(local_model["requests"]) == requests  # Analyzing makes no model call.
+
+
+def test_analyzer_sc09_9a_an_all_scanned_pdf_has_no_rows_and_the_message(pdf_store, local_model):
+    result = read_with_scan(pdf_store, local_model, "scan.pdf", [None])
+    analysis = pdf_import.analyze(result, currency="USD")
+    assert analysis.rows == [] and analysis.tables == [] and analysis.counts == dict(seen=0, parsed=0, rejected=0, left_out=0, pages_without_rows=1)
+    assert [issue.message for issue in analysis.issues] == ["Page 1 is a scanned page; no rows imported. Use Record for scanned statements."]
+
+
+def test_analyzer_a_reading_saved_before_layout_existed_is_blocked(tmp_path):
+    result = fx.synthetic_result([[("08/15/2026", "ROW", "1.00")]])
+    result.pages[0].layout = None
+    analysis = pdf_import.analyze(result, currency="USD")
+    assert analysis.rows == [] and analysis.blocked == pdf_import.NO_LAYOUT
+    assert analysis.blocked == "This PDF was read before transaction import existed. Read this document again to import its transactions."
+
+
+# --- SC-18: currency ---------------------------------------------------------------------------------------------------------
+
+def test_analyzer_sc18_a_document_in_another_currency_blocks_the_import(tmp_path):
+    result = read(tmp_path, fx.keur_pages())
+    analysis = pdf_import.analyze(result, currency="USD")
+    assert analysis.document_currency == "EUR" and "EUR" in analysis.blocked and "USD" in analysis.blocked
+    assert analysis.issues[0].code == "document_currency_mismatch"
+    assert analysis.counts["rejected"] == 9 and all("is not in USD" in row.rejected for row in analysis.rows)  # Each row says so, too.
+    euros = pdf_import.analyze(result, currency="EUR")
+    assert euros.blocked is None and euros.document_currency == "EUR" and [row.amount_minor for row in euros.rows] == [r[7] for r in fx.K_ROWS]
+
+
+def test_analyzer_sc18_18a_one_row_printing_another_currency_is_rejected_alone(tmp_path):
+    analysis = analyze(tmp_path, fx.k18a_pages())
+    assert analysis.document_currency is None and analysis.blocked is None
+    [rejected] = [row for row in analysis.rows if row.rejected]
+    assert rejected.description == "GROCERY MART" and rejected.amount == "45.10 EUR" and rejected.rejected == 'The amount "45.10 EUR" is not in USD.'
+    assert analysis.counts == dict(seen=9, parsed=8, rejected=1, left_out=0, pages_without_rows=0)
+
+
+# --- SC-24: exact dates ------------------------------------------------------------------------------------------------------
+
+def test_analyzer_sc24_d_ny_new_year_rows_advance_the_year(tmp_path):
+    result = read(tmp_path, fx.one_page(fx.D_NY))
+    blocked = pdf_import.analyze(result, currency="USD", account_type="checking")
+    assert blocked.required == ["year"] and all(row.posted_date is None for row in blocked.rows)
+    chosen = pdf_import.analyze(result, currency="USD", account_type="checking", year=2025)
+    assert chosen.required == [] and [row.posted_date for row in chosen.rows] == ["2025-08-03", "2025-12-30", "2026-01-02"]
+
+
+def test_analyzer_sc24_d_bad_an_impossible_date_rejects_its_row_naming_it(tmp_path):
+    analysis = analyze(tmp_path, fx.one_page(fx.D_BAD), account_type="checking")
+    p, q = analysis.rows
+    assert (p.posted_date, p.rejected) == ("2026-02-27", None)
+    assert q.posted_date is None and q.rejected == 'The date "02/30/2026" is not a real date.'
+
+
+def test_analyzer_sc24_d_full_four_digit_years_need_no_year(tmp_path):
+    result = read(tmp_path, fx.one_page(fx.D_FULL))
+    assert pdf_import.analyze(result, currency="USD", account_type="checking").required == ["date_format"]  # P10: no value above 12.
+    chosen = pdf_import.analyze(result, currency="USD", account_type="checking", date_format="MM/DD/YYYY")
+    assert chosen.required == [] and [row.posted_date for row in chosen.rows] == ["2026-08-03", "2026-08-04"]
+
+
+def test_analyzer_sc24_d_amb_the_day_month_order_is_a_required_choice(tmp_path):
+    result = read(tmp_path, fx.one_page(fx.D_AMB))
+    assert pdf_import.analyze(result, currency="USD", account_type="checking").required == ["date_format"]
+    day_first = pdf_import.analyze(result, currency="USD", account_type="checking", date_format="DD/MM/YYYY")
+    month_first = pdf_import.analyze(result, currency="USD", account_type="checking", date_format="MM/DD/YYYY")
+    assert [row.posted_date for row in day_first.rows] == ["2026-08-03", "2026-09-04"]
+    assert [row.posted_date for row in month_first.rows] == ["2026-03-08", "2026-04-09"]
+
+
+def test_analyzer_sc24_d_2y_two_digit_years_are_blocked_until_a_year_is_chosen(tmp_path):
+    result = read(tmp_path, fx.one_page(fx.D_2Y))
+    assert pdf_import.analyze(result, currency="USD", account_type="checking").required == ["year", "date_format"]
+    chosen = pdf_import.analyze(result, currency="USD", account_type="checking", date_format="MM/DD/YYYY", year=2026)
+    assert chosen.required == [] and [row.posted_date for row in chosen.rows] == ["2026-08-03", "2026-08-04"]
+    # Plan P1: a printed YY that disagrees with the computed year rejects the row (G4, not asserted by the contract).
+    wrong = pdf_import.analyze(result, currency="USD", account_type="checking", date_format="MM/DD/YYYY", year=2025)
+    assert all(row.rejected and "26" in row.rejected for row in wrong.rows)
+
+
+# --- SC-25: rejected rows are listed with page, row and reason ----------------------------------------------------------------
+
+def test_analyzer_sc25_v_three_rows_are_rejected_with_page_row_and_reason(tmp_path):
+    analysis = analyze(tmp_path, fx.v_pages(), date_format="MM/DD/YYYY", account_type="checking")
+    # v1 and v2 are the native table's rows 1 and 2; v3 to v5 are below-table rows numbered 3 to 5 (plan P13).
+    assert [(row.key, row.row, row.page) for row in analysis.rows] == [(f"page-1-layout-table-1:{n}", n, 1) for n in range(1, 6)]
+    assert [len(analysis.tables)] == [1] and analysis.tables[0].kind == "transactions" and analysis.tables[0].row_count == 5
+    v1, v2, v3, v4, v5 = analysis.rows
+    assert (v1.amount_minor, v1.rejected) == (-1000, None)
+    assert v2.rejected == "Both a debit and a credit are printed." and v2.amount_minor is None
+    assert v3.rejected == "The description is blank." and v3.description == "" and v3.date == "08/03/2026"
+    assert v4.rejected == 'The amount "1.2.3" can\'t be read.' and v4.amount == "1.2.3"
+    assert (v5.amount_minor, v5.rejected) == (-200, None) and v5.description == fx.V_LONG_DESCRIPTION  # Stored exactly as printed.
+    assert analysis.counts == dict(seen=5, parsed=2, rejected=3, left_out=0, pages_without_rows=0)  # 2 + 0 + 3 + 0 = 5.
+    assert [(issue.page, issue.row) for issue in analysis.issues] == [(1, 2), (1, 3), (1, 4)]
+    # Native rows cite cells; below-table rows cite words and lines, with no cells.
+    assert all(row.cell_ids and row.line_ids and not row.word_ids for row in (v1, v2))
+    assert all(row.word_ids and row.line_ids and not row.cell_ids for row in (v3, v4, v5))
+    assert not {row.amount_minor for row in analysis.rows} & {-98900, -99000, -98700}  # No Balance value is an amount.
+    assert analysis.issues[-1].code == "rejected_row" and not [issue for issue in analysis.issues if issue.code == "second_heading"]
+
+
+# --- SC-16: limits -----------------------------------------------------------------------------------------------------------
+
+def big_rows(count):
+    rows = [("08/15/2026", f"ROW {n}", "1.00") for n in range(count)]
+    return [rows[start:start + 499] for start in range(0, count, 499)]  # A native table holds at most 500 rows, its heading included.
+
+
+def test_analyzer_sc16_20001_rows_are_refused_and_20000_are_accepted():
+    with pytest.raises(pdf_import.PDFImportError, match="exceeds 20,000 data rows"):
+        pdf_import.analyze(fx.synthetic_result(big_rows(20_001)), currency="USD", account_type="checking")
+    analysis = pdf_import.analyze(fx.synthetic_result(big_rows(20_000)), currency="USD", account_type="checking")
+    assert analysis.counts["seen"] == 20_000 and analysis.counts["rejected"] == 0 and len(analysis.rows) == 20_000
+
+
+def test_analyzer_sc16_the_row_limit_is_a_module_constant_the_api_test_can_lower(tmp_path, monkeypatch):
+    monkeypatch.setattr(pdf_import, "MAX_ROWS", 3)
+    with pytest.raises(pdf_import.PDFImportError, match="exceeds 3 data rows"):
+        analyze(tmp_path, fx.one_page([(f"08/0{n}/2026", f"ROW{n}", f"{n}.00") for n in range(1, 5)]), account_type="checking")
+    (tmp_path / "three").mkdir()
+    assert analyze(tmp_path / "three", fx.one_page([(f"08/0{n}/2026", f"ROW{n}", f"{n}.00") for n in range(1, 4)]), account_type="checking").counts["seen"] == 3
+
+
+def test_analyzer_sc16_a_cell_over_2000_characters_refuses_the_whole_import(tmp_path):
+    with pytest.raises(pdf_import.PDFImportError, match=r"2,000-character"):
+        analyze(tmp_path, fx.long_cell_pages(), account_type="checking")
+
+
+def test_analyzer_sc16_250_rejected_rows_list_200_issues_and_count_all_250():
+    rows = [("08/15/2026", f"ROW {n}", "1.2.3") for n in range(250)]
+    analysis = pdf_import.analyze(fx.synthetic_result([rows]), currency="USD", account_type="checking")
+    assert len(analysis.issues) == 200 and analysis.counts["rejected"] == 250 and analysis.counts["seen"] == 250 and len(analysis.rows) == 250
+
+
+def test_analyzer_visual_rows_and_heading_texts_equal_every_native_table_in_the_fixtures(tmp_path):
+    """The analyzer's own re-implementation of the reader's row and text grouping (plan "Heading texts"): on every native table
+    of the fixtures, a visual row equals the table's row, and the heading texts equal its header cells. It must also agree with
+    the fixture helpers that SL-01 pinned, on every page."""
+    cases = {"x": fx.x_pages(), "r": fx.r_pages(), "f": fx.f_pages(), "fn": fx.fn_pages(), "long": fx.long_cell_pages(), "d": fx.one_page(fx.D_NY),
+             "x7b": fx.x_pages("7b"), "v": fx.v_pages(), "k": fx.k_pages()}
+    for name, pages in cases.items():
+        directory = tmp_path / name
+        directory.mkdir()
+        result = read(directory, pages)
+        for number in range(1, len(pages) + 1):
+            view = pdf_import.PageView(fx.layout(result, number))
+            rows = [[text for text, _, _ in view.texts(index)] for index in range(len(view.rows))]
+            assert rows == fx.row_texts(result, number), (name, number)
+            assert [[word.id for word in row] for row in view.rows] == [[word.id for word in row] for row in fx.visual_rows(result, number)], (name, number)
+            for grid in fx.native_grids(result, number):
+                for cells in grid:
+                    printed = [cell for cell in cells if cell]
+                    if printed == ["Fee summary", "Count", "Total"]:
+                        printed = ["Fee summary Count", "Total"]  # The reader also splits this heading at the amounts below it.
                     assert printed in rows, (name, number, printed)

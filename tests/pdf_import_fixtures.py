@@ -11,8 +11,8 @@ from pathlib import Path
 import re
 from statistics import median
 
-from home_manager.documents.pdf_layout import point
-from home_manager.documents.pdf_reader import complete_pdf, read_result, worker
+from home_manager.documents.pdf_layout import PDFCell, PDFCharacter, PDFLayout, PDFTable, PDFWord, point
+from home_manager.documents.pdf_reader import PDFPage, PDFResult, complete_pdf, read_result, worker
 from home_manager.library.storage import digest_file
 from test_pdf import make_pdf
 
@@ -283,6 +283,48 @@ def long_cell_pages():
     """SC-16 step 4: a `Date | Description | Amount` table, with a 2,001-character description in its first row."""
     rows = [HEADING3, ("08/01/2026", long_cell_text(), "1.00"), ("08/02/2026", "SHORT", "2.00")]
     return [page(rows, columns=LONG_CELL_COLUMNS, media=(LONG_CELL_PAGE_WIDTH, 792))]
+
+
+def summary_below_pages():
+    """A one-page native transactions table (A1, A2) with a `Summary | Amount` table printed below it, with no date on any
+    summary line: the summary stays listed, and nothing is absorbed into the transactions table."""
+    items = table_items([HEADING5, *x_cells("A1", "A2")], 700) + table_items(X_SUMMARY, 600, COLUMNS[:2])
+    return [{"items": items + [footer("FIRST LOCAL BANK statement page one of one, kept for your records", 540)]}]
+
+
+def second_heading_pages():
+    """A one-page native transactions table (A1, A2), a row with a blank description (the reader ends its table there, so it
+    is a below-table row), then a second transactions heading whose rows print only withdrawals (the reader builds no
+    transactions table for it, so the heading is only a visual row)."""
+    first = table_items([HEADING5, *x_cells("A1", "A2"), ("09/05/2026", "", "3.00", "", "1,008.00")], 700)
+    second = table_items([HEADING5, ("09/06/2026", "C2", "4.00", "", ""), ("09/07/2026", "C3", "5.00", "", "")], 620)
+    return [{"items": first + second + [footer("FIRST LOCAL BANK statement page one of one, kept for your records", 540)]}]
+
+
+def synthetic_page(number, rows):
+    """One in-memory native page: a `Date | Description | Amount` table, with one character per word (all the analyzer needs)."""
+    words, characters, cells = [], [], []
+    for row, values in enumerate([HEADING3, *rows]):
+        for column, text in enumerate(values):
+            x, y = COLUMNS[column], 20 * row + 20
+            characters.append(PDFCharacter.model_construct(index=len(characters), unicode_value=ord(text[0]), text=text[0], continuation_of=None,
+                                                          bbox=(x, y, x + 5 * len(text), y + 10), origin=(x, y), font_size=10.0, angle=0.0,
+                                                          generated=False, unicode_error=False))
+            words.append(PDFWord.model_construct(id=f"page-{number}-layout-word-{len(words) + 1}", text=text, character_indexes=[len(characters) - 1],
+                                                 bbox=(x, y, x + 5 * len(text), y + 10)))
+            cells.append(PDFCell.model_construct(id=f"page-{number}-layout-table-1-row-{row + 1}-cell-{column + 1}", row=row, column=column,
+                                                 row_span=1, column_span=1, word_ids=[words[-1].id], line_ids=[], text=text))
+    table = PDFTable.model_construct(id=f"page-{number}-layout-table-1", rows=len(rows) + 1, columns=3, header_rows=[0], cells=cells)
+    layout = PDFLayout.model_construct(source_hash="synthetic", page_number=number, page_to_preview=(1, 0, 0, 1, 0, 0), raw_text="", characters=characters,
+                                       words=words, lines=[], blocks=[], tables=[table], coverage="native_text", issues=[])
+    return PDFPage.model_construct(number=number, method="embedded_text", lines=[], layout=layout, vision_tables=None, regions=[])
+
+
+def synthetic_result(pages):
+    """An in-memory PDFResult (never saved) of native pages: `pages` holds one list of (date, description, amount) rows per
+    page, and each page is one native transactions table. Built with `model_construct`, so the reader's caps (500 rows a table)
+    do not apply: the row-limit double of SC-16 and its 250-rejected-rows case."""
+    return PDFResult.model_construct(input_hash="synthetic", pages=[synthetic_page(number, rows) for number, rows in enumerate(pages, 1)], issues=[])
 
 
 # --- P-check helpers: what the real reader made of a fixture ------------------------------------------------------
