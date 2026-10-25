@@ -45,6 +45,8 @@ const RECORD_FIELDS = {
                   ["Taxes this period", "taxes_minor"], ["Pre-tax deductions this period", "deductions_minor"],
                   ["Total deductions this period", "total_deductions_minor"]],
 };
+// Only a dining receipt has a tip line; another kind shows one only when a tip was recorded, so its total still adds up.
+const showsTip = record => record.receipt_kind === "dining" || Boolean(record.tip_minor);
 const PAY_FREQUENCIES = {52: "Weekly", 26: "Every two weeks", 24: "Twice a month", 12: "Monthly"};
 const DOCUMENT_KIND_LABELS = {receipt: "Purchase", bill: "Bill"};
 const isDateField = field => field.endsWith("_date");
@@ -211,7 +213,7 @@ function billLines(record, categories, onSaved, find, correctField = null) {
     const value = element("td", "", "numeric"); value.append(amount(record.display[`${field}_minor`] || "—", {signed: false}));
     const actions = element("td"); actions.colSpan = 5;
     if (correctField) {
-      const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
+      const button = element("button", "Correct", "link-button doc2-row-edit"); button.type = "button"; button.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
       button.addEventListener("click", () => correctField(field)); actions.append(button);
     }
     tr.append(name, value, actions); foot.append(tr);
@@ -277,13 +279,14 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
     const foot = table.appendChild(element("tfoot"));
     for (const [label, field] of [["Subtotal", "subtotal"], ["Tax", "tax"], ["Tip", "tip"], ["Not matched to an item", "unmatched"], ["Total", "total"]]) {
       if (field === "unmatched" && !record.unmatched_minor) continue;
+      if (field === "tip" && !showsTip(record)) continue;
       const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = codes ? 2 : 1;
       // A receipt paid partly by gift card: its printed total here, what was paid in its Paid line (document_v2.js doc2Paid).
       const shown = field === "total" && record.paid_summary ? record.printed_total?.display : record.display[`${field}_minor`];
       const value = element("td", "", "numeric"); value.append(amount(shown || "—", {signed: false}));
       const actions = element("td"); actions.colSpan = shares ? 3 : 2;
       if (correctField && field !== "unmatched") {
-        const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", `Correct ${field}`);
+        const button = element("button", "Correct", "link-button doc2-row-edit"); button.type = "button"; button.setAttribute("aria-label", `Correct ${field}`);
         button.addEventListener("click", () => correctField(field)); actions.append(button);
       }
       tr.append(name, value, actions); foot.append(tr);

@@ -494,7 +494,7 @@ let confirmCorrectCount = 0;
 const SALE_TYPES = {sale: "Sale", return: "Return"}, DIRECTION_WORDS = {out: "Money out", in: "Money in"};
 function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, correctable = [], reviewPath = null, confirmBody = {status: "verified"},
                          rejectBody = {status: "rejected"}, undoBody = {status: "needs_review"}, labels = {}, onChange = () => {}, preview = true,
-                         member = null, decision = true, onClose = null, showState = true, saveCorrection = null} = {}) {
+                         member = null, decision = true, onOpen = null, onClose = null, showState = true, saveCorrection = null} = {}) {
   const n = ++confirmCorrectCount, idOf = name => `cc${n}-${name}`;
   const record = `/api/finance/records/${recordType}/${recordId}`, path = reviewPath || `${record}/review`;
   const words = {confirm: "Confirm", reject: "Reject", correct: "Correct…", ...labels};
@@ -627,6 +627,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
   function openCorrect(field = null) {
     if (!correctButton) return;
     form.hidden = false; correctButton.setAttribute("aria-expanded", "true"); el.classList.add("cc-open");
+    onOpen?.();
     (fields[field] || Object.values(fields)[0])?.focus();
   }
   function close(focus = true) {

@@ -414,7 +414,9 @@ async function doc2Ledger(state, target, type, id, kept) {
   // Warnings ask for a decision; once the user has decided (verify or reject), they are no longer shown.
   const decided = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
   $("doc2-why").replaceChildren(...(record.issues?.length && !decided ? [doc2Why(record.issues)] : []));
-  doc2Decision(state, {recordType: type, recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source, correctable: record.correctable || []});
+  state.itemsSection = null;
+  doc2Decision(state, {recordType: type, recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source, correctable: record.correctable || [],
+                       onOpen: () => doc2ShowRowEdits(state, true), onClose: () => doc2ShowRowEdits(state, false)});
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
   if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
@@ -424,7 +426,9 @@ async function doc2Ledger(state, target, type, id, kept) {
   const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
   if (rows) {
     if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record, type === "receipt" && record.review_status !== "rejected");
-    const section = element("section", "", "doc2-section");
+    // A receipt's row Correct and Delete show only while the record's Correct is open (doc2ShowRowEdits).
+    const section = element("section", "", type === "receipt" ? "doc2-section doc2-hide-edits" : "doc2-section");
+    if (type === "receipt") state.itemsSection = section;
     section.append(element("h3", type === "statement" ? `Transactions (${record.transactions.length})` : `Items (${record.items?.length || 0})`), rows);
     parts.push(section);
   }
@@ -445,6 +449,7 @@ function doc2Fields(state, type, record) {
     const label = record.invoice && field === "total_minor" ? "Invoice total"
       : record.invoice && field === "amount_due_minor" ? "Remaining balance" : fieldLabel;
     if (end && !record[field] && !record[end] && !fix(field)) continue;  // A bill without a printed period.
+    if (field === "tip_minor" && !showsTip(record)) continue;
     // A receipt's Total is its printed total; what was paid after gift cards is in its Paid line (doc2Forms).
     const printed = type === "receipt" && field === "total_minor" && record.paid_summary ? record.printed_total?.display : null;
     const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : printed || record.display[field] || record[field];
@@ -655,13 +660,21 @@ function doc2Pending(state, record) {
                     await doc2Changed(state);
                   }, "secondary")});
 }
+function doc2ShowRowEdits(state, shown) {
+  const section = state.itemsSection;
+  if (!section) return;
+  section.classList.toggle("doc2-hide-edits", !shown);
+  if (shown) return;
+  section.querySelectorAll(".doc2-row-form").forEach(node => node.remove());
+  for (const button of section.querySelectorAll(".doc2-row-correct")) button.setAttribute("aria-expanded", "false");
+}
 // A statement's rows each take a correction of their own, opened in a row under it.
 function doc2RowCorrect(state, rows, record, allowDelete = false) {
   const items = Boolean(record.items), lines = (record.items || record.transactions).slice(0, 200);
   [...rows.querySelectorAll("tbody tr")].forEach((tr, index) => {
     const row = lines[index];
     if (!row?.correctable?.length) return;
-    const open = element("button", "Correct", "link-button doc2-row-correct"); open.type = "button";
+    const open = element("button", "Correct", "link-button doc2-row-correct doc2-row-edit"); open.type = "button";
     open.setAttribute("aria-label", `Correct ${row.description || row.description_raw || "this row"}`); open.setAttribute("aria-expanded", "false");
     open.addEventListener("click", () => {
       const shown = tr.nextElementSibling?.classList.contains("doc2-row-form");
@@ -681,7 +694,7 @@ function doc2RowCorrect(state, rows, record, allowDelete = false) {
     });
     tr.lastElementChild.append(open);
     if (items && allowDelete) {
-      const remove = element("button", "Delete", "link-button danger-text"); remove.type = "button";
+      const remove = element("button", "Delete", "link-button danger-text doc2-row-edit"); remove.type = "button";
       remove.setAttribute("aria-label", `Delete ${row.description || "this item"}`);
       remove.addEventListener("click", async () => {
         if (!await confirmAction({title: `Delete ${row.description || "this item"}?`,
