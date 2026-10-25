@@ -146,23 +146,53 @@ $("confirm-library-action").addEventListener("click", async () => {
 });
 
 const MAP_KEYS = ["date", "description", "amount", "debit", "credit"];
-let importDoc = null, importDone = null;
+const READ_FIRST = "Read this document first.";  // The server's refusal for a PDF with no saved reading (finance/ledger.py pdf_reading).
+const isPdf = doc => /\.pdf$/i.test(doc.relative_path);
+let importDoc = null, importDone = null, importOpener = null, importPdf = null, importAfterPdf = false;
 // onDone runs after the rows are imported (the Money screens reload; money_v2.js importPicker).
 async function openImport(doc, {onDone = null} = {}) {
-  importDoc = doc; importDone = onDone;
+  importDoc = doc; importDone = onDone; importOpener = document.activeElement;
+  // PDF mode (docs/documents.md "PDFs"): what the user has chosen so far, as the preview request sends it. A choice left
+  // empty is the server's default (tables: all, sign: the account type's); ticks are only the rows the user changed.
+  importPdf = isPdf(doc) ? {tables: null, sign: null, ticked: new Set(), unticked: new Set(), result: null, sequence: 0, latest: null, matched: false, importing: false, done: false} : null;
   $("import-document").textContent = doc.relative_path;
   const select = $("import-account"); select.replaceChildren(new Option("New account…", ""));
   const accounts = await api("/api/finance/accounts");
   for (const account of accounts) select.add(new Option(`${account.display_name} · ${account.currency}`, account.id));
-  let remembered = "";
-  try { remembered = localStorage.getItem("home-manager-import-account") || ""; } catch { remembered = ""; }
-  select.value = accounts.some(account => String(account.id) === remembered) ? remembered : accounts.length ? String(accounts[0].id) : "";
+  if (importPdf) {
+    // The account starts from the PDF's printed last four, never from the remembered CSV account (FR-13).
+    select.add(new Option("Choose an account…", "none"), 0); select.value = "none";
+  } else {
+    let remembered = "";
+    try { remembered = localStorage.getItem("home-manager-import-account") || ""; } catch { remembered = ""; }
+    select.value = accounts.some(account => String(account.id) === remembered) ? remembered : accounts.length ? String(accounts[0].id) : "";
+  }
   $("import-new-account").hidden = select.value !== "";
   for (const key of MAP_KEYS) $(`import-map-${key}`).replaceChildren(new Option("Detect", ""));
   $("import-preview").replaceChildren(); $("import-issues").replaceChildren(); $("import-status").textContent = "";
+  if (importPdf || importAfterPdf) $("import-date-format").value = "auto";
+  importAfterPdf = Boolean(importPdf);
+  showImportMode();
   $("confirm-import").disabled = true;
   $("import-dialog").showModal();
   await previewImport();
+}
+function showImportMode() {
+  const pdf = Boolean(importPdf);
+  for (const id of ["import-csv-map", "import-csv-sign", "import-csv-wrap"]) $(id).hidden = pdf;
+  for (const id of ["import-account-note", "import-tables", "import-pdf-wrap", "import-pdf-sign-field", "import-year-field", "import-sign-note", "import-read-first"]) $(id).hidden = true;
+  $("import-body").hidden = false; $("import-actions").hidden = false;
+  for (const control of $("import-body").querySelectorAll("input, select, button")) control.disabled = false;  // A finished PDF import locks them.
+  $("preview-import").disabled = false;
+  $("import-pdf-rows").replaceChildren(); $("import-table-list").replaceChildren();
+  if (!pdf) return;
+  $("import-last-four").value = ""; delete $("import-last-four").dataset.touched;
+  $("import-pdf-wrap").hidden = false;
+  // The year is a choice the PDF never makes for you; the list only offers recent years (no default).
+  const year = $("import-year"), now = new Date().getFullYear();
+  year.replaceChildren(new Option("Choose…", ""));
+  for (let value = now + 1; value >= now - 30; value -= 1) year.add(new Option(String(value), String(value)));
+  $("import-pdf-sign").value = "";
 }
 function importMapping() {
   const mapping = {date_format: $("import-date-format").value, sign: $("import-sign").value};
@@ -175,6 +205,7 @@ function importBody() {
           ...(accountId ? {account_id: accountId} : {currency: $("import-currency").value.trim().toUpperCase()})};
 }
 async function previewImport() {
+  if (importPdf) return previewPdf();
   $("confirm-import").disabled = true;
   try {
     const result = await api(`/api/documents/${importDoc.id}/transaction-import/preview`, {method:"POST", body:JSON.stringify(importBody())});
@@ -196,11 +227,200 @@ async function previewImport() {
     $("confirm-import").disabled = !result.counts.parsed;
   } catch (error) { $("import-status").textContent = error.message; }
 }
-$("import-account").addEventListener("change", () => { $("import-new-account").hidden = $("import-account").value !== ""; previewImport(); });
+
+// PDF mode (FR-28) -------------------------------------------------------------------------------------------------
+// The server decides every row, status and total (finance/ledger.py preview_pdf_import); this only sends the choices and draws the answer.
+function pdfBody({forImport = false} = {}) {
+  const value = $("import-account").value, body = {expected_hash: importDoc.current_hash, date_format: $("import-date-format").value};
+  if (/^\d+$/.test(value)) body.account_id = Number(value);
+  else if (value === "") {
+    // A new account: the import creates it in its own transaction (FR-14). A preview takes the type and currency typed so far.
+    const currency = $("import-currency").value.trim().toUpperCase(), lastFour = $("import-last-four").value.trim(), institution = $("import-institution").value.trim();
+    if (!forImport) { body.account_type = $("import-type").value; if (/^[A-Z]{3}$/.test(currency)) body.currency = currency; }
+    if (institution && /^[A-Z]{3}$/.test(currency) && /^(\d{4})?$/.test(lastFour)) {
+      body.new_account = {institution, account_type: $("import-type").value, currency, ...(lastFour ? {last_four: lastFour} : {})};
+    }
+  }
+  if (importPdf.tables) body.tables = importPdf.tables;
+  if ($("import-year").value) body.year = Number($("import-year").value);
+  if (importPdf.sign) body.sign = importPdf.sign;
+  if (importPdf.ticked.size) body.ticked = [...importPdf.ticked];
+  if (importPdf.unticked.size) body.unticked = [...importPdf.unticked];
+  return body;
+}
+function previewPdf() {
+  const state = importPdf;
+  state.latest = runPdfPreview(state);
+  return state.latest;
+}
+async function runPdfPreview(state) {
+  const sequence = ++state.sequence;
+  try {
+    const result = await api(`/api/documents/${importDoc.id}/transaction-import/preview`, {method: "POST", body: JSON.stringify(pdfBody())});
+    if (importPdf !== state || sequence !== state.sequence) return;  // Closed, or a newer choice is already on its way.
+    state.result = result;
+    showPdfPreview(result);
+  } catch (error) {
+    if (importPdf !== state || sequence !== state.sequence) return;
+    state.result = null;
+    if (error.message === READ_FIRST) showReadFirst();
+    else { $("import-status").textContent = error.message; updatePdfImport(); }
+  }
+}
+function showReadFirst() {
+  for (const id of ["import-body", "import-actions", "import-tables", "import-pdf-wrap"]) $(id).hidden = true;
+  $("import-read-first").hidden = false; $("import-read").disabled = false;
+  $("import-issues").replaceChildren(); $("import-status").textContent = "";
+  $("import-read").focus();
+}
+function pdfTableItem(table, tables) {
+  const item = element("li"), heads = table.headings.filter(Boolean).join(" · "), count = `${table.row_count} row${table.row_count === 1 ? "" : "s"}`;
+  if (!table.selectable) {
+    const parent = tables.find(other => other.id === table.linked_to);
+    item.append(element("span", parent ? `Page ${table.page} · continues the table on page ${parent.page} (${count})` : `Page ${table.page} · not a transactions table${heads ? ` · ${heads}` : ""}`, "muted"));
+    return item;
+  }
+  const label = element("label", "", "check-field"), box = document.createElement("input");
+  box.type = "checkbox"; box.checked = table.selected; box.dataset.key = `table:${table.id}`; box.dataset.table = table.id;
+  box.addEventListener("change", () => {
+    importPdf.tables = [...$("import-table-list").querySelectorAll("input[data-table]")].filter(input => input.checked).map(input => input.dataset.table);
+    previewImport();
+  });
+  label.append(box, element("span", `Page ${table.page}${heads ? ` · ${heads}` : ""} · ${count}${table.kind === "rebuilt" ? " (rebuilt from the page)" : ""}`));
+  item.append(label);
+  return item;
+}
+const PDF_ROW_STATUS = {new: "not_imported", already_recorded: "imported", rejected_earlier: "rejected", rejected: "rejected"};
+function pdfRow(row) {
+  const tr = document.createElement("tr");
+  cell(tr, row.page); cell(tr, row.date); cell(tr, row.description);
+  const printed = cell(tr, row.amount); printed.className = "numeric";
+  const signed = cell(tr, ""); signed.className = "numeric"; signed.appendChild(amount(row.display_amount));
+  const status = cell(tr, ""); status.appendChild(statusBadge(PDF_ROW_STATUS[row.status], "", row.status_text));
+  for (const label of row.labels) status.appendChild(element("small", label, "import-row-label"));
+  const tick = cell(tr, ""), box = document.createElement("input");
+  box.type = "checkbox"; box.checked = row.ticked; box.disabled = Boolean(row.rejected); box.dataset.key = `row:${row.key}`;
+  box.setAttribute("aria-label", `Import page ${row.page} row ${row.row}: ${row.description}`);
+  box.addEventListener("change", () => {
+    const [add, remove] = box.checked ? [importPdf.ticked, importPdf.unticked] : [importPdf.unticked, importPdf.ticked];
+    add.add(row.key); remove.delete(row.key);
+    previewImport();
+  });
+  tick.appendChild(box);
+  return tr;
+}
+function pdfSummary(result) {
+  if (result.blocked) return result.blocked;
+  if (result.required.length) return result.required_messages.join(" ");
+  const counts = result.counts;
+  if (!counts.seen) return "No rows to import in the selected tables.";
+  return `${counts.new} new, ${counts.already_recorded} already recorded${counts.rejected_earlier ? `, ${counts.rejected_earlier} rejected earlier` : ""}, ${counts.rejected} not importable, ${counts.left_out} left out. Money out ${result.totals.outflow}; money in ${result.totals.inflow}.`;
+}
+function showPdfPreview(result) {
+  const state = importPdf, focused = document.activeElement?.dataset?.key || null;
+  $("import-read-first").hidden = true; $("import-body").hidden = false; $("import-actions").hidden = false; $("import-pdf-wrap").hidden = false;
+  // The account: the match the first time, then the user's own choice. The note says why it was chosen.
+  const select = $("import-account"), match = result.account_match;
+  if (!state.matched && select.value === "none" && match && [...select.options].some(option => option.value === String(match.account_id))) select.value = String(match.account_id);
+  state.matched = true;
+  $("import-new-account").hidden = select.value !== "";
+  const note = $("import-account-note");
+  note.textContent = match && select.value === String(match.account_id) ? match.text : select.value === "none" ? "No saved account matches this PDF. Choose one, or add a new account." : "";
+  note.hidden = !note.textContent;
+  if (select.value === "" && result.new_account_last_four && !$("import-last-four").dataset.touched) $("import-last-four").value = result.new_account_last_four;
+  $("import-tables").hidden = !result.tables.length;
+  $("import-table-list").replaceChildren(...result.tables.map(table => pdfTableItem(table, result.tables)));
+  $("import-year-field").hidden = !(result.required.includes("year") || $("import-year").value);
+  // A single Amount column needs a sign; the default is the account type's, and only a choice of yours is sent.
+  const signed = "amount" in result.mapping || result.required.includes("sign") || Boolean(state.sign);
+  $("import-pdf-sign-field").hidden = !signed;
+  $("import-pdf-sign").value = result.sign || "";
+  $("import-sign-note").textContent = !signed ? "" : state.sign ? "" : result.sign_default ? "This is the usual sign for this type of account." : "";
+  $("import-sign-note").hidden = !$("import-sign-note").textContent;
+  $("import-pdf-rows").replaceChildren(...result.rows.map(pdfRow));
+  $("import-issues").replaceChildren(...result.issues.map(issue => element("li", issue.message)));
+  if (!state.done) $("import-status").textContent = pdfSummary(result);
+  updatePdfImport();
+  if (focused) document.querySelector(`#import-dialog [data-key="${CSS.escape(focused)}"]`)?.focus();
+}
+function pdfAccountReady() {
+  const value = $("import-account").value;
+  if (/^\d+$/.test(value)) return true;
+  return value === "" && Boolean($("import-institution").value.trim()) && /^[A-Za-z]{3}$/.test($("import-currency").value.trim()) && /^(\d{4})?$/.test($("import-last-four").value.trim());
+}
+function pdfBlocked(state) {
+  const result = state.result;
+  return !result || Boolean(result.blocked) || result.required.length > 0 || !pdfAccountReady() || !result.rows.some(row => row.ticked && !row.rejected);
+}
+function updatePdfImport() {
+  const state = importPdf;
+  if (state) $("confirm-import").disabled = state.importing || state.done || pdfBlocked(state);
+}
+async function importPdfRows() {
+  const state = importPdf;
+  state.importing = true; updatePdfImport();
+  try {
+    // A field's change event fires as the click lands and starts a preview: that settles first, and may block the import.
+    await state.latest;
+    if (importPdf !== state || pdfBlocked(state)) return;
+    const done = await api(`/api/documents/${importDoc.id}/transaction-imports`, {method: "POST", body: JSON.stringify({...pdfBody({forImport: true}), reading_id: state.result.reading_id})});
+    state.done = true;
+    // The summary stays in the dialog's live region; the Money screens behind it reload.
+    $("import-status").textContent = `Imported ${done.inserted} new transactions into ${done.account_name}; ${done.duplicates} were already recorded, ${done.rejected} rows were not importable and ${done.left_out} were left out.`
+      + (done.pages_without_rows ? ` ${done.pages_without_rows} pages had no rows.` : "");
+    for (const control of $("import-dialog").querySelectorAll("#import-body :is(input, select, button), #import-pdf-wrap input")) control.disabled = true;
+    $("preview-import").disabled = true;
+    $("close-import").focus();
+    loadNavCounts().catch(() => {});
+    if (importDone) Promise.resolve(importDone(done)).catch(error => notice(error, true));
+  } catch (error) { $("import-status").textContent = error.message; }
+  finally { state.importing = false; updatePdfImport(); }
+}
+// Read, then preview in place (FR-27): the reading job runs on its own queue and the dialog waits for it.
+async function waitForReading(runId, state) {
+  for (;;) {
+    const run = await api(`/api/receipt-runs/${runId}`);
+    if (importPdf !== state) return null;
+    if (!PENDING.includes(run.status)) return run;
+    await new Promise(resolve => setTimeout(resolve, 700));
+    if (importPdf !== state) return null;
+  }
+}
+$("import-read").addEventListener("click", async () => {
+  const state = importPdf;
+  $("import-read").disabled = true; $("import-status").textContent = "Reading the document …";
+  try {
+    const started = await api(`/api/documents/${importDoc.id}/receipt-runs`, {method: "POST", body: JSON.stringify({blob_hash: importDoc.current_hash})});
+    const run = await waitForReading(started.run_id, state);
+    if (!run) return;
+    if (!["succeeded", "partial"].includes(run.status)) throw new Error(run.error || `The reading ${statusLabel(run.status).toLowerCase()}.`);
+    $("import-status").textContent = "";
+    await previewImport();
+    // The Read button is gone once the preview shows; keep focus inside the dialog.
+    if (importPdf === state && !$("import-body").hidden && (document.activeElement === document.body || document.activeElement === $("import-read"))) $("import-account").focus();
+  } catch (error) { if (importPdf === state) { $("import-status").textContent = error.message; $("import-read").disabled = false; } }
+});
+$("import-account").addEventListener("change", () => {
+  $("import-new-account").hidden = $("import-account").value !== "";
+  previewImport();
+});
 for (const id of ["import-date-format", "import-sign", ...MAP_KEYS.map(key => `import-map-${key}`)]) $(id).addEventListener("change", previewImport);
+$("import-year").addEventListener("change", previewImport);
+$("import-pdf-sign").addEventListener("change", () => { importPdf.sign = $("import-pdf-sign").value || null; previewImport(); });
+// A partly typed new account still moves the sign default and the currency checks (FR-15).
+for (const id of ["import-institution", "import-type", "import-currency", "import-last-four"]) {
+  $(id).addEventListener("input", () => { if (id === "import-last-four") $(id).dataset.touched = "1"; updatePdfImport(); });
+  $(id).addEventListener("change", () => { if (importPdf) previewImport(); });
+}
 $("preview-import").addEventListener("click", previewImport);
 $("close-import").addEventListener("click", () => $("import-dialog").close());
+$("import-dialog").addEventListener("close", () => {
+  // A PDF dialog may be waiting on a preview or a reading: stop listening, and give focus back to what opened it.
+  const pdf = importPdf; importPdf = null;
+  if (pdf && (document.activeElement === document.body || !document.activeElement?.isConnected) && importOpener?.isConnected) importOpener.focus();
+});
 $("confirm-import").addEventListener("click", async () => {
+  if (importPdf) return importPdfRows();
   try {
     $("confirm-import").disabled = true;
     if (!$("import-account").value) {

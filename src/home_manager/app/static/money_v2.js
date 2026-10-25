@@ -79,7 +79,6 @@ async function importPicker({onImported = null} = {}) {
   money2.onImported = onImported; money2.opener = document.activeElement;
   const list = $("money2-import-list");
   list.replaceChildren(element("li", "Looking for exports …", "muted small"));
-  list.previousElementSibling.textContent = "Files arrive through the Inbox or a watched folder: PDF statements, and CSV or XLSX exports. Choose one to import.";
   $("money2-import").showModal();
   $("money2-import-close").focus();
   try {

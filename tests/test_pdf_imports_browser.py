@@ -203,3 +203,333 @@ def test_sc19_an_empty_library_names_pdf_csv_and_xlsx_in_the_picker(tmp_path):
         expect(page.locator("#money2-import-list")).to_contain_text("No bank or card exports waiting")
         for kind in ("PDF", "CSV", "XLSX"):
             expect(page.locator("#money2-import-list")).to_contain_text(kind)
+
+
+NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
+ACCOUNTS = {"A": ("FIRST LOCAL BANK", "checking", "4821"), "C": ("SYNTH CARD SERVICES", "credit_card", "7700"), "L": ("SYNTH LENDER", "loan", "3333")}
+LEDGER_TABLES = ("accounts", "transactions", "financial_evidence_links", "transaction_imports", "statements")
+
+
+def add_accounts(base, token, keys):
+    """Create the contract's accounts (A checking …4821, C card …7700, L loan …3333) through the real route; returns their ids."""
+    with httpx.Client(base_url=base, headers={"Authorization": f"Bearer {token}"}) as client:
+        ids = {}
+        for key in keys:
+            institution, kind, last_four = ACCOUNTS[key]
+            response = client.post("/api/finance/accounts", json={"institution": institution, "account_type": kind, "currency": "USD", "last_four": last_four})
+            assert response.status_code == 201, response.text
+            ids[key] = response.json()["id"]
+    return ids
+
+
+def library_row(base, token, manager, name):
+    [doc] = [item for item in manager.store.documents(limit=1000)["items"] if item["relative_path"].endswith(name)]
+    with httpx.Client(base_url=base, headers={"Authorization": f"Bearer {token}"}) as client:
+        return client.get(f"/api/documents/{doc['id']}").json()
+
+
+def ledger_counts(manager):
+    with manager.store.connection() as db:
+        return {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in LEDGER_TABLES}
+
+
+def finished_readings(manager):
+    with manager.store.connection() as db:
+        return db.execute("SELECT COUNT(*) FROM parse_runs WHERE status IN ('succeeded','partial')").fetchone()[0]
+
+
+@browser_test
+def test_sc21_import_on_an_unread_pdf_asks_for_a_reading_and_previews_in_place(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "pdf-unread-test"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        # Automatic reading after capture is a setting; with it off (and no model) a native PDF waits unread.
+        manager.vision = manager.vision.model_copy(update={"organize_after_scan": False})
+        ids = add_accounts(base, token, "A")
+        put(manager, [("Ku.pdf", fx.k_pages()), ("Kmixed.pdf", fx.m_pages())])
+        assert finished_readings(manager) == 0
+        before = ledger_counts(manager)
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.wait_for_selector("#tx2-import")
+        dialog = page.locator("#import-dialog")
+        # The row's More actions entry is SL-08's; the dialog opens on the library row the way the picker and that entry open it.
+        page.evaluate("""doc => { window.closes = 0; document.getElementById("import-dialog").addEventListener("close", () => { window.closes += 1; }); openImport(doc); }""",
+                      library_row(base, token, manager, "Kmixed.pdf"))
+        expect(dialog).to_be_visible()
+        expect(dialog.get_by_text("Read this document first")).to_be_visible()
+        read = dialog.get_by_role("button", name="Read", exact=True)
+        expect(read).to_be_visible()
+        expect(dialog.locator("#confirm-import")).to_be_hidden()
+        assert ledger_counts(manager) == before and finished_readings(manager) == 0
+        # 21-a: a scanned page needs a model; the dialog says what it says today, and nothing is written.
+        read.click()
+        expect(dialog.locator("#import-status")).to_contain_text("Configure a local vision model", timeout=60000)
+        expect(read).to_be_enabled()
+        assert ledger_counts(manager) == before and finished_readings(manager) == 0
+        page.locator("#close-import").click()
+        # Ku is fully native: Read, then the preview in the same dialog, without reopening it.
+        page.evaluate("""doc => { window.closes = 0; openImport(doc); }""", library_row(base, token, manager, "Ku.pdf"))
+        expect(dialog.get_by_text("Read this document first")).to_be_visible()
+        assert ledger_counts(manager) == before
+        dialog.get_by_role("button", name="Read", exact=True).click()
+        rows = dialog.locator("#import-pdf-rows tr")
+        expect(rows).to_have_count(9, timeout=60000)
+        expect(dialog.get_by_text("Read this document first")).to_be_hidden()
+        expect(dialog.locator("#import-account")).to_have_value(str(ids["A"]))
+        expect(dialog.locator("#import-account-note")).to_contain_text("4821")
+        expect(dialog.locator("#confirm-import")).to_be_enabled()
+        assert page.evaluate("window.closes") == 0
+        expect(dialog).to_be_visible()
+        assert finished_readings(manager) == 1 and ledger_counts(manager) == before  # A reading exists; the ledger tables did not move.
+        # Closing without importing writes nothing.
+        page.locator("#close-import").click()
+        expect(dialog).to_be_hidden()
+        assert ledger_counts(manager) == before and ledger_counts(manager)["transactions"] == 0
+        assert not failures
+        browser.close()
+
+
+def tab_walk(page, stop=None, limit=60):
+    """What each Tab press reaches (a row or table key, else the element id), until `stop` or the limit."""
+    seen = []
+    for _ in range(limit):
+        page.keyboard.press("Tab")
+        reached = page.evaluate("document.activeElement.dataset.key || document.activeElement.id")
+        seen.append(reached)
+        if reached == stop:
+            break
+    return seen
+
+
+def choose_in_dialog(page, picker_name):
+    """Transactions → Import an export → a file, by keyboard only (no pointer calls)."""
+    page.locator("#tx2-import").focus()
+    page.keyboard.press("Enter")
+    page.get_by_role("button", name=f"Import {picker_name}").focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#import-dialog[open]")
+
+
+@browser_test
+def test_sc23_the_pdf_dialog_works_by_keyboard_and_announces_its_summary(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    expect.set_options(timeout=30000)
+    token = "pdf-dialog-keyboard"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        ids = add_accounts(base, token, "ACL")
+        put(manager, [("K.pdf", fx.k_pages()), ("R.pdf", fx.r_pages())])
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.evaluate("id => localStorage.setItem('home-manager-import-account', String(id))", ids["C"])
+        page.goto(f"{base}/#/transactions")  # The one navigation; everything after it is the keyboard.
+        page.wait_for_selector("#tx2-import")
+        dialog = page.locator("#import-dialog")
+        status, account = dialog.locator("#import-status"), dialog.locator("#import-account")
+        # 1. K opens in PDF mode, with A matched and not the remembered C.
+        choose_in_dialog(page, "K.pdf")
+        rows = dialog.locator("#import-pdf-rows tr")
+        expect(rows).to_have_count(9)
+        expect(dialog.locator("#import-table-list input[type=checkbox]")).to_have_count(1)
+        expect(rows.nth(0).locator("td").first).to_have_text("1")
+        expect(rows.nth(8).locator("td").first).to_have_text("3")
+        row_keys = [box.get_attribute("data-key").removeprefix("row:") for box in rows.locator("input[type=checkbox]").all()]
+        for hidden in ("#import-csv-map", "#import-csv-wrap", "#import-map-date", "#import-csv-sign"):
+            expect(dialog.locator(hidden)).to_be_hidden()
+        expect(account).to_have_value(str(ids["A"]))
+        expect(dialog.locator("#import-account-note")).to_have_text("Matched …4821 printed on page 1")
+        assert page.evaluate("document.getElementById('import-dialog').contains(document.activeElement)")
+        assert page.evaluate(NO_OVERFLOW)
+        # 2. Tab reaches every control. First with a new account typed (its fields show); then with A, where Import is enabled.
+        account.focus()
+        page.keyboard.press("ArrowUp")  # Choose… < New account… < A: one step up from A is New account….
+        expect(dialog.locator("#import-new-account")).to_be_visible()
+        expect(dialog.locator("#import-last-four")).to_have_value("4821")  # Prefilled from the one number the PDF prints.
+        expect(status).to_contain_text("9 new")
+        walked = tab_walk(page, limit=40)
+        assert {"import-account", "import-institution", "import-type", "import-currency", "import-last-four", "preview-import"} <= set(walked), walked
+        assert any(key.startswith("table:") for key in walked) and any(key.startswith("row:") for key in walked), walked
+        account.focus()
+        page.keyboard.press("ArrowDown")
+        expect(account).to_have_value(str(ids["A"]))
+        expect(dialog.locator("#import-new-account")).to_be_hidden()
+        expect(status).to_contain_text("9 new")
+        walked = tab_walk(page, stop="confirm-import", limit=40)
+        assert walked[-1] == "confirm-import" and any(key.startswith("table:") for key in walked), walked
+        assert [key for key in tab_walk(page, limit=9) if key.startswith("row:")] == [f"row:{key}" for key in row_keys], "every row tick is reachable in order"
+        # A row's tick is a checkbox: Space leaves the row out, and focus stays on it while the preview redraws.
+        first_tick = rows.nth(0).locator("input[type=checkbox]")
+        first_tick.focus()
+        page.keyboard.press("Space")
+        expect(status).to_contain_text("8 new")
+        expect(status).to_contain_text("1 left out")
+        assert page.evaluate("document.activeElement.dataset.key") == f"row:{row_keys[0]}"
+        page.keyboard.press("Space")
+        expect(status).to_contain_text("9 new")
+        assert page.evaluate("document.activeElement.dataset.key").startswith("row:")
+        # 3. Import: the summary lands in the dialog's live region.
+        assert dialog.locator("#import-status").get_attribute("aria-live") == "polite" and dialog.locator("#import-status").get_attribute("role") == "status"
+        page.locator("#confirm-import").focus()
+        page.keyboard.press("Enter")
+        expect(status).to_contain_text("Imported 9 new transactions into FIRST LOCAL BANK")
+        expect(status).to_contain_text("0 were already recorded")
+        assert ledger_counts(manager)["transactions"] == 9
+        assert page.evaluate("document.activeElement.id") == "close-import"
+        # 4. Closing returns focus to what opened it.
+        page.keyboard.press("Enter")
+        expect(dialog).to_be_hidden()
+        assert page.evaluate("document.activeElement.id") == "tx2-import"
+        # 5. R: the card's sign default, a year to choose, and the totals that follow the account.
+        choose_in_dialog(page, "R.pdf")
+        expect(rows).to_have_count(5)
+        expect(account).to_have_value(str(ids["C"]))  # R prints XXXX7700: matched, and the same as the remembered one.
+        sign, year = dialog.locator("#import-pdf-sign"), dialog.locator("#import-year")
+        expect(sign).to_have_value("positive_is_outflow")
+        expect(status).to_contain_text("Choose the year")
+        expect(year).to_be_visible()
+        expect(dialog.locator("#confirm-import")).to_be_disabled()
+        year.focus()
+        page.keyboard.type("2025")
+        expect(year).to_have_value("2025")
+        expect(status).to_contain_text("5 new")
+        expect(dialog.locator("#confirm-import")).to_be_enabled()
+        expect(status).to_contain_text("Money out -112.94 USD; money in 269.99 USD")
+        assert page.evaluate(NO_OVERFLOW)
+        account.focus()
+        page.keyboard.press("ArrowUp")  # C → A
+        expect(account).to_have_value(str(ids["A"]))
+        expect(sign).to_have_value("negative_is_outflow")
+        expect(status).to_contain_text("Money out -269.99 USD; money in 112.94 USD")
+        account.focus()
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")  # A → C → L (a loan has no default sign)
+        expect(account).to_have_value(str(ids["L"]))
+        expect(sign).to_have_value("")
+        expect(dialog.locator("#confirm-import")).to_be_disabled()
+        expect(status).to_contain_text("Choose whether positive amounts")
+        sign.focus()
+        page.keyboard.press("ArrowDown")
+        expect(sign).to_have_value("negative_is_outflow")
+        expect(dialog.locator("#confirm-import")).to_be_enabled()
+        # 6. Nothing failed, and nothing overflowed.
+        assert page.evaluate(NO_OVERFLOW)
+        assert not failures
+        browser.close()
+
+
+@browser_test
+def test_the_dialog_creates_a_new_account_with_the_import_request_and_follows_the_table_choice(tmp_path):
+    """FR-14 (UI): no account request of its own; the last four is prefilled; FR-28: a table can be left out."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    expect.set_options(timeout=30000)
+    token = "pdf-dialog-new-account"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        put(manager, [("K.pdf", fx.k_pages())])
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures, requests = [], []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.on("request", lambda request: requests.append((request.method, request.url.split(base)[-1], request.post_data)) if request.method == "POST" else None)
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.wait_for_selector("#tx2-import")
+        dialog = page.locator("#import-dialog")
+        status, account = dialog.locator("#import-status"), dialog.locator("#import-account")
+        page.locator("#tx2-import").click()
+        page.get_by_role("button", name="Import K.pdf").click()
+        rows = dialog.locator("#import-pdf-rows tr")
+        expect(rows).to_have_count(9)
+        # No saved account: nothing chosen, Import disabled, and the dialog says why.
+        expect(account).to_have_value("none")
+        expect(dialog.locator("#import-account-note")).to_contain_text("No saved account matches")
+        expect(dialog.locator("#confirm-import")).to_be_disabled()
+        # Leaving the table out leaves no rows to import.
+        table = dialog.locator("#import-table-list input[type=checkbox]")
+        table.uncheck()
+        expect(rows).to_have_count(0)
+        expect(status).to_have_text("No rows to import in the selected tables.")
+        table.check()
+        expect(rows).to_have_count(9)
+        # A new account: last four from the PDF, institution typed; Import waits for the institution.
+        account.select_option("")
+        expect(dialog.locator("#import-last-four")).to_have_value("4821")
+        expect(dialog.locator("#confirm-import")).to_be_disabled()
+        dialog.locator("#import-institution").fill("FIRST LOCAL BANK")
+        expect(dialog.locator("#confirm-import")).to_be_enabled()
+        assert ledger_counts(manager)["accounts"] == 0
+        dialog.locator("#confirm-import").click()
+        expect(status).to_contain_text("Imported 9 new transactions into FIRST LOCAL BANK")
+        accounts = [(method, url) for method, url, _ in requests if url.startswith("/api/finance/accounts")]
+        assert accounts == [], "the import request creates the account; the dialog sends no request of its own"
+        [(_, _, body)] = [item for item in requests if item[1].endswith("/transaction-imports")]
+        sent = json.loads(body)
+        assert sent["new_account"] == {"institution": "FIRST LOCAL BANK", "account_type": "checking", "currency": "USD", "last_four": "4821"} and "account_id" not in sent
+        with manager.store.connection() as db:
+            assert [tuple(row) for row in db.execute("SELECT account_last_four FROM accounts")] == [("4821",)]
+            assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 9
+        assert not failures
+        browser.close()
+
+
+@browser_test
+def test_the_dialog_shows_flagged_rows_unticked_and_imports_the_ones_the_user_ticks(tmp_path):
+    """FR-09 (UI): a flagged page's rows start unticked, labelled with the reader's reason; FR-06: the date order is a choice."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    expect.set_options(timeout=30000)
+    token = "pdf-dialog-flagged"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        ids = add_accounts(base, token, "A")
+        put(manager, [("f.pdf", fx.f_pages())])
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.wait_for_selector("#tx2-import")
+        dialog = page.locator("#import-dialog")
+        status = dialog.locator("#import-status")
+        page.locator("#tx2-import").click()
+        page.get_by_role("button", name="Import f.pdf").click()
+        rows = dialog.locator("#import-pdf-rows tr")
+        expect(rows).to_have_count(6)
+        # F prints no account number, so nothing is preselected; the user chooses A.
+        expect(dialog.locator("#import-account")).to_have_value("none")
+        dialog.locator("#import-account").select_option(str(ids["A"]))
+        # July dates print no day above 12: the order is a choice, and Import waits for it.
+        expect(status).to_have_text("Choose the date order: day first or month first.")
+        expect(dialog.locator("#confirm-import")).to_be_disabled()
+        dialog.locator("#import-date-format").select_option("MM/DD/YYYY")
+        expect(status).to_contain_text("2 new")
+        expect(status).to_contain_text("4 left out")
+        boxes = rows.locator("input[type=checkbox]")
+        assert [box.is_checked() for box in boxes.all()] == [True, True, False, False, False, False]
+        for index in (2, 3, 4, 5):
+            expect(rows.nth(index)).to_contain_text("Page 2 PDF layout needs review")
+        expect(rows.nth(0).locator(".import-row-label")).to_have_count(0)
+        boxes.nth(2).check()
+        boxes.nth(4).check()
+        expect(status).to_contain_text("4 new")
+        expect(status).to_contain_text("2 left out")
+        dialog.locator("#confirm-import").click()
+        expect(status).to_contain_text("Imported 4 new transactions into FIRST LOCAL BANK")
+        expect(status).to_contain_text("2 were left out")
+        with manager.store.connection() as db:
+            assert [row[0] for row in db.execute("SELECT description_raw FROM transactions WHERE account_id=? ORDER BY id", (ids["A"],))] == ["F1", "F2", "F3", "F5"]
+        assert not failures
+        browser.close()
