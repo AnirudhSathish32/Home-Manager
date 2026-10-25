@@ -93,8 +93,25 @@ slices:
       would avoid N requests (needs tools.py/core/trace.py). Browser test uses k6 (k5 is a transfer, in no spending trace);
       API test uses k5. docs/ui.md and docs/documents.md left for SL-08.
   - id: SL-06
-    status: in_progress
+    status: done
+    start_head: 92dfea1
+    end_head: 0a159f4
+    commit: 0a159f4
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M2 set + test_library: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_provenance, test_migrations, test_backup, test_library -> 258 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py -q -> 4 passed (orchestrator rerun)"
+      - "071_pdf_import_index.sql compared to the plan's table definition: identical columns, STRICT, ON DELETE CASCADE, user_version 71, no backfill"
+      - "worker: ruff clean; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      M2 complete. pdf_import: ANALYZER_VERSION=1, index_row (always writes; error text on failure), index_quietly, pending,
+      backfill, summaries. ReceiptService.publish indexes; Manager.open_library submits the backfill. Store.import_candidates;
+      GET /api/finance/import-candidates -> {items, indexing}; listings carry pdf_import. Picker shows PDF/CSV/XLSX.
+      FOR SL-07: importPicker rewrites the dialog hint from JS because index.html was out of scope; index.html:624 still
+      says "CSV or XLSX". FOR REVIEW: pdf_import.refused is parsed from pdf_refusal's message text (pinned by a test).
+      The 250-PDF tests take ~100 s (API) and ~85 s (browser).
   - id: SL-07
-    status: todo
+    status: in_progress
   - id: SL-08
     status: todo
