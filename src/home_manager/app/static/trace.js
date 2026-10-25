@@ -140,13 +140,14 @@ function breakdownInputs(trace) {
   const heading = element("h3", "Inputs "); heading.append(element("span", `(${trace.inputs_page.total})`, "muted"));
   section.append(heading);
   if (!trace.inputs.length) { section.append(element("p", "No recorded inputs.", "muted small")); return section; }
-  const list = element("ul", "", "breakdown-inputs");
+  const list = element("ul", "", "breakdown-inputs"), pdfRows = [];
   for (const input of trace.inputs) {
     const li = element("li", "", "input-row"); li.dataset.verification = input.verification;
     const top = element("div", "", "input-main");
     top.append(element("span", input.label, "input-label"), amount(input.value));
     const marks = element("div", "", "input-marks");
-    if (input.provenance) marks.append(provenanceBadge(input.provenance));
+    const badge = input.provenance ? provenanceBadge(input.provenance) : null;
+    if (badge) marks.append(badge);
     if (input.verification === "needs_review") marks.append(statusBadge("unconfirmed"));
     if (input.verification === "checked_automatically") marks.append(element("span", "Checked automatically", "muted"));
     const links = [];
@@ -155,12 +156,14 @@ function breakdownInputs(trace) {
       link.addEventListener("click", () => drillBreakdown(input.trace));
       links.push(link);
     }
-    const doc = input.provenance?.document;
-    if (doc) links.push(homeLink("Open source", `#/documents/${doc.id}${doc.lines?.length ? `?lines=${doc.lines.join(",")}` : ""}`));
+    const link = sourceLink(input.provenance);
+    if (link) links.push(link);
     if (links.length) marks.append(...links);
+    if (isImportedTransaction(input.provenance)) pdfRows.push({badge, marks, id: input.provenance.record.id});
     li.append(top, marks); list.append(li);
   }
   section.append(list);
+  showPdfSources(pdfRows);
   if (trace.inputs_page.total > trace.inputs_page.shown) section.append(element("p", `Showing ${trace.inputs_page.shown} of ${trace.inputs_page.total}.`, "muted small"));
   return section;
 }
@@ -169,6 +172,30 @@ function breakdownMeta(trace) {
   if (trace.stale) meta.append("inputs changed since this was last shown ", statusBadge("stale"));
   else meta.append("inputs unchanged");
   return meta;
+}
+
+function sourceLink(prov) {
+  const doc = prov?.document;
+  return doc ? homeLink("Open source", `#/documents/${doc.id}${doc.lines?.length ? `?lines=${doc.lines.join(",")}` : ""}`) : null;
+}
+// A trace input carries a light provenance (docs/ui.md "Trace contract"); an imported transaction's page and cited lines (a PDF
+// import, FR-24) are fetched for it. A CSV or XLSX row has none of those, so its badge stays as it was.
+const isImportedTransaction = prov => prov?.kind === "imported" && !prov.import && prov.record?.type === "transaction";
+async function showPdfSources(rows) {
+  const queue = [...rows];
+  const work = async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      try {
+        const found = (await api(`/api/provenance/transaction/${next.id}`)).provenance;
+        if (found.import?.page == null || !next.badge.isConnected) continue;
+        const badge = provenanceBadge(found);
+        next.badge.replaceWith(badge);
+        const link = sourceLink(found);
+        if (link) next.marks.append(link);
+      } catch { /* The light badge stays. */ }
+    }
+  };
+  await Promise.all([work(), work(), work()]);
 }
 
 // Where one input came from, as icon + text from the server's fields only (docs/ui.md "Trace contract").
@@ -180,8 +207,10 @@ function provenanceBadge(prov) {
     text = prov.model?.id ? `Read by model ${prov.model.id}` : "Read by model";
     if (prov.document?.page != null) text += ` · page ${prov.document.page}`;
     if (prov.confidence?.level === "doubted") text += ` · doubted by ${prov.confidence.by}`;
-  } else if (kind === "imported") text = prov.import ? `Imported · ${prov.import.file} row ${prov.import.row}` : "Imported";
-  else if (kind === "override") text = `Changed by ${prov.actor?.person || "hand"}${prov.override?.reason || prov.reason ? ` · ${prov.override?.reason || prov.reason}` : ""}`;
+  } else if (kind === "imported") {
+    const at = prov.import?.page != null ? `page ${prov.import.page}${prov.import.continued_from != null ? ` · continued from page ${prov.import.continued_from}` : ""}` : `row ${prov.import?.row}`;
+    text = prov.import ? `Imported · ${prov.import.file} ${at}` : "Imported";
+  } else if (kind === "override") text = `Changed by ${prov.actor?.person || "hand"}${prov.override?.reason || prov.reason ? ` · ${prov.override?.reason || prov.reason}` : ""}`;
   else if (!STATUS[status]) text = statusLabel(kind);
   return setStatusBadge(element("span"), STATUS[status] ? status : kind, "", text);
 }
@@ -494,7 +523,7 @@ let confirmCorrectCount = 0;
 const SALE_TYPES = {sale: "Sale", return: "Return"}, DIRECTION_WORDS = {out: "Money out", in: "Money in"};
 function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, correctable = [], reviewPath = null, confirmBody = {status: "verified"},
                          rejectBody = {status: "rejected"}, undoBody = {status: "needs_review"}, labels = {}, onChange = () => {}, preview = true,
-                         member = null, decision = true, onClose = null, showState = true, saveCorrection = null} = {}) {
+                         member = null, decision = true, onOpen = null, onClose = null, showState = true, saveCorrection = null} = {}) {
   const n = ++confirmCorrectCount, idOf = name => `cc${n}-${name}`;
   const record = `/api/finance/records/${recordType}/${recordId}`, path = reviewPath || `${record}/review`;
   const words = {confirm: "Confirm", reject: "Reject", correct: "Correct…", ...labels};
@@ -627,6 +656,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
   function openCorrect(field = null) {
     if (!correctButton) return;
     form.hidden = false; correctButton.setAttribute("aria-expanded", "true"); el.classList.add("cc-open");
+    onOpen?.();
     (fields[field] || Object.values(fields)[0])?.focus();
   }
   function close(focus = true) {

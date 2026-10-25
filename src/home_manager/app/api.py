@@ -22,7 +22,7 @@ from ..core.formats import IMAGES, extension
 from ..core.logs import attach_server, log_failure
 from ..documents.reasoning import ReasoningConfig
 from ..documents.reviewer import ReviewerConfig
-from ..finance import rules, traces
+from ..finance import pdf_import, rules, traces
 from ..finance.forecast import AssetInput, Assets, ForecastInput, forecast
 from ..finance.health import check_ledger, record_links, summary
 from ..finance.investments import AccountInput as InvestmentAccountInput
@@ -45,7 +45,7 @@ from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
 from ..finance.scenarios import MAX_COMPARED, ScenarioInput, Scenarios
-from ..finance.tabular import ImportMapping
+from ..finance.tabular import DATE_FORMATS, ImportMapping
 from ..finance.tax_family import TaxUnits
 from ..finance.tax_lines import BUSINESS_KINDS, INCOME_KINDS, KINDS, LINES
 from ..finance.tax_tags import TaxTags
@@ -299,6 +299,21 @@ class ImportInput(BaseModel):
     account_id: int | None = None
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
     mapping: ImportMapping | None = None
+    # PDF only (docs/documents.md "PDFs"): the choices of the PDF import dialog. Absent for CSV and XLSX.
+    account_type: Literal[*ACCOUNT_TYPES] | None = None  # Preview only, with currency: a new account not yet complete.
+    reading_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    tables: list[str] | None = Field(default=None, max_length=200)
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    date_format: Literal["auto", *DATE_FORMATS] | None = None  # type: ignore[valid-type]
+    sign: Literal["negative_is_outflow", "positive_is_outflow"] | None = None  # None: not chosen, so the account type's default.
+    ticked: list[str] | None = Field(default=None, max_length=20_000)
+    unticked: list[str] | None = Field(default=None, max_length=20_000)
+    new_account: AccountInput | None = None  # Created in the import's own transaction, with no separate account request.
+
+    def pdf_choices(self):
+        names = ("account_type", "reading_id", "tables", "year", "date_format", "sign", "ticked", "unticked")
+        choices = {name: getattr(self, name) for name in names if getattr(self, name) is not None}
+        return {**choices, "new_account": self.new_account.model_dump()} if self.new_account else choices
 
 
 class CryptoImportInput(BaseModel):
@@ -921,16 +936,19 @@ def create_app(control: Path | None = None, token: str | None = None,
     def preview_import(document_id: int, value: ImportInput):
         store()
         ledger = manager().ledger
+        if ledger.is_pdf(document_id):  # A PDF may be previewed with neither: the account is matched and the currency read from the document.
+            return ledger.preview_import(document_id, value.currency, value.mapping, value.expected_hash,
+                                         pdf={**value.pdf_choices(), "account_id": value.account_id, "home_currency": manager().household.home_currency})
         currency = ledger.account(value.account_id)["currency"] if value.account_id else value.currency
         if not currency:
             raise HTTPException(400, "Choose an account or a currency for the preview.")
-        return ledger.preview_import(document_id, currency, value.mapping, value.expected_hash)
+        return ledger.preview_import(document_id, currency, value.mapping, value.expected_hash, pdf=value.pdf_choices() or None)
 
     @app.post("/api/documents/{document_id}/transaction-imports", status_code=201)
     def import_transactions(document_id: int, value: ImportInput):
-        if value.account_id is None:
+        if value.account_id is None and value.new_account is None:
             raise HTTPException(400, "Choose the account these transactions belong to.")
-        return manager().import_transactions(document_id, value.account_id, value.mapping, value.expected_hash)
+        return manager().import_transactions(document_id, value.account_id, value.mapping, value.expected_hash, pdf=value.pdf_choices() or None)
 
     @app.post("/api/finance/reconcile")
     def reconcile():
@@ -1907,11 +1925,26 @@ def create_app(control: Path | None = None, token: str | None = None,
                   date_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"), category: str | None = Query(None, max_length=40),
                   scope: Literal["money", "documents"] | None = None, employer: int | None = Query(None, ge=1),
                   section: Literal["Paystubs", "Documents"] | None = None):
-        return store().documents(offset, limit, folder, status, q, sort, date_from, date_to, category, scope, employer, section)
+        found = store().documents(offset, limit, folder, status, q, sort, date_from, date_to, category, scope, employer, section)
+        with store().connection() as db:
+            pdf_import.summaries(db, manager().ledger, found["items"], manager().household.home_currency)
+        return found
+
+    @app.get("/api/finance/import-candidates")
+    def import_candidates():
+        """What the Import picker lists: ready CSV/XLSX exports and PDFs with a transactions table, filtered before the cap.
+        `indexing` is true while older PDF readings are still being checked, so a short list is not mistaken for a complete one."""
+        library, ledger = store(), manager().ledger
+        items = library.import_candidates(ledger.pdf_refusal)
+        with library.connection() as db:
+            return {"items": items, "indexing": bool(pdf_import.pending(db))}
 
     @app.get("/api/documents/{document_id}")
     def document(document_id: int):
-        return store().document(document_id)
+        found = store().document(document_id)
+        with store().connection() as db:
+            pdf_import.summaries(db, manager().ledger, [found], manager().household.home_currency)
+        return found
 
     @app.put("/api/documents/{document_id}/description")
     def describe_document(document_id: int, value: DescriptionInput):

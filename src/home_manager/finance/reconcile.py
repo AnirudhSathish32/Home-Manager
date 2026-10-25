@@ -51,6 +51,19 @@ def shift(value, days):
     return (date.fromisoformat(value) + timedelta(days=days)).isoformat()
 
 
+def manual_candidates(db, manual, extra=()):
+    """The lines that could replace one manual entry: countable, not manual, in its account and currency, for its amount,
+    posted within RECEIPT_POSTING_DAYS either side, and not already named as someone's replacement. Reads only.
+    extra: lines that don't exist yet (dicts with posted_date, amount_minor and currency, in the manual's account), as a
+    preview of an import needs; they are counted after the stored ones."""
+    low, high = shift(manual["posted_date"], -RECEIPT_POSTING_DAYS), shift(manual["posted_date"], RECEIPT_POSTING_DAYS)
+    found = db.execute(f"SELECT t.id,t.category,t.posted_date FROM transactions t WHERE {COUNTABLE} AND t.origin<>'manual' AND t.account_id=? AND t.currency=? "
+                       "AND t.amount_minor=? AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transactions x WHERE x.replaced_by=t.id)",
+                       (manual["account_id"], manual["currency"], manual["amount_minor"], low, high)).fetchall()
+    return [*found, *(line for line in extra if line["currency"] == manual["currency"] and line["amount_minor"] == manual["amount_minor"]
+                      and low <= line["posted_date"] <= high)]
+
+
 def add_months(value, months):
     """Same day of month, clamped to the month's end (Jan 31 + 1 month -> Feb 28/29)."""
     day = date.fromisoformat(value)
@@ -725,10 +738,7 @@ class Reconciler:
         With two or more such lines nothing is replaced, so nothing is counted twice or dropped by a guess."""
         replaced = 0
         for manual in db.execute("SELECT * FROM transactions WHERE origin='manual' AND review_status<>'rejected' AND replaced_by IS NULL").fetchall():
-            candidates = db.execute(f"SELECT t.id,t.category,t.posted_date FROM transactions t WHERE {COUNTABLE} AND t.origin<>'manual' AND t.account_id=? AND t.currency=? "
-                                    "AND t.amount_minor=? AND t.posted_date BETWEEN ? AND ? AND NOT EXISTS(SELECT 1 FROM transactions x WHERE x.replaced_by=t.id)",
-                                    (manual["account_id"], manual["currency"], manual["amount_minor"], shift(manual["posted_date"], -RECEIPT_POSTING_DAYS),
-                                     shift(manual["posted_date"], RECEIPT_POSTING_DAYS))).fetchall()
+            candidates = manual_candidates(db, manual)
             if len(candidates) != 1:
                 continue
             line = candidates[0]

@@ -535,3 +535,37 @@ def test_the_app_starts_and_explains_a_failed_upgrade(tmp_path, next_step):
         assert f"step {NEXT:03d}" in manager.settings()["startup_error"]
     finally:
         manager.close()
+
+
+def test_071_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
+    """The PDF import index (specs/account-import-pdf): the upgrade from 070 leaves every existing table's rows as they were, sets
+    user_version=71 and adds a STRICT table that follows its reading. Nothing is backfilled by the migration."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    try:
+        for number, script in MIGRATIONS:
+            if number < 71:
+                db.executescript(script.read_text())
+        pre_document_forms(db)
+        db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at) "
+                   "VALUES('run1',?,'pdf-pages-v3-layout','{}','succeeded','t','t')", ("d" * 64,))
+        db.commit()
+        names = [row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        before = {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names}
+        assert "pdf_import_index" not in names and db.execute("PRAGMA user_version").fetchone()[0] == 70
+        storage.apply_migrations(db, 70)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST == 71
+        assert {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names} == before
+        assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # No backfill in the migration.
+        assert db.execute("SELECT strict FROM pragma_table_list WHERE name='pdf_import_index'").fetchone()[0] == 1
+        assert [row["name"] for row in db.execute("PRAGMA table_info(pdf_import_index)")] == [
+            "parse_run_id", "analyzer_version", "transactions_tables", "last_fours_json", "document_currency", "error", "created_at"]
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("INSERT INTO pdf_import_index VALUES('run1',1,1,'{}',NULL,NULL,'t')")
+        for row in ("('run1',1,1,'{}',NULL,NULL,'t')", "('missing',1,1,'{}',NULL,NULL,'t')", "('run1',NULL,1,'{}',NULL,NULL,'t')"):
+            with pytest.raises(sqlite3.IntegrityError):  # A second row for a reading, a reading that is not there, a missing version.
+                db.execute(f"INSERT INTO pdf_import_index VALUES{row}")
+        db.execute("DELETE FROM parse_runs WHERE id='run1'")
+        assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # ON DELETE CASCADE.
+    finally:
+        db.close()

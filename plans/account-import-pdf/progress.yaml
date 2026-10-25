@@ -1,0 +1,157 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: account-import-pdf
+plan_sha256: 4cf1c8e861f86c41e245203cdf205dc4a2696c27d6e45b1cfd35be39b4ec3af4
+slices:
+  - id: SL-01
+    status: done
+    start_head: 814fe16
+    end_head: ef93bcd
+    commit: ef93bcd
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k pcheck -q -> 35 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf.py tests/test_pdf_layout.py -q -> 39 passed (orchestrator rerun)"
+    notes: >-
+      Gate met under the reworded V bullet (P13): V's native table is heading, v1, v2 with only unresolved_columns; v3-v5
+      one visual row each, mapped with no straddle; v5's 480-char description one text. Fixture candidate rule follows the
+      plan's date-like/amount-like shapes. X 7-c fixture fixed to print A2's 20.00 as a withdrawal (contract line 341).
+      Helpers added: candidate_rows, below_table_rows.
+    attempts:
+      - "r1 (plan a2a60389): commit abc1509, blocked on the V gate; plan revised to P13 (below-table rows), spec re-approved ed41557b825f, plan re-approved 4cf1c8e861f8"
+  - id: SL-02
+    status: done
+    start_head: c0d3c0a
+    end_head: c35f404
+    commit: c35f404
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k \"analyzer or sc07 or sc24 or sc25 or sc16\" -q -> 57 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_pdf.py tests/test_pdf_layout.py tests/test_tabular.py -q -> 132 passed (orchestrator rerun)"
+      - "ruff check on touched files -> all checks passed; mypy -> 8 errors, all in core/paths.py (pre-existing, Windows-only), none in pdf_import.py"
+    notes: >-
+      analyze(result, *, tables, year, date_format, sign, account_type, currency) -> Analysis (dataclasses Analysis,
+      ImportTable, ImportRow, ImportIssue; PDFImportError(ValueError)). Pure: imports only core.money, documents.pdf_layout,
+      documents.pdf_reader and finance.tabular. Choices where the plan was silent: continuation entries selectable=False;
+      unresolved sign -> amount_minor None; unresolved year/date order -> posted_date None, row not rejected; a rebuilt
+      heading with no rows adds a no_rows issue. Index functions are SL-06.
+  - id: SL-03
+    status: done
+    start_head: cc6a0aa
+    end_head: 4bfb6d8
+    commit: 4bfb6d8
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k \"sc02 or sc03 or sc04 or sc05 or sc07 or sc08 or sc09 or sc15 or sc16 or sc17 or sc18 or sc24 or sc25\" tests/test_imports.py tests/test_tabular.py -q -> 91 passed (orchestrator rerun)"
+      - "regression: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_library, test_finance, test_reconcile_tools -> 226 passed (orchestrator rerun)"
+      - "worker: ruff clean on touched files; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      Ledger: pdf_reading (trash, P8 hash, blob re-hash, latest reading, reading_id, result_json vs run-folder result.json),
+      pdf_refusal, account_match, row_status, pdf_state, preview_pdf_import, import_pdf_transactions (one connection),
+      insert_transactions(fingerprints=). ImportInput gains account_type, reading_id, tables, year, date_format, sign,
+      ticked, unticked. Deferred to SL-04 as the plan's SL-04 row says: new_account, and row_status's "replaces a manual
+      entry" (needs reconcile.manual_candidates). Choices: import requires reading_id; CSV/PDF field mix -> 400 from the
+      ledger; a single account match drives row statuses and sign default only when no account_type is sent; unknown
+      tick keys ignored, a key in both lists refused. SC-17 e: no sqlite3.Error handler, so a plain 500 (contract asserts
+      only the end state). Test harness Env in tests/test_pdf_imports.py for later slices.
+  - id: SL-04
+    status: done
+    start_head: 4e9b933
+    end_head: 707cd42
+    commit: 707cd42
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M1 + SL-04 suites, unfiltered: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_library, test_finance, test_reconcile_tools -> 238 passed (orchestrator rerun)"
+      - "tests/test_tax_year.py -> 2 failed, 9 passed; the same 2 fail at 803c588 (before any feature code), run from a worktree with PYTHONPATH=<worktree>/src"
+      - "worker: ruff clean; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      M1 (backend) complete. reconcile.manual_candidates extracted (replace_manual unchanged); Ledger.replacing_manual adds
+      the "replaces a manual entry" row label (status stays New); import_pdf_transactions(new_account=) creates the account
+      inside the import's one connection (P6 reuse; same account with another currency refused); preview accepts
+      new_account additively and never creates; ImportInput.new_account uses AccountInput; ready_for_ledger per P5.
+      J1 is one stateful test with the J1-a restart after step 4; step 9 uses the publish_statement fallback.
+      The slice's -k command filters every path (13 tests); the suites were run unfiltered too.
+  - id: SL-05
+    status: done
+    start_head: 58d9796
+    end_head: da955c4
+    commit: da955c4
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -q -> 130 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py tests/test_trace_components_browser.py -q -> 4 passed (orchestrator rerun)"
+      - "tests/test_provenance.py tests/test_traces.py -> 3 failed, 23 passed; the same 3 test_traces tests fail at 803c588 (before feature code; node rejects --allow-fs-read)"
+    notes: >-
+      provenance_for: PDF locator -> import {file,row,page,table,continued_from}, document {id,page,cells,lines}; native rows
+      cite cell ids in both; word-based rows (rebuilt, continuation, below-table) put word ids in cells and line ids in
+      lines. CSV unchanged. trace.js: showPdfSources fetches /api/provenance/transaction/<id> per imported input (3 at a
+      time, up to 200 per open breakdown) because trace inputs carry no import data; FOR REVIEW: server-side enrichment
+      would avoid N requests (needs tools.py/core/trace.py). Browser test uses k6 (k5 is a transfer, in no spending trace);
+      API test uses k5. docs/ui.md and docs/documents.md left for SL-08.
+  - id: SL-06
+    status: done
+    start_head: 92dfea1
+    end_head: 0a159f4
+    commit: 0a159f4
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M2 set + test_library: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_provenance, test_migrations, test_backup, test_library -> 258 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py -q -> 4 passed (orchestrator rerun)"
+      - "071_pdf_import_index.sql compared to the plan's table definition: identical columns, STRICT, ON DELETE CASCADE, user_version 71, no backfill"
+      - "worker: ruff clean; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      M2 complete. pdf_import: ANALYZER_VERSION=1, index_row (always writes; error text on failure), index_quietly, pending,
+      backfill, summaries. ReceiptService.publish indexes; Manager.open_library submits the backfill. Store.import_candidates;
+      GET /api/finance/import-candidates -> {items, indexing}; listings carry pdf_import. Picker shows PDF/CSV/XLSX.
+      FOR SL-07: importPicker rewrites the dialog hint from JS because index.html was out of scope; index.html:624 still
+      says "CSV or XLSX". FOR REVIEW: pdf_import.refused is parsed from pdf_refusal's message text (pinned by a test).
+      The 250-PDF tests take ~100 s (API) and ~85 s (browser).
+  - id: SL-07
+    status: done
+    start_head: c979bf2
+    end_head: a392742
+    commit: a392742
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_pdf_imports_browser.py tests/test_accounts_v2_browser.py -q -> 10 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -q -> 140 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 pytest tests/test_transactions_v2_browser.py -q -> 1 failed (test_transactions_v2_filters_categorises_adds_and_imports, 390px .tx2-name), 1 passed; the same test fails at 803c588 (before feature code; worktree, PYTHONPATH=<worktree>/src)"
+      - "screenshots /tmp/sl07/ (before/after K, R, CSV; after U unread) checked: after-K-pdf.png shows match, tables, server totals, statuses and continued labels"
+    notes: >-
+      Dialog PDF mode in library.js/index.html/style.css: account from the server's account_match (not localStorage),
+      New account fieldset (new_account in preview/import requests, no separate account call), tables, year (no default),
+      date order, sign (server default; hidden for Debit/Credit), ticks, server statuses/labels/totals, re-preview on change,
+      Read-then-preview for an unread PDF. Hint copy moved to index.html; money_v2.js rewrite line removed.
+      FOR REVIEW: the unread case is detected by matching the error text "Read this document first."; status badges reuse
+      existing STATUS keys. SC-21's "More actions" entry is SL-08.
+  - id: SL-08
+    status: blocked
+    start_head: ffeded7
+    end_head: 1c926c8
+    commit: 1c926c8
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M3 line 1: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_provenance -> 225 passed (orchestrator rerun)"
+      - "M3 line 2, RUN_BROWSER_TESTS=1: test_pdf_imports_browser, test_transactions_v2_browser, test_records_v2_browser, test_document_v2_browser -> 17 passed, 2 failed (orchestrator rerun)"
+      - "both failures fail at 803c588 (before feature code): test_transactions_v2_filters_categorises_adds_and_imports, and test_records_v2_filters_strip_read_all_and_trash (2 of 2 runs, worktree with PYTHONPATH=<worktree>/src)"
+      - "worker: sc20 browser test 1 passed; ruff clean; node --check on both JS files; mypy only the 8 baseline errors"
+    blocked_on: >-
+      The plan's manual run on the agent test instance was not performed: scripts/test_instance.py verify exits 1 (no
+      instance running, seed manifest incomplete), no local models configured (Record needs one), and the instance's
+      uploads lack the K and R fixtures. The agent-testing skill says to stop and ask the developer instead of start/reset.
+    notes: >-
+      M3 test lines complete apart from the two pre-existing failures. Library row: Import is the step for a read PDF with
+      a transactions table, exactly one matching account and no receipt/bill/pay-stub record; otherwise Import
+      transactions is in More actions (also for an unread PDF, for SC-21/FR-27). Document page: Import primary with Record
+      beside it when one account matches, reversed otherwise. Docs: documents.md "Transaction imports" (renamed; no code
+      cited the old heading), money.md, development.md (071), ui.md, open-work.md (incl. the three FOR-REVIEW follow-ups).
+      DECIDED (user left it to the orchestrator, 2026-10-25): after a PDF import, Import stays the row's step, as FR-26
+      says, with Record under More actions. Making Record the step would amend FR-26 and need a new spec approval.
+      docs/README.md still says schema map 001-062 (pre-existing).

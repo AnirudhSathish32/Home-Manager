@@ -34,6 +34,9 @@ def test_receipt_money_item_price_undo_and_pay_period(tmp_path):
         form.get_by_role('button', name='Save', exact=True).click()
         expect(page.locator('.ledger-rows tfoot')).to_contain_text('3.00 USD')
         expect(page.locator('.item-warning', has_text="Doesn't add up")).to_be_visible()
+        # A receipt's row Correct shows only once the record's Correct is open.
+        expect(page.get_by_role('button', name='Correct EGGS', exact=True)).to_be_hidden()
+        page.locator('#doc2-decision').get_by_role('button', name='Correct…', exact=True).click()
         page.get_by_role('button', name='Correct EGGS', exact=True).click()
         row_form = page.locator('.doc2-row-form .cc-form')
         row_form.get_by_label('Price', exact=True).fill('19.00')

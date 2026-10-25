@@ -143,7 +143,8 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
     `finance.js` `ACCOUNT_GROUPS`), each row with its balance as an `account.balance` figure, "as of", an "Over 35 days
     old" badge, coverage and a Transactions link; **Import an export** opens the picker.
   - **Add a payment** posts `POST /api/finance/transactions`; a validation error shows under the field it names
-    (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and opens the
+    (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and PDFs with a
+    transactions table (`/api/finance/import-candidates`, PDFs labelled **PDF**) and opens the
     import dialog (`library.js` `openImport(doc, {onDone})`), which reloads the screen afterwards.
 - **Wealth & plans** (design in `design-system/home-manager/pages/wealth.md`).
   - **Investments** (`investments_v2.js`) has tiles (Invested per currency as an `investments.total` figure with its
@@ -213,7 +214,11 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
   documents; a 409 while model work runs stays in the strip). Then search, the state chips with counts, From/To and
   Sort (under "More filters" below 600px), a "Showing … — Clear filters" line when filtered, and one region with the
   folder tree (a select below 1100px) beside the list. Rows carry their next step as a text link (Read, Record,
-  Import, Restore) and the ⋯ menu; selecting rows shows a sticky bar (Read, Combine, Move, Delete, or Restore in Trash).
+  Import, Restore) and the ⋯ menu. A read PDF with a transactions table has **Import** as its step when exactly one saved
+  account matches its last four and it isn't recorded as a receipt, bill or pay stub (`doc.pdf_import`, from the server;
+  `pdfImportOffer` in `records_v2.js`), with Record in ⋯. Otherwise ⋯ holds **Import transactions** (an unread PDF too:
+  its dialog asks to read it first), and a PDF the import marked `imported` still offers Record
+  ([documents](documents.md#transaction-imports)); selecting rows shows a sticky bar (Read, Combine, Move, Delete, or Restore in Trash).
   Under 820px rows stack (name · amount, folder · date, state · step · ⋯). **Every filter is in the URL**:
   `?folder=&category=&employer=&section=&status=&q=&from=&to=&sort=&offset=`, non-default values only, invalid ones
   dropped. The sidebar's Inbox and Unfiled open `#/documents?folder=…`, and their counts (`library.js`
@@ -295,6 +300,9 @@ returns to the list with its filters, page and scroll position.
 - **States:** loading, unread (**Read document**), reading (live stage, Cancel), read but not recorded, needs review,
   verified (with Undo), failed (reason plus Retry), cancelled, publication blocked (for example, no currency), and an
   earlier version (with a banner).
+- **Import transactions** on a read PDF with a transactions table is the primary button, with **Record it** beside it, when
+  one saved account matches; otherwise it is a secondary button beside **Record it**. It is offered only on the latest
+  version and never while the page is reading or recording; closing the dialog refreshes the page's badge.
 - The page also hosts the split controls for several receipts in one file, the page order of combined images, and
   "Also found" duplicate links ([documents](documents.md)). The decision model's result is an advisory disclosure
   under Checks.
@@ -614,10 +622,11 @@ screen can be explained. These rules override visual or layout preferences.
   `stale` without its breakdown being opened. A return figure (`tax.result`, `tax.line`, `tax.node`) also hashes its
   engine's pinned SHA-256 (`build(..., hash_extra=)`), so a changed engine marks it stale too.
 - **Provenance.** `finance/provenance.py provenance_for(db, type, id, field)` is served at
-  `GET /api/provenance/{type}/{id}?field=`. It resolves imported (file, row), manual (who, when), extracted (model, run,
+  `GET /api/provenance/{type}/{id}?field=`. It resolves imported (file and row; for a PDF row also the page, the table and `continued_from`, with `document.lines` or the word ids that
+  light the cited lines), manual (who, when), extracted (model, run,
   cited lines, quote, page from the line id, the independent check's doubt), a market rate, and override (original,
-  newest value, who, when, why, how many times). Trace inputs carry a light provenance (kind and the record) and the
-  page fetches the full one.
+  newest value, who, when, why, how many times). Trace inputs carry a light provenance (kind and the record). The page fetches the full one for an imported PDF
+  row (`trace.js showPdfSources`, one request per such input; see [open work](open-work.md#money)).
 - **Who's here.** The picker in the sidebar foot shows when the profile has more than one person (the owner, the
   spouse named on the latest return, and every member in a family). The choice lasts for the browser session and is sent as `X-HM-Actor` (URI-encoded). The server
   checks it against `Manager.people()`: an unknown name is refused (400), and with one person the server fills in that
@@ -671,7 +680,7 @@ gives the buttons the `#review2-*` ids its keys press.
 |---|---|
 | `figure(fig)` | A button around `amount()`. Its underline appears only on hover or focus. Unverified shows an icon + "unconfirmed"; stale shows an icon + "changed". Enter opens the breakdown. No `trace` ref means a plain `amount()`. |
 | `breakdownPanel(ref)` | Non-modal: beside the content at 1440, a bottom sheet under 900. It shows the answer and formula; a steps table (n, label, op, value, running); a rounding row; a "Sums to" footer with ✓; paged inputs (unverified first); the rule card; and "Calculated … · inputs unchanged". Computed inputs open as breadcrumbs, and Esc goes back. |
-| `provenanceBadge(prov)` | Icon + text through the `STATUS` map: Entered by …, Read by model …, Imported · file row, Worked out, Changed from … · reason, the rule name, the ECB rate date. |
+| `provenanceBadge(prov)` | Icon + text through the `STATUS` map: Entered by …, Read by model …, Imported · file row (a PDF row: Imported · file page N, with "continued from page M" and an Open source link), Worked out, Changed from … · reason, the rule name, the ECB rate date. |
 | `confirmCorrect(opts)` | `div.confirm-correct`: a `role=group` "Decision" with the state's buttons, then `.cc-state`, then the hidden `form.cc-form`. Needs review or proposed shows Confirm (primary), Reject (secondary: it can be undone) and Correct…. Verified shows Undo verification and Correct…. Checked automatically shows "Not right? Reject" and Correct…. Rejected shows Undo rejection. Decisions post to `reviewPath` (default: the record's `/review`, as Review V) and offer Undo for 8 s; a failure stays inline. Correct… opens one field per `correctable` entry plus "Why (optional)". On input (450 ms debounce, late answers dropped) it shows the correction preview: before (a traced figure) → after (a plain amount) and the difference, then what stays, the match, review and notes. A 400 disables Save. Save PATCHes, then offers Undo (`/corrections/undo`). Esc closes the form. Options: `labels`, `undoBody`, `preview: false`, `decision: false` (Correct only, for a statement's row), `showState`, `onClose`. |
 | `sourceViewer(doc, reading, {runId, digest})` | `section.source-viewer`: Image \| Text tabs, a PDF page select, the preserved image (bearer fetch into a blob URL; a PDF gets a fresh iframe) with its read regions, the text as a roving list of `li.sv-line[data-line-id]` (↑/↓, Enter), and "Reading notes & codes". `highlight(ids)` goes to Text for a vision or PDF reading and marks the lines; otherwise it lights the regions. A region click or Enter on a line calls `onRegionClick` callbacks with `{blockId, lineIds}`. Also `update(reading, runId)`, `showDocument(id)` (a group's other page) and `destroy()`. Text read from documents stays text. |
 | `historyList(entries, {field, empty})` | `ol.history-list` of `li.history-row[data-kind]`: when, who ("Automatic check" for a review a correction made), then from → to (dates, categories and empty values in words; a statement row's label first) or a review's status → status, then why. `loadHistory(type, id)` fetches the entries. |

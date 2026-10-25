@@ -31,7 +31,10 @@ The rules every money figure follows. They are tested with fixtures, and the led
   never infinity or a made-up number.
 - **Import identity** prefers stable provider or account transaction ids. Heuristic fingerprints flag possible
   duplicates without dropping real transactions that happen to have equal values. Re-importing an identical batch
-  changes nothing.
+  changes nothing. CSV, XLSX and PDF rows share one source-independent fingerprint (account, date, amount, currency and
+  the ordinal among equal entries), so a PDF row and the same row from a CSV or a Recorded statement are one
+  transaction. A PDF's ordinals are counted over its selected tables in document order, so unticking a row never
+  changes another row's identity ([documents](documents.md#transaction-imports)).
 - **The model proposes, the code decides.** A model reading is a proposal, not proof. It counts only after
   deterministic checks pass and it is verified automatically or approved in Review.
 

@@ -621,7 +621,7 @@
         <details id="accounts2-about" class="today-about"><summary>About these balances</summary>
           <p class="muted small">Balances come from statements and show their dates. They aren't added up here; Today shows Cash and Net worth.</p>
           <p class="muted small">Balances aren't estimated from partial transaction history.</p>
-          <p class="muted small">To add transactions, drop a bank or card export (CSV or XLSX) into the Inbox, then choose Import an export.</p></details>
+          <p class="muted small">To add transactions, drop a bank or card statement or export (PDF, CSV or XLSX) into the Inbox, then choose Import an export.</p></details>
       </div>
     </section>
 
@@ -1129,25 +1129,39 @@
   <div class="dialog-heading"><h2 id="import-title">Import transactions</h2><button id="close-import" class="secondary" type="button">Close</button></div>
   <p id="import-document" class="muted"></p>
   <p class="muted">Read deterministically from the preserved copy; no model is involved. Re-importing the same rows never creates duplicates.</p>
+  <!-- A PDF that has not been read: Read starts the reading, and the dialog previews it in place (library.js, docs/documents.md "PDFs"). -->
+  <div id="import-read-first" class="import-read-first" hidden>
+    <p><strong>Read this document first</strong></p>
+    <p class="muted small">Importing never reads the PDF itself. Reading it takes a moment, and nothing is recorded until you import.</p>
+    <button id="import-read" class="primary" type="button">Read</button>
+  </div>
+  <div id="import-body">
   <label>Account<select id="import-account"></select></label>
+  <p id="import-account-note" class="muted small" hidden></p>
   <fieldset id="import-new-account"><legend>New account</legend>
     <div class="inline"><label>Institution<input id="import-institution" autocomplete="off"></label>
       <label>Type<select id="import-type"><option value="checking">Checking</option><option value="savings">Savings</option><option value="credit_card">Credit card</option><option value="brokerage">Brokerage</option><option value="loan">Loan</option><option value="other">Other</option></select></label></div>
     <div class="inline"><label>Currency (ISO code)<input id="import-currency" value="USD" maxlength="3" autocomplete="off"></label>
       <label>Last four digits (optional)<input id="import-last-four" maxlength="4" inputmode="numeric" autocomplete="off"></label></div>
   </fieldset>
-  <div class="inline">
+  <fieldset id="import-tables" class="import-tables" hidden><legend>Tables to import</legend><ul id="import-table-list" class="import-table-list"></ul></fieldset>
+  <div id="import-csv-map" class="inline">
     <label>Date column<select id="import-map-date"></select></label><label>Description column<select id="import-map-description"></select></label>
     <label>Amount column<select id="import-map-amount"></select></label><label>Debit column<select id="import-map-debit"></select></label><label>Credit column<select id="import-map-credit"></select></label>
   </div>
   <div class="inline">
+    <label id="import-year-field" hidden>Year<select id="import-year"></select></label>
     <label>Date format<select id="import-date-format"><option value="auto">Detect when unambiguous</option><option>YYYY-MM-DD</option><option>MM/DD/YYYY</option><option>DD/MM/YYYY</option></select></label>
-    <label>Amount sign<select id="import-sign"><option value="negative_is_outflow">Negative amounts are money out</option><option value="positive_is_outflow">Positive amounts are money out (many card exports)</option></select></label>
+    <label id="import-csv-sign">Amount sign<select id="import-sign"><option value="negative_is_outflow">Negative amounts are money out</option><option value="positive_is_outflow">Positive amounts are money out (many card exports)</option></select></label>
+    <label id="import-pdf-sign-field" hidden>Amount sign<select id="import-pdf-sign"><option value="">Choose…</option><option value="negative_is_outflow">Negative is money out</option><option value="positive_is_outflow">Positive is money out</option></select></label>
   </div>
-  <div class="dialog-actions"><button id="preview-import" type="button">Preview</button><button id="confirm-import" class="primary" type="button" disabled>Import transactions</button></div>
+  <p id="import-sign-note" class="muted small" hidden></p>
+  </div>
+  <div id="import-actions" class="dialog-actions"><button id="preview-import" type="button">Preview</button><button id="confirm-import" class="primary" type="button" disabled>Import transactions</button></div>
   <p id="import-status" role="status" aria-live="polite"></p>
   <ul id="import-issues" class="analysis-limitations"></ul>
-  <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Row</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="numeric">Amount</th></tr></thead><tbody id="import-preview"></tbody></table></div>
+  <div id="import-csv-wrap" class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Row</th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" class="numeric">Amount</th></tr></thead><tbody id="import-preview"></tbody></table></div>
+  <div id="import-pdf-wrap" class="table-wrap import-pdf-wrap" hidden><table class="data-table"><caption class="visually-hidden">Rows read from the PDF. Untick a row to leave it out.</caption><thead><tr><th scope="col">Page</th><th scope="col">Date as printed</th><th scope="col">Description</th><th scope="col" class="numeric">Amount as printed</th><th scope="col" class="numeric">Signed amount</th><th scope="col">Status</th><th scope="col">Import</th></tr></thead><tbody id="import-pdf-rows"></tbody></table></div>
 </dialog>
 <!-- Money screens v2 (money_v2.js): a payment entered by hand, and the bank or card export to import. -->
 <dialog id="money2-add" class="money2-dialog" aria-labelledby="money2-add-title" aria-describedby="money2-add-note">
@@ -1177,7 +1191,7 @@
 </dialog>
 <dialog id="money2-import" class="money2-dialog" aria-labelledby="money2-import-title">
   <div class="dialog-heading"><h2 id="money2-import-title">Import a bank or card export</h2><button id="money2-import-close" type="button" class="secondary">Close</button></div>
-  <p class="muted small">Files arrive through the Inbox or a watched folder. Choose one to import.</p>
+  <p class="muted small">Files arrive through the Inbox or a watched folder: PDF statements, and CSV or XLSX exports. Choose one to import.</p>
   <ul id="money2-import-list" class="dated-list"></ul>
 </dialog>
 <!-- Investments v2 (investments_v2.js): an account with no statement here yet. -->

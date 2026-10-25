@@ -5,6 +5,7 @@ never performs floating-point arithmetic.
 """
 
 from collections import Counter
+from dataclasses import asdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -20,12 +21,21 @@ from ..core import actor
 from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, RENT_LINE_KINDS, RENT_LINE_TYPES, receipt_category
 from ..core.formats import TABLES, extension
 from ..core.money import currency_code, format_minor, money, to_minor
+from ..core.paths import safe_path
 from ..core.trace import NULL
+from ..documents.pdf_layout import PDF_EVIDENCE_BYTES
+from ..documents.pdf_reader import PDFResult, read_result
 from ..documents.receipt_schema import StrictModel
-from ..library.storage import now
-from . import document_checks, paystub, splits
+from ..library.storage import digest_file, now
+from . import document_checks, paystub, pdf_import, splits
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
+PDF_INTEGRITY = "Preserved evidence failed its integrity check. Nothing was imported."
+PDF_ONLY = "Year, date order, sign, ticks and table choices apply to PDF files only."
+# What must still be chosen before a PDF import (pdf_import.Analysis.required), as the refusal and the dialog say it.
+REQUIRED = {"year": "Choose the year: these dates print no year, or only two digits.",
+            "date_format": "Choose the date order: day first or month first.",
+            "sign": "Choose whether positive amounts are money in or money out for this account."}
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
 ACCOUNT_TYPES = ("checking", "savings", "credit_card", "brokerage", "loan", "other")
 US_STATES = frozenset("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split())
@@ -312,6 +322,9 @@ def fingerprints(account_id, rows):
         seen[key] += 1
 
 
+identities = fingerprints  # insert_transactions has a parameter of the same name.
+
+
 class HouseholdConfig(StrictModel):
     """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it.
     checkin_weekday is the day of the weekly household check-in: Monday 0 … Sunday 6."""
@@ -428,11 +441,13 @@ class Ledger:
 
     # Transactions -------------------------------------------------------------
 
-    def insert_transactions(self, db, account, rows, origin, source, statement_id=None, review_status="proposed", refresh=()):
+    def insert_transactions(self, db, account, rows, origin, source, statement_id=None, review_status="proposed", refresh=(), fingerprints=None):
         """Insert or de-duplicate rows, returning (inserted_ids, duplicate_ids). Evidence is always linked.
-        A duplicate whose id is in refresh takes this reading's description, dates, type and review state."""
+        A duplicate whose id is in refresh takes this reading's description, dates, type and review state.
+        fingerprints: the rows' identities when the caller worked them out over a larger set (a PDF import ticks rows, but
+        unticking one must not renumber another); by default they are worked out over `rows`."""
         inserted, duplicates = [], []
-        for row, fingerprint in zip(rows, fingerprints(account["id"], rows)):
+        for row, fingerprint in zip(rows, identities(account["id"], rows) if fingerprints is None else fingerprints):
             if row["currency"] != account["currency"]:
                 raise ValueError("Transaction currency differs from its account currency; foreign-currency rows need review.")
             kind = row.get("transaction_type") or classify_transaction(row["description"], row["amount_minor"], account["account_type"])
@@ -1106,7 +1121,11 @@ class Ledger:
             raise ValueError("Preserved evidence failed its integrity check. Nothing was imported.")
         return version, parse_transactions(data, suffix, currency, mapping)
 
-    def preview_import(self, document_id, currency, mapping=None, digest=None):
+    def preview_import(self, document_id, currency, mapping=None, digest=None, pdf=None):
+        if self.is_pdf(document_id):
+            return self.preview_pdf_import(document_id, digest, mapping=mapping, currency=currency, **(pdf or {}))
+        if pdf:
+            raise ValueError(PDF_ONLY)
         try:
             _, (rows, used, issues, counts) = self.table_rows(document_id, digest, currency, mapping)
         except MappingError as exc:  # Readable file; the user must choose a column or date order.
@@ -1114,7 +1133,12 @@ class Ledger:
                     "counts": {"parsed": 0, "rejected": 0, "blank": 0, "columns": exc.columns}}
         return {"error": None, "mapping": used, "issues": issues[:200], "counts": counts, **preview(rows, currency_code(currency))}
 
-    def import_transactions(self, document_id, account_id, mapping=None, digest=None):
+    def import_transactions(self, document_id, account_id, mapping=None, digest=None, pdf=None):
+        if self.is_pdf(document_id):
+            choices = {name: value for name, value in (pdf or {}).items() if name != "account_type"}  # The account's own type is used.
+            return self.import_pdf_transactions(document_id, digest, account_id=account_id, mapping=mapping, **choices)
+        if pdf:
+            raise ValueError(PDF_ONLY)
         account = self.account(account_id)
         version, (rows, used, issues, counts) = self.table_rows(document_id, digest, account["currency"], mapping)
         import_id = uuid.uuid4().hex
@@ -1126,6 +1150,270 @@ class Ledger:
                         len(duplicates), counts["rejected"], json.dumps(issues[:200]), now()))
         return {"import_id": import_id, "account_id": account["id"], "inserted": len(inserted), "duplicates": len(duplicates),
                 "rejected": counts["rejected"], "issues": issues[:200], "mapping": used}
+
+    # Deterministic PDF import ---------------------------------------------------
+    # The rows come from the PDF's saved reading (finance/pdf_import.py, docs/documents.md "PDFs"). Neither the preview nor
+    # the import opens the PDF beyond hashing it, and neither calls a model.
+
+    def is_pdf(self, document_id):
+        with self.store.connection() as db:
+            row = db.execute("SELECT relative_path FROM occurrences WHERE id=?", (document_id,)).fetchone()
+        return row is not None and extension(row["relative_path"]) == ".pdf"
+
+    def pdf_reading(self, db, document_id, digest, reading_id=None):
+        """(document, version, run, PDFResult) for the document's current content and its current reading, after every
+        check that the reading still describes the preserved bytes (FR-22). Raises ValueError, naming the next step."""
+        document = db.execute("SELECT * FROM occurrences WHERE id=?", (document_id,)).fetchone()
+        if document is None:
+            raise ValueError("Document not found.")
+        selected = digest or document["current_hash"]
+        version = db.execute("SELECT * FROM versions WHERE occurrence_id=? AND hash=?", (document_id, selected)).fetchone()
+        if version is None:
+            raise ValueError("This content version does not belong to the document.")
+        if document["deleted_at"]:
+            raise ValueError("Restore the document from Trash before importing it.")
+        if selected != document["current_hash"]:  # document_version accepts any earlier version, so it can't tell (plan P8).
+            raise ValueError("This document changed since the preview; preview again.")
+        try:
+            intact = digest_file(self.store.blob_path(version["hash"])) == version["hash"]
+        except OSError:
+            intact = False
+        if not intact:
+            raise ValueError(PDF_INTEGRITY)
+        # The reading the library shows as this document's text (library/storage.py text_run_id).
+        run = db.execute("SELECT * FROM parse_runs WHERE blob_hash=? AND status IN ('succeeded','partial') AND parser_version<>'receipt-ocr-v1' "
+                         "ORDER BY created_at DESC LIMIT 1", (version["hash"],)).fetchone()
+        if run is None:
+            raise ValueError("Read this document first.")
+        if reading_id is not None and reading_id != run["id"]:
+            raise ValueError("This document was read again since the preview; preview again.")
+        saved = safe_path(self.store.root / "extracted" / run["id"] / "result.json") if re.fullmatch(r"[a-f0-9]{32}", run["id"]) else None
+        try:
+            if saved is None or not run["result_json"] or saved.stat().st_size > PDF_EVIDENCE_BYTES:
+                raise ValueError(PDF_INTEGRITY)
+            # Both copies are read the same way, so the comparison is of what the reading holds, not of how it was written.
+            stored, written = read_result(json.loads(run["result_json"])), read_result(json.loads(saved.read_bytes()))
+        except (OSError, ValueError) as exc:  # pydantic's ValidationError and JSON errors are ValueErrors.
+            raise ValueError(PDF_INTEGRITY) from exc
+        if not isinstance(stored, PDFResult):
+            raise ValueError(pdf_import.NO_LAYOUT)
+        if stored.model_dump() != written.model_dump() or stored.input_hash != version["hash"]:
+            raise ValueError(PDF_INTEGRITY)
+        return dict(document), dict(version), dict(run), stored
+
+    def pdf_refusal(self, db, blob_hash):
+        """What a PDF is already recorded as, which Record decided and an import must not contradict (FR-19), or None."""
+        kinds = (("SELECT CASE WHEN EXISTS(SELECT 1 FROM receipts WHERE blob_hash=? AND review_status<>'rejected' AND document_kind='bill') THEN 'bill' "
+                  "WHEN EXISTS(SELECT 1 FROM receipts WHERE blob_hash=? AND review_status<>'rejected') THEN 'receipt' END"),
+                 "SELECT CASE WHEN EXISTS(SELECT 1 FROM income_records WHERE blob_hash=? AND review_status<>'rejected') THEN 'pay stub' END",
+                 "SELECT CASE WHEN EXISTS(SELECT 1 FROM tax_forms WHERE blob_hash=? AND review_status<>'rejected') THEN 'tax form' END",
+                 "SELECT CASE WHEN EXISTS(SELECT 1 FROM investment_valuations WHERE blob_hash=? AND review_status<>'rejected') THEN 'investment statement' END")
+        for query in kinds:
+            kind = db.execute(query, (blob_hash,) * query.count("?")).fetchone()[0]
+            if kind:
+                return f"This PDF is recorded as a {kind}."
+        return None
+
+    def account_match(self, db, last_fours, document_currency, home_currency=None):
+        """The one active account in the document's currency whose last four the document prints, or None (FR-13).
+        last_fours: each distinct NNNN found, with the page of its first occurrence."""
+        currency = document_currency or home_currency or "USD"
+        found = [dict(row) for row in db.execute("SELECT * FROM accounts WHERE active=1 AND currency=? ORDER BY id", (currency,))
+                 if row["account_last_four"] in last_fours]
+        if len(found) != 1:
+            return None
+        four = found[0]["account_last_four"]
+        return {"account_id": found[0]["id"], "last_four": four, "page": last_fours[four], "text": f"Matched …{four} printed on page {last_fours[four]}"}
+
+    def row_status(self, db, account, fingerprints, blob_hash):
+        """Per row, in order: New, rejected earlier, or already recorded, with where from (FR-16, FR-17). Reads only.
+        A fingerprint never matches a manual entry (manual rows store manual:<uuid>)."""
+        found = {}
+        for start in range(0, len(fingerprints), 500):
+            chunk = fingerprints[start:start + 500]
+            for row in db.execute(f"SELECT t.id,t.source_fingerprint,t.review_status,{COUNTABLE} AS counted FROM transactions t "
+                                  f"WHERE t.account_id=? AND t.source_fingerprint IN ({','.join('?' * len(chunk))})", (account["id"], *chunk)):
+                found[row["source_fingerprint"]] = dict(row)
+        sources = {}
+        for start in range(0, len(found), 500):
+            chunk = [row["id"] for row in list(found.values())[start:start + 500]]
+            for link in db.execute("SELECT e.record_id,e.source_key,e.blob_hash,o.relative_path FROM financial_evidence_links e JOIN occurrences o ON o.id=e.document_id "
+                                   f"WHERE e.record_type='transaction' AND e.record_id IN ({','.join('?' * len(chunk))}) ORDER BY e.id DESC", chunk):
+                sources[link["record_id"]] = link  # Descending, so the earliest link wins.
+        statuses = []
+        for fingerprint in fingerprints:
+            row = found.get(fingerprint)
+            if row is None:
+                statuses.append({"status": "new", "text": "New"})
+            elif row["review_status"] == "rejected":
+                statuses.append({"status": "rejected_earlier", "text": "rejected earlier"})
+            else:
+                link = sources.get(row["id"])
+                name = link["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] if link else "an earlier import"
+                kind = "statement" if link and link["source_key"].startswith("extraction:") else "import"
+                text = "Already recorded from this statement" if kind == "statement" and link["blob_hash"] == blob_hash else f"Already recorded from {kind} {name}"
+                statuses.append({"status": "already_recorded", "text": text + ("" if row["counted"] else "; not counted until you reconcile it.")})
+        return statuses
+
+    def replacing_manual(self, db, account, lines):
+        """The keys of the New lines that the reconciliation pass after the import would use to replace a manual entry (FR-17):
+        a line is its entry's only candidate, by replace_manual's own rule, counting the lines this import would add. Reads only."""
+        from .reconcile import manual_candidates  # reconcile.py imports this module.
+        keys = set()
+        for manual in db.execute("SELECT * FROM transactions WHERE origin='manual' AND account_id=? AND review_status<>'rejected' AND replaced_by IS NULL", (account["id"],)).fetchall():
+            candidates = manual_candidates(db, manual, lines)
+            if len(candidates) == 1 and isinstance(candidates[0], dict):
+                keys.add(candidates[0]["key"])
+        return keys
+
+    def pdf_state(self, db, document_id, digest, *, reading_id=None, account_id=None, account=None, account_type=None, currency=None, home_currency=None,
+                  mapping=None, tables=None, year=None, date_format=None, sign=None, ticked=None, unticked=None):
+        """Everything the preview and the import share: the reading, the account in force, the analysis and the ticks. Reads only.
+        account: the account row itself, for an import that has just created it inside this transaction (account_id can't see it)."""
+        if mapping is not None:
+            raise ValueError("Column mapping applies to CSV and XLSX files.")
+        document, version, run, result = self.pdf_reading(db, document_id, digest, reading_id)
+        refusal = self.pdf_refusal(db, version["hash"])
+        if refusal:
+            raise ValueError(refusal)
+        choices = dict(tables=tables, year=year, date_format=date_format or "auto", sign=sign)
+        currency = currency_code(currency) if currency else None
+        account = account or (self.account(account_id) if account_id else None)
+        match = None
+        if account is None:  # A first look finds the last fours and the document's currency, which choose the account and so the sign.
+            first = pdf_import.analyze(result, account_type=account_type, currency=currency or "USD", **choices)
+            match = self.account_match(db, first.last_fours, first.document_currency, home_currency)
+            if match and account_type is None and currency in (None, db.execute("SELECT currency FROM accounts WHERE id=?", (match["account_id"],)).fetchone()[0]):
+                account = self.account(match["account_id"])
+            else:
+                currency = currency or first.document_currency or home_currency or "USD"
+        analysis = pdf_import.analyze(result, account_type=account["account_type"] if account else account_type,
+                                      currency=account["currency"] if account else currency, **choices)
+        if match is None:
+            match = self.account_match(db, analysis.last_fours, analysis.document_currency, home_currency)
+        rows = {row.key: row for row in analysis.rows}
+        if set(ticked or ()) & set(unticked or ()):
+            raise ValueError("A row cannot be both ticked and unticked.")
+        ticks = {key: row.ticked for key, row in rows.items()}
+        for key in ticked or ():
+            if key in rows and not rows[key].rejected:
+                ticks[key] = True
+        for key in unticked or ():
+            if key in rows:
+                ticks[key] = False
+        # Identity is worked out over every parsed row in document order, so unticking one never renumbers another (plan P3).
+        parsed = [row for row in analysis.rows if not row.rejected]
+        fingerprints = []
+        if account and not analysis.required:
+            fingerprints = list(identities(account["id"], [{"posted_date": row.posted_date, "amount_minor": row.amount_minor, "currency": row.currency} for row in parsed]))
+        return {"document": document, "version": version, "run": run, "account": account, "match": match, "analysis": analysis,
+                "ticks": ticks, "parsed": parsed, "fingerprints": fingerprints, "currency": account["currency"] if account else currency, "choices": choices}
+
+    def preview_pdf_import(self, document_id, digest, *, mapping=None, account_id=None, new_account=None, account_type=None, currency=None, home_currency=None,
+                           reading_id=None, tables=None, year=None, date_format=None, sign=None, ticked=None, unticked=None):
+        """What importing the PDF would do, writing nothing (FR-05). With no account and no currency the currency is the
+        document's, else the household's, else USD, and every row is New unless exactly one account matches (FR-13).
+        new_account (a possibly typed one): an account it would find is the account in force, as at import (plan P6); otherwise its type
+        and currency give the sign default and the currency checks, and every row is New."""
+        with self.store.connection() as db:
+            account = None
+            if new_account and account_id is None:
+                account = self.find_account(db, new_account["institution"], (new_account["account_type"],), new_account.get("last_four"))
+                if account and account["currency"] != currency_code(new_account["currency"]):
+                    account = None  # The import refuses this one; the preview still shows the rows.
+                if account is None:
+                    account_type, currency = account_type or new_account["account_type"], currency or new_account["currency"]
+            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account=account, account_type=account_type,
+                                   currency=currency, home_currency=home_currency, mapping=mapping, tables=tables, year=year, date_format=date_format,
+                                   sign=sign, ticked=ticked, unticked=unticked)
+            analysis, account, ticks, currency = state["analysis"], state["account"], state["ticks"], state["currency"]
+            statuses, replacing = {}, set()
+            if state["fingerprints"]:
+                for row, status in zip(state["parsed"], self.row_status(db, account, state["fingerprints"], state["version"]["hash"])):
+                    statuses[row.key] = status
+                replacing = self.replacing_manual(db, account, [{"key": row.key, "posted_date": row.posted_date, "amount_minor": row.amount_minor, "currency": row.currency}
+                                                                 for row in state["parsed"] if ticks[row.key] and statuses[row.key]["status"] == "new"])
+        totals = {"new": [0, 0], "recorded": [0, 0]}
+        rows, counts = [], {"new": 0, "already_recorded": 0, "rejected_earlier": 0}
+        for row in analysis.rows:
+            status = {"status": "rejected", "text": "Rejected: " + row.rejected} if row.rejected else statuses.get(row.key, {"status": "new", "text": "New"})
+            ticked_now = ticks[row.key]
+            if ticked_now and not row.rejected:
+                counts[status["status"]] += 1
+                if row.amount_minor is not None:
+                    bucket = totals["new" if status["status"] == "new" else "recorded"]
+                    bucket[row.amount_minor > 0] += row.amount_minor
+            rows.append({"key": row.key, "page": row.page, "table_id": row.table_id, "row": row.row, "date": row.date, "description": row.description,
+                         "amount": row.amount, "posted_date": row.posted_date, "amount_minor": row.amount_minor, "currency": row.currency,
+                         "display_amount": format_minor(row.amount_minor, currency) if row.amount_minor is not None else None,
+                         "ticked": ticked_now, "labels": row.labels + (["replaces a manual entry"] if row.key in replacing else []), "rejected": row.rejected, "status": status["status"], "status_text": status["text"],
+                         "continued_from": row.continued_from, "cell_ids": row.cell_ids, "line_ids": row.line_ids, "word_ids": row.word_ids})
+
+        def money(bucket):
+            return {"outflow": format_minor(bucket[0], currency), "inflow": format_minor(bucket[1], currency), "outflow_minor": bucket[0], "inflow_minor": bucket[1]}
+        left_out = sum(1 for row in state["parsed"] if not ticks[row.key])
+        return {"kind": "pdf", "reading_id": state["run"]["id"], "currency": currency, "account_id": account["id"] if account else None,
+                "tables": [asdict(table) for table in analysis.tables], "rows": rows, "issues": [asdict(issue) for issue in analysis.issues],
+                "counts": {**analysis.counts, "left_out": left_out, **counts}, "required": analysis.required,
+                "required_messages": [REQUIRED[item] for item in analysis.required], "blocked": analysis.blocked,
+                "totals": money(totals["new"]), "already_recorded_totals": money(totals["recorded"]), "account_match": state["match"],
+                "new_account_last_four": next(iter(analysis.last_fours)) if len(analysis.last_fours) == 1 else None,
+                "sign_default": analysis.sign_default, "sign": analysis.sign, "mapping": analysis.mapping, "document_currency": analysis.document_currency}
+
+    def import_pdf_transactions(self, document_id, digest, *, account_id=None, new_account=None, mapping=None, reading_id=None, tables=None, year=None,
+                                date_format=None, sign=None, ticked=None, unticked=None):
+        """Import the ticked rows of the PDF into an account, as one transaction: every check is made again inside it (FR-22, FR-23).
+        new_account (institution, account_type, currency, display_name, last_four) is found or created in that same transaction (FR-14,
+        plan P6), so a refusal or a failure leaves no account behind."""
+        if account_id is None and new_account is None:
+            raise ValueError("Choose the account these transactions belong to.")
+        if account_id is not None and new_account is not None:
+            raise ValueError("Choose an existing account or a new one, not both.")
+        if reading_id is None:
+            raise ValueError("Preview this document again before importing it.")
+        import_id = uuid.uuid4().hex
+        with self.store.connection() as db:
+            account = self.account_in(db, new_account["institution"], new_account["account_type"], new_account["currency"], new_account.get("display_name"),
+                                      new_account.get("last_four")) if new_account else None
+            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account=account, mapping=mapping, tables=tables, year=year,
+                                   date_format=date_format, sign=sign, ticked=ticked, unticked=unticked)
+            analysis, account, ticks, version = state["analysis"], state["account"], state["ticks"], state["version"]
+            if analysis.blocked:
+                raise ValueError(analysis.blocked)
+            if analysis.required:
+                raise ValueError(" ".join(REQUIRED[item] for item in analysis.required))
+            chosen = [(row, fingerprint) for row, fingerprint in zip(state["parsed"], state["fingerprints"]) if ticks[row.key]]
+            if not chosen:
+                reason = "every row was rejected or left out" if analysis.rows else (analysis.issues[0].message if analysis.issues else "no transactions table was found")
+                raise ValueError(f"Nothing to import: {reason}")
+            known = {fingerprint: status for (_, fingerprint), status in zip(chosen, self.row_status(db, account, [item[1] for item in chosen], version["hash"]))}
+            source = {"document_id": document_id, "blob_hash": version["hash"], "parse_run_id": reading_id, "source_key": "import:" + import_id}
+            lines = []
+            for row, _ in chosen:
+                locator = {"document_id": document_id, "blob_hash": version["hash"], "reading_id": reading_id, "page": row.page, "table_id": row.table_id,
+                           "row": row.row, **({"cell_ids": row.cell_ids} if row.cell_ids else {"word_ids": row.word_ids}), "line_ids": row.line_ids}
+                if row.continued_from is not None:
+                    locator["continued_from"] = row.continued_from
+                lines.append({"posted_date": row.posted_date, "description": row.description, "amount_minor": row.amount_minor, "currency": row.currency,
+                              "locator": locator})
+            inserted, duplicates = self.insert_transactions(db, account, lines, "import", source, fingerprints=[fingerprint for _, fingerprint in chosen])
+            sources = {}
+            for status in known.values():
+                if status["status"] != "new":
+                    sources[status["text"]] = sources.get(status["text"], 0) + 1
+            rejected_earlier = sum(1 for status in known.values() if status["status"] == "rejected_earlier")
+            left_out = sum(1 for row in state["parsed"] if not ticks[row.key])
+            used_sign = analysis.sign if "amount" in analysis.mapping else None
+            record = {"kind": "pdf", "reading_id": reading_id, "tables": [{"id": table.id, "page": table.page, "linked_to": table.linked_to} for table in analysis.tables if table.selected],
+                      "mapping": analysis.mapping, "year": year, "date_format": date_format or "auto", "sign": used_sign,
+                      "ticked": [row.key for row in state["parsed"] if ticks[row.key]], "unticked": [row.key for row in state["parsed"] if not ticks[row.key]], "left_out": left_out}
+            issues = [asdict(issue) for issue in analysis.issues]
+            db.execute("INSERT INTO transaction_imports VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       (import_id, document_id, version["hash"], account["id"], json.dumps(record), analysis.counts["parsed"], len(inserted),
+                        len(duplicates), analysis.counts["rejected"], json.dumps(issues), now()))
+        return {"import_id": import_id, "account_id": account["id"], "account_name": account["display_name"], "inserted": len(inserted),
+                "duplicates": len(duplicates), "rejected": analysis.counts["rejected"], "left_out": left_out, "rejected_earlier": rejected_earlier,
+                "pages_without_rows": analysis.counts["pages_without_rows"], "issues": issues, "duplicate_sources": sources}
 
     # Review -------------------------------------------------------------------
 
