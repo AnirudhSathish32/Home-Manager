@@ -37,9 +37,27 @@ slices:
       unresolved sign -> amount_minor None; unresolved year/date order -> posted_date None, row not rejected; a rebuilt
       heading with no rows adds a no_rows issue. Index functions are SL-06.
   - id: SL-03
-    status: in_progress
+    status: done
+    start_head: cc6a0aa
+    end_head: 4bfb6d8
+    commit: 4bfb6d8
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k \"sc02 or sc03 or sc04 or sc05 or sc07 or sc08 or sc09 or sc15 or sc16 or sc17 or sc18 or sc24 or sc25\" tests/test_imports.py tests/test_tabular.py -q -> 91 passed (orchestrator rerun)"
+      - "regression: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_library, test_finance, test_reconcile_tools -> 226 passed (orchestrator rerun)"
+      - "worker: ruff clean on touched files; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      Ledger: pdf_reading (trash, P8 hash, blob re-hash, latest reading, reading_id, result_json vs run-folder result.json),
+      pdf_refusal, account_match, row_status, pdf_state, preview_pdf_import, import_pdf_transactions (one connection),
+      insert_transactions(fingerprints=). ImportInput gains account_type, reading_id, tables, year, date_format, sign,
+      ticked, unticked. Deferred to SL-04 as the plan's SL-04 row says: new_account, and row_status's "replaces a manual
+      entry" (needs reconcile.manual_candidates). Choices: import requires reading_id; CSV/PDF field mix -> 400 from the
+      ledger; a single account match drives row statuses and sign default only when no account_type is sent; unknown
+      tick keys ignored, a key in both lists refused. SC-17 e: no sqlite3.Error handler, so a plain 500 (contract asserts
+      only the end state). Test harness Env in tests/test_pdf_imports.py for later slices.
   - id: SL-04
-    status: todo
+    status: in_progress
   - id: SL-05
     status: todo
   - id: SL-06
