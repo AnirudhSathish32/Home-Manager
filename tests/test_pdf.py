@@ -15,7 +15,13 @@ from home_manager.models.vision import VisionConfig
 
 
 def make_pdf(path, pages, unicode_map=None):
-    """Minimal valid PDF. A string page has an embedded text layer; None is an image-only (scanned) page."""
+    """Minimal valid PDF. A string page has an embedded text layer; None is an image-only (scanned) page.
+
+    A dict page takes "items" ((x, y, text) or (x, y, text, font_size); default 10 pt), and these optional settings:
+    "rotation", "crop" (CropBox), "media" (MediaBox as "x0 y0 x1 y1", or (width, height); it also sets the default
+    CropBox), "images" (a count of small image objects drawn on the page) and "encoding" ("cp1252": WinAnsi text, so
+    that the bullet and ellipsis print as one glyph each).
+    """
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>", None, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
     if unicode_map:
         cmap = ("/CIDInit /ProcSet findresource begin 12 dict begin begincmap "
@@ -25,22 +31,35 @@ def make_pdf(path, pages, unicode_map=None):
                 " endbfchar endcmap CMapName currentdict /CMap defineresource pop end end").encode()
         objects[2] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 4 0 R >>"
         objects.append(b"<< /Length %d >>\nstream\n" % len(cmap) + cmap + b"\nendstream")
+    if any(isinstance(page, dict) and page.get("encoding") == "cp1252" and not unicode_map for page in pages):
+        objects[2] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+    image = None
     kids = []
     for text in pages:
         settings = text if isinstance(text, dict) else {}
         if settings:
+            codec = settings.get("encoding", "latin-1")
             stream = b""
-            for x, y, label in settings["items"]:
+            for x, y, label, *size in settings["items"]:
                 escaped = label.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-                stream += f"BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET\n".encode("latin-1")
+                stream += f"BT /F1 {size[0] if size else 10} Tf 1 0 0 1 {x} {y} Tm (".encode("latin-1") + escaped.encode(codec) + b") Tj ET\n"
+            for number in range(settings.get("images", 0)):
+                if image is None:
+                    objects.append(b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>\nstream\n\x80\x80\x80\x80\nendstream")
+                    image = len(objects)
+                stream += f"q 20 0 0 20 {500 + number * 30} 20 cm /Im1 Do Q\n".encode()
         elif text is None:
             stream = b"0.2 g 72 600 300 80 re f"  # Pixels only: nothing extractable.
         else:
             escaped = [line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for line in text.split("\n")]
             stream = b"BT /F1 10 Tf 12 TL 40 760 Td " + b" ".join(f"({line}) Tj T*".encode("latin-1") for line in escaped) + b" ET"
         objects.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
-        extra = (f" /Rotate {settings.get('rotation', 0)} /CropBox [{settings.get('crop', '0 0 612 792')}]" if settings else "").encode()
-        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R " % (len(objects)) + extra + b" >>")
+        media = settings.get("media", "0 0 612 792")
+        if not isinstance(media, str):
+            media = f"0 0 {media[0]} {media[1]}"
+        extra = (f" /Rotate {settings.get('rotation', 0)} /CropBox [{settings.get('crop', media)}]" if settings else "").encode()
+        xobjects = f" /XObject << /Im1 {image} 0 R >>" if settings.get("images") else ""
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [{media}] /Resources << /Font << /F1 3 0 R >>{xobjects} >> /Contents {len(objects)} 0 R ".encode() + extra + b" >>")
         kids.append(len(objects))
     objects[1] = b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % kid for kid in kids) + b"] /Count %d >>" % len(kids)
     data, offsets = bytearray(b"%PDF-1.4\n"), []
