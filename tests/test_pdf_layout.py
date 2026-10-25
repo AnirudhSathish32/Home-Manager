@@ -84,6 +84,37 @@ def test_two_column_letter_and_address_are_read_by_column_not_as_a_table(tmp_pat
     assert layout.reading_text.splitlines() == [text for _, _, text in items]
 
 
+STATEMENT_ROWS = [("08/25/2026", "REFUND BOOKSTORE", "", "19.99", "2,460.89"),
+                  ("08/28/2026", "UTILITY CO", "82.40", "", "2,378.49"),
+                  ("08/30/2026", "INTEREST PAID", "", "0.12", "2,378.61")]
+STATEMENT_FOOTER = "FIRST LOCAL BANK statement page three of three, kept for your records"
+
+
+def statement_items(rows, top=700):
+    return [(x, top - 20 * row, text) for row, cells in enumerate(rows)
+            for x, text in zip((40, 110, 300, 390, 480), cells) if text]
+
+
+@pytest.mark.parametrize("rows", [
+    STATEMENT_ROWS,  # A continued page: no heading, so no table.
+    [("Date", "Description", "Withdrawals", "Deposits", "Balance"), *[(*row[:3], "", row[4]) for row in STATEMENT_ROWS]],  # No deposits on the page.
+])
+def test_a_statement_page_without_a_table_keeps_each_amount_on_its_row(tmp_path, rows):
+    """A statement's amount columns are part of their rows even when no table is found: splitting at the gutter listed
+    19.99 and 0.12 after the rows, and a model then paired them with the wrong rows (docs/documents.md "PDFs")."""
+    layout = read_layout(tmp_path, [*statement_items(rows), (40, 700 - 20 * len(rows), STATEMENT_FOOTER)])
+    assert not layout.tables and layout.issues == ["unresolved_columns"]
+    assert layout.reading_text.splitlines() == [" ".join(cell for cell in row if cell) for row in rows] + [STATEMENT_FOOTER]
+
+
+def test_an_amount_column_with_rows_of_its_own_is_still_read_apart(tmp_path):
+    """Amounts printed where the left side has no row (a totals box beside a note) are a column of their own."""
+    items = [(40, 700, "Thank you for banking with us"), (40, 680, "Questions? Call the branch"),
+             (400, 700, "1,000.00"), (400, 680, "2,378.61"), (400, 660, "1,378.61")]
+    layout = read_layout(tmp_path, items)
+    assert layout.reading_text.splitlines() == ["Thank you for banking with us", "Questions? Call the branch", "1,000.00", "2,378.61", "1,378.61"]
+
+
 def test_title_and_footer_do_not_become_table_rows(tmp_path):
     layout = read_layout(tmp_path, [(40, 720, "Payroll statement - October"), *payroll_items(), (40, 620, "Keep this for your records")])
     assert len(layout.tables) == 1

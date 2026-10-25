@@ -469,6 +469,19 @@ def reconstruct(characters, matrix, number, issues):
         amounts = lambda columns: any(numeric(row[c]) for c in columns for row in body)
         return next((c for c in range(2, width) if labels(0) and labels(c) and amounts(range(1, c)) and amounts(range(c+1, width))), None)
 
+    def amounts_of_rows(region, cut):
+        """The words right of cut are amount columns of the rows on its left, not a block of their own (a statement page
+        whose table isn't found: no heading on a continued page, or a column empty on this page): each row with words
+        right of the cut has words left of it too, and prints only amounts there, apart from a heading row first.
+        Splitting would list the amounts after their rows (docs/documents.md "PDFs")."""
+        sides = [([w for w in row if word_boxes[w.id][2] < cut], [w for w in row if word_boxes[w.id][0] > cut]) for row in region]
+        if any(right and not left for left, right in sides):
+            return False  # A row printed only right of the cut: a column of its own.
+        priced = [right for _, right in sides if right]
+        money = lambda word: amount.fullmatch(word.text) or re.fullmatch(r"[A-Z]{3}", word.text)
+        return bool(priced) and all(money(w) for row in priced[1:] for w in row) and any(
+            amount.fullmatch(w.text) for row in priced for w in row)
+
     def add_line(row):
         line = PDFLayoutLine(id=f"{prefix}line-{len(lines)+1}", word_ids=[w.id for w in row],
                              text=" ".join(w.text for w in row), bbox=union(w.bbox for w in row))
@@ -508,7 +521,9 @@ def reconstruct(characters, matrix, number, issues):
                 gaps.append((start-end, (start+end)/2))
             end = max(end, right)
         for _, cut in sorted(gaps, reverse=True) if depth < 12 else []:
-            left = [[w for w in row if word_boxes[w.id][2] < cut] for row in region]
+            if grid is None and amounts_of_rows(region, cut):
+                continue
+            left =[[w for w in row if word_boxes[w.id][2] < cut] for row in region]
             right = [[w for w in row if word_boxes[w.id][0] > cut] for row in region]
             left, right = [row for row in left if row], [row for row in right if row]
             if len(left) >= 2 and len(right) >= 2 and (grid is None or (table_grid(left) and table_grid(right))):

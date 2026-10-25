@@ -233,7 +233,10 @@ sharing rows (a payslip's Earnings beside its Deductions) are read as two tables
 stretch (a section after a blank row, the totals at the foot of a mostly empty box) continue the table above when
 they line up with its columns and each prints two amounts or more or is a section label; a details box right above
 the heading row isn't part of it. One body row is a table when it prints two amounts or more (a benefits table's Co
-Match 401K).
+Match 401K). Where no table is found (a statement's continued page with no heading, or a page whose Deposits column is
+empty), a gutter splits the page into columns only when the right side is more than the amounts of the rows on its
+left: amounts that each sit on a row printed to their left stay on that row's line, so the model never has to pair
+them back up. A reading saved before this needs **Read again**.
 
 **Tables** shows native cells as **From PDF text positions**. Click a value to highlight its actual words on the saved
 page preview. **Original** opens the preserved PDF; **Text → Original text order** shows historical text and citations.
@@ -307,7 +310,7 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
 **Entry points.** The picker (Transactions → Import, Accounts → Import an export and each account's own button) lists
 CSV and XLSX files and the read PDFs that have a transactions table, labelled **PDF**, from
 `GET /api/finance/import-candidates` (`indexing: true` while older readings are still being checked). A small
-derived index (`pdf_import_index`, migration 071) holds each reading's table count, printed last fours and currency so
+derived index (`pdf_import_index`, migration 072) holds each reading's table count, printed last fours and currency so
 the picker and the library need not analyze readings on every request. It is rebuilt when a reading is saved, at
 start for older readings, and when `ANALYZER_VERSION` changes. On a PDF's **library row** and **document page**,
 **Import transactions** (`doc.pdf_import`, computed by the server) is the primary action when the reading has a
