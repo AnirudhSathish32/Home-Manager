@@ -1,0 +1,21 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: account-import-pdf
+plan_sha256: a2a6038955da26e0040d29d17e3ebc2472842c0096c87fbbc3c70b1ca79b7b3a
+slices:
+  - id: SL-01
+    status: in_progress
+    start_head: 00dc9a2
+  - id: SL-02
+    status: todo
+  - id: SL-03
+    status: todo
+  - id: SL-04
+    status: todo
+  - id: SL-05
+    status: todo
+  - id: SL-06
+    status: todo
+  - id: SL-07
+    status: todo
+  - id: SL-08
+    status: todo
