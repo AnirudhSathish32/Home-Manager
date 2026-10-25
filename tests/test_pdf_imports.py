@@ -8,6 +8,7 @@ fixtures: they are the analyzer-level checkpoints of SC-05, SC-07, SC-08, SC-09,
 import steps of those scenarios are tested with the ledger. Expected values come from tests/pdf_import_fixtures.py.
 """
 
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +23,7 @@ from home_manager.core.jobs import Work
 from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance import pdf_import
 from home_manager.finance.ledger import COUNTABLE
+from home_manager.finance.tools import FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.vision import VisionConfig
 import pdf_import_fixtures as fx
@@ -916,13 +918,21 @@ class Env:
         assert 400 <= response.status_code < 500 and message in str(response.json()["detail"]), (response.status_code, response.text)
 
 
-@pytest.fixture
-def env(tmp_path):
+@contextmanager
+def opened(tmp_path, configure=True):
+    """A library under tmp_path behind the real API. Opening it again after it closed is a restart of the Manager on the same folders."""
     app = create_app(tmp_path / "control", "pdf-token", limits=ScanLimits(stability_seconds=0))
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
         client.headers.update({"Authorization": "Bearer pdf-token"})
-        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        if configure:
+            client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
         yield Env(app, client)
+
+
+@pytest.fixture
+def env(tmp_path):
+    with opened(tmp_path) as opened_env:
+        yield opened_env
 
 
 def minor(rows, field="amount_minor"):
@@ -962,64 +972,142 @@ def counted(env_, account_id=None):
     return env_.sql(f"SELECT count(*) FROM transactions t WHERE {COUNTABLE}" + (" AND t.account_id=?" if account_id else ""), *([account_id] if account_id else []))[0][0]
 
 
-# --- J1 steps 1 to 4 (SC-01): K is previewed and imported ------------------------------------------------------------------
+# --- J1 (SC-01, SC-12, SC-13, SC-14): import, restart, import again, a rejected row, another account, Record later ----------
 
-def test_sc01_journey_j1_steps_1_to_4_preview_and_import_k(env):
-    a, c, b = env.account("A"), env.account("C"), env.account("B")
-    doc = env.add("k.pdf", fx.k_pages())
-    kept = doc["current_hash"]
-    # 1. The Inbox copy is overwritten without a scan: the preserved blob and its reading are what every step uses (FR-02).
-    (env.store.library.inbox / "k.pdf").write_bytes(b"different bytes, never scanned")
-    assert env.fresh(doc)["current_hash"] == kept
-    # 2. K is listed as ready for the ledger, and is still a document (FR-01).
-    listed = env.client.get("/api/documents", params={"status": "ready_for_ledger"}).json()["items"]
-    assert [item["id"] for item in listed] == [doc["id"]] and listed[0]["relative_path"].endswith(".pdf")
-    # 3. Preview with no account.
-    before = env.state()
-    preview = env.ok_preview(doc)
-    assert env.state() == before  # C-unchanged and C-evidence.
-    tables = [table for table in preview["tables"] if table["kind"] != "other"]
-    assert [(table["page"], table["kind"], table["selected"]) for table in tables] == [(1, "rebuilt", True), (2, "continuation", True), (3, "continuation", True)]
-    assert [table["linked_to"] for table in tables] == [None, tables[0]["id"], tables[0]["id"]] and [table["selectable"] for table in tables] == [True, False, False]
-    assert preview["account_match"] == {"account_id": a, "last_four": "4821", "page": 1, "text": "Matched \u20264821 printed on page 1"}
-    rows = preview["rows"]
-    assert [(row["page"], row["date"], row["description"]) for row in rows] == [(r[1], r[2], r[3]) for r in fx.K_ROWS]
-    assert [row["amount"] for row in rows] == [r[4] or r[5] for r in fx.K_ROWS] and minor(rows) == [r[7] for r in fx.K_ROWS]
-    assert [row["posted_date"] for row in rows] == fx.K_POSTED
-    assert {row["status"] for row in rows} == {"new"} and all(row["ticked"] for row in rows) and not any(row["rejected"] for row in rows)
-    assert [row["labels"] for row in rows] == [[]] * 3 + [["continued from page 1"]] * 6
-    assert (preview["totals"]["outflow_minor"], preview["totals"]["inflow_minor"]) == (-fx.K_OUT_MINOR, fx.K_IN_MINOR)
-    assert (preview["totals"]["outflow"], preview["totals"]["inflow"]) == ("-641.50 USD", "2,020.11 USD")
-    assert preview["issues"] == [] and preview["required"] == [] and preview["blocked"] is None
-    assert -99000 not in minor(rows) and all(r[6].replace(",", "").replace(".", "") not in {str(abs(v)) for v in minor(rows)} for r in fx.K_ROWS)  # Balance is never an amount.
-    # 4. Import into A with the preview's reading id.
-    result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
-    assert (result["inserted"], result["duplicates"], result["rejected"], result["left_out"]) == (9, 0, 0, 0) and result["account_name"] == "FIRST LOCAL BANK checking 4821"
-    assert "reconciliation" in result and re.fullmatch(r"[0-9a-f]{32}", result["import_id"])
-    stored = ledger_rows(env, a)
-    assert [(row[0], row[1]) for row in stored] == list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS]))
-    assert {row[2:5] for row in stored} == {("integer", "import", "USD")} and counted(env, a) == 9
-    [(mapping_json, parsed, inserted, duplicates, rejected, issues_json, created)] = env.sql(
-        "SELECT mapping_json,parsed,inserted,duplicates,rejected,issues_json,created_at FROM transaction_imports")
-    record = json.loads(mapping_json)
-    assert (parsed, inserted, duplicates, rejected, json.loads(issues_json)) == (9, 9, 0, 0, []) and created
-    assert (record["kind"], record["reading_id"], record["year"], record["sign"], record["left_out"]) == ("pdf", preview["reading_id"], None, None, 0)
-    assert record["mapping"] == {"date": "Date", "description": "Description", "debit": "Withdrawals", "credit": "Deposits"}  # No Balance.
-    assert [(table["page"], table["linked_to"]) for table in record["tables"]] == [(1, None), (2, tables[0]["id"]), (3, tables[0]["id"])]
-    assert len(record["ticked"]) == 9 and record["unticked"] == []
-    links = env.sql("SELECT source_key,locator_json,blob_hash,parse_run_id FROM financial_evidence_links WHERE record_type='transaction' ORDER BY id")
-    assert len(links) == 9 and all(IMPORT_ID.fullmatch(link[0]) and link[2] == kept and link[3] == preview["reading_id"] for link in links)
-    for link, row in zip(links, rows):
-        locator = json.loads(link[1])
-        assert (locator["document_id"], locator["blob_hash"], locator["reading_id"], locator["page"], locator["table_id"], locator["row"]) == (
-            doc["id"], kept, preview["reading_id"], row["page"], row["table_id"], row["row"])
-        assert locator["word_ids"] and locator["line_ids"] and ("continued_from" in locator) == (row["page"] > 1)
-    concealed(env)
-    assert env.files() == before[1]  # The blob and the saved reading are byte-identical after the import (C-evidence).
-    assert env.sql("SELECT count(*) FROM accounts")[0][0] == 3 and c and b
+def spending(env_, start="2026-08-01", end="2026-08-31"):
+    """(net spending, refunds) in USD minor units, as the Spending view counts them."""
+    [usd] = [row for row in FinanceTools(env_.store).get_spending(PeriodInput(start=start, end=end))["by_currency"] if row["currency"] == "USD"]
+    return usd["net_spending"]["minor"], usd["refunds"]["minor"]
 
 
-# --- SC-02 / SC-03: year and sign --------------------------------------------------------------------------------------------
+# By hand, net of refunds: purchases k1 450, k2 450, k3 4,510 and k8 8,240, fee k6 500, less interest k9 0.12 and the refund k7 19.99 (k5 is a transfer).
+K_SPENDING = (12139, 1999)
+K_SPENDING_WITHOUT_K8 = (3899, 1999)
+
+
+def all_rows(env_, account_id):
+    return env_.sql("SELECT id,posted_date,amount_minor,origin,review_status,review_source,category,statement_id,replaced_by,description_raw "
+                    "FROM transactions WHERE account_id=? ORDER BY id", account_id)
+
+
+def test_sc01_journey_j1_import_restart_import_again_reject_other_account_record_later(tmp_path):
+    """One stateful journey. Step 9's Record uses the allowed fallback of the contract's doubles: `publish_statement(S-K, ..., "proposed")`."""
+    with opened(tmp_path) as env:
+        a, c, b = env.account("A"), env.account("C"), env.account("B")
+        doc = env.add("K.pdf", fx.k_pages())
+        kept = doc["current_hash"]
+        # 1. The Inbox copy is overwritten without a scan: the preserved blob and its reading are what every step uses (FR-02).
+        (env.store.library.inbox / "K.pdf").write_bytes(b"different bytes, never scanned")
+        assert env.fresh(doc)["current_hash"] == kept
+        # 2. K is listed as ready for the ledger, and is still a document (FR-01).
+        listed = env.client.get("/api/documents", params={"status": "ready_for_ledger"}).json()["items"]
+        assert [item["id"] for item in listed] == [doc["id"]] and listed[0]["relative_path"].endswith(".pdf")
+        # 3. Preview with no account.
+        before = env.state()
+        preview = env.ok_preview(doc)
+        assert env.state() == before  # C-unchanged and C-evidence.
+        tables = [table for table in preview["tables"] if table["kind"] != "other"]
+        assert [(table["page"], table["kind"], table["selected"]) for table in tables] == [(1, "rebuilt", True), (2, "continuation", True), (3, "continuation", True)]
+        assert [table["linked_to"] for table in tables] == [None, tables[0]["id"], tables[0]["id"]] and [table["selectable"] for table in tables] == [True, False, False]
+        assert preview["account_match"] == {"account_id": a, "last_four": "4821", "page": 1, "text": "Matched …4821 printed on page 1"}
+        rows = preview["rows"]
+        assert [(row["page"], row["date"], row["description"]) for row in rows] == [(r[1], r[2], r[3]) for r in fx.K_ROWS]
+        assert [row["amount"] for row in rows] == [r[4] or r[5] for r in fx.K_ROWS] and minor(rows) == [r[7] for r in fx.K_ROWS]
+        assert [row["posted_date"] for row in rows] == fx.K_POSTED
+        assert {row["status"] for row in rows} == {"new"} and all(row["ticked"] for row in rows) and not any(row["rejected"] for row in rows)
+        assert [row["labels"] for row in rows] == [[]] * 3 + [["continued from page 1"]] * 6
+        assert (preview["totals"]["outflow_minor"], preview["totals"]["inflow_minor"]) == (-fx.K_OUT_MINOR, fx.K_IN_MINOR)
+        assert (preview["totals"]["outflow"], preview["totals"]["inflow"]) == ("-641.50 USD", "2,020.11 USD")
+        assert preview["issues"] == [] and preview["required"] == [] and preview["blocked"] is None
+        assert -99000 not in minor(rows) and all(r[6].replace(",", "").replace(".", "") not in {str(abs(v)) for v in minor(rows)} for r in fx.K_ROWS)  # Balance is never an amount.
+        # 4. Import into A with the preview's reading id.
+        result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+        assert (result["inserted"], result["duplicates"], result["rejected"], result["left_out"]) == (9, 0, 0, 0) and result["account_name"] == "FIRST LOCAL BANK checking 4821"
+        assert "reconciliation" in result and re.fullmatch(r"[0-9a-f]{32}", result["import_id"])
+        stored = ledger_rows(env, a)
+        assert [(row[0], row[1]) for row in stored] == list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS]))
+        assert {row[2:5] for row in stored} == {("integer", "import", "USD")} and counted(env, a) == 9
+        [(mapping_json, parsed, inserted, duplicates, rejected, issues_json, created)] = env.sql(
+            "SELECT mapping_json,parsed,inserted,duplicates,rejected,issues_json,created_at FROM transaction_imports")
+        record = json.loads(mapping_json)
+        assert (parsed, inserted, duplicates, rejected, json.loads(issues_json)) == (9, 9, 0, 0, []) and created
+        assert (record["kind"], record["reading_id"], record["year"], record["sign"], record["left_out"]) == ("pdf", preview["reading_id"], None, None, 0)
+        assert record["mapping"] == {"date": "Date", "description": "Description", "debit": "Withdrawals", "credit": "Deposits"}  # No Balance.
+        assert [(table["page"], table["linked_to"]) for table in record["tables"]] == [(1, None), (2, tables[0]["id"]), (3, tables[0]["id"])]
+        assert len(record["ticked"]) == 9 and record["unticked"] == []
+        links = env.sql("SELECT source_key,locator_json,blob_hash,parse_run_id FROM financial_evidence_links WHERE record_type='transaction' ORDER BY id")
+        assert len(links) == 9 and all(IMPORT_ID.fullmatch(link[0]) and link[2] == kept and link[3] == preview["reading_id"] for link in links)
+        for link, row in zip(links, rows):
+            locator = json.loads(link[1])
+            assert (locator["document_id"], locator["blob_hash"], locator["reading_id"], locator["page"], locator["table_id"], locator["row"]) == (
+                doc["id"], kept, preview["reading_id"], row["page"], row["table_id"], row["row"])
+            assert locator["word_ids"] and locator["line_ids"] and ("continued_from" in locator) == (row["page"] > 1)
+        concealed(env)
+        assert env.files() == before[1]  # The blob and the saved reading are byte-identical after the import (C-evidence).
+        assert env.sql("SELECT count(*) FROM accounts")[0][0] == 3 and c
+        after_four = (env.counts(), env.files(), all_rows(env, a), env.sql("SELECT * FROM financial_evidence_links ORDER BY id"),
+                      env.sql("SELECT id,mapping_json,created_at FROM transaction_imports"))
+    # J1-a: the Manager closes and opens again on the same folders. Nothing from step 4 is lost or doubled, and every later step runs on the new one.
+    with opened(tmp_path, configure=False) as env:
+        assert (env.counts(), env.files(), all_rows(env, a), env.sql("SELECT * FROM financial_evidence_links ORDER BY id"),
+                env.sql("SELECT id,mapping_json,created_at FROM transaction_imports")) == after_four
+        assert env.fresh(doc)["current_hash"] == kept
+        # 5. Spending counts the imported rows; Record is still the next step; a second preview shows every row as already recorded (FR-18, FR-12).
+        assert spending(env) == K_SPENDING
+        assert env.fresh(doc)["ledger_status"] == "imported"
+        ready = env.client.get("/api/documents", params={"status": "ready_for_ledger"}).json()["items"]
+        assert [item["id"] for item in ready] == [doc["id"]]  # Plan P5: an imported PDF stays ready to record.
+        again = env.ok_preview(doc, account_id=a)
+        assert {row["status_text"] for row in again["rows"]} == {"Already recorded from import K.pdf"} and again["counts"]["new"] == 0 and again["counts"]["already_recorded"] == 9
+        assert again["totals"]["outflow_minor"] == 0 and again["totals"]["inflow_minor"] == 0
+        # 6. (J1-a repeats this step after the restart.) Import K into A again with the same choices.
+        result = env.ok_import(doc, reading=again["reading_id"], account_id=a)
+        assert (result["inserted"], result["duplicates"], result["rejected"]) == (0, 9, 0) and result["duplicate_sources"] == {"Already recorded from import K.pdf": 9}
+        assert len(env.sql("SELECT id FROM transaction_imports")) == 2 and len(ledger_rows(env, a)) == 9
+        assert all_rows(env, a) == after_four[2]
+        links = env.sql("SELECT record_id,source_key FROM financial_evidence_links WHERE record_type='transaction'")
+        assert len(links) == 18 and all(len({key for record, key in links if record == row[0]}) == 2 for row in after_four[2])
+        assert spending(env) == K_SPENDING
+        # 7. Reject k8 through the transaction review action: it is reported "rejected earlier", the others are duplicates, nothing is inserted.
+        [(k8,)] = env.sql("SELECT id FROM transactions WHERE account_id=? AND description_raw='UTILITY CO'", a)
+        assert env.client.post(f"/api/finance/records/transaction/{k8}/review", json={"status": "rejected"}).status_code == 200
+        third = env.ok_preview(doc, account_id=a)
+        assert [row["status"] for row in third["rows"]].count("rejected_earlier") == 1 and third["counts"]["new"] == 0
+        assert [row["status_text"] for row in third["rows"] if row["description"] == "UTILITY CO"] == ["rejected earlier"]
+        result = env.ok_import(doc, reading=third["reading_id"], account_id=a)
+        assert (result["inserted"], result["duplicates"], result["rejected_earlier"]) == (0, 9, 1) and result["duplicate_sources"] == {"Already recorded from import K.pdf": 8, "rejected earlier": 1}
+        assert env.sql("SELECT review_status FROM transactions WHERE id=?", k8) == [("rejected",)] and counted(env, a) == 8
+        assert spending(env) == K_SPENDING_WITHOUT_K8
+        # 8. Import K into B, which no last four matched, so the request names it. A's rows and their review state are unchanged.
+        a_rows = all_rows(env, a)
+        into_b = env.ok_import(doc, account_id=b)
+        assert (into_b["inserted"], into_b["duplicates"], into_b["account_id"], into_b["account_name"]) == (9, 0, b, "OTHER BANK savings 1111")
+        assert all_rows(env, a) == a_rows and [row[1] for row in ledger_rows(env, b)] == [r[7] for r in fx.K_ROWS] and len(env.sql("SELECT id FROM transaction_imports")) == 4
+        b_rows = all_rows(env, b)
+        # 9. Record K into A with the Record double S-K: its statement awaits reconciliation and the rows keep their origin and review state.
+        lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+        published = env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")
+        assert published["account_id"] == a and (published["inserted"], published["duplicates"]) == (0, 9)
+        assert env.sql("SELECT account_id,reconciliation FROM statements") == [(a, "awaiting")]
+        statement = published["id"]
+        rows_now = all_rows(env, a)
+        assert [row[0] for row in rows_now] == [row[0] for row in a_rows] and {row[7] for row in rows_now} == {statement}
+        assert [row[1:7] + row[8:] for row in rows_now] == [row[1:7] + row[8:] for row in a_rows]  # Only statement_id changed.
+        assert {row[3] for row in rows_now} == {"import"} and counted(env, a) == 8 and [row[4] for row in rows_now if row[0] == k8] == ["rejected"]
+        assert all_rows(env, b) == b_rows  # B's rows are untouched: their account differs, so their fingerprints do.
+        # 10. The statement is read again: the same 9 rows, each keeping its import evidence.
+        env.manager.ledger.publish_statement(statement_of(lines), record_source(doc, "extraction:test-again"), "proposed")
+        assert [row[0] for row in all_rows(env, a)] == [row[0] for row in a_rows]
+        for row in a_rows:
+            assert env.sql("SELECT count(*) FROM financial_evidence_links WHERE record_type='transaction' AND record_id=? AND source_key LIKE 'import:%'", row[0]) == [(3,)]  # Steps 4, 6 and 7.
+        # Final state.
+        assert env.counts()["transactions"] == 18 and env.counts()["transaction_imports"] == 4 and env.counts()["statements"] == 1 and env.counts()["accounts"] == 3
+        assert env.sql("SELECT account_id,count(*),min(origin),max(origin) FROM transactions GROUP BY account_id ORDER BY account_id") == [(a, 9, "import", "import"), (b, 9, "import", "import")]
+        assert counted(env) == 17 and counted(env, a) == 8 and counted(env, b) == 9
+        assert env.sql("SELECT count(*) FROM transactions WHERE typeof(amount_minor)<>'integer'") == [(0,)]
+        concealed(env)
+        assert {path: digest for path, digest in env.files().items()} == before[1]
+
 
 def test_sc02_dates_printed_without_a_year_need_the_year_and_card_amounts_flip(env):
     c = env.account("C")
@@ -1503,3 +1591,238 @@ def test_the_import_request_keeps_csv_and_pdf_choices_apart(env):
     unread = env.add("unread.pdf", fx.m_pages(), read=False)  # A scanned page needs a model, so capture could not read it.
     env.refused(env.preview(unread, account_id=a), "Read this document first.")
     assert env.counts()["transactions"] == 0
+
+
+# --- SC-06: a new account is created only together with a successful import --------------------------------------------------
+
+NEW_C = {"institution": "Bank", "account_type": "credit_card", "currency": "USD", "display_name": "Synth card", "last_four": "7700"}
+
+
+def failing_insert(env_, marker, body):
+    """Run `body` with a permanent BEFORE INSERT trigger on transactions (the import's connection is its own, so a TEMP trigger would not be seen)."""
+    with env_.store.connection() as db:
+        db.execute(f"CREATE TRIGGER fault BEFORE INSERT ON transactions WHEN NEW.description_raw = '{marker}' BEGIN SELECT RAISE(ABORT, 'injected fault'); END")
+    try:
+        return body()
+    finally:
+        with env_.store.connection() as db:
+            db.execute("DROP TRIGGER fault")
+
+
+def test_sc06_a_new_account_is_created_only_together_with_a_successful_import(env):
+    doc = env.add("r.pdf", fx.r_pages())
+    # 1. Preview with no account: nothing is preselected and the one printed last four is offered for the new account.
+    preview = env.ok_preview(doc)
+    assert preview["account_match"] is None and preview["new_account_last_four"] == "7700" and preview["account_id"] is None
+    assert env.counts()["accounts"] == 0
+    reading = env.ok_preview(doc, year=2025, new_account=NEW_C)["reading_id"]  # A new account typed in full previews without creating it.
+    assert env.counts()["accounts"] == 0
+    body = {"year": 2025, "reading_id": reading, "new_account": NEW_C}
+    # 2. A fault on the last row: the request fails without a trace, and no account, row, evidence or import is left.
+    before = env.state()
+    quiet = TestClient(env.app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False, headers=dict(env.client.headers))
+
+    def fails():
+        return quiet.post(f"/api/documents/{doc['id']}/transaction-imports", json={"expected_hash": doc["current_hash"], **body})
+    response = failing_insert(env, "RETURN BOOKSTORE", fails)
+    assert response.status_code >= 500 and "Traceback" not in response.text and "injected" not in response.text
+    assert env.state() == before and before[0]["accounts"] == 0 and before[0]["transactions"] == 0 and before[0]["financial_evidence_links"] == 0
+    assert before[0]["transaction_imports"] == 0
+    # 3. The same request with the fault removed imports all 5 rows into the one new account, with the card column's amounts.
+    response = env.run(doc, **body)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert (result["inserted"], result["duplicates"], result["account_name"]) == (5, 0, "Synth card")
+    [(account_id, kind, last_four, currency, name)] = env.sql("SELECT id,account_type,account_last_four,currency,display_name FROM accounts")
+    assert (kind, last_four, currency, name) == ("credit_card", "7700", "USD", "Synth card") and result["account_id"] == account_id
+    rows = ledger_rows(env, account_id)
+    assert [(row[0], row[1], row[2], row[3]) for row in rows] == [(posted, row[5], "integer", "import") for posted, row in zip(fx.R_POSTED_2025, fx.R_ROWS)]
+    assert env.counts()["transaction_imports"] == 1 and counted(env, account_id) == 5
+    concealed(env)
+    # 4. A last four of six digits is refused as for the account route (422), and writes nothing.
+    before = env.state()
+    response = env.run(doc, year=2025, reading_id=reading, new_account={**NEW_C, "last_four": "123456"})
+    assert response.status_code == 422 and env.state() == before
+
+
+def test_sc06_a_new_account_that_would_not_be_created_writes_nothing(env):
+    """Neither or both of account_id and new_account, a CSV with a new account, a different currency for an identical account."""
+    a = env.account("A")
+    doc = env.add("r.pdf", fx.r_pages())
+    csv = env.add("kc.csv", fx.kc_csv(), read=False)
+    k = env.add("k.pdf", fx.k_pages())
+    reading, k_reading = env.ok_preview(doc, year=2025)["reading_id"], env.ok_preview(k)["reading_id"]
+    before = env.state()
+    env.refused(env.run(doc, year=2025, reading_id=reading), "Choose the account these transactions belong to.")
+    env.refused(env.run(doc, year=2025, reading_id=reading, account_id=a, new_account=NEW_C), "Choose an existing account or a new one, not both.")
+    env.refused(env.run(csv, new_account=NEW_C), "apply to PDF files only")
+    env.refused(env.preview(csv, currency="USD", new_account=NEW_C), "apply to PDF files only")
+    env.refused(env.run(k, reading_id=k_reading, new_account={"institution": "FIRST LOCAL BANK", "account_type": "checking", "currency": "EUR", "last_four": "4821"}),
+                "This account already exists with a different currency.")
+    assert env.state() == before
+
+
+def test_sc06_6a_two_printed_last_fours_prefill_nothing(env):
+    doc = env.add("k2.pdf", fx.k2_pages())
+    preview = env.ok_preview(doc)
+    assert preview["new_account_last_four"] is None and preview["account_match"] is None
+
+
+def test_sc06_p6_a_new_account_identical_to_an_existing_one_is_reused(env):
+    """Plan P6: no second account and no constraint error; the preview and the import both see the existing account's rows."""
+    a = env.account("A")
+    doc = env.add("k.pdf", fx.k_pages())
+    same = {"institution": "FIRST LOCAL BANK", "account_type": "checking", "currency": "USD", "last_four": "4821"}
+    first = env.ok_import(doc, new_account=same)
+    assert (first["inserted"], first["account_id"], first["account_name"]) == (9, a, "FIRST LOCAL BANK checking 4821") and env.counts()["accounts"] == 1
+    preview = env.ok_preview(doc, new_account=same)
+    assert {row["status_text"] for row in preview["rows"]} == {"Already recorded from import k.pdf"} and preview["account_id"] == a
+    again = env.ok_import(doc, reading=preview["reading_id"], new_account=same)
+    assert (again["inserted"], again["duplicates"], again["account_id"]) == (0, 9, a) and env.counts()["accounts"] == 1 and len(ledger_rows(env, a)) == 9
+
+
+def test_sc06_a_typed_new_account_gives_the_preview_its_sign_default_and_currency(env):
+    doc = env.add("r.pdf", fx.r_pages())
+    as_card = env.ok_preview(doc, year=2025, new_account=NEW_C)
+    as_checking = env.ok_preview(doc, year=2025, new_account={**NEW_C, "account_type": "checking"})
+    assert minor(as_card["rows"]) == [row[5] for row in fx.R_ROWS] and minor(as_checking["rows"]) == [row[6] for row in fx.R_ROWS]
+    assert (as_card["totals"]["outflow_minor"], as_card["totals"]["inflow_minor"]) == fx.R_TOTALS_C
+    assert (as_checking["totals"]["outflow_minor"], as_checking["totals"]["inflow_minor"]) == fx.R_TOTALS_A
+    assert env.counts()["accounts"] == 0
+
+
+# --- SC-10 and SC-11: rows that are already in the ledger ---------------------------------------------------------------------
+
+def snapshot(env_, account_id):
+    """What a PDF import must not change about a row it finds again."""
+    return env_.sql("SELECT id,origin,category,category_source,review_status,review_source,statement_id,replaced_by,merchant_id FROM transactions WHERE account_id=? ORDER BY id", account_id)
+
+
+def test_sc10_a_row_already_imported_from_csv_is_a_duplicate_with_a_new_evidence_link(env):
+    a = env.account("A")
+    kc = env.add("Kc.csv", fx.kc_csv(), read=False)
+    assert csv_import(env, kc, a)["inserted"] == 9  # The CSV dialog's behaviour (SC-26 step 3).
+    doc = env.add("K.pdf", fx.k_pages())
+    rows_before, spent = snapshot(env, a), spending(env)
+    links_before = env.sql("SELECT count(*) FROM financial_evidence_links")[0][0]
+    preview = env.ok_preview(doc, account_id=a)
+    assert {row["status_text"] for row in preview["rows"]} == {"Already recorded from import Kc.csv"} and preview["counts"]["new"] == 0
+    assert (preview["totals"]["outflow_minor"], preview["totals"]["inflow_minor"]) == (0, 0)
+    result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+    assert (result["inserted"], result["duplicates"]) == (0, 9) and result["duplicate_sources"] == {"Already recorded from import Kc.csv": 9}
+    assert env.sql("SELECT count(*),min(origin),max(origin) FROM transactions") == [(9, "import", "import")] and snapshot(env, a) == rows_before
+    assert env.sql("SELECT count(*) FROM financial_evidence_links WHERE blob_hash=?", doc["current_hash"]) == [(9,)]
+    assert env.sql("SELECT count(*) FROM financial_evidence_links")[0][0] == links_before + 9 and spending(env) == spent == K_SPENDING
+
+
+def csv_import(env_, doc, account_id):
+    response = env_.run(doc, account_id=account_id)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def manual_in_a(env_, account_id, posted, description, amount):
+    return env_.manager.ledger.add_manual_transaction(account_id, posted, description, amount, "out")
+
+
+def test_sc10_10a_a_manual_entry_is_labelled_in_the_preview_and_replaced_after_the_import(env):
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    manual_in_a(env, a, "2026-08-05", "Groceries by hand", "45.10")
+    [(manual_id,)] = env.sql("SELECT id FROM transactions WHERE origin='manual'")
+    assert spending(env)[0] == 4510
+    preview = env.ok_preview(doc, account_id=a)
+    labelled = [(row["description"], row["status"]) for row in preview["rows"] if "replaces a manual entry" in row["labels"]]
+    assert labelled == [("GROCERY MART", "new")] and preview["counts"]["new"] == 9
+    result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+    assert result["inserted"] == 9
+    [(k3,)] = env.sql("SELECT id FROM transactions WHERE account_id=? AND description_raw='GROCERY MART'", a)
+    assert env.sql("SELECT review_status,replaced_by FROM transactions WHERE id=?", manual_id) == [("rejected", k3)]
+    assert env.sql(f"SELECT count(*) FROM transactions t WHERE {COUNTABLE} AND t.id=?", k3) == [(1,)]
+    assert spending(env) == K_SPENDING  # 45.10 counts once.
+    assert env.ok_preview(doc, account_id=a)["counts"]["already_recorded"] == 9
+
+
+def test_sc10_10b_two_equal_new_rows_against_one_manual_entry_label_nothing_and_replace_nothing(env):
+    """k1 and k2 are both -4.50 on 08-03: replace_manual would have two candidates, so the preview claims none (plan, pass-2 MJ-1)."""
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    manual_in_a(env, a, "2026-08-03", "Coffee by hand", "4.50")
+    [(manual_id,)] = env.sql("SELECT id FROM transactions WHERE origin='manual'")
+    preview = env.ok_preview(doc, account_id=a)
+    assert [row for row in preview["rows"] if "replaces a manual entry" in row["labels"]] == []
+    env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+    assert env.sql("SELECT review_status,replaced_by FROM transactions WHERE id=?", manual_id) == [("verified", None)]
+    assert counted(env, a) == 10 and spending(env)[0] == K_SPENDING[0] + 450  # Existing counting is unchanged: nothing is dropped by a guess.
+
+
+def test_sc10_existing_matching_lines_count_as_candidates_so_the_preview_labels_nothing(env):
+    """Two lines already match the manual entry, so replace_manual replaced nothing; k3 would be a third, and the preview claims nothing."""
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    manual_in_a(env, a, "2026-08-05", "Groceries by hand", "45.10")
+    two = env.add("two.csv", b"Date,Description,Amount\n2026-08-04,GROCERY ONE,-45.10\n2026-08-06,GROCERY TWO,-45.10\n", read=False)
+    assert csv_import(env, two, a)["inserted"] == 2
+    assert env.sql("SELECT review_status,replaced_by FROM transactions WHERE origin='manual'") == [("verified", None)]
+    preview = env.ok_preview(doc, account_id=a)
+    assert [row for row in preview["rows"] if "replaces a manual entry" in row["labels"]] == [] and preview["counts"]["new"] == 9
+    env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+    assert env.sql("SELECT review_status,replaced_by FROM transactions WHERE origin='manual'") == [("verified", None)]  # Nothing replaced, as the preview said.
+
+
+def test_sc11_a_statement_recorded_and_awaiting_reconciliation_is_not_duplicated(env):
+    """Record is the double of the contract's fallback: `publish_statement(S-K, ..., "proposed")`."""
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    published = env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")
+    assert published["inserted"] == 9 and published["account_id"] == a
+    assert env.sql("SELECT reconciliation FROM statements") == [("awaiting",)]
+    assert env.sql("SELECT count(*),min(origin),max(origin) FROM transactions") == [(9, "extraction", "extraction")] and counted(env, a) == 0
+    rows_before = snapshot(env, a)
+    preview = env.ok_preview(doc, account_id=a)
+    assert {row["status_text"] for row in preview["rows"]} == {"Already recorded from this statement; not counted until you reconcile it."}
+    result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
+    assert (result["inserted"], result["duplicates"]) == (0, 9) and snapshot(env, a) == rows_before and counted(env, a) == 0
+    assert env.sql("SELECT count(*),min(origin),max(origin) FROM transactions") == [(9, "extraction", "extraction")]
+    assert env.counts()["transaction_imports"] == 1
+    assert env.sql("SELECT count(*) FROM financial_evidence_links WHERE source_key LIKE 'import:%'") == [(9,)]
+
+
+# --- SC-26: CSV/XLSX import and the PDF status filters are unchanged ---------------------------------------------------------
+
+def listed(env_, status):
+    return {Path(item["relative_path"]).name for item in env_.client.get("/api/documents", params={"status": status}).json()["items"]}
+
+
+def test_sc26_status_filters_for_pdfs_and_table_files(env):
+    from home_manager.core.formats import TABLES  # Imported here: the module routes by extension and must not have changed.
+    assert ".pdf" not in TABLES
+    a = env.account("A")
+    k = env.add("K.pdf", fx.k_pages())
+    kc = env.add("Kc.csv", fx.kc_csv(), read=False)
+    unread = env.add("unread.pdf", fx.m_pages(), read=False)
+    assert listed(env, "ready_for_ledger") == {"K.pdf", "Kc.csv"} and listed(env, "needs_text") == {"unread.pdf"}
+    # A CSV import with the dialog's remembered account behaves as before: the table file leaves "ready", and a PDF imported stays.
+    assert csv_import(env, kc, a)["inserted"] == 9
+    assert listed(env, "ready_for_ledger") == {"K.pdf"}
+    assert env.ok_import(k, account_id=a)["duplicates"] == 9
+    assert listed(env, "ready_for_ledger") == {"K.pdf"} and listed(env, "needs_text") == {"unread.pdf"} and unread
+    # A PDF recorded as a statement is no longer ready (as before the feature).
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    env.manager.ledger.publish_statement(statement_of(lines), record_source(k), "proposed")
+    assert listed(env, "ready_for_ledger") == set()
+    assert env.fresh(k)["relative_path"].endswith(".pdf")
+
+
+def test_sc10_manual_candidates_counts_stored_lines_and_the_lines_an_import_would_add(env):
+    from home_manager.finance.reconcile import manual_candidates
+    a = env.account("A")
+    manual_in_a(env, a, "2026-08-05", "Groceries by hand", "45.10")
+    extra = [{"key": "x", "posted_date": "2026-08-10", "amount_minor": -4510, "currency": "USD"},  # Five days after: inside the window.
+             {"key": "y", "posted_date": "2026-08-11", "amount_minor": -4510, "currency": "USD"},  # Six days: outside.
+             {"key": "z", "posted_date": "2026-08-05", "amount_minor": -4500, "currency": "USD"},  # Another amount.
+             {"key": "w", "posted_date": "2026-08-05", "amount_minor": -4510, "currency": "EUR"}]  # Another currency.
+    with env.store.connection() as db:
+        manual = db.execute("SELECT * FROM transactions WHERE origin='manual'").fetchone()
+        assert manual_candidates(db, manual) == [] and [line["key"] for line in manual_candidates(db, manual, extra)] == ["x"]

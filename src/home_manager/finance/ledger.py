@@ -1233,9 +1233,21 @@ class Ledger:
                 statuses.append({"status": "already_recorded", "text": text + ("" if row["counted"] else "; not counted until you reconcile it.")})
         return statuses
 
-    def pdf_state(self, db, document_id, digest, *, reading_id=None, account_id=None, account_type=None, currency=None, home_currency=None,
+    def replacing_manual(self, db, account, lines):
+        """The keys of the New lines that the reconciliation pass after the import would use to replace a manual entry (FR-17):
+        a line is its entry's only candidate, by replace_manual's own rule, counting the lines this import would add. Reads only."""
+        from .reconcile import manual_candidates  # reconcile.py imports this module.
+        keys = set()
+        for manual in db.execute("SELECT * FROM transactions WHERE origin='manual' AND account_id=? AND review_status<>'rejected' AND replaced_by IS NULL", (account["id"],)).fetchall():
+            candidates = manual_candidates(db, manual, lines)
+            if len(candidates) == 1 and isinstance(candidates[0], dict):
+                keys.add(candidates[0]["key"])
+        return keys
+
+    def pdf_state(self, db, document_id, digest, *, reading_id=None, account_id=None, account=None, account_type=None, currency=None, home_currency=None,
                   mapping=None, tables=None, year=None, date_format=None, sign=None, ticked=None, unticked=None):
-        """Everything the preview and the import share: the reading, the account in force, the analysis and the ticks. Reads only."""
+        """Everything the preview and the import share: the reading, the account in force, the analysis and the ticks. Reads only.
+        account: the account row itself, for an import that has just created it inside this transaction (account_id can't see it)."""
         if mapping is not None:
             raise ValueError("Column mapping applies to CSV and XLSX files.")
         document, version, run, result = self.pdf_reading(db, document_id, digest, reading_id)
@@ -1244,7 +1256,7 @@ class Ledger:
             raise ValueError(refusal)
         choices = dict(tables=tables, year=year, date_format=date_format or "auto", sign=sign)
         currency = currency_code(currency) if currency else None
-        account = self.account(account_id) if account_id else None
+        account = account or (self.account(account_id) if account_id else None)
         match = None
         if account is None:  # A first look finds the last fours and the document's currency, which choose the account and so the sign.
             first = pdf_import.analyze(result, account_type=account_type, currency=currency or "USD", **choices)
@@ -1275,19 +1287,30 @@ class Ledger:
         return {"document": document, "version": version, "run": run, "account": account, "match": match, "analysis": analysis,
                 "ticks": ticks, "parsed": parsed, "fingerprints": fingerprints, "currency": account["currency"] if account else currency, "choices": choices}
 
-    def preview_pdf_import(self, document_id, digest, *, mapping=None, account_id=None, account_type=None, currency=None, home_currency=None,
+    def preview_pdf_import(self, document_id, digest, *, mapping=None, account_id=None, new_account=None, account_type=None, currency=None, home_currency=None,
                            reading_id=None, tables=None, year=None, date_format=None, sign=None, ticked=None, unticked=None):
         """What importing the PDF would do, writing nothing (FR-05). With no account and no currency the currency is the
-        document's, else the household's, else USD, and every row is New unless exactly one account matches (FR-13)."""
+        document's, else the household's, else USD, and every row is New unless exactly one account matches (FR-13).
+        new_account (a possibly typed one): an account it would find is the account in force, as at import (plan P6); otherwise its type
+        and currency give the sign default and the currency checks, and every row is New."""
         with self.store.connection() as db:
-            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account_type=account_type, currency=currency,
-                                   home_currency=home_currency, mapping=mapping, tables=tables, year=year, date_format=date_format, sign=sign,
-                                   ticked=ticked, unticked=unticked)
+            account = None
+            if new_account and account_id is None:
+                account = self.find_account(db, new_account["institution"], (new_account["account_type"],), new_account.get("last_four"))
+                if account and account["currency"] != currency_code(new_account["currency"]):
+                    account = None  # The import refuses this one; the preview still shows the rows.
+                if account is None:
+                    account_type, currency = account_type or new_account["account_type"], currency or new_account["currency"]
+            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account=account, account_type=account_type,
+                                   currency=currency, home_currency=home_currency, mapping=mapping, tables=tables, year=year, date_format=date_format,
+                                   sign=sign, ticked=ticked, unticked=unticked)
             analysis, account, ticks, currency = state["analysis"], state["account"], state["ticks"], state["currency"]
-            statuses = {}
+            statuses, replacing = {}, set()
             if state["fingerprints"]:
                 for row, status in zip(state["parsed"], self.row_status(db, account, state["fingerprints"], state["version"]["hash"])):
                     statuses[row.key] = status
+                replacing = self.replacing_manual(db, account, [{"key": row.key, "posted_date": row.posted_date, "amount_minor": row.amount_minor, "currency": row.currency}
+                                                                 for row in state["parsed"] if ticks[row.key] and statuses[row.key]["status"] == "new"])
         totals = {"new": [0, 0], "recorded": [0, 0]}
         rows, counts = [], {"new": 0, "already_recorded": 0, "rejected_earlier": 0}
         for row in analysis.rows:
@@ -1301,7 +1324,7 @@ class Ledger:
             rows.append({"key": row.key, "page": row.page, "table_id": row.table_id, "row": row.row, "date": row.date, "description": row.description,
                          "amount": row.amount, "posted_date": row.posted_date, "amount_minor": row.amount_minor, "currency": row.currency,
                          "display_amount": format_minor(row.amount_minor, currency) if row.amount_minor is not None else None,
-                         "ticked": ticked_now, "labels": row.labels, "rejected": row.rejected, "status": status["status"], "status_text": status["text"],
+                         "ticked": ticked_now, "labels": row.labels + (["replaces a manual entry"] if row.key in replacing else []), "rejected": row.rejected, "status": status["status"], "status_text": status["text"],
                          "continued_from": row.continued_from, "cell_ids": row.cell_ids, "line_ids": row.line_ids, "word_ids": row.word_ids})
 
         def money(bucket):
@@ -1315,16 +1338,22 @@ class Ledger:
                 "new_account_last_four": next(iter(analysis.last_fours)) if len(analysis.last_fours) == 1 else None,
                 "sign_default": analysis.sign_default, "sign": analysis.sign, "mapping": analysis.mapping, "document_currency": analysis.document_currency}
 
-    def import_pdf_transactions(self, document_id, digest, *, account_id=None, mapping=None, reading_id=None, tables=None, year=None, date_format=None,
-                                sign=None, ticked=None, unticked=None):
-        """Import the ticked rows of the PDF into an account, as one transaction: every check is made again inside it (FR-22, FR-23)."""
-        if account_id is None:
+    def import_pdf_transactions(self, document_id, digest, *, account_id=None, new_account=None, mapping=None, reading_id=None, tables=None, year=None,
+                                date_format=None, sign=None, ticked=None, unticked=None):
+        """Import the ticked rows of the PDF into an account, as one transaction: every check is made again inside it (FR-22, FR-23).
+        new_account (institution, account_type, currency, display_name, last_four) is found or created in that same transaction (FR-14,
+        plan P6), so a refusal or a failure leaves no account behind."""
+        if account_id is None and new_account is None:
             raise ValueError("Choose the account these transactions belong to.")
+        if account_id is not None and new_account is not None:
+            raise ValueError("Choose an existing account or a new one, not both.")
         if reading_id is None:
             raise ValueError("Preview this document again before importing it.")
         import_id = uuid.uuid4().hex
         with self.store.connection() as db:
-            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, mapping=mapping, tables=tables, year=year,
+            account = self.account_in(db, new_account["institution"], new_account["account_type"], new_account["currency"], new_account.get("display_name"),
+                                      new_account.get("last_four")) if new_account else None
+            state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account=account, mapping=mapping, tables=tables, year=year,
                                    date_format=date_format, sign=sign, ticked=ticked, unticked=unticked)
             analysis, account, ticks, version = state["analysis"], state["account"], state["ticks"], state["version"]
             if analysis.blocked:

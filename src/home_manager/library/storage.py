@@ -26,7 +26,8 @@ TABLE_FILE = "(lower(relative_path) LIKE '%.csv' OR lower(relative_path) LIKE '%
 WORK_FILTERS = {
     "all": "1",
     "needs_text": f"text_run_id IS NULL AND NOT {TABLE_FILE}",
-    "ready_for_ledger": f"(text_run_id IS NOT NULL OR {TABLE_FILE}) AND ledger_status IS NULL",
+    # A read PDF stays ready after a PDF import: Record is still its next step (plan P5). A table file doesn't.
+    "ready_for_ledger": f"(({TABLE_FILE} AND ledger_status IS NULL) OR (NOT {TABLE_FILE} AND text_run_id IS NOT NULL AND (ledger_status IS NULL OR ledger_status='imported')))",
     "needs_review": "ledger_status IN ('proposed','needs_review')",
     "failed": "(parse_status IN ('failed','interrupted') OR extraction_status IN ('failed','interrupted'))",
 }

@@ -308,10 +308,12 @@ class ImportInput(BaseModel):
     sign: Literal["negative_is_outflow", "positive_is_outflow"] | None = None  # None: not chosen, so the account type's default.
     ticked: list[str] | None = Field(default=None, max_length=20_000)
     unticked: list[str] | None = Field(default=None, max_length=20_000)
+    new_account: AccountInput | None = None  # Created in the import's own transaction, with no separate account request.
 
     def pdf_choices(self):
         names = ("account_type", "reading_id", "tables", "year", "date_format", "sign", "ticked", "unticked")
-        return {name: getattr(self, name) for name in names if getattr(self, name) is not None}
+        choices = {name: getattr(self, name) for name in names if getattr(self, name) is not None}
+        return {**choices, "new_account": self.new_account.model_dump()} if self.new_account else choices
 
 
 class CryptoImportInput(BaseModel):
@@ -944,7 +946,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.post("/api/documents/{document_id}/transaction-imports", status_code=201)
     def import_transactions(document_id: int, value: ImportInput):
-        if value.account_id is None:
+        if value.account_id is None and value.new_account is None:
             raise HTTPException(400, "Choose the account these transactions belong to.")
         return manager().import_transactions(document_id, value.account_id, value.mapping, value.expected_hash, pdf=value.pdf_choices() or None)
 
