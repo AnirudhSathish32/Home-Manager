@@ -45,7 +45,7 @@ from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
 from ..finance.scenarios import MAX_COMPARED, ScenarioInput, Scenarios
-from ..finance.tabular import ImportMapping
+from ..finance.tabular import DATE_FORMATS, ImportMapping
 from ..finance.tax_family import TaxUnits
 from ..finance.tax_lines import BUSINESS_KINDS, INCOME_KINDS, KINDS, LINES
 from ..finance.tax_tags import TaxTags
@@ -299,6 +299,19 @@ class ImportInput(BaseModel):
     account_id: int | None = None
     currency: str | None = Field(default=None, pattern=r"^[A-Za-z]{3}$")
     mapping: ImportMapping | None = None
+    # PDF only (docs/documents.md "PDFs"): the choices of the PDF import dialog. Absent for CSV and XLSX.
+    account_type: Literal[*ACCOUNT_TYPES] | None = None  # Preview only, with currency: a new account not yet complete.
+    reading_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    tables: list[str] | None = Field(default=None, max_length=200)
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    date_format: Literal["auto", *DATE_FORMATS] | None = None  # type: ignore[valid-type]
+    sign: Literal["negative_is_outflow", "positive_is_outflow"] | None = None  # None: not chosen, so the account type's default.
+    ticked: list[str] | None = Field(default=None, max_length=20_000)
+    unticked: list[str] | None = Field(default=None, max_length=20_000)
+
+    def pdf_choices(self):
+        names = ("account_type", "reading_id", "tables", "year", "date_format", "sign", "ticked", "unticked")
+        return {name: getattr(self, name) for name in names if getattr(self, name) is not None}
 
 
 class CryptoImportInput(BaseModel):
@@ -921,16 +934,19 @@ def create_app(control: Path | None = None, token: str | None = None,
     def preview_import(document_id: int, value: ImportInput):
         store()
         ledger = manager().ledger
+        if ledger.is_pdf(document_id):  # A PDF may be previewed with neither: the account is matched and the currency read from the document.
+            return ledger.preview_import(document_id, value.currency, value.mapping, value.expected_hash,
+                                         pdf={**value.pdf_choices(), "account_id": value.account_id, "home_currency": manager().household.home_currency})
         currency = ledger.account(value.account_id)["currency"] if value.account_id else value.currency
         if not currency:
             raise HTTPException(400, "Choose an account or a currency for the preview.")
-        return ledger.preview_import(document_id, currency, value.mapping, value.expected_hash)
+        return ledger.preview_import(document_id, currency, value.mapping, value.expected_hash, pdf=value.pdf_choices() or None)
 
     @app.post("/api/documents/{document_id}/transaction-imports", status_code=201)
     def import_transactions(document_id: int, value: ImportInput):
         if value.account_id is None:
             raise HTTPException(400, "Choose the account these transactions belong to.")
-        return manager().import_transactions(document_id, value.account_id, value.mapping, value.expected_hash)
+        return manager().import_transactions(document_id, value.account_id, value.mapping, value.expected_hash, pdf=value.pdf_choices() or None)
 
     @app.post("/api/finance/reconcile")
     def reconcile():

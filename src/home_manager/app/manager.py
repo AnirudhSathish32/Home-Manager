@@ -1436,11 +1436,11 @@ class Manager:
             self.require(False)
             return {"run_id": self.organization.enqueue(document_id, digest)}
 
-    def import_transactions(self, document_id, account_id, mapping=None, digest=None):
+    def import_transactions(self, document_id, account_id, mapping=None, digest=None, pdf=None):
         """Deterministic and fast; runs on the request thread, never waiting for model work."""
         with self.mutex:
             self.require(False)
-        result = self.ledger.import_transactions(document_id, account_id, mapping, digest)
+        result = self.ledger.import_transactions(document_id, account_id, mapping, digest, pdf=pdf)
         return {**result, "reconciliation": self.reconciler.run("import")}
 
     def start_receipt(self, document_id, digest=None, rotation=0, force=False):
