@@ -57,9 +57,25 @@ slices:
       tick keys ignored, a key in both lists refused. SC-17 e: no sqlite3.Error handler, so a plain 500 (contract asserts
       only the end state). Test harness Env in tests/test_pdf_imports.py for later slices.
   - id: SL-04
-    status: in_progress
+    status: done
+    start_head: 4e9b933
+    end_head: 707cd42
+    commit: 707cd42
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M1 + SL-04 suites, unfiltered: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_library, test_finance, test_reconcile_tools -> 238 passed (orchestrator rerun)"
+      - "tests/test_tax_year.py -> 2 failed, 9 passed; the same 2 fail at 803c588 (before any feature code), run from a worktree with PYTHONPATH=<worktree>/src"
+      - "worker: ruff clean; mypy only the 8 baseline errors in core/paths.py"
+    notes: >-
+      M1 (backend) complete. reconcile.manual_candidates extracted (replace_manual unchanged); Ledger.replacing_manual adds
+      the "replaces a manual entry" row label (status stays New); import_pdf_transactions(new_account=) creates the account
+      inside the import's one connection (P6 reuse; same account with another currency refused); preview accepts
+      new_account additively and never creates; ImportInput.new_account uses AccountInput; ready_for_ledger per P5.
+      J1 is one stateful test with the J1-a restart after step 4; step 9 uses the publish_statement fallback.
+      The slice's -k command filters every path (13 tests); the suites were run unfiltered too.
   - id: SL-05
-    status: todo
+    status: in_progress
   - id: SL-06
     status: todo
   - id: SL-07
