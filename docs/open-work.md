@@ -42,8 +42,9 @@ and link here for what isn't. When an item is built, remove it from this list an
   copy of a gift-card receipt shows the amount paid, not the printed total; a full account number quoted inside an item
   row's citation isn't masked (product codes look the same); a document in a running batch whose reading hasn't
   started yet doesn't refuse a kind change (the kind still wins).
-- **Complex PDF layout:** merged/stacked headers, wrapped cells, rich form-field association, cross-page tables and
-  repeated-header/footer detection remain open. Shared native layout is connected to extraction, search and source
+- **Complex PDF layout:** merged/stacked headers, wrapped cells, rich form-field association, cross-page tables in the
+  reader itself (the transaction import links a table across pages for its own rows only,
+  [documents](documents.md#transaction-imports)) and repeated-header/footer detection remain open. Shared native layout is connected to extraction, search and source
   highlighting; see the [text extraction plan](../text_extraction_plan.md) for implemented behavior and limits.
 
 ## Models and evals
@@ -67,6 +68,22 @@ and link here for what isn't. When an item is built, remove it from this list an
 ## Money
 
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
+- **PDF transaction import, still open** ([documents](documents.md#transaction-imports)):
+  - Scanned (vision) pages are listed but never imported; Record is the way to bring them in.
+  - A second transactions heading below a native table: the next page still continues the **first** table, so a table
+    with different columns could be read with the first one's. The preview shows each row's columns and signed amount.
+  - Any later-page line with a date and an amount in the continued table's columns is counted, schedules included.
+    The preview totals are the only check.
+  - A card statement listed newest first can get dates a year off after the year rollover.
+  - Import primary can leave a PDF never Recorded, so its balances are never checked. Record is in More actions.
+  - Record finds an account by exact institution text, so a PDF import account with another name gets a second account
+    and duplicate rows when the PDF is Recorded later.
+  - The source badge fetches the full provenance for every imported transaction input in an open breakdown (one request
+    each, up to 200). The trace could carry the page and row itself.
+  - The import index's `refused` kind is read from the refusal message text (`pdf_import.REFUSED`), and the dialog finds
+    an unread PDF by comparing the error text `Read this document first.`. Both want a structured value from the server.
+  - The row status badges reuse existing statuses with the server's text; there is no vocabulary of their own yet.
+  - Accuracy on real bank PDFs is unmeasured. The manual run covered only synthetic statements.
 - **Bills and money in, still open** ([money](money.md#bills-and-their-lines)):
   - Manually linking a paystub deposit split across two accounts.
   - A bill line's person can be chosen only in the family's inbox, where the family's people are known; a person's own

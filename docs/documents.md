@@ -218,6 +218,7 @@ check the plumbing and evidence, not model accuracy.
 - native layout IDs are separate, so existing text citations remain stable; new native and scanned pages both have rendered previews with saved coordinate transforms;
 - ambiguous native layout or possible image-only content creates a review issue that prevents automatic record verification;
 - no page is silently skipped, and long PDFs are analysed in chunks.
+- a read PDF with a transactions table can also be imported as account transactions with no model; see [Transaction imports](#transaction-imports).
 
 Classification, typed extraction, general reasoning and search now use the same readable native layout. Table headings
 are repeated with each extraction chunk. Code copies monetary values from recognized printed columns, keeping
@@ -244,11 +245,14 @@ or damaged native geometry uses original text with review issues. See the [imple
 Mixed digital/scanned PDFs, positioned tables, shuffled streams, crop/rotation transforms, compatibility, ledger publication,
 search and browser highlights are covered by synthetic tests; live-document accuracy remains to be evaluated.
 
-### CSV and XLSX imports
+### Transaction imports
 
-**Import transactions** on a CSV/XLSX row previews and imports from the preserved copy (`finance/tabular.py`). No
-model is involved.
+**Import transactions** on a CSV, XLSX or PDF previews and imports account transactions from the preserved copy (CSV and
+XLSX: `finance/tabular.py`; PDF: `finance/pdf_import.py`, below). No model is involved. The dialog (`openImport` in
+`library.js`) and the API (`POST /api/documents/{id}/transaction-import/preview` and `…/transaction-imports`) are the
+same for all three.
 
+**CSV and XLSX**
 - **Mapping.** Column mapping is detected or chosen. Date order is inferred only when the whole column is unambiguous.
   The sign convention is explicit, and each rejected row comes with a reason.
 - **CSV** is read with the standard `csv` module as strings. Raw values such as `(1,234.56)` and `03/04/2026` are kept
@@ -258,6 +262,62 @@ model is involved.
   - Formula results can't become authoritative without review.
 - **Re-importing never duplicates.** Transactions have a source-independent fingerprint (see
   [Typed extraction](#typed-extraction)).
+
+**PDF**
+
+A PDF is imported from its **saved reading** (`finance/pdf_import.py analyze`, pure code, nothing decoded in the
+request). It makes no model or network call, and never touches the Inbox or Library file. A PDF stays a document that
+is read and recorded as before: it is not a table file, and `needs_text` and `ready_for_ledger` return the same PDFs
+(a PDF the import marked `imported` is still recordable, and still counts as ready for the ledger).
+- **What is read.** Only `embedded_text` pages. A scanned page is listed ("Page N is a scanned page; no rows imported.
+  Use Record for scanned statements.") and contributes nothing. A PDF read before native layout was saved is blocked
+  until **Read again**.
+- **Tables and rows.** Every native transactions table is listed (page, headings, row count) and ticked by default;
+  other native tables are listed as "not a transactions table". A table that continues on the next page is linked to
+  it ("continued from page N"). Pages with no native table are rebuilt from the saved words by baseline and the
+  heading's column positions, and so are rows printed below a native table the reader cut short. The import does this
+  itself; the reader's tables are unchanged. A balance column is never an amount.
+- **Dates, amounts and signs are exact.** A four-digit year is read as printed. A date without a year (or with a
+  two-digit year) waits for the year you choose, and the current year is never assumed. A day/month order that the
+  column does not settle is a required choice. Amounts go through `core/money.to_minor`. Debit and Credit columns
+  decide the sign; a single Amount column uses the chosen account's default (card: positive is money out; checking or
+  savings: positive is money in; other types ask), which you can change. A row whose date or amount does not fit is
+  rejected with a reason, never guessed.
+- **Flagged pages.** Rows from a page with a layout issue (other than the harmless `unresolved_columns` on a page whose
+  rows are rebuilt) start unticked, with the page's message. Ticked rows import like any other.
+- **Account.** The dialog ignores the remembered CSV account. An account is preselected only when exactly one active
+  account in the document's currency has its last four printed in the reading ("ending in 4821", `XXXX4821`, `*4821`,
+  …) and the dialog says where ("Matched …4821 printed on page 1"). Otherwise Import waits for a choice. **New
+  account…** prefills the last four and creates the account inside the import request itself, in the same database
+  transaction as the rows. A refused or failed import leaves no account. A different currency on the document blocks
+  the import; no conversion.
+- **Duplicates.** A row already recorded by a CSV/XLSX import, a statement or an earlier PDF import is not inserted
+  again, and its evidence is linked. The preview names the source ("Already recorded from import …"). A manual entry
+  with the same values is replaced, as for CSV. A statement row not yet counted says so.
+- **Refusals** name the next step and write nothing: recorded as a receipt, bill, pay stub, tax form or investment
+  statement; in Trash; the reading, document or preserved blob changed since the preview; over 20,000 rows or 2,000
+  characters in a cell; nothing to import. A PDF recorded as a statement, or not recorded, can be imported.
+- **Atomic and recorded.** The account, rows, evidence and the `transaction_imports` record (reading, tables, year, sign,
+  ticks and counts, in `mapping_json` and `issues_json` with `kind: "pdf"`) are one transaction. Reconciliation runs
+  after. Re-importing the same PDF inserts nothing, reports all duplicates and adds a record.
+- **Where a row came from.** Each row's evidence keeps the document, reading, page, table, row and the cell, word or
+  line ids. The source badge reads `Imported · <file> page N` (plus `continued from page M`) and links to the page with
+  those lines lit ([ui](ui.md#whats-built), "Provenance").
+
+**Entry points.** The picker (Transactions → Import, Accounts → Import an export and each account's own button) lists
+CSV and XLSX files and the read PDFs that have a transactions table, labelled **PDF**, from
+`GET /api/finance/import-candidates` (`indexing: true` while older readings are still being checked). A small
+derived index (`pdf_import_index`, migration 071) holds each reading's table count, printed last fours and currency so
+the picker and the library need not analyze readings on every request. It is rebuilt when a reading is saved, at
+start for older readings, and when `ANALYZER_VERSION` changes. On a PDF's **library row** and **document page**,
+**Import transactions** (`doc.pdf_import`, computed by the server) is the primary action when the reading has a
+transactions table, exactly one saved account matches by last four and currency, and the PDF is not recorded as a
+receipt, bill or pay stub; Record is then in More actions (library) or the button beside it (document page).
+Otherwise Record (or Read) stays primary and **Import transactions** is in More actions or beside **Record it**
+whenever a reading with a transactions table exists. An unread PDF also has Import transactions in More actions: its
+dialog says **Read this document first** with a **Read** button, reads the PDF, and
+shows the preview in the same dialog. CSV and XLSX keep Import as their step. After a PDF import the row's badge says
+`imported`, and Record is still offered.
 
 ### Several receipts in one file
 

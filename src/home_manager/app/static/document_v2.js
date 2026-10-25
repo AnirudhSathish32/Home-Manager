@@ -278,7 +278,12 @@ function doc2Steps(state) {
     return item;
   }));
   const parts = [], extraction = state.extraction, doc = state.doc, idle = !busy.inference;
-  const next = (label, action) => { const button = element("button", label, "primary"); button.type = "button"; button.disabled = !idle; button.addEventListener("click", action); return button; };
+  const next = (label, action, tone = "primary") => { const button = element("button", label, tone); button.type = "button"; button.disabled = !idle; button.addEventListener("click", action); return button; };
+  // Import transactions (FR-26, docs/documents.md "Transaction imports"): primary when one saved account matches the PDF, else beside Record.
+  // Offered only on the latest version of a read PDF, and never while it is being read or recorded.
+  const offer = state.loaded && state.result && state.extractionChecked && !state.pending && !extraction?.pending && state.digest === doc.current_hash ? pdfImportOffer(doc) : null;
+  const importButton = offer && next("Import transactions", () => openImport(doc, {onDone: () => refreshDocumentV2(state)}), offer === "primary" ? "primary" : "secondary");
+  const recordTone = offer === "primary" ? "secondary" : "primary";
   if (state.actionError) parts.push(alertBox(state.actionError, {tone: "error"}));
   if (!state.loaded) { /* The page's loading state says it. */ }
   else if (doc.deleted_at) parts.push(element("p", "This document is in Trash. Restore it from ⋯ to read or record it.", "muted small"));
@@ -295,15 +300,20 @@ function doc2Steps(state) {
   else if (extraction?.pending) parts.push(element("p", "Recording … progress shows in the sidebar.", "muted small"));
   else if (!extraction) {
     const row = element("div", "", "doc2-next-row");
-    row.append(element("p", "Read, but not recorded yet. Recording checks every amount against its source line.", "small"), next("Record it", () => doc2Record()));
+    const record = next("Record it", () => doc2Record(), recordTone);
+    row.append(element("p", "Read, but not recorded yet. Recording checks every amount against its source line.", "small"), ...(offer === "primary" ? [importButton, record] : [record, ...(importButton ? [importButton] : [])]));
     if (!modelsConfigured.reasoning) row.append(modelNote("Recording needs a local reasoning model."));
     parts.push(row);
   } else if (["failed", "interrupted"].includes(extraction.status))
     parts.push(alertBox(`Home Manager couldn't record this document. ${extraction.error || ""}`.trim(), {tone: "error", action: next("Try again", () => doc2Record(true))}));
-  else if (extraction.status === "cancelled") parts.push(alertBox("Recording was cancelled before it finished.", {action: next("Record it", () => doc2Record(true))}));
+  else if (extraction.status === "cancelled") parts.push(alertBox("Recording was cancelled before it finished.", {action: next("Record it", () => doc2Record(true), recordTone)}));
   else if (!extraction.publication)
     parts.push(element("p", `Filed as ${(extraction.documentType || "an unknown document").replaceAll("_", " ")}, which has no ledger record. Use Move to put it elsewhere.`, "muted small"));
   else if (extraction.publication.status === "blocked") parts.push(alertBox(`Can't record this: ${extraction.publication.reason}`, {tone: "warning"}));
+  // Where Record isn't the next step (recorded, filed elsewhere, failed, cancelled), Import transactions stands on its own row.
+  if (importButton && !parts.some(part => part.contains?.(importButton))) {
+    const row = element("div", "", "doc2-next-row"); row.append(importButton); parts.push(row);
+  }
   $("doc2-next").replaceChildren(...parts);
   // An earlier version or a document in Trash shows its record without a decision.
   $("doc2-decision").hidden = state.digest !== doc.current_hash || Boolean(doc.deleted_at);

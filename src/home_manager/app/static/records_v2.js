@@ -451,18 +451,30 @@ function rc2Row(doc) {
   actions.append(wrap);
   return tr;
 }
+// What a PDF offers for importing its transactions (docs/documents.md "Transaction imports"): "primary" when it has a transactions table, exactly one
+// saved account matches its last four and currency, and it isn't recorded as a receipt, bill or pay stub (the server decides, FR-26);
+// "secondary" when it has the table but no single match (More actions, or beside Record on the document page); else null.
+function pdfImportOffer(doc) {
+  const info = doc.pdf_import;
+  if (doc.deleted_at || !isPdf(doc) || !(info?.tables > 0) || info.refused) return null;
+  return info.match ? "primary" : "secondary";
+}
+// A PDF the import marked `imported` is still recordable: Record checks balances (docs/documents.md "Transaction imports", FR-18).
+const rc2Recordable = doc => doc.text_run_id && (!doc.ledger_status || (isPdf(doc) && doc.ledger_status === "imported")) && !PENDING.includes(doc.extraction_status);
+const rc2Record = doc => rc2Start(`/api/documents/${doc.id}/extraction-runs`, {parse_run_id: doc.text_run_id}, "Recording started. Follow it on Processing.");
+const rc2Importing = doc => !doc.deleted_at && !PENDING.includes(doc.parse_status) && !PENDING.includes(doc.extraction_status);
 // The one most useful action for the document, as a text link: Restore, Import, Read or Record.
 function rc2Step(doc, stateCell) {
   const name = documentName(doc);
   let label = "", run = null, model = false;
   if (doc.deleted_at) { label = "Restore"; run = async () => { await restoreDocuments([doc]); await rc2Draw(); }; }
-  else if (isTable(doc)) { label = "Import"; run = () => openImport(doc, {onDone: () => rc2Draw()}); }
+  else if (isTable(doc) || (rc2Importing(doc) && pdfImportOffer(doc) === "primary")) { label = "Import"; run = () => openImport(doc, {onDone: () => rc2Draw()}); }
   else if (!doc.text_run_id && !PENDING.includes(doc.parse_status)) {
     label = "Read"; model = true;
     run = () => rc2Start(`/api/documents/${doc.id}/receipt-runs`, {blob_hash: doc.current_hash}, "Reading started. Follow it on Processing.");
-  } else if (doc.text_run_id && !doc.ledger_status && !PENDING.includes(doc.extraction_status)) {
+  } else if (rc2Recordable(doc)) {
     label = "Record"; model = true;
-    run = () => rc2Start(`/api/documents/${doc.id}/extraction-runs`, {parse_run_id: doc.text_run_id}, "Recording started. Follow it on Processing.");
+    run = () => rc2Record(doc);
   }
   if (!run) return null;
   const button = element("button", label, "link-button rc2-step"); button.type = "button";
@@ -496,8 +508,22 @@ function rc2Menu(doc) {
     items.push(rc2Button("Delete", "danger-text", () => openLibraryAction([doc], "trash")));
   }
   items.push(element("small", doc.managed_path ? `Library/${doc.managed_path}` : "Managed copy pending", "managed-path"));
+  // Beside the step the row doesn't show (docs/documents.md "Transaction imports"): Record when Import leads, Import when Record or Read leads.
+  // An unread PDF offers Import too: the dialog reads it first (FR-27), and the picker doesn't list unread PDFs.
+  const primary = !doc.deleted_at && !isTable(doc) && rc2Importing(doc) && pdfImportOffer(doc) === "primary";
+  const offered = isPdf(doc) && rc2Importing(doc) && (pdfImportOffer(doc) === "secondary" || (!doc.text_run_id && !doc.pdf_import));
+  const more = [];
+  let trigger = null;
+  if (primary && rc2Recordable(doc)) {
+    const record = rc2Button("Record", "", async () => { try { await rc2Record(doc); } catch (error) { busy.inference = false; controls(); throw error; } });
+    record.dataset.step = "true"; record.disabled = busy.inference;
+    more.push(record);
+  }
+  // The menu closes on click; the dialog hands focus back to the opener, so the opener is the menu's button.
+  if (offered) more.push(rc2Button("Import transactions", "", () => { trigger?.focus(); return openImport(doc, {onDone: () => rc2Draw()}); }));
+  items.splice(2, 0, ...more);
   const wrap = menu(`More actions for ${name}`, items);
-  wrap.querySelector(".menu-trigger").dataset.rc2Key = `menu-${doc.id}`;
+  trigger = wrap.querySelector(".menu-trigger"); trigger.dataset.rc2Key = `menu-${doc.id}`;
   return wrap;
 }
 $("rc2-list").addEventListener("menuclose", () => { if (rc2.deferred) setTimeout(() => rc2.deferred && rc2Draw({quiet: true})); });

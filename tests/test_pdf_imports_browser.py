@@ -1,6 +1,7 @@
 """PDF transaction imports in the browser (specs/account-import-pdf/test-contract.md): synthetic PDFs and data only."""
 import json
 import os
+import re
 from urllib.parse import quote
 
 import httpx
@@ -259,7 +260,7 @@ def test_sc21_import_on_an_unread_pdf_asks_for_a_reading_and_previews_in_place(t
         page.goto(f"{base}/#/transactions")
         page.wait_for_selector("#tx2-import")
         dialog = page.locator("#import-dialog")
-        # The row's More actions entry is SL-08's; the dialog opens on the library row the way the picker and that entry open it.
+        # The dialog opens on the library row as the row's More actions entry opens it (sc20 drives that entry itself).
         page.evaluate("""doc => { window.closes = 0; document.getElementById("import-dialog").addEventListener("close", () => { window.closes += 1; }); openImport(doc); }""",
                       library_row(base, token, manager, "Kmixed.pdf"))
         expect(dialog).to_be_visible()
@@ -531,5 +532,130 @@ def test_the_dialog_shows_flagged_rows_unticked_and_imports_the_ones_the_user_ti
         expect(status).to_contain_text("2 were left out")
         with manager.store.connection() as db:
             assert [row[0] for row in db.execute("SELECT description_raw FROM transactions WHERE account_id=? ORDER BY id", (ids["A"],))] == ["F1", "F2", "F3", "F5"]
+        assert not failures
+        browser.close()
+
+
+PRIMARY = re.compile(r"\bprimary\b")
+
+
+def library_page(page, base):
+    page.goto(f"{base}/#/documents?folder=Inbox")
+    page.wait_for_selector("#rc2-table tbody tr")
+
+
+def row_of(page, name):
+    return page.locator("#rc2-table tbody tr").filter(has_text=name)
+
+
+def menu_items(row):
+    """Open the row's More actions menu and return its items' texts (the menu stays open)."""
+    row.locator(".menu-trigger").click()
+    return row.get_by_role("menuitem").all_text_contents()
+
+
+@browser_test
+def test_sc20_the_primary_action_follows_the_reading_the_account_match_and_what_the_pdf_is_recorded_as(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "pdf-primary-test"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        ids = add_accounts(base, token, "A")
+        # K matches A. Kn has K's table and no last four. Kr has K's table and is recorded as a receipt. Kc is a CSV.
+        put(manager, [("K.pdf", fx.k_pages()), ("Kn.pdf", fx.k0_pages()), ("Kr.pdf", fx.k_pages(above=(*fx.K_TEXT, "Copy Kr"))), ("Kc.csv", fx.kc_csv())])
+        # Ku is a native PDF that nothing has read: automatic reading after capture is a setting, and it is off for this one.
+        manager.vision = manager.vision.model_copy(update={"organize_after_scan": False})
+        put(manager, [("Ku.pdf", fx.k_pages(above=(*fx.K_TEXT, "Copy Ku")))])
+        docs = {item["relative_path"].rsplit("/", 1)[-1]: item for item in manager.store.documents(limit=1000)["items"]}
+        kr = docs["Kr.pdf"]
+        manager.ledger.publish_receipt({"merchant": "Corner Shop", "purchase_date": "2026-09-10", "subtotal_minor": None, "tax_minor": None, "tip_minor": None,
+                                        "total_minor": 299, "currency": "USD", "issues": [], "locator": {"line_ids": ["line-0"]}, "items": []},
+                                       {"document_id": kr["id"], "blob_hash": kr["current_hash"], "source_key": "extraction:test", "run_id": "test"}, "proposed")
+        assert not docs["Ku.pdf"]["text_run_id"] and docs["K.pdf"]["text_run_id"] and docs["Kn.pdf"]["text_run_id"]
+        before = ledger_counts(manager)
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        library_page(page, base)
+        step = lambda name: row_of(page, name).locator("button.rc2-step")
+        # 1. Library rows.
+        expect(step("K.pdf")).to_have_text("Import")
+        items = menu_items(row_of(page, "K.pdf"))
+        assert items[2:3] == ["Record"] and "Import transactions" not in items
+        page.keyboard.press("Escape")
+        expect(step("Kn.pdf")).to_have_text("Record")
+        items = menu_items(row_of(page, "Kn.pdf"))
+        assert "Import transactions" in items and "Record" not in items
+        page.keyboard.press("Escape")
+        expect(step("Ku.pdf")).to_have_text("Read")
+        expect(step("Kc.csv")).to_have_text("Import")
+        assert "Import transactions" not in menu_items(row_of(page, "Kc.csv"))
+        page.keyboard.press("Escape")
+        expect(step("Kr.pdf")).to_have_count(0)
+        assert not [text for text in menu_items(row_of(page, "Kr.pdf")) if text in ("Import transactions", "Record")]
+        page.keyboard.press("Escape")
+        assert ledger_counts(manager) == before
+        # 2. Document pages.
+        def document_page(name):
+            page.goto(f"{base}/#/documents/{docs[name]['id']}")
+            expect(page.locator("#doc2-steps .doc2-step").first).to_be_visible()
+            return page.locator("#doc2-next")
+        nxt = document_page("K.pdf")
+        expect(nxt.get_by_role("button", name="Import transactions")).to_have_class(PRIMARY)
+        expect(nxt.get_by_role("button", name="Record it")).to_be_visible()
+        expect(nxt.get_by_role("button", name="Record it")).not_to_have_class(PRIMARY)
+        expect(nxt.locator(".primary")).to_have_count(1)
+        nxt = document_page("Kn.pdf")
+        expect(nxt.get_by_role("button", name="Record it")).to_have_class(PRIMARY)
+        expect(nxt.get_by_role("button", name="Import transactions")).to_be_visible()
+        expect(nxt.get_by_role("button", name="Import transactions")).not_to_have_class(PRIMARY)
+        nxt = document_page("Ku.pdf")
+        expect(nxt.get_by_role("button", name="Read document")).to_have_class(PRIMARY)
+        expect(nxt.get_by_role("button", name="Import transactions")).to_have_count(0)
+        nxt = document_page("Kr.pdf")
+        expect(page.locator("#doc2-steps .doc2-step").nth(1)).to_be_visible()
+        expect(nxt.get_by_role("button", name="Import transactions")).to_have_count(0)
+        # An unread PDF reaches the dialog through its row's More actions (FR-27): it asks for a reading first.
+        library_page(page, base)
+        row = row_of(page, "Ku.pdf")
+        assert "Import transactions" in menu_items(row)
+        row.get_by_role("menuitem", name="Import transactions").click()
+        expect(page.locator("#import-dialog").get_by_text("Read this document first")).to_be_visible()
+        page.locator("#close-import").click()
+        expect(page.locator("#import-dialog")).to_be_hidden()
+        assert ledger_counts(manager) == before and finished_readings(manager) == 3
+        # Kn: Import transactions from More actions opens the PDF dialog, and closing it returns focus to the menu's button.
+        row = row_of(page, "Kn.pdf")
+        assert "Import transactions" in menu_items(row)
+        row.get_by_role("menuitem", name="Import transactions").click()
+        dialog = page.locator("#import-dialog")
+        expect(dialog.locator("#import-pdf-rows tr")).to_have_count(9)
+        expect(dialog.locator("#import-account")).to_have_value("none")  # No printed last four, so no preselection.
+        page.locator("#close-import").click()
+        expect(row_of(page, "Kn.pdf").locator(".menu-trigger")).to_be_focused()
+        # 3. Import K into A from its row; K still offers Record, on the row and on its page, and the badge says imported.
+        step("K.pdf").click()
+        expect(dialog.locator("#import-pdf-rows tr")).to_have_count(9)
+        expect(dialog.locator("#import-account")).to_have_value(str(ids["A"]))
+        dialog.locator("#confirm-import").click()
+        expect(dialog.locator("#import-status")).to_contain_text("Imported 9 new transactions", timeout=30000)
+        page.locator("#close-import").click()
+        with manager.store.connection() as db:
+            assert tuple(db.execute("SELECT COUNT(*), COUNT(DISTINCT account_id) FROM transactions").fetchone()) == (9, 1)
+        page.reload()
+        page.wait_for_selector("#rc2-table tbody tr")
+        expect(row_of(page, "K.pdf").locator(".rc2-state .status-badge")).to_contain_text("Imported")
+        assert "Record" in menu_items(row_of(page, "K.pdf"))
+        page.keyboard.press("Escape")
+        nxt = document_page("K.pdf")
+        expect(nxt.get_by_role("button", name="Record it")).to_be_visible()
+        expect(nxt.get_by_role("button", name="Import transactions")).to_be_visible()
+        expect(page.locator("#doc2-state")).to_contain_text("Imported")
+        # Kn, Ku, Kc and Kr changed nothing.
+        with manager.store.connection() as db:
+            assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 9
         assert not failures
         browser.close()
