@@ -1,22 +1,11 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: account-import-pdf
-plan_sha256: a2a6038955da26e0040d29d17e3ebc2472842c0096c87fbbc3c70b1ca79b7b3a
+plan_sha256: 4cf1c8e861f86c41e245203cdf205dc4a2696c27d6e45b1cfd35be39b4ec3af4
 slices:
   - id: SL-01
-    status: blocked
-    start_head: 803c588
-    end_head: abc1509
-    commit: abc1509
-    provider: claude
-    model: claude-sonnet-5-5
-    verification:
-      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k pcheck -q -> 1 failed, 35 passed (orchestrator rerun)"
-      - ".venv/bin/python -m pytest tests/test_pdf.py tests/test_pdf_layout.py -q -> 39 passed (orchestrator rerun)"
-    blocked_on: >-
-      Gate bullet 3 (V half) fails: test_pcheck_sc25_v_v5_cell_is_one_native_cell_without_a_layout_review. With v3's
-      blank description the reader's native table holds only the heading, v1 and v2; v3 to v5 stay loose lines and the
-      page gets unresolved_columns and pdf_layout_review. The plan's analyze uses a native transactions table's own rows,
-      so it would silently drop v3 to v5. Needs a plan (or contract) change and re-approval before SL-02.
+    status: in_progress
+    attempts:
+      - "r1 (plan a2a60389): commit abc1509, blocked on the V gate; plan revised to P13 (below-table rows), spec re-approved ed41557b825f, plan re-approved 4cf1c8e861f8"
   - id: SL-02
     status: todo
   - id: SL-03
