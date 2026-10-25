@@ -139,3 +139,36 @@ Adding a budget brings up a drop down menu that appears in the middle of the scr
 - Expected: A pay line with neither amount (citing a line that prints no amount) is left out or sends the stub to review.
 - Actual: The stub is Recorded and verified, and the record lists 'Paid by your employer: HARBOR TOOLS INC' with no amounts.
 - Evidence: tests/.tmp/evidence/paystub-amountless-employer-line.png
+
+<!-- finding:da9edb71d92a200a -->
+### #/documents/ID: statement Record fails: page-3 deposits read apart from their rows
+- Date: 2026-10-25 (seed 2026-10-25)
+- Agent: SL-08 manual run (claude)
+- Page: http://127.0.0.1:8775/#/documents/31
+- Kind: bug · Severity: medium
+- Steps: 1. Add K.pdf (tests/pdf_import_fixtures.py k_pages) through the Scanner watched folder and let it be read. 2. Import it into First Local Bank checking 4821 (9 rows). 3. More actions > Record, then Try again twice (gemma-3-12b-it / openai/gpt-oss-20b).
+- Expected: SC-12: a statement awaiting reconciliation; the 9 imported rows keep origin import, get linked and stay counted.
+- Actual: All 3 attempts fail validation on transactions.6 and .8 (REFUND BOOKSTORE 19.99, INTEREST PAID 0.12): 'amount is not printed in its cited evidence' / 'citation is not an exact quote'. The Text tab shows page 3's Deposits amounts after the page footer, apart from their rows, so no single line holds both. Nothing published; ledger unchanged (9 counted). Import itself unaffected.
+- Evidence: tests/.tmp/evidence/pdf-import-k-record-fails-page3.png
+
+<!-- finding:8a5cd0d8b6033ddc -->
+### #/documents/ID: badge says Couldn't process after a successful PDF import
+- Date: 2026-10-25 (seed 2026-10-25)
+- Agent: SL-08 manual run (claude)
+- Page: http://127.0.0.1:8775/#/documents/31
+- Kind: friction · Severity: low
+- Steps: 1. Add K.pdf; the automatic Record fails validation. 2. Import transactions into First Local Bank checking 4821: 9 imported. 3. Reload K's page and its library row.
+- Expected: The badge reads Imported (SC-20), as R.pdf's row does after its import.
+- Actual: K's page and row still show 'Couldn't process' and 'Nothing is recorded from this document yet.'; the badge's title says 'Text: Done · Ledger: Imported'. Nothing on the page says 9 rows came from it.
+- Evidence: tests/.tmp/evidence/pdf-import-k-badge-couldnt-process.png
+
+<!-- finding:e93a1485730bf944 -->
+### #/documents/ID: statement Record blocked: currency unresolved for an imported PDF's account
+- Date: 2026-10-25 (seed 2026-10-25)
+- Agent: SL-08 manual run (claude)
+- Page: http://127.0.0.1:8775/#/documents/31
+- Kind: bug · Severity: medium
+- Steps: 1. K.pdf (prints FIRST LOCAL BANK, account ending 4821, no currency) imported into First Local Bank checking 4821 (USD). 2. Read again (rows now keep their amounts), then Record it, Try again, then set Settings > Home currency USD and Extract again.
+- Expected: SC-12: Record uses the matched account's currency (USD) and leaves a statement awaiting reconciliation linked to the 9 imported rows.
+- Actual: Run 1: validation failed (closing_balance, withdrawals_total not printed). Runs 2 and 3: 'Can't record this: Currency could not be resolved, so nothing was published.' Home currency can't help (it needs a printed symbol). Likely cause: Ledger.find_account matches institution with case-sensitive '=', so 'FIRST LOCAL BANK' never finds 'First Local Bank'. Ledger unchanged (12 charges, In 2,020.11 / Out 141.50).
+- Evidence: tests/.tmp/evidence/pdf-import-k-record-currency-unresolved.png

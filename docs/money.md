@@ -385,6 +385,11 @@ The app asks: "Credit card statement recorded … Begin reconciling receipts?"
   many need you to pick the right charge in Review.
 - **No** leaves the statement waiting. A reminder with **Reconcile now** stays until you do.
 
+**Which account.** A statement goes to the account with its institution, type and last four. The institution matches
+whatever its case and spacing ("FIRST LOCAL BANK" finds "First Local Bank"); an exact match wins. A statement that
+prints no currency takes that account's currency; with no matching account and no printed currency, nothing is
+published.
+
 ## Reading a statement or receipt again
 
 Extracting a document again (with a better model, or with **Try again**) never touches a record you approved or

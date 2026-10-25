@@ -131,7 +131,7 @@ slices:
       FOR REVIEW: the unread case is detected by matching the error text "Read this document first."; status badges reuse
       existing STATUS keys. SC-21's "More actions" entry is SL-08.
   - id: SL-08
-    status: blocked
+    status: done
     start_head: ffeded7
     end_head: 1c926c8
     commit: 1c926c8
@@ -142,11 +142,18 @@ slices:
       - "M3 line 2, RUN_BROWSER_TESTS=1: test_pdf_imports_browser, test_transactions_v2_browser, test_records_v2_browser, test_document_v2_browser -> 17 passed, 2 failed (orchestrator rerun)"
       - "both failures fail at 803c588 (before feature code): test_transactions_v2_filters_categorises_adds_and_imports, and test_records_v2_filters_strip_read_all_and_trash (2 of 2 runs, worktree with PYTHONPATH=<worktree>/src)"
       - "worker: sc20 browser test 1 passed; ruff clean; node --check on both JS files; mypy only the 8 baseline errors"
-    blocked_on: >-
-      The plan's manual run on the agent test instance was not performed: scripts/test_instance.py verify exits 1 (no
-      instance running, seed manifest incomplete), no local models configured (Record needs one), and the instance's
-      uploads lack the K and R fixtures. The agent-testing skill says to stop and ask the developer instead of start/reset.
+      - "manual run on agent test instance 2026-10-25 (gemma-3-12b-it / openai/gpt-oss-20b), K and R added via the seeded Scanner watched folder: K into A (seeded First Local Bank checking 4821) from the row's Import step and from the document page: A preselected, 'Matched …4821 printed on page 1', 9 rows, pages 2-3 'continued from page 1', Balance never an amount, withdrawals negative, out -641.50 / in 2,020.11, Record in More actions (SC-01, SC-20)"
+      - "manual run: R into C (New account… Synth Card Services credit card 7700, last four prefilled): Import disabled until year chosen (2025), sign defaulted 'Positive is money out', 5 rows, out -112.94 / in 269.99 = R_TOTALS_C; choosing A flipped to 'Negative is money out', -269.99 / 112.94 = R_TOTALS_A (SC-02, SC-03)"
+      - "manual run: re-import K into A from the document page: 0 inserted / 9 already recorded; A still 9 counted, In 2,020.11 / Out 141.50 (SC-13)"
+      - "manual run: Record K NOT verified (SC-12): 3 attempts (auto on capture, row Record, Try again) all failed validation on transactions.6/.8; nothing published, A unchanged (no duplicated or dropped rows)"
+      - "findings: '#/documents/ID: statement Record fails: page-3 deposits read apart from their rows' (bug, medium; Record, not the import); '#/documents/ID: badge says Couldn't process after a successful PDF import' (friction, low). Evidence: tests/.tmp/evidence/pdf-import-*.png"
+      - "SC-12 rerun after the pdf_layout gutter fix (instance restarted): Read again on K -> Text shows '08/25/2026 REFUND BOOKSTORE 19.99 2,460.89' (every amount on its row); Record it -> failed validation (closing_balance, withdrawals_total not printed); Try again -> 'Currency could not be resolved, so nothing was published'; Home currency set to USD in Settings + Extract again -> same. A unchanged: 12 charges (9 from K), In 2,020.11 / Out 141.50 (641.50 less the 500.00 transfer); K's badge now reads Imported"
+      - "SC-12 passed after the find_account fix (instance restarted): Extract again on K (run 1 of 1) -> statement 5 for First Local Bank checking 4821, USD from the account, 9 transactions read correctly, Needs review (opening/closing balance not printed); Confirm -> Recorded/Verified, statement 5 awaiting reconciliation; A's rows 27-35 keep origin import, statement_id 5, counted; A 12 transactions (no new or duplicated rows), In 2,020.11 / Out 141.50; no second account (5 accounts). Evidence: tests/.tmp/evidence/pdf-import-k-record-needs-review.png, pdf-import-k-recorded-verified.png, pdf-import-a-charges-after-record.png"
     notes: >-
+      The first SC-12 failure (page-3 amounts after the rows) was pdf_layout's page-wide gutter split when no table is
+      found, fixed in src/home_manager/documents/pdf_layout.py (uncommitted, 2026-10-25).
+      The second (currency unresolved) was Ledger.find_account matching institution case-sensitively, fixed to match
+      whatever the case and spacing with an exact match winning (uncommitted, 2026-10-25).
       M3 test lines complete apart from the two pre-existing failures. Library row: Import is the step for a read PDF with
       a transactions table, exactly one matching account and no receipt/bill/pay-stub record; otherwise Import
       transactions is in More actions (also for an unread PDF, for SC-21/FR-27). Document page: Import primary with Record

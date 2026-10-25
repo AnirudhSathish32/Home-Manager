@@ -1790,6 +1790,23 @@ def test_sc11_a_statement_recorded_and_awaiting_reconciliation_is_not_duplicated
     assert env.sql("SELECT count(*) FROM financial_evidence_links WHERE source_key LIKE 'import:%'") == [(9,)]
 
 
+def test_record_finds_the_account_whatever_the_institution_case(env):
+    """The manual run (2026-10-25): A named "First Local Bank" never matched K's printed "FIRST LOCAL BANK", so K, which
+    prints no currency, had none and nothing was published. The institution matches whatever its case and spacing."""
+    response = env.client.post("/api/finance/accounts", json={"institution": "First Local Bank", "account_type": "checking",
+                                                              "currency": "USD", "last_four": "4821"})
+    assert response.status_code == 201, response.text
+    a = response.json()["id"]
+    with env.manager.store.connection() as db:
+        assert env.manager.ledger.find_account(db, "FIRST  LOCAL BANK", ("checking", "savings", "other"), "4821")["id"] == a
+        assert env.manager.ledger.find_account(db, "FIRST LOCAL BANK", ("checking",), "7700") is None
+        assert env.manager.ledger.find_account(db, "FIRST LOCAL CREDIT UNION", ("checking",), "4821") is None
+    doc = env.add("K.pdf", fx.k_pages())
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    published = env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")
+    assert published["account_id"] == a and env.sql("SELECT count(*) FROM accounts") == [(1,)]
+
+
 # --- SC-26: CSV/XLSX import and the PDF status filters are unchanged ---------------------------------------------------------
 
 def listed(env_, status):

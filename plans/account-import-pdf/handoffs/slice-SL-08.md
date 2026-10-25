@@ -69,6 +69,8 @@ Spec, plan, `progress.yaml`, approvals, `reviews.md`, design-system, every Pytho
 
 ## Manual run: NOT performed
 
+Update 2026-10-25: the manual run was performed on the agent test instance (gemma-3-12b-it / openai/gpt-oss-20b), and SC-01, SC-02, SC-03, SC-13, SC-20 and SC-12 passed after the pdf_layout and find_account fixes. The steps and numbers are in progress.yaml SL-08; the evidence is in tests/.tmp/evidence/pdf-import-*.png (k-into-a-row, k-reimport-page, a-charges-after-k, r-into-c-new-account, c-charges-after-r, k-read-again-text, k-record-needs-review, k-recorded-verified, a-charges-after-record).
+
 `python scripts/test_instance.py verify` fails: no instance is running (`FAIL server: not running (no session.json)`, `FAIL seed manifest: incomplete, run reset`, `FAIL guards`), and LM Studio and the models are not configured. The agent-testing skill says to stop and tell the developer, and not to run `start`/`reset`/`stop` unless asked, so I did not. Also, the instance's `uploads/` holds the seeded receipts/statements/etc. (`README.txt`), not the K and R fixtures, and Record needs a reasoning model, so the contract's pass (import K and R, re-import K, Record K) needs the developer to start the instance, or approve starting it and adding K/R (`tests/pdf_import_fixtures.py` `k_pages`/`r_pages`) as uploads. No screenshots exist and no finding was recorded; `docs/bugs.md` is untouched. Evidence folder when it runs: `tests/.tmp/evidence/`.
 
 ## Notes

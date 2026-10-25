@@ -76,14 +76,18 @@ and link here for what isn't. When an item is built, remove it from this list an
     The preview totals are the only check.
   - A card statement listed newest first can get dates a year off after the year rollover.
   - Import primary can leave a PDF never Recorded, so its balances are never checked. Record is in More actions.
-  - Record finds an account by exact institution text, so a PDF import account with another name gets a second account
-    and duplicate rows when the PDF is Recorded later.
+  - Record finds an account by its institution text, ignoring case and spacing only. A PDF import account named
+    differently ("Chase" for "JPMORGAN CHASE BANK") gets a second account and duplicate rows when the PDF is Recorded
+    later, or nothing is published when the statement prints no currency.
   - The source badge fetches the full provenance for every imported transaction input in an open breakdown (one request
     each, up to 200). The trace could carry the page and row itself.
   - The import index's `refused` kind is read from the refusal message text (`pdf_import.REFUSED`), and the dialog finds
     an unread PDF by comparing the error text `Read this document first.`. Both want a structured value from the server.
   - The row status badges reuse existing statuses with the server's text; there is no vocabulary of their own yet.
   - Accuracy on real bank PDFs is unmeasured. The manual run covered only synthetic statements.
+- **Record of a statement with no transactions.** With openai/gpt-oss-20b, Record of synthetic K (9 printed rows)
+  once came back with an empty transactions list and the run succeeded. Nothing checks the row count against the
+  printed rows; the balance check is the only catch. Found 2026-10-25 while tracing the K Record failure.
 - **Bills and money in, still open** ([money](money.md#bills-and-their-lines)):
   - Manually linking a paystub deposit split across two accounts.
   - A bill line's person can be chosen only in the family's inbox, where the family's people are known; a person's own

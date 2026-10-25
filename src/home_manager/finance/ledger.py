@@ -409,9 +409,12 @@ class Ledger:
         return dict(db.execute("SELECT * FROM accounts WHERE id=?", (cursor.lastrowid,)).fetchone())
 
     def find_account(self, db, institution, account_types, last_four):
-        row = db.execute(f"SELECT * FROM accounts WHERE institution=? AND account_type IN ({','.join('?' * len(account_types))}) "
-                         "AND coalesce(account_last_four,'')=? ORDER BY id LIMIT 1",
-                         (" ".join((institution or "").split())[:120], *account_types, last_four or "")).fetchone()
+        """The institution matches whatever its case: a statement prints "FIRST LOCAL BANK" for the account the user named
+        "First Local Bank". An exact match wins (docs/money.md "New statements wait for you")."""
+        institution = " ".join((institution or "").split())[:120]
+        row = db.execute(f"SELECT * FROM accounts WHERE institution=? COLLATE NOCASE AND account_type IN ({','.join('?' * len(account_types))}) "
+                         "AND coalesce(account_last_four,'')=? ORDER BY institution=? DESC, id LIMIT 1",
+                         (institution, *account_types, last_four or "", institution)).fetchone()
         return dict(row) if row else None
 
     def account(self, account_id):
