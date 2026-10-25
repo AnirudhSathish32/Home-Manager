@@ -1,0 +1,18 @@
+{
+  "feature": "account-import-pdf",
+  "spec": {
+    "sha256": "a1037ac6cde2016fa656f9b220a1c55a4fb97394980d062b16b569cfab16e6c7",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-24T22:59:04-04:00",
+    "approved_via": "agent",
+    "permission": "approve the spec and plan"
+  },
+  "plan": {
+    "sha256": "a2a6038955da26e0040d29d17e3ebc2472842c0096c87fbbc3c70b1ca79b7b3a",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-24T22:59:04-04:00",
+    "approved_via": "agent",
+    "permission": "approve the spec and plan",
+    "spec_sha256": "a1037ac6cde2016fa656f9b220a1c55a4fb97394980d062b16b569cfab16e6c7"
+  }
+}
