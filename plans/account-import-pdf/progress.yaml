@@ -131,4 +131,26 @@ slices:
       FOR REVIEW: the unread case is detected by matching the error text "Read this document first."; status badges reuse
       existing STATUS keys. SC-21's "More actions" entry is SL-08.
   - id: SL-08
-    status: in_progress
+    status: blocked
+    start_head: ffeded7
+    end_head: 1c926c8
+    commit: 1c926c8
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M3 line 1: test_pdf_imports, test_imports, test_formats, test_tabular, test_pdf, test_pdf_layout, test_provenance -> 225 passed (orchestrator rerun)"
+      - "M3 line 2, RUN_BROWSER_TESTS=1: test_pdf_imports_browser, test_transactions_v2_browser, test_records_v2_browser, test_document_v2_browser -> 17 passed, 2 failed (orchestrator rerun)"
+      - "both failures fail at 803c588 (before feature code): test_transactions_v2_filters_categorises_adds_and_imports, and test_records_v2_filters_strip_read_all_and_trash (2 of 2 runs, worktree with PYTHONPATH=<worktree>/src)"
+      - "worker: sc20 browser test 1 passed; ruff clean; node --check on both JS files; mypy only the 8 baseline errors"
+    blocked_on: >-
+      The plan's manual run on the agent test instance was not performed: scripts/test_instance.py verify exits 1 (no
+      instance running, seed manifest incomplete), no local models configured (Record needs one), and the instance's
+      uploads lack the K and R fixtures. The agent-testing skill says to stop and ask the developer instead of start/reset.
+    notes: >-
+      M3 test lines complete apart from the two pre-existing failures. Library row: Import is the step for a read PDF with
+      a transactions table, exactly one matching account and no receipt/bill/pay-stub record; otherwise Import
+      transactions is in More actions (also for an unread PDF, for SC-21/FR-27). Document page: Import primary with Record
+      beside it when one account matches, reversed otherwise. Docs: documents.md "Transaction imports" (renamed; no code
+      cited the old heading), money.md, development.md (071), ui.md, open-work.md (incl. the three FOR-REVIEW follow-ups).
+      OPEN for the user: after a PDF import, Import stays the row's step (FR-26 read literally); docs/README.md still says
+      schema map 001-062 (pre-existing).
