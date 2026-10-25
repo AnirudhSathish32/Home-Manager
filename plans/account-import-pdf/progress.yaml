@@ -3,11 +3,24 @@ feature: account-import-pdf
 plan_sha256: 4cf1c8e861f86c41e245203cdf205dc4a2696c27d6e45b1cfd35be39b4ec3af4
 slices:
   - id: SL-01
-    status: in_progress
+    status: done
+    start_head: 814fe16
+    end_head: ef93bcd
+    commit: ef93bcd
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py -k pcheck -q -> 35 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf.py tests/test_pdf_layout.py -q -> 39 passed (orchestrator rerun)"
+    notes: >-
+      Gate met under the reworded V bullet (P13): V's native table is heading, v1, v2 with only unresolved_columns; v3-v5
+      one visual row each, mapped with no straddle; v5's 480-char description one text. Fixture candidate rule follows the
+      plan's date-like/amount-like shapes. X 7-c fixture fixed to print A2's 20.00 as a withdrawal (contract line 341).
+      Helpers added: candidate_rows, below_table_rows.
     attempts:
       - "r1 (plan a2a60389): commit abc1509, blocked on the V gate; plan revised to P13 (below-table rows), spec re-approved ed41557b825f, plan re-approved 4cf1c8e861f8"
   - id: SL-02
-    status: todo
+    status: in_progress
   - id: SL-03
     status: todo
   - id: SL-04
