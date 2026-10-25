@@ -1,6 +1,6 @@
 # Import account transactions from PDF documents — implementation plan
 Spec: specs/account-import-pdf/spec.md (with specs/account-import-pdf/test-contract.md)
-Spec sha256: a1037ac6cde2016fa656f9b220a1c55a4fb97394980d062b16b569cfab16e6c7
+Spec sha256: ed41557b825f87577b107abbfcdc04b80ff588f00b786ca15bf7997e1ee99a60
 Review-Risk: HIGH
 Review-Risk-Rationale: It writes money rows that count toward totals, creates accounts, adds a migration and changes a
 public API contract (the import request), so a defect could miscount or duplicate household money.
@@ -87,6 +87,7 @@ saved reading (parse_runs.result_json + run folder result.json)
        ├─ classify native tables per page: transactions / other
        ├─ group saved words into visual rows; find transactions headings among them where no native one exists → rebuilt tables
        ├─ rebuild continuation-page rows from saved words with the continued table's columns (FR-08)
+       ├─ rebuild the rows below a native transactions table that the reader cut short, with its columns (P13)
        ├─ map columns, drop balance columns, parse dates, amounts and currency
        ├─ tick rule (flagged pages), issues, counts and limits
        └─ last-four candidates and document currency
@@ -112,7 +113,7 @@ saved reading (parse_runs.result_json + run folder result.json)
       continues.
   - `rows`: one entry per data row of the selected tables, with these fields:
     - `key` = `"<table_id>:<row>"`, `page`, `table_id` and `row` (for rebuilt and continuation rows, `row` counts the
-      rows on that page from 0);
+      rows on that page from 0; below-table rows instead continue the native table's numbering, P13);
     - the as-printed `date`, `description` and `amount` cell texts;
     - `posted_date`, `amount_minor`, `currency`;
     - `ticked`, `labels` (`continued from page N`, or the page issue message), `rejected` (a reason or null);
@@ -148,11 +149,33 @@ saved reading (parse_runs.result_json + run folder result.json)
   - **Native tables.**
     - A native table whose row 0 is a transactions heading is a `transactions` table. Its own rows are used, as the
       reader built them.
+    - **Rows below a native table (P13, after the SL-01 gate).** The reader keeps the longest prefix of rows that forms a table
+      (`emit`, `pdf_layout.py:494–498`), and a table needs an alphabetic label on every body row (`table_grid`,
+      `:435–440`). So a row with a blank description ends the native table. The
+      rows after it stay loose lines, and the page gets only `unresolved_columns` (fixture V: the native table is the
+      heading, v1 and v2; v3 to v5 are loose lines; verified by the SL-01 worker and the planner on 2026-10-24).
+      - So on a page with a native `transactions` table, the visual rows whose baseline is below the table's last row
+        form its **below-table region**. The region ends at the page's next native transactions table, if any.
+      - A visual row in the region that is a transactions heading ends the region, and adds the issue `Page N: rows
+        after a second transactions heading on this page were not read.` Those rows are reported, not guessed.
+      - A visual row in the region that meets the candidate rule (below) is a **below-table candidate** row. It uses the native table's columns (from its row-0 cell words) and the same candidate, accept and
+        reject rules as rebuilt rows (below).
+      - Below-table rows belong to the native table's entry, with its `table_id`. Their `row` numbers continue after
+        the table's last native row (V: v3 is row 3, v4 row 4, v5 row 5). They are ticked, labelled and counted like
+        the table's own rows, and they get no extra label.
+      - They are cited like rebuilt rows (`word_ids` and `line_ids`, no `cell_ids`; see "Evidence"). Everywhere this
+        plan says "rebuilt rows" about evidence, locators or links, below-table rows are included. Row numbering is
+        the exception: it follows the bullet above.
+      - A page with a native transactions table is still not a continuation page, and the next page's continuation
+        rules are unchanged.
     - Any other native table is `other`, unless its words share baselines with the rebuilt table's heading or with one
-      of its candidate rows (accepted or rejected, below), not merely with any visual row lower on the page. Then it is
-      absorbed into the rebuilt table and not listed (review pass 4, BLOCKER-2: the wrong `Date | Description` table on K
-      page 1; pass-5 INFO).
-    - An `other` table that shares no baselines (Summary, Fee summary) is listed as `not a transactions table`.
+      of its candidate rows (accepted or rejected, below), or with a below-table **candidate** row (accepted or
+      rejected) of a native transactions table (P13). (Spec FR-08 says "shares a line" here; it means a baseline, as
+      in its rebuilt-table sentence, because loose words sit in their own saved lines. Pass-7 m-1.) Sharing a baseline with any other visual row lower on the page
+      is not enough. Such a table is absorbed into the rebuilt table, or the native table's below-table rows, and is
+      not listed (review pass 4, BLOCKER-2: the wrong `Date | Description` table on K page 1; pass-5 INFO).
+    - An `other` table that shares no baselines (Summary, Fee summary) is listed as `not a transactions table`
+      (FR-04). That includes a Summary printed below a native transactions table (pass-6 MAJOR-2).
   - **Rebuilt tables.** On a page with no native `transactions` table, the first visual row that is a transactions
     heading starts a `rebuilt` table. Only visual rows **after** the heading are candidates, so title and
     statement-period rows above it never are.
@@ -162,11 +185,18 @@ saved reading (parse_runs.result_json + run folder result.json)
     - A word goes to the span holding its horizontal centre. It straddles when its box crosses a midpoint by more than
       20% of its own width.
   - **Rows (revised after pass-5 MINOR-1).**
+    - A word is **date-like** when it fully matches one of FR-06's printed shapes, `\d{1,2}/\d{1,2}(/\d{2}|/\d{4})?` or `\d{4}-\d{2}-\d{2}`, and **amount-like** when,
+      after an optional leading `-`, `+` or `(` and currency symbol and an optional trailing `)`, `-`, `CR`/`DR` or
+      three-letter code, it starts with a digit and holds only digits, `,` and `.` (so `1.2.3` is amount-like, and
+      contract V's v4 becomes a candidate that is rejected as an unparseable amount). Whether the text parses is decided
+      later (FR-06, FR-07), never by these shapes.
     - A visual row is a **candidate** when it has a date-like word that falls in, or straddles, the date span, and an
       amount-like word that falls in, or straddles, an amount, debit or credit span. A Balance-only amount doesn't make
       a candidate.
     - A candidate is accepted when its date and its amounts each sit wholly inside one span, and each amount column
-      holds at most one amount-like word and no other text.
+      holds at most one amount-like word and no other text. One three-letter upper-case code word directly after the
+      amount, in the same span, is part of the amount cell, not other text (Keur prints `4.50 EUR` as two words,
+      checked by the planner on the SL-01 fixture, 2026-10-24). Its currency is then judged by FR-11.
     - Otherwise it is **rejected**, with page, row and reason: the date or amount straddles (contract 7-d), or an amount
       column holds two amount-like words or other text (7-e). A rejected candidate counts in `seen` and `rejected`
       (FR-10).
@@ -181,7 +211,7 @@ saved reading (parse_runs.result_json + run folder result.json)
       table's.
     - A new transactions table ends the chain (contract 7-b).
     - A scanned page in between doesn't break the chain. It reports itself and contributes nothing (FR-03).
-  - **Evidence.** A rebuilt row cites its `word_ids`, and as `line_ids` every saved line its words fall in (through
+  - **Evidence.** A rebuilt row (including a continuation or below-table row) cites its `word_ids`, and as `line_ids` every saved line its words fall in (through
     `PDFLayoutLine.word_ids`). Contract SC-22 highlights them all.
   - **No rows.** A continuation page with no rows, or a page with neither a native nor a rebuilt transactions table,
     is reported `Page N: no transactions table found`.
@@ -399,7 +429,7 @@ saved reading (parse_runs.result_json + run folder result.json)
 **Trace badge (FR-24):** `Imported · <file> page N` plus `continued from page M` when present. It links to
 `#/documents/<id>?lines=<cell_ids>`, or `?lines=<line_ids>` for rebuilt rows (these highlight in `trace.js:435`).
 
-### Decisions this plan makes (each needs no spec change; all are listed for plan approval)
+### Decisions this plan makes (each needs no spec change except P13; all are listed for plan approval)
 
 | ID | Gap | Decision |
 |---|---|---|
@@ -415,6 +445,7 @@ saved reading (parse_runs.result_json + run folder result.json)
 | P10 | Review M1: date order for fixtures with no value above 12 | FR-06's existing rule applies (a required choice). The tests for X, F, M, V, D-full and D-2y send `date_format = MM/DD/YYYY` (contract fixture rules, as amended). |
 | P11 | INFO from review: ordinals across tables | Fingerprint ordinals are computed over the **selected** tables, so deselecting a table can renumber same-day, same-amount rows in later tables. This is accepted. It matches CSV, whose ordinals are over the parsed rows, and the preview shows the resulting statuses before Import. |
 | P12 | INFO from review: Today's "ready to record" | Under P5, an imported-only PDF stays in Today's "ready to record" count (`finance/dashboard.py:106`). That is intended, because Record is still the next step for checking balances (FR-18, R3). |
+| P13 | SL-01 gate (user decision 2026-10-24, option 1): a native table the reader cut short | Visual rows below a native transactions table's last row are rebuilt with its columns as below-table rows (see "Rows below a native table"), so no printed row with a date and an amount is dropped without a report. This is how contract SC-25 gets 5 rows from V, and it applies to any real statement with a row that has no alphabetic description. FR-08's rules for candidates, acceptance and rejection apply to these rows unchanged, and no expected value in the contract changes. Spec amended for it (pass-6 MAJOR-1): FR-08 and Terms, FR-05, FR-24 and R1 name below-table rows; re-approved ed41557b825f. |
 
 G7 needs no decision: `insert_transactions` already truncates descriptions to 500 characters (`ledger.py:436`). The
 contract only asserts ≤ 500. G8 (FR-15's reference to FR-13's totals) is read as FR-05's totals, as the contract does. G9
@@ -457,10 +488,12 @@ is handled by the contract's own fallback.
 | ID | FR/SC covered | Dependencies | Files/changes | Verification command / evidence |
 |---|---|---|---|---|
 | SL-01 | Fixtures and the G1/U2 gate (contract P-checks for K, R, X, F, M, V, D-*, K0, K2, Keur) | none | `tests/pdf_import_fixtures.py` (new: builders, with footer lines of at least 40 non-space characters per native page, and P-check helpers); `tests/test_pdf.py` `make_pdf` (additive options, see "SL-01 details" below); `tests/test_pdf_imports.py` (new; P-check tests only) | `python -m pytest tests/test_pdf_imports.py -k pcheck tests/test_pdf.py tests/test_pdf_layout.py -q`. **Gate:** see "SL-01 details". If it fails, stop and escalate before SL-02 |
-| SL-02 | FR-03, FR-04, FR-06, FR-07 (parsing), FR-08 (native and rebuilt tables, continuation pages; SC-07 7-a to 7-e), FR-09 exception (SC-08 8-a), FR-09 (tick rule), FR-10, FR-11 (row/document), FR-12, FR-13 (patterns), FR-21; SC-07, SC-24, SC-25, SC-16 (analyzer level), SC-05 step 5, SC-09 (analyzer level) | SL-01 | `finance/pdf_import.py` (new, pure); `tests/test_pdf_imports.py` (analyzer tests on real readings; SC-16 uses a fabricated `PDFResult` built in memory) | `python -m pytest tests/test_pdf_imports.py -k "analyzer or sc07 or sc24 or sc25 or sc16" -q` |
+| SL-02 | FR-03, FR-04, FR-06, FR-07 (parsing), FR-08 (native and rebuilt tables, continuation pages; SC-07 7-a to 7-e), FR-09 exception (SC-08 8-a), FR-09 (tick rule), FR-10, FR-11 (row/document), FR-12, FR-13 (patterns), FR-21; SC-07, SC-24, SC-25, SC-16 (analyzer level), SC-05 step 5, SC-09 (analyzer level) | SL-01 | `finance/pdf_import.py` (new, pure); `tests/test_pdf_imports.py` (analyzer tests on real readings; SC-16 uses a fabricated `PDFResult` built in memory; SC-25 at analyzer level asserts V's 5 rows: v1 and v2 native, v3 to v5 below-table rows numbered 3 to 5, P13; plus synthetic analyzer cases for a Summary native table
+below a transactions table (still listed, nothing absorbed) and a second visual heading below a native table (the
+issue is reported)) | `python -m pytest tests/test_pdf_imports.py -k "analyzer or sc07 or sc24 or sc25 or sc16" -q` |
 | SL-03 | FR-02, FR-05, FR-07 (default by account), FR-11 (block), FR-12, FR-13 (match), FR-15, FR-19, FR-22, FR-23, FR-29, FR-30; SC-02, SC-03, SC-04, SC-05, SC-08, SC-09, SC-15, SC-16 (API), SC-17, SC-18; J1 steps 1–4 | SL-02 | `finance/ledger.py` (`pdf_reading`, `pdf_refusal`, `account_match`, `row_status`, `preview_pdf_import`, `import_pdf_transactions`, `.pdf` dispatch, `insert_transactions(fingerprints=)`); `app/api.py` (`ImportInput` fields); `app/manager.py` (pass-through); tests | `python -m pytest tests/test_pdf_imports.py -k "sc02 or sc03 or sc04 or sc05 or sc07 or sc08 or sc09 or sc15 or sc16 or sc17 or sc18 or sc24 or sc25" tests/test_imports.py tests/test_tabular.py -q`. SC-07, SC-24 and SC-25 run here for their import steps (pass-2 m-3); in SL-02 only their analyzer checkpoints run |
 | SL-04 | FR-01, FR-14, FR-16, FR-17, FR-18 (ledger), FR-20, FR-23 (new account in the transaction); SC-06, SC-10 (including 10-a), SC-11, SC-26; J1 complete (SC-01, SC-12, SC-13, SC-14), J1-a | SL-03 | `finance/ledger.py` (`new_account` path, duplicate messages); `finance/reconcile.py` (`manual_candidates` extracted; `replace_manual` uses it, with unchanged behavior); `library/storage.py` `WORK_FILTERS["ready_for_ledger"]` (P5); tests, including the permanent-trigger fault double | `python -m pytest tests/test_pdf_imports.py -k "journey_j1 or sc06 or sc10 or sc11 or sc26" tests/test_imports.py tests/test_formats.py tests/test_tabular.py tests/test_library.py tests/test_finance.py tests/test_reconcile_tools.py -q` |
-| SL-05 | FR-24; SC-22 (API and badge; k5's locator is `table_id = page-2-import-continuation`, `row = 1`, continued from `page-1-…` table, pass-5 MINOR-4) | SL-04 | `finance/provenance.py` (PDF locator → `import {file, page, row, table, continued_from}`, `document {id, page, lines, cells}`); `app/static/trace.js:183` (page form and link); tests | `python -m pytest tests/test_pdf_imports.py -k sc22 tests/test_provenance.py tests/test_traces.py -q`; `RUN_BROWSER_TESTS=1 python -m pytest tests/test_pdf_imports_browser.py -k sc22` |
+| SL-05 | FR-24; SC-22 (API and badge; k5's locator is `table_id = page-2-import-continuation`, `row = 1`, continued from `page-1-…` table, pass-5 MINOR-4; plus V's v5, a below-table row: native `table_id`, `row = 5`, `word_ids` and `line_ids`, no `cell_ids`, and the API and badge link `?lines=<line_ids>`, pass-7 m-2) | SL-04 | `finance/provenance.py` (PDF locator → `import {file, page, row, table, continued_from}`, `document {id, page, lines, cells}`); `app/static/trace.js:183` (page form and link); tests | `python -m pytest tests/test_pdf_imports.py -k sc22 tests/test_provenance.py tests/test_traces.py -q`; `RUN_BROWSER_TESTS=1 python -m pytest tests/test_pdf_imports_browser.py -k sc22` |
 | SL-06 | FR-25, FR-01 (filters for imported PDFs, re-checked); SC-19 (API twin), SC-26 step 2 | SL-04 | `library/migrations/071_pdf_import_index.sql`; `documents/receipt_service.py` (`index_quietly` on publish); `finance/pdf_import.py` (`index_row`, `pending`, `backfill`, `ANALYZER_VERSION`); `app/manager.py` `open_library` (submits the backfill); `library/storage.py` and the listing (server-computed `pdf_import`); `app/api.py` (`GET /api/finance/import-candidates`); `app/static/money_v2.js` (picker uses it; `PDF` label; copy names PDF, CSV and XLSX); `tests/test_migrations.py`; tests | `python -m pytest tests/test_pdf_imports.py -k "sc19 or index" tests/test_migrations.py tests/test_backup.py tests/test_library.py -q`; `RUN_BROWSER_TESTS=1 python -m pytest tests/test_pdf_imports_browser.py -k sc19` |
 | SL-07 | FR-13 (UI), FR-14 (UI), FR-15, FR-27, FR-28 (and the UI side of FR-04–FR-09); SC-21, SC-23 | SL-04, SL-06 | `app/static/library.js` (PDF mode, Read-then-preview, `new_account` in the request); `app/static/index.html` `#import-dialog` (PDF controls); `app/static/style.css` (scoped rules only); `tests/test_pdf_imports_browser.py` | `RUN_BROWSER_TESTS=1 python -m pytest tests/test_pdf_imports_browser.py -k "sc21 or sc23" tests/test_transactions_v2_browser.py -q` |
 | SL-08 | FR-18 (UI), FR-26; SC-20; docs; manual run | SL-06, SL-07 | `app/static/records_v2.js` (`rc2Step`, `rc2Menu`); `app/static/document_v2.js` (`doc2Steps` primary or secondary import); `docs/documents.md` ("PDFs", "CSV and XLSX imports" → "Transaction imports"), `docs/money.md` ("Import identity": PDF rows share the fingerprint), `docs/open-work.md:45` (cross-page linking done in the import only), `docs/development.md` schema map (migration 071, review minor 6); tests | `RUN_BROWSER_TESTS=1 python -m pytest tests/test_pdf_imports_browser.py -k sc20 tests/test_records_v2_browser.py tests/test_document_v2_browser.py -q`; the manual run on the agent test instance, with evidence under its folder |
@@ -491,7 +524,12 @@ feasibility question for the long cells.
   is built to do. Every rebuilt page has its heading as one **visual row** (FR-08), whose words carry the boxes the
   column spans need. X page 1 and page 3 have the stated native tables. The footers are words-only (contract fixture
   rule), so no page meant to be clean carries `unresolved_columns`.
-- V's v5 cell and SC-16's 2,001-character cell each read as **one** native cell, with no `pdf_layout_review`.
+- SC-16's 2,001-character cell reads as **one** native cell, with no `pdf_layout_review`.
+- V (amended after the first SL-01 run, P13): the reader's native table is the heading, v1 and v2, the page's only
+  layout issue is `unresolved_columns`, and v3, v4 and v5 are each **one** visual row below it. Each maps to the
+  heading's column spans with no straddling word, and v5's 480-character description is one text in the Description
+  span. No `glyph_outside_page`, `overlapping_text` or rotation issue. (V shows the reader's behavior, which the
+  P-check pins; it doesn't need V to read as one complete native table.)
 
 Milestone checks:
 - **M1, after SL-04:** the full backend contract passes: `python -m pytest tests/test_pdf_imports.py
@@ -572,6 +610,15 @@ above.
   - amounts far from their headings: reported as straddling;
   - two-line headings: not found, so the page is reported.
 
+  - a native table cut short by a row with no alphabetic description: the rows below it are rebuilt (P13). A dated
+    line with an amount printed below a table (for example a payment-due line) becomes a candidate too. It is
+    accepted or reported like any rebuilt row, and the preview totals are the mitigation, as for D10.
+
+  - a second transactions heading below a native table (pass-7 m-3, not accepted by the user and not mitigated):
+    its page's later rows are reported, but the next page still continues the **first** table, because the spec's
+    continuation rule ends a chain only at a new transactions table. If the second table's columns differ, the next
+    page's rows could be mapped to the first table's columns. The preview shows each row's columns and signed amount.
+
   Money is never guessed: a row's date or amount that doesn't fit is reported. The second line of a wrapped
   description is dropped without a report, which affects only the description text. Accuracy on the user's real bank
   PDFs is unmeasured. The manual run
@@ -608,3 +655,5 @@ After the loop, the G1 reader check led to FR-08 rebuilt rows (spec re-approved 
 authorized, found two blockers. They were fixed with visual rows (spec re-approved 501d6bbf3a70). Pass 5 found one MAJOR,
 the footer flag, which the user decided by extending the FR-09 exception; its minors are fixed. That amendment needs the
 spec approved again.
+After approval, SL-01's gate failed on fixture V: the reader cuts a native table short at v3's blank description. The
+user chose a plan change (P13, below-table rows), reviewed in pass 6.

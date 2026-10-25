@@ -114,3 +114,37 @@ same complete native table gives `['unresolved_columns']` with a `Page 1 of 3` f
 
 No BLOCKER remains. The only remaining spec change after pass 5 is MAJOR-1's FR-09 wording, decided by the user, plus
 minor wording. No further pass is planned unless the user asks for one.
+
+## Pass 6 (2026-10-24, after the SL-01 gate failed on fixture V; user chose option 1, a plan change): REVISE
+Reviewer: provider `claude`, model `claude-opus-5-5`, native subagent `general-purpose` (`max_subs=0`). Its probes are
+in `/tmp/hm-review6/`. It confirmed on the reader that V's native table is the heading, v1 and v2 with only
+`unresolved_columns`, that v3 to v5 map to the column spans with no straddle, and that no other fixture has a dated row
+below a native table (so no other result changes). The planner's own probes are in `/tmp/hm-probe-v/` (V, and Keur's
+`4.50 EUR` printed as two words).
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| MAJOR-1 | MAJOR | P13 needs a spec change: FR-08 rebuilds rows only on pages with no native transactions table and on continuation pages; FR-05 and FR-24 name only rebuilt rows as cited by words or lines; R1 accepts phantom rows only on later pages | **Escalated (spec amendment).** FR-08 (and Terms), FR-05, FR-24 and R1 must name below-table rows. The spec needs approval again. No contract expected value changes |
+| MAJOR-2 | MAJOR | Absorbing an `other` table that shares a baseline with any below-table row would swallow a Summary printed below the table | **Fixed:** absorption needs a below-table **candidate** row (accepted or rejected); a Summary below stays listed; SL-02 adds that analyzer case |
+| MINOR-3 | MINOR | Rows after a second, visual-only heading on a native page were dropped without a report | **Fixed:** the region ends at the next native transactions table; a visual heading inside it ends the region with an issue naming the page |
+| MINOR-4 | MINOR | Row numbering: "rebuilt rows count from 0" against "continue the native numbering" | **Fixed:** the `row` rule and the "rebuilt rows" cross-reference both exclude numbering |
+| MINOR-5 | MINOR | The cut is in `emit`'s longest-prefix search (`pdf_layout.py:494–498`), not `table_grid` | **Fixed:** citation corrected |
+| INFO-6 | INFO | FR-09 exception, SC-25 row numbers, P3 ordinals, continuation chain and SL-05 hold | None |
+| INFO-7 | INFO | The diff also adds date-like and amount-like shapes and the trailing currency code word | **Kept.** The planner added the code-word rule because Keur's rows would otherwise be rejected as "other text" (an existing plan gap); the reviewer checked both against FR-06, FR-07 and FR-11 |
+| INFO-8 | INFO | The old V gate test encodes the old gate; P13 was out of order | **Fixed:** P13 moved after P12. SL-01 is re-run to replace the test with the reworded gate |
+
+MAJOR-1 needs the user: the plan is not ready for approval until the spec amendment is approved.
+
+## Pass 7 (2026-10-25, follow-up scoped to pass 6, after the spec amendment ed41557b825f): READY
+Reviewer: provider `claude`, model `claude-opus-5-5`, native subagent `general-purpose` (`max_subs=0`). (A first
+attempt ended on an API rate limit with no output and was rerun.) It found MAJOR-1 resolved by the spec amendment, and
+MAJOR-2, MINOR-3 to MINOR-5 correct as fixed, with no contract contradiction and SC-25 holding under P13.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| m-1 | MINOR | Spec FR-08 says an `other` table "shares a line" with a below-table row; read literally as a saved line it never can | **Noted in the plan:** it means a baseline, as the plan and FR-08's rebuilt-table sentence say. Spec wording to fix the next time it is amended |
+| m-2 | MINOR | Provenance for a below-table row (native `table_id`, word and line ids, no cells) is untested | **Fixed:** SL-05 adds V's v5 locator and `?lines=` link |
+| m-3 | MINOR | After a second visual heading, the next page still continues the first table | **Listed under Risks** (spec continuation rule unchanged). For the user to decide |
+| i-1 | INFO | Terms reads as conditional on the reader cutting the table short | None |
+
+No BLOCKER or MAJOR remains. The plan is ready for approval.
