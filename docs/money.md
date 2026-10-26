@@ -407,6 +407,11 @@ the account waits again unless something else confirms it; the rows the Confirm 
 statement doesn't confirm its account. A statement into an account that is already confirmed keeps the automatic check.
 Adding by hand an account that waits confirms it, and a manual transaction into one that waits is refused.
 
+An account that waits is listed under "Waiting for confirm" at the bottom of Accounts, with a link to its statement and
+Delete…, and its statement's page and To check say so. A statement that was `verified`/`automatic` before accounts waited
+(an upgrade leaves it so) offers Confirm and Reject as a proposed one does while its account waits; its stored status isn't
+rewritten.
+
 A re-read of a statement you haven't decided that moves it to another account (it printed another last four) takes
 the unconfirmed account it leaves, if that holds no statement, transaction or import, in the same transaction. A
 confirmed account is never removed this way. A re-read of a statement you confirmed or rejected is kept as you
@@ -414,8 +419,8 @@ decided it and makes no account.
 
 ## Deleting an account
 
-An account, confirmed or waiting, can be deleted with everything recorded in it. The Delete button and its dialog are
-screens still to build ([open work](open-work.md)); the API is built. Documents are never touched: originals, preserved
+An account, confirmed or waiting, can be deleted with everything recorded in it, from its row on Accounts, from the
+"Waiting for confirm" group, or from its statement's page and To check ([ui](ui.md#pages) describes the dialog). Documents are never touched: originals, preserved
 blobs, readings and library files stay as they were, so a statement document offers **Record** again and an imported CSV
 or PDF offers **Import** again. Recording the statement again makes a new account that waits for Confirm. There is no undo.
 

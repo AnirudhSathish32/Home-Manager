@@ -797,7 +797,9 @@ details.today-region[open] > summary { margin-bottom: var(--space-3); }
   column-gap: var(--space-4); row-gap: var(--space-1); padding: var(--space-3) 0; overflow-wrap: anywhere; }
 .accounts2-row + .accounts2-row { border-top: 1px solid var(--border); }
 .accounts2-name { grid-area: name; display: flex; flex-direction: column; gap: 2px; }
-.accounts2-name .accounts2-rename { align-self: flex-start; font-size: var(--text-sm); }
+.accounts2-row-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-4); }
+.accounts2-name .accounts2-row-actions { align-self: flex-start; }
+.accounts2-row-actions .link-button, .accounts2-row-actions .accounts2-link { font-size: var(--text-sm); }
 .accounts2-rename-form { grid-area: name; display: flex; flex-direction: column; gap: var(--space-2); }
 .accounts2-rename-field { display: flex; flex-direction: column; gap: 2px; font-size: var(--text-sm); color: var(--text-secondary); }
 .accounts2-rename-field input { width: 100%; max-width: 360px; }
@@ -810,10 +812,21 @@ details.today-region[open] > summary { margin-bottom: var(--space-3); }
 .accounts2-link { grid-area: link; align-self: center; display: inline-flex; align-items: center; gap: 2px; color: var(--accent); font-weight: 550; text-decoration: none; white-space: nowrap; }
 .accounts2-link:hover { text-decoration: underline; }
 .accounts2-link .icon { width: 16px; height: 16px; }
+/* Waiting for confirm (OD-5): a collapsed region of accounts a statement made. */
+.accounts2-waiting { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4); }
+.accounts2-waiting > summary { cursor: pointer; color: var(--accent); font-weight: 550; }
+.accounts2-waiting[open] > summary { margin-bottom: var(--space-2); }
+.accounts2-waiting-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name actions"; align-items: center; }
+.accounts2-waiting-row .accounts2-row-actions { grid-area: actions; }
+.accounts2-waiting-row .accounts2-link { grid-area: auto; align-self: baseline; }
+.account-delete-counts { margin: var(--space-2) 0; padding-left: var(--space-5); }
+.account-delete-count strong { font-variant-numeric: tabular-nums; }
+.doc2-account-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); margin: var(--space-2) 0; }
 @media (max-width: 599px) {
   .accounts2-actions, .accounts2-actions button { width: 100%; }
   .accounts2-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "balance" "coverage" "link"; }
   .accounts2-link { justify-self: start; }
+  .accounts2-waiting-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "actions"; }
 }
 /* Transactions v2 (transactions_v2.js) and the Money dialogs (money_v2.js). Tokens only. */
 .tx2-toolbar { display: flex; flex-direction: column; gap: var(--space-3); }

@@ -1085,6 +1085,20 @@
   <h2 id="confirm-title"></h2><p id="confirm-message"></p>
   <div class="dialog-actions"><button id="confirm-cancel" type="button">Cancel</button><button id="confirm-accept" type="button"></button></div>
 </dialog>
+<!-- Delete account (accounts_v2.js openAccountDelete): the counts come from the server's preview. -->
+<dialog id="account-delete-dialog" class="money2-dialog" aria-labelledby="account-delete-title" aria-describedby="account-delete-body">
+  <h2 id="account-delete-title">Delete account</h2>
+  <div id="account-delete-body" hidden>
+    <p>Deleting <strong id="account-delete-name"></strong> deletes its statements, transactions and import records. It has:</p>
+    <ul id="account-delete-counts" class="account-delete-counts"></ul>
+    <p id="account-delete-stay" class="muted small" hidden></p>
+    <p id="account-delete-family" class="small" hidden></p>
+    <p>The documents stay in your library; you can record or import them again.</p>
+    <p><strong>This can't be undone.</strong></p>
+  </div>
+  <p id="account-delete-error" class="field-error" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="account-delete-cancel" type="button">Cancel</button><button id="account-delete-accept" type="button" class="danger" disabled>Delete account</button></div>
+</dialog>
 <dialog id="invite-dialog" aria-labelledby="invite-title">
   <form id="invite-form">
     <h2 id="invite-title">Invite</h2>

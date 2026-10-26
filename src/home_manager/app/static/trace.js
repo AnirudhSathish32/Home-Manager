@@ -523,12 +523,14 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
 
 // Confirm, Reject and Correct for one record (docs/ui.md "Observability components"). Correct opens a form whose preview
 // shows what saving would change (the correction-preview endpoint) before anything is saved; a save or decision can be
-// undone for 8 seconds. decision: false offers Correct only (a statement's row).
+// undone for 8 seconds. decision: false offers Correct only (a statement's row). awaitingAccount: the statement's account waits for
+// Confirm (Ledger.record's account_confirmed is false), so a statement that was checked automatically before accounts waited offers Confirm
+// and Reject as a proposed one does (docs/money.md "New statements wait for you"; the stored status isn't rewritten).
 let confirmCorrectCount = 0;
 const SALE_TYPES = {sale: "Sale", return: "Return"}, DIRECTION_WORDS = {out: "Money out", in: "Money in"};
 function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, correctable = [], reviewPath = null, confirmBody = {status: "verified"},
                          rejectBody = {status: "rejected"}, undoBody = {status: "needs_review"}, labels = {}, onChange = () => {}, preview = true,
-                         member = null, decision = true, onOpen = null, onClose = null, showState = true, saveCorrection = null} = {}) {
+                         member = null, decision = true, onOpen = null, onClose = null, showState = true, saveCorrection = null, awaitingAccount = false} = {}) {
   const n = ++confirmCorrectCount, idOf = name => `cc${n}-${name}`;
   const record = `/api/finance/records/${recordType}/${recordId}`, path = reviewPath || `${record}/review`;
   const words = {confirm: "Confirm", reject: "Reject", correct: "Correct…", ...labels};
@@ -538,7 +540,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
   const form = element("form", "", "cc-form"); form.id = idOf("form"); form.hidden = true; form.noValidate = true;
   el.append(actions, stateLine, form);
   const button = (label, className = "") => { const node = element("button", label, className); node.type = "button"; return node; };
-  const automatic = reviewStatus === "verified" && reviewSource === "automatic";
+  const automatic = reviewStatus === "verified" && reviewSource === "automatic" && !awaitingAccount;
   let confirmButton = null, rejectButton = null, correctButton = null;
   const failed = error => stateLine.replaceChildren(alertBox(error.message || String(error), {tone: "error"}));
   async function decide(body, message, undo) {
@@ -561,7 +563,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
   // showState: false where the record's status badge already shows beside its title (the document page).
   const status = name => { if (showState) stateLine.append(statusBadge(name)); };
   if (decision) {
-    if (["needs_review", "proposed"].includes(reviewStatus)) {
+    if (["needs_review", "proposed"].includes(reviewStatus) || (awaitingAccount && reviewStatus === "verified" && reviewSource === "automatic")) {
       confirmButton = button(words.confirm, "primary"); rejectButton = button(words.reject);
       confirmButton.addEventListener("click", () => decide(confirmBody, "Confirmed.", {...undoBody}));
       rejectButton.addEventListener("click", () => decide(rejectBody, "Rejected. It no longer counts.", {...undoBody}));
@@ -673,6 +675,18 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
     onClose?.();
   }
   return {el, confirmButton, rejectButton, correctButton, openCorrect, close};
+}
+// A statement whose account waits for Confirm says where it goes (FR-05, the record's account_note), with the way to delete that account
+// without confirming it (OD-5; the dialog is accounts_v2.js openAccountDelete). null for a statement whose account is confirmed.
+function accountNoteBlock(record) {
+  if (!record?.account_note) return null;
+  const row = element("p", "", "doc2-account-note small"), name = record.account || "this account";
+  row.dataset.accountNote = String(record.account_id);
+  const remove = element("button", "Delete account", "link-button danger-text doc2-account-delete"); remove.type = "button";
+  remove.setAttribute("aria-label", `Delete account ${name}…`);
+  remove.addEventListener("click", () => openAccountDelete(record.account_id, {opener: remove}));
+  row.append(element("span", record.account_note), remove);
+  return row;
 }
 // What a correction would change, from the preview: each moved total as before → after (after is a plain amount: its
 // breakdown would open today's figure, not the corrected one), then what stays, the match, the review state and notes.

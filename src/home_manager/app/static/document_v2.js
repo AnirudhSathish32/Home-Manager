@@ -265,8 +265,8 @@ function doc2StepStates(state) {
   if (read !== "done" || !state.extractionChecked) return [["Read", read]];
   const extraction = state.extraction;
   const recorded = !extraction ? "todo" : extraction.pending ? "running" : failed(extraction.status) ? "failed"
-    : !extraction.publication ? "none" : extraction.publication.status === "blocked" ? "attention"
-    : ["needs_review", "proposed"].includes(state.recordStatus) ? "attention" : state.recordStatus === "verified" ? "done"
+    : extraction.publication?.removed ? "todo" : !extraction.publication ? "none" : extraction.publication.status === "blocked" ? "attention"
+    : ["needs_review", "proposed"].includes(state.recordStatus) || state.awaitingAccount ? "attention" : state.recordStatus === "verified" ? "done"
     : state.recordStatus === "rejected" ? "rejected" : "running";
   return [["Read", read], ["Recorded", recorded]];
 }
@@ -307,7 +307,14 @@ function doc2Steps(state) {
   } else if (["failed", "interrupted"].includes(extraction.status))
     parts.push(alertBox(`Home Manager couldn't record this document. ${extraction.error || ""}`.trim(), {tone: "error", action: next("Try again", () => doc2Record(true))}));
   else if (extraction.status === "cancelled") parts.push(alertBox("Recording was cancelled before it finished.", {action: next("Record it", () => doc2Record(true), recordTone)}));
-  else if (!extraction.publication)
+  else if (extraction.publication?.removed) {
+    // Its account was deleted with the record (FR-13); the document and its reading are untouched, so it can be recorded again.
+    const row = element("div", "", "doc2-next-row");
+    const record = next("Record it", () => doc2Record(true), recordTone);
+    row.append(element("p", "The account this was recorded into was deleted. Record it again to make a new account that waits for you to confirm it.", "small"),
+               ...(offer === "primary" ? [importButton, record] : [record, ...(importButton ? [importButton] : [])]));
+    parts.push(row);
+  } else if (!extraction.publication)
     parts.push(element("p", `Filed as ${(extraction.documentType || "an unknown document").replaceAll("_", " ")}, which has no ledger record. Use Move to put it elsewhere.`, "muted small"));
   else if (extraction.publication.status === "blocked") parts.push(alertBox(`Can't record this: ${extraction.publication.reason}`, {tone: "warning"}));
   // Where Record isn't the next step (recorded, filed elsewhere, failed, cancelled), Import transactions stands on its own row.
@@ -327,7 +334,7 @@ function doc2Steps(state) {
 function doc2ClearRecord() {
   for (const id of ["doc2-panel-record", "doc2-why", "doc2-decision", "doc2-record-badge"]) $(id).replaceChildren();
   $("doc2-record-title").textContent = "Recorded information";
-  if (doc2) { doc2.record = null; doc2.type = null; doc2.cc = null; doc2.recordStatus = null; doc2.reload = null; }
+  if (doc2) { doc2.record = null; doc2.type = null; doc2.cc = null; doc2.recordStatus = null; doc2.reload = null; doc2.awaitingAccount = false; }
 }
 async function doc2Extraction(state, parseId) {
   const runs = await api(`/api/receipt-runs/${parseId}/extraction-runs`);
@@ -347,7 +354,7 @@ async function doc2Extraction(state, parseId) {
   state.renderedKey = key;
   doc2ClearRecord();
   const target = $("doc2-panel-record"), publication = run.publication;
-  if (run.status !== "succeeded" || !publication || publication.status === "blocked") {
+  if (run.status !== "succeeded" || !publication || publication.status === "blocked" || publication.removed) {
     target.append(emptyState("Nothing is recorded from this document yet.")); state.extractionChecked = true; doc2Steps(state); return;
   }
   if (["asset", "investment_valuation", "investment_confirmation", "tax_form"].includes(publication.record_type)) await doc2Other(state, target, publication);
@@ -417,6 +424,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   const record = await api(`/api/finance/records/${type}/${id}?figures=1`);
   if (doc2 !== state) return;
   state.record = record; state.type = type; state.recordStatus = record.review_status;
+  state.awaitingAccount = type === "statement" && record.account_confirmed === false;  // P4: its account waits for this statement's Confirm.
   state.reload = () => doc2Ledger(state, target, type, id, false);
   const automatic = record.review_status === "verified" && record.review_source === "automatic";
   $("doc2-record-title").textContent = doc2RecordTitle(type, record);
@@ -426,16 +434,18 @@ async function doc2Ledger(state, target, type, id, kept) {
   $("doc2-why").replaceChildren(...(record.issues?.length && !decided ? [doc2Why(record.issues)] : []));
   state.itemsSection = null;
   doc2Decision(state, {recordType: type, recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source, correctable: record.correctable || [],
-                       onOpen: () => doc2ShowRowEdits(state, true), onClose: () => doc2ShowRowEdits(state, false)});
+                       awaitingAccount: state.awaitingAccount, onOpen: () => doc2ShowRowEdits(state, true), onClose: () => doc2ShowRowEdits(state, false)});
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
   if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
-  parts.push(doc2Fields(state, type, record, find), ...doc2Forms(state, type, record, find));
+  const accountNote = type === "statement" ? accountNoteBlock(record) : null;
+  parts.push(...(accountNote ? [accountNote] : []), doc2Fields(state, type, record, find), ...doc2Forms(state, type, record, find));
   const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
   if (doc2 !== state) return;
   const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
   if (rows) {
     if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record, type === "receipt" && record.review_status !== "rejected");
+    if (type === "statement") doc2RowSources(state, rows, record);
     // A receipt's row Correct and Delete show only while the record's Correct is open (doc2ShowRowEdits).
     const section = element("section", "", type === "receipt" ? "doc2-section doc2-hide-edits" : "doc2-section");
     if (type === "receipt") state.itemsSection = section;
@@ -547,7 +557,8 @@ const TENDER_LABELS = {gift_card: "Gift card", ebt: "EBT", card: "Card", cash: "
 function doc2Forms(state, type, record, find) {
   const parts = [];
   // A bill's notes, under its fields: what its reading left out or worked out, with no review needed (plan P9).
-  const notes = record.document_kind === "bill" ? record.details?.notes : null;
+  // A statement's are the same kind of note (rows the columns didn't have, a reading's rows that were replaced; FR-20).
+  const notes = record.document_kind === "bill" || type === "statement" ? record.details?.notes : null;
   if (Array.isArray(notes) && notes.length) {
     const list = element("ul", "", "doc2-notes muted small");
     list.setAttribute("aria-label", "Notes from the reading");
@@ -706,6 +717,23 @@ function doc2ShowRowEdits(state, shown) {
   if (shown) return;
   section.querySelectorAll(".doc2-row-form").forEach(node => node.remove());
   for (const button of section.querySelectorAll(".doc2-row-correct")) button.setAttribute("aria-expanded", "false");
+}
+// A row read from the statement's printed columns names its own words or table cells (FR-24), which the record's rows don't carry:
+// Find asks for them, so the page opens on that row's words, not only its line (SC-26). Other rows keep their lines.
+function doc2RowSources(state, rows, record) {
+  const lines = record.transactions.slice(0, 200);
+  [...rows.querySelectorAll("tbody tr")].forEach((tr, index) => {
+    const row = lines[index], old = tr.querySelector(".source-link"), cell = row?.cell_evidence?.line_total || row?.cell_evidence?.amount;
+    if (!row?.line_ids?.length || !old || cell?.source === "pdf_text") return;  // A cell the reading cited by its own id keeps its Find.
+    old.replaceWith(sourceButton(row.line_ids, async ids => {
+      let words = [];
+      try {
+        const found = (await api(`/api/provenance/transaction/${row.id}`)).provenance;
+        if (found.kind === "extracted") words = (found.document?.cells || []).filter(cell => typeof cell === "string");
+      } catch { /* The row's lines are cited either way. */ }
+      state.viewer.highlight([...new Set([...ids, ...words])]);
+    }));
+  });
 }
 // A statement's rows each take a correction of their own, opened in a row under it.
 function doc2RowCorrect(state, rows, record, allowDelete = false) {

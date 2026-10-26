@@ -128,6 +128,7 @@ function renderReview2Item() {
     $("review2-why").append(row);
   } else if (parts.why) $("review2-why").append(element("p", parts.why, "review2-why"));
   $("review2-evidence").append(...parts.evidence, ...(parts.extra || []));
+  parts.note?.().then(note => { if (note && shown === review2.shown) $("review2-evidence").append(note); }).catch(() => {});
   review2Bar(parts, shown).catch(error => { if (shown === review2.shown) $("review2-alert").replaceChildren(alertBox(error.message, {tone: "error"})); });
   review2Source(parts.source, shown);
 }
@@ -270,13 +271,18 @@ function review2Parts(item) {
             reject: {label: "Not a match", run: review2Decide(path, {status: "rejected"}, "Marked not a match; it won't be proposed again.")}};
   }
   if (item.kind === "record") {
-    const record = `/api/finance/records/${value.record_type}/${value.id}`;
+    const record = `/api/finance/records/${value.record_type}/${value.id}`, statement = value.record_type === "statement";
+    let viewing = null;
+    const viewed = () => viewing ||= api(record);
     return {why: value.issues.length ? "It isn't counted until you decide." : "Extracted by a model and not yet checked by you.", issues: value.issues,
             evidence: [summaryBlock(RECORD_KINDS[value.record_type], value.summary, {link: false})],
             source: review2RecordSource(value.record_type, value.id, value.summary?.document_id), document: value.summary?.document_id,
+            // A statement whose account waits for Confirm says so and offers Delete account (FR-05, OD-5).
+            note: statement ? async () => accountNoteBlock(await viewed()) : null,
             cc: async () => {
-              const view = await api(record);
-              return {recordType: value.record_type, recordId: value.id, reviewStatus: view.review_status, reviewSource: view.review_source, correctable: view.correctable || []};
+              const view = await viewed();
+              return {recordType: value.record_type, recordId: value.id, reviewStatus: view.review_status, reviewSource: view.review_source, correctable: view.correctable || [],
+                      awaitingAccount: statement && view.account_confirmed === false};
             }};
   }
   if (item.kind === "asset") {

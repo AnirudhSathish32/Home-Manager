@@ -144,7 +144,28 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
     old" badge, coverage and a Transactions link; **Import an export** opens the picker. **Rename** (not in the family
     view) edits the name in place (`PUT /api/finance/accounts/{id}`), and the institution too while the account's
     `institution_clash` is set; a refusal shows under the fields, Escape or Cancel puts the row back, and focus returns
-    to Rename.
+    to Rename. **Delete…** sits beside it (also not in the family view; `aria-label` "Delete {name}…") and opens the
+    delete dialog (below).
+  - **Waiting for confirm** is a collapsed `<details>` region at the bottom of Accounts (`#accounts2-waiting`,
+    `GET /api/finance/accounts/waiting`, hidden when none wait and in the family view). An account a statement made isn't
+    in the groups, Today or the pickers until its statement is confirmed ([money](money.md#new-statements-wait-for-you));
+    each entry has **Open statement** (its document, where Confirm is) and **Delete…**, so the account can go without being
+    confirmed. Its open state survives a reload of the list.
+  - **The delete dialog** (`#account-delete-dialog`, `openAccountDelete` in `accounts_v2.js`) is shared by the Accounts
+    rows, the Waiting group, the document page and To check. It loads `GET …/accounts/{id}/delete-preview` and shows the
+    account's name, a list of the server's counts (statements, transactions and import records always; receipts and pay
+    stubs linked to its transactions, transfer and refund links, recurring payments and bills, and category rules only when
+    not 0), what stays (linked receipts and pay stubs count on their own again; recurring payments and bills stay with no
+    account, each said only when it applies), the family line when the preview has family rows or a copy ("Your family's copy
+    has n statements and m transactions of this account; it drops them at your next share. k family records in this library
+    about them are deleted too."), "The documents stay in your library; you can record or import them again." and "This can't
+    be undone." Focus starts on **Cancel** and returns to the opener when the dialog closes by Cancel or Esc; **Delete
+    account** (danger) is the second click and sends the preview's token. A 409 ("This account changed since you opened
+    Delete; check the counts again.") shows under the list, loads the preview again and leaves Delete account enabled for the
+    new counts; a 404 disables it. A preview that arrives after the dialog was closed and opened again is dropped. After a
+    delete the page on screen is drawn again (Accounts, Today, To check; the document page shows its statement as not
+    recorded), the To check count is refreshed, a toast says the documents are still in the library, and focus goes to the
+    page's heading, because the opener is gone.
   - **Add a payment** posts `POST /api/finance/transactions`; a validation error shows under the field it names
     (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and PDFs with a
     transactions table (`/api/finance/import-candidates`, PDFs labelled **PDF**) and opens the
@@ -337,6 +358,18 @@ returns to the list with its filters, page and scroll position.
     the saved text); "Total · Gift card · Paid" with Paid as a traced figure; **Printed details** (each with Find and,
     for receipts, Correct; tenders, deposit splits, grocery weights and counts); and **Arithmetic checks**, each a figure that opens its
     trace. A receipt with a gift card shows its printed total as Total.
+  - **Statements** (`type === "statement"`) add these to the Record tab:
+    - **The account note** (`accountNoteBlock` in `trace.js`, from `account_note`): "New account: … — added to Accounts when
+      you confirm this statement." with **Delete account**, which opens the same dialog (OD-5). It goes once the account is
+      confirmed. To check shows the same note and button under the evidence of a statement item.
+    - **The record's notes** (`details.notes`: rows the printed columns didn't have, rows the reading listed that were
+      replaced, and the like) in `.doc2-notes` under the fields, as a bill's are.
+    - **Find on a row** read from the printed columns asks `GET /api/provenance/transaction/{id}` for the row's own words or
+      table cells and lights those with its line (`doc2RowSources`). A row whose amount cell the reading cited keeps its
+      own Find.
+    - **A deleted account's statement.** `publication.removed` (the record went with its account) reads as "no record": the
+      page says nothing is recorded and offers **Record it** again (`doc2Record(true)`), since the document and its reading
+      are untouched (FR-13). Recording it again makes a new account that waits for Confirm.
   - **History:** `historyList` with the record's changes, then the readings.
   - **Details:** where the file is, versions and how the text was read.
 - **Under 900px.** It's one column (header, source, tabs), and the decision pins to the bottom of the screen.
@@ -684,7 +717,7 @@ gives the buttons the `#review2-*` ids its keys press.
 | `figure(fig)` | A button around `amount()`. Its underline appears only on hover or focus. Unverified shows an icon + "unconfirmed"; stale shows an icon + "changed". Enter opens the breakdown. No `trace` ref means a plain `amount()`. |
 | `breakdownPanel(ref)` | Non-modal: beside the content at 1440, a bottom sheet under 900. It shows the answer and formula; a steps table (n, label, op, value, running); a rounding row; a "Sums to" footer with ✓; paged inputs (unverified first); the rule card; and "Calculated … · inputs unchanged". Computed inputs open as breadcrumbs, and Esc goes back. |
 | `provenanceBadge(prov)` | Icon + text through the `STATUS` map: Entered by …, Read by model …, Imported · file row (a PDF row: Imported · file page N, with "continued from page M" and an Open source link), Worked out, Changed from … · reason, the rule name, the ECB rate date. |
-| `confirmCorrect(opts)` | `div.confirm-correct`: a `role=group` "Decision" with the state's buttons, then `.cc-state`, then the hidden `form.cc-form`. Needs review or proposed shows Confirm (primary), Reject (secondary: it can be undone) and Correct…. Verified shows Undo verification and Correct…. Checked automatically shows "Not right? Reject" and Correct…. Rejected shows Undo rejection. Decisions post to `reviewPath` (default: the record's `/review`, as Review V) and offer Undo for 8 s; a failure stays inline. Correct… opens one field per `correctable` entry plus "Why (optional)". On input (450 ms debounce, late answers dropped) it shows the correction preview: before (a traced figure) → after (a plain amount) and the difference, then what stays, the match, review and notes. A 400 disables Save. Save PATCHes, then offers Undo (`/corrections/undo`). Esc closes the form. Options: `labels`, `undoBody`, `preview: false`, `decision: false` (Correct only, for a statement's row), `showState`, `onClose`. |
+| `confirmCorrect(opts)` | `div.confirm-correct`: a `role=group` "Decision" with the state's buttons, then `.cc-state`, then the hidden `form.cc-form`. Needs review or proposed shows Confirm (primary), Reject (secondary: it can be undone) and Correct…. Verified shows Undo verification and Correct…. Checked automatically shows "Not right? Reject" and Correct…. Rejected shows Undo rejection. Decisions post to `reviewPath` (default: the record's `/review`, as Review V) and offer Undo for 8 s; a failure stays inline. Correct… opens one field per `correctable` entry plus "Why (optional)". On input (450 ms debounce, late answers dropped) it shows the correction preview: before (a traced figure) → after (a plain amount) and the difference, then what stays, the match, review and notes. A 400 disables Save. Save PATCHes, then offers Undo (`/corrections/undo`). Esc closes the form. Options: `labels`, `undoBody`, `preview: false`, `decision: false` (Correct only, for a statement's row), `showState`, `onClose`, `awaitingAccount` (a statement whose account waits for Confirm: a record that was checked automatically before accounts waited offers Confirm and Reject as a proposed one does, and the stored status isn't rewritten). |
 | `sourceViewer(doc, reading, {runId, digest})` | `section.source-viewer`: Image \| Text tabs, a PDF page select, the preserved image (bearer fetch into a blob URL; a PDF gets a fresh iframe) with its read regions, the text as a roving list of `li.sv-line[data-line-id]` (↑/↓, Enter), and "Reading notes & codes". `highlight(ids)` goes to Text for a vision or PDF reading and marks the lines; otherwise it lights the regions. A region click or Enter on a line calls `onRegionClick` callbacks with `{blockId, lineIds}`. Also `update(reading, runId)`, `showDocument(id)` (a group's other page) and `destroy()`. Text read from documents stays text. |
 | `historyList(entries, {field, empty})` | `ol.history-list` of `li.history-row[data-kind]`: when, who ("Automatic check" for a review a correction made), then from → to (dates, categories and empty values in words; a statement row's label first) or a review's status → status, then why. `loadHistory(type, id)` fetches the entries. |
 | `loadReading(documentId, digest)` | `{doc, run, result}` for a document's newest finished reading (else its newest), cached until `clearReadings()`; one still running isn't cached. |
