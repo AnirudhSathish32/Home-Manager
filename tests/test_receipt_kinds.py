@@ -415,6 +415,8 @@ def gift_card_library(tmp_path, local_model, receipt_lines=GIFT_RECEIPT, stateme
     receipt_id = run["publication"]["id"]
     before = october(manager)
     _, _, statement_run = record_document(manager, local_model, "card.png", statement, card_replies(statement))
+    # FR-04: the card's account is new, so its statement waits for Confirm; its lines count once the user has confirmed it and it is reconciled.
+    manager.ledger.review("statement", statement_run["publication"]["id"], "verified")
     manager.reconciler.reconcile_statement(statement_run["publication"]["id"])
     return manager, receipt_id, before
 

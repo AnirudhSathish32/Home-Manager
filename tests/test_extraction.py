@@ -387,13 +387,14 @@ def test_long_statement_is_chunked_reconciled_and_only_failed_chunks_retry(tmp_p
         # Classification and summary see the whole statement (it fits one call); rows: two chunks; only chunk 2 retried.
         assert sent == [106, 106, 80, 26, 26]
         publication = run["publication"]
-        assert publication["status"] == "published" and publication["review_status"] == "verified"  # Balances reconcile.
+        assert publication["status"] == "published" and publication["review_status"] == "proposed"  # Balances reconcile; FR-04: the new account waits for Confirm.
         assert (publication["inserted"], publication["duplicates"]) == (100, 0)
         statement = manager.ledger.record("statement", publication["id"])
         assert statement["issues"] == [] and len(statement["transactions"]) == 100
         account = manager.ledger.account(statement["account_id"])
         assert (account["institution"], account["account_last_four"], account["account_type"]) == ("First Local Bank", "4821", "checking")
-        assert "000123454821" not in json.dumps(manager.ledger.accounts())
+        with manager.store.connection() as db:  # Every account, the one that waits for Confirm too (FR-04): the full number is never stored.
+            assert "000123454821" not in json.dumps([dict(row) for row in db.execute("SELECT * FROM accounts")])
         assert sum(row["amount_minor"] for row in statement["transactions"]) == statement["closing_balance_minor"] - statement["opening_balance_minor"]
         # A re-extraction that drops a row fails the deterministic arithmetic check and replaces stale unreviewed rows.
         _, summary, transactions = statement_lines(missing=42)

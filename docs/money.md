@@ -394,6 +394,24 @@ name. Its institution is what statements (and family sync) find it by, so it cha
 and never to one a statement would also find another account under, whatever its case. A statement that prints no
 currency takes that account's currency; with no matching account and no printed currency, nothing is published.
 
+**A new account waits for Confirm.** When Record has to make the statement's account, the account waits as well: it isn't in
+the Accounts list, the Add transaction and Import pickers, the assistant's accounts, Today's cash, Forecast or Net worth,
+Spending's coverage or PDF import's last-four preselection. The statement is `proposed` whatever the checks found (only a
+family's delivery, which the family confirmed, is not held), and the record shows
+`New account: <name> — added to Accounts when you confirm this statement.` An account you add yourself, or one a family
+delivery makes, is confirmed from the start. The sort is stored as `accounts.origin` (`user`, `record`, `family`).
+
+An account is confirmed once any of these holds, so there is no flag to drift: you confirm a statement in it, one is
+reconciled, or a CSV, XLSX or PDF import reaches it. Undo of a Confirm sets the statement back to `needs_review`, and
+the account waits again unless something else confirms it; the rows the Confirm decided wait again with it. Rejecting a
+statement doesn't confirm its account. A statement into an account that is already confirmed keeps the automatic check.
+Adding by hand an account that waits confirms it, and a manual transaction into one that waits is refused.
+
+A re-read of a statement you haven't decided that moves it to another account (it printed another last four) takes
+the unconfirmed account it leaves, if that holds no statement, transaction or import, in the same transaction. A
+confirmed account is never removed this way. A re-read of a statement you confirmed or rejected is kept as you
+decided it and makes no account.
+
 ## Reading a statement or receipt again
 
 Extracting a document again (with a better model, or with **Try again**) never touches a record you approved or

@@ -1,8 +1,8 @@
 """Accounts that wait for Confirm, and the upgrade that sorts existing ones (specs/statement-accounts, FR-01 – FR-03, FR-07, FR-08).
 
-SC-04 and SC-07 (and the ledger/API side of SC-02 and SC-03) at the ledger and API level. Record's own use of `origin='record'` and the
-downgrade to `proposed` come with SL-05's journey J1, so the accounts that wait are made here through `publish_statement(origin='record')`,
-which is what Record will call. Everything is synthetic and lives under tmp_path.
+SC-04 and SC-07 (and the ledger/API side of SC-02 and SC-03) at the ledger and API level. Journey J1 and SC-06 come last: Record of S
+through the service, its account waiting for Confirm, Undo, and a re-read that moves the statement. The accounts that wait in the SC-04
+tests are made through `publish_statement(origin='record')`, which is what Record calls. Everything is synthetic and lives under tmp_path.
 """
 
 from datetime import date
@@ -14,16 +14,22 @@ import pytest
 
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.family_sync import FamilyFolder
+from home_manager.core.jobs import Work
+from home_manager.documents.extraction import ExtractionService
+from home_manager.documents.pdf_reader import read_result
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance.family_routing import apply_delivery, member_facts
 from home_manager.finance.forecast import Assets, baseline
 from home_manager.finance.investments import AccountInput, Investments
 from home_manager.finance.ledger import CONFIRMED, Ledger
-from home_manager.finance.tools import FinanceTools, scope_of
+from home_manager.finance.tools import FinanceTools, PeriodInput, scope_of
 from home_manager.library import storage
 from home_manager.library.storage import Store
 import pdf_import_fixtures as fx  # noqa: F401  (keeps the shared fixture path on sys.path, as the other PDF test files do)
 import statement_account_fixtures as sf
 from test_pdf_imports import env, no_network  # noqa: F401  (the API environment of PDF import, and the autouse C-net guard)
+from test_statement_rebuild import Recorded, bank_replies, s_replies
 
 CSV = b"Date,Description,Amount\n2026-09-04,SYNTH BAKERY,-6.25\n2026-09-05,SYNTH PAYROLL,2000.00\n"
 MIGRATION = storage.MIGRATIONS[-1][1]
@@ -391,3 +397,169 @@ def test_sc07_a_new_library_has_the_origin_column_and_only_three_origins(tmp_pat
                 db.execute("UPDATE accounts SET origin='model'")
     finally:
         store.close()
+
+
+# === Journey J1 and SC-06: Record of S, Confirm, Undo and a re-read that moves the statement =====================================
+
+ACCOUNT_NOTE = "New account: SYNTH BANK savings 3456 — added to Accounts when you confirm this statement."
+TABLES = ("accounts", "statements", "transactions", "financial_evidence_links", "review_events", "category_rules", "transaction_imports")
+
+
+def recorded_s(env_, model, name="s.pdf", pages=None):
+    """A synthetic PDF captured and read by the real reader, ready for Record through the service (the model is the `local_model` stub)."""
+    doc = env_.add(name, pages or sf.s_pages())
+    service = ReceiptService(env_.store)
+    parse_id = env_.reading(doc)
+    return Recorded(env_.store, service, doc, parse_id, sf.reading_lines(read_result(service.get(parse_id)["result"])), model)
+
+
+def moved(lines):
+    """S's summary as a re-read that takes the statement to …7890: the model gives that reference, citing the printed number line the
+    document has. (S2's own stub cites S2's number line; the same document version has only S's.)"""
+    line = "Account Number 000009000123456"
+    return {**sf.s_summary(lines), "account_reference": sf.proposed(lines, "7890", line, line)}
+
+
+def attempt(recorded, replies):
+    """Record again without asserting the run succeeded; returns the extraction run."""
+    recorded.model["by_schema"] = replies(recorded.lines)
+    config = ReasoningConfig(base_url=recorded.model["config"].base_url, model="synthetic-reasoning")
+    run_id, _ = ExtractionService(recorded.store, recorded.service).enqueue(recorded.doc["id"], recorded.parse_id, config, force=True, home_currency="USD")
+    ExtractionService(recorded.store, recorded.service).run(run_id, Work.detached())
+    return ExtractionService(recorded.store, recorded.service).get(run_id)
+
+
+def snapshot(env_):
+    return {table: env_.sql(f'SELECT * FROM "{table}" ORDER BY 1') for table in TABLES}
+
+
+def amounts(env_, statement_id):
+    return [row[0] for row in env_.sql("SELECT amount_minor FROM transactions WHERE statement_id=? ORDER BY id", statement_id)]
+
+
+def september(env_):
+    """What September 2026 counts for: money in and spending, summed over currencies (FinanceTools, as the API)."""
+    tools, period = FinanceTools(env_.store), PeriodInput(start="2026-09-01", end="2026-09-30")
+    return (sum(row["inflow"]["minor"] for row in tools.calculate_cashflow(period)["by_currency"]),
+            sum(row["net_spending"]["minor"] for row in tools.get_spending(period)["by_currency"]))
+
+
+def review(env_, statement_id, status):
+    response = env_.client.post(f"/api/finance/records/statement/{statement_id}/review", json={"status": status})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def shown(env_, statement_id):
+    return env_.client.get(f"/api/finance/records/statement/{statement_id}").json()
+
+
+def test_journey_j1_a_statements_account_waits_for_confirm_and_a_re_read_moves_it(env, local_model):
+    recorded = recorded_s(env, local_model)
+    files = env.files()
+    # 1 (SC-01): the account exists but waits, and so does the statement, though the rows it records reconcile.
+    record = recorded.run(s_replies())
+    statement_id = record["id"]
+    [(account_id, name, kind, origin)] = env.sql("SELECT id,display_name,account_type,origin FROM accounts")
+    assert (name, kind, origin) == ("SYNTH BANK savings 3456", "savings", "record")
+    c_hidden(env, account_id)
+    assert (record["review_status"], record["issues"]) == ("proposed", [])
+    assert recorded.extraction["publication"]["review_status"] == "proposed"
+    view = shown(env, statement_id)  # Confirm and Reject are what a proposed record offers; the account's note is under it.
+    assert (view["review_status"], view["account_confirmed"], view["account_note"]) == ("proposed", False, ACCOUNT_NOTE)
+    assert amounts(env, statement_id) == sf.S_AMOUNTS == [36, 2, -38, 150000, -50000]
+    assert september(env) == (0, 0)  # Its rows count for nothing until the statement is confirmed and reconciled.
+    # 2 (SC-02): Confirm confirms the account at once.
+    assert review(env, statement_id, "verified")["review_status"] == "verified"
+    assert env.sql("SELECT review_status,review_source FROM statements WHERE id=?", statement_id) == [("verified", "user")]
+    c_visible(env, account_id)
+    assert "account_note" not in shown(env, statement_id) and shown(env, statement_id)["account_confirmed"] is True
+    # 3 (SC-03, FR-07): Undo (the toast's body) puts everything back: the account waits again, and so do the rows the Confirm cascaded (P15).
+    review(env, statement_id, "needs_review")
+    c_hidden(env, account_id)
+    assert env.sql("SELECT review_status,review_source FROM transactions WHERE statement_id=?", statement_id) == [("needs_review", None)] * 5
+    assert shown(env, statement_id)["account_note"] == ACCOUNT_NOTE
+    # 4 (SC-05, FR-06): a re-read that moves the statement removes the account it leaves, in the same transaction.
+    before = snapshot(env)
+    with env.store.connection() as db:
+        db.execute("CREATE TRIGGER fault BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT,'injected fault'); END")
+    failed = attempt(recorded, bank_replies(moved, sf.s_bad_rows))
+    assert failed["status"] == "failed" and failed["publication"] is None, failed
+    assert snapshot(env) == before  # The account, the statement and its rows are as after step 3.
+    with env.store.connection() as db:
+        db.execute("DROP TRIGGER fault")
+    record = recorded.run(bank_replies(moved, sf.s_bad_rows), force=True)
+    [(moved_id, name, origin)] = env.sql("SELECT id,display_name,origin FROM accounts")
+    assert (name, origin) == ("SYNTH BANK savings 7890", "record") and moved_id != account_id
+    c_hidden(env, moved_id, "7890")
+    with env.store.connection() as db:
+        assert sf.orphans(db, account_id) == []  # C-orphans: nothing names …3456 any more.
+    assert env.sql("SELECT count(*) FROM statements") == [(1,)] and record["id"] == statement_id and record["review_status"] == "proposed"
+    assert amounts(env, statement_id) == [36, 2, -38, 150000, -50000]  # From the rebuild, not the S-bad stub.
+    assert env.sql("SELECT count(DISTINCT account_id) FROM transactions") == [(1,)] and env.sql("SELECT account_id FROM statements") == [(moved_id,)]
+    assert env.files() == files  # C-docs: the documents are untouched.
+
+
+def test_journey_j1_a_a_re_read_of_a_statement_you_confirmed_keeps_it_as_you_reviewed_it(env, local_model):
+    """SC-06 (E2): the re-read is `kept_reviewed`: one account, …3456, with its statement and rows, and no …7890 account (P16)."""
+    recorded = recorded_s(env, local_model)
+    record = recorded.run(s_replies())
+    review(env, record["id"], "verified")
+    [(account_id,)] = env.sql("SELECT id FROM accounts")
+    before, files = snapshot(env), env.files()
+    again = recorded.run(bank_replies(moved, sf.s_bad_rows), force=True)
+    assert recorded.extraction["publication"]["status"] == "kept_reviewed" and again["id"] == record["id"]
+    assert env.sql("SELECT id,display_name FROM accounts") == [(account_id, "SYNTH BANK savings 3456")]
+    assert env.sql("SELECT count(*) FROM accounts WHERE display_name LIKE '%7890'") == [(0,)]
+    c_visible(env, account_id)
+    assert snapshot(env) == before and amounts(env, record["id"]) == [36, 2, -38, 150000, -50000]
+    assert env.files() == files
+
+
+def test_journey_j1_b_a_second_statement_of_a_confirmed_account_keeps_the_automatic_check(env, local_model):
+    first = recorded_s(env, local_model)
+    first_id = first.run(s_replies())["id"]
+    review(env, first_id, "verified")
+    [(account_id,)] = env.sql("SELECT id FROM accounts")
+    second = recorded_s(env, local_model, "s-again.pdf", sf.s_pages(above=(*sf.S_ABOVE[:2], "Household copy B", *sf.S_ABOVE[2:])))
+    record = second.run(s_replies())
+    assert record["account_id"] == account_id and record["issues"] == []
+    assert env.sql("SELECT review_status,review_source FROM statements WHERE id=?", record["id"]) == [("verified", "automatic")]
+    assert second.extraction["publication"]["review_status"] == "verified"
+    assert env.sql("SELECT count(*) FROM accounts") == [(1,)]
+    c_visible(env, account_id)
+
+
+def test_journey_j1_a_correction_does_not_skip_the_wait_but_does_for_a_confirmed_account(env):
+    """FR-04: the automatic promotion after a correction stays `proposed` while the account waits, and is `verified` otherwise."""
+    account, statement_id, _ = waiting(env, status="needs_review")
+    corrected = env.manager.ledger.correct("statement", statement_id, {"closing_balance": "1,000.01"})
+    assert corrected["review_status"] == "proposed" and env.sql("SELECT review_source FROM statements WHERE id=?", statement_id) == [(None,)]
+    c_hidden(env, account)
+    doc = env.add("made-by-hand.pdf", sf.c_pages(), read=False)
+    hand = env.manager.ledger.create_account("SYNTH BANK", "checking", "USD", last_four="5678")["id"]
+    published = env.manager.ledger.publish_statement(statement("5678"), source_of(doc, "extraction:hand"), "needs_review", origin="record")
+    assert published["account_id"] == hand
+    assert env.manager.ledger.correct("statement", published["id"], {"closing_balance": "1,000.01"})["review_status"] == "verified"
+
+
+def test_journey_j1_a_undo_keeps_a_row_you_reviewed_one_by_one(env):
+    """P15: Undo of a Confirm returns the rows the Confirm decided, not a row with a decision of its own."""
+    rows = (("2026-09-03", "SYNTH COFFEE SHOP", -450), ("2026-09-04", "SYNTH BAKERY", -625), ("2026-09-05", "SYNTH PAYROLL", 200000))
+    _, statement_id, _ = waiting(env, rows=rows)
+    review(env, statement_id, "verified")
+    [first, second, third] = [row[0] for row in env.sql("SELECT id FROM transactions WHERE statement_id=? ORDER BY id", statement_id)]
+    env.manager.ledger.review("transaction", second, "rejected")
+    review(env, statement_id, "needs_review")
+    assert env.sql("SELECT id,review_status,review_source FROM transactions WHERE statement_id=? ORDER BY id", statement_id) == [
+        (first, "needs_review", None), (second, "rejected", "user"), (third, "needs_review", None)]
+
+
+def test_journey_j1_a_a_family_deliverys_statement_is_not_held_and_a_record_one_into_its_account_is(env):
+    """FR-04 leaves origin 'family' alone; a Record statement into a family-made account that is confirmed keeps the automatic check."""
+    doc = env.add("family.pdf", sf.s_pages(), read=False)
+    delivered = env.manager.ledger.publish_statement(statement("3456"), source_of(doc, "family:key"), "verified", origin="family")
+    assert (delivered["review_status"], delivered["account_confirmed"]) == ("verified", True)
+    other = env.add("record.pdf", sf.c_pages(), read=False)
+    second = env.manager.ledger.publish_statement(statement("3456", closing=300000), source_of(other, "extraction:second"), "verified", origin="record")
+    assert (second["review_status"], second["account_confirmed"], second["account_id"]) == ("verified", True, delivered["account_id"])

@@ -605,7 +605,7 @@ def test_sc15_the_year_comes_from_the_printed_period(pdf_store, local_model):
     recorded, _ = stored(pdf_store, local_model, sf.c_pages())
     record = recorded.run(bank_replies(sf.c_summary, lambda lines: [], kind="credit_card_statement", end="2026-01-14"))
     assert [posted for posted, _, _ in recorded.transactions()] == ["2025-12-20", "2026-01-03", "2026-01-05"]
-    assert record["review_status"] == "verified", record["issues"]  # 300.00 − (−19.99 + 250.00 − 38.20) = 108.19
+    assert record["review_status"] == "proposed", record["issues"]  # 300.00 − (−19.99 + 250.00 − 38.20) = 108.19; FR-04: a new account waits
 
 
 def test_sc15_with_no_printed_period_no_row_is_recorded_and_each_is_an_issue_naming_the_missing_year(pdf_store, local_model):
@@ -631,7 +631,7 @@ def test_sc16_the_model_cannot_change_rebuilt_rows_and_the_status_follows_the_ot
     assert recorded.transactions() == expected_s()
     notes = [note for note in recorded.notes() if "printed columns don't have" in note]
     assert len(notes) == 2 and all(quoting(note, "page 1", "2026-09-18", "0.38", "money in") for note in notes)
-    assert record["issues"] == [] and record["review_status"] == "verified"  # It reconciles; the notes are not reasons for review.
+    assert record["issues"] == [] and record["review_status"] == "proposed"  # FR-04: it reconciles, and the new account waits for Confirm; the notes are not reasons for review.
 
 
 def test_sc16_a_rebuilt_row_the_model_did_not_list_is_still_recorded(pdf_store, local_model):

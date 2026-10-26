@@ -1100,12 +1100,21 @@ class Ledger:
         return {"record_type": "asset", "id": asset_id, "status": "published"}
 
     def publish_statement(self, record, source, status, origin="user"):
-        """origin: who makes the account if the statement needs a new one (account_in)."""
+        """origin: who makes the account if the statement needs a new one (account_in). The first statement into an account
+        that waits for Confirm is published `proposed`, whatever the checks found, except a family's delivery, which the family
+        confirmed (docs/money.md "New statements wait for you"). A re-read that moves the statement to another account removes
+        the unconfirmed account it leaves empty, in this transaction."""
         card = record["statement_type"] == "credit_card"
         # A bank statement's account is the type it prints (savings for "Chase Savings"), checking when none is printed.
         printed = None if card else PRINTED_ACCOUNT_TYPES.get(((record.get("details") or {}).get("account_type") or {}).get("text"))
         kind = "credit_card" if card else printed or "checking"
         with self.store.connection() as db:
+            # A statement you decided is kept as you reviewed it, before any account is looked for or made (a re-read that
+            # prints another last four must not leave a new empty account behind).
+            before = db.execute("SELECT id,account_id,review_status,review_source FROM statements WHERE blob_hash=?", (source["blob_hash"],)).fetchone()
+            if before and before["review_status"] in ("verified", "rejected") and before["review_source"] == "user":
+                return self._published("statement", before["id"], False, account_id=before["account_id"], review_status=before["review_status"],
+                                       account_confirmed=self.account_confirmed(db, before["account_id"]))
             account = (printed and self.find_account(db, record["institution"], (printed,), record["last_four"])
                        or self.find_account(db, record["institution"], statement_types(kind), record["last_four"]))
             account = account or self.account_in(db, record["institution"], kind, record["currency"], last_four=record["last_four"], origin=origin)
@@ -1113,6 +1122,10 @@ class Ledger:
                 account = self.retype_account(db, account, printed)
             if account["currency"] != record["currency"]:
                 raise ValueError("The statement currency differs from its account's currency; nothing was published.")
+            # FR-04: the first statement into an account that waits always waits for your Confirm.
+            account_confirmed = self.account_confirmed(db, account["id"])
+            if status == "verified" and not account_confirmed and origin != "family":
+                status = "proposed"
             statement_id, written = self._upsert(db, "statements", source, {
                 "account_id": account["id"], "statement_type": record["statement_type"], "period_start": record["period_start"],
                 "period_end": record["period_end"], "issue_date": None, "due_date": record.get("due_date"),
@@ -1124,7 +1137,7 @@ class Ledger:
                 # picks the account above (docs/documents.md "Pay stub and statement fields").
                 "details_json": json.dumps(record["details"]) if record.get("details") else None})
             if not written:
-                return self._published("statement", statement_id, False, account_id=account["id"])
+                return self._published("statement", statement_id, False, account_id=account["id"], review_status=status, account_confirmed=account_confirmed)
             self.add_evidence(db, "statement", statement_id, source, record["locator"])
             self.apply_corrections(db, "statement", statement_id)
             # Rows from an earlier extraction the user has not decided (unreviewed or accepted automatically) that no other source supports.
@@ -1150,7 +1163,32 @@ class Ledger:
                 issues = [*record["issues"], f"This reading no longer finds {len(kept)} transaction{'s' if len(kept) > 1 else ''} you worked on; "
                           "they were kept. Check them against the statement."]
                 db.execute("UPDATE statements SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), statement_id))
-        return self._published("statement", statement_id, True, account_id=account["id"], inserted=len(inserted), duplicates=len(duplicates), kept=len(kept))
+                status = "needs_review"
+            # FR-06: a re-read that moved the statement leaves its old account; if that account waits and holds nothing, it goes.
+            if before and before["account_id"] != account["id"]:
+                self.remove_if_empty(db, before["account_id"])
+        return self._published("statement", statement_id, True, account_id=account["id"], inserted=len(inserted), duplicates=len(duplicates), kept=len(kept),
+                               review_status=status, account_confirmed=account_confirmed)
+
+    def remove_if_empty(self, db, account_id):
+        """Remove an account that waits for Confirm and has no statement, transaction or import record, in the caller's
+        transaction. A confirmed account is never removed here. Returns whether it was removed."""
+        if self.account_confirmed(db, account_id) or db.execute(
+                "SELECT EXISTS(SELECT 1 FROM statements WHERE account_id=:a) OR EXISTS(SELECT 1 FROM transactions WHERE account_id=:a) "
+                "OR EXISTS(SELECT 1 FROM transaction_imports WHERE account_id=:a)", {"a": account_id}).fetchone()[0]:
+            return False
+        self._remove_account(db, account_id)
+        return True
+
+    @staticmethod
+    def _remove_account(db, account_id):
+        """Remove an account row and what only pointed at it, in the caller's transaction (migration 073 does the same for the
+        accounts it removes). Here the account has no statement, transaction or import record."""
+        db.execute("DELETE FROM category_rules WHERE account_id=?", (account_id,))
+        db.execute("DELETE FROM tax_rules WHERE account_id=?", (account_id,))
+        db.execute("UPDATE recurring_obligations SET account_id=NULL WHERE account_id=?", (account_id,))
+        db.execute("UPDATE investment_accounts SET ledger_account_id=NULL WHERE ledger_account_id=?", (account_id,))
+        db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
 
     @staticmethod
     def user_worked_on(db, transaction_id):
@@ -1562,6 +1600,12 @@ class Ledger:
                 # A statement's extracted rows share its decision; rows the user reviewed individually keep theirs.
                 db.execute("UPDATE transactions SET review_status=?,review_source='user',updated_at=? WHERE statement_id=? AND origin='extraction' "
                            "AND (review_status IN ('proposed','needs_review') OR review_source='automatic')", (status, now(), record_id))
+            if record_type == "statement" and status == "needs_review":
+                # Undo puts the rows back as they were: those the statement's decision cascaded (decided, with no review of their own)
+                # wait for review again; a row you reviewed one by one keeps its decision.
+                db.execute("UPDATE transactions SET review_status='needs_review',review_source=NULL,updated_at=? WHERE statement_id=? AND origin='extraction' "
+                           "AND review_source='user' AND review_status IN ('verified','rejected') AND NOT EXISTS("
+                           "SELECT 1 FROM review_events e WHERE e.record_type='transaction' AND e.record_id=transactions.id)", (now(), record_id))
             # The warnings a user counts a record despite stay on the record (undo restores them) and in its history.
             flagged = json.loads(row["validation_json"]) if "validation_json" in row.keys() else []
             if status == "verified" and flagged and not note:
@@ -1651,6 +1695,9 @@ class Ledger:
             if record_type == "statement":
                 value["transactions"] = [dict(item) for item in db.execute("SELECT * FROM transactions WHERE statement_id=? ORDER BY posted_date,id", (record_id,))]
                 value["account_confirmed"] = self.account_confirmed(db, row["account_id"])
+                if not value["account_confirmed"]:
+                    name = db.execute("SELECT display_name FROM accounts WHERE id=?", (row["account_id"],)).fetchone()[0]
+                    value["account_note"] = f"New account: {name} — added to Accounts when you confirm this statement."
             if record_type == "income_record":
                 value["lines"] = []
                 for line in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY position", (record_id,)):
@@ -2047,9 +2094,12 @@ class Ledger:
             table = RECORD_TABLES[record_type]
             row = db.execute(f"SELECT validation_json,review_status,review_source FROM {table} WHERE id=?", (record_id,)).fetchone()
             if not json.loads(row["validation_json"]) and row["review_status"] == "needs_review" and row["review_source"] != "user":
-                db.execute(f"UPDATE {table} SET review_status='verified',review_source='automatic' WHERE id=?", (record_id,))
-                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES(?,?,'needs_review','verified',?,?)",
-                           (record_type, record_id, AUTO_VERIFIED_NOTE, now()))
+                # A statement into an account that waits for Confirm waits too: a correction doesn't skip it (FR-04).
+                waits = record_type == "statement" and not self.account_confirmed(db, db.execute("SELECT account_id FROM statements WHERE id=?", (record_id,)).fetchone()[0])
+                promoted = "proposed" if waits else "verified"
+                db.execute(f"UPDATE {table} SET review_status=?,review_source=? WHERE id=?", (promoted, None if waits else "automatic", record_id))
+                db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,note,created_at) VALUES(?,?,'needs_review',?,?,?)",
+                           (record_type, record_id, promoted, AUTO_VERIFIED_NOTE, now()))
         # The new history rows, so the change can be undone (undo_corrections).
         return {**self.record(record_type, record_id), "correction_ids": ids}
 

@@ -10,6 +10,7 @@ Stage D (finance.Ledger) publishes only validated values, never after cancellati
 
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
+from functools import partial
 import json
 import logging
 import re
@@ -3248,7 +3249,9 @@ class ExtractionService:
             published = (Investments(self.ledger.store).publish_statement(record, source) if kind == "investment_statement"
                          else self.ledger.publish_asset(record, source))
             return record, {**published, "review_status": "proposed"}
-        publish = {"receipt": self.ledger.publish_receipt, "bank_statement": self.ledger.publish_statement, "credit_card_statement": self.ledger.publish_statement,
+        # A statement's new account waits for the user's Confirm (origin "record"; docs/money.md "New statements wait for you").
+        statement = partial(self.ledger.publish_statement, origin="record")
+        publish = {"receipt": self.ledger.publish_receipt, "bank_statement": statement, "credit_card_statement": statement,
                    "bill": self.ledger.publish_bill, "paystub": self.ledger.publish_income}[kind]
         published = publish(record, source, status)
         if kind == "paystub":  # Its 401(k) and HSA lines may now point to an investment account.

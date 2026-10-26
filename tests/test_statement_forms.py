@@ -58,7 +58,7 @@ def replaced(lines, start, line):
 
 def test_sc22_bank_statement_fields_and_summary_check(tmp_path, local_model):
     with read_statement(tmp_path, local_model, BANK, bank_replies(BANK)) as (manager, run, record):
-        assert record["review_status"] == "verified", record["issues"]
+        assert record["review_status"] == "proposed", record["issues"]  # FR-04: its account is new, so it waits for Confirm; the checks pass.
         assert run["result"]["normalized"]["cross_checks"] == 2  # The summary check and the transaction check.
         details = stored_details(manager)
         assert details["account_type"]["text"] == "checking"
@@ -147,7 +147,7 @@ def test_skipped_statement_rows_are_asked_for_again_and_kept_in_printed_order(tm
     with read_statement(tmp_path, local_model, lines, replies) as (_, _run, record):
         assert [(row["description_raw"], row["amount_minor"]) for row in record["transactions"]] == [
             ("PAYROLL SYNTH WORKS", 250000), ("RENT", -120050), ("SYNTH BANK ACCTVERIFY", 36), ("SYNTH BANK ACCTVERIFY", 38), ("SYNTH BANK ACCTVERIFY", -74)]
-        assert record["review_status"] == "verified", record["issues"]
+        assert record["review_status"] == "proposed", record["issues"]  # FR-04
 
 
 def test_statement_rows_still_missing_after_the_second_request_are_a_review_note(tmp_path, local_model):
@@ -210,7 +210,7 @@ def test_the_printed_words_as_the_account_type_and_four_digits_from_the_middle_o
                            account_reference=value(SAVINGS, "1234", account, account))
     with read_statement(tmp_path, local_model, SAVINGS, replies) as (manager, _run, record):
         assert stored_details(manager)["account_type"]["text"] == "savings"
-        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["review_status"] == "verified", record["issues"]
+        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["review_status"] == "proposed", record["issues"]  # FR-04
 
 
 @pytest.mark.parametrize("amount, flagged", [("0.38", True), ("0.02", False)])
@@ -229,7 +229,7 @@ def test_sc22_b_no_type_word_is_other(tmp_path, local_model):
     lines = replaced(BANK, "EVERYDAY CHECKING", "ACCOUNT 000123456789")
     guessed = value(lines, "checking", "ACCOUNT 000123456789")  # Not printed as a word: never taken.
     with read_statement(tmp_path, local_model, lines, bank_replies(lines, account_type=guessed)) as (manager, _run, record):
-        assert stored_details(manager)["account_type"]["text"] == "other" and record["review_status"] == "verified"
+        assert stored_details(manager)["account_type"]["text"] == "other" and record["review_status"] == "proposed"  # FR-04
         with manager.store.connection() as db:
             assert db.execute("SELECT account_type FROM accounts").fetchone()[0] == "checking"  # The account itself doesn't change.
 
@@ -237,12 +237,12 @@ def test_sc22_b_no_type_word_is_other(tmp_path, local_model):
 def test_sc22_c_without_a_withdrawals_total_the_summary_check_is_skipped(tmp_path, local_model):
     lines = without(BANK, "WITHDRAWALS ")
     with read_statement(tmp_path, local_model, lines, bank_replies(lines)) as (_, run, record):
-        assert record["review_status"] == "verified" and run["result"]["normalized"]["cross_checks"] == 1
+        assert record["review_status"] == "proposed" and run["result"]["normalized"]["cross_checks"] == 1  # FR-04
 
 
 def test_sc23_card_statement_fields_and_summary_check(tmp_path, local_model):
     with read_statement(tmp_path, local_model, CARD, card_replies(CARD)) as (manager, run, record):
-        assert record["review_status"] == "verified", record["issues"]
+        assert record["review_status"] == "proposed", record["issues"]  # FR-04
         assert run["result"]["normalized"]["cross_checks"] == 2
         details = stored_details(manager)
         assert (details["purchase_apr"]["text"], details["cash_advance_apr"]["text"]) == ("24.99%", "29.99%")
@@ -262,7 +262,7 @@ def test_sc23_a_a_mismatching_new_balance_goes_to_review(tmp_path, local_model):
 def test_sc23_b_without_a_fees_line_the_summary_check_is_skipped(tmp_path, local_model):
     lines = without(CARD, "FEES CHARGED")
     with read_statement(tmp_path, local_model, lines, card_replies(lines)) as (_, run, record):
-        assert record["review_status"] == "verified" and run["result"]["normalized"]["cross_checks"] == 1
+        assert record["review_status"] == "proposed" and run["result"]["normalized"]["cross_checks"] == 1  # FR-04
 
 
 def test_sc25_statement_identifiers_are_never_stored(tmp_path, local_model):
@@ -305,7 +305,8 @@ def read_september(tmp_path, model):
     assert stub["publication"]["review_status"] == "verified"
     for name, statement, replies in (("bank.png", BANK, bank_replies(BANK)), ("card.png", CARD, card_replies(CARD))):
         _, _, run = record_document(manager, model, name, statement, replies)
-        assert run["publication"]["review_status"] == "verified"
+        assert run["publication"]["review_status"] == "proposed"  # FR-04: a new account waits for Confirm, so its statement does too.
+        manager.ledger.review("statement", run["publication"]["id"], "verified")  # Confirm, as the user does; the rows then count after reconcile.
         manager.reconciler.reconcile_statement(run["publication"]["id"])
     return manager
 

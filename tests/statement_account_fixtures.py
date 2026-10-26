@@ -351,3 +351,29 @@ def x_summary(lines):
 def q_summary(lines):
     """Q's stub: SYNTH BANK, the period 09/2026, and nothing else printed."""
     return bank_summary(lines, None, None, "2026-09-01", "2026-09-30", None, None, account_type=None)
+
+
+# --- Shared checks ---------------------------------------------------------------------------------------------------------
+
+def orphans(db, account_id, statements=(), transactions=()):
+    """C-orphans(account, statements, transactions): the rows still holding the account or an id in either set. Every table with a
+    column that refers to accounts, statements or transactions is read from sqlite_schema at call time, so a new table can't be missed."""
+    found = []
+    typed = {"statement": list(statements), "transaction": list(transactions)}
+    for (table,) in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall():
+        columns = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+        wanted = [("account_id", [account_id]), ("ledger_account_id", [account_id]), ("statement_id", typed["statement"]),
+                  ("transaction_id", typed["transaction"]), ("from_transaction_id", typed["transaction"]), ("to_transaction_id", typed["transaction"])]
+        if table == "accounts":
+            wanted.append(("id", [account_id]))
+        for column, ids in wanted:
+            if column in columns and ids:
+                marks = ",".join("?" * len(ids))
+                found += [(table, column, row[0]) for row in db.execute(f'SELECT rowid FROM "{table}" WHERE "{column}" IN ({marks})', ids)]
+        if {"record_type", "record_id"} <= columns:
+            for kind in ("statement", "transaction"):
+                if typed[kind]:
+                    marks = ",".join("?" * len(typed[kind]))
+                    found += [(table, f"{kind} record_id", row[0]) for row in db.execute(
+                        f'SELECT rowid FROM "{table}" WHERE record_type=? AND record_id IN ({marks})', [kind, *typed[kind]])]
+    return found
