@@ -219,6 +219,7 @@ check the plumbing and evidence, not model accuracy.
 - ambiguous native layout or possible image-only content creates a review issue that prevents automatic record verification;
 - no page is silently skipped, and long PDFs are analysed in chunks.
 - a read PDF with a transactions table can also be imported as account transactions with no model; see [Transaction imports](#transaction-imports).
+- a bank or credit-card statement PDF recorded as a statement takes its transactions from the same table rules, on every page with a text layer; see [Statement rows from the printed columns](#statement-rows-from-the-printed-columns).
 
 Classification, typed extraction, general reasoning and search now use the same readable native layout. Table headings
 are repeated with each extraction chunk. Code copies monetary values from recognized printed columns, keeping
@@ -287,6 +288,17 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   savings: positive is money in; other types ask), which you can change. The choice is offered whenever any selected
   table has an Amount column, even when another one has Debit and Credit columns. A row whose date or amount does not fit is
   rejected with a reason, never guessed.
+- **A number inside the description.** In a row rebuilt from the words, an amount-shaped word that continues the
+  description's printed text (joined to the word before it, closer than 1.5 font sizes, in a run that starts in the
+  Description column) is description text, not an amount: `09/18 ACCTVERIFY PPD ID 1234567890 0.36` is 0.36 with that
+  description, where it used to be rejected. It stays the row's amount only when its whole box lies inside one amount
+  column's span (Amount, Debit or Credit; no tolerance) and it is the row's only amount-shaped word centred in an
+  amount column (`09/22 LONG DESCRIPTION 12.34`). A Balance column is never an amount column. A joined amount that
+  is the row's only amount but crosses its column's edge is rejected with "The amount is printed against the
+  description, so it can't be told apart from it." (the row is listed, not lost). An amount printed apart from the
+  description inside an amount column is rejected as before. Record rebuilds its rows the same way ([Typed
+  extraction](#typed-extraction)). Because this changes what the analyzer finds, `ANALYZER_VERSION` is 2: every PDF
+  reading is indexed again at the next start, and the picker shows `indexing: true` until that is done.
 - **Flagged pages.** Rows from a page with a layout issue (other than the harmless `unresolved_columns` on a page whose
   rows are rebuilt) start unticked, with the page's message. Ticked rows import like any other.
 - **Account.** The dialog ignores the remembered CSV account. An account is preselected only when exactly one active
@@ -544,6 +556,49 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
   index keep the document as printed.
 - **Each check is a figure** on the record (`checks`), traced by `receipt.fuel`, `receipt.dining`, `receipt.unit_line`,
   `receipt.paid`, `paystub.hours`, `paystub.deposits` and `statement.summary` ([ui](ui.md#trace-contract)).
+
+### Statement rows from the printed columns
+
+Code: `finance/statement_rows.py` (`rebuild`, `rebuilt_pages`), `documents/extraction.py` (`read`, `normalize`,
+`publish`), `finance/provenance.py`. Rows are rebuilt by PDF import's rules ([Transaction imports](#transaction-imports)),
+with no model and no network.
+
+- **Which pages.** Recording a bank or credit-card statement PDF rebuilds the rows of every `embedded_text` page that
+  has a transactions table, a page flagged for overlapping or rotated text included. Those pages' transactions are the
+  rebuilt rows. A page with no transactions heading that continues none, a scanned (`vision_model`) page and a reading
+  saved without layout keep the model's rows and today's checks. A reading with no layout adds the note "Read this
+  document again to take its rows from the printed columns." Readings made before this are rebuilt on **Extract
+  again**; a statement you confirmed or rejected is not rewritten.
+- **Values.** The date is the Date cell; the description is the Description cell as printed; the amount is the Amount
+  cell or the one filled Debit/Withdrawals or Credit/Deposits cell, in minor units. A Balance column is never an
+  amount. With one Amount column a bank statement reads negative as money out and a card statement reads positive as
+  money out. A date with no year, or a two-digit year, takes its year from the printed period (a month before the
+  period's start month falls in its end year); with no printed period such rows are not recorded and are listed. A
+  day/month order the dates can't settle is listed too.
+- **The model decides nothing there.** Its rows on a rebuilt page change no date, amount or direction and add no rows.
+  One that matches no rebuilt row (by date and amount) becomes a record note quoting it ("The reading listed a row the
+  printed columns don't have…"); notes show with the record but are not reasons for review. A rebuilt row the model
+  didn't list is still recorded. The missed-row check does not run on rebuilt pages.
+- **Rows that are not recorded** are review issues with page, row and reason, in PDF import's words, and the statement
+  needs review: a date or amount outside every column, a word straddling two columns, two amounts in one column, both
+  debit and credit, an impossible date, an unreadable amount, a currency other than the statement's. A rebuilt page
+  with a layout issue other than `unresolved_columns` still gives its rows and the statement needs review, naming the
+  page. The same row (date, amount, description) printed on two pages or tables is recorded twice with an issue naming
+  both places.
+- **Balance tables.** A table whose title line (the row directly above its heading) or heading names a balance (or
+  "daily ending balance", "daily balance") is not read, starts no continuation, and ends a table that has no reader
+  table where its title or a second heading begins. A `Date | Amount | Balance` heading doesn't make a table a balance
+  table. When only a title excludes a table that has Description and Amount columns, a note says its rows came from the
+  reading.
+- **Checks** are unchanged and run on the rebuilt amounts. The arithmetic check is skipped when a row was dropped
+  or a model row on another page was left out, so it never reports a false mismatch.
+- **If the rebuild fails** the model's rows are used on every page with one issue ("The rows couldn't be rebuilt from
+  the printed columns…"); nothing else changes.
+- **Evidence.** A rebuilt row's evidence link keeps `{rebuilt, page, table_id, row, line_ids, word_ids, cell_ids,
+  quotes}`. `GET /api/provenance/transaction/{id}` gives `document: {id, page, lines, cells}`: the document, the row's
+  page, its line ids, and the words to highlight (`cells` is the row's word ids, or its table cells for a row of a
+  native table). A trace's **Open source** link for such a row adds the cells to `?lines=`, and the document page
+  lights those words.
 
 ### Model runs, queues and cancellation
 

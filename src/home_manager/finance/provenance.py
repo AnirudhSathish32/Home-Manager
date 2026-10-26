@@ -57,19 +57,25 @@ def _extraction(db, row, record_type, record_id, field):
     result = json.loads(run["result_json"]) if run is not None and run["result_json"] else {}
     header = (result.get("header") or {}).get(field) if field else None
     cites = header.get("evidence", []) if isinstance(header, dict) else []
+    locator, link_document = {}, None
     if not cites:  # The record's own citations (its evidence link), when the field has none of its own.
-        link = db.execute("SELECT locator_json FROM financial_evidence_links WHERE record_type=? AND record_id=? AND source_key LIKE 'extraction:%' "
+        link = db.execute("SELECT document_id,locator_json FROM financial_evidence_links WHERE record_type=? AND record_id=? AND source_key LIKE 'extraction:%' "
                           "ORDER BY id DESC LIMIT 1", (record_type, record_id)).fetchone() if record_type in RECORD_TABLES else None
         locator = json.loads(link["locator_json"]) if link else {}
+        link_document = link["document_id"] if link else None
         cites = [{"line_id": line, "quote": quote} for line, quote in zip(locator.get("line_ids", []), locator.get("quotes", []) or [None] * 40)]
     lines = [cite["line_id"] for cite in cites if cite.get("line_id")]
-    document_id = row["document_id"] if "document_id" in row.keys() else None
+    keys = row.keys()
+    document_id = row["document_id"] if "document_id" in keys else row["source_document_id"] if "source_document_id" in keys else link_document
     found["document"] = {"id": document_id, "lines": lines, "quote": next((cite["quote"] for cite in cites if cite.get("quote")), None),
                          "page": page_of(lines[0]) if lines else None}
     cells = result.get("summary_cell_evidence", {})
     cell = cells.get(field) or cells.get({"total": "invoice_total", "amount_due": "balance_due"}.get(field))
     if cell:
         found["document"]["cells"] = [cell]
+    if locator.get("rebuilt"):  # A row rebuilt from a statement's printed columns: its page, and the words (or table cells) to highlight (docs/documents.md "Statement rows from the printed columns").
+        found["document"]["page"] = locator.get("page") or found["document"]["page"]
+        found["document"]["cells"] = locator.get("word_ids") or locator.get("cell_ids") or []
     check = result.get("decision") or result.get("laya")
     label = CHECK_LABELS.get(field, field)
     doubt = next((item for item in (check or {}).get("checks", []) if item.get("field") == label), None) if field else None

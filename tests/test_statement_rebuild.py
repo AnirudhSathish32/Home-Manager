@@ -21,7 +21,7 @@ from home_manager.finance.statement_rows import NO_LAYOUT_NOTE, rebuild, rebuilt
 import pdf_import_fixtures as fx
 import statement_account_fixtures as sf
 from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
-from test_pdf_imports import env, no_network  # noqa: F401  (the autouse C-net guard, and the API environment of PDF import)
+from test_pdf_imports import env, no_network, opened  # noqa: F401  (the autouse C-net guard, and the API environment of PDF import)
 
 SEPTEMBER = ("2026-09-01", "2026-09-30")
 NO_AMOUNT = "The amount is printed against the description, so it can't be told apart from it."
@@ -690,6 +690,40 @@ def test_sc18_a_reading_without_layout_records_the_models_rows_as_today_with_the
         ("2026-09-18", 36), ("2026-09-18", 38), ("2026-09-18", -38), ("2026-09-20", 150000), ("2026-09-25", -50000), ("2026-09-18", 38)]
     assert NO_LAYOUT_NOTE in recorded.notes() and NO_LAYOUT_NOTE not in record["issues"]
     assert not any("printed columns don't have" in note for note in recorded.notes())
+
+
+def test_sc19_a_rebuilt_rows_provenance_names_its_file_page_lines_and_words(env, local_model):
+    recorded, result = stored((env.store.library.inbox, env.store), local_model, sf.s_pages())
+    recorded.run(s_replies())
+    ids = [row[0] for row in env.sql("SELECT id FROM transactions WHERE statement_id=? ORDER BY id", recorded.record["id"])]
+    locators = {txn: json.loads(locator) for txn, locator in env.sql("SELECT record_id,locator_json FROM financial_evidence_links WHERE record_type='transaction'")}
+    s2 = ids[1]
+    response = env.client.get(f"/api/provenance/transaction/{s2}")
+    assert response.status_code == 200, response.text
+    found = response.json()["provenance"]
+    locator = locators[s2]
+    layout = fx.layout(result, 1)
+    assert locator["rebuilt"] is True and locator["page"] == 1 and locator["line_ids"]
+    # S is a native table: s2 cites the cells of its table row, and the line that holds its words (not a bare row number).
+    assert not locator["word_ids"] and locator["cell_ids"] and all(cell.startswith("page-1-layout-table-1-row-") for cell in locator["cell_ids"])
+    assert [line.text for line in layout.lines if line.id in locator["line_ids"]] == [f"09/18 {sf.S_DESCRIPTIONS[1]} 0.02 0.38"]
+    assert found["kind"] == "extracted"
+    assert found["document"] == {"id": recorded.doc["id"], "page": 1, "lines": locator["line_ids"], "cells": locator["cell_ids"],
+                                 "quote": f"09/18 {sf.S_DESCRIPTIONS[1]} 0.02 0.38"}
+    assert env.sql("SELECT relative_path FROM occurrences WHERE id=?", found["document"]["id"])[0][0].endswith("statement.pdf")
+
+
+def test_sc19_a_rebuilt_row_below_a_native_table_cites_its_words(env, local_model):
+    recorded, result = stored((env.store.library.inbox, env.store), local_model, sf.s_flag_pages())
+    recorded.run(s_replies())
+    [(txn, raw)] = env.sql("SELECT record_id,locator_json FROM financial_evidence_links WHERE record_type='transaction' AND record_id IN "
+                           "(SELECT id FROM transactions WHERE statement_id=? ORDER BY id LIMIT 1 OFFSET 1)", recorded.record["id"])
+    locator = json.loads(raw)
+    assert locator["rebuilt"] is True and locator["word_ids"] and not locator["cell_ids"]
+    found = env.client.get(f"/api/provenance/transaction/{txn}").json()["provenance"]
+    assert found["document"]["page"] == 1 and found["document"]["lines"] == locator["line_ids"] and found["document"]["cells"] == locator["word_ids"]
+    words = {word.id for word in fx.layout(result, 1).words}
+    assert set(found["document"]["cells"]) <= words and found["document"]["id"] == recorded.doc["id"]
 
 
 def test_sc20_s_reconciles_and_extracting_again_gives_identical_rows_and_ids(pdf_store, local_model):

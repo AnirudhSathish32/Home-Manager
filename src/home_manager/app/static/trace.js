@@ -174,9 +174,14 @@ function breakdownMeta(trace) {
   return meta;
 }
 
+// The cited lines. A row read from a statement's printed columns (extracted, FR-24) also names its words or table cells, so the page opens on
+// the row's own words; an imported row's link stays its lines.
 function sourceLink(prov) {
   const doc = prov?.document;
-  return doc ? homeLink("Open source", `#/documents/${doc.id}${doc.lines?.length ? `?lines=${doc.lines.join(",")}` : ""}`) : null;
+  if (!doc) return null;
+  const cells = prov.kind === "extracted" ? (doc.cells || []).filter(cell => typeof cell === "string") : [];
+  const ids = [...new Set([...(doc.lines || []), ...cells])];
+  return homeLink("Open source", `#/documents/${doc.id}${ids.length ? `?lines=${ids.join(",")}` : ""}`);
 }
 // A trace input carries a light provenance (docs/ui.md "Trace contract"); an imported transaction's page and cited lines (a PDF
 // import, FR-24) are fetched for it. A CSV or XLSX row has none of those, so its badge stays as it was.

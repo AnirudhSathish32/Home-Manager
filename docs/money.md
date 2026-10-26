@@ -414,6 +414,12 @@ one line by line:
   - For a receipt item, it means you categorised, identified or tagged it, or it is in your household items. It is
     placed after the new reading's items.
 
+A statement PDF read again takes its rows from the printed columns ([documents](documents.md#statement-rows-from-the-printed-columns))
+when it has a text layer, so the same reading gives the same rows. A row is the same line when its posted date, amount and
+currency match (as above), so an older statement whose rows came from the model keeps what you did to a row that is still
+there. A row the new reading no longer has is removed unless you worked on it, as above; a statement you confirmed is
+never rewritten.
+
 ## Near matches and foreign receipts
 
 Exact-amount matching misses a tip added after the receipt printed, or a currency conversion. When no charge has the
