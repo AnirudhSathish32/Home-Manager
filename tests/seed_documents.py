@@ -73,8 +73,9 @@ def seed_read_receipt(manager, model, needs_review=False):
     return {"doc_id": doc_id, "record_id": _record_id(manager, "receipts", doc_id)}
 
 
-def seed_statement(manager, model):
-    """Last month's bank statement with three rows, read and recorded; its balances reconcile. Returns {doc_id, record_id}."""
+def seed_statement(manager, model, confirmed=True):
+    """Last month's bank statement with three rows, read and recorded, and Confirmed (its account is new, so Record leaves
+    it waiting); its balances reconcile. With confirmed=False it stays proposed, its account waiting. Returns {doc_id, record_id}."""
     _models(manager, model)
     end = date.today().replace(day=1) - timedelta(days=1)
     start = end.replace(day=1)
@@ -92,7 +93,11 @@ def seed_statement(manager, model):
                                   "direction": "debit" if debit else "credit", "evidence": cite(number, lines[number - 1])}
                                  for number, (day, text, amount, debit) in enumerate(rows, 6)]}]
     doc_id = _read_and_record(manager, model, "bank-statement.png", lines, outputs)
-    return {"doc_id": doc_id, "record_id": _record_id(manager, "statements", doc_id)}
+    record_id = _record_id(manager, "statements", doc_id)
+    if confirmed:
+        # FR-04: its account is new, so Record leaves the statement proposed and the account waiting; Confirm as the user does.
+        manager.ledger.review("statement", record_id, "verified")
+    return {"doc_id": doc_id, "record_id": record_id}
 
 
 def seed_bill(manager, model):

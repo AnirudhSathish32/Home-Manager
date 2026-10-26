@@ -52,6 +52,9 @@ def open_page(driver, base, token, route, width=1440):
     page.on("pageerror", lambda error: failures.append(str(error)))
     page.goto(f"{base}/#token={token}")
     page.goto(f"{base}/#/{route}")
+    # The app shows its route twice on load (shell.js, then again once settings are in), and the second draw replaces the page's
+    # elements; wait for both, or a focus or keypress lands on an element that is replaced a moment later.
+    page.wait_for_load_state("networkidle")
     return browser, page, failures
 
 
