@@ -7,11 +7,16 @@ tests/statement_account_fixtures.py by hand. A failed P-check is a fixture or re
 expected value.
 """
 
+import json
+
 from home_manager.core.jobs import Work
+from home_manager.documents.extraction import ExtractionService
 from home_manager.documents.layout_context import native_page
 from home_manager.documents.pdf_reader import read_result
+from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance import pdf_import, statement_rows
+from home_manager.finance.ledger import Ledger
 from home_manager.finance.statement_rows import NO_LAYOUT_NOTE, rebuild, rebuilt_pages
 import pdf_import_fixtures as fx
 import statement_account_fixtures as sf
@@ -492,3 +497,322 @@ def test_stubs_the_summaries_cite_the_printed_lines_and_s2_changes_only_the_refe
             for cite in item["evidence"]:
                 assert cite["quote"] in known[cite["line_id"]]
         assert reference in summary["account_reference"]["evidence"][0]["quote"]
+
+
+# === Record: the rows through ExtractionService ==============================================================================
+
+LAYOUT_ISSUES = {"overlapping_text", "unsupported_text_rotation"}
+
+
+class Recorded:
+    """One Record of a fixture: the store, the extraction run, its statement's record and the lines the model was shown."""
+
+    def __init__(self, store, service, doc, parse_id, lines, model):
+        self.store, self.service, self.doc, self.parse_id, self.lines, self.model = store, service, doc, parse_id, lines, model
+
+    def run(self, replies, force=False):
+        """Record with these `by_schema` replies (a function of the lines is called with them)."""
+        self.model["by_schema"] = replies(self.lines) if callable(replies) else replies
+        config = ReasoningConfig(base_url=self.model["config"].base_url, model="synthetic-reasoning")
+        run_id, _ = ExtractionService(self.store, self.service).enqueue(self.doc["id"], self.parse_id, config, force=force, home_currency="USD")
+        ExtractionService(self.store, self.service).run(run_id, Work.detached())
+        self.extraction = ExtractionService(self.store, self.service).get(run_id)
+        assert self.extraction["status"] == "succeeded", self.extraction["error"]
+        self.record = Ledger(self.store).record("statement", self.extraction["publication"]["id"])
+        return self.record
+
+    def transactions(self):
+        with self.store.connection() as db:
+            return [(row["posted_date"], row["amount_minor"], row["description_raw"]) for row in db.execute(
+                "SELECT posted_date,amount_minor,description_raw FROM transactions WHERE statement_id=? ORDER BY id", (self.record["id"],))]
+
+    def notes(self):
+        """The record's notes, read from the API's record shape (the statement's details), not from the run's result."""
+        return (self.record.get("details") or {}).get("notes", [])
+
+
+def stored(pdf_store, local_model, pages, scanned=None):
+    """The fixture captured, read by the real reader (a None page by the vision stub), ready for Record."""
+    inbox, store = pdf_store
+    make_pdf(inbox / "statement.pdf", pages)
+    doc = capture(inbox, store)
+    if scanned:
+        local_model["output"] = {"full_text": scanned}
+    service = ReceiptService(store)
+    parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
+    service.run(parse_id, Work.detached())
+    parsed = service.get(parse_id)
+    assert parsed["status"] == "succeeded", parsed["error"]
+    result = read_result(parsed["result"])
+    assert len(local_model["requests"]) == (1 if scanned else 0)  # Only the scanned page reached the vision model.
+    return Recorded(store, service, doc, parse_id, sf.reading_lines(result), local_model), result
+
+
+def bank_replies(summary, rows, kind="bank_statement", end="2026-09-30", **extra):
+    def make(lines):
+        key = "CreditCardStatementSummary" if kind == "credit_card_statement" else "BankStatementSummary"
+        return {"Classification": [sf.classified(lines, kind, end)], key: [summary(lines)], "Transactions": [{"transactions": rows(lines)}], **extra}
+    return make
+
+
+def s_replies(rows=sf.s_bad_rows, summary=sf.s_summary):
+    return bank_replies(summary, rows)
+
+
+def s_bad_without_s4(lines):
+    return sf.s_bad_rows(lines, only=("s1", "s2", "s3", "s5", "extra"))
+
+
+def quoting(note, *texts):
+    return all(text in note for text in texts)
+
+
+def test_sc13_the_users_case_records_the_printed_columns_and_notes_the_two_rows_the_columns_dont_have(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.s_flag_pages())
+    page = result.pages[0]  # P-check
+    assert page.method == "embedded_text" and native_page(page) is False and LAYOUT_ISSUES <= set(page.layout.issues)
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    assert not any(amount in (38, 0) for _, amount, _ in recorded.transactions())  # Neither balance is recorded as an amount.
+    notes = recorded.notes()
+    assert len([note for note in notes if note.startswith("The reading listed a row the printed columns don't have")]) == 2
+    assert all(quoting(note, "page 1", "2026-09-18", "0.38", "money in", "It wasn't recorded.") for note in notes if "printed columns don't have" in note)
+    assert any("SYNTH ACCTVERIFY PPD ID 1234567890" in note for note in notes) and any("SYNTH ACCTVERIFY 0.38" in note for note in notes)
+    assert not any("printed columns don't have" in issue for issue in record["issues"])  # Notes, not review reasons (Q5).
+    assert record["review_status"] == "needs_review"
+    assert any(issue.startswith("Page 1 PDF layout needs review: ") for issue in record["issues"])  # FR-22
+    with recorded.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM transactions WHERE typeof(amount_minor)<>'integer' OR currency<>'USD'").fetchone()[0] == 0  # C-money
+
+
+def test_sc14_debit_credit_columns_and_the_models_balance_amounts_change_nothing(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.w_pages())
+    recorded.run(bank_replies(sf.w_summary, sf.w_rows, end="2026-08-31"))
+    assert [(amount, description) for _, amount, description in recorded.transactions()] == [
+        (minor, row[2]) for minor, row in zip(sf.W_AMOUNTS, sf.W_ROWS)]
+    assert [amount for _, amount, _ in recorded.transactions()] == [-120000, 250000, 15000]
+    assert not any(amount in (-20000, 230000, 245000) for _, amount, _ in recorded.transactions())  # No balance value is recorded.
+
+
+def test_sc14_a_card_statements_charges_print_positive_and_record_as_money_out(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.c_pages())
+    recorded.run(bank_replies(sf.c_summary, lambda lines: [], kind="credit_card_statement", end="2026-01-14"))
+    assert [(posted, amount) for posted, amount, _ in recorded.transactions()] == [(row[4], row[5]) for row in sf.C_ROWS]
+    assert [amount for _, amount, _ in recorded.transactions()] == [-1999, 25000, -3820]
+
+
+def test_sc15_the_year_comes_from_the_printed_period(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.c_pages())
+    record = recorded.run(bank_replies(sf.c_summary, lambda lines: [], kind="credit_card_statement", end="2026-01-14"))
+    assert [posted for posted, _, _ in recorded.transactions()] == ["2025-12-20", "2026-01-03", "2026-01-05"]
+    assert record["review_status"] == "verified", record["issues"]  # 300.00 − (−19.99 + 250.00 − 38.20) = 108.19
+
+
+def test_sc15_with_no_printed_period_no_row_is_recorded_and_each_is_an_issue_naming_the_missing_year(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.c0_pages())
+    record = recorded.run(bank_replies(lambda lines: sf.c_summary(lines, period=False), lambda lines: [], kind="credit_card_statement", end=None))
+    assert recorded.transactions() == [] and record["review_status"] == "needs_review"
+    for number in (1, 2, 3):
+        [issue] = [issue for issue in record["issues"] if issue.startswith(f"Page 1 row {number}: ")]
+        assert "no year is printed" in issue and "period" in issue
+    assert not any(issue.startswith("Statement arithmetic") for issue in record["issues"])  # Rows were left out, so the sum says nothing.
+
+
+def test_sc15_s_rows_without_a_year_are_2026_09(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    recorded.run(s_replies())
+    assert [posted for posted, _, _ in recorded.transactions()] == sf.S_POSTED
+
+
+def test_sc16_the_model_cannot_change_rebuilt_rows_and_the_status_follows_the_other_checks(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.s_pages())
+    assert native_page(result.pages[0]) is True  # S is not flagged: the page is native for the model too.
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    notes = [note for note in recorded.notes() if "printed columns don't have" in note]
+    assert len(notes) == 2 and all(quoting(note, "page 1", "2026-09-18", "0.38", "money in") for note in notes)
+    assert record["issues"] == [] and record["review_status"] == "verified"  # It reconciles; the notes are not reasons for review.
+
+
+def test_sc16_a_rebuilt_row_the_model_did_not_list_is_still_recorded(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    recorded.run(bank_replies(sf.s_summary, s_bad_without_s4))
+    assert recorded.transactions() == expected_s()
+
+
+def test_sc17_rejected_rows_are_issues_with_their_page_row_and_reason(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.x_pages())
+    got = analysis(result)
+    record = recorded.run(bank_replies(sf.x_summary, lambda lines: [], end="2026-09-30"))
+    assert recorded.transactions() == [("2026-09-02", 1000, "GOOD")]
+    assert record["review_status"] == "needs_review"
+    by_row = {int(issue.split()[3].rstrip(":")): issue for issue in record["issues"] if issue.startswith("Page 1 row ")}
+    assert sorted(by_row) == [1, 2, 3, 4, 5]
+    for number, reason in zip(range(1, 6), [row.rejected for row in got.rows[1:]]):
+        assert by_row[number] == f"Page 1 row {number}: {reason}" and reason
+    assert "doesn't fit a column" in by_row[1] and "More than one amount" in by_row[2] and "not a real date" in by_row[3]
+    assert "can't be read" in by_row[4] and "not in USD" in by_row[5]
+
+
+def test_sc18_a_scanned_page_keeps_the_models_row_while_page_one_comes_from_the_rebuild(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.m_pages(), scanned="SCANNED PAGE\n09/27 SCANNED CAFE 7.00")
+    assert [page.method for page in result.pages] == ["embedded_text", "vision_model"]
+    scanned = [(line_id, text) for line_id, text in recorded.lines if line_id.startswith("page-2-")]
+
+    def rows(lines):
+        cafe = next(pair for pair in lines if "SCANNED CAFE" in pair[1])
+        return [*sf.s_bad_rows(lines), sf.stub_row(lines, "2026-09-27", "SCANNED CAFE", "7.00", "debit", cafe[1])]
+    record = recorded.run(bank_replies(sf.s_summary, rows))
+    assert scanned and recorded.transactions() == [*expected_s(), ("2026-09-27", -700, "SCANNED CAFE")]
+    with recorded.store.connection() as db:
+        links = [json.loads(row[0]) for row in db.execute(
+            "SELECT locator_json FROM financial_evidence_links WHERE record_type='transaction' ORDER BY record_id")]
+    assert [bool(link.get("rebuilt")) for link in links] == [True] * 5 + [False]  # No rebuilt row cites page 2.
+    assert all(link["line_ids"][0].startswith("page-1-") for link in links[:5]) and links[5]["line_ids"][0].startswith("page-2-")
+    assert not any("aren't in the transactions" in issue for issue in record["issues"])  # Page 1 is not asked about again.
+
+
+def without_layout(recorded):
+    """S's saved reading with every page's layout set to None, as an old reading (test_pdf_imports does the same)."""
+    with recorded.store.connection() as db:
+        saved = json.loads(db.execute("SELECT result_json FROM parse_runs WHERE id=?", (recorded.parse_id,)).fetchone()[0])
+        for page in saved["pages"]:
+            page["layout"] = None
+        db.execute("UPDATE parse_runs SET result_json=? WHERE id=?", (json.dumps(saved), recorded.parse_id))
+    recorded.lines = sf.reading_lines(read_result(saved))
+
+
+def test_sc18_a_reading_without_layout_records_the_models_rows_as_today_with_the_note(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    without_layout(recorded)
+    record = recorded.run(s_replies())
+    assert [(posted, amount) for posted, amount, _ in recorded.transactions()] == [
+        ("2026-09-18", 36), ("2026-09-18", 38), ("2026-09-18", -38), ("2026-09-20", 150000), ("2026-09-25", -50000), ("2026-09-18", 38)]
+    assert NO_LAYOUT_NOTE in recorded.notes() and NO_LAYOUT_NOTE not in record["issues"]
+    assert not any("printed columns don't have" in note for note in recorded.notes())
+
+
+def test_sc20_s_reconciles_and_extracting_again_gives_identical_rows_and_ids(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    record = recorded.run(s_replies())
+    assert not any("Statement arithmetic does not reconcile" in issue for issue in record["issues"]) and recorded.extraction["result"]["normalized"]["cross_checks"] >= 1
+
+    def snapshot():
+        with recorded.store.connection() as db:
+            return [tuple(row) for row in db.execute("SELECT id,posted_date,amount_minor,description_raw,source_fingerprint FROM transactions ORDER BY id")]
+    first = snapshot()
+    recorded.run(s_replies(), force=True)
+    assert snapshot() == first and [row[2] for row in first] == sf.S_AMOUNTS
+
+
+def test_sc20_a_statement_you_confirmed_is_untouched_by_extracting_again(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    record = recorded.run(s_replies())
+    Ledger(recorded.store).review("statement", record["id"], "verified")
+    with recorded.store.connection() as db:
+        before = [tuple(row) for row in db.execute("SELECT * FROM transactions ORDER BY id")], [tuple(row) for row in db.execute("SELECT * FROM statements")]
+    recorded.run(s_replies(rows=s_bad_without_s4), force=True)
+    assert recorded.extraction["publication"]["status"] == "kept_reviewed"
+    with recorded.store.connection() as db:
+        assert ([tuple(row) for row in db.execute("SELECT * FROM transactions ORDER BY id")], [tuple(row) for row in db.execute("SELECT * FROM statements")]) == before
+
+
+def test_sc20_the_rebuild_makes_no_request_of_its_own(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    before = len(local_model["requests"])
+    recorded.run(s_replies())
+    asked = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"][before:]]
+    assert sorted(set(asked)) == ["BankStatementSummary", "Classification", "Transactions"]  # Only the stubbed reasoning calls; no vision request.
+    assert all(request["messages"][1]["content"] is not None for request in local_model["requests"][before:])
+    assert not any("image_url" in json.dumps(request["messages"]) for request in local_model["requests"][before:])
+
+
+def test_sc21_a_daily_balance_table_is_never_transactions(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.d_pages())
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    assert sum(1 for posted, amount, _ in recorded.transactions() if (posted, amount) == ("2026-09-20", 150000)) == 1
+    assert not any(row[2] == 0 or row[2] == 100000 for row in recorded.transactions())
+    assert [issue for issue in record["issues"] if "PDF layout needs review" not in issue] == []  # The reader's own note on the daily rows only.
+
+
+def test_sc21_the_daily_table_on_page_two_by_itself_starts_no_continuation(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.d2_pages())
+    assert rebuilt_pages(result) == {1}
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    # Page 2 has no rebuilt rows, so it keeps today's reading (FR-23): the reader's page note and the missed-row note name its lines.
+    assert [issue for issue in record["issues"] if not issue.startswith("Page 2 PDF layout") and "aren't in the transactions" not in issue] == []
+
+
+def test_sc21_d_flag_records_only_s1_to_s5_and_no_issue_names_a_daily_row(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.d_pages(flagged=True))
+    assert native_page(result.pages[0]) is False
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    assert not any("DAILY" in issue or "1,500.00" in issue for issue in record["issues"] if "layout" not in issue)
+
+
+def test_sc23_the_same_row_in_two_sections_is_recorded_twice_and_noted_in_review(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.q_pages())
+    record = recorded.run(bank_replies(sf.q_summary, lambda lines: []))
+    checks = [row for row in recorded.transactions() if row[2] == "CHECK 1001"]
+    assert len(checks) == 2 and [amount for _, amount, _ in checks] == [-7500, -7500]
+    with recorded.store.connection() as db:
+        assert [row[0] for row in db.execute("SELECT count(*) FROM transactions WHERE description_raw='CHECK 1001' GROUP BY source_fingerprint")] == [1, 1]
+    [issue] = [issue for issue in record["issues"] if issue.startswith("The same row is printed twice")]
+    assert "page 1" in issue and "page 2" in issue and record["review_status"] == "needs_review"
+
+
+def test_sc27_record_reads_s_flag_with_the_description_numbers_and_rejects_none(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_flag_pages())
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    assert [description for _, _, description in recorded.transactions()][:3] == [
+        "SYNTH ACCTVERIFY PPD ID 1234567890", "SYNTH ACCTVERIFY PPD ID 1234567890", "SYNTH ACCTVERIFY WEB ID 1234567890"]
+    assert not any("doesn't fit a column" in issue or "printed against the description" in issue for issue in record["issues"])
+
+
+def test_sc28_t1_is_recorded_though_the_model_did_not_list_it_and_no_issue_names_it(pdf_store, local_model):
+    recorded, result = stored(pdf_store, local_model, sf.t_pages())
+    assert native_page(result.pages[0]) is False
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == [*expected_s(), (sf.T1_POSTED, 1234, "SYNTH LONG DESCRIPTION")]
+    named = [issue for issue in [*record["issues"], *recorded.notes()] if "LONG DESCRIPTION" in issue or "Page 1 row 6" in issue or "09/22" in issue]
+    assert named == []  # T isn't balanced, so the arithmetic issue is expected (it names the sum, not the row).
+    assert all("1234567890" in description for _, _, description in recorded.transactions()[:3])
+
+
+REBUILD_FAILED = "The rows couldn't be rebuilt from the printed columns, so the reading's rows were used; check them."
+
+
+def test_sc18_p8_a_rebuild_that_fails_in_read_falls_back_to_the_models_rows_on_every_page_with_one_issue(pdf_store, local_model, monkeypatch):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+
+    def broken(result):
+        raise RuntimeError("synthetic failure")
+    monkeypatch.setattr(statement_rows, "rebuilt_pages", broken)
+    record = recorded.run(s_replies())
+    assert [issue for issue in record["issues"] if issue == REBUILD_FAILED] == [REBUILD_FAILED]
+    # As today: the model's six rows, each amount taken from the native table's cell it cites (the misread s2 and the extra row become 0.02).
+    assert [amount for _, amount, _ in recorded.transactions()] == [36, 2, -38, 150000, -50000, 2]
+    assert record["review_status"] == "needs_review"
+
+
+def test_sc18_p8_a_rebuild_that_fails_in_publish_is_one_issue_and_the_models_rows_stand(pdf_store, local_model, monkeypatch):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+
+    def broken(*args, **options):
+        raise pdf_import.PDFImportError("synthetic limit")
+    monkeypatch.setattr(statement_rows, "rebuild", broken)
+    record = recorded.run(s_replies())
+    assert record["issues"].count(REBUILD_FAILED) == 1 and len(recorded.transactions()) == 6
+
+
+def test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reporting_a_false_mismatch(pdf_store, local_model):
+    """FR-25: the sum is checked only when no row was left out. T-edge's t1 is rejected, so its statement isn't summed."""
+    recorded, _ = stored(pdf_store, local_model, sf.t_pages(edge=True))
+    record = recorded.run(s_replies())
+    assert recorded.transactions() == expected_s()
+    assert not any("Statement arithmetic" in issue for issue in record["issues"])
+    assert f"Page 1 row 5: {NO_AMOUNT}" in record["issues"]

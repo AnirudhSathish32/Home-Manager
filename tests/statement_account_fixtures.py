@@ -65,7 +65,7 @@ C_ABOVE = ("SYNTH CARD", "Card number XXXX7700", "Previous Balance 300.00", "New
 C0_ABOVE = ("SYNTH CARD", "Previous Balance 300.00", "New Balance 108.19", "Card number XXXX7700")
 
 # X: the rejection rows. (id, date, description, amount word, x of the amount word, what the contract expects.)
-X_ABOVE = ("SYNTH BANK", "SYNTH CHECKING", "Statement period 09/01/2026 through 09/30/2026")
+X_ABOVE = ("SYNTH BANK", "SYNTH CHECKING", "All amounts in USD", "Statement period 09/01/2026 through 09/30/2026")  # USD: x6's EUR blocks the home currency
 X_REJECTED = {"x2": "The amount doesn't fit a column.",
               "x3": "More than one amount sits in the Amount column.",
               "x4": 'The date "02/30/2026" is not a real date.',
@@ -89,7 +89,8 @@ def lines_above(lines, top=780, step=12):
 
 
 def words_footer(name, y):
-    return footer(f"{name} statement page one of one, kept for your records", y)
+    # The "$" lets Record read the amounts as the home currency (ExtractionService.currency_for), as the summary stubs leave the currency missing.
+    return footer(f"{name} statement page one of one, amounts shown in $, kept for your records", y)
 
 
 def page(above, rows, columns, heading, name, top=TOP, extra=(), foot=True, **settings):
@@ -190,6 +191,17 @@ def q_pages():
     return [first, second]
 
 
+def daily_page():
+    """A page holding only D's DAILY ENDING BALANCE table (Date | Amount) under its title (SC-21's second variant)."""
+    items = [(40, 724, "DAILY ENDING BALANCE"), *table_items([HEADING4[:1] + ("Amount",), *DAILY], TOP, (40, 380))]
+    return {"items": items + [words_footer("SYNTH BANK daily", TOP - 20 * 4)]}
+
+
+def d2_pages():
+    """S's page, then the daily balance table by itself on page 2."""
+    return [s_pages()[0], daily_page()]
+
+
 def m_pages():
     """M: S's page, then a scanned page (read once with the vision stub)."""
     return [s_pages()[0], None]
@@ -251,16 +263,35 @@ def printed(iso):
     return f"{month}/{day}/{year}"
 
 
-def bank_summary(lines, reference, account_line, start, end, opening, closing):
+def line_with(lines, text):
+    """The first line that contains text (a statement printing its period on several pages has more than one)."""
+    return next(pair for pair in lines if text in spaced(pair[1]))
+
+
+def first_proposed(lines, value, line, quote=None):
+    line_id, printed_text = line_with(lines, line)
+    return {"value": value, "status": "proposed", "evidence": [{"line_id": line_id, "quote": quote or value}]}
+
+
+def fill(kind, summary):
+    """Every field of the summary schema: the given ones, the rest missing."""
+    from home_manager.documents.extraction import HEADER_MODELS
+    return {name: summary.get(name, MISSING) for name in HEADER_MODELS[kind].model_fields}
+
+
+def bank_summary(lines, reference, account_line, start, end, opening, closing, account_type=("savings", "SYNTH SAVINGS")):
     """S's `BankStatementSummary` reply: institution SYNTH BANK, account_type `savings` citing SYNTH SAVINGS, the account
-    reference, the period, opening and closing. The currency is missing (USD from the setting, as today); the rest is missing."""
-    summary = {"institution": proposed(lines, "SYNTH BANK", "SYNTH BANK"), "account_type": proposed(lines, "savings", "SYNTH SAVINGS", "SYNTH SAVINGS"),
-               "account_reference": proposed(lines, reference, account_line), "currency": MISSING,
-               "period_start": proposed(lines, start, "Statement period", printed(start)), "period_end": proposed(lines, end, "Statement period", printed(end)),
-               "opening_balance": proposed(lines, opening, "Beginning Balance"), "closing_balance": proposed(lines, closing, "Ending Balance")}
-    for name in ("deposits_total", "withdrawals_total", "interest_earned", "fees_total", "apy"):
-        summary[name] = MISSING
-    return summary
+    reference, the period, opening and closing. The currency is missing (USD from the setting, as today); the rest is missing.
+    A reference, opening or closing of None is not printed on the statement (X), and so missing."""
+    found = {"institution": first_proposed(lines, "SYNTH BANK", "SYNTH BANK"),
+             "period_start": first_proposed(lines, start, "Statement period", printed(start)), "period_end": first_proposed(lines, end, "Statement period", printed(end))}
+    if account_type:
+        found["account_type"] = proposed(lines, account_type[0], account_type[1], account_type[1])
+    if reference:
+        found["account_reference"] = proposed(lines, reference, account_line)
+    if opening:
+        found["opening_balance"], found["closing_balance"] = proposed(lines, opening, "Beginning Balance"), proposed(lines, closing, "Ending Balance")
+    return fill("bank_statement", found)
 
 
 def s_summary(lines):
@@ -271,3 +302,52 @@ def s_summary(lines):
 def s2_summary(lines):
     """S2's stub: S's with account_reference 7890, cited from S2's account number line."""
     return bank_summary(lines, "7890", "Account Number 000009000127890", "2026-09-01", "2026-09-30", "0.00", "1,000.00")
+
+
+def w_summary(lines, month=8):
+    """W's stub: account 4821, checking, the period of the month, opening 1,000.00 and closing 2,450.00."""
+    last = 31 if month in (8, 10) else 30
+    return bank_summary(lines, "4821", "Account Number 000000004821", f"2026-{month:02d}-01", f"2026-{month:02d}-{last}", "1,000.00", "2,450.00",
+                        account_type=("checking", "SYNTH CHECKING"))
+
+
+def c_summary(lines, period=True):
+    """C's `CreditCardStatementSummary` reply (C0 with `period=False`): SYNTH CARD …7700, previous 300.00 and new balance 108.19."""
+    found = {"issuer": proposed(lines, "SYNTH CARD", "SYNTH CARD"), "account_reference": proposed(lines, "7700", "Card number XXXX7700"),
+             "previous_balance": proposed(lines, "300.00", "Previous Balance"), "statement_balance": proposed(lines, "108.19", "New Balance")}
+    if period:
+        found["period_start"] = first_proposed(lines, "2025-12-15", "Statement period", "12/15/2025")
+        found["period_end"] = first_proposed(lines, "2026-01-14", "Statement period", "01/14/2026")
+    return fill("credit_card_statement", found)
+
+
+def classified(lines, kind, end=None):
+    """The `Classification` reply for a statement: SYNTH BANK (or SYNTH CARD) as the issuer, the period's end as the document date."""
+    issuer = "SYNTH CARD" if kind == "credit_card_statement" else "SYNTH BANK"
+    return {"document_type": kind, "evidence": first_proposed(lines, issuer, issuer)["evidence"], "issuer": first_proposed(lines, issuer, issuer),
+            "document_date": first_proposed(lines, end, "Statement period", printed(end)) if end else MISSING}
+
+
+def w_rows(lines):
+    """W's `Transactions` stub: every amount is its Balance cell (SC-14), with the direction the columns give."""
+    found = []
+    for row in W_ROWS:
+        line = f"{row[1]} {row[2]}"
+        found.append(stub_row(lines, printed_to_iso(row[1]), row[2], row[5].lstrip("-"), "debit" if row[3] else "credit", line))
+    return found
+
+
+def printed_to_iso(text):
+    month, day, year = text.split("/")
+    return f"{year}-{month}-{day}"
+
+
+def x_summary(lines):
+    """X's stub: SYNTH BANK checking, the period 09/2026, the currency from its printed line, no account number or balances."""
+    return {**bank_summary(lines, None, None, "2026-09-01", "2026-09-30", None, None, account_type=("checking", "SYNTH CHECKING")),
+            "currency": first_proposed(lines, "USD", "All amounts in USD")}
+
+
+def q_summary(lines):
+    """Q's stub: SYNTH BANK, the period 09/2026, and nothing else printed."""
+    return bank_summary(lines, None, None, "2026-09-01", "2026-09-30", None, None, account_type=None)

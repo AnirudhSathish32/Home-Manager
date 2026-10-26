@@ -24,7 +24,7 @@ from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
-from ..finance import document_checks
+from ..finance import document_checks, statement_rows
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
@@ -1279,6 +1279,7 @@ def whole(lines, notes=None):
 
 # Several receipts in one file (docs/documents.md, "Several receipts in one file") ---------------------------
 
+REBUILD_FAILED = "The rows couldn't be rebuilt from the printed columns, so the reading's rows were used; check them."
 SPLIT_NOTE = "This receipt was split from a file holding several; confirm the split on the document's page."
 # A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.
 TOTAL_LINE = re.compile(r"(?<![\w-])(grand\s+)?total(?!\s*(tax|savings?|saved|discounts?|items?|number|qty|quantity|units|points))\b", re.IGNORECASE)
@@ -1661,12 +1662,22 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
-def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None):
+PAGE_ID = re.compile(r"page-(\d+)-")
+
+
+def line_page(line_id):
+    """The page a cited line is on ("page-2-layout-line-7" is 2), or None for an id that names none."""
+    found = PAGE_ID.match(line_id or "")
+    return int(found.group(1)) if found else None
+
+
+def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None, rebuild=None):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
     when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
     printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks). bill_kind: the
-    form a bill was read with (specs/bill-kinds), or None for a bill read without kinds."""
+    form a bill was read with (specs/bill-kinds), or None for a bill read without kinds. rebuild: a statement's rows rebuilt from its
+    printed columns (finance/statement_rows.py), which replace the model's rows on their pages (specs/statement-accounts FR-20)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -1750,24 +1761,59 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         if start and end and start > end:
             issues.append("The statement period starts after it ends.")
         record["transactions"] = []
+        found, record_notes = [], []  # found: (page, transaction), rebuilt rows first, then the model's rows of the other pages.
+        skipped = 0
+        rebuilt = rebuild.pages if rebuild is not None and rebuild.available else set()
+        unmatched = [(row["locator"]["page"], row["posted_date"], row["amount_minor"]) for row in rebuild.rows] if rebuilt else []
+        if rebuilt:
+            for row in rebuild.rows:
+                posted, page = row["posted_date"], row["locator"]["page"]
+                if start and end and not start - timedelta(days=7) <= date.fromisoformat(posted) <= end + timedelta(days=7):
+                    issues.append(f"Page {page} row {row['locator']['row']} is dated outside the statement period.")
+                found.append((page, {**row, "description": " ".join(row["description"].split())}))
         for index, row in enumerate(rows, 1):
             posted = iso_date(row.posted_date) or iso_date(row.transaction_date)
+            page = next((line_page(cite.line_id) for cite in row.evidence if line_page(cite.line_id) in rebuilt), None)
+            if page is not None:  # FR-20: the model's row on a rebuilt page decides nothing; it only matches a rebuilt row or becomes a note.
+                try:
+                    magnitude = abs(to_minor(row.amount, currency)) if currency else None
+                except MoneyError:
+                    magnitude = None
+                signed = None if magnitude is None else -magnitude if row.direction == "debit" else magnitude
+                match = next((entry for entry in unmatched if entry == (page, posted, signed)), None)
+                if match is not None:
+                    unmatched.remove(match)
+                else:
+                    record_notes.append(f"The reading listed a row the printed columns don't have, on page {page}: "
+                                        f"{row.posted_date or row.transaction_date or 'no date'} {' '.join(row.description.split())} {row.amount} "
+                                        f"({'money out' if row.direction == 'debit' else 'money in'}). It wasn't recorded.")
+                continue
             magnitude = money(row.amount, f"Transaction {index} amount", magnitude=True)
             if posted is None or magnitude is None:
                 issues.append(f"Transaction {index} has no unambiguous date or amount and was not published.")
+                skipped += 1
                 continue
             if start and end and not start - timedelta(days=7) <= date.fromisoformat(posted) <= end + timedelta(days=7):
                 issues.append(f"Transaction {index} is dated outside the statement period.")
             if balance_taken(row, magnitude, line_text, currency):
                 issues.append(f"Transaction {index} ({' '.join(row.description.split())[:60]}): {row.amount} is the last of the amounts on its line, "
                               "which is usually the running balance, not the transaction's amount. Check its amount.")
-            record["transactions"].append({"posted_date": posted, "transaction_date": iso_date(row.transaction_date),
-                                           "description": " ".join(row.description.split()), "currency": currency,
-                                           "amount_minor": -magnitude if row.direction == "debit" else magnitude, "locator": locator(row.evidence)})
+            found.append((min((line_page(cite.line_id) or 1 for cite in row.evidence), default=1),
+                          {"posted_date": posted, "transaction_date": iso_date(row.transaction_date),
+                           "description": " ".join(row.description.split()), "currency": currency,
+                           "amount_minor": -magnitude if row.direction == "debit" else magnitude, "locator": locator(row.evidence)}))
+        # With rebuilt pages the rows are merged by page (stable: a page keeps its source's order). Otherwise they stay as the model gave them.
+        record["transactions"] = [transaction for _, transaction in (sorted(found, key=lambda entry: entry[0]) if rebuilt else found)]
+        if rebuild is not None:
+            issues.extend(rebuild.issues)
+            record_notes.extend(rebuild.notes)
+            skipped += rebuild.dropped
+        if record_notes:
+            record["notes"] = record_notes
         net = sum(row["amount_minor"] for row in record["transactions"])
         # Card balances are amounts owed: charges (negative) increase them, payments decrease them.
         opening, closing = (record.get("previous_balance_minor"), record.get("statement_balance_minor")) if card else (record.get("opening_balance_minor"), record.get("closing_balance_minor"))
-        if opening is not None and closing is not None and currency and len(record["transactions"]) == len(rows):
+        if opening is not None and closing is not None and currency and not skipped:
             expected = opening - net if card else opening + net
             record["cross_checks"] += expected == closing
             if expected != closing:
@@ -3112,7 +3158,7 @@ class ExtractionService:
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
-                receipt_kind=None, kind_change=False, printed_columns=False):
+                receipt_kind=None, kind_change=False, printed_columns=False, evidence=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -3128,9 +3174,19 @@ class ExtractionService:
         currency, note = self.currency_for(kind, header, lines, home_currency)
         record_notes += [note] if note else []
         # receipt_kind is the form the reading chose: a receipt kind, or for a bill its bill kind (extract).
+        rebuild = None
+        if evidence is not None and currency is not None:  # The pages the reading rebuilt (read), with the statement's own currency and period.
+            period = [iso_date(field.value) if field.status == "proposed" else None for field in (header.period_start, header.period_end)]
+            try:
+                rebuild = statement_rows.rebuild(evidence, statement_type="credit_card" if kind == "credit_card_statement" else "bank",
+                                                 period_start=period[0], period_end=period[1], currency=currency)
+            except Exception as exc:  # P8
+                log_failure(log, "statement row rebuild", exc)
+                notes.append(REBUILD_FAILED)
         record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes,
                                    receipt_kind=receipt_kind if kind == "receipt" else None, printed_columns=printed_columns,
-                                   bill_kind=receipt_kind if kind == "bill" else None)
+                                   bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild)
+        record_notes += record.pop("notes", [])
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
@@ -3165,6 +3221,8 @@ class ExtractionService:
         issues.extend(review_reasons(kind, record, decision, issues))
         if record_notes:
             record["notes"] = record_notes
+            if kind in ("bank_statement", "credit_card_statement"):  # Kept with the statement, which stores its details but not its notes (P19).
+                record.setdefault("details", {})["notes"] = record_notes
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
         source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
@@ -3195,7 +3253,7 @@ class ExtractionService:
         published = publish(record, source, status)
         if kind == "paystub":  # Its 401(k) and HSA lines may now point to an investment account.
             Investments(self.ledger.store).refresh_payroll_links()
-        return record, {**published, "review_status": status}
+        return record, {**published, "review_status": published.get("review_status", status)}
 
     def run(self, run_id, work=None):
         work = work or Work.detached()
@@ -3296,6 +3354,17 @@ class ExtractionService:
         notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
         tables = reported_tables(evidence)
         classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
+        # A bank or card statement PDF has its rows rebuilt from the printed columns (FR-16). The pages that get rows are not asked
+        # about again (missed_rows) or anchored; any other page keeps the model's reading (FR-23).
+        rebuilt, rebuild_failed = set(), False
+        statement_pdf = classification.document_type in ("bank_statement", "credit_card_statement") and hasattr(evidence, "pages")
+        if statement_pdf:
+            try:
+                rebuilt = statement_rows.rebuilt_pages(evidence)
+            except Exception as exc:  # P8: any failure of the rebuild falls back to the reading, on every page.
+                log_failure(log, "statement row rebuild", exc)
+                rebuild_failed = True
+                notes.append(REBUILD_FAILED)
         cell_references, summary_references = [], {}
         # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
         # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
@@ -3318,9 +3387,22 @@ class ExtractionService:
         elif tables and header is not None:
             from .native_values import anchor_rows, anchor_summary
             header, summary_references = anchor_summary(header, tables, notes)
-            rows, cell_references = anchor_rows(classification.document_type, rows, tables, notes)
+            if rebuilt:  # The model's rows on a rebuilt page decide nothing (FR-20), so nothing is anchored or counted there.
+                found, cell_references = [], []
+                for row in rows:
+                    on_rebuilt = any(line_page(cite.line_id) in rebuilt for cite in row.evidence)
+                    anchored, references = ([row], [{}]) if on_rebuilt else anchor_rows(classification.document_type, [row], tables, notes)
+                    found += anchored
+                    cell_references += references
+                rows = found
+            else:
+                rows, cell_references = anchor_rows(classification.document_type, rows, tables, notes)
+        asked = lines
+        if rebuilt:
+            tables = [table for table in tables if getattr(table, "page", None) not in rebuilt]
+            asked = [line for line in lines if line_page(line.id) not in rebuilt]
         if classification.document_type in ("bank_statement", "credit_card_statement") and header is not None:
-            rows, cell_references = self.missed_rows(config, work, classification.document_type, lines, rows, cell_references, header, tables, notes)
+            rows, cell_references = self.missed_rows(config, work, classification.document_type, asked, rows, cell_references, header, tables, notes)
         if header is not None:
             # Every native body row must be accounted for, including summary rows.
             # An omission cannot become an automatically accepted partial ledger.
@@ -3365,7 +3447,8 @@ class ExtractionService:
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
-                "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns}
+                "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns,
+                "evidence": evidence if statement_pdf and not rebuild_failed else None}
 
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
@@ -3396,7 +3479,7 @@ class ExtractionService:
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
                                                              reading.get("cell_references"), reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
-                                                             reading.get("printed_columns", False))
+                                                             reading.get("printed_columns", False), reading.get("evidence"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
