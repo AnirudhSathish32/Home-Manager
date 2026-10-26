@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 820dd6e
-end_head: <see commit>
-commit: <filled after commit>
+end_head: 16b314c
+commit: 16b314c
 changed_files:
   - tests/seed_documents.py
   - tests/test_statement_accounts_browser.py

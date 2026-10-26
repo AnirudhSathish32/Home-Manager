@@ -1,0 +1,124 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: statement-accounts
+plan_sha256: 3e0aee3fd6ed3e5657d0a25e5387198843dd4b464685df536a07279d2109b986
+slices:
+  - id: SL-01
+    status: done
+    start_head: f3fad94
+    end_head: 0e379a7
+    commit: 0e379a7
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_statement_rebuild.py tests/test_pdf.py tests/test_pdf_layout.py tests/test_pdf_imports.py -q -> 230 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_statement_rebuild.py -k \"pcheck or rows or sc27 or sc28 or fr30_edge\" -q -> 37 passed, 3 deselected (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_statement_forms.py tests/test_extraction.py tests/test_layout_consumers.py -q -> 68 passed (orchestrator rerun)"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      make_pdf gains an optional matrix item; no existing assertion changed. ANALYZER_VERSION=2. Rebuild.dropped is an
+      extra field beyond the plan's dataclass. Plan's SL-01 -k command deselects the PDF files' own tests; run them whole.
+      SL-02 stubs (S-bad, summary) are provisional.
+    attempts:
+      - "r1: rate limit mid-slice; left uncommitted partial diff (pdf_import.py, tests/test_pdf.py, statement_rows.py), no handoff; r2 resumes from it"
+  - id: SL-02
+    status: done
+    start_head: 0e379a7
+    end_head: 318e2ad
+    commit: 318e2ad
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_statement_rebuild.py tests/test_statement_forms.py tests/test_extraction.py tests/test_layout_consumers.py tests/test_pdf_imports.py tests/test_provenance.py tests/test_pdf.py tests/test_pdf_layout.py -q -> 337 passed (orchestrator rerun)"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      normalize(rebuild=), read/publish use rebuilt_pages/rebuild with whole-reading P8 fallback; notes in
+      details["notes"]. Fixture footers now print "amounts shown in $" (words-only, still >=40 chars) so currency resolves;
+      X adds "All amounts in USD". Open: SC-21 variant page 2 alone keeps reader's unresolved_columns note and
+      missed-row issue (contract asserts only s1-s5).
+  - id: SL-03
+    status: done
+    start_head: 318e2ad
+    end_head: 604c045
+    commit: 604c045
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M1 whole: .venv/bin/python -m pytest tests/test_statement_rebuild.py tests/test_statement_forms.py tests/test_pdf_imports.py tests/test_extraction.py tests/test_layout_consumers.py tests/test_provenance.py -q -> 297 passed (orchestrator rerun)"
+      - "tests/test_traces.py -> 7 passed, 3 failed: environmental, node v18.19.1 rejects --allow-fs-read (tax engine); worker confirmed same failures on START_HEAD"
+      - "worker: RUN_BROWSER_TESTS=1 test_pdf_imports_browser.py test_trace_components_browser.py -> 12 passed"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      provenance document.id fixed (was null; column is source_document_id). trace.js adds cells only for extracted
+      provenance, to keep test_pdf_imports_browser hrefs (plan said whenever present) - for SL-07/review. SL-07 SC-26
+      needs cells to reach viewer.highlight from document_v2.js rows.
+  - id: SL-04
+    status: done
+    start_head: 604c045
+    end_head: 0793b8c
+    commit: 0793b8c
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_statement_accounts.py tests/test_migrations.py tests/test_imports.py tests/test_pdf_imports.py tests/test_family_routing.py tests/test_finance.py tests/test_statement_rebuild.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reconcile_tools.py tests/test_library.py -q -> 369 passed (orchestrator rerun)"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      Migration 073 adds accounts.origin (user/record/family), sorts per FR-08, removes empty record accounts (and their
+      category/tax rules; nulls recurring/investment links); idempotent after the sort marker. Existing-assertion change
+      accepted by orchestrator: test_072 user_version '== LATEST == 72' -> '== LATEST >= 72' (mechanical consequence of the
+      plan's migration 073). publish_statement gains origin= only; Record passes origin='record' in SL-05.
+  - id: SL-05
+    status: done
+    start_head: 0793b8c
+    end_head: fc2d68e
+    commit: fc2d68e
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M2 + SL-05 gate files whole (statement_accounts, statement_rebuild, statement_forms, pdf_imports, extraction, layout_consumers, provenance, migrations, imports, family_routing, finance, reconcile_tools, reextraction, record_history, receipt_kinds) -> 440 passed (orchestrator rerun)"
+      - "test_traces.py: same 3 node-v18 failures (worker confirmed on 0793b8c)"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      Existing assertions changed verified->proposed per FR-04 (test_extraction, test_statement_forms x7 + read_september
+      confirms before reconcile, test_statement_rebuild sc15/sc16); test_receipt_kinds gift_card_library confirms before
+      reconcile. Accepted by orchestrator as mechanical consequences of FR-04/FR-01/FR-02. J1 step 4 uses S summary with
+      account_reference 7890 instead of S2 stub (no contract value changes). docs/open-work.md built clause removed.
+    attempts:
+      - "r1: rate limit mid-slice; left uncommitted partial diff (extraction.py, ledger.py, test_extraction.py, test_statement_forms.py, test_statement_rebuild.py), no handoff; r2 resumes from it"
+  - id: SL-06
+    status: done
+    start_head: fc2d68e
+    end_head: 4eb5a2e
+    commit: 4eb5a2e
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M3 whole + reextraction, record_history, receipt_kinds -> 449 passed (orchestrator rerun)"
+      - "ruff check src tests -> all checks passed"
+      - "baseline full suite on 05f9aa4 (pre-feature): 54 failed, 20 errors, 1328 passed - all in agent_*, engine_worksheets, tax_*, cpa_pack, scenarios, traces (environmental: node v18 / Windows-only); list in /tmp/hm-base-failures.txt"
+    notes: >-
+      No existing assertions changed. Deviations accepted: investment events also clear transaction_previous_type and
+      transaction_link (as reconcile.unlink_investment); preview adds refund_links; family.copy computed in manager from
+      the profile link; require(False) matches import_transactions as the plan says. Delete touches exactly the tables
+      listed in handoff slice-SL-06.md.
+  - id: SL-07
+    status: done
+    start_head: 4eb5a2e
+    end_head: 16b314c
+    commit: 820dd6e, 16b314c (fix-up)
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "M4 full non-browser suite at 820dd6e: 1418 passed, 54 failed, 20 errors - failure set identical to pre-feature 05f9aa4 (0 new)"
+      - "All browser tests (RUN_BROWSER_TESTS=1) at 16b314c vs 05f9aa4: 0 new failures except test_spending_v2_browser::test_this_month_v2_shows_the_month_its_budgets_and_rules, which passed 3/3 alone (flaky under load; untouched by the feature's fix-up)"
+      - "fix-up worker: test_statement_accounts_browser.py 5x loop all passed; sc25 10/10 under CPU load"
+      - "ruff check src tests -> all checks passed"
+    notes: >-
+      Fix-up 16b314c: seed_statement confirms its statement (FR-04 had left it proposed, breaking review_v2 to-check order
+      and search_v2 ask column); statement_accounts_browser open_page waits for networkidle (double route render race).
+      No existing assertions changed in SL-07 or fix-up. sourceLink kept extracted-only; SC-26 via doc2RowSources.
+      Leftovers: Back doesn't close delete dialog; design-system pages not updated; dialog wording for receipts/pay stubs
+      chosen by worker. Pre-existing browser failures at 05f9aa4 (agent_instance x3, browser, records_v2, taxes_v2 x3,
+      transactions_v2) unchanged.
+    attempts:
+      - "r1: commit 820dd6e. M4 orchestrator run: full non-browser suite = baseline exactly (54 failed/20 errors, same set as 05f9aa4, 0 new). Browser vs 05f9aa4: 3 new failures - test_review_v2 to_check order (statement-1 first), test_search_v2 ask column (.figure-button timeout), test_statement_accounts_browser sc25 (flaky; passes alone). r2 fix-up dispatched."
+
