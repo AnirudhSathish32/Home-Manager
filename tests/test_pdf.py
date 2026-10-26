@@ -17,7 +17,9 @@ from home_manager.models.vision import VisionConfig
 def make_pdf(path, pages, unicode_map=None):
     """Minimal valid PDF. A string page has an embedded text layer; None is an image-only (scanned) page.
 
-    A dict page takes "items" ((x, y, text) or (x, y, text, font_size); default 10 pt), and these optional settings:
+    A dict page takes "items" ((x, y, text), (x, y, text, font_size) or (x, y, text, font_size, matrix); default 10 pt; matrix
+    is the four numbers a b c d of the text matrix, default (1, 0, 0, 1), so (0, 1, -1, 0) draws the text rotated 90 degrees),
+    and these optional settings:
     "rotation", "crop" (CropBox), "media" (MediaBox as "x0 y0 x1 y1", or (width, height); it also sets the default
     CropBox), "images" (a count of small image objects drawn on the page) and "encoding" ("cp1252": WinAnsi text, so
     that the bullet and ellipsis print as one glyph each).
@@ -42,7 +44,8 @@ def make_pdf(path, pages, unicode_map=None):
             stream = b""
             for x, y, label, *size in settings["items"]:
                 escaped = label.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-                stream += f"BT /F1 {size[0] if size else 10} Tf 1 0 0 1 {x} {y} Tm (".encode("latin-1") + escaped.encode(codec) + b") Tj ET\n"
+                matrix = " ".join(str(number) for number in size[1]) if len(size) > 1 else "1 0 0 1"
+                stream += f"BT /F1 {size[0] if size else 10} Tf {matrix} {x} {y} Tm (".encode("latin-1") + escaped.encode(codec) + b") Tj ET\n"
             for number in range(settings.get("images", 0)):
                 if image is None:
                     objects.append(b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>\nstream\n\x80\x80\x80\x80\nendstream")

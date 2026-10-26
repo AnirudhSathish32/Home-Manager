@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 MAX_ROWS, MAX_CELL, MAX_ISSUES = 20_000, 2000, 200
 # Bump when what the analyzer finds changes (tables, last fours, currency): every PDF reading is indexed again at the next start.
-ANALYZER_VERSION = 1
+ANALYZER_VERSION = 2  # 2: FR-30, a number that continues the description is description text (specs/statement-accounts).
 BALANCE_NAMES = ("balance", "running balance", "new balance", "ending balance")  # Never an amount (PDF import only).
 ROLES = ("date", "description", "amount", "debit", "credit")
 AMOUNT_ROLES = ("amount", "debit", "credit")
@@ -144,17 +144,18 @@ class PageView:
         self.row_of = {word.id: index for index, row in enumerate(self.rows) for word in row}
         self.line_of = {word_id: line.id for line in layout.lines for word_id in line.word_ids}
 
-    def texts(self, index):
-        """A visual row's texts, as (text, left, right): words closer than 1.5 font sizes form one text (plan "Heading texts")."""
+    def runs(self, index):
+        """A visual row's runs of words: a word closer than 1.5 font sizes to the one before it joins its run (plan "Heading texts")."""
         groups = []
         for word in self.rows[index]:
-            box = self.box[word.id]
-            if not groups or box[0] - groups[-1][2] > self.size * 1.5:
-                groups.append([[word.text], box[0], box[2]])
-            else:
-                groups[-1][0].append(word.text)
-                groups[-1][2] = box[2]
-        return [(" ".join(words), left, right) for words, left, right in groups]
+            if not groups or self.box[word.id][0] - self.box[groups[-1][-1].id][2] > self.size * 1.5:
+                groups.append([])
+            groups[-1].append(word)
+        return groups
+
+    def texts(self, index):
+        """A visual row's texts, as (text, left, right): the text of each run and where it starts and ends."""
+        return [(" ".join(word.text for word in run), self.box[run[0].id][0], self.box[run[-1].id][2]) for run in self.runs(index)]
 
     def lines(self, word_ids):
         return list(dict.fromkeys(self.line_of[word_id] for word_id in word_ids if word_id in self.line_of))
@@ -237,25 +238,47 @@ class Raw:
     shape: tuple | None = None
 
 
+def joined_amounts(view, spec, index, amount_columns):
+    """FR-30: the amount-shaped words that continue the description's printed text. A run of words whose first word is placed in
+    the Description column holds description text, so each later amount-shaped word in it is joined to the description. A joined
+    word stays an amount when (a) its whole box lies inside one amount column's span, with no tolerance, and (b) it is the only
+    amount-shaped word of the row centred in an amount column; a Balance column is not an amount column. Returns the joined words
+    that stay description text."""
+    description = spec.columns.get("description")
+    if description is None:
+        return []
+    joined = [word for run in view.runs(index) if place(spec.spans, view.box[run[0].id])[0] == description
+              for word in run[1:] if AMOUNT_WORD.fullmatch(word.text)]
+    centred = [word for word in view.rows[index] if AMOUNT_WORD.fullmatch(word.text)
+               and any(spec.spans[column][0] <= (view.box[word.id][0] + view.box[word.id][2]) / 2 < spec.spans[column][1] for column in amount_columns)]
+    return [word for word in joined if not (len(centred) == 1 and any(spec.spans[column][0] <= view.box[word.id][0] and view.box[word.id][2] <= spec.spans[column][1]
+                                                                      for column in amount_columns))]
+
+
 def visual_row(view, spec, index, row):
     """A visual row as a candidate row (plan "Rows"), or None when it is not one. A candidate has a date-like word in or
     straddling the date span and an amount-like word in or straddling an amount, debit or credit span (a Balance-only
     amount makes none). It is accepted when its date and amounts each sit wholly inside one span and each amount column
-    holds exactly one amount (and at most the currency code after it); otherwise it is rejected with the reason."""
+    holds exactly one amount (and at most the currency code after it); otherwise it is rejected with the reason. An
+    amount-shaped word that continues the description's text is description text, not an amount (FR-30, `joined_amounts`)."""
     words = view.rows[index]
     date_span = spec.columns["date"]
     amount_columns = [spec.columns[role] for role in AMOUNT_ROLES if role in spec.columns]
+    taken = {word.id for word in joined_amounts(view, spec, index, amount_columns)}
     dates = [word for word in words if DATE_WORD.fullmatch(word.text) and touches(spec.spans[date_span], view.box[word.id])]
-    amounts = [word for word in words if AMOUNT_WORD.fullmatch(word.text) and any(touches(spec.spans[column], view.box[word.id]) for column in amount_columns)]
-    if not dates or not amounts:
+    candidates = [word for word in words if AMOUNT_WORD.fullmatch(word.text) and any(touches(spec.spans[column], view.box[word.id]) for column in amount_columns)]
+    amounts = [word for word in candidates if word.id not in taken]
+    if not dates or not amounts and not any(word.id in taken for word in candidates):
         return None
     found, cells = {}, {}
     for word in words:
-        column, fits = place(spec.spans, view.box[word.id])
+        column, fits = (spec.columns["description"], True) if word.id in taken else place(spec.spans, view.box[word.id])
         found[word.id] = (column, fits)
         cells.setdefault(column, []).append(word)
     reject = None
-    if not all(found[word.id] == (date_span, True) for word in dates):
+    if not amounts:
+        reject = "The amount is printed against the description, so it can't be told apart from it."  # P18: never dropped silently.
+    elif not all(found[word.id] == (date_span, True) for word in dates):
         reject = "The date doesn't fit a column."
     elif not all(found[word.id][0] in amount_columns and found[word.id][1] for word in amounts):
         reject = "The amount doesn't fit a column."
