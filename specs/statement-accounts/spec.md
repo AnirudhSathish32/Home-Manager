@@ -5,7 +5,8 @@ Feature: statement-accounts
      Do not add a Status line: changing it would change the hash. Check with gate.py. -->
 
 Amends: `specs/document-forms/spec.md` (statement extraction / **Record**) where it creates accounts and reads statement
-rows, and reuses the row rules of `specs/account-import-pdf/spec.md` FR-07 and FR-08 without changing that feature.
+rows, and reuses the row rules of `specs/account-import-pdf/spec.md` FR-07 and FR-08. It changes one of those rules
+for both features (FR-30, D5, D6); nothing else in PDF import changes.
 Baseline for the account parts: the built behavior cited below (no earlier spec covers account creation or deletion).
 
 ## Decisions already made (user, 2026-10-26; not to be re-asked)
@@ -22,6 +23,33 @@ Baseline for the account parts: the built behavior cited below (no earlier spec 
 
 - **D4 Open decisions settled** (user, 2026-10-26, "defaults ok"): OD-1 through OD-5 take their recommended defaults,
   and risks R1, R2 and R3 are accepted as FR-27 – FR-29. R4 and R5 need no requirement.
+- **D5 Amendments after plan review pass 1** (user, 2026-10-26, "accept the defaults and amend the spec with your
+  recommendations"):
+  - **E1.** On a page rebuilt from its words, PDF import's rule took the number at the end of a description
+    (`… PPD ID 1234567890`) for an amount and rejected the row. That was the user's own rows. A number that continues
+    the description's printed text is now description text, in PDF import and Record alike (FR-30).
+  - **E2.** A re-read of a statement you confirmed doesn't move it (FR-26, as today), so SC-06 now expects it to stay.
+  - **Plan defaults taken:**
+    - Q1: one feature.
+    - Q2: FR-27's balance heading wording.
+    - Q3: rejecting the only statement you confirmed returns the account to waiting.
+    - Q4: a failed rebuild falls back for the whole reading.
+    - Q5: FR-20's note is a record note, not a review reason.
+    - Q6: a delete doesn't reach records already delivered into another person's library.
+  - **Corrections to the baseline:**
+    - N1: there is no `bills` table; a recurring bill is a `recurring_obligations` row of kind `bill`.
+    - N3: today the model, not code, resolves a statement's years.
+- **D6 Decisions after plan review passes 2 and 3** (user, 2026-10-26, the plan's Q7 and Q8):
+  - **Q7: the fallback is accepted, and FR-27 is unchanged.** A value line that names a balance, such as
+    `Ending Balance 1,000.00`, printed directly above a transactions heading is that table's title line. FR-27 then
+    classes the table as a balance table, so none of its rows is rebuilt, and its page keeps the model's reading
+    (FR-23). The fix that would close it, treating the row above a heading as a title only when it holds no
+    amount-shaped word, is deferred. The gap is listed in `docs/open-work.md` "Money".
+  - **Q8: FR-30 is amended.** An amount-shaped word joined to the description's run stays the row's amount when its
+    whole box lies inside one amount column and it is the row's only amount-shaped word in an amount column. Otherwise
+    FR-30 is unchanged: S-flag's `… PPD ID 1234567890 0.36` still records 36 with the full description, and
+    `account-import-pdf` contract 7-e and the test contract's x3 are still rejected. So a row whose description runs close
+    to its only amount is read as it is today, in PDF import and Record alike (SC-28).
 
 Background (user report): one Chase savings statement, read twice, left two accounts (last four 1234, then 3456 after
 the last-four fix, both from the same statement). A row took its running balance 0.38 as its amount instead of 0.02.
@@ -34,13 +62,14 @@ number on a line.
 **Users.** The household user who records statements and keeps the Accounts tab.
 
 **In scope.** Unconfirmed accounts (FR-01 – FR-08). Deleting an account (FR-09 – FR-15). Record's rows from the rebuilt
-table (FR-16 – FR-27, FR-29). The family hub's copies on delete (FR-28).
+table (FR-16 – FR-27, FR-29). The family hub's copies on delete (FR-28). The description-number rule shared with PDF
+import (FR-30).
 
 **Non-goals.**
 - Merging two accounts into one, or moving records between accounts.
 - Changing an account's type or currency by hand.
 - Undoing a delete. Recording the documents again is the way back (OD-2).
-- Changing PDF import (`account-import-pdf`), CSV/XLSX import, reconciliation rules, receipts or pay stubs.
+- Changing PDF import (`account-import-pdf`) beyond FR-30, CSV/XLSX import, reconciliation rules, receipts or pay stubs.
 - Rebuilding tables for photos or scanned pages, or for investment, loan or tax documents.
 - Any model or network call added by this feature.
 
@@ -54,7 +83,8 @@ All paths are under `src/home_manager/` unless noted.
   `NOT NULL REFERENCES accounts(id)` (`library/migrations/050_strict_tables.sql`, tables `statements_new` and
   `transactions_new`).
 - Other tables refer to accounts:
-  - `bills`, `category_rules`, `recurring_obligations` and `transaction_imports` have `account_id`.
+  - `category_rules`, `recurring_obligations` and `transaction_imports` have `account_id`. There is no `bills` table
+    (dropped in migration 067): a recurring bill is a `recurring_obligations` row of kind `bill` (N1).
   - `tax_rules.account_id` is `ON DELETE CASCADE`.
   - `investment_accounts.ledger_account_id` is `ON DELETE SET NULL`.
 - A re-read writes over an undecided statement (`_upsert`, `ledger.py:594–609`). The account comes from the new
@@ -109,13 +139,13 @@ Terms:
 | FR-03 | An account becomes confirmed when you confirm a statement in it (review to `verified` by you), reconcile a statement in it, or import CSV, XLSX or PDF transactions into it. Rejecting a statement doesn't confirm its account. | Confirming the statement makes the account appear on Accounts and Today in the same response. Rejecting leaves it unconfirmed. |
 | FR-04 | The first statement into an unconfirmed account always waits for your Confirm. It is published `proposed`, with Confirm and Reject offered, even when it has no issues. Statements into a confirmed account keep today's automatic check. | A clean statement (no issues) into a new account shows Confirm on its document page and in Review. The same statement recorded again into a confirmed account is `verified`, `automatic`. |
 | FR-05 | The statement's record says where it goes: "New account: *name* — added to Accounts when you confirm this statement." | Shown on the document page and in Review for a statement whose account is unconfirmed. |
-| FR-06 | When a re-read records a statement into a different account, an unconfirmed account it leaves with no statements, transactions or import records is removed, in the same database transaction. A confirmed account is never removed automatically. | Record K, then record it again with a different last four: one account exists, the new one. The same sequence with the first account confirmed leaves both. |
+| FR-06 | When a re-read records a statement into a different account, an unconfirmed account it leaves with no statements, transactions or import records is removed, in the same database transaction. A confirmed account is never removed automatically. | Record K, then record it again with a different last four: one account exists, the new one. The same sequence after you confirmed the statement keeps it unchanged in the first account (FR-26), and creates no second account (E2). |
 | FR-07 | Undoing a Confirm (the toast's Undo) returns the account to unconfirmed when nothing else confirmed it (OD-1). | Confirm, then Undo: the account leaves Accounts again. |
 | FR-08 | Existing data on upgrade. An account is confirmed if it has an import record, or a statement you reviewed (`review_source='user'`) or reconciled, or if you created it (no statement and no extraction rows at all). Other accounts become unconfirmed. An unconfirmed account with no statements, transactions or import records is removed. | Fixture with (a) an account holding only an automatically checked statement, (b) an empty account left by a re-read, (c) an account with a CSV import, (d) an account made by hand: after upgrade (a) is unconfirmed, (b) is gone, and (c) and (d) are confirmed. |
 | **Delete an account** | | |
 | FR-09 | Each account on the Accounts tab offers **Delete…**. | The action is in the account's actions, keyboard reachable, with an accessible name naming the account. |
-| FR-10 | Delete first shows what will go: the account's name and the counts of statements, transactions and import records. It also counts receipts and pay stubs linked to its transactions (these go back to counting on their own), transfer links, recurring payments and bills tied to it, and category rules for it. It says the documents stay in the library and can be recorded or imported again, and that this can't be undone. Delete needs an explicit second click. | The dialog's numbers equal the database counts for a fixture account. Cancel changes nothing. |
-| FR-11 | Deleting removes, in one database transaction: the account; its statements and transactions; its import records; and everything that belongs only to those statements and transactions (evidence links, corrections, review history, tags, category splits, receipt and pay-stub links, transfer links). Category rules and tax rules for the account are removed. Recurring payments and bills keep their row with no account (OD-4). An investment account linked to it keeps its own values with the link cleared. | After delete, no row anywhere refers to the account id or to the ids of its statements or transactions (checked table by table). Rows of other accounts are unchanged. |
+| FR-10 | Delete first shows what will go: the account's name and the counts of statements, transactions and import records. It also counts receipts and pay stubs linked to its transactions (these go back to counting on their own), transfer links, recurring payments and recurring bills tied to it (`recurring_obligations`, N1), and category rules for it. It says the documents stay in the library and can be recorded or imported again, and that this can't be undone. Delete needs an explicit second click. | The dialog's numbers equal the database counts for a fixture account. Cancel changes nothing. |
+| FR-11 | Deleting removes, in one database transaction: the account; its statements and transactions; its import records; and everything that belongs only to those statements and transactions (evidence links, corrections, review history, tags, category splits, receipt and pay-stub links, transfer links). Category rules and tax rules for the account are removed. Recurring payments and recurring bills keep their row with no account (OD-4). An investment account linked to it keeps its own values with the link cleared. | After delete, no row anywhere refers to the account id or to the ids of its statements or transactions (checked table by table). Rows of other accounts are unchanged. |
 | FR-12 | Money after a delete. Receipts and pay stubs that were matched to deleted transactions count on their own again, as if never matched (`STANDALONE_RECEIPT`, `STANDALONE_INCOME`). Totals drop by exactly what the deleted transactions counted. | Fixture: a receipt matched to a deleted transaction is in Spending once, standalone, after the delete. The month's totals equal (before − deleted transactions' counted amounts + newly standalone receipts and pay stubs). |
 | FR-13 | Documents are untouched: originals, preserved blobs, readings and library files stay byte-identical. A statement document shows no record and offers **Record** again. A CSV or PDF that was imported offers **Import** again. | Hashes of the document files and reading folder are unchanged. The document's next step is Record (statement) or Import (import file). |
 | FR-14 | Delete is refused, changing nothing, when the account changed after the dialog opened (a statement recorded or an import into it in between). The message is "This account changed since you opened Delete; check the counts again." | Open the dialog, record another statement into the account, then Delete: 4xx with that message, and all rows remain. |
@@ -125,15 +155,16 @@ Terms:
 | FR-17 | Each rebuilt row's transaction takes these values from its cells. The posted date comes from the Date cell. The description is the Description cell as printed (up to 500 characters). The amount is exact, in minor units, from the Amount cell or the one filled Withdrawals/Debit or Deposits/Credit cell. The Balance column (`pdf_import.BALANCE_NAMES`) is never an amount. | `09/18 … 0.02 0.38` under Amount \| Balance records 0.02, never 0.38. A Debit/Credit statement records each row's filled cell. |
 | FR-18 | Direction. Separate Debit and Credit columns decide it. With a single Amount column, a bank statement reads negative as money out, and a card statement reads positive as money out (charges). The rule is not a choice in Record. | A card statement whose charges print positive records them as money out. A bank statement printing `-500.00` records money out. |
 | FR-19 | Year. A four-digit year is read as printed. A date with no year, or a two-digit year, takes its year from the statement's printed period (OD-3). A month earlier than the period's start month falls in the period's end year, so a December–January statement works. With no printed period, such rows aren't recorded and the statement goes to review, naming the rows. | Period 2025-12-15 to 2026-01-14: `12/20` gives 2025-12-20 and `01/03` gives 2026-01-03. No period read: the rows are listed in review and not recorded. |
-| FR-20 | On a rebuilt page, the transactions are the rebuilt rows. The model's rows citing that page don't change any rebuilt row's date, amount or direction, and add no rows there. A model row on that page that matches no rebuilt row (by date and amount) becomes a review note quoting it. A rebuilt row the model didn't list is still recorded. | Stubbed model answers with the balance as an amount and an extra row: the record holds exactly the rebuilt rows, plus one review note for the extra row. |
+| FR-20 | On a rebuilt page, the transactions are the rebuilt rows. The model's rows citing that page don't change any rebuilt row's date, amount or direction, and add no rows there. A model row on that page that matches no rebuilt row (by date and amount) becomes a note on the record quoting it. The note is shown with the record but isn't a reason for review (Q5). A rebuilt row the model didn't list is still recorded. | Stubbed model answers with the balance as an amount and an extra row: the record holds exactly the rebuilt rows, plus one note for the extra row, and the status follows the other checks. |
 | FR-21 | Rows the rebuild rejects (date or amount outside every column, a word straddling two columns, two amounts in one column, both debit and credit, an impossible date, an unparseable amount, a currency differing from the statement's) are not recorded. Each becomes a review issue with page, row and reason. The statement needs review. | A fixture with one row of each kind records the good rows. Each rejected row is in `issues` with its page and reason, and the status is `needs_review`. |
 | FR-22 | A rebuilt page with a layout issue other than `unresolved_columns` (overlapping or rotated text, glyphs outside the page, and so on) still gives its rows. The statement needs review, naming the page and issue, as the page note does today. | The flagged-page fixture records its rows, and the statement is `needs_review` with "Page 1 PDF layout needs review: …". |
 | FR-23 | Pages without rebuilt rows keep today's reading: the model's rows with the existing checks, including the missed-row check. That covers scanned (`vision_model`) pages, pages with no transactions heading that continue none, and readings saved before layouts existed. A reading with no layout adds the note "Read this document again to take its rows from the printed columns." | A 2-page PDF with page 2 scanned: page 1 rows come from the rebuild, and page 2 rows from the stubbed model. An old reading without layout records as today, with the note. |
 | FR-24 | Evidence. Each rebuilt-row transaction cites its document, blob hash, page, line ids and word ids (cell ids for a native table row). Its source opens the page with those words highlighted. | `GET /api/provenance/transaction/{id}` for a rebuilt row names its page and line and word ids. The document page highlights them. |
 | FR-25 | The statement's checks are unchanged and now run on the rebuilt amounts: opening + transactions = closing (bank), previous − transactions = new balance (card), and the printed-summary check. | The user's case fixture (0.36, 0.02 with balance 0.38, −0.38) reconciles when the printed balances agree, with no "Rows may be missing" issue. |
-| FR-27 | A table on a statement whose title line (the visual row directly above its heading) or heading names a balance (`pdf_import.BALANCE_NAMES`, or "daily ending balance", "daily balance") is not a transactions table for Record. Its rows are never recorded, and it starts no continuation chain (R2, accepted). | A page with the transactions table and a "DAILY ENDING BALANCE" table headed Date \| Amount records only the transactions table's rows. |
-| FR-28 | Delete reaches the family hub. Family copies of the account's statements and transactions (`finance/family_routing.py`) are removed with it, and the dialog counts them (R1, accepted; U1 is resolved in the plan). | After deleting an account whose statement was shared to the family, no family row refers to it, and the dialog showed the shared count. |
+| FR-27 | A table on a statement whose title line (the visual row directly above its heading) or heading names a balance (`pdf_import.BALANCE_NAMES`, or "daily ending balance", "daily balance") is not a transactions table for Record. A heading's column that is itself the Balance column (`Date \| Amount \| Balance`) doesn't make the table a balance table (Q2). Its rows are never recorded, it starts no continuation chain, and on a page rebuilt from its words the transactions table ends where such a table's title or a second heading begins (R2, accepted). | A page with the transactions table and a "DAILY ENDING BALANCE" table headed Date \| Amount records only the transactions table's rows. |
+| FR-28 | Delete reaches the family hub. Family copies of the account's statements and transactions (`finance/family_routing.py`) are removed with it, and the dialog counts them (R1, accepted; U1 is resolved in the plan). Records already delivered into another person's own library are theirs, and a delete doesn't reach them (Q6). | After deleting an account whose statement was shared to the family, no family row refers to it, and the dialog showed the shared count. |
 | FR-29 | Two rebuilt rows with the same date, amount and description on different pages or in different tables get a review note naming both places. Both are recorded, as their ordinals keep them apart (R3, accepted). | A statement printing a check in "Checks paid" and again in the main list records both rows, and the statement is `needs_review` with the note. |
+| FR-30 | Description numbers (E1, amended by D6 Q8; changes `account-import-pdf` FR-08 for both features). In a row rebuilt from a page's words, an amount-shaped word that continues the description's printed text is description text, not an amount. It must be joined to the word before it by the reader's spacing rule (`pdf_import.PageView.texts`: closer than 1.5 font sizes), in a run of words that starts in the Description column. **Exception:** such a word stays the row's amount when both hold: (a) its whole box lies inside one amount column's span (Amount, Debit/Withdrawals or Credit/Deposits; spans as `account-import-pdf` FR-08 "Column positions", with no tolerance), and (b) it is the only amount-shaped word in the row whose centre is in an amount column. A Balance column isn't an amount column. Every other placement is read as before: an amount-shaped word printed apart from the description inside an amount column is still rejected (`account-import-pdf` contract 7-e; this contract's x3). | S-flag's `09/18 SYNTH ACCTVERIFY PPD ID 1234567890 0.36` records 36 with that description, in Record and in PDF import alike: `1234567890` crosses into the Amount column from the Description column and `0.36` is also in the Amount column, so neither (a) nor (b) holds. T's `09/22 SYNTH LONG DESCRIPTION 12.34`, whose `12.34` is joined to the description, lies wholly in the Amount column and is the row's only amount, records 12.34 with the description `SYNTH LONG DESCRIPTION`, in both. The `account-import-pdf` contract tests pass unchanged. |
 | FR-26 | Rebuilding is deterministic and local: the same reading gives the same rows. No model or network call is added. Readings made before this feature are rebuilt on **Extract again**. Statements you already confirmed or rejected aren't rewritten (as today). | Extract again twice gives identical rows. With network blocked and no model configured, the rebuild step itself succeeds (the model steps fail as today). |
 
 ## Invariants, privacy, security and data retention
@@ -158,7 +189,7 @@ Terms:
 - **Confirm and Undo** (FR-03, FR-07) are recorded in review history as today. Confirmation status follows them
   without separate state that could drift (how is the plan's choice).
 - **Upgrade** (FR-08) is one migration step and repeatable: running it again changes nothing.
-- **Rebuild failures** (a malformed saved layout) fall back to the model's reading for that page, with a review note,
+- **Rebuild failures** (a malformed saved layout) fall back to the model's reading for every page of that reading (pages are linked by continuation tables; Q4), with a review note,
   and never fail the whole Record.
 
 ## Nondeterministic outputs and how they are verified
@@ -176,24 +207,26 @@ Terms:
 | SC-03 | FR-07 | SC-02 | Undo the Confirm | The account is unconfirmed and off Accounts |
 | SC-04 | FR-03 | Unconfirmed account | Reconcile its statement; separately, import a CSV into it | Each action confirms the account |
 | SC-05 | FR-06 | SC-01 | Record the same PDF again so its last four changes (stubbed reference) | One account (the new one); the old unconfirmed account is gone |
-| SC-06 | FR-06 | SC-02 (confirmed) | Same as SC-05 | Both accounts exist; the confirmed one is left empty |
+| SC-06 | FR-06, FR-26 | SC-02 (confirmed) | Same as SC-05 | The re-read keeps the confirmed statement as it is (`kept_reviewed`): one account, …3456, confirmed, with its statement and rows; no …7890 account is created (E2) |
 | SC-07 | FR-08 | Fixtures (a)–(d) of FR-08 in an old-schema library | Upgrade | (a) unconfirmed, (b) removed, (c) and (d) confirmed. Upgrading again changes nothing |
 | SC-08 | FR-09, FR-10 | Confirmed account with 2 statements, 30 transactions, 1 CSV import record, 1 receipt matched, 1 transfer link, 1 recurring payment, 1 category rule | Open Delete | The dialog shows exactly those counts and the documents-stay sentence. Cancel changes nothing |
 | SC-09 | FR-11, FR-12, FR-13 | SC-08 | Confirm Delete | No row refers to the account, its statements or transactions. The receipt counts standalone. Totals are as FR-12 states. The recurring payment remains with no account. Document hashes are unchanged; the statement offers Record and the CSV offers Import |
 | SC-10 | FR-14 | Dialog open on an account | Record another statement into it, then Delete | Refused with the "changed" message; nothing removed |
 | SC-11 | FR-15 | SC-08 with a fault on the last delete step | Delete; remove the fault; Delete | First: everything remains. Retry: deleted |
 | SC-12 | FR-09, FR-11 | An unconfirmed account, from its statement's document page and from Accounts' "Waiting for confirm" group (OD-5) | Delete it | Removed with its statement and rows |
-| SC-13 | FR-16, FR-17, FR-22 | User's case fixture: page 1 flagged `overlapping_text` and `unsupported_text_rotation`, Date \| Description \| Amount \| Balance, rows including `09/18 … 0.02 0.38` and `09/18 … -0.38 0.00` | Record (model stub returns 0.38 as that row's amount) | The rows record 0.02 and −0.38, never 0.38 or 0.00. The statement is `needs_review` with the page-1 layout note |
+| SC-13 | FR-16, FR-17, FR-22, FR-30 | User's case fixture: page 1 flagged `overlapping_text` and `unsupported_text_rotation`, Date \| Description \| Amount \| Balance, rows including `09/18 … 0.02 0.38` and `09/18 … -0.38 0.00` | Record (model stub returns 0.38 as that row's amount) | The rows record 0.02 and −0.38, never 0.38 or 0.00. The statement is `needs_review` with the page-1 layout note |
 | SC-14 | FR-17, FR-18 | Bank statement with Withdrawals \| Deposits \| Balance; card statement with Amount, charges positive | Record each | Exact signed amounts per row; Balance never an amount |
 | SC-15 | FR-19 | Card statement, year-less dates, period 2025-12-15 to 2026-01-14; variant with no period read | Record | Dates fall in 2025-12 and 2026-01. Variant: rows not recorded and listed in review |
-| SC-16 | FR-20 | Rebuilt page; model stub adds one extra row and misreads one amount | Record | The rebuilt rows exactly, plus a review note for the extra row |
+| SC-16 | FR-20 | Rebuilt page; model stub adds one extra row and misreads one amount | Record | The rebuilt rows exactly, plus a note on the record for each model row that matches none; the status follows the other checks |
 | SC-17 | FR-21 | One row of each rejection kind | Record | Good rows recorded; each rejected row an issue with page, row and reason; `needs_review` |
 | SC-18 | FR-23 | 2 pages, page 2 scanned (stub vision); and an old reading without layout | Record | Page 1 rows from the rebuild, page 2 from the model; the old reading as today, with the note |
 | SC-19 | FR-24 | A rebuilt-row transaction | Open its source; call provenance | Page with its words highlighted; provenance names page, line and word ids |
 | SC-20 | FR-25, FR-26 | The user's case fixture with matching printed balances | Record twice | No reconcile issue; identical rows both times |
-| SC-21 | FR-27 | Bank statement with a transactions table and a "DAILY ENDING BALANCE" Date \| Amount table | Record | Only the transactions rows are recorded |
+| SC-21 | FR-27 | Bank statement with a transactions table and a "DAILY ENDING BALANCE" Date \| Amount table; also on a page flagged like SC-13's | Record | Only the transactions rows are recorded |
 | SC-22 | FR-28 | Account whose statement was shared to the family hub | Open Delete; Delete | The dialog counts the shared copies; afterwards no family row refers to the account |
 | SC-23 | FR-29 | Statement printing one check in two sections | Record | Both rows recorded; review note naming both places |
+| SC-27 | FR-30 | S-flag (SC-13's page) | Record; separately, PDF-import it | s1–s3 are recorded (36, 2, −38) with their full descriptions by both; the `account-import-pdf` 7-e case is still rejected |
+| SC-28 | FR-30 (D6 Q8) | T: S-flag plus a row whose description is joined to its only amount, printed wholly in the Amount column | Record; separately, PDF-import it | That row records 12.34 with the description `SYNTH LONG DESCRIPTION` by both, not rejected; s1–s5 are as in SC-27 |
 | SC-24 | FR-02, FR-03, FR-05 | Browser; S recorded | Accounts tab, document page, Confirm | Account under "Waiting for confirm" until Confirm, then in its group and in Today's cash |
 | SC-25 | FR-09, FR-10, OD-5 | Browser; unconfirmed account | Delete from Accounts and from the document page, by keyboard | Dialog with counts; Cancel returns focus; Delete removes it |
 | SC-26 | FR-24 | Browser; a rebuilt-row transaction | Open its source | Page opens with the row's words highlighted |
@@ -206,7 +239,7 @@ Terms:
 |---|---|---|
 | OD-1 | Does Undo of a Confirm return the account to unconfirmed? | **Yes**, when nothing else confirmed it: Undo should put things back as they were. |
 | OD-2 | Delete has no undo. | **No undo**; the dialog says so and that documents can be recorded again. A ledger Trash would be a separate feature. |
-| OD-3 | May Record take a year-less date's year from the printed statement period? (PDF import asks the user instead, and lists inferring the year as a non-goal; Record has the cited period.) | **Yes**: the period is printed and cited on the same statement, and Record already resolves years from it today. Rows are refused when no period was read. |
+| OD-3 | May Record take a year-less date's year from the printed statement period? (PDF import asks the user instead, and lists inferring the year as a non-goal; Record has the cited period.) | **Yes**: the period is printed and cited on the same statement, and the model already resolves years from it today; this makes it code (N3). Rows are refused when no period was read. |
 | OD-4 | Recurring payments and bills tied to a deleted account: keep them without an account, or delete them? | **Keep them without an account**: they come from contracts and bills too, not only from the account's rows. |
 | OD-5 | Where does an unconfirmed account appear so it can be deleted without confirming it? | On the statement's document page ("New account: … · Delete account"), and in a "Waiting for confirm" group at the bottom of Accounts, collapsed. Delete there behaves as FR-10 – FR-15. |
 

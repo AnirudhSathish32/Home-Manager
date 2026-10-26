@@ -68,10 +68,18 @@ and link here for what isn't. When an item is built, remove it from this list an
 ## Money
 
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
-- **Statement accounts** (`specs/statement-accounts/spec.md`, drafted 2026-10-26, awaiting approval): accounts that
-  Record creates wait for Confirm; Delete account on the Accounts tab; Record takes a statement's dates and amounts
-  from its rebuilt columns, never Balance. Until built, re-reading a statement can leave an empty account, and a row
+- **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
+  `plans/statement-accounts/plan.md`): accounts that Record creates wait for Confirm; Delete account on the Accounts
+  tab; Record takes a statement's dates and amounts from its rebuilt columns, never Balance. Until built, re-reading a statement can leave an empty account, and a row
   can take its running balance as its amount (only sent to review).
+  - **A value line above the transactions heading** (accepted gap, spec D6 Q7; it stays once the feature is built).
+    The spec's FR-27 takes the row directly above a heading as the table's title, and a title that names a balance
+    makes the table a balance table. So a statement that prints a value line such as `Ending Balance 1,000.00`
+    directly above its transactions heading has none of that table's rows rebuilt, and the page falls back to the
+    model's reading, the one that can take a running balance as an amount (the plan adds a record note saying so). Deferred
+    fix: count the row above a heading as its title only when that row holds no amount-shaped word. A daily balance
+    table's title (`DAILY ENDING BALANCE`) holds none, so it is still excluded. Whether real statements print a value
+    line there is unverified (spec A1).
 - **PDF transaction import, still open** ([documents](documents.md#transaction-imports)):
   - Scanned (vision) pages are listed but never imported; Record is the way to bring them in.
   - A second transactions heading below a native table: the next page still continues the **first** table, so a table

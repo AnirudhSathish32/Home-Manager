@@ -25,7 +25,7 @@ running the current code. Where the spec leaves an outcome open, it is listed un
 - **Shared checks**
   - **C-unchanged:** the row counts of `accounts`, `statements`, `transactions`, `transaction_imports`,
     `financial_evidence_links`, `review_events`, `record_corrections`, `transaction_receipt_links`,
-    `transaction_income_links`, `transaction_links`, `category_rules`, `recurring_obligations`, `bills`,
+    `transaction_income_links`, `transaction_links`, `category_rules`, `recurring_obligations`,
     `record_shares`, `family_assignments` and `family_corrections` are unchanged.
   - **C-docs:** the sha256 of each fixture document's original, preserved blob, library file and every file in its
     reading folder is unchanged.
@@ -53,7 +53,7 @@ running the current code. Where the spec leaves an outcome open, it is listed un
 | Vision model (M page 2 only) | `local_model` | Returns `{"full_text": "SCANNED PAGE\n09/27 SCANNED CAFE 7.00"}`. |
 | Reasoning model (Record) | `local_model` by schema | `Classification`, `BankStatementSummary` or `CreditCardStatementSummary`, and `Transactions` answers given per fixture. The `Transactions` answers are deliberately wrong where a scenario says so. |
 | Fault during delete (SC-11) | SQLite trigger | `CREATE TRIGGER fault BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT,'injected fault'); END`, dropped before the retry. It fires on the last step whatever order the rows go in. |
-| Old-schema library (SC-07) | Fixture | A library migrated up to the migration before this feature's, then filled through the public Ledger and extraction paths. Then the feature's migration runs. |
+| Old-schema library (SC-07) | Fixture | A library migrated up to the migration before this feature's, then filled through the public Ledger and extraction paths. Then the feature's migration runs. Where the current code can't produce a pre-feature state through public paths, the test makes it with the smallest direct SQL and says so: (a)'s statement and rows set to `verified`/`automatic`; (b)'s removed account re-inserted with its old id, still named by its run's `publication_json`. No expected value depends on how the state was made. |
 | Reading without layout (SC-18 b) | Fixture | A saved reading with every page's `layout` set to `None`, as `tests/test_pdf_imports.py:2057` does. |
 | Clock | Real | No assertion depends on today's date. |
 
@@ -92,6 +92,14 @@ Arithmetic: 0.00 + 0.36 + 0.02 − 0.38 + 1,500.00 − 500.00 = 1,000.00, the pr
   record which one was used. Never inject the issue into a saved reading.
 - **S2:** S printing account number `000009000127890`, so the last four is 7890. It is used to move a statement to
   another account (SC-05, SC-06).
+- **T (SC-28, spec D6 Q8):** S-flag with one more row, t1, below s5: date `09/22`, description `SYNTH LONG DESCRIPTION`,
+  amount `12.34`, Balance blank. Expected: 2026-09-22, `amount_minor` 1234 (money in), description
+  `SYNTH LONG DESCRIPTION`. The description's words are placed one by one so that `SYNTH` is centred in the Description
+  column, each gap is under 1.5 font sizes, and `12.34` starts just past the Description/Amount midpoint. P-check: on
+  t1's visual row, `12.34` is in the same `PageView.texts` run as `SYNTH LONG DESCRIPTION`, its whole box lies inside
+  the Amount column's span, and it is the only amount-shaped word centred in an amount column. One placement that
+  passes, at 10 pt with S's columns: `SYNTH` at x 110, `LONG` at 155, `DESCRIPTION` at 194, `12.34` at 272. T isn't
+  balanced (s1–s5 already reach the ending balance), so no scenario asserts its arithmetic.
 
 **W: bank statement, Withdrawals | Deposits | Balance**, period 08/01/2026–08/31/2026, opening 1,000.00, closing
 2,450.00.
@@ -132,7 +140,7 @@ gives period start and end as missing.
   W, 3 from W′ and 3 from the import.
 - 1 receipt matched (verified link) to w1.
 - 1 transfer link between w1 and a transaction in account B.
-- 1 recurring payment and 1 bill with `account_id = A`.
+- 1 recurring payment and 1 recurring bill with `account_id = A` (two `recurring_obligations` rows, kinds `subscription` and `bill`; there is no `bills` table, spec N1).
 - 1 category rule for A.
 - 1 investment account with `ledger_account_id = A`.
 - Account **B**, confirmed, holding 3 transactions, is the control and must be untouched.
@@ -162,8 +170,8 @@ Initial state: no accounts. S is captured and read.
 
 Expected final state: 1 account (…7890, unconfirmed), 1 statement, 5 transactions with amounts 36, 2, −38, 150000,
 −50000 (from the rebuild, not the S-bad stub). C-docs holds.
-Variant J1-a (**SC-06**): confirm at step 2 and skip step 3. Step 4 then leaves 2 accounts: …3456 confirmed and empty,
-…7890 unconfirmed.
+Variant J1-a (**SC-06**, amended E2): confirm at step 2 and skip step 3. Step 4's re-read is `kept_reviewed` (FR-26): exactly 1
+account remains, …3456, confirmed, with its statement and 5 rows unchanged (snapshot equal), and no …7890 account exists.
 Variant J1-b: a second statement of the same account, recorded after it was confirmed, with no issues, is `verified`,
 `automatic` (FR-04's second half).
 Evidence: `pytest tests/test_statement_accounts.py -k journey_j1`
@@ -253,7 +261,7 @@ Record →
 - The transactions are exactly s1–s5 in printed order: dates 2026-09-18 ×3, 2026-09-20, 2026-09-25; amounts 36, 2, −38,
   150000, −50000. **No row has 38 or 0** (s2's and s3's balances).
 - Two stub rows match no rebuilt row: the misread s2 and the extra row, both `09/18 0.38` money in. Each gets one
-  review note quoting it (FR-20; gap G2 covers the wording). The stub's s1, s3, s4 and s5 match rebuilt rows and add
+  note on the record quoting it (FR-20; gap G2 covers the wording), in `notes`, not in `issues`. The stub's s1, s3, s4 and s5 match rebuilt rows and add
   no note.
 - The statement is `needs_review` with `Page 1 PDF layout needs review: …` (FR-22).
 - C-money holds.
@@ -318,7 +326,32 @@ Requirement IDs: FR-27
 D → only s1–s5 are recorded. No transaction has the amount 150000 on 2026-09-20 twice, and none comes from the
 `DAILY ENDING BALANCE` rows.
 Variant: the daily table on page 2 by itself, after S's page 1 → it starts no continuation; page 2 gives no rows.
+Variant D-flag: D drawn on S-flag's page (no native table) → only s1–s5 are recorded, and no issue names a daily row.
 Evidence: `pytest tests/test_statement_rebuild.py -k sc21`
+
+## SC-27: a number that ends a description (E1)
+Requirement IDs: FR-30
+S-flag, Record (S-bad stub) → s1–s3 are recorded as 36, 2, −38, with descriptions `SYNTH ACCTVERIFY PPD ID 1234567890`,
+`SYNTH ACCTVERIFY PPD ID 1234567890` and `SYNTH ACCTVERIFY WEB ID 1234567890`. None is rejected.
+PDF import of the same reading (preview by `account_id`) → the same 5 rows parse, none rejected.
+Regression: `account-import-pdf` 7-e (`12345` printed apart from `B1 REF` in the Withdrawals span) is still rejected,
+and X's x3 still is.
+Evidence: `pytest tests/test_statement_rebuild.py -k sc27 tests/test_pdf_imports.py`
+
+## SC-28: a description joined to its only amount (spec D6 Q8)
+Requirement IDs: FR-30
+Fixture: T. Stub: S-bad, which doesn't list t1.
+P-check: T's (above), and S-flag's page issues.
+- Record →
+  - The transactions are s1–s5 as in SC-27 (36, 2, −38, 150000, −50000, with their full descriptions), then t1:
+    2026-09-22, 1234, `SYNTH LONG DESCRIPTION`. t1 is recorded though the model didn't list it (FR-20).
+  - No issue names t1.
+- PDF import of the same reading (preview by `account_id`) → the same 6 rows parse with those amounts and descriptions,
+  none rejected. t1's amount cell is `12.34`, and its description holds no number.
+- Regression: S-flag's `1234567890` stays in the description of s1–s3 (it crosses into the Amount column, and it isn't
+  the row's only amount), and `account-import-pdf` 7-e and X's x3 are still rejected.
+
+Evidence: `pytest tests/test_statement_rebuild.py -k sc28 tests/test_pdf_imports.py`
 
 ## SC-23: the same row in two sections
 Requirement IDs: FR-29
@@ -379,6 +412,7 @@ Evidence: `RUN_BROWSER_TESTS=1 pytest tests/test_statement_accounts_browser.py`
 | FR-27 | SC-21 | `-k sc21` |
 | FR-28 | SC-22 | `pytest tests/test_statement_accounts.py -k sc22` |
 | FR-29 | SC-23 | `pytest tests/test_statement_rebuild.py -k sc23` |
+| FR-30 | SC-27; SC-28; SC-13 | `pytest tests/test_statement_rebuild.py -k "sc27 or sc28 or sc13" tests/test_pdf_imports.py` |
 
 Regression run, touched components only:
 ```
@@ -398,3 +432,6 @@ RUN_BROWSER_TESTS=1 python -m pytest tests/test_statement_accounts_browser.py te
   by the same rule, with no separate month assertion.
 - **G4 (FR-10).** "Counts the dialog showed" in FR-14: how the request carries them is the plan's choice. The contract
   asserts only the refusal when they differ.
+- **G5 (FR-30).** A word joined to the description that is the row's only amount but crosses an amount column's edge
+  is description text under FR-30, so the row has no amount. The spec doesn't say how that row is shown (the plan's
+  P18 rejects it with a reason). No scenario asserts it.
