@@ -540,8 +540,10 @@ PRIMARY = re.compile(r"\bprimary\b")
 
 
 def library_page(page, base):
+    # Rows from an earlier visit stay in the DOM until the fresh load redraws the table, so wait for rows it drew.
+    page.locator("#rc2-table tbody tr").evaluate_all("rows => rows.forEach(row => { row.dataset.stale = 'true'; })")
     page.goto(f"{base}/#/documents?folder=Inbox")
-    page.wait_for_selector("#rc2-table tbody tr")
+    page.wait_for_selector("#rc2-table tbody tr:not([data-stale])")
 
 
 def row_of(page, name):
