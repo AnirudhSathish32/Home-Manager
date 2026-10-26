@@ -405,13 +405,13 @@ def test_sc23_the_pdf_dialog_works_by_keyboard_and_announces_its_summary(tmp_pat
         expect(year).to_have_value("2025")
         expect(status).to_contain_text("5 new")
         expect(dialog.locator("#confirm-import")).to_be_enabled()
-        expect(status).to_contain_text("Money out -112.94 USD; money in 269.99 USD")
+        expect(status).to_contain_text("New: money out -112.94 USD; money in 269.99 USD")
         assert page.evaluate(NO_OVERFLOW)
         account.focus()
         page.keyboard.press("ArrowUp")  # C → A
         expect(account).to_have_value(str(ids["A"]))
         expect(sign).to_have_value("negative_is_outflow")
-        expect(status).to_contain_text("Money out -269.99 USD; money in 112.94 USD")
+        expect(status).to_contain_text("New: money out -269.99 USD; money in 112.94 USD")
         account.focus()
         page.keyboard.press("ArrowDown")
         page.keyboard.press("ArrowDown")  # A → C → L (a loan has no default sign)
@@ -658,4 +658,33 @@ def test_sc20_the_primary_action_follows_the_reading_the_account_match_and_what_
         with manager.store.connection() as db:
             assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 9
         assert not failures
+        browser.close()
+
+
+@browser_test
+def test_a_second_preview_shows_the_already_recorded_totals_beside_the_new_ones(tmp_path):
+    """FR-05: money in and out are shown for ticked New rows, separately from Already recorded rows."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    expect.set_options(timeout=30000)
+    token = "pdf-dialog-recorded-totals"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        import_pdf(manager, base, token, "K.pdf", fx.k_pages())
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/transactions")
+        page.wait_for_selector("#tx2-import")
+        dialog = page.locator("#import-dialog")
+        page.locator("#tx2-import").click()
+        page.get_by_role("button", name="Import K.pdf").click()
+        expect(dialog.locator("#import-pdf-rows tr")).to_have_count(9)
+        status = dialog.locator("#import-status")
+        expect(status).to_contain_text("0 new, 9 already recorded")
+        expect(status).to_contain_text("New: money out 0.00 USD; money in 0.00 USD.")
+        expect(status).to_contain_text("Already recorded: money out -641.50 USD; money in 2,020.11 USD.")
+        assert failures == []
         browser.close()

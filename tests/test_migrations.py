@@ -585,3 +585,64 @@ def test_migration_numbers_are_unique_and_a_new_library_has_every_step(tmp_path)
             assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("stopped_after_bill_kinds", [False, True])
+def test_a_library_that_applied_the_pdf_import_index_as_071_gets_bill_kinds_and_keeps_its_index(tmp_path, stopped_after_bill_kinds):
+    """Before a793fea the PDF import index was step 071, the number bill kinds also took. A library that applied it is at
+    71 with pdf_import_index but no bill-kind columns. Its upgrade adds the bill-kind columns, keeps the index rows and ends
+    at the latest version, through the same path a start takes. So does a start after an earlier one committed bill kinds'
+    071 and stopped before 072."""
+    root = tmp_path / "managed"
+    root.mkdir()
+    (root / ".home-manager-store").write_text("home-manager-store-v1\n", encoding="utf-8")
+    db = sqlite3.connect(root / "inventory.sqlite3")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 71:
+                db.executescript(script.read_text())
+        old_071 = dict(MIGRATIONS)[72].read_text().replace("PRAGMA user_version=72;", "PRAGMA user_version=71;")
+        db.executescript(old_071)
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", ("d" * 64,))
+        db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at) "
+                   "VALUES('run1',?,'pdf-pages-v3-layout','{}','succeeded','t','t')", ("d" * 64,))
+        db.execute("INSERT INTO pdf_import_index VALUES('run1',1,1,'{\"4821\": 1}','USD',NULL,'t')")
+        db.commit()
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 71
+        assert "bill_kind" not in {row[1] for row in db.execute("PRAGMA table_info(receipts)")}
+        if stopped_after_bill_kinds:
+            db.executescript(dict(MIGRATIONS)[71].read_text())
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 71
+    finally:
+        db.close()
+    store = Store(root)
+    try:
+        with store.connection() as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+            assert "bill_kind" in {row[1] for row in db.execute("PRAGMA table_info(receipts)")}
+            assert "line_type" in {row[1] for row in db.execute("PRAGMA table_info(receipt_items)")}
+            assert [tuple(row) for row in db.execute("SELECT parse_run_id,transactions_tables,last_fours_json,document_currency FROM pdf_import_index")] == [
+                ("run1", 1, '{"4821": 1}', "USD")]
+    finally:
+        store.close()
+
+
+def test_another_table_named_pdf_import_index_stops_the_upgrade_at_072(tmp_path):
+    """Step 072 is skipped only for the index the first 071 created. Any other table by that name stops the upgrade with
+    the usual message, at version 71, instead of being taken for the index."""
+    root = tmp_path / "managed"
+    root.mkdir()
+    (root / ".home-manager-store").write_text("home-manager-store-v1\n", encoding="utf-8")
+    db = sqlite3.connect(root / "inventory.sqlite3")
+    try:
+        for number, script in MIGRATIONS:
+            if number <= 71:
+                db.executescript(script.read_text())
+        db.execute("CREATE TABLE pdf_import_index(unrelated TEXT)")
+        db.commit()
+    finally:
+        db.close()
+    with pytest.raises(MigrationError) as failure:
+        Store(root)
+    assert (failure.value.number, failure.value.version) == (72, 71) and "step 072" in str(failure.value)
+    assert version_of(root) == 71

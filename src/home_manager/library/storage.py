@@ -111,13 +111,41 @@ def apply_migrations(db, version, snapshot=None):
         db.execute(f"PRAGMA foreign_keys={'ON' if enforced else 'OFF'}")
 
 
+def has_pdf_import_index(db):
+    return db.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='pdf_import_index'").fetchone() is not None
+
+
+def pdf_import_index_is_072(db, script):
+    """Whether the existing pdf_import_index is the table step 072 creates: its stored CREATE TABLE text equals the script's,
+    whitespace aside. The first 071 created it with the same text."""
+    created = re.search(r"CREATE TABLE pdf_import_index \(.*?\) STRICT", script, re.S)
+    stored = db.execute("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pdf_import_index'").fetchone()
+    return bool(created and stored) and " ".join(stored[0].split()) == " ".join(created[0].split())
+
+
+def pdf_index_as_071(db, version):
+    """A library that applied the PDF import index as step 071, before bill kinds took that number (commit a793fea): at
+    version 71 with pdf_import_index but without the bill-kind columns. It still needs bill kinds' 071."""
+    return version == 71 and has_pdf_import_index(db) and "bill_kind" not in {row[1] for row in db.execute("PRAGMA table_info(receipts)")}
+
+
 def _apply_migrations(db, version, snapshot):
+    if pdf_index_as_071(db, version):
+        version = 70
     for number, script in MIGRATIONS:
         if version < number:
             log.info("schema upgrade step=%03d", number)
             try:
                 before = reference_problems(db)
-                db.executescript("BEGIN IMMEDIATE;\n" + script.read_text())
+                # A library that applied the PDF import index as 071 already has its table and rows, also on a start after
+                # bill kinds' 071 committed and 072 did not: 072 then only records its version.
+                # Any other table by that name stops the upgrade rather than being taken for the index.
+                text = script.read_text()
+                if number == 72 and has_pdf_import_index(db):
+                    if not pdf_import_index_is_072(db, text):
+                        raise sqlite3.DatabaseError("A table named pdf_import_index exists but is not the PDF import index.")
+                    text = f"PRAGMA user_version={number};"
+                db.executescript("BEGIN IMMEDIATE;\n" + text)
                 reached = db.execute("PRAGMA user_version").fetchone()[0]
                 if reached != number:
                     raise sqlite3.DatabaseError(f"Upgrade step {number:03d} did not record its version.")
@@ -129,6 +157,7 @@ def _apply_migrations(db, version, snapshot):
             except sqlite3.Error as exc:
                 if db.in_transaction:
                     db.rollback()
+                version = db.execute("PRAGMA user_version").fetchone()[0]
                 log_failure(log, "schema upgrade", exc, step=f"{number:03d}", version=version)
                 keep = f" The copy taken before upgrading is {snapshot.name}; keep it." if snapshot else ""
                 raise MigrationError(f"The library upgrade stopped at step {number:03d}. Earlier steps were kept (the library is at version {version}), "
@@ -672,9 +701,10 @@ class Store:
 
     def import_candidates(self, refusal, limit=500):
         """The documents the Import picker offers, newest first: ready CSV/XLSX files and PDFs whose current reading has a transactions
-        table (pdf_import_index) and that `refusal(db, hash)` does not refuse. Everything is filtered before the cap, so a CSV is
+        table (pdf_import_index) and that `refusal(db, hash)` does not refuse. A PDF already recorded as a statement stays listed:
+        import is still offered after Record (specs/account-import-pdf FR-18). Everything is filtered before the cap, so a CSV is
         never hidden behind PDFs. Each item has import_kind: csv, xlsx or pdf."""
-        clause = (f"deleted_at IS NULL AND grouped_under IS NULL AND {WORK_FILTERS['ready_for_ledger']} AND ({TABLE_FILE} OR "
+        clause = (f"deleted_at IS NULL AND grouped_under IS NULL AND (({TABLE_FILE} AND {WORK_FILTERS['ready_for_ledger']}) OR "
                   "(lower(relative_path) LIKE '%.pdf' AND text_run_id IN (SELECT parse_run_id FROM pdf_import_index WHERE transactions_tables>0)))")
         items = []
         with self.connection() as db:

@@ -141,7 +141,10 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
     Coming up and All sit side by side from 1600px.
   - **Accounts** (`accounts_v2.js`) lists the accounts in groups (Cash, Credit cards, Investments, Loans, Other;
     `finance.js` `ACCOUNT_GROUPS`), each row with its balance as an `account.balance` figure, "as of", an "Over 35 days
-    old" badge, coverage and a Transactions link; **Import an export** opens the picker.
+    old" badge, coverage and a Transactions link; **Import an export** opens the picker. **Rename** (not in the family
+    view) edits the name in place (`PUT /api/finance/accounts/{id}`), and the institution too while the account's
+    `institution_clash` is set; a refusal shows under the fields, Escape or Cancel puts the row back, and focus returns
+    to Rename.
   - **Add a payment** posts `POST /api/finance/transactions`; a validation error shows under the field it names
     (`errorField()` reads FastAPI's `loc`). **Import** lists the library's ready CSV and XLSX files and PDFs with a
     transactions table (`/api/finance/import-candidates`, PDFs labelled **PDF**) and opens the

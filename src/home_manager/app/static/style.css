@@ -797,6 +797,11 @@ details.today-region[open] > summary { margin-bottom: var(--space-3); }
   column-gap: var(--space-4); row-gap: var(--space-1); padding: var(--space-3) 0; overflow-wrap: anywhere; }
 .accounts2-row + .accounts2-row { border-top: 1px solid var(--border); }
 .accounts2-name { grid-area: name; display: flex; flex-direction: column; gap: 2px; }
+.accounts2-name .accounts2-rename { align-self: flex-start; font-size: var(--text-sm); }
+.accounts2-rename-form { grid-area: name; display: flex; flex-direction: column; gap: var(--space-2); }
+.accounts2-rename-field { display: flex; flex-direction: column; gap: 2px; font-size: var(--text-sm); color: var(--text-secondary); }
+.accounts2-rename-field input { width: 100%; max-width: 360px; }
+.accounts2-rename-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .accounts2-balance { grid-area: balance; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); }
 .accounts2-figure { display: flex; align-items: baseline; gap: var(--space-2); }
 .accounts2-figure .figure-label { font-size: var(--text-xs); color: var(--text-secondary); }

@@ -47,7 +47,9 @@ All four show category names through `categoryLabel()` (v1 showed raw keys).
 
 ## Accounts
 - **Components:** one tinted region per group; each row has the name and institution, the balance figure with its
-  label and "as of", an "Over 35 days old" badge past 35 days, coverage, and a Transactions link.
+  label and "as of", an "Over 35 days old" badge past 35 days, coverage, and a Transactions link. A Rename link button
+  under the name swaps it for an inline form (Name, and Institution with a note only for an account whose institution
+  clashes in case with another; Save, Cancel) with the error under the fields.
 - **Layout:** a 3-column row grid, stacking under 600px. Import an export is the header's primary.
 - **States:** `pageState`. No accounts: empty state with Import. Family: owner prefix, no Import.
 

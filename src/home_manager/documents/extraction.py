@@ -26,7 +26,7 @@ from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
 from ..finance import document_checks
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
-from ..finance.ledger import Ledger, normalize_name, says_return
+from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
@@ -3012,9 +3012,12 @@ class ExtractionService:
         if kind in ("bank_statement", "credit_card_statement"):
             name = header.issuer if kind == "credit_card_statement" else header.institution
             digits = re.sub(r"\D", "", header.account_reference.value or "")
-            with self.store.connection() as db:
-                account = name.value and self.ledger.find_account(db, name.value, ("credit_card",) if kind == "credit_card_statement" else ("checking", "savings", "other"),
-                                                                  digits[-4:] if len(digits) >= 4 else None)
+            try:
+                with self.store.connection() as db:
+                    account = name.value and self.ledger.find_account(db, name.value, statement_types("credit_card" if kind == "credit_card_statement" else "checking"),
+                                                                      digits[-4:] if len(digits) >= 4 else None)
+            except ValueError:  # Several accounts whose institutions differ only in case: no account's currency is assumed.
+                account = None
             if account:
                 return account["currency"], "Currency is not printed; the existing account's currency was used."
         if pesos:

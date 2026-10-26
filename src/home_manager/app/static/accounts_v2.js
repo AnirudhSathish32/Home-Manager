@@ -38,6 +38,13 @@ function accounts2Row(account) {
   const name = element("div", "", "accounts2-name");
   name.append(element("strong", account.display_name), element("small",
     `${account.owner ? `${account.owner} · ` : ""}${account.institution}${account.account_last_four ? ` ··${account.account_last_four}` : ""} · ${account.currency}`, "muted"));
+  if (!familyMode) {
+    const rename = element("button", "Rename", "link-button accounts2-rename"); rename.type = "button";
+    rename.dataset.account = String(account.id);
+    rename.setAttribute("aria-label", `Rename ${account.display_name}`);
+    rename.addEventListener("click", () => accounts2RenameForm(account, name));
+    name.append(rename);
+  }
   const balance = element("div", "", "accounts2-balance");
   if (account.balance) {
     const line = element("div", "", "accounts2-figure");
@@ -55,6 +62,47 @@ function accounts2Row(account) {
   link.setAttribute("aria-label", `Transactions for ${account.display_name}`);
   li.append(name, balance, link, coverage);
   return li;
+}
+
+// Rename: the name, in place of the row's name. Statements find an account by institution, type and last four, so the
+// institution is offered only when another such account has it in another case (institution_clash), to settle which one
+// a statement belongs to (docs/money.md "New statements wait for you").
+function accounts2RenameForm(account, name) {
+  const form = element("form", "", "accounts2-rename-form");
+  form.setAttribute("aria-label", `Rename ${account.display_name}`);
+  const field = (label, value, maxLength) => {
+    const wrap = element("label", "", "accounts2-rename-field"), input = document.createElement("input");
+    input.value = value; input.maxLength = maxLength; input.required = true;
+    wrap.append(element("span", label), input);
+    return [wrap, input];
+  };
+  const [institutionField, institution] = field("Institution", account.institution, 120);
+  const [nameField, displayName] = field("Name", account.display_name, 160);
+  const first = account.institution_clash ? institution : displayName;
+  const error = element("p", "", "field-error"); error.id = `accounts2-rename-error-${account.id}`; error.hidden = true; error.setAttribute("role", "alert");
+  first.setAttribute("aria-describedby", error.id);
+  const note = element("small", "Another account has this institution in a different case, so statements can't tell them apart. Change one of them.", "muted");
+  const save = element("button", "Save", "small primary"); save.type = "submit";
+  const cancel = element("button", "Cancel", "small quiet"); cancel.type = "button";
+  const actions = element("div", "", "accounts2-rename-actions"); actions.append(save, cancel);
+  const close = () => { form.replaceWith(name); name.querySelector(".accounts2-rename")?.focus(); };
+  cancel.addEventListener("click", close);
+  form.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    error.hidden = true; save.disabled = true;
+    try {
+      await api(`/api/finance/accounts/${account.id}`, {method: "PUT", body: JSON.stringify({institution: institution.value.trim(), display_name: displayName.value.trim()})});
+      notice("Account renamed.");
+      await reloadAccounts();
+      $("accounts2-groups").querySelector(`.accounts2-rename[data-account="${account.id}"]`)?.focus();  // The list was redrawn.
+    } catch (failure) {
+      error.textContent = failure.message || String(failure); error.hidden = false; first.focus();
+    } finally { save.disabled = false; }
+  });
+  form.append(...(account.institution_clash ? [institutionField, note] : []), nameField, error, actions);
+  name.replaceWith(form);
+  first.focus();
 }
 
 $("accounts2-import").prepend(icon("upload"));

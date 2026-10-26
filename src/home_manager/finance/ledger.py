@@ -366,6 +366,15 @@ class HouseholdConfig(StrictModel):
         return value
 
 
+STATEMENT_TYPES = (("credit_card",), ("checking", "savings", "other"))
+
+
+def statement_types(account_type):
+    """The account types one statement searches together (publish_statement): a card statement the cards, a bank statement
+    checking, savings and other. Any other type only itself."""
+    return next((group for group in STATEMENT_TYPES if account_type in group), (account_type,))
+
+
 class Ledger:
     def __init__(self, store):
         self.store = store
@@ -410,16 +419,59 @@ class Ledger:
 
     def find_account(self, db, institution, account_types, last_four):
         """The institution matches whatever its case: a statement prints "FIRST LOCAL BANK" for the account the user named
-        "First Local Bank". An exact match wins (docs/money.md "New statements wait for you")."""
+        "First Local Bank". An exact match wins. Accounts saved before that may differ only by case; when the institution
+        matches several of them and none exactly, none is guessed: ValueError (docs/money.md "New statements wait for you")."""
         institution = " ".join((institution or "").split())[:120]
-        row = db.execute(f"SELECT * FROM accounts WHERE institution=? COLLATE NOCASE AND account_type IN ({','.join('?' * len(account_types))}) "
-                         "AND coalesce(account_last_four,'')=? ORDER BY institution=? DESC, id LIMIT 1",
-                         (institution, *account_types, last_four or "", institution)).fetchone()
-        return dict(row) if row else None
+        rows = db.execute(f"SELECT * FROM accounts WHERE institution=? COLLATE NOCASE AND account_type IN ({','.join('?' * len(account_types))}) "
+                          "AND coalesce(account_last_four,'')=? ORDER BY institution=? DESC, id",
+                          (institution, *account_types, last_four or "", institution)).fetchall()
+        if len(rows) > 1 and rows[0]["institution"] != institution:
+            names = ", ".join(f'"{row["display_name"]}"' for row in rows)
+            raise ValueError(f'"{institution}" matches {len(rows)} accounts whose institutions differ only in case ({names}), '
+                             "so none was chosen. Rename all but one of them on Accounts, then try again.")
+        return dict(rows[0]) if rows else None
 
-    def account(self, account_id):
+    def case_twin(self, db, account, institution):
+        """Another account a statement could take for this one under `institution`: same institution whatever its case, same
+        last four (NULL-aware), and a type the same statement searches (statement_types). Its row, or None."""
+        types = statement_types(account["account_type"])
+        return db.execute(f"SELECT * FROM accounts WHERE id<>? AND institution=? COLLATE NOCASE AND account_type IN ({','.join('?' * len(types))}) "
+                          "AND coalesce(account_last_four,'')=coalesce(?,'') ORDER BY id LIMIT 1",
+                          (account["id"], institution, *types, account["account_last_four"])).fetchone()
+
+    def institution_clash(self, db, account):
+        """Whether another account has this account's institution in another case where a statement would look for both: the
+        clash find_account refuses to guess. Only then may the institution be changed (see rename_account)."""
+        return self.case_twin(db, account, account["institution"]) is not None
+
+    def rename_account(self, account_id, institution, display_name):
+        """Change an account's name, and its institution only to settle a clash (institution_clash). Statements and family
+        sync find an account by its institution, type and last four, so changing it otherwise would make the next Record
+        of its statement create a second account. The new institution may not be one a statement would also find another
+        account under, whatever its case (docs/money.md "New statements wait for you")."""
+        institution, display_name = " ".join((institution or "").split())[:120], " ".join((display_name or "").split())[:160]
+        if not institution:
+            raise ValueError("Enter the account's institution.")
+        if not display_name:
+            raise ValueError("Enter a name for the account.")
         with self.store.connection() as db:
-            row = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+            db.execute("BEGIN IMMEDIATE")
+            account = self.account(account_id, db)
+            if institution != account["institution"]:
+                if not self.institution_clash(db, account):
+                    raise ValueError("Statements find this account by its institution, so it stays as it is. Only the name can be changed.")
+                clash = self.case_twin(db, account, institution)
+                if clash:
+                    raise ValueError(f'"{clash["display_name"]}" already has this institution and last four. Choose a different institution.')
+            db.execute("UPDATE accounts SET institution=?,display_name=?,updated_at=? WHERE id=?", (institution, display_name, now(), account_id))
+            return self.account(account_id, db)
+
+    def account(self, account_id, db=None):
+        """The account row; on `db` when given, so it is read inside the caller's transaction."""
+        if db is None:
+            with self.store.connection() as db:
+                return self.account(account_id, db)
+        row = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
         if row is None:
             raise ValueError("Account not found.")
         return dict(row)
@@ -989,7 +1041,7 @@ class Ledger:
     def publish_statement(self, record, source, status):
         card = record["statement_type"] == "credit_card"
         with self.store.connection() as db:
-            account = self.find_account(db, record["institution"], ("credit_card",) if card else ("checking", "savings", "other"), record["last_four"])
+            account = self.find_account(db, record["institution"], statement_types("credit_card" if card else "checking"), record["last_four"])
             account = account or self.account_in(db, record["institution"], "credit_card" if card else "checking", record["currency"], last_four=record["last_four"])
             if account["currency"] != record["currency"]:
                 raise ValueError("The statement currency differs from its account's currency; nothing was published.")
@@ -1281,13 +1333,13 @@ class Ledger:
             raise ValueError(refusal)
         choices = dict(tables=tables, year=year, date_format=date_format or "auto", sign=sign)
         currency = currency_code(currency) if currency else None
-        account = account or (self.account(account_id) if account_id else None)
+        account = account or (self.account(account_id, db) if account_id else None)
         match = None
         if account is None:  # A first look finds the last fours and the document's currency, which choose the account and so the sign.
             first = pdf_import.analyze(result, account_type=account_type, currency=currency or "USD", **choices)
             match = self.account_match(db, first.last_fours, first.document_currency, home_currency)
             if match and account_type is None and currency in (None, db.execute("SELECT currency FROM accounts WHERE id=?", (match["account_id"],)).fetchone()[0]):
-                account = self.account(match["account_id"])
+                account = self.account(match["account_id"], db)
             else:
                 currency = currency or first.document_currency or home_currency or "USD"
         analysis = pdf_import.analyze(result, account_type=account["account_type"] if account else account_type,
@@ -1361,7 +1413,7 @@ class Ledger:
                 "required_messages": [REQUIRED[item] for item in analysis.required], "blocked": analysis.blocked,
                 "totals": money(totals["new"]), "already_recorded_totals": money(totals["recorded"]), "account_match": state["match"],
                 "new_account_last_four": next(iter(analysis.last_fours)) if len(analysis.last_fours) == 1 else None,
-                "sign_default": analysis.sign_default, "sign": analysis.sign, "mapping": analysis.mapping, "document_currency": analysis.document_currency}
+                "sign_default": analysis.sign_default, "sign": analysis.sign, "signed": analysis.signed, "mapping": analysis.mapping, "document_currency": analysis.document_currency}
 
     def import_pdf_transactions(self, document_id, digest, *, account_id=None, new_account=None, mapping=None, reading_id=None, tables=None, year=None,
                                 date_format=None, sign=None, ticked=None, unticked=None):
@@ -1376,6 +1428,8 @@ class Ledger:
             raise ValueError("Preview this document again before importing it.")
         import_id = uuid.uuid4().hex
         with self.store.connection() as db:
+            # The write lock is taken before the checks, so a reading published meanwhile waits for this import (FR-22).
+            db.execute("BEGIN IMMEDIATE")
             account = self.account_in(db, new_account["institution"], new_account["account_type"], new_account["currency"], new_account.get("display_name"),
                                       new_account.get("last_four")) if new_account else None
             state = self.pdf_state(db, document_id, digest, reading_id=reading_id, account_id=account_id, account=account, mapping=mapping, tables=tables, year=year,
@@ -1406,9 +1460,10 @@ class Ledger:
                     sources[status["text"]] = sources.get(status["text"], 0) + 1
             rejected_earlier = sum(1 for status in known.values() if status["status"] == "rejected_earlier")
             left_out = sum(1 for row in state["parsed"] if not ticks[row.key])
-            used_sign = analysis.sign if "amount" in analysis.mapping else None
-            record = {"kind": "pdf", "reading_id": reading_id, "tables": [{"id": table.id, "page": table.page, "linked_to": table.linked_to} for table in analysis.tables if table.selected],
-                      "mapping": analysis.mapping, "year": year, "date_format": date_format or "auto", "sign": used_sign,
+            used_sign = analysis.sign if analysis.signed else None
+            selected = [table for table in analysis.tables if table.selected]
+            record = {"kind": "pdf", "reading_id": reading_id, "tables": [{"id": table.id, "page": table.page, "linked_to": table.linked_to} for table in selected],
+                      "mapping": analysis.mapping, "mappings": {table.id: table.columns for table in selected if table.linked_to is None}, "year": year, "date_format": date_format or "auto", "sign": used_sign,
                       "ticked": [row.key for row in state["parsed"] if ticks[row.key]], "unticked": [row.key for row in state["parsed"] if not ticks[row.key]], "left_out": left_out}
             issues = [asdict(issue) for issue in analysis.issues]
             db.execute("INSERT INTO transaction_imports VALUES(?,?,?,?,?,?,?,?,?,?,?)",

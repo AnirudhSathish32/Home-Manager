@@ -293,6 +293,12 @@ class AccountInput(BaseModel):
     last_four: str | None = Field(default=None, pattern=r"^\d{4}$")
 
 
+class AccountRename(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    institution: str = Field(min_length=1, max_length=120)
+    display_name: str = Field(min_length=1, max_length=160)
+
+
 class ImportInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -931,6 +937,11 @@ def create_app(control: Path | None = None, token: str | None = None,
     def create_account(value: AccountInput):
         store()
         return manager().ledger.create_account(value.institution, value.account_type, value.currency, value.display_name, value.last_four)
+
+    @app.put("/api/finance/accounts/{account_id}")
+    def rename_account(account_id: int, value: AccountRename):
+        store()
+        return manager().ledger.rename_account(account_id, value.institution, value.display_name)
 
     @app.post("/api/documents/{document_id}/transaction-import/preview")
     def preview_import(document_id: int, value: ImportInput):

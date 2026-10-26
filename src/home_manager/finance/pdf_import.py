@@ -109,6 +109,7 @@ class Analysis:
     document_currency: str | None
     sign_default: str | None
     sign: str | None  # The sign convention in force: the choice, else the account type's default.
+    signed: bool = False  # A selected table has a single Amount column, so the sign applies (FR-07), whatever the first table has.
 
     @property
     def blocked(self):
@@ -620,7 +621,7 @@ def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", si
                   pages_without_rows=sum(1 for page in result.pages if page.number not in sourced))
     mapping: dict[str, str] = next((entry.table.columns for entry in used if not entry.parent), {})
     return Analysis([entry.table for entry in entries], rows, issues[:MAX_ISSUES], counts, [item for item in ("year", "date_format", "sign") if item in required],
-                    mapping, last_fours(result), found_currency, default, used_sign)
+                    mapping, last_fours(result), found_currency, default, used_sign, any("amount" in entry.table.columns for entry in used))
 
 
 # --- Import index (migration 072; docs/documents.md "PDFs") -------------------------------------------------------------

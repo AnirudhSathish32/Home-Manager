@@ -385,10 +385,14 @@ The app asks: "Credit card statement recorded … Begin reconciling receipts?"
   many need you to pick the right charge in Review.
 - **No** leaves the statement waiting. A reminder with **Reconcile now** stays until you do.
 
-**Which account.** A statement goes to the account with its institution, type and last four. The institution matches
-whatever its case and spacing ("FIRST LOCAL BANK" finds "First Local Bank"); an exact match wins. A statement that
-prints no currency takes that account's currency; with no matching account and no printed currency, nothing is
-published.
+**Which account.** A statement goes to the account with its institution, type and last four: a card statement looks at
+cards, and a bank statement at checking, savings and other accounts together. The institution matches whatever its case
+and spacing ("FIRST LOCAL BANK" finds "First Local Bank"); an exact match wins. Two accounts it would find whose
+institutions differ only by case (one saved before this rule, or a checking and a savings account) clash: none is
+chosen, nothing is published, and the message names the accounts. **Rename** on Accounts always changes an account's
+name. Its institution is what statements (and family sync) find it by, so it changes only on an account in such a clash,
+and never to one a statement would also find another account under, whatever its case. A statement that prints no
+currency takes that account's currency; with no matching account and no printed currency, nothing is published.
 
 ## Reading a statement or receipt again
 

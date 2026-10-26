@@ -284,7 +284,8 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   two-digit year) waits for the year you choose, and the current year is never assumed. A day/month order that the
   column does not settle is a required choice. Amounts go through `core/money.to_minor`. Debit and Credit columns
   decide the sign; a single Amount column uses the chosen account's default (card: positive is money out; checking or
-  savings: positive is money in; other types ask), which you can change. A row whose date or amount does not fit is
+  savings: positive is money in; other types ask), which you can change. The choice is offered whenever any selected
+  table has an Amount column, even when another one has Debit and Credit columns. A row whose date or amount does not fit is
   rejected with a reason, never guessed.
 - **Flagged pages.** Rows from a page with a layout issue (other than the harmless `unresolved_columns` on a page whose
   rows are rebuilt) start unticked, with the page's message. Ticked rows import like any other.
@@ -295,22 +296,26 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   transaction as the rows. A refused or failed import leaves no account. A different currency on the document blocks
   the import; no conversion.
 - **Duplicates.** A row already recorded by a CSV/XLSX import, a statement or an earlier PDF import is not inserted
-  again, and its evidence is linked. The preview names the source ("Already recorded from import …"). A manual entry
+  again, and its evidence is linked. The preview names the source ("Already recorded from import …") and totals money in
+  and out for these rows apart from the ticked New ones. A manual entry
   with the same values is replaced, as for CSV. A statement row not yet counted says so.
 - **Refusals** name the next step and write nothing: recorded as a receipt, bill, pay stub, tax form or investment
   statement; in Trash; the reading, document or preserved blob changed since the preview; over 20,000 rows or 2,000
   characters in a cell; nothing to import. A PDF recorded as a statement, or not recorded, can be imported.
-- **Atomic and recorded.** The account, rows, evidence and the `transaction_imports` record (reading, tables, year, sign,
-  ticks and counts, in `mapping_json` and `issues_json` with `kind: "pdf"`) are one transaction. Reconciliation runs
-  after. Re-importing the same PDF inserts nothing, reports all duplicates and adds a record.
+- **Atomic and recorded.** The account, rows, evidence and the `transaction_imports` record (reading, tables, each
+  table's columns in `mappings`, year, sign, ticks and counts, in `mapping_json` and `issues_json` with `kind: "pdf"`)
+  are one transaction. It takes the write lock before checking the reading, so a reading saved meanwhile waits for the
+  import to finish. Reconciliation runs after. Re-importing the same PDF inserts nothing, reports all duplicates and adds a record.
 - **Where a row came from.** Each row's evidence keeps the document, reading, page, table, row and the cell, word or
   line ids. The source badge reads `Imported · <file> page N` (plus `continued from page M`) and links to the page with
   those lines lit ([ui](ui.md#whats-built), "Provenance").
 
 **Entry points.** The picker (Transactions → Import, Accounts → Import an export and each account's own button) lists
-CSV and XLSX files and the read PDFs that have a transactions table, labelled **PDF**, from
+CSV and XLSX files and the read PDFs that have a transactions table, labelled **PDF** (a PDF recorded as a statement
+included), from
 `GET /api/finance/import-candidates` (`indexing: true` while older readings are still being checked). A small
-derived index (`pdf_import_index`, migration 072) holds each reading's table count, printed last fours and currency so
+derived index (`pdf_import_index`, migration 072; a library that applied it under its first number, 071, gets bill
+kinds' 071 at its next start and keeps its index) holds each reading's table count, printed last fours and currency so
 the picker and the library need not analyze readings on every request. It is rebuilt when a reading is saved, at
 start for older readings, and when `ANALYZER_VERSION` changes. On a PDF's **library row** and **document page**,
 **Import transactions** (`doc.pdf_import`, computed by the server) is the primary action when the reading has a

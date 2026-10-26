@@ -109,3 +109,64 @@ def test_accounts_v2_without_a_library_and_in_the_family_view(tmp_path):
             assert page.evaluate(NO_OVERFLOW), width
         assert not failures, failures
         browser.close()
+
+
+@browser_test
+def test_accounts_v2_renames_an_account_and_settles_an_institution_clash(tmp_path):
+    """Rename edits the name in place; Save puts focus back on Rename. The institution is offered only while another
+    account of the same type and last four has it in another case; a refusal shows beside the fields, and Escape puts the
+    row back and returns focus to Rename."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "accounts-v2-rename"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        seed(manager)
+        [household] = [account for account in manager.ledger.accounts() if account["display_name"] == "Household checking"]
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={token}")
+        page.goto(f"{base}/#/accounts")
+        # 1. No clash: only the name is offered.
+        page.get_by_role("button", name="Rename Household checking").click()
+        form = page.get_by_role("form", name="Rename Household checking")
+        expect(form.get_by_label("Name")).to_be_focused()
+        expect(form.get_by_label("Institution")).to_have_count(0)
+        form.get_by_label("Name").fill("Everyday checking")
+        form.get_by_label("Name").press("Enter")
+        expect(page.locator(".accounts2-row", has_text="Everyday checking")).to_contain_text(household["institution"])
+        expect(page.get_by_role("button", name="Rename Everyday checking")).to_be_focused()
+        assert manager.ledger.account(household["id"])["institution"] == household["institution"]
+        # 2. An account saved before institutions matched whatever their case: the same institution in capitals.
+        with manager.store.connection() as db:
+            db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,?,'t','t')",
+                       (household["institution"].upper(), household["account_type"], "Old copy", household["account_last_four"], household["currency"]))
+        page.reload()
+        rename = page.get_by_role("button", name="Rename Old copy")
+        rename.click()
+        form = page.get_by_role("form", name="Rename Old copy")
+        institution = form.get_by_label("Institution")
+        expect(institution).to_be_focused()
+        expect(form).to_contain_text("statements can't tell them apart")
+        institution.fill(household["institution"].lower())
+        form.get_by_role("button", name="Save").click()
+        expect(form.get_by_role("alert")).to_contain_text('"Everyday checking" already has this institution and last four.')
+        expect(institution).to_be_focused()
+        page.keyboard.press("Escape")
+        expect(form).to_have_count(0)
+        expect(rename).to_be_focused()
+        rename.click()
+        form.get_by_label("Institution").fill("Synth Credit Union")
+        form.get_by_label("Name").fill("Credit union checking")
+        form.get_by_role("button", name="Save").click()
+        expect(page.locator(".accounts2-row", has_text="Credit union checking")).to_contain_text("Synth Credit Union")
+        expect(page.get_by_role("button", name="Rename Credit union checking")).to_be_focused()
+        # 3. The clash is settled: neither account offers its institution any more.
+        page.get_by_role("button", name="Rename Credit union checking").click()
+        expect(page.get_by_role("form", name="Rename Credit union checking").get_by_label("Institution")).to_have_count(0)
+        page.set_viewport_size({"width": 390, "height": 900})
+        assert page.evaluate(NO_OVERFLOW)
+        assert failures == []
+        browser.close()

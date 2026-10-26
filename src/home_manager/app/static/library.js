@@ -314,7 +314,9 @@ function pdfSummary(result) {
   if (result.required.length) return result.required_messages.join(" ");
   const counts = result.counts;
   if (!counts.seen) return "No rows to import in the selected tables.";
-  return `${counts.new} new, ${counts.already_recorded} already recorded${counts.rejected_earlier ? `, ${counts.rejected_earlier} rejected earlier` : ""}, ${counts.rejected} not importable, ${counts.left_out} left out. Money out ${result.totals.outflow}; money in ${result.totals.inflow}.`;
+  // Ticked New rows and Already recorded rows are totalled apart (FR-05); both come from the server.
+  const recorded = counts.already_recorded + counts.rejected_earlier ? ` Already recorded: money out ${result.already_recorded_totals.outflow}; money in ${result.already_recorded_totals.inflow}.` : "";
+  return `${counts.new} new, ${counts.already_recorded} already recorded${counts.rejected_earlier ? `, ${counts.rejected_earlier} rejected earlier` : ""}, ${counts.rejected} not importable, ${counts.left_out} left out. New: money out ${result.totals.outflow}; money in ${result.totals.inflow}.${recorded}`;
 }
 function showPdfPreview(result) {
   const state = importPdf, focused = document.activeElement?.dataset?.key || null;
@@ -332,7 +334,7 @@ function showPdfPreview(result) {
   $("import-table-list").replaceChildren(...result.tables.map(table => pdfTableItem(table, result.tables)));
   $("import-year-field").hidden = !(result.required.includes("year") || $("import-year").value);
   // A single Amount column needs a sign; the default is the account type's, and only a choice of yours is sent.
-  const signed = "amount" in result.mapping || result.required.includes("sign") || Boolean(state.sign);
+  const signed = result.signed || result.required.includes("sign") || Boolean(state.sign);
   $("import-pdf-sign-field").hidden = !signed;
   $("import-pdf-sign").value = result.sign || "";
   $("import-sign-note").textContent = !signed ? "" : state.sign ? "" : result.sign_default ? "This is the usual sign for this type of account." : "";

@@ -314,7 +314,10 @@ class FinanceTools(ItemAnalysisTools):
         for account in self.ledger.accounts():
             coverage = self.query(f"SELECT min(t.posted_date) AS first,max(t.posted_date) AS last,count(*) AS transactions FROM transactions t WHERE t.account_id=? AND {COUNTABLE}",
                                   (account["id"],))[0]
-            accounts.append({**account, "coverage": coverage, "balance": self.get_account_balance(AccountInput(account_id=account["id"]))["balance"]})
+            with self.connection() as db:
+                clash = self.ledger.institution_clash(db, account)
+            accounts.append({**account, "coverage": coverage, "balance": self.get_account_balance(AccountInput(account_id=account["id"]))["balance"],
+                             "institution_clash": clash})
         return {"accounts": accounts}
 
     def get_account_balance(self, value, recorder=NULL):

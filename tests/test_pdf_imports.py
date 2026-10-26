@@ -2097,3 +2097,168 @@ def test_index_the_next_start_indexes_readings_saved_before_the_feature_and_the_
         found = candidates(second)
         assert found["indexing"] is False and {item["relative_path"].rsplit("/", 1)[-1] for item in found["items"]} == {"K.pdf", "Kn.pdf"}
         assert [row[2] for row in index_rows(second)] == [1, 1]
+
+
+# --- Review findings (2026-10-25 code review): concurrency, account matching, mixed tables, the picker -------------------------
+
+def test_a_reading_published_while_an_import_runs_waits_for_it_or_refuses_it(env, monkeypatch):
+    """FR-22: the import's checks and its writes are one transaction. A reading published after the checks passed but
+    before the rows were written either waits for the import to commit, or the import is refused. It never imports rows
+    from a reading that is no longer the document's reading.
+
+    The second reading is made first and set back to running, so the race is the publication itself: receipt_service's
+    UPDATE to succeeded, run on its own connection once the import's checks have passed. Which transaction committed first
+    is read inside the publishing one (does it already see the import's record?), not from when the request returned."""
+    import threading
+    a, doc = env.account("A"), env.add("k.pdf", fx.k_pages())
+    first, second = env.reading(doc), env.read(doc)
+    with env.store.connection() as db:
+        db.execute("UPDATE parse_runs SET status='running' WHERE id=?", (second,))
+    reading = env.ok_preview(doc, account_id=a)["reading_id"]
+    assert reading == first != second
+    ledger, original = env.manager.ledger, env.manager.ledger.pdf_state
+    attempted, published, seen = threading.Event(), threading.Event(), {}
+
+    def publish():
+        attempted.set()
+        with env.store.connection() as db:
+            db.execute("UPDATE parse_runs SET status='succeeded',updated_at='t' WHERE id=?", (second,))
+            seen["imports_at_publication"] = db.execute("SELECT count(*) FROM transaction_imports").fetchone()[0]
+        published.set()
+
+    def checked_then_published(*args, **kwargs):
+        state = original(*args, **kwargs)
+        if not attempted.is_set():
+            threading.Thread(target=publish, daemon=True).start()
+            assert attempted.wait(timeout=10)
+            # Without the import's lock the UPDATE commits at once; this wait gives it the time to, so that case is the one tested.
+            published.wait(timeout=2)
+        return state
+    monkeypatch.setattr(ledger, "pdf_state", checked_then_published)
+    response = env.run(doc, account_id=a, reading_id=reading)
+    assert published.wait(timeout=30) and env.reading(doc) == second  # The publication itself always goes through.
+    if seen["imports_at_publication"] == 0:  # It committed before the import did: the import must have been refused.
+        env.refused(response, "This document was read again since the preview; preview again.")
+        assert env.counts()["transactions"] == 0 and env.counts()["transaction_imports"] == 0
+    else:  # It waited for the import's commit.
+        assert response.status_code == 201, response.text
+        assert env.sql("SELECT count(*) FROM transactions") == [(9,)]
+        assert env.sql("SELECT json_extract(mapping_json,'$.reading_id') FROM transaction_imports") == [(first,)]
+
+
+def legacy_account(env_, institution, currency):
+    """An account saved before institutions matched whatever their case, so two may differ only by case."""
+    with env_.store.connection() as db:
+        return db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) "
+                          "VALUES(?,'checking',?,'4821',?,'t','t')", (institution, f"{institution} {currency}", currency)).lastrowid
+
+
+def test_an_exact_institution_wins_and_two_accounts_that_differ_only_by_case_are_never_guessed(env):
+    upper, lower = legacy_account(env, "First Local Bank", "USD"), legacy_account(env, "first local bank", "EUR")
+    kinds = ("checking", "savings", "other")
+    with env.store.connection() as db:
+        assert env.manager.ledger.find_account(db, "First Local Bank", kinds, "4821")["id"] == upper
+        assert env.manager.ledger.find_account(db, "first  local bank", kinds, "4821")["id"] == lower
+        with pytest.raises(ValueError, match="differ only in case"):
+            env.manager.ledger.find_account(db, "FIRST LOCAL BANK", kinds, "4821")
+    doc = env.add("K.pdf", fx.k_pages())
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    with pytest.raises(ValueError, match="differ only in case"):
+        env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")
+    assert env.sql("SELECT count(*) FROM accounts") == [(2,)] and env.sql("SELECT count(*) FROM statements") == [(0,)]
+
+
+def test_renaming_one_of_two_accounts_that_differ_only_by_case_lets_record_find_the_other(env):
+    """The ambiguity has a way out: Accounts renames one of the clashing accounts' institution. A new institution that
+    another account of the same type and last four already has, whatever its case, is refused. Once the clash is settled,
+    the institution is fixed again."""
+    upper, lower = legacy_account(env, "First Local Bank", "USD"), legacy_account(env, "first local bank", "EUR")
+    rename = lambda account, **body: env.client.put(f"/api/finance/accounts/{account}", json=body)
+    clashes = lambda: {row["id"]: row["institution_clash"] for row in env.client.post("/api/finance/tools/get_accounts", json={}).json()["accounts"]}
+    assert clashes() == {upper: True, lower: True}
+    env.refused(rename(lower, institution="FIRST LOCAL BANK", display_name="Euro"), "already has this institution and last four")
+    env.refused(rename(lower, institution="  ", display_name="Euro"), "Enter the account's institution.")
+    assert rename(lower, institution="Euro Local Bank", display_name="", extra=1).status_code == 422
+    assert rename(999, institution="X", display_name="Y").status_code == 400
+    response = rename(lower, institution="Euro  Local Bank", display_name="Euro checking")
+    assert response.status_code == 200, response.text
+    assert {key: response.json()[key] for key in ("id", "institution", "display_name", "currency", "account_type", "account_last_four")} == {
+        "id": lower, "institution": "Euro Local Bank", "display_name": "Euro checking", "currency": "EUR", "account_type": "checking", "account_last_four": "4821"}
+    assert clashes() == {upper: False, lower: False}
+    env.refused(rename(upper, institution="My Bank", display_name="Household checking"), "Statements find this account by its institution")
+    assert rename(upper, institution="First Local Bank", display_name="Household checking").status_code == 200  # The name alone is always free.
+    doc = env.add("K.pdf", fx.k_pages())
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    assert env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")["account_id"] == upper
+    assert env.sql("SELECT count(*) FROM accounts") == [(2,)]
+
+
+def test_a_checking_and_a_savings_account_that_differ_only_by_case_can_be_settled(env):
+    """Review R4-1: a bank statement looks for checking, savings and other accounts together, so a checking and a savings
+    account whose institutions differ only by case clash for Record too, and Rename lets either one change."""
+    checking = env.client.post("/api/finance/accounts", json={"institution": "First Local Bank", "account_type": "checking", "currency": "USD", "last_four": "4821"}).json()["id"]
+    savings = env.client.post("/api/finance/accounts", json={"institution": "first local bank", "account_type": "savings", "currency": "USD", "last_four": "4821"}).json()["id"]
+    card = env.client.post("/api/finance/accounts", json={"institution": "FIRST LOCAL BANK", "account_type": "credit_card", "currency": "USD", "last_four": "4821"}).json()["id"]
+    clashes = {row["id"]: row["institution_clash"] for row in env.client.post("/api/finance/tools/get_accounts", json={}).json()["accounts"]}
+    assert clashes == {checking: True, savings: True, card: False}  # A card statement looks only at cards.
+    doc = env.add("K.pdf", fx.k_pages())
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    with pytest.raises(ValueError, match="Rename all but one of them on Accounts"):
+        env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")
+    rename = lambda account, institution: env.client.put(f"/api/finance/accounts/{account}", json={"institution": institution, "display_name": "Savings"})
+    env.refused(rename(savings, "FIRST LOCAL BANK"), "already has this institution and last four")
+    assert rename(savings, "First Local Savings Bank").status_code == 200
+    assert env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")["account_id"] == checking
+
+
+def test_an_imported_account_keeps_its_institution_so_record_still_finds_it(env):
+    """Review R3-1: changing a normal account's institution would make the next Record of its statement create a second
+    account and count the rows twice. Only the name changes; Record then finds the account and inserts nothing."""
+    a = env.account("A")
+    doc = env.add("K.pdf", fx.k_pages())
+    assert env.ok_import(doc, account_id=a)["inserted"] == 9
+    rename = lambda **body: env.client.put(f"/api/finance/accounts/{a}", json=body)
+    env.refused(rename(institution="My Local Bank", display_name="Everyday"), "Statements find this account by its institution")
+    assert rename(institution="FIRST LOCAL BANK", display_name="Everyday").json()["display_name"] == "Everyday"
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    assert env.manager.ledger.publish_statement(statement_of(lines), record_source(doc), "proposed")["account_id"] == a
+    assert env.sql("SELECT count(*) FROM accounts") == [(1,)] and env.sql("SELECT count(*) FROM transactions") == [(9,)]
+
+
+def mixed_pages():
+    """Page 1: K's Withdrawals/Deposits table. Page 2: its own headed Date | Description | Amount table."""
+    return [fx.page([fx.HEADING5, *fx.k_rows(1)], above=fx.K_TEXT, number=1, total=2),
+            fx.page([fx.HEADING3, ("08/15/2026", "SHOP ONE", "10.00"), ("08/16/2026", "SHOP TWO", "20.00")], number=2, total=2)]
+
+
+def test_an_amount_table_after_a_debit_credit_table_still_offers_and_keeps_the_sign(env):
+    """FR-07: a selected Amount table needs the sign choice even when the first table has Debit and Credit columns, and the
+    import history keeps the sign used and every selected table's columns."""
+    a = env.account("A")
+    doc = env.add("mixed.pdf", mixed_pages())
+    preview = env.ok_preview(doc, account_id=a)
+    assert len([table for table in preview["tables"] if table["selected"]]) == 2
+    assert preview["signed"] is True  # The dialog shows the sign choice.
+    result = env.ok_import(doc, reading=preview["reading_id"], account_id=a, sign="positive_is_outflow")
+    assert result["inserted"] == 5
+    assert [row[1] for row in ledger_rows(env, a) if row[5].startswith("SHOP")] == [-1000, -2000]
+    [(mapping_json,)] = env.sql("SELECT mapping_json FROM transaction_imports")
+    record = json.loads(mapping_json)
+    assert record["sign"] == "positive_is_outflow"
+    assert sorted(record["mappings"].values(), key=len) == [
+        {"date": "Date", "description": "Description", "amount": "Amount"},
+        {"date": "Date", "description": "Description", "debit": "Withdrawals", "credit": "Deposits"}]
+    debit_credit = env.add("k.pdf", fx.k_pages())
+    assert env.ok_preview(debit_credit, account_id=a)["signed"] is False
+
+
+def test_a_pdf_recorded_as_a_statement_stays_in_the_import_picker(env):
+    """FR-18 and FR-25: after Record, import is still offered, so a statement PDF stays in the picker (only an FR-19 refusal
+    takes it out)."""
+    env.account("A")
+    k = env.add("K.pdf", fx.k_pages())
+    assert {item["id"] for item in candidates(env)["items"]} == {k["id"]}
+    lines = list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS], [r[3] for r in fx.K_ROWS]))
+    env.manager.ledger.publish_statement(statement_of(lines), record_source(k), "proposed")
+    assert env.fresh(k)["ledger_status"] not in (None, "imported")
+    assert {item["id"] for item in candidates(env)["items"]} == {k["id"]}
