@@ -6,7 +6,21 @@ import json
 
 import pytest
 
-from document_forms_fixtures import BANK, CARD, MISSING, bank_replies, card_replies, cite, library, p_table, record_document, stored_identifiers, uncited, value
+from document_forms_fixtures import (
+    BANK,
+    CARD,
+    MISSING,
+    at,
+    bank_replies,
+    card_replies,
+    cite,
+    library,
+    p_table,
+    record_document,
+    stored_identifiers,
+    uncited,
+    value,
+)
 from home_manager.documents import extraction
 from home_manager.documents.extraction import DETAILS_FAILED
 from home_manager.finance import traces
@@ -110,6 +124,105 @@ def test_sc22_a_a_mismatching_closing_balance_fails_both_checks(tmp_path, local_
         assert summary == ("Closing balance: opening 1,000.00 + deposits 2,500.00 − withdrawals 1,200.50 = 2,299.50 USD, "
                            "but the printed closing balance is 2,300.50 USD.")
         assert any(issue.startswith("Statement arithmetic does not reconcile") for issue in record["issues"])
+
+
+# Account-verification deposits and their reversal, printed without a sign; the reversal also prints the running balance.
+VERIFY = ["09/18 SYNTH BANK ACCTVERIFY PPD ID: SYNTHVERIFY 0.36", "09/18 SYNTH BANK ACCTVERIFY PPD ID: SYNTHVERIFY 0.38",
+          "09/18 SYNTH BANK ACCTVERIFY WEB ID: SYNTHVERIFY -0.74 0.00"]
+
+
+def verify_rows(lines):
+    first = lines.index(VERIFY[0]) + 1
+    return [{"posted_date": "2026-09-18", "transaction_date": None, "description": "SYNTH BANK ACCTVERIFY", "amount": amount,
+             "direction": direction, "evidence": at(lines, first + offset)}
+            for offset, (amount, direction) in enumerate((("0.36", "credit"), ("0.38", "credit"), ("0.74", "debit")))]
+
+
+def test_skipped_statement_rows_are_asked_for_again_and_kept_in_printed_order(tmp_path, local_model):
+    """The first answer leaves out the verification rows (statement_rows reads only signed lines); the second request, for
+    those lines alone, finds them, and they sit after the rent row as printed."""
+    lines = [*BANK, *VERIFY]
+    replies = bank_replies(lines)
+    replies["Transactions"].append({"transactions": verify_rows(lines)})
+    with read_statement(tmp_path, local_model, lines, replies) as (_, _run, record):
+        assert [(row["description_raw"], row["amount_minor"]) for row in record["transactions"]] == [
+            ("PAYROLL SYNTH WORKS", 250000), ("RENT", -120050), ("SYNTH BANK ACCTVERIFY", 36), ("SYNTH BANK ACCTVERIFY", 38), ("SYNTH BANK ACCTVERIFY", -74)]
+        assert record["review_status"] == "verified", record["issues"]
+
+
+def test_statement_rows_still_missing_after_the_second_request_are_a_review_note(tmp_path, local_model):
+    lines = [*BANK, *VERIFY]
+    replies = bank_replies(lines)
+    replies["Transactions"].append({"transactions": []})
+    with read_statement(tmp_path, local_model, lines, replies) as (_, _run, record):
+        assert len(record["transactions"]) == 2 and record["review_status"] == "needs_review"
+        assert any(issue.startswith("3 printed line(s) with a date and an amount aren't in the transactions: \"09/18 SYNTH BANK ACCTVERIFY")
+                   for issue in record["issues"]), record["issues"]
+
+
+def test_each_statement_type_offers_only_its_own_fields(tmp_path, local_model):
+    with read_statement(tmp_path, local_model, BANK, bank_replies(BANK)) as (_, _run, record):
+        bank = {item["field"] for item in record["correctable"]}
+    (tmp_path / "card").mkdir()
+    with read_statement(tmp_path / "card", local_model, CARD, card_replies(CARD)) as (_, _run, record):
+        card = {item["field"] for item in record["correctable"]}
+    assert {"opening_balance", "closing_balance"} <= bank and not {"statement_balance", "minimum_payment", "due_date"} & bank
+    assert {"statement_balance", "minimum_payment", "due_date"} <= card and not {"opening_balance", "closing_balance"} & card
+
+
+SAVINGS = replaced(BANK, "EVERYDAY CHECKING", "EVERYDAY SAVINGS ACCOUNT 000123456789")
+
+
+def savings_replies():
+    return bank_replies(SAVINGS, account_type=value(SAVINGS, "savings", "EVERYDAY SAVINGS", "EVERYDAY SAVINGS"))
+
+
+def accounts(manager):
+    with manager.store.connection() as db:
+        return [tuple(row) for row in db.execute("SELECT account_type,display_name FROM accounts ORDER BY id")]
+
+
+def test_a_savings_statement_records_into_a_savings_account(tmp_path, local_model):
+    with read_statement(tmp_path, local_model, SAVINGS, savings_replies()) as (manager, _run, record):
+        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["account"] == "SYNTH BANK savings 6789"
+
+
+@pytest.mark.parametrize("name, renamed", [(None, "SYNTH BANK savings 6789"), ("Rainy day fund", "Rainy day fund")])
+def test_a_checking_account_a_statement_prints_as_savings_becomes_savings(tmp_path, local_model, name, renamed):
+    """An account recorded as checking before the printed type counted: the next Record of its statement corrects the type,
+    and a default name follows it while a name the user gave stays."""
+    manager, doc, parse_id = transcribe(tmp_path, local_model, SAVINGS)
+    try:
+        account = manager.ledger.create_account("SYNTH BANK", "checking", "USD", display_name=name, last_four="6789")
+        local_model["by_schema"] = savings_replies()
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        assert manager.ledger.record("statement", run["publication"]["id"])["account_id"] == account["id"]
+        assert accounts(manager) == [("savings", renamed)]
+    finally:
+        manager.close()
+
+
+def test_the_printed_words_as_the_account_type_and_four_digits_from_the_middle_of_the_number(tmp_path, local_model):
+    """The model answers the type with the printed words and the reference with four digits from inside the number."""
+    account = "EVERYDAY SAVINGS ACCOUNT 000123456789"
+    replies = bank_replies(SAVINGS, account_type=value(SAVINGS, "Everyday Savings", account, "EVERYDAY SAVINGS"),
+                           account_reference=value(SAVINGS, "1234", account, account))
+    with read_statement(tmp_path, local_model, SAVINGS, replies) as (manager, _run, record):
+        assert stored_details(manager)["account_type"]["text"] == "savings"
+        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["review_status"] == "verified", record["issues"]
+
+
+@pytest.mark.parametrize("amount, flagged", [("0.38", True), ("0.02", False)])
+def test_a_row_that_took_its_lines_running_balance_goes_to_review(tmp_path, local_model, amount, flagged):
+    lines = [*BANK, "09/18 SYNTH BANK ACCTVERIFY PPD ID: 1234567890 0.02 0.38"]
+    replies = bank_replies(lines)
+    replies["Transactions"][0]["transactions"].append({"posted_date": "2026-09-18", "transaction_date": None, "description": "SYNTH BANK ACCTVERIFY",
+                                                       "amount": amount, "direction": "credit", "evidence": at(lines, len(lines))})
+    with read_statement(tmp_path, local_model, lines, replies) as (_, _run, record):
+        found = [issue for issue in record["issues"] if "usually the running balance" in issue]
+        assert found == ([f"Transaction 3 (SYNTH BANK ACCTVERIFY): {amount} is the last of the amounts on its line, which is usually the running "
+                          "balance, not the transaction's amount. Check its amount."] if flagged else []), record["issues"]
 
 
 def test_sc22_b_no_type_word_is_other(tmp_path, local_model):

@@ -174,6 +174,9 @@ CORRECTABLE = {
 # Which receipt fields a bill shows, and what it calls them: a bill has no tip or store location, and counts its new
 # charges (total), not past-due balances (docs/money.md "Bills and their lines").
 BILL_FIELDS = ("issue_date", "due_date", "period_start", "period_end", "amount_due")
+# A bank statement prints no card balance, minimum payment or due date, and a card statement keeps its previous and new
+# balances in its summary, not as an opening and closing balance: neither is offered for correction on the other type.
+OTHER_STATEMENT_FIELDS = {"bank": ("statement_balance", "minimum_payment", "due_date"), "credit_card": ("opening_balance", "closing_balance")}
 BILL_SHOWN = {"document_kind": "Record as", "merchant": "Provider", "issue_date": "Issue date", "due_date": "Due date", "period_start": "Period start",
               "period_end": "Period end", "total": "New charges", "amount_due": "Amount due", "category": "Category"}
 # A bill line's own corrections, kept by printed position like an item's price ("line_kind:3", "member:3"): field -> column.
@@ -239,8 +242,11 @@ def field_labels(record_type, bill=False):
 
 
 def fields_for(record_type, row):
-    """The correctable fields of one record: a bill's (BILL_SHOWN), or a receipt's without the bill-only ones."""
+    """The correctable fields of one record: a bill's (BILL_SHOWN), a receipt's without the bill-only ones, or a statement's
+    without the other statement type's (OTHER_STATEMENT_FIELDS)."""
     fields = CORRECTABLE.get(record_type, {})
+    if record_type == "statement":
+        return {field: value for field, value in fields.items() if field not in OTHER_STATEMENT_FIELDS.get(row["statement_type"], ())}
     if record_type != "receipt":
         return fields
     if row["document_kind"] == "bill":
@@ -369,6 +375,18 @@ class HouseholdConfig(StrictModel):
 STATEMENT_TYPES = (("credit_card",), ("checking", "savings", "other"))
 
 
+def default_account_name(institution, account_type, last_four):
+    """The name an account gets unless one is given. It leaves out the type when the institution already ends with it
+    ("Household checking", not "Household checking checking"); migration 065 renamed older rows the same way."""
+    kind = account_type.replace("_", " ")
+    default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind}"
+    return f"{default}{' ' + last_four if last_four else ''}"[:160]
+
+
+# The account type a bank statement's printed type word gives its account (document forms FR-25); other or none: checking.
+PRINTED_ACCOUNT_TYPES = {"checking": "checking", "savings": "savings", "money_market": "savings"}
+
+
 def statement_types(account_type):
     """The account types one statement searches together (publish_statement): a card statement the cards, a bank statement
     checking, savings and other. Any other type only itself."""
@@ -408,14 +426,20 @@ class Ledger:
             if existing["currency"] != currency:
                 raise ValueError("This account already exists with a different currency.")
             return existing
-        # The default name leaves out the type when the institution already ends with it ("Household checking", not
-        # "Household checking checking"); migration 065 renames older rows the same way.
-        kind = account_type.replace("_", " ")
-        default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind}"
         cursor = db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                            (institution, account_type, (display_name or f"{default}{' ' + last_four if last_four else ''}")[:160],
+                            (institution, account_type, display_name[:160] if display_name else default_account_name(institution, account_type, last_four),
                              last_four, currency, now(), now()))
         return dict(db.execute("SELECT * FROM accounts WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+    def retype_account(self, db, account, account_type):
+        """A checking account a later statement prints as savings (or the other way): the printed type wins, and a name
+        still the default follows it; a name the user gave is kept. No account of that type has the same identity
+        (publish_statement looks for one first)."""
+        name = account["display_name"]
+        if name == default_account_name(account["institution"], account["account_type"], account["account_last_four"]):
+            name = default_account_name(account["institution"], account_type, account["account_last_four"])
+        db.execute("UPDATE accounts SET account_type=?,display_name=?,updated_at=? WHERE id=?", (account_type, name, now(), account["id"]))
+        return dict(db.execute("SELECT * FROM accounts WHERE id=?", (account["id"],)).fetchone())
 
     def find_account(self, db, institution, account_types, last_four):
         """The institution matches whatever its case: a statement prints "FIRST LOCAL BANK" for the account the user named
@@ -1040,9 +1064,15 @@ class Ledger:
 
     def publish_statement(self, record, source, status):
         card = record["statement_type"] == "credit_card"
+        # A bank statement's account is the type it prints (savings for "Chase Savings"), checking when none is printed.
+        printed = None if card else PRINTED_ACCOUNT_TYPES.get(((record.get("details") or {}).get("account_type") or {}).get("text"))
+        kind = "credit_card" if card else printed or "checking"
         with self.store.connection() as db:
-            account = self.find_account(db, record["institution"], statement_types("credit_card" if card else "checking"), record["last_four"])
-            account = account or self.account_in(db, record["institution"], "credit_card" if card else "checking", record["currency"], last_four=record["last_four"])
+            account = (printed and self.find_account(db, record["institution"], (printed,), record["last_four"])
+                       or self.find_account(db, record["institution"], statement_types(kind), record["last_four"]))
+            account = account or self.account_in(db, record["institution"], kind, record["currency"], last_four=record["last_four"])
+            if printed and account["account_type"] in PRINTED_ACCOUNT_TYPES.values() and account["account_type"] != printed:
+                account = self.retype_account(db, account, printed)
             if account["currency"] != record["currency"]:
                 raise ValueError("The statement currency differs from its account's currency; nothing was published.")
             statement_id, written = self._upsert(db, "statements", source, {
@@ -1052,7 +1082,8 @@ class Ledger:
                 "statement_balance_minor": record.get("statement_balance_minor"), "minimum_payment_minor": record.get("minimum_payment_minor"),
                 "summary_json": json.dumps(record["summary"]), "currency": record["currency"], "review_status": status,
                 "validation_json": json.dumps(record["issues"]), "reconciliation": "awaiting",
-                # Printed summary details, shown and checked only: the account's type and what counts don't change (FR-29).
+                # Printed summary details, shown and checked only: what counts doesn't change (FR-29). The printed account type
+                # picks the account above (docs/documents.md "Pay stub and statement fields").
                 "details_json": json.dumps(record["details"]) if record.get("details") else None})
             if not written:
                 return self._published("statement", statement_id, False, account_id=account["id"])

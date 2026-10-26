@@ -37,3 +37,10 @@ def test_scrub_masks_only_the_named_keys():
 
 def test_last_four():
     assert (last_four("****1234"), last_four("000123456789"), last_four("12"), last_four(None)) == ("1234", "6789", None, None)
+
+
+def test_last_four_is_the_printed_numbers_own_when_given_digits_from_its_middle():
+    printed = ["Account Number: 000009000123456"]
+    assert (last_four("1234", printed), last_four("3456", printed), last_four("1234", ["Account 0000 0900 0123 456"])) == ("3456", "3456", "3456")
+    # Not found in what is printed, or in two printed numbers: the given digits stand.
+    assert (last_four("1234", ["Account XXXX3456"]), last_four("1234", ["Ref 912345 Acct 81234"])) == ("1234", "1234")

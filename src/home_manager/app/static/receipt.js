@@ -34,7 +34,8 @@ function runTelemetry(run) {
 const RECORD_FIELDS = {
   receipt: [["Record as", "document_kind"], ["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"],
             ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
-  statement: [["Period", "period_start", "period_end"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
+  // Account type is a bank statement's printed detail; each statement type offers only its own fields (ledger OTHER_STATEMENT_FIELDS).
+  statement: [["Period", "period_start", "period_end"], ["Account type", "account_type"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
   // A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"); it counts on its due date.
   bill: [["Record as", "document_kind"], ["Provider", "merchant"], ["Issued", "issue_date"], ["Due", "due_date"], ["Period", "period_start", "period_end"], ["Categories", "category"],

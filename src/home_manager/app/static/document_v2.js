@@ -430,7 +430,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
   if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
-  parts.push(doc2Fields(state, type, record), ...doc2Forms(state, type, record, find));
+  parts.push(doc2Fields(state, type, record, find), ...doc2Forms(state, type, record, find));
   const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
   if (doc2 !== state) return;
   const rows = ledgerRows(record, categories, state.reload, find, state.cc?.correctButton ? field => state.cc.openCorrect(field) : null);
@@ -451,13 +451,18 @@ async function doc2Ledger(state, target, type, id, kept) {
   doc2Steps(state);
 }
 // One row per field shown: its value, a mark when a person changed it, then Find (its source line) and Correct.
-function doc2Fields(state, type, record) {
+function doc2Fields(state, type, record, find) {
   const list = element("dl", "", "doc2-fields");
   const fix = field => (record.correctable || []).find(item => item.shown_as === field || `${item.shown_as}_minor` === field);
   const corrected = field => (record.corrections || []).filter(item => item.field === field).at(-1);
   // A kinded bill's money is in its rows under the lines, and an Issued it doesn't print is left out (specs/bill-kinds FR-46, FR-50).
   const kinded = Boolean(record.bill_summary);
   for (const [fieldLabel, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
+    if (field === "account_type") {  // A bank statement's printed account type, with its source line (FR-25); never guessed.
+      const detail = record.details?.account_type;
+      if (record.statement_type === "bank") doc2DetailRow(state, record, list, fieldLabel, detail ? {...detail, display: ACCOUNT_TYPES[detail.text] || detail.text} : {display: "Not printed"}, find);
+      continue;
+    }
     const label = record.invoice && field === "total_minor" ? "Invoice total"
       : record.invoice && field === "amount_due_minor" ? "Remaining balance" : fieldLabel;
     if (kinded && (["total_minor", "amount_due_minor"].includes(field) || (field === "issue_date" && !record.issue_date))) continue;
@@ -587,6 +592,7 @@ function doc2DetailList(state, record, find) {
   section.append(element("h3", "Printed details"), list);
   for (const [name, detail] of Object.entries(details)) {
     if (!DETAIL_LABELS[name] || !detail || typeof detail !== "object" || !("locator" in detail)) continue;
+    if (name === "account_type" && record.statement_type === "bank") continue;  // Shown with the statement's fields (doc2Fields).
     const shown = name === "account_type" ? {...detail, display: ACCOUNT_TYPES[detail.text] || detail.text} : detail;
     doc2DetailRow(state, record, list, DETAIL_LABELS[name], shown, find, `detail:${name}`);
     if (detail.label) list.lastElementChild.append(element("span", `printed as ${detail.label.text}`, "muted small"));

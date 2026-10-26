@@ -68,6 +68,10 @@ and link here for what isn't. When an item is built, remove it from this list an
 ## Money
 
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
+- **Statement accounts** (`specs/statement-accounts/spec.md`, drafted 2026-10-26, awaiting approval): accounts that
+  Record creates wait for Confirm; Delete account on the Accounts tab; Record takes a statement's dates and amounts
+  from its rebuilt columns, never Balance. Until built, re-reading a statement can leave an empty account, and a row
+  can take its running balance as its amount (only sent to review).
 - **PDF transaction import, still open** ([documents](documents.md#transaction-imports)):
   - Scanned (vision) pages are listed but never imported; Record is the way to bring them in.
   - A second transactions heading below a native table: the next page still continues the **first** table, so a table

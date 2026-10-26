@@ -512,9 +512,29 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
   heading it was printed under, each cited (from the validated table cell where there is one). Checks: hours × rate
   per earning line, and the splits' sum against net pay. This period is guarded against year-to-date and annual
   amounts ([money](money.md#money-in-and-paystubs)).
-- **Bank statements** keep the account type (from printed words only, else `other`; the account's own type doesn't
-  change), deposits, withdrawals, interest earned, fees and APY. Check: opening + deposits − withdrawals = closing,
-  only when all four are printed, beside the check from the transaction rows.
+- **Bank statements** keep the account type (from printed words only, else `other`), deposits, withdrawals, interest
+  earned, fees and APY. An answer that is the printed words themselves ("Chase Savings") counts by the one type word
+  in it, when its citation prints that word too. Check: opening + deposits − withdrawals = closing, only when all four are printed, beside the
+  check from the transaction rows.
+  - The printed type is the account's: a savings or money-market statement records into a savings account, and
+    checking or `other` into checking (`ledger.PRINTED_ACCOUNT_TYPES`). A checking account that a later statement prints
+    as savings, or the other way round, takes the printed type. Its name follows only while it is still the default
+    name (`retype_account`).
+  - The document page shows the account type with the statement's fields. A bank statement offers no statement
+    balance, minimum payment or due date, and a card statement offers no opening or closing balance
+    (`ledger.OTHER_STATEMENT_FIELDS`).
+- **Statement rows the model skipped.** After Record, any line the model was given that starts with a date, prints an
+  amount after it, and isn't a balance or total line is checked. If no transaction or summary field cites it, the model
+  is asked once more for the rows in those lines alone, with the printed period (`missed_statement_lines`,
+  `missed_rows`). Rows it finds are checked like the others and placed in printed order. Any still left out become a
+  review note quoting up to three of them. The instruction also names small amounts, such as account-verification
+  deposits and their reversals, as rows.
+- **Amount or running balance.** A row read from one flat line (not a table cell) whose amount is the last of two or
+  more amounts printed with cents after its date is sent to review: on a line such as `09/18 DEPOSIT 0.02 0.38` the
+  last is the balance (`balance_taken`). The instruction says so too.
+- **Account numbers.** The last four are the printed number's own. When the model gives four digits from inside a
+  longer number it cites (1234 of 000009000123456), the number's last four are kept instead
+  (`core/identifiers.last_four`).
 - **Card statements** keep the purchase and cash-advance APRs, credit limit, available credit and rewards (points stay
   text). Check: previous − payments − credits + purchases + fees + interest = statement balance, when all are printed.
 - **Nothing counts differently**: the new fields are shown, checked and traced only.

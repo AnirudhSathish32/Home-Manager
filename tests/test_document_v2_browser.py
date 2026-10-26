@@ -145,8 +145,15 @@ def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
             expect(details).to_contain_text(text)
         # 4. Bank statement, 5. card statement.
         open_document(page, base, ids["forms_bank_doc"])
-        for text in ("Checking", "2,500.00", "1,200.50", "0.42", "0.50%", "Fees"):
+        for text in ("2,500.00", "1,200.50", "0.42", "0.50%", "Fees"):
             expect(details).to_contain_text(text)
+        # The account type is with the statement's fields, and a bank statement has no card fields.
+        fields = page.locator(".doc2-fields")
+        expect(fields).to_contain_text("Account type")
+        expect(fields).to_contain_text("Checking")
+        expect(details).not_to_contain_text("Account type")
+        for text in ("Statement balance", "Minimum payment", "Due"):
+            expect(fields).not_to_contain_text(text)
         open_document(page, base, ids["forms_card_doc"])
         for text in ("24.99%", "29.99%", "5,000.00", "4,207.55", "812 points"):
             expect(details).to_contain_text(text)
