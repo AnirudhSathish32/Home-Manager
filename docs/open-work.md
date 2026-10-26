@@ -69,9 +69,11 @@ and link here for what isn't. When an item is built, remove it from this list an
 
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
 - **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
-  `plans/statement-accounts/plan.md`): Delete account on the Accounts tab, and the screens for accounts that wait for
-  Confirm (the "Waiting for confirm" group, the account note on the document page and in Review, Confirm on an
-  old automatic statement). The API for waiting accounts is built ([money](money.md#new-statements-wait-for-you)).
+  `plans/statement-accounts/plan.md`): the screens for accounts that wait for Confirm and for deleting one (Delete… on
+  the Accounts tab and its dialog, the "Waiting for confirm" group, the account note and Delete account on the document
+  page and in Review, Record again on a document whose statement was removed, Confirm on an old automatic statement).
+  The APIs for waiting accounts and for deleting one are built ([money](money.md#new-statements-wait-for-you),
+  [deleting](money.md#deleting-an-account)).
   - **A value line above the transactions heading** (accepted gap, spec D6 Q7; it stays once the feature is built).
     The spec's FR-27 takes the row directly above a heading as the table's title, and a title that names a balance
     makes the table a balance table. So a statement that prints a value line such as `Ending Balance 1,000.00`

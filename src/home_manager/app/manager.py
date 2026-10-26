@@ -1447,6 +1447,40 @@ class Manager:
         result = self.ledger.import_transactions(document_id, account_id, mapping, digest, pdf=pdf)
         return {**result, "reconciliation": self.reconciler.run("import")}
 
+    def delete_preview(self, account_id):
+        """What deleting an account removes (FR-10), with the family's copy of it when this profile publishes to a family (P9)."""
+        with self.mutex:
+            self.require(False)
+        preview = self.ledger.delete_preview(account_id)
+        preview["family"]["copy"] = self.family_copy(account_id)
+        return preview
+
+    def family_copy(self, account_id):
+        """What the family's copy of this library holds of the account: the whole database is sealed at each publish, so the copy
+        has the rows made by then, and drops them at the next share after a delete. None when this profile publishes to no family.
+        A member on the family's computer shares live, so every row counts."""
+        link = (self.profile or {}).get("family")
+        if not link or not link.get("publishing", True) or not (link.get("published_at") or link.get("local")):
+            return None
+        cutoff = link.get("published_at")
+        with self.store.connection() as db:
+            return {table: db.execute(f"SELECT count(*) FROM {table} WHERE account_id=?" + (" AND created_at<=?" if cutoff else ""),
+                                      (account_id, cutoff) if cutoff else (account_id,)).fetchone()[0] for table in ("statements", "transactions")}
+
+    def delete_account(self, account_id, token):
+        """Delete an account with its records (FR-11). Like an import it is quick and local, so it runs on the request thread and
+        waits for no model work (a family view, which holds no library, is refused). BEGIN IMMEDIATE and the token are the guards
+        against a Record or import that lands meanwhile. The reconcile that follows asks again about anything its removal left ambiguous."""
+        with self.mutex:
+            self.require(False)
+        result = self.ledger.delete_account(account_id, token)
+        try:
+            reconciliation = self.reconciler.run("import")
+        except Exception as exc:  # The delete is committed; a failed reconcile runs again at the next import or by hand.
+            log_failure(log, "reconcile after account delete", exc)
+            reconciliation = None
+        return {**result, "reconciliation": reconciliation}
+
     def start_receipt(self, document_id, digest=None, rotation=0, force=False):
         with self.mutex:
             self.require("inference", "Model work is running. Wait for it or cancel it first.")

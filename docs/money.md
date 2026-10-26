@@ -412,6 +412,53 @@ the unconfirmed account it leaves, if that holds no statement, transaction or im
 confirmed account is never removed this way. A re-read of a statement you confirmed or rejected is kept as you
 decided it and makes no account.
 
+## Deleting an account
+
+An account, confirmed or waiting, can be deleted with everything recorded in it. The Delete button and its dialog are
+screens still to build ([open work](open-work.md)); the API is built. Documents are never touched: originals, preserved
+blobs, readings and library files stay as they were, so a statement document offers **Record** again and an imported CSV
+or PDF offers **Import** again. Recording the statement again makes a new account that waits for Confirm. There is no undo.
+
+- `GET /api/finance/accounts/{id}/delete-preview` gives the counts the dialog shows, a `family` line (below) and a
+  `token`. Counts: statements, transactions, import records, receipts and pay stubs matched (verified or proposed) to its
+  transactions (they go back to counting on their own), transfer links, refund links, recurring payments and recurring bills
+  tied to it, and category rules for it. A recurring bill is a `recurring_obligations` row of kind `bill`; there is no `bills`
+  table. The preview writes nothing.
+- `POST /api/finance/accounts/{id}/delete` takes `{"token": …}` and returns `{"deleted", "counts", "reconciliation"}`.
+  The token is a hash of the counts, every statement and transaction of the account with its last change, and its import
+  records. If a statement was recorded, a reading redone, an import made or a reconcile run since the preview, the token no
+  longer fits and nothing is deleted: 409 "This account changed since you opened Delete; check the counts again." A missing
+  account is 404. A failure part way (a database error) is a 500 with the app's generic message, and the retry with the same
+  token works.
+
+**What goes, in one transaction** (`BEGIN IMMEDIATE`, the token checked inside it), in this order, with the account row last:
+1. Rows on the account's transactions: receipt links, pay stub links, transfer and refund links (the other transaction, the
+   receipt and the pay stub stay), category splits, tax tags and investment payment rejections. An investment event that
+   named one forgets it, as unlinking it in reconcile does.
+2. A transaction of another account that one of these replaced loses its `replaced_by` pointer and counts again.
+3. Rows that name a statement or transaction by type and id: evidence links, review history, reconciliation issues,
+   corrections, family corrections, family assignments and donation checks.
+4. Open reconciliation questions whose candidate transactions include one of them. The reconcile that runs after the
+   delete asks again where it is still ambiguous.
+5. The transactions, statements and import records.
+6. The account's category rules and tax rules. Recurring payments and bills keep their row with no account, and an
+   investment account linked to it keeps its values with the link cleared.
+7. The account.
+
+Nothing else is written. Totals drop by exactly what the account's transactions counted. A receipt or pay stub that was
+matched to a deleted transaction counts on its own again, on its own date (`STANDALONE_RECEIPT`, `STANDALONE_INCOME`).
+Fingerprints, merchants, other accounts and their rows are unchanged. A re-read that leaves an empty waiting account takes
+steps 6 and 7 only, through the same code ([above](#new-statements-wait-for-you)).
+
+**Family.** A delete reaches the family in three ways, and no further:
+- The family's copy of your library is the whole database, sealed at each share. The delete changes the database, so the
+  next share is due and the copy drops the account's rows then. The preview's `family.copy` counts the statements and
+  transactions that copy holds now (those made by the last share, or all of them for a member on the family's own
+  computer), and is null when the profile shares with no family.
+- Family rows in this library are deleted with the records: who a statement was routed to, family corrections, and
+  evidence from a family delivery. `family.rows` counts them.
+- Statements already delivered into another person's library are theirs. A delete here doesn't reach them.
+
 ## Reading a statement or receipt again
 
 Extracting a document again (with a better model, or with **Try again**) never touches a record you approved or

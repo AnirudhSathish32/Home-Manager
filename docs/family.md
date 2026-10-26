@@ -192,6 +192,9 @@ number, and a last four can name only one member's line or card.
 - **Read-only parts.** Budgets, category rules, item categories, recurring-payment decisions and the recurring scan are
   each person's own and aren't shown. Spending shows each currency; the USD total isn't (each member converts with
   their own rates).
+- **After a delete.** Deleting an account ([money](money.md#deleting-an-account)) reaches the family's copy at the member's
+  next share, since the copy is the member's whole database. Statements already delivered into another member's own
+  library stay theirs.
 
 ## Family corrections
 

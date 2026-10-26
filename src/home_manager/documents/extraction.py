@@ -2852,6 +2852,15 @@ class ExtractionService:
             if isinstance(value["result"], dict) and value["result"].get(key) and not value["result"][key].get("error"):
                 value["result"][key] = check_counts(value["result"][key])
         value["publication"] = json.loads(value.pop("publication_json") or "null")
+        publication = value["publication"]
+        if isinstance(publication, dict) and publication.get("record_type") == "statement" and publication.get("id") is not None:
+            # Deleting an account removes its statements but keeps the run's history (docs/money.md "Deleting an account"): the run
+            # is marked, so the document offers Record again. Ids are reused, so the statement must also be of this document's blob.
+            with self.store.connection() as db:
+                alive = db.execute("SELECT 1 FROM statements s JOIN parse_runs p ON p.blob_hash=s.blob_hash WHERE s.id=? AND p.id=?",
+                                   (publication["id"], row["parse_run_id"])).fetchone()
+            if not alive:
+                publication["removed"] = True
         value["model_runs"] = self.store.model_runs(run_id)
         return value
 

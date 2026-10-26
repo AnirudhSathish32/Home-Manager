@@ -357,16 +357,23 @@ def q_summary(lines):
 
 def orphans(db, account_id, statements=(), transactions=()):
     """C-orphans(account, statements, transactions): the rows still holding the account or an id in either set. Every table with a
-    column that refers to accounts, statements or transactions is read from sqlite_schema at call time, so a new table can't be missed."""
+    column that refers to accounts, statements or transactions is read from sqlite_schema and its foreign keys at call time, so a new table
+    can't be missed. `transactions.replaced_by` is checked too (it names a transaction)."""
     found = []
     typed = {"statement": list(statements), "transaction": list(transactions)}
     for (table,) in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall():
         columns = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
         wanted = [("account_id", [account_id]), ("ledger_account_id", [account_id]), ("statement_id", typed["statement"]),
-                  ("transaction_id", typed["transaction"]), ("from_transaction_id", typed["transaction"]), ("to_transaction_id", typed["transaction"])]
+                  ("transaction_id", typed["transaction"]), ("from_transaction_id", typed["transaction"]), ("to_transaction_id", typed["transaction"]),
+                  ("replaced_by", typed["transaction"])]
         if table == "accounts":
             wanted.append(("id", [account_id]))
+        # An `account_id` counts only where its foreign key targets accounts: holdings, investment_events and others name an
+        # investment account by the same column name, and their ids are not this account's.
+        targets_accounts = {row[3] for row in db.execute(f'PRAGMA foreign_key_list("{table}")') if row[2] == "accounts"}
         for column, ids in wanted:
+            if column in ("account_id", "ledger_account_id") and column not in targets_accounts:
+                continue
             if column in columns and ids:
                 marks = ",".join("?" * len(ids))
                 found += [(table, column, row[0]) for row in db.execute(f'SELECT rowid FROM "{table}" WHERE "{column}" IN ({marks})', ids)]

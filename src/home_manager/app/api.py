@@ -40,7 +40,7 @@ from ..finance.investments import (
     WithdrawalKind,
 )
 from ..finance.item_categories import ItemCategorizer
-from ..finance.ledger import ACCOUNT_TYPES, HouseholdConfig
+from ..finance.ledger import ACCOUNT_TYPES, AccountNotFound, HouseholdConfig
 from ..finance.paycheck import PaycheckInput
 from ..finance.provenance import provenance_for
 from ..finance.reconcile import OBLIGATION_DECISIONS, Reconciler
@@ -291,6 +291,11 @@ class AccountInput(BaseModel):
     currency: str = Field(pattern=r"^[A-Za-z]{3}$")
     display_name: str | None = Field(default=None, max_length=160)
     last_four: str | None = Field(default=None, pattern=r"^\d{4}$")
+
+
+class AccountDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    token: str = Field(min_length=1, max_length=128)
 
 
 class AccountRename(BaseModel):
@@ -927,6 +932,24 @@ def create_app(control: Path | None = None, token: str | None = None,
         """Accounts Record created that wait for the user's Confirm (docs/money.md "New statements wait for you"); not in /accounts."""
         store()
         return manager().ledger.waiting_accounts()
+
+    @app.get("/api/finance/accounts/{account_id}/delete-preview")
+    def account_delete_preview(account_id: int):
+        """What Delete would remove, with the token the delete must send back (docs/money.md "Deleting an account")."""
+        store()
+        return account_found(manager().delete_preview, account_id)
+
+    @app.post("/api/finance/accounts/{account_id}/delete")
+    def delete_account(account_id: int, value: AccountDelete):
+        """Delete an account with its statements, transactions and import records. 409 when it changed since the preview."""
+        store()
+        return account_found(manager().delete_account, account_id, value.token)
+
+    def account_found(action, *arguments):
+        try:
+            return action(*arguments)
+        except AccountNotFound:
+            raise HTTPException(404, "Account not found.") from None
 
     @app.get("/api/finance/health")
     def ledger_health():

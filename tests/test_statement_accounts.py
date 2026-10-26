@@ -563,3 +563,362 @@ def test_journey_j1_a_a_family_deliverys_statement_is_not_held_and_a_record_one_
     other = env.add("record.pdf", sf.c_pages(), read=False)
     second = env.manager.ledger.publish_statement(statement("3456", closing=300000), source_of(other, "extraction:second"), "verified", origin="record")
     assert (second["review_status"], second["account_confirmed"], second["account_id"]) == ("verified", True, delivered["account_id"])
+
+
+# --- FR-09 – FR-15, FR-28: deleting an account (journey J2, SC-12, SC-22) ----------------------------------------------------------
+
+GENERIC_500 = "The library database could not complete this request. Details are in the Home Manager log."
+CHANGED = "This account changed since you opened Delete; check the counts again."
+CSV_A = b"Date,Description,Amount\n2026-10-04,SYNTH BAKERY,-6.25\n2026-10-05,SYNTH PAYROLL,2000.00\n2026-10-06,SYNTH PHARMACY,-12.40\n"
+CSV_B = b"Date,Description,Amount\n2026-07-10,SYNTH GROCER,-20.00\n2026-07-12,SYNTH CAFE,-4.50\n2026-08-04,SYNTH TRANSFER IN,1200.00\n"
+MONTHS = (("2026-08-01", "2026-08-31"), ("2026-09-01", "2026-09-30"), ("2026-10-01", "2026-10-31"))
+
+
+def dump(env_):
+    """{table: {rowid: row}} for every table, for a before/after comparison of the whole library. A WITHOUT ROWID table is keyed by the row itself."""
+    found = {}
+    with env_.store.connection() as db:
+        for (table,) in db.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall():
+            try:
+                found[table] = {row[0]: tuple(row[1:]) for row in db.execute(f'SELECT rowid,* FROM "{table}"')}
+            except sqlite3.OperationalError:
+                found[table] = {tuple(row): tuple(row) for row in db.execute(f'SELECT * FROM "{table}"')}
+    return found
+
+
+def touched(before, after):
+    """{table: (keys removed, keys changed, keys added)} for the tables that differ."""
+    found = {}
+    for table, old in before.items():
+        new = after[table]
+        removed = sorted(set(old) - set(new), key=repr)
+        changed, added = sorted((key for key in set(old) & set(new) if old[key] != new[key]), key=repr), sorted(set(new) - set(old), key=repr)
+        if removed or changed or added:
+            found[table] = (removed, changed, added)
+    return found
+
+
+def recorded_w(env_, model, shift=0):
+    """W (shift 0), W′ (1) or W″ (2) captured and read by the real reader, ready for Record."""
+    doc = env_.add(f"w{shift}.pdf", sf.w_pages(shift))
+    service = ReceiptService(env_.store)
+    parse_id = env_.reading(doc)
+    return Recorded(env_.store, service, doc, parse_id, sf.reading_lines(read_result(service.get(parse_id)["result"])), model)
+
+
+def w_replies(shift):
+    month = 8 + shift
+    return bank_replies(lambda lines: sf.w_summary(lines, month), lambda lines: [], end=f"2026-{month:02d}-{31 if month in (8, 10) else 30}")
+
+
+def receipt_of(ledger, doc, total=4500):
+    """A verified receipt of the day of w1's rent line."""
+    half = total // 2
+    item = {"product_code": None, "quantity": None, "unit_price_minor": None, "discount_minor": None, "taxed": False, "locator": {}}
+    return ledger.publish_receipt({
+        "merchant": "SYNTH MARKET", "purchase_date": "2026-08-03", "subtotal_minor": total, "tax_minor": 0, "tip_minor": None, "total_minor": total,
+        "currency": "USD", "issues": [], "payment_last_four": None, "locator": {"line_ids": ["line-1"]},
+        "items": [{**item, "description": "BANANAS", "line_total_minor": half, "category": "groceries"},
+                  {**item, "description": "PAPER TOWELS", "line_total_minor": total - half, "category": "household supplies"}]},
+        source_of(doc, "extraction:receipt"), "verified")["id"]
+
+
+class Fixture:
+    """The SC-08 fixture, through public paths: account A (W and W′ recorded and confirmed, a CSV import), a verified receipt matched to w1, a
+    transfer link from w1 to a transaction of account B, a recurring payment and bill, a category rule, a linked investment account. B is the control."""
+
+    def __init__(self, env_, model):
+        self.env = env_
+        self.first = first = recorded_w(env_, model, 0)
+        self.w = first.run(w_replies(0))
+        self.a = env_.sql("SELECT id FROM accounts")[0][0]
+        assert (self.w["review_status"], env_.sql("SELECT origin FROM accounts WHERE id=?", self.a)) == ("proposed", [("record",)])
+        review(env_, self.w["id"], "verified")  # Confirm: A is on Accounts from here.
+        self.second = recorded_w(env_, model, 1).run(w_replies(1))
+        assert self.second["account_id"] == self.a if "account_id" in self.second else True
+        for record in (self.w, self.second):
+            assert env_.client.post(f"/api/finance/statements/{record['id']}/reconcile").status_code == 200  # Their rows count from here.
+        self.csv_doc = env_.add("a.csv", CSV_A, read=False)
+        assert env_.run(self.csv_doc, account_id=self.a).json()["inserted"] == 3
+        self.b = env_.client.post("/api/finance/accounts", json={"institution": "SYNTH CREDIT UNION", "account_type": "checking", "currency": "USD", "last_four": "9021"}).json()["id"]
+        assert env_.run(env_.add("b.csv", CSV_B, read=False), account_id=self.b).json()["inserted"] == 3
+        self.w1 = env_.sql("SELECT id FROM transactions WHERE statement_id=? ORDER BY id", self.w["id"])[0][0]
+        self.b_in = env_.sql("SELECT id FROM transactions WHERE account_id=? AND amount_minor=120000", self.b)[0][0]
+        self.receipt = receipt_of(env_.manager.ledger, env_.add("receipt.png", b"synthetic receipt of w1", read=False))
+        with env_.store.connection() as db:
+            db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,created_at,updated_at) "
+                       "VALUES(?,?,0,'test','verified','t','t')", (self.w1, self.receipt))
+            # The import into B already paired w1 with B's deposit as a transfer (the reconcile after an import); make it the user's.
+            assert db.execute("UPDATE transaction_links SET review_status='verified' WHERE link_type='transfer' AND from_transaction_id=? AND to_transaction_id=?",
+                              (self.w1, self.b_in)).rowcount == 1
+            for name, kind in (("SYNTH GYM", "subscription"), ("SYNTH LANDLORD", "bill")):
+                db.execute("INSERT INTO merchants(canonical_name,normalized_name,created_at,updated_at) VALUES(?,?,'t','t')", (name, name.lower()))
+                db.execute("INSERT INTO recurring_obligations(merchant_id,account_id,obligation_type,expected_amount_minor,currency,frequency,status,confidence_source,kind,"
+                           "created_at,updated_at) VALUES((SELECT id FROM merchants WHERE normalized_name=?),?,'subscription',1000,'USD','monthly','verified','user',?,'t','t')",
+                           (name.lower(), self.a, kind))
+        env_.manager.ledger.add_rule("SYNTH BAKERY", "dining", self.a)
+        self.investment = Investments(env_.store).add(AccountInput(name="Linked", kind="hysa", currency="USD", value="1", as_of="2026-06-30", ledger_account_id=self.a))["id"]
+
+    def ids(self):
+        statements = [row[0] for row in self.env.sql("SELECT id FROM statements WHERE account_id=?", self.a)]
+        transactions = [row[0] for row in self.env.sql("SELECT id FROM transactions WHERE account_id=?", self.a)]
+        return statements, transactions
+
+    def b_rows(self):
+        return self.env.sql("SELECT * FROM transactions WHERE account_id=? ORDER BY id", self.b)
+
+    def preview(self, account=None):
+        response = self.env.client.get(f"/api/finance/accounts/{account or self.a}/delete-preview")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def delete(self, token, account=None):
+        return self.env.client.post(f"/api/finance/accounts/{account or self.a}/delete", json={"token": token})
+
+
+def money_by_month(env_, account=None):
+    """Spending (net of refunds) and money in for each month in USD, for the household or one account."""
+    tools, found = FinanceTools(env_.store), {}
+    for start, end in MONTHS:
+        period = PeriodInput(start=start, end=end, account_id=account)
+        spending = [row["net_spending"]["minor"] for row in tools.get_spending(period)["by_currency"] if row["currency"] == "USD"]
+        inflow = [row["inflow"]["minor"] for row in tools.calculate_cashflow(period)["by_currency"] if row["currency"] == "USD"]
+        found[start[:7]] = (sum(spending), sum(inflow))
+    return found
+
+
+def test_journey_j2_deleting_an_account_with_everything_in_it(env, local_model):
+    fixture = Fixture(env, local_model)
+    a, b = fixture.a, fixture.b
+    files = env.files()
+    [investment_before] = env.sql("SELECT * FROM investment_accounts WHERE id=?", fixture.investment)
+    # 1 (SC-08, FR-09, FR-10): the preview counts what the database holds for A; opening it and cancelling change nothing.
+    before = dump(env)
+    opened = fixture.preview()
+    assert opened["counts"] == {"statements": 2, "transactions": 9, "imports": 1, "receipts": 1, "pay_stubs": 0, "transfer_links": 1, "refund_links": 0,
+                                "recurring_payments": 1, "recurring_bills": 1, "category_rules": 1}
+    assert (opened["account"]["id"], opened["account"]["display_name"]) == (a, env.sql("SELECT display_name FROM accounts WHERE id=?", a)[0][0])
+    assert opened["family"] == {"rows": 0, "copy": None} and len(opened["token"]) == 64
+    assert fixture.preview()["token"] == opened["token"]  # The same account gives the same token.
+    assert dump(env) == before and env.files() == files  # Cancel: C-unchanged and C-docs.
+    spending_before, a_counted = money_by_month(env), money_by_month(env, a)
+    assert a_counted["2026-08"][0] != 0 and a_counted["2026-09"][0] != 0, a_counted  # The rows count: that is what the delete takes away.
+    # 2 (SC-10, FR-14): another statement lands in A after the dialog opened; Delete with the old token is refused and changes nothing.
+    third = recorded_w(env, local_model, 2).run(w_replies(2))
+    assert env.sql("SELECT account_id FROM statements WHERE id=?", third["id"]) == [(a,)]
+    after_recording, files = dump(env), env.files()  # C-docs from here: the recording added its own document
+    refused = fixture.delete(opened["token"])
+    assert refused.status_code == 409 and refused.json() == {"detail": CHANGED}, refused.text
+    assert dump(env) == after_recording
+    fresh = fixture.preview()
+    assert fresh["token"] != opened["token"] and (fresh["counts"]["statements"], fresh["counts"]["transactions"]) == (3, 12)
+    # 3 (SC-11, FR-15): a fault on the last step (the account row) rolls back every earlier step; no traceback reaches the client.
+    with env.store.connection() as db:
+        db.execute("CREATE TRIGGER fault BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT,'injected fault'); END")
+    failed = fixture.delete(fresh["token"])
+    assert failed.status_code == 500 and failed.json() == {"detail": GENERIC_500}, failed.text
+    assert "Traceback" not in failed.text and "injected" not in failed.text
+    assert touched(after_recording, dump(env)) == {} and env.files() == files
+    # 4 (FR-11): with the fault removed, the same delete (counts current) succeeds, and only A's rows go.
+    with env.store.connection() as db:
+        db.execute("DROP TRIGGER fault")
+    statements, transactions = fixture.ids()
+    b_before, b_account = fixture.b_rows(), env.sql("SELECT * FROM accounts WHERE id=?", b)
+    before = dump(env)
+    done = fixture.delete(fresh["token"])
+    assert done.status_code == 200, done.text
+    assert done.json()["deleted"] == a and done.json()["counts"] == fresh["counts"]
+    after = dump(env)
+    with env.store.connection() as db:
+        assert sf.orphans(db, a, statements, transactions) == []  # C-orphans
+        assert db.execute("SELECT count(*) FROM accounts WHERE id=?", (a,)).fetchone()[0] == 0
+    assert fixture.b_rows() == b_before and env.sql("SELECT * FROM accounts WHERE id=?", b) == b_account  # The control account's rows are exactly as they were.
+    assert env.sql("SELECT account_id,kind FROM recurring_obligations ORDER BY kind") == [(None, "bill"), (None, "subscription")]  # OD-4
+    [investment_after] = env.sql("SELECT * FROM investment_accounts WHERE id=?", fixture.investment)
+    columns = [row[1] for row in env.sql("PRAGMA table_info(investment_accounts)")]
+    assert {name: value for name, value in zip(columns, investment_after) if name != "ledger_account_id"} == {
+        name: value for name, value in zip(columns, investment_before) if name != "ledger_account_id"}
+    assert investment_after[columns.index("ledger_account_id")] is None
+    # The exact tables and rows a delete touches: A's rows go (evidence: 3 statements and 12 transactions), the rows that only named A are
+    # let go of, and the reconcile after the commit writes its run. Nothing else in the library differs.
+    changes = touched(before, after)
+    assert {table: (len(gone), len(changed), len(added)) for table, (gone, changed, added) in changes.items()} == {
+        "accounts": (1, 0, 0), "statements": (3, 0, 0), "transactions": (12, 0, 0), "transaction_imports": (1, 0, 0), "financial_evidence_links": (15, 0, 0),
+        "review_events": (1, 0, 0), "category_rules": (1, 0, 0), "transaction_receipt_links": (1, 0, 0), "transaction_links": (1, 0, 0),
+        "recurring_obligations": (0, 2, 0), "investment_accounts": (0, 1, 0), "reconciliation_runs": (0, 0, 1)}, changes
+    assert set(changes["transactions"][0]) == {key for key, row in before["transactions"].items() if row[1] == a}  # row = (id, account_id, …)
+    assert set(changes["statements"][0]) == {key for key, row in before["statements"].items() if row[1] == a}
+    assert set(changes["accounts"][0]) == {a}
+    # 5 (SC-09, FR-12): the receipt counts alone; each month is what it was less A's counted amounts plus the receipt.
+    spending_after = money_by_month(env)
+    for month in spending_before:
+        expected_spending = spending_before[month][0] - a_counted[month][0] + (4500 if month == "2026-08" else 0)
+        expected_inflow = spending_before[month][1] - a_counted[month][1]
+        assert spending_after[month] == (expected_spending, expected_inflow), (month, spending_after[month], expected_spending, expected_inflow)
+    assert env.sql("SELECT count(*) FROM transaction_receipt_links") == [(0,)]
+    assert env.sql("SELECT review_status FROM receipts WHERE id=?", fixture.receipt) == [("verified",)]  # The receipt itself stays.
+    # 6 (FR-13): documents are untouched; W's document offers Record, the CSV offers Import, and recording again makes a new waiting account.
+    assert env.files() == files
+    run = env.sql("SELECT id FROM extraction_runs WHERE document_id=? ORDER BY created_at DESC LIMIT 1", fixture.first.doc["id"])[0][0]
+    assert env.manager.extractions.get(run)["publication"]["removed"] is True
+    ledger_status = {doc["id"]: doc["ledger_status"] for doc in env.store.documents(limit=100_000)["items"]}
+    assert ledger_status[fixture.first.doc["id"]] is None and ledger_status[fixture.csv_doc["id"]] is None
+    fixture.first.run(w_replies(0), force=True)
+    [(new_account, origin)] = env.sql("SELECT id,origin FROM accounts WHERE id NOT IN (?)", b)
+    assert origin == "record" and new_account != a
+    with env.store.connection() as db:
+        assert sf.orphans(db, a) == []  # The new statement and rows may reuse the old ids; nothing names the old account.
+
+
+def family_key(kind, record):
+    return hashlib.md5(f"{kind}-{record}".encode()).hexdigest()
+
+
+def test_journey_j2_every_table_that_names_the_accounts_records_is_cleared_and_the_others_keep_theirs(env):
+    """FR-11 table by table, for the rows J2's fixture has none of: splits, tags, payment rejections, income links, corrections, family and
+    donation rows, an open question naming a deleted transaction, and a transaction of another account that one of these replaced."""
+    ledger = env.manager.ledger
+    c = ledger.create_account("SYNTH BANK", "checking", "USD", last_four="1111")["id"]
+    d = ledger.create_account("SYNTH OTHER", "checking", "USD", last_four="2222")["id"]
+    docs = [env.add(name, pages, read=False) for name, pages in (("c.pdf", sf.c_pages()), ("w.pdf", sf.w_pages()), ("s2.pdf", sf.s2_pages()))]  # Distinct blobs.
+    mine = ledger.publish_statement(statement("1111", rows=(("2026-09-03", "SYNTH ONE", -450), ("2026-09-04", "SYNTH TWO", -625))), source_of(docs[0], "extraction:c"), "verified")
+    other = ledger.publish_statement({**statement("2222", rows=(("2026-09-05", "SYNTH THREE", -700), ("2026-09-06", "SYNTH FOUR", -800))), "institution": "SYNTH OTHER"},
+                                     source_of(docs[1], "extraction:d"), "verified")
+    assert (mine["account_id"], other["account_id"]) == (c, d)
+    [c1, c2] = [row[0] for row in env.sql("SELECT id FROM transactions WHERE account_id=? ORDER BY id", c)]
+    [d1, d2] = [row[0] for row in env.sql("SELECT id FROM transactions WHERE account_id=? ORDER BY id", d)]
+    statements, transactions = [mine["id"]], [c1, c2]
+    receipt = receipt_of(ledger, env.add("r.png", b"synthetic receipt", read=False))
+    with env.store.connection() as db:
+        db.execute("INSERT INTO income_records(document_id,blob_hash,currency,review_status,created_at,updated_at) VALUES(?,?,'USD','verified','t','t')",
+                   (docs[2]["id"], docs[2]["current_hash"]))
+        stub = db.execute("SELECT max(id) FROM income_records").fetchone()[0]
+        db.execute("INSERT INTO investment_accounts(name,kind,currency,source,created_at,updated_at) VALUES('SYNTH INV','hysa','USD','manual','t','t')")
+        investment = db.execute("SELECT max(id) FROM investment_accounts").fetchone()[0]
+        db.execute("INSERT INTO investment_events(account_id,event_date,event_type,amount_minor,review_status,created_at,transaction_id,transaction_link) "
+                   "VALUES(?,'2026-09-03','contribution',450,'verified','t',?,'user')", (investment, c1))
+        event = db.execute("SELECT max(id) FROM investment_events").fetchone()[0]
+        for transaction in (c1, d1):
+            db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,created_at,updated_at) VALUES(?,?,0,'t','proposed','t','t')",
+                       (transaction, receipt))
+            db.execute("INSERT INTO transaction_income_links(transaction_id,income_record_id,match_score,match_method,review_status,created_at,updated_at) VALUES(?,?,0,'t','proposed','t','t')",
+                       (transaction, stub))
+            db.execute("INSERT INTO category_splits(receipt_id,transaction_id,category,amount_minor) VALUES(?,?,'groceries',100)", (receipt, transaction))
+            db.execute("INSERT INTO tax_tags(transaction_id,kind,line,amount_minor,currency,tax_date,source,review_status,created_at,updated_at) "
+                       "VALUES(?,'itemized','x',100,'USD','2026-09-03','user','verified','t','t')", (transaction,))
+        db.execute("INSERT INTO investment_payment_rejections(event_id,transaction_id,created_at) VALUES(?,?,'t')", (event, c1))
+        db.execute("INSERT INTO transaction_links(link_type,from_transaction_id,to_transaction_id,match_score,match_method,review_status,created_at,updated_at) "
+                   "VALUES('transfer',?,?,0,'t','verified','t','t'),('refund',?,?,0,'t','proposed','t','t')", (c1, d1, d2, c2))
+        db.execute("UPDATE transactions SET replaced_by=? WHERE id=?", (c1, d2))
+        for kind, record in (("transaction", c1), ("statement", mine["id"]), ("transaction", d1), ("statement", other["id"])):
+            db.execute("INSERT INTO record_corrections(record_type,record_id,field,created_at) VALUES(?,?,'x','t')", (kind, record))
+            db.execute("INSERT INTO review_events(record_type,record_id,previous_status,new_status,created_at) VALUES(?,?,'a','b','t')", (kind, record))
+            db.execute("INSERT INTO family_corrections(key,direction,member_id,record_type,record_id,field,status,created_at,updated_at) VALUES(?,'sent','m',?,?,'x','pending','t','t')",
+                       (family_key(kind, record), kind, record))
+            db.execute("INSERT INTO reconciliation_issues(issue_type,record_type,record_id,detail_json,status,created_at,updated_at) VALUES('x',?,?,'{}','open','t','t')", (kind, record))
+        for record in (mine["id"], other["id"]):
+            db.execute("INSERT INTO family_assignments(record_type,record_id,family_record_key,status,updated_at) VALUES('statement',?,?,'unassigned','t')", (record, f"key-{record}"))
+            db.execute("INSERT INTO donation_checks(document_id,blob_hash,record_type,record_id,document_type,extraction_run_id,extraction_version,proposal_json,answers_json,"
+                       "source_kind,status,created_at,updated_at) VALUES(?,?,'statement',?,'bank_statement','r','v','{}','{}','native_pdf','draft','t','t')", (docs[0]["id"], docs[0]["current_hash"], record))
+        # Open questions about a match: one naming a transaction of C (it goes), one naming only D's (it stays), and one that is not JSON-shaped.
+        for offset, detail in enumerate(({"candidate_transaction_ids": [c2, d1]}, {"candidate_transaction_ids": [d1, d2]}, {"other": 1})):
+            db.execute("INSERT INTO reconciliation_issues(issue_type,record_type,record_id,detail_json,status,created_at,updated_at) VALUES('ambiguous_receipt_match','receipt',?,?,'open','t','t')",
+                       (receipt + offset, json.dumps(detail)))
+        db.execute("INSERT INTO tax_rules(pattern,account_id,kind,line,created_at,updated_at) VALUES('SYNTH',?,'tax_payment','x','t','t'),('SYNTH2',?,'tax_payment','x','t','t')", (c, d))
+        db.execute("INSERT INTO category_rules(pattern,category,account_id,created_at,updated_at) VALUES('A','dining',?,'t','t'),('B','dining',?,'t','t')", (c, d))
+    other_before = {"transactions": env.sql("SELECT * FROM transactions WHERE account_id=?", d), "statements": env.sql("SELECT * FROM statements WHERE account_id=?", d)}
+    preview = env.client.get(f"/api/finance/accounts/{c}/delete-preview").json()
+    assert preview["counts"]["receipts"] == 1 and preview["counts"]["pay_stubs"] == 1 and preview["counts"]["transfer_links"] == 1 and preview["counts"]["refund_links"] == 1
+    assert env.client.post(f"/api/finance/accounts/{c}/delete", json={"token": preview["token"]}).status_code == 200
+    with env.store.connection() as db:
+        assert sf.orphans(db, c, statements, transactions) == []
+        assert db.execute("SELECT count(*) FROM transactions WHERE replaced_by IN (?,?)", (c1, c2)).fetchone()[0] == 0
+    # Another account's rows are as they were, except what pointed into C.
+    assert env.sql("SELECT * FROM transactions WHERE account_id=? AND id<>?", d, d2) == [row for row in other_before["transactions"] if row[0] != d2]
+    assert env.sql("SELECT replaced_by FROM transactions WHERE id=?", d2) == [(None,)] and env.sql("SELECT * FROM statements WHERE account_id=?", d) == other_before["statements"]
+    assert env.sql("SELECT record_type,record_id FROM record_corrections ORDER BY id") == [("transaction", d1), ("statement", other["id"])]
+    assert env.sql("SELECT record_type,record_id FROM family_assignments") == [("statement", other["id"])]
+    assert env.sql("SELECT record_type,record_id FROM donation_checks") == [("statement", other["id"])]
+    assert env.sql("SELECT key FROM family_corrections ORDER BY key") == sorted([(family_key("statement", other["id"]),), (family_key("transaction", d1),)])
+    assert env.sql("SELECT count(*) FROM tax_tags") == [(1,)] and env.sql("SELECT transaction_id FROM tax_tags") == [(d1,)]
+    assert env.sql("SELECT DISTINCT transaction_id FROM category_splits WHERE transaction_id IS NOT NULL") == [(d1,)] and env.sql("SELECT transaction_id FROM transaction_receipt_links") == [(d1,)]
+    assert env.sql("SELECT transaction_id FROM transaction_income_links") == [(d1,)] and env.sql("SELECT count(*) FROM transaction_links") == [(0,)]
+    assert env.sql("SELECT count(*) FROM investment_payment_rejections") == [(0,)]
+    assert env.sql("SELECT transaction_id,transaction_link FROM investment_events") == [(None, None)] and env.sql("SELECT count(*) FROM investment_accounts") == [(1,)]
+    assert [json.loads(row[0]) for row in env.sql("SELECT detail_json FROM reconciliation_issues WHERE issue_type='ambiguous_receipt_match' ORDER BY id")] == [
+        {"candidate_transaction_ids": [d1, d2]}, {"other": 1}]
+    assert env.sql("SELECT pattern FROM tax_rules") == [("SYNTH2",)] and env.sql("SELECT pattern FROM category_rules") == [("B",)]
+    assert env.sql("SELECT count(*) FROM receipts") == [(1,)] and env.sql("SELECT count(*) FROM income_records") == [(1,)]  # Their other side stays.
+
+
+def test_journey_j2_a_missing_account_is_404_the_body_is_strict_and_a_fault_in_any_step_leaves_everything(env):
+    assert env.client.get("/api/finance/accounts/999/delete-preview").status_code == 404
+    assert env.client.post("/api/finance/accounts/999/delete", json={"token": "x"}).status_code == 404
+    account, _, _ = waiting(env)
+    before = dump(env)
+    for body in ({}, {"token": ""}, {"token": 5}, {"token": "x", "extra": 1}):
+        assert env.client.post(f"/api/finance/accounts/{account}/delete", json=body).status_code == 422
+    assert env.client.post(f"/api/finance/accounts/{account}/delete", json={"token": "0" * 64}).json() == {"detail": CHANGED}
+    # A fault at the first step, not only the last: the trigger fires on the first table the delete writes.
+    token = env.client.get(f"/api/finance/accounts/{account}/delete-preview").json()["token"]
+    with env.store.connection() as db:
+        db.execute("CREATE TRIGGER fault BEFORE DELETE ON transactions BEGIN SELECT RAISE(ABORT,'injected fault'); END")
+    assert env.client.post(f"/api/finance/accounts/{account}/delete", json={"token": token}).status_code == 500
+    assert touched(before, dump(env)) == {}
+    with env.store.connection() as db:
+        db.execute("DROP TRIGGER fault")
+    assert env.client.post(f"/api/finance/accounts/{account}/delete", json={"token": token}).status_code == 200  # The retry with the same token.
+
+
+def test_sc12_an_unconfirmed_account_is_deleted_with_its_statement_and_rows(env, local_model):
+    recorded = recorded_s(env, local_model)
+    record = recorded.run(s_replies())
+    [(account, origin)] = env.sql("SELECT id,origin FROM accounts")
+    assert origin == "record" and [row["id"] for row in env.client.get("/api/finance/accounts/waiting").json()] == [account]
+    files = env.files()
+    transactions = [row[0] for row in env.sql("SELECT id FROM transactions")]
+    assert len(transactions) == 5
+    preview = env.client.get(f"/api/finance/accounts/{account}/delete-preview").json()  # From the document page or the Waiting for confirm group.
+    assert (preview["counts"]["statements"], preview["counts"]["transactions"]) == (1, 5)
+    assert env.client.post(f"/api/finance/accounts/{account}/delete", json={"token": preview["token"]}).status_code == 200
+    with env.store.connection() as db:
+        assert sf.orphans(db, account, [record["id"]], transactions) == []
+    assert env.sql("SELECT count(*) FROM accounts") == [(0,)] and env.sql("SELECT count(*) FROM statements") == [(0,)] and env.sql("SELECT count(*) FROM transactions") == [(0,)]
+    assert env.client.get("/api/finance/accounts/waiting").json() == [] and env.files() == files
+    assert recorded.extraction["id"] and env.manager.extractions.get(recorded.extraction["id"])["publication"]["removed"] is True
+    again = recorded.run(s_replies(), force=True)  # The document offers Record again, and it makes a new account that waits.
+    assert again["review_status"] == "proposed" and len(env.client.get("/api/finance/accounts/waiting").json()) == 1
+
+
+def test_sc22_a_delete_reaches_the_family_rows_in_this_library_and_the_dialog_counts_them(env, monkeypatch):
+    """P9: the family rows this library holds are deleted with the records; the family's copy of the library drops them at the next share."""
+    from home_manager.finance.family_routing import FamilyRouting
+    account, statement_id, doc = waiting(env)
+    review(env, statement_id, "verified")
+    [transaction] = [row[0] for row in env.sql("SELECT id FROM transactions")]
+    routing = FamilyRouting(env.store)
+    routing.refresh({}, [])
+    assert routing.get("statement", statement_id)["status"] == "unassigned"  # P-check: the statement is routed
+    with env.store.connection() as db:
+        db.execute("INSERT INTO family_corrections(key,direction,member_id,record_type,record_id,field,status,created_at,updated_at) VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','sent','m','transaction',?,'category','pending','t','t')", (transaction,))
+        env.manager.ledger.add_evidence(db, "transaction", transaction, source_of(doc, "family:key-1"), {"line_ids": ["page-1-line-1"]})
+    preview = env.client.get(f"/api/finance/accounts/{account}/delete-preview").json()
+    assert preview["family"] == {"rows": 3, "copy": None}  # One assignment, one correction, one family delivery's evidence.
+    # The family's copy: a member who publishes to a family has the rows made by the last publish in it, and a member on the family's own computer all of them.
+    row = env.sql("SELECT max(created_at) FROM transactions")[0][0]
+    link = {"family_id": "f", "publishing": True, "published_at": row}
+    with env.store.connection() as db:
+        db.execute("UPDATE statements SET created_at='9999-01-01T00:00:00+00:00' WHERE id=?", (statement_id,))
+    for profile, expected in (({"family": {**link}}, {"statements": 0, "transactions": 1}), ({"family": {**link, "published_at": "0000"}}, {"statements": 0, "transactions": 0}),
+                              ({"family": {**link, "published_at": None, "local": True}}, {"statements": 1, "transactions": 1}), ({"family": {**link, "publishing": False}}, None),
+                              ({"family": {**link, "published_at": None}}, None), ({}, None)):
+        monkeypatch.setattr(env.manager, "profile", profile)
+        assert env.manager.delete_preview(account)["family"] == {"rows": 3, "copy": expected}, profile
+    monkeypatch.setattr(env.manager, "profile", None)
+    assert env.client.post(f"/api/finance/accounts/{account}/delete", json={"token": preview["token"]}).status_code == 200
+    with env.store.connection() as db:
+        assert sf.orphans(db, account, [statement_id], [transaction]) == []
+        assert db.execute("SELECT count(*) FROM family_assignments").fetchone()[0] == 0 and db.execute("SELECT count(*) FROM family_corrections").fetchone()[0] == 0
+    with pytest.raises(ValueError, match="no family assignment"):
+        routing.get("statement", statement_id)
+    assert not [item for item in routing.list() if item["record_type"] == "statement"] and routing.pending() == []

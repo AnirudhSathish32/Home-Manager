@@ -345,6 +345,14 @@ def fingerprints(account_id, rows):
 identities = fingerprints  # insert_transactions has a parameter of the same name.
 
 
+class AccountNotFound(ValueError):
+    """No such account. A ValueError, so callers that don't care answer 400 as before; Delete's routes answer 404."""
+
+
+class AccountChanged(RuntimeError):
+    """Delete was asked with counts the account no longer matches (FR-14). A RuntimeError, so the API answers 409."""
+
+
 class HouseholdConfig(StrictModel):
     """User-chosen defaults. home_currency reads bare symbols such as $ when nothing contradicts it.
     checkin_weekday is the day of the weekly household check-in: Monday 0 … Sunday 6."""
@@ -518,7 +526,7 @@ class Ledger:
                 return self.account(account_id, db)
         row = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
         if row is None:
-            raise ValueError("Account not found.")
+            raise AccountNotFound("Account not found.")
         return dict(row)
 
     def accounts(self):
@@ -1181,14 +1189,112 @@ class Ledger:
         return True
 
     @staticmethod
+    def delete_counts(db, account_id):
+        """What deleting the account removes or releases, counted in the caller's transaction (FR-10). Receipts, pay stubs and
+        links count when they are verified or proposed: those are the ones that stop counting a purchase or a pay stub on its own."""
+        t = "SELECT id FROM transactions WHERE account_id=:a"
+        one = lambda sql: db.execute(sql, {"a": account_id}).fetchone()[0]  # noqa: E731
+        live = "review_status IN ('verified','proposed')"
+        return {
+            "statements": one("SELECT count(*) FROM statements WHERE account_id=:a"),
+            "transactions": one("SELECT count(*) FROM transactions WHERE account_id=:a"),
+            "imports": one("SELECT count(*) FROM transaction_imports WHERE account_id=:a"),
+            "receipts": one(f"SELECT count(DISTINCT receipt_id) FROM transaction_receipt_links WHERE {live} AND transaction_id IN ({t})"),
+            "pay_stubs": one(f"SELECT count(DISTINCT income_record_id) FROM transaction_income_links WHERE {live} AND transaction_id IN ({t})"),
+            "transfer_links": one(f"SELECT count(*) FROM transaction_links WHERE link_type='transfer' AND {live} "
+                                  f"AND (from_transaction_id IN ({t}) OR to_transaction_id IN ({t}))"),
+            "refund_links": one(f"SELECT count(*) FROM transaction_links WHERE link_type='refund' AND {live} "
+                                f"AND (from_transaction_id IN ({t}) OR to_transaction_id IN ({t}))"),
+            "recurring_payments": one("SELECT count(*) FROM recurring_obligations WHERE account_id=:a AND kind='subscription'"),
+            "recurring_bills": one("SELECT count(*) FROM recurring_obligations WHERE account_id=:a AND kind='bill'"),
+            "category_rules": one("SELECT count(*) FROM category_rules WHERE account_id=:a")}
+
+    @classmethod
+    def delete_token(cls, db, account_id, counts):
+        """Names the account's records as they stand: the counts, and every statement and transaction with its last change and
+        every import record. A statement recorded, a re-read, an import or a reconcile in between changes it (FR-14)."""
+        state = {"counts": counts,
+                 "statements": [[row[0], row[1]] for row in db.execute("SELECT id,updated_at FROM statements WHERE account_id=? ORDER BY id", (account_id,))],
+                 "transactions": [[row[0], row[1]] for row in db.execute("SELECT id,updated_at FROM transactions WHERE account_id=? ORDER BY id", (account_id,))],
+                 "imports": [row[0] for row in db.execute("SELECT id FROM transaction_imports WHERE account_id=? ORDER BY id", (account_id,))]}
+        return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def family_rows(db, account_id):
+        """Family rows in this library that point at the account's statements and transactions (docs/money.md "Deleting an account"):
+        who the family routed each statement to, corrections the family sent or received, and evidence from a family delivery."""
+        s, t = "SELECT id FROM statements WHERE account_id=:a", "SELECT id FROM transactions WHERE account_id=:a"
+        one = lambda sql: db.execute(sql, {"a": account_id}).fetchone()[0]  # noqa: E731
+        return (one(f"SELECT count(*) FROM family_assignments WHERE record_type='statement' AND record_id IN ({s})")
+                + one(f"SELECT count(*) FROM family_corrections WHERE (record_type='statement' AND record_id IN ({s})) "
+                      f"OR (record_type='transaction' AND record_id IN ({t}))")
+                + one(f"SELECT count(*) FROM financial_evidence_links WHERE source_key LIKE 'family:%' AND ((record_type='statement' AND record_id IN ({s})) "
+                      f"OR (record_type='transaction' AND record_id IN ({t})))"))
+
+    def delete_preview(self, account_id):
+        """What Delete would remove, for the dialog (FR-10), with the token Delete must send back (FR-14). `family` holds the rows
+        in this library; the manager adds what the family's own copy holds."""
+        with self.store.connection() as db:
+            account = self.account(account_id, db)
+            counts = self.delete_counts(db, account_id)
+            return {"account": account, "counts": counts, "family": {"rows": self.family_rows(db, account_id), "copy": None},
+                    "token": self.delete_token(db, account_id, counts)}
+
+    def delete_account(self, account_id, token):
+        """Remove the account with every statement, transaction and import record in it, in one transaction (FR-11, FR-15). Refused,
+        changing nothing, when the account changed since the preview that gave `token` (FR-14). Documents are not touched (FR-13)."""
+        with self.store.connection() as db:
+            # The write lock first: a Record or import that lands meanwhile waits, and the token is checked against what it left.
+            db.execute("BEGIN IMMEDIATE")
+            self.account(account_id, db)
+            counts = self.delete_counts(db, account_id)
+            if token != self.delete_token(db, account_id, counts):
+                raise AccountChanged("This account changed since you opened Delete; check the counts again.")
+            self._remove_account(db, account_id)
+        return {"deleted": account_id, "counts": counts}
+
+    @staticmethod
     def _remove_account(db, account_id):
-        """Remove an account row and what only pointed at it, in the caller's transaction (migration 073 does the same for the
-        accounts it removes). Here the account has no statement, transaction or import record."""
-        db.execute("DELETE FROM category_rules WHERE account_id=?", (account_id,))
-        db.execute("DELETE FROM tax_rules WHERE account_id=?", (account_id,))
-        db.execute("UPDATE recurring_obligations SET account_id=NULL WHERE account_id=?", (account_id,))
-        db.execute("UPDATE investment_accounts SET ledger_account_id=NULL WHERE ledger_account_id=?", (account_id,))
-        db.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        """Remove an account and everything that belongs only to its statements, transactions and import records, in the caller's
+        transaction (docs/money.md "Deleting an account"). The account row goes last: with foreign keys on it can only go after
+        its children. FR-06's removal of an empty account is the same code with nothing to remove in steps 1 to 5. Migration 073
+        does the empty case for the accounts it removes. Documents and readings are never touched."""
+        a = {"a": account_id}
+        t, s = "SELECT id FROM transactions WHERE account_id=:a", "SELECT id FROM statements WHERE account_id=:a"
+        # 1. What hangs off the account's transactions. The other side of a link (a receipt, a pay stub, a transaction of another
+        #    account) stays. An investment event that named one forgets it, as reconcile's unlink does.
+        for table in ("transaction_receipt_links", "transaction_income_links", "category_splits", "tax_tags", "investment_payment_rejections"):
+            db.execute(f"DELETE FROM {table} WHERE transaction_id IN ({t})", a)
+        db.execute(f"DELETE FROM transaction_links WHERE from_transaction_id IN ({t}) OR to_transaction_id IN ({t})", a)
+        db.execute(f"UPDATE investment_events SET transaction_id=NULL,transaction_previous_type=NULL,transaction_link=NULL WHERE transaction_id IN ({t})", a)
+        # 2. A transaction of another account that one of these replaced counts again (R2); the pointer goes, the row stays.
+        db.execute(f"UPDATE transactions SET replaced_by=NULL WHERE account_id<>:a AND replaced_by IN ({t})", a)
+        # 3. Rows that name a record by type and id, with no foreign key. Ids are reused once deleted, so none may stay behind.
+        for table in ("financial_evidence_links", "review_events", "reconciliation_issues", "record_corrections", "family_corrections",
+                      "family_assignments", "donation_checks"):
+            db.execute(f"DELETE FROM {table} WHERE (record_type='transaction' AND record_id IN ({t})) OR (record_type='statement' AND record_id IN ({s}))", a)
+        # 4. Open questions whose candidates include one of these transactions. They are machine questions: the reconcile after
+        #    the delete asks again where it is still ambiguous.
+        doomed = {row[0] for row in db.execute(t, a)}
+        if doomed:
+            for issue_id, detail in db.execute("SELECT id,detail_json FROM reconciliation_issues WHERE status='open'").fetchall():
+                try:
+                    candidates = set(json.loads(detail or "{}").get("candidate_transaction_ids") or ())
+                except (ValueError, AttributeError, TypeError):
+                    continue
+                if candidates & doomed:
+                    db.execute("DELETE FROM reconciliation_issues WHERE id=?", (issue_id,))
+        # 5. The records themselves.
+        db.execute("DELETE FROM transactions WHERE account_id=:a", a)
+        db.execute("DELETE FROM statements WHERE account_id=:a", a)
+        db.execute("DELETE FROM transaction_imports WHERE account_id=:a", a)
+        # 6. Rules for the account go. A recurring payment or bill and an investment account keep their own rows (OD-4, FR-11).
+        db.execute("DELETE FROM category_rules WHERE account_id=:a", a)
+        db.execute("DELETE FROM tax_rules WHERE account_id=:a", a)
+        db.execute("UPDATE recurring_obligations SET account_id=NULL WHERE account_id=:a", a)
+        db.execute("UPDATE investment_accounts SET ledger_account_id=NULL WHERE ledger_account_id=:a", a)
+        # 7. The account.
+        db.execute("DELETE FROM accounts WHERE id=:a", a)
 
     @staticmethod
     def user_worked_on(db, transaction_id):
