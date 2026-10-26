@@ -554,7 +554,7 @@ def test_072_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
         before = {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names}
         assert "pdf_import_index" not in names and db.execute("PRAGMA user_version").fetchone()[0] == 71
         storage.apply_migrations(db, 71)
-        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST == 72
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST >= 72  # Later steps (073) run too; "== 72" only held while 072 was the newest.
         assert {name: db.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0] for name in names} == before
         assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # No backfill in the migration.
         assert db.execute("SELECT strict FROM pragma_table_list WHERE name='pdf_import_index'").fetchone()[0] == 1
@@ -567,6 +567,46 @@ def test_072_pdf_import_index_adds_one_derived_table_and_changes_nothing_else():
                 db.execute(f"INSERT INTO pdf_import_index VALUES{row}")
         db.execute("DELETE FROM parse_runs WHERE id='run1'")
         assert db.execute("SELECT count(*) FROM pdf_import_index").fetchone()[0] == 0  # ON DELETE CASCADE.
+    finally:
+        db.close()
+
+
+def test_073_statement_accounts_sorts_accounts_by_who_made_them_and_runs_again_without_change():
+    """specs/statement-accounts FR-08: from 072, accounts a statement or an extraction run points at become 'record' (they wait for Confirm
+    unless something confirms them), one a family delivery published becomes 'family', a Record account left empty is removed with what named
+    only it, and every other account is the user's. The part after the sort marker changes nothing when it runs again."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    try:
+        for number, script in MIGRATIONS:
+            if number < 73:
+                db.executescript(script.read_text())
+        account = "INSERT INTO accounts(id,institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,'SYNTH BANK','checking','SYNTH',?,'USD','t','t')"
+        for number in range(1, 7):
+            db.execute(account, (number, f"{number:04d}"))
+        for number, status, source in ((2, "verified", "automatic"), (5, "verified", "user")):  # Automatic, and confirmed by the user.
+            db.execute("INSERT INTO statements(id,account_id,document_id,blob_hash,statement_type,currency,review_status,review_source,created_at,updated_at) "
+                       "VALUES(?,?,1,?,'bank','USD',?,?,'t','t')", (number, number, str(number) * 64, status, source))
+        db.execute("INSERT INTO financial_evidence_links(record_type,record_id,document_id,blob_hash,parse_run_id,source_key,locator_json,created_at) "
+                   "VALUES('statement',2,1,?,NULL,'family:k','{}','t')", ("2" * 64,))
+        db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at) VALUES('p',?,'v','{}','succeeded','t','t')", ("9" * 64,))
+        db.execute("INSERT INTO extraction_runs(id,document_id,parse_run_id,config_json,prompt_version,status,created_at,updated_at,publication_json) "
+                   "VALUES('r',1,'p','{}','v','succeeded','t','t',?)", ('{"record_type":"statement","id":9,"account_id":3}',))
+        db.execute("INSERT INTO transaction_imports(id,document_id,blob_hash,account_id,mapping_json,parsed,inserted,duplicates,rejected,issues_json,created_at) "
+                   "VALUES('i',1,?,4,'{}',1,1,0,0,'[]','t')", ("8" * 64,))
+        db.execute("INSERT INTO category_rules(pattern,category,account_id,created_at,updated_at) VALUES('X','dining',3,'t','t')")
+        db.commit()
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 72
+        storage.apply_migrations(db, 72)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST >= 73
+        # 1 hand-made, 2 an automatic statement that a family delivery published, 3 empty but named by a run, 4 an import only,
+        # 5 a statement the user confirmed, 6 hand-made.
+        assert {row["id"]: row["origin"] for row in db.execute("SELECT id,origin FROM accounts")} == {1: "user", 2: "family", 4: "user", 5: "record", 6: "user"}
+        assert db.execute("SELECT count(*) FROM category_rules").fetchone()[0] == 0  # The removed account's rule went with it.
+        before = {name: db.execute(f'SELECT * FROM "{name}" ORDER BY 1').fetchall() for name in ("accounts", "statements", "category_rules", "transaction_imports")}
+        again = next(script for number, script in MIGRATIONS if number == 73).read_text().split("-- sort:", 1)[1].split("\n", 1)[1]
+        db.executescript(again)
+        assert {name: db.execute(f'SELECT * FROM "{name}" ORDER BY 1').fetchall() for name in before} == before
     finally:
         db.close()
 

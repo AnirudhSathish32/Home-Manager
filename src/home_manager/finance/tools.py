@@ -26,6 +26,7 @@ from ..library import text_index
 from .fx import REPORTING, EcbRates, FxError
 from .ledger import (
     CHARGE_SHARE,
+    CONFIRMED,
     COUNTABLE,
     HAS_SPLITS,
     PENDING,
@@ -559,8 +560,8 @@ class FinanceTools(ItemAnalysisTools):
 
     def _coverage(self, scope, params, account_id=None):
         return self.query(f"SELECT a.id AS account_id,a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(t.id) AS transactions "
-                          f"FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id AND {COUNTABLE} AND {scope} "
-                          + ("WHERE a.id=? " if account_id is not None else "") + "GROUP BY a.id ORDER BY a.id",
+                          f"FROM accounts a LEFT JOIN transactions t ON t.account_id=a.id AND {COUNTABLE} AND {scope} WHERE {CONFIRMED} "
+                          + ("AND a.id=? " if account_id is not None else "") + "GROUP BY a.id ORDER BY a.id",
                           [*params, account_id] if account_id is not None else params)
 
     def _net_by_currency(self, start, end, account_id):

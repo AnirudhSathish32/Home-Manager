@@ -338,7 +338,7 @@ Install with `.[dev]`. There is no CI, so run these before committing:
 ## Schema map
 
 Each library holds one SQLite database, `inventory.sqlite3`, built by the forward-only scripts in
-`src/home_manager/library/migrations/` (001–072). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
+`src/home_manager/library/migrations/` (001–073). The `NNN_` prefix of each script matches `PRAGMA user_version`. The
 `.sql` file is the source of truth for columns and constraints. A table that was later rebuilt is listed under the
 migration that first created it.
 
@@ -461,6 +461,12 @@ migration that first created it.
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
 | 072 | `pdf_import_index` | `pdf_import_index` | Derived and rebuildable from the reading, keyed by `parse_runs.id` (`ON DELETE CASCADE`): table count, printed last fours, currency, `analyzer_version`, `error`. No money or row data; nothing backfilled by the migration ([documents](documents.md#transaction-imports)) |
+
+**Statement accounts (073)**
+
+| # | File | Tables added | Columns added / notes |
+|---|---|---|---|
+| 073 | `statement_accounts` | | `accounts.origin` (`user`, `record`, `family`; default `user`). It says who made the account; whether a `record` account is confirmed is derived (`ledger.CONFIRMED`: an import record, a statement you reviewed or one reconciled), never stored. The upgrade sets `record` for accounts holding a statement or extracted rows, or that an extraction run published a statement into, and `family` for those a family delivery's statement is in; it then removes a `record` account with no statement, transaction or import record (with its category and tax rules, and unlinks its recurring payments and investment link). Rewrites no stored decision. The part after `-- sort:` is idempotent ([money](money.md#new-statements-wait-for-you)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

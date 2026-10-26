@@ -21,7 +21,7 @@ import uuid
 from ..core import actor
 from ..core.money import money
 from ..library.storage import now
-from .ledger import Ledger, normalize_name
+from .ledger import CONFIRMED, Ledger, normalize_name
 from .splits import equal_shares, line_shares
 
 ROUTED = ("receipt", "statement", "income_record")
@@ -50,7 +50,7 @@ def member_facts(members):
     for member, store in members:
         with store.connection() as db:
             accounts = [{"institution": row[0], "account_type": row[1], "last_four": row[2]} for row in db.execute(
-                "SELECT institution,account_type,account_last_four FROM accounts WHERE account_last_four IS NOT NULL ORDER BY institution,id")]
+                f"SELECT a.institution,a.account_type,a.account_last_four FROM accounts a WHERE a.account_last_four IS NOT NULL AND {CONFIRMED} ORDER BY a.institution,a.id")]
             employers = {normalize_name(row[0]) for row in db.execute(
                 "SELECT m.canonical_name FROM income_records i JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.review_status<>'rejected'")}
         facts[member["member_id"]] = {"accounts": accounts, "employers": employers}
@@ -356,7 +356,8 @@ def apply_delivery(store, delivery, document):
         record_type, record = "receipt", {**record, "total_minor": record.get("amount_due_minor")}
     else:
         publish = {"receipt": ledger.publish_receipt, "statement": ledger.publish_statement, "income_record": ledger.publish_income}[record_type]
-        published = publish(record, source, "verified")
+        # The family confirmed the statement, so an account it needs is confirmed too (origin 'family').
+        published = publish(record, source, "verified", **({"origin": "family"} if record_type == "statement" else {}))
     with store.connection() as db:
         if record_type in SHAREABLE:
             if delivery.get("share") is None:

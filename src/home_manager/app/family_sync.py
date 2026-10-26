@@ -40,6 +40,7 @@ from ..core.jobs import Work
 from ..core.logs import log_failure
 from ..core.money import money
 from ..core.paths import DirectoryLock, PathError, safe_path, write_atomic
+from ..finance.ledger import CONFIRMED
 from ..library.share import DecryptingReader, EncryptingWriter, ShareError, check_passphrase
 from ..library.storage import MIGRATIONS, MigrationError, apply_migrations, now
 from .profiles import clean_name, decode_key, encode_key
@@ -681,8 +682,9 @@ class FamilyFolder:
         owners, joint = {}, {}
         for member in present:
             db = connections[member["member_id"]]
+            # An account still waiting for Confirm owns nothing: it would reject another member's real transactions.
             for account_id, institution, kind, last_four, display in db.execute(
-                    "SELECT id,institution,account_type,account_last_four,display_name FROM accounts WHERE account_last_four IS NOT NULL"):
+                    f"SELECT a.id,a.institution,a.account_type,a.account_last_four,a.display_name FROM accounts a WHERE a.account_last_four IS NOT NULL AND {CONFIRMED}"):
                 key = (" ".join(institution.lower().split()), kind, last_four)
                 if key not in owners:
                     owners[key] = member["member_id"]

@@ -26,7 +26,7 @@ from ..core.formats import extension
 from ..core.money import currency_code, format_minor, money, percent_text, to_minor
 from ..core.trace import NULL, figure, ref
 from ..library.storage import now
-from .ledger import clean_reason, name_tokens, normalize_name
+from .ledger import clean_reason, confirmed, name_tokens, normalize_name
 from .retirement import HAS_RMD, divisor, required, rmd_start_age
 from .tabular import parse_crypto_export
 from .tax_lots import account_lots, realized, shares
@@ -600,7 +600,7 @@ class Investments:
                 "SELECT * FROM investment_confirmations WHERE account_id=? ORDER BY trade_date DESC,id DESC", (account_id,))]
             linkable = [dict(row) for row in db.execute(
                 f"SELECT l.id,l.display_name,l.account_type FROM accounts l WHERE l.account_type IN ({','.join('?' * len(LINKABLE_TYPES))}) AND l.currency=? "
-                "AND l.active=1 AND NOT EXISTS(SELECT 1 FROM investment_accounts a WHERE a.ledger_account_id=l.id AND a.id<>?) ORDER BY l.display_name",
+                f"AND l.active=1 AND {confirmed('l')} AND NOT EXISTS(SELECT 1 FROM investment_accounts a WHERE a.ledger_account_id=l.id AND a.id<>?) ORDER BY l.display_name",
                 (*LINKABLE_TYPES, currency, account_id))]
             employers = [{"id": employer_id, "name": name} for employer_id, name, employer_currency, _ in self.payroll_employers(db, account["section"])
                          if employer_currency == currency]

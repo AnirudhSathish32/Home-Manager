@@ -38,6 +38,7 @@ REQUIRED = {"year": "Choose the year: these dates print no year, or only two dig
             "sign": "Choose whether positive amounts are money in or money out for this account."}
 REVIEW_STATES = ("proposed", "needs_review", "verified", "rejected")
 ACCOUNT_TYPES = ("checking", "savings", "credit_card", "brokerage", "loan", "other")
+ACCOUNT_ORIGINS = ("user", "record", "family")
 US_STATES = frozenset("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split())
 # A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"), not a record type of its own.
 RECORD_TABLES = {"statement": "statements", "transaction": "transactions", "receipt": "receipts", "income_record": "income_records"}
@@ -51,6 +52,19 @@ HELD = "t.origin='extraction' AND EXISTS(SELECT 1 FROM statements s WHERE s.id=t
 # rows only after the user verifies them; statement lines once their statement is reconciled.
 # Everything else is reported as pending review.
 COUNTABLE = f"t.review_status<>'rejected' AND (t.origin<>'extraction' OR t.review_status='verified') AND NOT ({HELD})"
+
+
+def confirmed(alias="a"):
+    """The SQL test for an account the user has confirmed (docs/money.md "New statements wait for you"), for the accounts
+    row named `alias`. Derived, not stored, so it can't drift from review history: an account Record created (origin 'record')
+    waits until an import reached it, a statement in it was confirmed by the user, or one was reconciled. Undo of a Confirm
+    sets the statement back to needs_review, which unconfirms the account again unless something else confirms it."""
+    return (f"({alias}.origin<>'record' OR EXISTS(SELECT 1 FROM transaction_imports i WHERE i.account_id={alias}.id) "
+            f"OR EXISTS(SELECT 1 FROM statements s WHERE s.account_id={alias}.id AND "
+            "(s.review_status='verified' AND s.review_source='user' OR s.reconciliation='reconciled')))")
+
+
+CONFIRMED = confirmed("a")
 # A receipt counts on its own until a card or bank line that is not rejected replaces it: a sale as spending, a
 # return (a negative total) as a refund, the same way (docs/money.md "Returns").
 STANDALONE_RECEIPT = ("r.review_status='verified' AND r.total_minor<>0 AND r.purchase_date IS NOT NULL AND NOT EXISTS("
@@ -411,8 +425,12 @@ class Ledger:
         with self.store.connection() as db:
             return self.account_in(db, institution, account_type, currency, display_name, last_four)
 
-    def account_in(self, db, institution, account_type, currency, display_name=None, last_four=None):
-        """Find or create an account inside the caller's transaction."""
+    def account_in(self, db, institution, account_type, currency, display_name=None, last_four=None, origin="user"):
+        """Find or create an account inside the caller's transaction. origin says who makes it: 'user' (confirmed at once),
+        'record' (a statement Record read: it waits for Confirm) or 'family' (a family delivery). Adding by hand an account
+        that waits for Confirm confirms it: an existing 'record' account found with origin 'user' takes that origin."""
+        if origin not in ACCOUNT_ORIGINS:
+            raise ValueError("Unknown account origin.")
         institution = " ".join((institution or "").split())[:120]
         if not institution:
             raise ValueError("Enter the account's institution.")
@@ -425,10 +443,13 @@ class Ledger:
         if existing:
             if existing["currency"] != currency:
                 raise ValueError("This account already exists with a different currency.")
+            if origin == "user" and existing["origin"] == "record":
+                db.execute("UPDATE accounts SET origin='user',updated_at=? WHERE id=?", (now(), existing["id"]))
+                existing = dict(db.execute("SELECT * FROM accounts WHERE id=?", (existing["id"],)).fetchone())
             return existing
-        cursor = db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        cursor = db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,origin,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                             (institution, account_type, display_name[:160] if display_name else default_account_name(institution, account_type, last_four),
-                             last_four, currency, now(), now()))
+                             last_four, currency, origin, now(), now()))
         return dict(db.execute("SELECT * FROM accounts WHERE id=?", (cursor.lastrowid,)).fetchone())
 
     def retype_account(self, db, account, account_type):
@@ -501,8 +522,22 @@ class Ledger:
         return dict(row)
 
     def accounts(self):
+        """The accounts the user has confirmed. One filter here keeps an account that waits for Confirm off every list built from
+        it: Accounts, Today, Forecast, the pickers and the assistant's get_accounts (docs/money.md "New statements wait for you")."""
         with self.store.connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM accounts ORDER BY institution, account_type, account_last_four")]
+            return [dict(row) for row in db.execute(f"SELECT a.* FROM accounts a WHERE {CONFIRMED} ORDER BY a.institution, a.account_type, a.account_last_four")]
+
+    def waiting_accounts(self):
+        """The accounts that wait for Confirm, each with its newest statement that isn't rejected (the document to open and
+        confirm), else None. Kept out of accounts(), so nothing counts them."""
+        with self.store.connection() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT a.*,s.id AS statement_id,s.document_id AS statement_document_id FROM accounts a LEFT JOIN statements s ON s.id="
+                "(SELECT max(x.id) FROM statements x WHERE x.account_id=a.id AND x.review_status<>'rejected') "
+                f"WHERE NOT {CONFIRMED} ORDER BY a.institution, a.account_type, a.account_last_four, a.id")]
+
+    def account_confirmed(self, db, account_id):
+        return db.execute(f"SELECT 1 FROM accounts a WHERE a.id=? AND {CONFIRMED}", (account_id,)).fetchone() is not None
 
     # Evidence -----------------------------------------------------------------
 
@@ -571,6 +606,8 @@ class Ledger:
             account = db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
             if account is None:
                 raise ValueError("Account not found.")
+            if not self.account_confirmed(db, account_id):  # The pickers don't offer it; only a crafted request gets here.
+                raise ValueError("This account waits for you to confirm its statement.")
             minor = to_minor(amount, account["currency"])
             if minor <= 0:
                 raise ValueError("Enter an amount above zero; choose money out or in separately.")
@@ -1062,7 +1099,8 @@ class Ledger:
             asset_id = db.execute(f"INSERT INTO assets({','.join(columns)}) VALUES({','.join('?' * len(columns))})", tuple(columns.values())).lastrowid
         return {"record_type": "asset", "id": asset_id, "status": "published"}
 
-    def publish_statement(self, record, source, status):
+    def publish_statement(self, record, source, status, origin="user"):
+        """origin: who makes the account if the statement needs a new one (account_in)."""
         card = record["statement_type"] == "credit_card"
         # A bank statement's account is the type it prints (savings for "Chase Savings"), checking when none is printed.
         printed = None if card else PRINTED_ACCOUNT_TYPES.get(((record.get("details") or {}).get("account_type") or {}).get("text"))
@@ -1070,7 +1108,7 @@ class Ledger:
         with self.store.connection() as db:
             account = (printed and self.find_account(db, record["institution"], (printed,), record["last_four"])
                        or self.find_account(db, record["institution"], statement_types(kind), record["last_four"]))
-            account = account or self.account_in(db, record["institution"], kind, record["currency"], last_four=record["last_four"])
+            account = account or self.account_in(db, record["institution"], kind, record["currency"], last_four=record["last_four"], origin=origin)
             if printed and account["account_type"] in PRINTED_ACCOUNT_TYPES.values() and account["account_type"] != printed:
                 account = self.retype_account(db, account, printed)
             if account["currency"] != record["currency"]:
@@ -1304,7 +1342,7 @@ class Ledger:
         """The one active account in the document's currency whose last four the document prints, or None (FR-13).
         last_fours: each distinct NNNN found, with the page of its first occurrence."""
         currency = document_currency or home_currency or "USD"
-        found = [dict(row) for row in db.execute("SELECT * FROM accounts WHERE active=1 AND currency=? ORDER BY id", (currency,))
+        found = [dict(row) for row in db.execute(f"SELECT a.* FROM accounts a WHERE a.active=1 AND a.currency=? AND {CONFIRMED} ORDER BY a.id", (currency,))
                  if row["account_last_four"] in last_fours]
         if len(found) != 1:
             return None
@@ -1612,6 +1650,7 @@ class Ledger:
                     "WHERE t.id=? GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
             if record_type == "statement":
                 value["transactions"] = [dict(item) for item in db.execute("SELECT * FROM transactions WHERE statement_id=? ORDER BY posted_date,id", (record_id,))]
+                value["account_confirmed"] = self.account_confirmed(db, row["account_id"])
             if record_type == "income_record":
                 value["lines"] = []
                 for line in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY position", (record_id,)):

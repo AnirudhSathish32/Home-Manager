@@ -922,6 +922,12 @@ def create_app(control: Path | None = None, token: str | None = None,
         store()
         return manager().ledger.accounts()
 
+    @app.get("/api/finance/accounts/waiting")
+    def waiting_accounts():
+        """Accounts Record created that wait for the user's Confirm (docs/money.md "New statements wait for you"); not in /accounts."""
+        store()
+        return manager().ledger.waiting_accounts()
+
     @app.get("/api/finance/health")
     def ledger_health():
         """Every ledger rule the data breaks, by record id (finance/health.py), and whether each tax engine can run here.
