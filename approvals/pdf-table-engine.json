@@ -1,0 +1,18 @@
+{
+  "feature": "pdf-table-engine",
+  "spec": {
+    "sha256": "31d06e09ac86d98038369be6c963d04d07bc2030512fd68437fd6f6bcf200e3a",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-27T15:51:15-04:00",
+    "approved_via": "agent",
+    "permission": "approve the spec then plan phase 1 only"
+  },
+  "plan": {
+    "sha256": "2c54ab470d6799f3d7a4bf2e9573d79feae10fb816d19e6b33596a708acd6a23",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-10-27T16:18:35-04:00",
+    "approved_via": "agent",
+    "permission": "approve the plan then start implmentation",
+    "spec_sha256": "31d06e09ac86d98038369be6c963d04d07bc2030512fd68437fd6f6bcf200e3a"
+  }
+}

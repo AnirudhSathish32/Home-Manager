@@ -1,0 +1,11 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: pdf-table-engine
+plan_sha256: 2c54ab470d6799f3d7a4bf2e9573d79feae10fb816d19e6b33596a708acd6a23
+slices:
+  - {id: SL-01, status: todo}
+  - {id: SL-02, status: todo}
+  - {id: SL-03, status: todo}
+  - {id: SL-04, status: todo}
+  - {id: SL-05, status: todo}
+  - {id: SL-06, status: todo}
+  - {id: SL-07, status: todo}
