@@ -10,10 +10,10 @@ LEGACY_HIERARCHY = {
     "05_Investments": ["Brokerage", "Retirement"],
     "06_Obligations": ["Housing", "Loans", "Insurance"],
 }
-# Two stores over one library. Money: proof of what was spent, which the ledger counts and reconciles.
+# Two stores over one library. Money: proof of what was spent, which the ledger counts and reconciles (bills too).
 # Documents: papers kept because they matter (leases, policies, pay stubs, tax forms).
-MONEY_FOLDERS = ["Receipts", "Bank_Statements", "Credit_Card_Statements"]
-DOCUMENT_FOLDERS = ["Bills", "Housing", "Insurance", "Investments", "Jobs", "Loans", "Taxes"]
+MONEY_FOLDERS = ["Receipts", "Bills", "Bank_Statements", "Credit_Card_Statements"]
+DOCUMENT_FOLDERS = ["Housing", "Insurance", "Investments", "Jobs", "Loans", "Taxes"]
 FOLDERS = [*MONEY_FOLDERS, *DOCUMENT_FOLDERS]
 FILING_FOLDERS = ["Unfiled", *FOLDERS]
 LIBRARY_FOLDERS = ["Inbox", *FILING_FOLDERS]

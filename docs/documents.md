@@ -20,14 +20,15 @@ Inbox/                       the only way documents enter (plus watched folders)
 Unfiled/
 Money (the ledger counts and reconciles these)
   Receipts/
+  Bills/
   Bank_Statements/
   Credit_Card_Statements/
 Documents (papers kept because they matter)
-  Bills/  Housing/  Insurance/  Investments/  Loans/  Taxes/
+  Housing/  Insurance/  Investments/  Loans/  Taxes/
   Jobs/<Employer>/Paystubs/ and Jobs/<Employer>/Documents/   (see taxes.md, "Jobs and pay stubs")
 ```
 
-The retired `Income` folder is emptied at startup into `Jobs`. Bills is an active document folder. The original nested layout
+The retired `Income` folder is emptied at startup into `Jobs`. Bills is an active money folder, shown in Receipts & statements. The original nested layout
 (`01_Banking/…`) survives only as `LEGACY_HIERARCHY`, so old folder names in history still resolve. Where the database,
 blobs and settings live is in [operations](operations.md#where-things-live).
 

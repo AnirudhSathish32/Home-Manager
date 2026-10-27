@@ -38,6 +38,8 @@ def test_records_v2_filters_strip_read_all_and_trash(tmp_path):
         panel = page.locator("#rc2-panel")
         expect(panel).to_be_visible()
         expect(page.locator("[data-page='documents']")).to_have_count(1)  # One section per page.
+        expect(page.locator("#rc2-tree [data-folder='Housing']")).to_have_count(1)
+        expect(page.locator("#rc2-tree [data-folder='Bills']")).to_have_count(0)  # Bills live in Receipts & statements.
 
         # The strip names the backlog and holds the page's only primary.
         read_all = page.locator("#rc2-read-all")
@@ -133,6 +135,7 @@ def test_records_v2_filters_strip_read_all_and_trash(tmp_path):
         expect(page.locator("#nav-receipts")).to_have_attribute("aria-current", "page")
         expect(page.locator("#rc2-tree [data-folder-group='Receipts']")).to_be_visible()
         expect(page.locator("#rc2-tree [data-folder='Inbox']")).to_have_count(0)
+        expect(page.locator("#rc2-tree [data-folder='Bills']")).to_have_count(1)  # Bills are money (docs/money.md "Two stores, one library").
         expect(page.locator("#rc2-table tbody tr")).to_have_count(3)
         no_overflow(page)
 

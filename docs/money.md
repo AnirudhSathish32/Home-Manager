@@ -40,9 +40,9 @@ The rules every money figure follows. They are tested with fixtures, and the led
 
 ## Two stores, one library
 
-- **Receipts & statements** (the Money section) holds Receipts, with a subfolder per category, Bank Statements and
-  Credit Card Statements: proof of what was spent, counted and reconciled.
-- **Documents** holds Bills, Housing, Insurance, Investments, Jobs, Loans and Taxes, plus the shared Inbox and Unfiled: papers
+- **Receipts & statements** (the Money section) holds Receipts, with a subfolder per category, Bills, Bank Statements
+  and Credit Card Statements: proof of what was spent, counted and reconciled.
+- **Documents** holds Housing, Insurance, Investments, Jobs, Loans and Taxes, plus the shared Inbox and Unfiled: papers
   kept because they matter.
 - Files arrive in the one Inbox and are filed to whichever store fits. Trash shows each store's trashed files.
   Emptying Trash is offered from Documents only, because it empties both. On disk the folders are listed in
