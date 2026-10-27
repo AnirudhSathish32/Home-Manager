@@ -96,6 +96,14 @@ for entry in reading.entries:
           f"read by Record: {table.id in reading.ids}{'   (excluded: balance title or heading)' if table.id in reading.excluded else ''}")
 if not reading.entries:
     print("  no tables found")
+_, analysis, kept = statement_rows.selected(result, "USD", "negative_is_outflow")
+kinds = {table.id: table.kind for table in analysis.tables}
+print(f"rows Record takes from the printed columns: {len(kept)}")
+for row in kept:
+    cells = {role: shape(getattr(row, role)) for role in ("date", "description", "amount")}
+    where = f"y {100 * min(PageView(result.pages[row.page - 1].layout).box[w][1] for w in row.word_ids) / result.pages[row.page - 1].layout.preview_height:.1f}%" if row.word_ids else "native cells"
+    print(f"  page {row.page} {kinds[row.table_id]} row {row.row} ({where}): {cells}"
+          + (f"   rejected: {masked(row.rejected)}" if row.rejected else ""))
 built = statement_rows.rebuild(result, statement_type="bank", period_start=f"{year}-01-01", period_end=f"{year}-12-31", currency="USD")
 print(f"available: {built.available}   rebuilt pages: {sorted(built.pages)}   rows recorded: {len(built.rows)}   rows dropped: {built.dropped}")
 for issue in built.issues:
