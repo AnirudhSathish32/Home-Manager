@@ -373,10 +373,10 @@ function rc2Head() {
   const total = rc2.data.total;
   $("rc2-breadcrumb").textContent = rc2Breadcrumb();
   $("rc2-count").textContent = `${total} document${total === 1 ? "" : "s"}`;
-  // Emptying Trash deletes both stores' trashed files, so it is offered from Documents only.
-  $("rc2-empty-trash").hidden = rc2.folder !== "trash" || rc2.scope !== "documents" || !rc2.catalog.counts.trash;
-  $("rc2-description").textContent = rc2.folder === "trash" && rc2.scope === "money" ? "Restore receipts and statements here. Empty Trash from Documents."
-    : rc2.folder === "trash" ? "Restore documents or empty Trash to permanently delete them. Emptying also removes trashed receipts and statements."
+  // Each section empties only its own Trash.
+  $("rc2-empty-trash").hidden = rc2.folder !== "trash" || !rc2.catalog.counts.trash;
+  $("rc2-description").textContent = rc2.folder === "trash" && rc2.scope === "money" ? "Restore receipts and statements or empty Trash to permanently delete them."
+    : rc2.folder === "trash" ? "Restore documents or empty Trash to permanently delete them."
     : rc2.folder === "Inbox" ? "Newly dropped files waiting to be read and filed."
     : rc2.folder === "Unfiled" ? "Documents whose type, merchant or date could not be confirmed. Record them or use Move." : "";
 }
@@ -601,7 +601,7 @@ async function rc2EmptyTrash() {
   const count = rc2.catalog.counts.trash;
   if (!await confirmAction({title: "Permanently empty Trash?", danger: true, confirmLabel: "Permanently empty Trash",
                             message: `All ${count} document${count === 1 ? "" : "s"} in Trash, including those hidden by filters or on other pages. Permanently deletes managed copies, preserved versions, extracted text and associated ledger records. Data still used by other documents is kept. This cannot be undone. Existing backups remain.`})) return;
-  const result = await api("/api/trash/empty", {method: "POST", body: JSON.stringify({confirmed: true})});
+  const result = await api("/api/trash/empty", {method: "POST", body: JSON.stringify({confirmed: true, scope: rc2.scope})});
   notice(`${result.deleted} documents permanently deleted.`);
   if (result.cleanup_pending) notice("Some files could not be removed. Close them in other programs and retry Empty trash, or restart the app to retry cleanup.", true);
   rc2.selection.clear();

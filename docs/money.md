@@ -44,8 +44,8 @@ The rules every money figure follows. They are tested with fixtures, and the led
   and Credit Card Statements: proof of what was spent, counted and reconciled.
 - **Documents** holds Housing, Insurance, Investments, Jobs, Loans and Taxes, plus the shared Inbox and Unfiled: papers
   kept because they matter.
-- Files arrive in the one Inbox and are filed to whichever store fits. Trash shows each store's trashed files.
-  Emptying Trash is offered from Documents only, because it empties both. On disk the folders are listed in
+- Files arrive in the one Inbox and are filed to whichever store fits. Trash shows each store's trashed files,
+  and Empty trash in a store empties only that store's Trash (`scope` on `/api/trash/empty`). On disk the folders are listed in
   `core/folders.py` (`MONEY_FOLDERS`, `DOCUMENT_FOLDERS`). `scope=money|documents` on `/api/documents` and
   `/api/folders` selects the store.
 - **Bills are filed to Bills and counted by their lines** (see [Bills and their lines](#bills-and-their-lines)). Record

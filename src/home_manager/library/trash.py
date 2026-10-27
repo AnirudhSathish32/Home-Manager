@@ -51,14 +51,17 @@ def cleanup(store):
     return failures
 
 
-def empty(store):
-    """Caller holds the manager mutex with background work idle and the library lock."""
+def empty(store, scope=None):
+    """Caller holds the manager mutex with background work idle and the library lock. With a scope (money or documents),
+    only that section's Trash: the trashed documents in its folders, with the later pages grouped under them."""
     if cleanup(store):
         raise ValueError("Previous trash cleanup could not finish. Close files open in other programs and try again.")
+    scoped, scope_params = store.scope_clause(scope)
     with store.connection() as db:
         db.execute("BEGIN IMMEDIATE")
-        docs = db.execute("SELECT * FROM occurrences WHERE deleted_at IS NOT NULL").fetchall()
-        ids = {row["id"] for row in docs}
+        ids = {row[0] for row in db.execute(store.library_query() + "SELECT id FROM library WHERE deleted_at IS NOT NULL AND "
+                                            f"coalesce(grouped_under,id) IN (SELECT id FROM library WHERE grouped_under IS NULL{scoped})",
+                                            scope_params)}
         if not ids:
             return {"deleted": 0, "cleanup_pending": 0}
         # Ordinary tables only: the full-text index (a virtual table and its shadow tables) follows document_passages by trigger.

@@ -128,8 +128,9 @@ library, not just the visible page.
 
 - **Delete** asks for confirmation, naming the document. **Delete to Trash** removes it from active views and future
   reading batches, but keeps the originals, the reading history and the file on disk.
-- Trash offers **Restore** and **Empty trash…**. Empty trash permanently removes every trashed document after
-  confirmation: managed copies, preserved versions, readings, text-index passages and ledger records.
+- Trash offers **Restore** and **Empty trash…**. Empty trash permanently removes every trashed document in that
+  section (Documents, or Receipts & statements) after confirmation: managed copies, preserved versions, readings,
+  text-index passages and ledger records. The other section's Trash is left alone.
   - Evidence still used by other documents is kept. External originals and backups are untouched.
   - Edited managed files block deletion, so the edits can be saved first.
   - Running background work must finish first. Interrupted removal is retried at restart or on the next Empty trash.

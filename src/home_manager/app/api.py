@@ -218,6 +218,7 @@ class BatchInput(BaseModel):
 class EmptyTrashInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     confirmed: Literal[True]
+    scope: Literal["money", "documents"]
 
 
 class ReceiptBatchInput(BatchInput):
@@ -2000,7 +2001,7 @@ def create_app(control: Path | None = None, token: str | None = None,
 
     @app.post("/api/trash/empty")
     def empty_trash(value: EmptyTrashInput):
-        return manager().empty_trash()
+        return manager().empty_trash(value.scope)
 
     @app.post("/api/documents/{document_id}/trash")
     def trash_document(document_id: int, value: DeleteInput):

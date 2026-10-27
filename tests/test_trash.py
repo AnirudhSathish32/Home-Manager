@@ -211,8 +211,24 @@ def test_empty_trash_api_requires_confirmation(tmp_path):
         trash(app.state.manager.store, source, doc)
         assert client.post("/api/trash/empty", json={"confirmed": True}).status_code == 401
         headers = {"Authorization": "Bearer test-token"}
-        for body in ({}, {"confirmed": False}):
+        for body in ({}, {"confirmed": False}, {"confirmed": True}, {"confirmed": True, "scope": "everything"}):
             assert client.post("/api/trash/empty", headers=headers, json=body).status_code == 422
-        response = client.post("/api/trash/empty", headers=headers, json={"confirmed": True})
+        response = client.post("/api/trash/empty", headers=headers, json={"confirmed": True, "scope": "documents"})
         assert response.status_code == 200, response.text
         assert response.json() == {"deleted": 1, "cleanup_pending": 0}
+
+
+def test_empty_trash_empties_only_its_sections_trash(library):
+    store, source = library
+    receipt = capture(store, source, "receipt.csv")
+    store.library_action(receipt["id"], receipt["current_hash"], "move", "Receipts")
+    receipt = store.document(receipt["id"])
+    other = capture(store, source, "other.csv", b"date,amount\n2026-09-25,99.00\n")
+    trash(store, source, receipt)
+    trash(store, source, other)
+    assert store.folders("money")["counts"]["trash"] == 1 and store.folders("documents")["counts"]["trash"] == 1
+    assert empty(store, "money") == {"deleted": 1, "cleanup_pending": 0}
+    assert [doc["id"] for doc in store.documents(folder="trash")["items"]] == [other["id"]]
+    assert empty(store, "money")["deleted"] == 0
+    assert empty(store, "documents")["deleted"] == 1
+    assert store.documents(folder="trash")["total"] == 0

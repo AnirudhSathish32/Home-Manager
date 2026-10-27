@@ -139,6 +139,24 @@ def test_records_v2_filters_strip_read_all_and_trash(tmp_path):
         expect(page.locator("#rc2-table tbody tr")).to_have_count(3)
         no_overflow(page)
 
+        # A deleted receipt is in this section's Trash, which empties here and leaves the Documents Trash alone.
+        page.wait_for_load_state("networkidle")
+        title = rows.first.locator(".rc2-name").text_content()
+        page.get_by_role("button", name=f"More actions for {title}").click()
+        page.get_by_role("menuitem", name="Delete").click()
+        page.locator("#confirm-library-action").click()
+        expect(page.locator("#library-action-dialog")).to_be_hidden()
+        page.locator("#rc2-tree [data-folder='trash']").click()
+        expect(page).to_have_url(re.compile(r"#/receipts\?folder=trash"))
+        expect(rows).to_have_count(1)
+        page.locator("#rc2-empty-trash").click()
+        expect(page.locator("#confirm-title")).to_have_text("Permanently empty Trash?")
+        page.locator("#confirm-accept").click()
+        expect(page.locator("#rc2-empty-trash")).to_be_hidden()
+        expect(rows).to_have_count(0)
+        page.goto(f"{base}/#/documents?folder=trash")
+        expect(rows).to_have_count(1)
+
         # The sidebar's Inbox link opens the Inbox folder on the redesigned screen.
         page.locator("#nav-inbox").click()
         expect(page).to_have_url(f"{base}/#/documents?folder=Inbox")
