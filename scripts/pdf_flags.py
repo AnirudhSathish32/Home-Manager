@@ -17,7 +17,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pypdfium2 as pdfium  # noqa: E402
+import pypdfium2.raw as raw  # noqa: E402
 
+from home_manager.documents import pdf_layout  # noqa: E402
 from home_manager.documents.pdf_layout import capture_layout, point, visual_box  # noqa: E402
 
 DATE = re.compile(r"\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?")
@@ -31,7 +33,7 @@ def kinds(chars):
     return ", ".join(f"{n} {kind}" for kind, n in sorted(count.items()))
 
 
-def report(page_number, layout):
+def report(page_number, layout, textpage):
     width, height = layout.preview_width, layout.preview_height
     matrix = layout.page_to_preview
 
@@ -141,10 +143,25 @@ def report(page_number, layout):
     }
     print("\n" + "   ".join(f"{name}: {n}" for name, n in others.items()))
 
+    # How each glyph is drawn: PDFium's font size, the scale of its matrix, and its box height, all in PDF points.
+    drawn = Counter()
+    for c in glyphs:
+        matrix_ = raw.FS_MATRIX()
+        ok = raw.FPDFText_GetMatrix(textpage, c.index, matrix_)
+        reported = raw.FPDFText_GetFontSize(textpage, c.index)
+        scale_ = math.hypot(matrix_.c, matrix_.d) if ok else None
+        loose = raw.FS_RECTF()
+        raw.FPDFText_GetLooseCharBox(textpage, c.index, loose)
+        drawn[(round(reported, 2), ok, round(scale_, 3) if scale_ is not None else None,
+               round(c.bbox[3] - c.bbox[1], 1), round(abs(loose.top - loose.bottom), 1))] += 1
+    print("\nreported size, matrix found, matrix scale, glyph height, loose box height (pt) × glyphs:")
+    for key, n in drawn.most_common(8):
+        print(f"  {key} ×{n}")
+
 
 path = Path(sys.argv[1]).resolve()
 with pdfium.PdfDocument(str(path)) as pdf:
-    print(f"pages: {len(pdf)}")
+    print(f"pages: {len(pdf)}   this checkout has the size fix: {hasattr(pdf_layout, 'upright')}   pypdfium2 {pdfium.PYPDFIUM_INFO}, pdfium {pdfium.PDFIUM_INFO}")
     for index in range(len(pdf)):
         page = pdf[index]
         textpage = page.get_textpage()
@@ -152,7 +169,7 @@ with pdfium.PdfDocument(str(path)) as pdf:
             width, height = page.get_size()
             bitmap = page.render(scale=min(2, 2400 / max(width, height)))
             try:
-                report(index+1, capture_layout(page, textpage, bitmap, index+1, "0"*64, textpage.get_text_bounded()))
+                report(index+1, capture_layout(page, textpage, bitmap, index+1, "0"*64, textpage.get_text_bounded()), textpage)
             finally:
                 bitmap.close()
         finally:
