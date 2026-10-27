@@ -6,6 +6,7 @@ import random
 from PIL import Image
 import pytest
 
+from home_manager.documents.layout_context import native_page, project_page
 from home_manager.documents.pdf_layout import PDFLayout, point, visual_box
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker
 from home_manager.library.storage import digest_file
@@ -268,6 +269,42 @@ def test_overlapping_layer_is_preserved_but_not_promoted_to_a_table(tmp_path):
     assert layout.coverage == "needs_review" and "overlapping_text" in layout.issues
     assert not layout.tables
     assert len(layout.characters) > 100
+
+
+SCALED = 10 / 0.24  # A bank's statement sets its font at 0.24 pt and scales it up with the text matrix.
+SCALED_ROWS = [("Date", "Description", "Amount", "Balance"), ("09/18", "SYNTH ACCTVERIFY", "0.36", "0.36"),
+               ("09/18", "SYNTH ACCTVERIFY", "0.02", "0.38"), ("09/18", "SYNTH ACCTVERIFY", "-0.38", "0.00")]
+SCALED_FOOTER = "Synthetic savings statement page one of one, kept for your records"
+
+
+def scaled_items(margin=(600, 300)):
+    """SCALED_ROWS at 0.24 pt × SCALED, as the bank's PDF draws its text, and a reference number printed up the page at
+    `margin` (the right margin by default), drawn the same way."""
+    items = [(x, 700 - 20 * row, text, 0.24, (SCALED, 0, 0, SCALED)) for row, cells in enumerate(SCALED_ROWS)
+             for x, text in zip((40, 110, 380, 470), cells)]
+    items.append((40, 600, SCALED_FOOTER, 0.24, (SCALED, 0, 0, SCALED)))
+    items.append((*margin, "10000000000123456789", 0.24, (0, SCALED, -SCALED, 0)))
+    return items
+
+
+def test_text_scaled_by_its_matrix_is_measured_at_its_drawn_size_and_a_turned_margin_number_leaves_the_table(tmp_path):
+    """The user's bank statement: PDFium reported 0.24 pt for most glyphs, so every gap counted as a word break, kerning
+    counted as overlapping text, and a vertical number in the margin refused every table on the page."""
+    layout = read_layout(tmp_path, scaled_items())
+    assert {round(char.font_size, 3) for char in layout.characters if char.bbox} == {10}
+    assert layout.issues == ["unsupported_text_rotation"] and layout.coverage == "needs_review"
+    assert len(layout.tables) == 1 and grid(layout) == [list(row) for row in SCALED_ROWS]
+    # The number is one line of its own, after the page's other text, and needs review.
+    assert layout.lines[-1].text == "10000000000123456789"
+    assert layout.blocks[-1].kind == "paragraph" and layout.blocks[-1].status == "needs_review"
+    complete_pdf(tmp_path, config=None, digest=digest_file(tmp_path / "positioned.pdf"))
+    page = read_result(json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))).pages[0]
+    assert native_page(page) and project_page(page)[1][0].page == 1  # The viewer's Tables tab and the model get the table.
+
+
+def test_turned_text_across_a_table_still_refuses_it(tmp_path):
+    layout = read_layout(tmp_path, scaled_items(margin=(420, 610)))
+    assert "unsupported_text_rotation" in layout.issues and not layout.tables
 
 
 @pytest.mark.parametrize("corruption", ["word", "reference", "cell", "duplicate", "coverage", "bounds", "column_swap", "row_swap"])

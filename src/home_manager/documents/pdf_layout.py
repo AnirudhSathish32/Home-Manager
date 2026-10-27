@@ -90,6 +90,13 @@ def point(matrix, x, y):
     return a*x + c*y + e, b*x + d*y + f
 
 
+def upright(matrix, angle):
+    """A glyph reads left to right on the preview, within 5% of level."""
+    dx, dy = point(matrix, math.cos(angle), math.sin(angle))
+    ox, oy = point(matrix, 0, 0)
+    return dx-ox > 0 and abs(dy-oy) <= abs(dx-ox)*0.05
+
+
 def visual_box(matrix, box):
     x0, y0, x1, y1 = box
     points = [point(matrix, x, y) for x, y in ((x0, y0), (x0, y1), (x1, y0), (x1, y1))]
@@ -303,10 +310,13 @@ def capture_layout(page, textpage, bitmap, number, digest, raw_text):
                 issues.add("degenerate_glyph")
             elif box[0] < bounds[0] - 1 or box[1] < bounds[1] - 1 or box[2] > bounds[2] + 1 or box[3] > bounds[3] + 1:
                 issues.add("glyph_outside_page")
-            dx, dy = point(matrix, math.cos(angle), math.sin(angle))
-            ox, oy = point(matrix, 0, 0)
-            if dx-ox <= 0 or abs(dy-oy) > abs(dx-ox)*0.05:
+            if not upright(matrix, angle):
                 issues.add("unsupported_text_rotation")
+            # The size a glyph is drawn at: PDFium reports the font operator's size, and a PDF may set that tiny (0.24)
+            # and scale it with the text matrix or the graphics state, as some bank statements do.
+            glyph = raw.FS_MATRIX()
+            if raw.FPDFText_GetMatrix(textpage, index, glyph) and math.isfinite(stretch := math.hypot(glyph.c, glyph.d)) and stretch > 0:
+                size *= stretch
         characters.append(PDFCharacter(index=index, unicode_value=codes[index], text=text, continuation_of=continuation,
                                        bbox=box, origin=origin, font_size=max(0, size),
                                        angle=angle, generated=generated, unicode_error=error))
@@ -331,6 +341,10 @@ def reconstruct(characters, matrix, number, issues):
     scale = math.hypot(matrix[0], matrix[1])
     size = max(1, median(char.font_size for char in glyphs)*scale)
     boxes = {char.index: visual_box(matrix, char.bbox) for char in glyphs}
+    # Turned text (a reference number printed up the margin) is kept out of the rows: each run is a line of its own after
+    # the page's other text, and only a table it lies across is refused (docs/documents.md "PDFs").
+    turned = [char for char in glyphs if not upright(matrix, char.angle)]
+    glyphs = [char for char in glyphs if upright(matrix, char.angle)]
     baseline = {char.index: point(matrix, *char.origin)[1] if char.origin else boxes[char.index][3] for char in glyphs}
     rows = []
     for char in sorted(glyphs, key=lambda char: (baseline[char.index], boxes[char.index][0], char.index)):
@@ -338,6 +352,14 @@ def reconstruct(characters, matrix, number, issues):
             rows.append([])
         rows[-1].append(char)
     words, visual_rows = [], []
+
+    def add_word(group):
+        group = [part for char in group for part in
+                 ([char, characters[char.index+1]] if char.index+1 < len(characters) and characters[char.index+1].continuation_of == char.index else [char])]
+        word = PDFWord(id=f"{prefix}word-{len(words)+1}", text="".join(char.text for char in group),
+                       character_indexes=[char.index for char in group], bbox=union(char.bbox for char in group))
+        words.append(word)
+        return word
     seen = set()
     for row in rows:
         row.sort(key=lambda char: (boxes[char.index][0], char.index))
@@ -356,17 +378,21 @@ def reconstruct(characters, matrix, number, issues):
             if previous is None or gap > size*0.4 or explicit_space:
                 groups.append([])
             groups[-1].append(char)
-        row_words = []
-        for group in groups:
-            group = [part for char in group for part in
-                     ([char, characters[char.index+1]] if char.index+1 < len(characters) and characters[char.index+1].continuation_of == char.index else [char])]
-            word = PDFWord(id=f"{prefix}word-{len(words)+1}", text="".join(char.text for char in group),
-                           character_indexes=[char.index for char in group], bbox=union(char.bbox for char in group))
-            words.append(word)
-            row_words.append(word)
-        visual_rows.append(row_words)
+        visual_rows.append([add_word(group) for group in groups])
+    # A turned run is the glyphs printed one after another at one angle; a space between them starts a new word.
+    turned_rows = []
+    for char in sorted(turned, key=lambda char: char.index):
+        previous = turned_rows[-1][-1][-1] if turned_rows else None
+        between = characters[previous.index+1:char.index] if previous else []
+        if previous is None or char.angle != previous.angle or any(item.text and not item.text.isspace() for item in between):
+            turned_rows.append([[]])
+        elif any(item.text.isspace() for item in between):
+            turned_rows[-1].append([])
+        turned_rows[-1][-1].append(char)
+    turned_rows = [[add_word(group) for group in row] for row in turned_rows]
     lines, blocks, tables = [], [], []
     word_boxes = {word.id: visual_box(matrix, word.bbox) for word in words}
+    turned_boxes = [boxes[char.index] for char in turned]
 
     amount = re.compile(r"[$€£(+\-]*[\d.,]*\d[\d.,]*%?\)?")
     numeric = lambda group: bool(re.fullmatch(r"[\s\d.,+\-()%$€£/]+", " ".join(w.text for w in group)))
@@ -532,7 +558,9 @@ def reconstruct(characters, matrix, number, issues):
                 emit(left, depth+1)
                 emit(right, depth+1)
                 return
-        if grid and not issues & {"overlapping_text", "unsupported_text_rotation", "glyph_outside_page", "unicode_mapping"}:
+        area = union(word_boxes[w.id] for row in region for w in row)
+        crossed = any(box[0] < area[2] and box[2] > area[0] and box[1] < area[3] and box[3] > area[1] for box in turned_boxes)
+        if grid and not crossed and not issues & {"overlapping_text", "glyph_outside_page", "unicode_mapping"}:
             table_id = f"{prefix}table-{len(tables)+1}"
             row_lines = [add_line(row) for row in region]
             cells = [PDFCell(id=f"{table_id}-row-{r+1}-cell-{c+1}", row=r, column=c, word_ids=[w.id for w in group],
@@ -579,4 +607,6 @@ def reconstruct(characters, matrix, number, issues):
             merged.append(region)
     for region in merged:
         emit(region)
+    for row in turned_rows:
+        blocks.append(PDFLayoutBlock(id=f"{prefix}block-{len(blocks)+1}", kind="paragraph", line_ids=[add_line(row).id], status="needs_review"))
     return words, lines, blocks, tables

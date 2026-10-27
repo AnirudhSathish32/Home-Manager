@@ -11,7 +11,7 @@ from .receipt_schema import TextLine
 
 def native_page(page):
     return (page.method == "embedded_text" and page.layout is not None
-            and not {"unsupported_text_rotation", "overlapping_text", "unicode_mapping", "degenerate_glyph"}.intersection(page.layout.issues)
+            and not {"overlapping_text", "unicode_mapping", "degenerate_glyph"}.intersection(page.layout.issues)
             and not (not page.layout.tables and page.vision_tables and page.vision_tables.tables))
 
 
