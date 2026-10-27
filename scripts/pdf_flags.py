@@ -48,6 +48,9 @@ def report(page_number, layout):
     size = max(1, median(c.font_size for c in glyphs)*scale)
     boxes = {c.index: visual_box(matrix, c.bbox) for c in glyphs}
     print(f"glyphs: {len(glyphs)}   median font size: {size:.1f} px   page: {width}×{height} px")
+    sizes = Counter(round(c.font_size, 2) for c in glyphs).most_common(5)
+    print("reported font sizes (pt, glyphs):", ", ".join(f"{s} ×{n}" for s, n in sizes),
+          f"  median glyph height: {median(boxes[c.index][3] - boxes[c.index][1] for c in glyphs):.1f} px")
 
     # Rows that look like a transactions heading, or like a transaction (a date first and an amount somewhere).
     words = {w.id: w for w in layout.words}
