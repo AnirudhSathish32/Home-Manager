@@ -32,7 +32,7 @@ from test_pdf_imports import env, no_network  # noqa: F401  (the API environment
 from test_statement_rebuild import Recorded, bank_replies, s_replies
 
 CSV = b"Date,Description,Amount\n2026-09-04,SYNTH BAKERY,-6.25\n2026-09-05,SYNTH PAYROLL,2000.00\n"
-MIGRATION = storage.MIGRATIONS[-1][1]
+MIGRATION = next(path for number, path in storage.MIGRATIONS if number == 73)  # 073_statement_accounts.sql
 
 
 def statement(last_four="3456", rows=((("2026-09-03"), "SYNTH COFFEE SHOP", -450),), closing=100000):
@@ -344,7 +344,7 @@ def test_sc07_the_upgrade_sorts_existing_accounts_and_running_it_again_changes_n
     try:
         ledger = Ledger(store)
         with store.connection() as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 73 and db.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert db.execute("PRAGMA user_version").fetchone()[0] == storage.MIGRATIONS[-1][0] and db.execute("PRAGMA foreign_key_check").fetchall() == []  # 073 and every later step.
             origins = {row["id"]: row["origin"] for row in db.execute("SELECT id,origin FROM accounts")}
             # (b) is gone, with everything that named only it, and nothing refers to it.
             assert ids["b"] not in origins and references_to(db, "accounts", ids["b"]) == []
@@ -372,7 +372,8 @@ def test_sc07_the_upgrade_sorts_existing_accounts_and_running_it_again_changes_n
     assert script.count("-- sort:") == 1
     db = sqlite3.connect(tmp_path / "managed" / "inventory.sqlite3")
     try:
-        db.executescript("BEGIN IMMEDIATE;\n" + script.split("-- sort:", 1)[1].split("\n", 1)[1])
+        # Without its last line, which records version 73: a later step has moved the version on.
+        db.executescript("BEGIN IMMEDIATE;\n" + script.split("-- sort:", 1)[1].split("\n", 1)[1].replace("PRAGMA user_version=73;", ""))
         db.commit()
     finally:
         db.close()
@@ -401,7 +402,7 @@ def test_sc07_a_new_library_has_the_origin_column_and_only_three_origins(tmp_pat
 
 # === Journey J1 and SC-06: Record of S, Confirm, Undo and a re-read that moves the statement =====================================
 
-ACCOUNT_NOTE = "New account: SYNTH BANK savings 3456 — added to Accounts when you confirm this statement."
+ACCOUNT_NOTE = "New account: SYNTH BANK Savings 3456 — added to Accounts when you confirm this statement."
 TABLES = ("accounts", "statements", "transactions", "financial_evidence_links", "review_events", "category_rules", "transaction_imports")
 
 
@@ -461,7 +462,7 @@ def test_journey_j1_a_statements_account_waits_for_confirm_and_a_re_read_moves_i
     record = recorded.run(s_replies())
     statement_id = record["id"]
     [(account_id, name, kind, origin)] = env.sql("SELECT id,display_name,account_type,origin FROM accounts")
-    assert (name, kind, origin) == ("SYNTH BANK savings 3456", "savings", "record")
+    assert (name, kind, origin) == ("SYNTH BANK Savings 3456", "savings", "record")
     c_hidden(env, account_id)
     assert (record["review_status"], record["issues"]) == ("proposed", [])
     assert recorded.extraction["publication"]["review_status"] == "proposed"
@@ -490,7 +491,7 @@ def test_journey_j1_a_statements_account_waits_for_confirm_and_a_re_read_moves_i
         db.execute("DROP TRIGGER fault")
     record = recorded.run(bank_replies(moved, sf.s_bad_rows), force=True)
     [(moved_id, name, origin)] = env.sql("SELECT id,display_name,origin FROM accounts")
-    assert (name, origin) == ("SYNTH BANK savings 7890", "record") and moved_id != account_id
+    assert (name, origin) == ("SYNTH BANK Savings 7890", "record") and moved_id != account_id
     c_hidden(env, moved_id, "7890")
     with env.store.connection() as db:
         assert sf.orphans(db, account_id) == []  # C-orphans: nothing names …3456 any more.
@@ -509,7 +510,7 @@ def test_journey_j1_a_a_re_read_of_a_statement_you_confirmed_keeps_it_as_you_rev
     before, files = snapshot(env), env.files()
     again = recorded.run(bank_replies(moved, sf.s_bad_rows), force=True)
     assert recorded.extraction["publication"]["status"] == "kept_reviewed" and again["id"] == record["id"]
-    assert env.sql("SELECT id,display_name FROM accounts") == [(account_id, "SYNTH BANK savings 3456")]
+    assert env.sql("SELECT id,display_name FROM accounts") == [(account_id, "SYNTH BANK Savings 3456")]
     assert env.sql("SELECT count(*) FROM accounts WHERE display_name LIKE '%7890'") == [(0,)]
     c_visible(env, account_id)
     assert snapshot(env) == before and amounts(env, record["id"]) == [36, 2, -38, 150000, -50000]

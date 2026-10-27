@@ -71,7 +71,7 @@ def test_default_account_names_say_the_type_once(ledger):
                  for institution, kind, last_four in (("Household checking", "checking", None), ("Family SAVINGS", "savings", "1234"),
                                                       ("Chase", "checking", None), ("Superchecking", "checking", None),
                                                       ("Visa credit card", "credit_card", None))]
-    assert names == ["Household checking", "Family SAVINGS 1234", "Chase checking", "Superchecking checking", "Visa credit card"]
+    assert names == ["Household checking", "Family SAVINGS 1234", "Chase Checking", "Superchecking Checking", "Visa credit card"]
 
 
 def test_database_rejects_float_money_and_full_account_numbers(ledger):

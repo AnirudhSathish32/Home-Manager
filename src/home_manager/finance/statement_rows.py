@@ -241,7 +241,8 @@ def rebuild(result, *, statement_type, period_start, period_end, currency) -> Re
     lines = {page.number: {line.id: line.text for line in page.layout.lines} for page in result.pages if page.method == "embedded_text"}
     transactions = [{"posted_date": posted, "transaction_date": None, "description": row.description, "currency": row.currency,
                      "amount_minor": row.amount_minor,
-                     "locator": {"rebuilt": True, "page": row.page, "table_id": row.table_id, "row": row.row, "line_ids": row.line_ids,
+                     "locator": {"rebuilt": True, "page": row.page, "table_id": row.table_id, "row": row.row, "balance_minor": row.balance_minor,
+                                 "line_ids": row.line_ids,
                                  "word_ids": row.word_ids, "cell_ids": row.cell_ids,
                                  "quotes": [lines[row.page].get(line_id, "") for line_id in row.line_ids]}}
                     for row, posted in recorded]

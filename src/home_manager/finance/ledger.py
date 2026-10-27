@@ -398,10 +398,11 @@ STATEMENT_TYPES = (("credit_card",), ("checking", "savings", "other"))
 
 
 def default_account_name(institution, account_type, last_four):
-    """The name an account gets unless one is given. It leaves out the type when the institution already ends with it
-    ("Household checking", not "Household checking checking"); migration 065 renamed older rows the same way."""
+    """The name an account gets unless one is given: the institution and the type, capitalized ("Chase Savings 1234"). It
+    leaves out the type when the institution already ends with it ("Household checking", not "Household checking
+    checking"); migrations 065 and 074 renamed older rows the same way."""
     kind = account_type.replace("_", " ")
-    default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind}"
+    default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind.capitalize()}"
     return f"{default}{' ' + last_four if last_four else ''}"[:160]
 
 
@@ -1852,6 +1853,9 @@ class Ledger:
                 evidence = self.evidence(kind, row["id"])
                 row["line_ids"] = [line for entry in evidence for line in entry["locator"].get("line_ids", [])]
                 row["cell_evidence"] = {name: cell for entry in evidence for name, cell in entry["locator"].get("cells", {}).items()}
+                if kind == "transaction":  # The balance a statement prints after a row read from its columns (docs/documents.md "Statement rows from the printed columns").
+                    row["balance_minor"] = next((entry["locator"]["balance_minor"] for entry in evidence
+                                                 if isinstance(entry["locator"].get("balance_minor"), int)), None)
         # Exact display strings: the browser never does money arithmetic.
         for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()

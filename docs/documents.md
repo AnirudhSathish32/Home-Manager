@@ -584,7 +584,9 @@ with no model and no network.
   money out. A description printed in pieces with wide gaps ("ACCTVERIFY      PPD ID: 1234") stays one description:
   text after it that ends before the Amount heading begins is description text, even past the midpoint between the
   two headings (an amount-shaped word is placed as before). This narrows `account-import-pdf` FR-08's midpoint rule
-  for both features. A date with no year, or a two-digit year, takes its year from the printed period (a month before the
+  for both features. The Balance cell is kept as the row's printed balance (`balance_minor` in its evidence), shown in
+  the document page's transactions table beside the amount and never read as one. A date with no year, or a two-digit
+  year, takes its year from the printed period (a month before the
   period's start month falls in its end year); with no printed period such rows are not recorded and are listed. A
   day/month order the dates can't settle is listed too.
 - **The model decides nothing there.** Its rows on a rebuilt page change no date, amount or direction and add no rows.
@@ -597,6 +599,10 @@ with no model and no network.
   with a layout issue other than `unresolved_columns` still gives its rows and the statement needs review, naming the
   page. The same row (date, amount, description) printed on two pages or tables is recorded twice with an issue naming
   both places.
+- **Opening and closing balances in the table.** When the model cites a summary amount from a native table row, the
+  amount is copied from that row's cell (`native_values.anchor_summary`). A Beginning or Ending Balance row inside the
+  transactions table is found by its first printed cell, and its value is read from the Balance column when Amount is
+  blank.
 - **Balance tables.** A table whose title line (the row directly above its heading) or heading names a balance (or
   "daily ending balance", "daily balance") is not read, starts no continuation, and ends a table that has no reader
   table where its title or a second heading begins. A `Date | Amount | Balance` heading doesn't make a table a balance

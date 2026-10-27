@@ -303,12 +303,14 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
   // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
   const codes = Boolean(record.items?.some(row => row.product_code));
   const shares = Boolean(record.items?.some(row => row.display.share_minor));
-  const columns = record.items ? ["Item", "Code", "Price", "Category", "Paid", ""] : ["Posted", "Description", "Amount", ""];
-  const shown = index => !record.items || !((index === 1 && !codes) || (index === 4 && !shares));
+  // A statement row read from its printed columns carries the balance the statement prints after it, as the server formats it.
+  const balances = Boolean(!record.items && rows.some(row => row.display.balance_minor));
+  const columns = record.items ? ["Item", "Code", "Price", "Category", "Paid", ""] : ["Posted", "Description", "Amount", "Balance", ""];
+  const shown = index => record.items ? !((index === 1 && !codes) || (index === 4 && !shares)) : index !== 3 || balances;
   const head = document.createElement("tr");
   columns.forEach((title, index) => {
     if (!shown(index)) return;
-    const th = head.appendChild(element("th", title, index === 2 || index === 4 ? "numeric" : "")); th.scope = "col";
+    const th = head.appendChild(element("th", title, index === 2 || index === 4 || (!record.items && index === 3) ? "numeric" : "")); th.scope = "col";
   });
   table.appendChild(document.createElement("thead")).appendChild(head);
   const body = table.appendChild(document.createElement("tbody"));
@@ -317,14 +319,15 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
     const paid = row.line_total_minor == null ? "—" : row.share_minor !== row.line_total_minor && row.display.share_minor ? row.display.share_minor : "—";
     const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—", "", paid]
-      : [row.posted_date, row.description_raw, row.display.amount_minor];
+      : [row.posted_date, row.description_raw, row.display.amount_minor, row.display.balance_minor || "—"];
     values.forEach((value, index) => {
       if (!shown(index)) return;
-      const money = index === 2 || index === 4;
+      const balance = !record.items && index === 3, money = index === 2 || index === 4 || balance;
       const td = tr.appendChild(element("td", money || index === 3 ? "" : value, money ? "numeric" : ""));
-      if (money) td.appendChild(amount(value, {signed: !record.items}));  // Statement rows carry a direction; item prices don't.
+      // Statement rows carry a direction; item prices and a running balance don't.
+      if (money) td.appendChild(amount(value, {signed: !record.items && !balance}));
       if (record.items && index === 4 && paid !== "—") td.append(element("small", "with tax", "muted block"));
-      if (index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
+      if (record.items && index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
                                                         : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
     });
     const cell = row.cell_evidence?.line_total || row.cell_evidence?.amount;

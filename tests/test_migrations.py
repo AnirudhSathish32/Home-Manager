@@ -251,8 +251,36 @@ def test_065_drops_the_doubled_type_from_generated_account_names_only():
         db.commit()
         storage.apply_migrations(db, 64)
         assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        # 074 then capitalizes the type in the names still in the generated form.
         assert [row[0] for row in db.execute("SELECT display_name FROM accounts ORDER BY id")] == [
-            "Household checking", "Family Savings 1234", "Chase checking", "Superchecking checking", "Household checking savings", "Groceries card"]
+            "Household checking", "Family Savings 1234", "Chase Checking", "Superchecking Checking", "Household checking Savings", "Groceries card"]
+    finally:
+        db.close()
+
+
+def test_074_capitalizes_the_type_in_generated_account_names_only():
+    """"Chase savings 1234" becomes "Chase Savings 1234" (docs/money.md "Money pages"); a name the user chose, one that leaves
+    the type out, and one already capitalized stay as they are."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 74:
+                db.executescript(script.read_text())
+        rows = [("JPMorgan Chase Bank, N.A.", "savings", "JPMorgan Chase Bank, N.A. savings 1234", "1234"),
+                ("First Local Bank", "checking", "First Local Bank checking", None),
+                ("Synth Card", "credit_card", "Synth Card credit card 9999", "9999"),
+                ("Household checking", "checking", "Household checking", None),  # The type is left out (065).
+                ("Chase", "savings", "Rainy day fund", None),  # Chosen by the user.
+                ("Chase", "checking", "Chase Checking", None)]  # Already capitalized.
+        for institution, kind, name, last_four in rows:
+            db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) VALUES(?,?,?,?,'USD','t','t')",
+                       (institution, kind, name, last_four))
+        db.commit()
+        storage.apply_migrations(db, 73)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert [row[0] for row in db.execute("SELECT display_name FROM accounts ORDER BY id")] == [
+            "JPMorgan Chase Bank, N.A. Savings 1234", "First Local Bank Checking", "Synth Card Credit card 9999", "Household checking",
+            "Rainy day fund", "Chase Checking"]
     finally:
         db.close()
 

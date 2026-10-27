@@ -898,3 +898,38 @@ def test_a_description_printed_in_pieces_is_description_text_in_a_rebuilt_row(tm
     built = bank(result)
     assert rows_of(built) == PIECES_EXPECTED
     assert not [issue for issue in built.issues if "not an amount" in issue]
+
+
+def test_each_rebuilt_row_keeps_its_printed_balance_never_as_its_amount(tmp_path):
+    for flagged in (False, True):
+        directory = tmp_path / str(flagged)
+        directory.mkdir()
+        rows = bank(read(directory, pieces_pages(flagged))).rows
+        assert [row["locator"]["balance_minor"] for row in rows] == [36, 38, 0], flagged
+        assert [row["amount_minor"] for row in rows] == [36, 2, -38], flagged
+
+
+def test_the_record_shows_each_rows_printed_balance_formatted_by_the_server(pdf_store, local_model):
+    recorded, _ = stored(pdf_store, local_model, sf.s_pages())
+    record = recorded.run(s_replies())
+    shown = [row["display"].get("balance_minor") for row in record["transactions"]]
+    assert shown == [None, "0.38 USD", "0.00 USD", "1,500.00 USD", "1,000.00 USD"]  # s1 prints no balance.
+    assert [row["display"]["amount_minor"] for row in record["transactions"]] == ["0.36 USD", "0.02 USD", "-0.38 USD", "1,500.00 USD", "-500.00 USD"]
+
+
+def test_an_opening_balance_cited_from_the_tables_beginning_balance_row_is_its_balance_cell(tmp_path):
+    """Once the transactions table was found, the model cited its `| Beginning Balance | | 0.00` row, whose Date cell is blank
+    and whose value is under Balance: the opening balance became ambiguous."""
+    from home_manager.documents.extraction import HEADER_MODELS, HEADERS, Value
+    from home_manager.documents.layout_context import evidence_tables
+    from home_manager.documents.native_values import anchor_summary
+    from test_extraction import MISSING
+    [table] = evidence_tables(read(tmp_path, pieces_pages()))
+    opening, closing = table.rows[0], table.rows[-1]
+    header = HEADER_MODELS["bank_statement"](**{name: MISSING for name in HEADERS["bank_statement"]}).model_copy(update={
+        "opening_balance": Value(value="0.00", status="proposed", evidence=[{"line_id": opening.line_id, "quote": "Beginning Balance"}]),
+        "closing_balance": Value(value="0.00", status="proposed", evidence=[{"line_id": closing.line_id, "quote": "Ending Balance"}])})
+    notes = []
+    fixed, references = anchor_summary(header, [table], notes)
+    assert (fixed.opening_balance.status, fixed.opening_balance.value) == ("proposed", "0.00") and not notes
+    assert references["opening_balance"]["cell_id"] == opening.cells[3].id and references["closing_balance"]["cell_id"] == closing.cells[3].id

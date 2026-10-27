@@ -81,6 +81,7 @@ class ImportRow:
     line_ids: list[str]
     word_ids: list[str]
     continued_from: int | None
+    balance_minor: int | None = None  # The printed running balance after the row, never an amount; None when none is printed.
 
 
 @dataclass
@@ -232,6 +233,7 @@ class Raw:
     debit: str = ""
     credit: str = ""
     amount: str = ""
+    balance: str = ""  # The Balance column's text, shown beside the row and never read as its amount.
     cell_ids: list[str] = field(default_factory=list)
     line_ids: list[str] = field(default_factory=list)
     word_ids: list[str] = field(default_factory=list)
@@ -307,8 +309,9 @@ def visual_row(view, spec, index, row):
         return " ".join(word.text for word in cells.get(spec.columns[role], [])) if role in spec.columns else ""
 
     word_ids = [word.id for word in words]
+    balance = " ".join(word.text for word in cells.get(spec.roles.index("balance"), [])) if "balance" in spec.roles else ""
     return Raw(row=row, date=text("date"), description=text("description"), debit=text("debit"), credit=text("credit"), amount=text("amount"),
-               line_ids=view.lines(word_ids), word_ids=word_ids, reject=reject)
+               balance=balance, line_ids=view.lines(word_ids), word_ids=word_ids, reject=reject)
 
 
 def native_spec(view, table):
@@ -331,8 +334,9 @@ def native_rows(table: PDFTable, spec, view):
         text = {role: by_cell[(row, spec.source[spec.columns[role]])].text if (row, spec.source[spec.columns[role]]) in by_cell else ""
                 for role in ROLES if role in spec.columns}
         printed = [cell for cell in cells if cell.text]
+        balance = by_cell.get((row, spec.source[spec.roles.index("balance")])) if "balance" in spec.roles else None
         raws.append(Raw(row=row, date=text.get("date", ""), description=text.get("description", ""), debit=text.get("debit", ""),
-                        credit=text.get("credit", ""), amount=text.get("amount", ""),
+                        credit=text.get("credit", ""), amount=text.get("amount", ""), balance=balance.text if balance else "",
                         cell_ids=[cell.id for cell in printed], line_ids=list(dict.fromkeys(line for cell in printed for line in cell.line_ids))))
     return raws
 
@@ -634,9 +638,13 @@ def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", si
                 posted, minor = None, None
                 parsed_issues.append(ImportIssue(table.page, raw.row, "rejected_row", f"Page {table.page} row {raw.row}: {reject}"))
             key = f"{table.id}:{raw.row}"
+            try:
+                balance = to_minor(raw.balance, currency) if raw.balance.strip() else None
+            except MoneyError:
+                balance = None
             rows.append(ImportRow(key, table.page, table.id, raw.row, raw.date, raw.description, printed_amount(raw), posted, minor, None if reject else currency,
                                   not reject and not entry.flags, labels, reject, raw.cell_ids, raw.line_ids, raw.word_ids,
-                                  entry.parent.table.page if entry.parent else None))
+                                  entry.parent.table.page if entry.parent else None, balance))
             table.rows.append(key)
     issues += parsed_issues
 

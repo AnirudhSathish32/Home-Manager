@@ -24,6 +24,8 @@ SUMMARY_ROLES = {
     "new_charges": {"new charges", "current charges"},
     "total": {"total", "grand total"},
     "ending_value": {"ending value", "market value", "account value"},
+    "opening_balance": {"opening balance", "beginning balance", "starting balance"},
+    "closing_balance": {"closing balance", "ending balance"},
 }
 
 
@@ -44,9 +46,14 @@ def anchor_summary(header, tables, notes):
             labels = SUMMARY_ROLES.get(name, {name.replace("_", " ")})
             index = column(table, labels)
             if index is None:
-                label = re.sub(r"[^a-z0-9]+", " ", row.cells[0].quote.lower()).strip()
+                # The row's label is its first printed cell: a statement's Beginning Balance row leaves its Date cell blank.
+                first = next((cell.quote for cell in row.cells if cell.quote.strip()), "")
+                label = re.sub(r"[^a-z0-9]+", " ", first.lower()).strip()
                 if label in labels:
                     index = column(table, {"amount", "value", "total"})
+                    # A statement prints its opening and closing balances in the Balance column, with Amount blank.
+                    if index is None or not cell_amount(row.cells[index]):
+                        index = column(table, {"balance"}) if name in ("opening_balance", "closing_balance") else index
             if index is not None:
                 cell = row.cells[index]
         amount = cell_amount(cell) if cell else None

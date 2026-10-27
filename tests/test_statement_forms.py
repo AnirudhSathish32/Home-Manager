@@ -184,10 +184,10 @@ def accounts(manager):
 
 def test_a_savings_statement_records_into_a_savings_account(tmp_path, local_model):
     with read_statement(tmp_path, local_model, SAVINGS, savings_replies()) as (manager, _run, record):
-        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["account"] == "SYNTH BANK savings 6789"
+        assert accounts(manager) == [("savings", "SYNTH BANK Savings 6789")] and record["account"] == "SYNTH BANK Savings 6789"
 
 
-@pytest.mark.parametrize("name, renamed", [(None, "SYNTH BANK savings 6789"), ("Rainy day fund", "Rainy day fund")])
+@pytest.mark.parametrize("name, renamed", [(None, "SYNTH BANK Savings 6789"), ("Rainy day fund", "Rainy day fund")])
 def test_a_checking_account_a_statement_prints_as_savings_becomes_savings(tmp_path, local_model, name, renamed):
     """An account recorded as checking before the printed type counted: the next Record of its statement corrects the type,
     and a default name follows it while a name the user gave stays."""
@@ -210,7 +210,7 @@ def test_the_printed_words_as_the_account_type_and_four_digits_from_the_middle_o
                            account_reference=value(SAVINGS, "1234", account, account))
     with read_statement(tmp_path, local_model, SAVINGS, replies) as (manager, _run, record):
         assert stored_details(manager)["account_type"]["text"] == "savings"
-        assert accounts(manager) == [("savings", "SYNTH BANK savings 6789")] and record["review_status"] == "proposed", record["issues"]  # FR-04
+        assert accounts(manager) == [("savings", "SYNTH BANK Savings 6789")] and record["review_status"] == "proposed", record["issues"]  # FR-04
 
 
 @pytest.mark.parametrize("amount, flagged", [("0.38", True), ("0.02", False)])

@@ -1023,7 +1023,7 @@ def test_sc01_journey_j1_import_restart_import_again_reject_other_account_record
         assert -99000 not in minor(rows) and all(r[6].replace(",", "").replace(".", "") not in {str(abs(v)) for v in minor(rows)} for r in fx.K_ROWS)  # Balance is never an amount.
         # 4. Import into A with the preview's reading id.
         result = env.ok_import(doc, reading=preview["reading_id"], account_id=a)
-        assert (result["inserted"], result["duplicates"], result["rejected"], result["left_out"]) == (9, 0, 0, 0) and result["account_name"] == "FIRST LOCAL BANK checking 4821"
+        assert (result["inserted"], result["duplicates"], result["rejected"], result["left_out"]) == (9, 0, 0, 0) and result["account_name"] == "FIRST LOCAL BANK Checking 4821"
         assert "reconciliation" in result and re.fullmatch(r"[0-9a-f]{32}", result["import_id"])
         stored = ledger_rows(env, a)
         assert [(row[0], row[1]) for row in stored] == list(zip(fx.K_POSTED, [r[7] for r in fx.K_ROWS]))
@@ -1082,7 +1082,7 @@ def test_sc01_journey_j1_import_restart_import_again_reject_other_account_record
         # 8. Import K into B, which no last four matched, so the request names it. A's rows and their review state are unchanged.
         a_rows = all_rows(env, a)
         into_b = env.ok_import(doc, account_id=b)
-        assert (into_b["inserted"], into_b["duplicates"], into_b["account_id"], into_b["account_name"]) == (9, 0, b, "OTHER BANK savings 1111")
+        assert (into_b["inserted"], into_b["duplicates"], into_b["account_id"], into_b["account_name"]) == (9, 0, b, "OTHER BANK Savings 1111")
         assert all_rows(env, a) == a_rows and [row[1] for row in ledger_rows(env, b)] == [r[7] for r in fx.K_ROWS] and len(env.sql("SELECT id FROM transaction_imports")) == 4
         b_rows = all_rows(env, b)
         # 9. Record K into A with the Record double S-K: its statement awaits reconciliation and the rows keep their origin and review state.
@@ -1675,7 +1675,7 @@ def test_sc06_p6_a_new_account_identical_to_an_existing_one_is_reused(env):
     doc = env.add("k.pdf", fx.k_pages())
     same = {"institution": "FIRST LOCAL BANK", "account_type": "checking", "currency": "USD", "last_four": "4821"}
     first = env.ok_import(doc, new_account=same)
-    assert (first["inserted"], first["account_id"], first["account_name"]) == (9, a, "FIRST LOCAL BANK checking 4821") and env.counts()["accounts"] == 1
+    assert (first["inserted"], first["account_id"], first["account_name"]) == (9, a, "FIRST LOCAL BANK Checking 4821") and env.counts()["accounts"] == 1
     preview = env.ok_preview(doc, new_account=same)
     assert {row["status_text"] for row in preview["rows"]} == {"Already recorded from import k.pdf"} and preview["account_id"] == a
     again = env.ok_import(doc, reading=preview["reading_id"], new_account=same)

@@ -46,7 +46,7 @@ def test_review_queue_carries_summaries_of_every_record_involved(reconciled):  #
     assert costco["summary"]["document_path"].endswith("receipt.png")
     link = next(item for item in queue["links"] if item["kind"] == "receipt")
     assert link["match_signals"] == ["amount", "same_day", "merchant"]
-    assert link["from"]["account"] == "Fidelity credit card 7314" and link["to"]["name"] == "Costco Wholesale"
+    assert link["from"]["account"] == "Fidelity Credit card 7314" and link["to"]["name"] == "Costco Wholesale"
     transfer = next(item for item in queue["links"] if item["kind"] == "transfer")
     assert transfer["from"]["id"] == ids["bank"][1] and transfer["to"]["id"] == ids["card"][3]
     [issue] = queue["issues"]
@@ -81,7 +81,7 @@ def test_transaction_filters_sort_paging_and_receipt_linkage(reconciled):  # B2
 def test_transaction_record_includes_account_and_links(reconciled):  # B3
     _, ledger, _, _, ids = reconciled
     record = ledger.record("transaction", ids["card"][0])
-    assert record["account"] == "Fidelity credit card 7314"
+    assert record["account"] == "Fidelity Credit card 7314"
     [link] = record["links"]
     assert link["kind"] == "receipt" and link["counterpart"]["id"] == ids["costco"] and link["counterpart"]["amount"]["display"] == "163.82 USD"
     payment = ledger.record("transaction", ids["card"][3])

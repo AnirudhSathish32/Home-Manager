@@ -18,7 +18,7 @@ from test_taxes_v2_browser import served
 
 browser_test = pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 NO_OVERFLOW = "document.documentElement.scrollWidth <= window.innerWidth"
-NAME = "SYNTH BANK savings 3456"
+NAME = "SYNTH BANK Savings 3456"
 NOTE = f"New account: {NAME} — added to Accounts when you confirm this statement."
 DOCUMENTS_STAY = "The documents stay in your library; you can record or import them again."
 
