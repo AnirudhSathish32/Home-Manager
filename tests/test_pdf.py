@@ -14,8 +14,12 @@ from home_manager.library.storage import Store
 from home_manager.models.vision import VisionConfig
 
 
-def make_pdf(path, pages, unicode_map=None):
+def make_pdf(path, pages, unicode_map=None, type3_scale=None):
     """Minimal valid PDF. A string page has an embedded text layer; None is an image-only (scanned) page.
+
+    `type3_scale` draws the text in a Type 3 font whose FontMatrix is that many times the usual 0.001, so 0.24 pt text is
+    drawn 0.24 × scale pt tall while PDFium reports 0.24 pt (a bank's statement; docs/documents.md "PDFs"). Every glyph is
+    a 0.5 em wide box, and printable ASCII maps to itself.
 
     A dict page takes "items" ((x, y, text), (x, y, text, font_size) or (x, y, text, font_size, matrix); default 10 pt; matrix
     is the four numbers a b c d of the text matrix, default (1, 0, 0, 1), so (0, 1, -1, 0) draws the text rotated 90 degrees),
@@ -33,6 +37,22 @@ def make_pdf(path, pages, unicode_map=None):
                 " endbfchar endcmap CMapName currentdict /CMap defineresource pop end end").encode()
         objects[2] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 4 0 R >>"
         objects.append(b"<< /Length %d >>\nstream\n" % len(cmap) + cmap + b"\nendstream")
+    if type3_scale:
+        codes = range(32, 127)
+        cmap = (b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Synthetic def /CMapType 2 def "
+                b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <20> <7E> <0020> endbfrange "
+                b"endcmap CMapName currentdict /CMap defineresource pop end end")
+        objects.append(b"<< /Length %d >>\nstream\n" % len(cmap) + cmap + b"\nendstream")
+        first = len(objects) + 1
+        for code in codes:
+            glyph = b"500 0 0 0 0 0 d1" if code == 32 else b"500 0 50 -200 450 800 d1 50 0 400 700 re f"  # A full-em box, 0.7 em of ink.
+            objects.append(b"<< /Length %d >>\nstream\n" % len(glyph) + glyph + b"\nendstream")
+        scale = f"{0.001 * type3_scale:.6f}"
+        objects[2] = (f"<< /Type /Font /Subtype /Type3 /FontBBox [0 -200 500 800] /FontMatrix [{scale} 0 0 {scale} 0 0] "
+                      f"/CharProcs << {' '.join(f'/g{code} {first + index} 0 R' for index, code in enumerate(codes))} >> "
+                      f"/Encoding << /Type /Encoding /Differences [32 {' '.join(f'/g{code}' for code in codes)}] >> "
+                      f"/FirstChar 32 /LastChar 126 /Widths [{' '.join(['500'] * len(codes))}] /ToUnicode {first - 1} 0 R "
+                      f"/Resources << >> >>").encode()
     if any(isinstance(page, dict) and page.get("encoding") == "cp1252" and not unicode_map for page in pages):
         objects[2] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
     image = None

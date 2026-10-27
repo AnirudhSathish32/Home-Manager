@@ -248,8 +248,10 @@ Stacked headers, wrapped cells, rich forms and cross-page table linkage remain f
 native geometry uses original text with review issues.
 
 Text size is the size each glyph is drawn at: PDFium's reported font size times the scale of the glyph's matrix
-(text matrix and graphics state). A bank's statement sets its font at 0.24 pt and scales it up, and read at 0.24 pt
-every gap was a word break, kerning looked like overlapping text, and no row or table was found. Turned text (a
+(text matrix and graphics state), or the height of the font's loose glyph box when that is more than twice as large
+(a scale inside the font, such as a Type 3 font's FontMatrix, which the matrix doesn't include). A bank's statement
+sets its font at 0.24 pt and draws it about 10 pt tall, and read at 0.24 pt every gap was a word break, kerning looked
+like overlapping text, and no row or table was found. Turned text (a
 reference number printed up the margin) still flags the page for review, but it is kept out of the rows: each run is
 a line of its own after the page's other text, and only a table it lies across is refused. See the [implementation status and remaining design](../text_extraction_plan.md).
 Mixed digital/scanned PDFs, positioned tables, shuffled streams, crop/rotation transforms, compatibility, ledger publication,

@@ -312,11 +312,17 @@ def capture_layout(page, textpage, bitmap, number, digest, raw_text):
                 issues.add("glyph_outside_page")
             if not upright(matrix, angle):
                 issues.add("unsupported_text_rotation")
-            # The size a glyph is drawn at: PDFium reports the font operator's size, and a PDF may set that tiny (0.24)
-            # and scale it with the text matrix or the graphics state, as some bank statements do.
-            glyph = raw.FS_MATRIX()
+            # The size a glyph is drawn at. PDFium reports the font operator's size, and a PDF may set that tiny (0.24 pt)
+            # and scale it up with the text matrix or graphics state, or inside a Type 3 font's FontMatrix, as a bank's
+            # statement does. The matrix gives the first; the font's loose box, more than twice the size, the second. The
+            # box is measured across the glyph's baseline: its width for text set at 90 or 270 degrees.
+            glyph, loose = raw.FS_MATRIX(), raw.FS_RECTF()
             if raw.FPDFText_GetMatrix(textpage, index, glyph) and math.isfinite(stretch := math.hypot(glyph.c, glyph.d)) and stretch > 0:
                 size *= stretch
+            if raw.FPDFText_GetLooseCharBox(textpage, index, loose):
+                height = abs(loose.right - loose.left) if abs(math.sin(angle)) > abs(math.cos(angle)) else abs(loose.top - loose.bottom)
+                if math.isfinite(height) and height > size*2:
+                    size = height
         characters.append(PDFCharacter(index=index, unicode_value=codes[index], text=text, continuation_of=continuation,
                                        bbox=box, origin=origin, font_size=max(0, size),
                                        angle=angle, generated=generated, unicode_error=error))

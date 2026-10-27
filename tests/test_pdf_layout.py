@@ -13,9 +13,9 @@ from home_manager.library.storage import digest_file
 from test_pdf import make_pdf
 
 
-def read_layout(tmp_path, items, **settings):
+def read_layout(tmp_path, items, type3_scale=None, **settings):
     source = tmp_path / "positioned.pdf"
-    make_pdf(source, [{"items": items, **settings}])
+    make_pdf(source, [{"items": items, **settings}], type3_scale=type3_scale)
     worker(str(source), tmp_path)
     return PDFLayout.model_validate(json.loads((tmp_path / "pages.json").read_text(encoding="utf-8"))[0]["layout"])
 
@@ -271,27 +271,37 @@ def test_overlapping_layer_is_preserved_but_not_promoted_to_a_table(tmp_path):
     assert len(layout.characters) > 100
 
 
-SCALED = 10 / 0.24  # A bank's statement sets its font at 0.24 pt and scales it up with the text matrix.
+SCALED = 10 / 0.24  # A bank's statement sets its font at 0.24 pt and draws it about 10 pt tall.
 SCALED_ROWS = [("Date", "Description", "Amount", "Balance"), ("09/18", "SYNTH ACCTVERIFY", "0.36", "0.36"),
                ("09/18", "SYNTH ACCTVERIFY", "0.02", "0.38"), ("09/18", "SYNTH ACCTVERIFY", "-0.38", "0.00")]
 SCALED_FOOTER = "Synthetic savings statement page one of one, kept for your records"
 
 
-def scaled_items(margin=(600, 300)):
-    """SCALED_ROWS at 0.24 pt × SCALED, as the bank's PDF draws its text, and a reference number printed up the page at
-    `margin` (the right margin by default), drawn the same way."""
-    items = [(x, 700 - 20 * row, text, 0.24, (SCALED, 0, 0, SCALED)) for row, cells in enumerate(SCALED_ROWS)
+def scaled_items(margin=(600, 300), matrix=(SCALED, 0, 0, SCALED)):
+    """SCALED_ROWS at 0.24 pt, scaled up by the text `matrix` (or by a Type 3 font when it is the identity), and a reference
+    number printed up the page at `margin` (the right margin by default), drawn the same way."""
+    turned = (0, matrix[0], -matrix[3], 0)
+    items = [(x, 700 - 20 * row, text, 0.24, matrix) for row, cells in enumerate(SCALED_ROWS)
              for x, text in zip((40, 110, 380, 470), cells)]
-    items.append((40, 600, SCALED_FOOTER, 0.24, (SCALED, 0, 0, SCALED)))
-    items.append((*margin, "10000000000123456789", 0.24, (0, SCALED, -SCALED, 0)))
+    items.append((40, 600, SCALED_FOOTER, 0.24, matrix))
+    items.append((*margin, "10000000000123456789", 0.24, turned))
     return items
 
 
-def test_text_scaled_by_its_matrix_is_measured_at_its_drawn_size_and_a_turned_margin_number_leaves_the_table(tmp_path):
+SCALINGS = {  # How the PDF scales 0.24 pt text up, the read settings, and the size each glyph is then measured at.
+    "text matrix": ({}, {}, 10.0),
+    # The user's statement: PDFium reports 0.24 pt and a matrix scale of 1; the font's loose box (1 em here) shows the size.
+    "Type 3 font": ({"matrix": (1, 0, 0, 1)}, {"type3_scale": SCALED}, 10.0),
+}
+
+
+@pytest.mark.parametrize("scaling", SCALINGS)
+def test_scaled_text_is_measured_at_its_drawn_size_and_a_turned_margin_number_leaves_the_table(tmp_path, scaling):
     """The user's bank statement: PDFium reported 0.24 pt for most glyphs, so every gap counted as a word break, kerning
     counted as overlapping text, and a vertical number in the margin refused every table on the page."""
-    layout = read_layout(tmp_path, scaled_items())
-    assert {round(char.font_size, 3) for char in layout.characters if char.bbox} == {10}
+    items, settings, size = SCALINGS[scaling]
+    layout = read_layout(tmp_path, scaled_items(**items), **settings)
+    assert {round(char.font_size, 1) for char in layout.characters if char.bbox} == {size}
     assert layout.issues == ["unsupported_text_rotation"] and layout.coverage == "needs_review"
     assert len(layout.tables) == 1 and grid(layout) == [list(row) for row in SCALED_ROWS]
     # The number is one line of its own, after the page's other text, and needs review.
