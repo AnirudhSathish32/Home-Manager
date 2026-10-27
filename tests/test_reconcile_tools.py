@@ -150,6 +150,41 @@ def test_spending_tools_are_exact_exclude_transfers_and_pending_model_rows(books
         call_tool(tools, "get_spending", {"start": "2026-09-30", "end": "2026-09-01"})
 
 
+def test_interest_earned_is_money_in_and_interest_charged_is_spending(books):
+    """A reconciled bank statement's interest credit is money in, never a negative charge; a card's interest charge is spending."""
+    store, ledger, docs = books
+    ledger.create_account("First Local Bank", "checking", "USD", last_four="4821")
+    card = ledger.create_account("Fidelity", "credit_card", "USD", last_four="7314")
+    add(store, ledger, card, docs["export.csv"], [("2026-09-05", "BOOKS", -3333), ("2026-09-28", "INTEREST CHARGE ON PURCHASES", -500)])
+    statement = ledger.publish_statement({"statement_type": "bank", "institution": "First Local Bank", "last_four": "4821", "currency": "USD",
+                                          "period_start": "2026-09-01", "period_end": "2026-09-30", "opening_balance_minor": None, "closing_balance_minor": None,
+                                          "summary": {}, "issues": [], "locator": {"line_ids": ["page-1-line-1"]},
+                                          "transactions": [{"posted_date": "2026-09-30", "description": "INTEREST PAYMENT", "amount_minor": 36,
+                                                            "currency": "USD", "locator": {"line_ids": ["page-1-line-9"]}}]},
+                                         source_of(docs["bill.png"], "extraction:statement"), "proposed")
+    ledger.review("statement", statement["id"], "verified")
+    Reconciler(store).reconcile_statement(statement["id"])
+    with store.connection() as db:
+        assert tuple(db.execute("SELECT transaction_type,amount_minor FROM transactions WHERE statement_id=?", (statement["id"],)).fetchone()) == ("interest", 36)
+    tools = FinanceTools(store)
+    september = {"start": "2026-09-01", "end": "2026-09-30"}
+    [usd] = call_tool(tools, "get_spending", september)["by_currency"]
+    # 33.33 + 5.00 spent; the 0.36 earned is neither spending nor a refund.
+    assert (usd["spending"]["decimal"], usd["refunds"]["decimal"], usd["net_spending"]["decimal"]) == ("38.33", "0.00", "38.33")
+    categories = call_tool(tools, "get_spending_by_category", september)["categories"]
+    assert [(row["category"], row["spending"]["decimal"]) for row in categories] == [("uncategorized", "38.33")]
+    [cashflow] = call_tool(tools, "calculate_cashflow", september)["by_currency"]
+    assert (cashflow["inflow"]["decimal"], cashflow["outflow"]["decimal"]) == ("0.36", "38.33")
+    # Transactions → Items: the interest credit is a money-in row, not a −0.36 charge.
+    items = call_tool(tools, "get_spending_items", {**september, "limit": 50})
+    [earned] = [row for row in items["items"] if row["description"] == "INTEREST PAYMENT"]
+    assert (earned["kind"], earned["amount"]["display"], earned["direction"], earned["category"]) == ("income", "0.36 USD", "in", None)
+    [charged] = [row for row in items["items"] if row["description"] == "INTEREST CHARGE ON PURCHASES"]
+    assert (charged["kind"], charged["amount"]["display"], charged["direction"]) == ("charge", "5.00 USD", "out")
+    assert [(row["in"]["decimal"], row["out"]["decimal"]) for row in items["totals"]] == [("0.36", "38.33")]
+    assert_ledger_healthy(store)
+
+
 def test_bills_wait_in_review(tmp_path, books):
     store, ledger, docs = books
     checking = ledger.create_account("First Local Bank", "checking", "USD")

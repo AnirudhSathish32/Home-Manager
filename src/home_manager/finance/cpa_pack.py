@@ -237,7 +237,8 @@ class Collector:
             what = f"{t['description_raw']} on {t['posted_date']}"
             usd, basis, handle = self.usd(t["amount_minor"], t["currency"], t["day"], what)
             spent = None
-            if t["transaction_type"] in spending_types:
+            # Interest earned is money in, not negative spending (finance/tools.py EARNED_INTEREST).
+            if t["transaction_type"] in spending_types and not (t["transaction_type"] == "interest" and t["amount_minor"] > 0):
                 net = t["spent"]  # A refund is negative: this person's part of it when shared.
                 spent = net if t["currency"] == REPORTING else (handle.convert(net) if handle else None)
                 spent_total += spent or 0

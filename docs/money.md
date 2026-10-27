@@ -75,6 +75,9 @@ posted dates, purchase date and due date. A statement spanning two months is fou
 - **Totals show the split.** Spending results carry `from_receipts` and `receipts`, and `refunds_from_receipts` and
   `return_receipts`: the parts that so far only receipts show. A bill is a receipt, so these include bills.
 - **Pay stubs count the same way on the money-in side** ([Money in and paystubs](#money-in-and-paystubs)).
+- **Interest goes by its sign.** A line typed `interest` is spending when it is charged (negative, a card's interest
+  charge) and money in when it is earned (positive, a bank's interest credit): never negative spending
+  (`EARNED_INTEREST` in `finance/tools.py`). The tax year counts the same positive lines as bank interest.
 
 ## Bills and their lines
 

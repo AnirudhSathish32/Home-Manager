@@ -52,6 +52,11 @@ from .provenance import light, verification_of
 from .reconcile import RECEIPT_POSTING_DAYS, shift
 
 SPENDING_TYPES = ",".join(f"'{kind}'" for kind in SPENDING)
+# Interest is spending when charged (negative) and money in when earned (positive), as the tax year counts it (tax_year.py).
+EARNED_INTEREST = "(t.transaction_type='interest' AND t.amount_minor>0)"
+SPENT = f"(t.transaction_type IN ({SPENDING_TYPES}) AND NOT {EARNED_INTEREST})"
+SPENT_OR_REFUND = f"(t.transaction_type IN ({SPENDING_TYPES},'refund') AND NOT {EARNED_INTEREST})"
+REFUND = "t.transaction_type='refund'"
 # Which rows a transaction query includes: counted totals, extracted rows awaiting review, or rejected rows.
 STATUS_FILTERS = {"counted": COUNTABLE, "pending": PENDING, "rejected": "t.review_status='rejected'"}
 TRANSACTION_SORTS = {"date_desc": "t.posted_date DESC,t.id DESC", "date_asc": "t.posted_date,t.id",
@@ -360,7 +365,7 @@ class FinanceTools(ItemAnalysisTools):
             clauses.append(in_categories(len(value.categories)))
             params += value.categories * 2
         if value.metric:
-            spending = f"t.transaction_type IN ({SPENDING_TYPES},'refund')"
+            spending = SPENT_OR_REFUND
             inflow = "(t.amount_minor>0 AND t.transaction_type IN ('deposit','interest','other'))"
             clauses.append({"spending": spending, "inflow": inflow, "cashflow": f"({spending} OR {inflow})",
                             "categories": spending}[value.metric])
@@ -494,7 +499,7 @@ class FinanceTools(ItemAnalysisTools):
         # is negative here, a refund positive.
         charged = f"-{TRANSACTION_SPENT}"
         for row in self.query(f"SELECT {month} AS month,t.currency,t.transaction_type='refund' AS refund,sum({charged}) AS total,count(*) AS count "
-                              f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') GROUP BY 1,2,3", params):
+                              f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND {SPENT_OR_REFUND} GROUP BY 1,2,3", params):
             bucket = totals[(row["month"], row["currency"])]
             if row["refund"]:
                 bucket["refunds"] += row["total"]
@@ -538,7 +543,7 @@ class FinanceTools(ItemAnalysisTools):
                               count=bucket["return_receipts"])
         for row in self.query(f"SELECT t.id,t.posted_date,coalesce(m.canonical_name,t.description_raw) AS name,t.currency,t.transaction_type,"
                               f"{charged} AS amount,t.origin,t.review_status,t.review_source FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
-                              f"WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({'' if refunds_only else f'{SPENDING_TYPES},'}'refund') "
+                              f"WHERE {COUNTABLE} AND {scope} AND {REFUND if refunds_only else SPENT_OR_REFUND} "
                               "ORDER BY t.posted_date,t.id", params):
             refund = row["transaction_type"] == "refund"
             recorder.input(f"transaction:{row['id']}", f"{'Refund · ' if refund else ''}{row['name']} · {row['posted_date']}",
@@ -556,7 +561,7 @@ class FinanceTools(ItemAnalysisTools):
     def _pending(self, scope, params, by_month=False):
         month = "substr(t.posted_date,1,7)" if by_month else "NULL"
         return self.query(f"SELECT {month} AS month,t.currency,-sum(t.amount_minor) AS total,count(*) AS count FROM transactions t WHERE {PENDING} AND {scope} "
-                          f"AND t.transaction_type IN ({SPENDING_TYPES}) GROUP BY 1,2", params)
+                          f"AND {SPENT} GROUP BY 1,2", params)
 
     def _coverage(self, scope, params, account_id=None):
         return self.query(f"SELECT a.id AS account_id,a.display_name,min(t.posted_date) AS first,max(t.posted_date) AS last,count(t.id) AS transactions "
@@ -573,7 +578,7 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         rows = self.query(f"SELECT coalesce(t.transaction_date,t.posted_date) AS day,t.currency,{TRANSACTION_SPENT} AS net "
                           f"FROM transactions t WHERE {COUNTABLE} AND {scope} AND t.currency<>? "
-                          f"AND t.transaction_type IN ({SPENDING_TYPES},'refund')", [*params, REPORTING])
+                          f"AND {SPENT_OR_REFUND}", [*params, REPORTING])
         if account_id is None:
             rows += self.query(f"SELECT r.purchase_date AS day,r.currency,{RECEIPT_SPENT} AS net FROM receipts r WHERE {STANDALONE_RECEIPT} "
                                "AND r.purchase_date BETWEEN ? AND ? AND r.currency<>?", (start, end, REPORTING))
@@ -627,7 +632,7 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         totals = defaultdict(lambda: [0, 0])
         rows = self.query(f"SELECT t.currency,{SPLIT_CATEGORY} AS category,sum({SPLIT_SPENT}) AS total,count(DISTINCT t.id) AS count "
-                          f"FROM transactions t {TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') "
+                          f"FROM transactions t {TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND {SPENT_OR_REFUND} "
                           "GROUP BY 1,2", params)
         if account_id is None:
             rows += self.query(f"SELECT r.currency,{RECEIPT_SPLIT_CATEGORY} AS category,sum({RECEIPT_SPLIT_SPENT}) AS total,count(DISTINCT r.id) AS count "
@@ -645,7 +650,7 @@ class FinanceTools(ItemAnalysisTools):
         scope, params = scope_of(start, end, account_id)
         charges = self.query(f"SELECT t.id,t.posted_date AS day,coalesce(m.canonical_name,t.description_raw) AS name,sum({SPLIT_SPENT}) AS amount,"
                              f"count(s.id) AS parts,t.origin,t.review_status,t.review_source FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id "
-                             f"{TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND t.transaction_type IN ({SPENDING_TYPES},'refund') AND t.currency=? "
+                             f"{TRANSACTION_SPLITS} WHERE {COUNTABLE} AND {scope} AND {SPENT_OR_REFUND} AND t.currency=? "
                              f"AND {SPLIT_CATEGORY}=? GROUP BY t.id ORDER BY t.posted_date,t.id", [*params, currency, category])
         receipts = [] if account_id is not None else self.query(
             f"SELECT r.id,r.purchase_date AS day,coalesce(m.canonical_name,'Unknown merchant') AS name,sum({RECEIPT_SPLIT_SPENT}) AS amount,count(s.id) AS parts,"
@@ -672,7 +677,7 @@ class FinanceTools(ItemAnalysisTools):
         rows = self.query(f"SELECT 'transaction' AS kind,t.id,t.posted_date AS day,t.transaction_type='refund' AS refund,t.currency,"
                           f"coalesce(m.canonical_name,t.description_raw) AS name,-{TRANSACTION_SPENT} AS amount_minor,t.origin,t.review_status,t.review_source "
                           f"FROM transactions t LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {scope} "
-                          f"AND t.transaction_type IN ({SPENDING_TYPES},'refund') ORDER BY t.posted_date,t.id", params)
+                          f"AND {SPENT_OR_REFUND} ORDER BY t.posted_date,t.id", params)
         if account_id is None:
             rows += self.query(f"SELECT 'receipt' AS kind,r.id,r.purchase_date AS day,r.total_minor<0 AS refund,r.currency,coalesce(m.canonical_name,'UNKNOWN') AS name,"
                                f"-{RECEIPT_SPENT} AS amount_minor,NULL AS origin,r.review_status,r.review_source FROM receipts r "
@@ -732,14 +737,14 @@ class FinanceTools(ItemAnalysisTools):
                 f"t.currency,a.display_name AS account,t.category_source,CASE WHEN {linked} IS NOT NULL THEN 'reconciled' ELSE 'statement' END AS status,"
                 f"(SELECT document_id FROM receipts WHERE id={linked}) AS receipt_document_id,-{SPLIT_SPENT} AS signed_minor,NULL AS income_record_id "
                 f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id {TRANSACTION_SPLITS} "
-                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND t.transaction_type IN ({SPENDING_TYPES},'refund'){charge_scope}"
+                f"LEFT JOIN receipt_items i ON i.id=s.receipt_item_id WHERE {COUNTABLE} AND {SPENT_OR_REFUND}{charge_scope}"
                 # Money in: deposits and other credits, a deposit matched to its pay stub reconciled (docs/money.md "Money in and paystubs").
-                # Interest earned is already above, as money back on the interest type.
+                # Interest earned is money in here too (EARNED_INTEREST); interest charged is a charge above.
                 f" UNION ALL SELECT 'transaction',t.id,NULL,t.posted_date,coalesce(m.canonical_name,t.description_raw),t.description_raw,'income',NULL,NULL,"
                 f"NULL,NULL,NULL,NULL,t.amount_minor,t.currency,a.display_name,t.category_source,CASE WHEN {paid} IS NOT NULL THEN 'reconciled' ELSE 'statement' END,"
                 f"(SELECT document_id FROM income_records WHERE id={paid}),t.amount_minor,{paid} "
                 f"FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN merchants m ON m.id=t.merchant_id WHERE {COUNTABLE} AND {INFLOW} "
-                f"AND t.transaction_type NOT IN ({SPENDING_TYPES},'refund'){charge_scope}")
+                f"AND NOT {SPENT_OR_REFUND}{charge_scope}")
         params = [*params, *account, *params[:len(dated)], *account]
         if value.account_id is None:
             rows += (f" UNION ALL SELECT 'receipt',NULL,r.id,r.purchase_date,coalesce(m.canonical_name,'Unknown merchant'),r.description,{ROW_KIND},i.position,i.description,"

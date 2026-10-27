@@ -312,7 +312,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator("#rc2-table")).not_to_contain_text("inbox-statement.csv")
             assert not inbox_file.exists()
             page.goto(f"http://127.0.0.1:{port}/#/receipts?folder=Bank_Statements")  # Bank statements live with receipts on the money side.
-            page.locator("#rc2-table").get_by_role("button", name="Import inbox-statement.csv").click()
+            page.locator("#rc2-table").get_by_role("button", name="Add missed inbox-statement.csv").click()
             playwright.expect(page.locator("#import-status")).to_contain_text("Choose the description column")
             page.locator("#import-map-description").select_option("date")  # The only text-like column in this minimal file.
             playwright.expect(page.locator("#import-status")).to_contain_text("1 rows ready")

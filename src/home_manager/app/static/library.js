@@ -149,9 +149,13 @@ const MAP_KEYS = ["date", "description", "amount", "debit", "credit"];
 const READ_FIRST = "Read this document first.";  // The server's refusal for a PDF with no saved reading (finance/ledger.py pdf_reading).
 const isPdf = doc => /\.pdf$/i.test(doc.relative_path);
 let importDoc = null, importDone = null, importOpener = null, importPdf = null, importAfterPdf = false;
-// onDone runs after the rows are imported (the Money screens reload; money_v2.js importPicker).
-async function openImport(doc, {onDone = null} = {}) {
+// onDone runs after the rows are imported (the Money screens reload; money_v2.js importPicker). missed: opened from a
+// library row's or document page's Add missed transactions, which adds only rows not already recorded (docs/documents.md
+// "Transaction imports").
+async function openImport(doc, {onDone = null, missed = false} = {}) {
   importDoc = doc; importDone = onDone; importOpener = document.activeElement;
+  $("import-title").textContent = !missed ? "Import transactions" : isPdf(doc) ? "Add transactions the reading missed" : "Add missed transactions";
+  $("confirm-import").textContent = missed ? "Add missed transactions" : "Import transactions";
   // PDF mode (docs/documents.md "PDFs"): what the user has chosen so far, as the preview request sends it. A choice left
   // empty is the server's default (tables: all, sign: the account type's); ticks are only the rows the user changed.
   importPdf = isPdf(doc) ? {tables: null, sign: null, ticked: new Set(), unticked: new Set(), result: null, sequence: 0, latest: null, matched: false, importing: false, done: false} : null;

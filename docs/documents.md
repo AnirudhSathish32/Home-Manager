@@ -338,14 +338,17 @@ included), from
 derived index (`pdf_import_index`, migration 072; a library that applied it under its first number, 071, gets bill
 kinds' 071 at its next start and keeps its index) holds each reading's table count, printed last fours and currency so
 the picker and the library need not analyze readings on every request. It is rebuilt when a reading is saved, at
-start for older readings, and when `ANALYZER_VERSION` changes. A PDF's transactions can be imported only once the
-PDF is **recorded** (as a statement; a PDF recorded as a receipt, bill or pay stub is refused). Until then its
-**library row** offers Read or Record and no Import, and its **document page** shows **Import transactions** turned
-off beside **Record it**. Once recorded, **Import transactions** (`doc.pdf_import`, computed by the server) is the
-row's step and the page's primary button when the reading has a transactions table and exactly one saved account
-matches by last four and currency; otherwise it is in More actions and a secondary button on the page. The import
-dialog itself still says **Read this document first** with a **Read** button for a PDF with no reading, reads it,
-and shows the preview in the same dialog. CSV and XLSX keep Import as their step.
+start for older readings, and when `ANALYZER_VERSION` changes. On a PDF the import is a correction to its recording,
+so it is called **Add missed transactions**: it adds the rows the recording left out and changes no recorded row
+(those are fixed with Correct). It is offered only once the PDF is **recorded** (as a statement; a PDF recorded as a
+receipt, bill or pay stub is refused). Until then its **library row** offers Read or Record and nothing more, and its
+**document page** shows **Add missed transactions** turned off beside **Record it**. Once recorded, it
+(`doc.pdf_import`, computed by the server) is the row's step (**Add missed**) and the page's primary button when the
+reading has a transactions table and exactly one saved account matches by last four and currency; otherwise it is in
+More actions and a secondary button on the page. Its dialog is titled **Add transactions the reading missed**. The
+picker still opens the same dialog as **Import transactions**, which says **Read this document first** with a
+**Read** button for a PDF with no reading, reads it, and shows the preview in the same dialog. A CSV or XLSX row's
+step is **Add missed** too, opening the dialog as **Add missed transactions**.
 
 ### Several receipts in one file
 

@@ -279,12 +279,12 @@ function doc2Steps(state) {
   }));
   const parts = [], extraction = state.extraction, doc = state.doc, idle = !busy.inference;
   const next = (label, action, tone = "primary") => { const button = element("button", label, tone); button.type = "button"; button.disabled = !idle; button.addEventListener("click", action); return button; };
-  // Import transactions (FR-26, docs/documents.md "Transaction imports"): primary when one saved account matches the PDF, else beside Record.
+  // Add missed transactions, a PDF import (FR-26, docs/documents.md "Transaction imports"): primary when one saved account matches the PDF.
   // Offered only on the latest version of a read PDF, and never while it is being read or recorded. It can be clicked only once
   // the document is recorded; until then it shows beside Record, turned off.
   const offer = state.loaded && state.result && state.extractionChecked && !state.pending && !extraction?.pending && state.digest === doc.current_hash ? pdfImportOffer(doc) : null;
   const recorded = extraction?.status === "succeeded" && extraction.publication && !extraction.publication.removed && extraction.publication.status !== "blocked";
-  const importButton = offer && next("Import transactions", () => openImport(doc, {onDone: () => refreshDocumentV2(state)}), offer === "primary" && recorded ? "primary" : "secondary");
+  const importButton = offer && next("Add missed transactions", () => openImport(doc, {missed: true, onDone: () => refreshDocumentV2(state)}), offer === "primary" && recorded ? "primary" : "secondary");
   if (importButton && !recorded) { importButton.disabled = true; importButton.title = "Record this document first."; }
   if (state.actionError) parts.push(alertBox(state.actionError, {tone: "error"}));
   if (!state.loaded) { /* The page's loading state says it. */ }
@@ -319,7 +319,7 @@ function doc2Steps(state) {
   } else if (!extraction.publication)
     parts.push(element("p", `Filed as ${(extraction.documentType || "an unknown document").replaceAll("_", " ")}, which has no ledger record. Use Move to put it elsewhere.`, "muted small"));
   else if (extraction.publication.status === "blocked") parts.push(alertBox(`Can't record this: ${extraction.publication.reason}`, {tone: "warning"}));
-  // Where Record isn't the next step (recorded, filed elsewhere, failed, cancelled), Import transactions stands on its own row.
+  // Where Record isn't the next step (recorded, filed elsewhere, failed, cancelled), Add missed transactions stands on its own row.
   if (importButton && !parts.some(part => part.contains?.(importButton))) {
     const row = element("div", "", "doc2-next-row"); row.append(importButton); parts.push(row);
   }

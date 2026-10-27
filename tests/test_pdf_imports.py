@@ -981,9 +981,10 @@ def spending(env_, start="2026-08-01", end="2026-08-31"):
     return usd["net_spending"]["minor"], usd["refunds"]["minor"]
 
 
-# By hand, net of refunds: purchases k1 450, k2 450, k3 4,510 and k8 8,240, fee k6 500, less interest k9 0.12 and the refund k7 19.99 (k5 is a transfer).
-K_SPENDING = (12139, 1999)
-K_SPENDING_WITHOUT_K8 = (3899, 1999)
+# By hand, net of refunds: purchases k1 450, k2 450, k3 4,510 and k8 8,240, fee k6 500, less the refund k7 19.99 (k5 is a transfer;
+# interest k9 0.12 is money earned, not spending).
+K_SPENDING = (12151, 1999)
+K_SPENDING_WITHOUT_K8 = (3911, 1999)
 
 
 def all_rows(env_, account_id):

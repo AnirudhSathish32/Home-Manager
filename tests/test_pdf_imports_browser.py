@@ -599,22 +599,22 @@ def test_sc20_the_primary_action_follows_the_reading_the_account_match_and_what_
         library_page(page, base)
         step = lambda name: row_of(page, name).locator("button.rc2-step")
         # 1. Library rows: a PDF offers Import only once it is recorded.
-        expect(step("K.pdf")).to_have_text("Import")
+        expect(step("K.pdf")).to_have_text("Add missed")
         items = menu_items(row_of(page, "K.pdf"))
-        assert "Record" not in items and "Import transactions" not in items
+        assert "Record" not in items and "Add missed transactions" not in items
         page.keyboard.press("Escape")
         expect(step("Kn.pdf")).to_have_text("Record")
         items = menu_items(row_of(page, "Kn.pdf"))
-        assert "Import transactions" not in items and "Record" not in items
+        assert "Add missed transactions" not in items and "Record" not in items
         page.keyboard.press("Escape")
         expect(step("Ku.pdf")).to_have_text("Read")
-        assert "Import transactions" not in menu_items(row_of(page, "Ku.pdf"))
+        assert "Add missed transactions" not in menu_items(row_of(page, "Ku.pdf"))
         page.keyboard.press("Escape")
-        expect(step("Kc.csv")).to_have_text("Import")
+        expect(step("Kc.csv")).to_have_text("Add missed")
         assert "Import transactions" not in menu_items(row_of(page, "Kc.csv"))
         page.keyboard.press("Escape")
         expect(step("Kr.pdf")).to_have_count(0)
-        assert not [text for text in menu_items(row_of(page, "Kr.pdf")) if text in ("Import transactions", "Record")]
+        assert not [text for text in menu_items(row_of(page, "Kr.pdf")) if text in ("Add missed transactions", "Record")]
         page.keyboard.press("Escape")
         assert ledger_counts(manager) == before
         # 2. Document pages.
@@ -622,26 +622,28 @@ def test_sc20_the_primary_action_follows_the_reading_the_account_match_and_what_
             page.goto(f"{base}/#/documents/{docs[name]['id']}")
             expect(page.locator("#doc2-steps .doc2-step").first).to_be_visible()
             return page.locator("#doc2-next")
-        # On the document page Import transactions waits, turned off beside Record it, until the PDF is recorded.
+        # On the document page Add missed transactions waits, turned off beside Record it, until the PDF is recorded.
         nxt = document_page("K.pdf")
-        expect(nxt.get_by_role("button", name="Import transactions")).to_be_enabled()
-        expect(nxt.get_by_role("button", name="Import transactions")).to_have_class(PRIMARY)
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_be_enabled()
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_have_class(PRIMARY)
         expect(nxt.get_by_role("button", name="Record it")).to_have_count(0)
         nxt = document_page("Kn.pdf")
         expect(nxt.get_by_role("button", name="Record it")).to_have_class(PRIMARY)
-        expect(nxt.get_by_role("button", name="Import transactions")).to_be_disabled()
-        expect(nxt.get_by_role("button", name="Import transactions")).not_to_have_class(PRIMARY)
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_be_disabled()
+        expect(nxt.get_by_role("button", name="Add missed transactions")).not_to_have_class(PRIMARY)
         nxt = document_page("Ku.pdf")
         expect(nxt.get_by_role("button", name="Read document")).to_have_class(PRIMARY)
-        expect(nxt.get_by_role("button", name="Import transactions")).to_have_count(0)
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_have_count(0)
         nxt = document_page("Kr.pdf")
         expect(page.locator("#doc2-steps .doc2-step").nth(1)).to_be_visible()
-        expect(nxt.get_by_role("button", name="Import transactions")).to_have_count(0)
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_have_count(0)
         assert ledger_counts(manager) == before and finished_readings(manager) == 3
-        # 3. Import recorded K into A from its row; it still offers Import, on the row and on its page.
+        # 3. Add recorded K's missed rows into A from its row; it still offers Add missed, on the row and on its page.
         library_page(page, base)
         dialog = page.locator("#import-dialog")
         step("K.pdf").click()
+        expect(dialog.locator("#import-title")).to_have_text("Add transactions the reading missed")
+        expect(dialog.locator("#confirm-import")).to_have_text("Add missed transactions")
         expect(dialog.locator("#import-pdf-rows tr")).to_have_count(9)
         expect(dialog.locator("#import-account")).to_have_value(str(ids["A"]))
         dialog.locator("#confirm-import").click()
@@ -651,9 +653,9 @@ def test_sc20_the_primary_action_follows_the_reading_the_account_match_and_what_
             assert tuple(db.execute("SELECT COUNT(*), COUNT(DISTINCT account_id) FROM transactions").fetchone()) == (9, 1)
         page.reload()
         page.wait_for_selector("#rc2-table tbody tr")
-        expect(step("K.pdf")).to_have_text("Import")
+        expect(step("K.pdf")).to_have_text("Add missed")
         nxt = document_page("K.pdf")
-        expect(nxt.get_by_role("button", name="Import transactions")).to_be_enabled()
+        expect(nxt.get_by_role("button", name="Add missed transactions")).to_be_enabled()
         # Kn, Ku, Kc and Kr changed nothing.
         with manager.store.connection() as db:
             assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 9

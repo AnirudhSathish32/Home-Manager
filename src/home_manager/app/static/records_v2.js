@@ -465,12 +465,12 @@ const rc2Record = doc => rc2Start(`/api/documents/${doc.id}/extraction-runs`, {p
 // A PDF's transactions can be imported only once it is recorded, as on its document page (docs/documents.md "Transaction imports").
 const rc2Recorded = doc => Boolean(doc.ledger_status) && !["imported", "not_tracked"].includes(doc.ledger_status);
 const rc2Importing = doc => !doc.deleted_at && rc2Recorded(doc) && !PENDING.includes(doc.parse_status) && !PENDING.includes(doc.extraction_status);
-// The one most useful action for the document, as a text link: Restore, Import, Read or Record.
+// The one most useful action for the document, as a text link: Restore, Add missed (a CSV or XLSX, or a recorded PDF), Read or Record.
 function rc2Step(doc, stateCell) {
   const name = documentName(doc);
   let label = "", run = null, model = false;
   if (doc.deleted_at) { label = "Restore"; run = async () => { await restoreDocuments([doc]); await rc2Draw(); }; }
-  else if (isTable(doc) || (rc2Importing(doc) && pdfImportOffer(doc) === "primary")) { label = "Import"; run = () => openImport(doc, {onDone: () => rc2Draw()}); }
+  else if (isTable(doc) || (rc2Importing(doc) && pdfImportOffer(doc) === "primary")) { label = "Add missed"; run = () => openImport(doc, {missed: true, onDone: () => rc2Draw()}); }
   else if (!doc.text_run_id && !PENDING.includes(doc.parse_status)) {
     label = "Read"; model = true;
     run = () => rc2Start(`/api/documents/${doc.id}/receipt-runs`, {blob_hash: doc.current_hash}, "Reading started. Follow it on Processing.");
@@ -510,12 +510,13 @@ function rc2Menu(doc) {
     items.push(rc2Button("Delete", "danger-text", () => openLibraryAction([doc], "trash")));
   }
   items.push(element("small", doc.managed_path ? `Library/${doc.managed_path}` : "Managed copy pending", "managed-path"));
-  // A recorded PDF without a single matching account offers Import here (docs/documents.md "Transaction imports"); with one, Import is its step.
+  // A recorded PDF without a single matching account offers Add missed transactions here (docs/documents.md "Transaction imports");
+  // with one, Add missed is its step.
   const offered = isPdf(doc) && rc2Importing(doc) && pdfImportOffer(doc) === "secondary";
   const more = [];
   let trigger = null;
   // The menu closes on click; the dialog hands focus back to the opener, so the opener is the menu's button.
-  if (offered) more.push(rc2Button("Import transactions", "", () => { trigger?.focus(); return openImport(doc, {onDone: () => rc2Draw()}); }));
+  if (offered) more.push(rc2Button("Add missed transactions", "", () => { trigger?.focus(); return openImport(doc, {missed: true, onDone: () => rc2Draw()}); }));
   items.splice(2, 0, ...more);
   const wrap = menu(`More actions for ${name}`, items);
   trigger = wrap.querySelector(".menu-trigger"); trigger.dataset.rc2Key = `menu-${doc.id}`;
