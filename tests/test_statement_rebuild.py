@@ -406,9 +406,11 @@ def test_sc27_without_fr30_those_rows_are_rejected_so_the_change_is_what_lets_th
 
 
 def test_sc27_x3_is_still_rejected_and_a_number_printed_apart_is_not_joined(tmp_path):
-    """X's x3 prints `REF 55.55` in the Amount span beside `5.00` (the run starts in the Amount span); 7-e is in test_pdf_imports."""
+    """X's x3 prints `REF 55.55` in the Amount span beside `5.00` (the run starts in the Amount span); 7-e is in test_pdf_imports.
+    `REF` ends before the Amount heading begins, so it is description text (docs/documents.md "Statement rows from the printed
+    columns"); `55.55` is still an amount."""
     got = analysis(read(tmp_path, sf.x_pages()))
-    [x3] = [row for row in got.rows if row.description == "X3"]
+    [x3] = [row for row in got.rows if row.description == "X3 REF"]
     assert x3.rejected == "More than one amount sits in the Amount column." and x3.amount_minor is None
 
 
@@ -850,3 +852,49 @@ def test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reportin
     assert recorded.transactions() == expected_s()
     assert not any("Statement arithmetic" in issue for issue in record["issues"])
     assert f"Page 1 row 5: {NO_AMOUNT}" in record["issues"]
+
+
+# === A description printed in pieces (the user's bank statement) ============================================================
+
+PIECES_ROWS = [  # (date, description's first piece, its second piece and where it starts, amount, balance)
+    ("09/18", "SYNTH ACCTVERIFY", (230, "PPD ID: SYNTHID01"), "0.36", "0.36"),
+    ("09/18", "SYNTH ACCTVERIFY", (230, "PPD ID: SYNTHID01"), "0.02", "0.38"),
+    ("09/18", "SYNTH ACCTVERIFY XY12", (260, "Web ID: SYNTHID01"), "-0.38", "0.00"),
+]
+
+
+def pieces_pages(flagged=False):
+    """Date | Description | Amount | Balance with the amounts right-aligned under headings far to the right. Each description's
+    second piece reaches past the midpoint between the Description and Amount headings (282 pt), but ends before Amount (433
+    pt). Beginning and Ending Balance rows print only a balance. `flagged` adds S-flag's overlapping and turned words."""
+    items = [(38, 700, "Date"), (80, 700, "Description"), (433, 700, "Amount"), (501, 700, "Balance"),
+             (80, 680, "Beginning Balance"), (515, 680, "0.00")]
+    for index, (date, first, (x, second), amount, balance) in enumerate(PIECES_ROWS):
+        y = 660 - 20 * index
+        items += [(38, y, date), (80, y, first), (x, y, second), (468 - 5 * len(amount), y, amount), (535 - 5 * len(balance), y, balance)]
+    items += [(80, 600, "Ending Balance"), (515, 600, "0.00"), sf.words_footer("SYNTH BANK", 580)]
+    return [{"items": items + (sf.flag_items() if flagged else [])}]
+
+
+PIECES_EXPECTED = [("2026-09-18", 36, "SYNTH ACCTVERIFY PPD ID: SYNTHID01"), ("2026-09-18", 2, "SYNTH ACCTVERIFY PPD ID: SYNTHID01"),
+                   ("2026-09-18", -38, "SYNTH ACCTVERIFY XY12 Web ID: SYNTHID01")]
+
+
+def test_a_description_printed_in_pieces_is_one_cell_of_the_native_table(tmp_path):
+    """The reader allowed one piece of text per cell, so it refused the table and showed only a support table."""
+    result = read(tmp_path, pieces_pages())
+    assert native_page(result.pages[0])
+    assert fx.native_transactions_tables(result, 1) == [[["Date", "Description", "Amount", "Balance"], ["", "Beginning Balance", "", "0.00"],
+                                                          *[[date, f"{first} {second}", amount, balance] for date, first, (_, second), amount, balance in PIECES_ROWS],
+                                                          ["", "Ending Balance", "", "0.00"]]]
+    assert rows_of(bank(result)) == PIECES_EXPECTED
+
+
+def test_a_description_printed_in_pieces_is_description_text_in_a_rebuilt_row(tmp_path):
+    """On a flagged page Record rebuilds from the words: the second piece's end fell in the Amount column's span, and each row
+    was rejected as text in the Amount column."""
+    result = read(tmp_path, pieces_pages(flagged=True))
+    assert not native_page(result.pages[0])
+    built = bank(result)
+    assert rows_of(built) == PIECES_EXPECTED
+    assert not [issue for issue in built.issues if "not an amount" in issue]

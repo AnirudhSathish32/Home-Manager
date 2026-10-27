@@ -479,6 +479,13 @@ def reconstruct(characters, matrix, number, issues):
             cells = [[] for _ in header]
             for group in groups_row:
                 left, right = word_boxes[group[0].id][0], word_boxes[group[-1].id][2]
+                # Text printed in pieces with wide gaps (a statement's "ACCTVERIFY      PPD ID: 1234") continues the text
+                # cell before it while it ends before the next column's heading begins.
+                filled = max((i for i, cell in enumerate(cells) if cell), default=None)
+                if (filled is not None and filled < last and textual(group) and textual(cells[filled])
+                        and right < starts[filled+1]):
+                    cells[filled] = cells[filled] + group
+                    continue
                 candidates = [i for i in range(len(header)) if left >= bands[i]-size*0.2 and right <= bands[i+1]+size*0.2]
                 # A label wider than its heading runs right, a wide amount left: it starts or ends in one column's
                 # band and stays clear of the neighbouring headings.

@@ -228,7 +228,8 @@ Ambiguous roles and unaccounted native rows require review. Nearby non-table pay
 Columns may be packed tightly, as payroll sites print This period and YTD: an amount never shares a cell with the
 amount or label after it, and a heading that runs into the next ("this period year to date") is split where the
 cells below it fall into separate columns (right-aligned amounts may reach past their heading). A label wider than its
-heading may run right (and a wide amount left) as long as it stays clear of the neighbouring headings. Two tables
+heading may run right (and a wide amount left) as long as it stays clear of the neighbouring headings. Text printed in
+pieces with wide gaps continues the text cell before it while it ends before the next column's heading begins. Two tables
 sharing rows (a payslip's Earnings beside its Deductions) are read as two tables. A section label alone on its row
 ("Statutory", "Voluntary") stays in its table when amount rows follow it, and needs no record. Rows after a blank
 stretch (a section after a blank row, the totals at the foot of a mostly empty box) continue the table above when
@@ -580,7 +581,10 @@ with no model and no network.
 - **Values.** The date is the Date cell; the description is the Description cell as printed; the amount is the Amount
   cell or the one filled Debit/Withdrawals or Credit/Deposits cell, in minor units. A Balance column is never an
   amount. With one Amount column a bank statement reads negative as money out and a card statement reads positive as
-  money out. A date with no year, or a two-digit year, takes its year from the printed period (a month before the
+  money out. A description printed in pieces with wide gaps ("ACCTVERIFY      PPD ID: 1234") stays one description:
+  text after it that ends before the Amount heading begins is description text, even past the midpoint between the
+  two headings (an amount-shaped word is placed as before). This narrows `account-import-pdf` FR-08's midpoint rule
+  for both features. A date with no year, or a two-digit year, takes its year from the printed period (a month before the
   period's start month falls in its end year); with no printed period such rows are not recorded and are listed. A
   day/month order the dates can't settle is listed too.
 - **The model decides nothing there.** Its rows on a rebuilt page change no date, amount or direction and add no rows.

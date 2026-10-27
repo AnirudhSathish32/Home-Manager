@@ -176,6 +176,7 @@ class Spec:
     spans: list[tuple[float, float]]
     columns: dict[str, int]  # Role to index into texts.
     source: list[int]  # A native table's column for each text.
+    heads: list[tuple[float, float]] = field(default_factory=list)  # Where each heading is printed (left, right).
 
 
 def assign(texts):
@@ -204,7 +205,7 @@ def make_spec(items, source=()):
     cuts = [(items[index][2] + items[index + 1][1]) / 2 for index in range(len(items) - 1)]
     texts = [text for text, _, _ in items]
     roles, columns = assign(texts)
-    return Spec(texts, roles, list(zip([-infinity] + cuts, cuts + [infinity])), columns, list(source))
+    return Spec(texts, roles, list(zip([-infinity] + cuts, cuts + [infinity])), columns, list(source), [(left, right) for _, left, right in items])
 
 
 def place(spans, box):
@@ -271,8 +272,15 @@ def visual_row(view, spec, index, row):
     if not dates or not amounts and not any(word.id in taken for word in candidates):
         return None
     found, cells = {}, {}
+    description = spec.columns.get("description")
     for word in words:
-        column, fits = (spec.columns["description"], True) if word.id in taken else place(spec.spans, view.box[word.id])
+        column, fits = (description, True) if word.id in taken else place(spec.spans, view.box[word.id])
+        # A description printed in pieces with wide gaps ("ACCTVERIFY      PPD ID: 1234") can reach past the midpoint before
+        # the Amount column. Text that follows it and ends before the next heading begins is still description text; an
+        # amount-shaped word is placed as before (docs/documents.md "Statement rows from the printed columns").
+        if (column in amount_columns and description == column - 1 and cells.get(description) and not AMOUNT_WORD.fullmatch(word.text)
+                and view.box[word.id][2] < spec.heads[column][0]):
+            column, fits = description, True
         found[word.id] = (column, fits)
         cells.setdefault(column, []).append(word)
     reject = None
