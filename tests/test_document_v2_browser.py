@@ -331,9 +331,12 @@ def test_document_page_states_find_correct_and_decide(tmp_path):
         expect(page.locator("#doc2-tab-history")).to_have_attribute("aria-selected", "true")
         expect(page.locator('#doc2-history .history-row[data-kind="correction"]')).to_have_count(2)
 
-        # A statement's rows each take their own correction.
+        # A statement's rows each take their own correction; once it is approved, they show only while the record's Correct is open.
         open_document(page, base, ids["statement_doc"])
         expect(page.locator("#doc2-record-title")).to_contain_text("Statement from")
+        expect(page.locator("#doc2-record-badge")).to_contain_text("Verified")
+        expect(page.locator("#doc2-panel-record").get_by_role("button", name="Correct CORNER BOOKS")).to_be_hidden()
+        page.locator("#doc2-decision").get_by_role("button", name="Correct…").click()
         page.locator("#doc2-panel-record").get_by_role("button", name="Correct CORNER BOOKS").click()
         row_form = page.locator(".doc2-row-form .cc-form")
         expect(row_form.get_by_label("Date", exact=True)).to_be_focused()

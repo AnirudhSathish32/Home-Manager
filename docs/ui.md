@@ -238,11 +238,11 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
   documents; a 409 while model work runs stays in the strip). Then search, the state chips with counts, From/To and
   Sort (under "More filters" below 600px), a "Showing … — Clear filters" line when filtered, and one region with the
   folder tree (a select below 1100px) beside the list. Rows carry their next step as a text link (Read, Record,
-  Import, Restore) and the ⋯ menu. A read PDF with a transactions table has **Import** as its step when exactly one saved
-  account matches its last four and it isn't recorded as a receipt, bill or pay stub (`doc.pdf_import`, from the server;
-  `pdfImportOffer` in `records_v2.js`), with Record in ⋯. Otherwise ⋯ holds **Import transactions** (an unread PDF too:
-  its dialog asks to read it first), and a PDF the import marked `imported` still offers Record
-  ([documents](documents.md#transaction-imports)); selecting rows shows a sticky bar (Read, Combine, Move, Delete, or Restore in Trash).
+  Import, Restore) and the ⋯ menu. A PDF offers Import only once it is recorded: a recorded PDF with a transactions table
+  has **Import** as its step when exactly one saved account matches its last four and it isn't recorded as a receipt,
+  bill or pay stub (`doc.pdf_import`, from the server; `pdfImportOffer` and `rc2Importing` in `records_v2.js`), else ⋯
+  holds **Import transactions** ([documents](documents.md#transaction-imports)); selecting rows shows a sticky bar
+  (Read, Combine, Move, Delete, or Restore in Trash).
   Under 820px rows stack (name · amount, folder · date, state · step · ⋯). **Every filter is in the URL**:
   `?folder=&category=&employer=&section=&status=&q=&from=&to=&sort=&offset=`, non-default values only, invalid ones
   dropped. The sidebar's Inbox and Unfiled open `#/documents?folder=…`, and their counts (`library.js`
@@ -324,9 +324,12 @@ returns to the list with its filters, page and scroll position.
 - **States:** loading, unread (**Read document**), reading (live stage, Cancel), read but not recorded, needs review,
   verified (with Undo), failed (reason plus Retry), cancelled, publication blocked (for example, no currency), and an
   earlier version (with a banner).
-- **Import transactions** on a read PDF with a transactions table is the primary button, with **Record it** beside it, when
-  one saved account matches; otherwise it is a secondary button beside **Record it**. It is offered only on the latest
-  version and never while the page is reading or recording; closing the dialog refreshes the page's badge.
+- **Import transactions** on a read PDF with a transactions table can be clicked only once the PDF is recorded; until then
+  it is a turned-off secondary button beside **Record it**, which stays primary. Once recorded it is the primary button
+  when one saved account matches, else secondary. It is offered only on the latest version and never while the page is
+  reading or recording; closing the dialog refreshes the page's badge.
+- **Correct on an approved statement.** Once you confirm a statement, its fields' and rows' **Correct** buttons hide
+  until the record's own **Correct** (in the header) is open, as a receipt's row edits do.
 - The page also hosts the split controls for several receipts in one file, the page order of combined images, and
   "Also found" duplicate links ([documents](documents.md)). The decision model's result is an advisory disclosure
   under Checks.

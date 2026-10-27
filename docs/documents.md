@@ -338,15 +338,14 @@ included), from
 derived index (`pdf_import_index`, migration 072; a library that applied it under its first number, 071, gets bill
 kinds' 071 at its next start and keeps its index) holds each reading's table count, printed last fours and currency so
 the picker and the library need not analyze readings on every request. It is rebuilt when a reading is saved, at
-start for older readings, and when `ANALYZER_VERSION` changes. On a PDF's **library row** and **document page**,
-**Import transactions** (`doc.pdf_import`, computed by the server) is the primary action when the reading has a
-transactions table, exactly one saved account matches by last four and currency, and the PDF is not recorded as a
-receipt, bill or pay stub; Record is then in More actions (library) or the button beside it (document page).
-Otherwise Record (or Read) stays primary and **Import transactions** is in More actions or beside **Record it**
-whenever a reading with a transactions table exists. An unread PDF also has Import transactions in More actions: its
-dialog says **Read this document first** with a **Read** button, reads the PDF, and
-shows the preview in the same dialog. CSV and XLSX keep Import as their step. After a PDF import the row's badge says
-`imported`, and Record is still offered.
+start for older readings, and when `ANALYZER_VERSION` changes. A PDF's transactions can be imported only once the
+PDF is **recorded** (as a statement; a PDF recorded as a receipt, bill or pay stub is refused). Until then its
+**library row** offers Read or Record and no Import, and its **document page** shows **Import transactions** turned
+off beside **Record it**. Once recorded, **Import transactions** (`doc.pdf_import`, computed by the server) is the
+row's step and the page's primary button when the reading has a transactions table and exactly one saved account
+matches by last four and currency; otherwise it is in More actions and a secondary button on the page. The import
+dialog itself still says **Read this document first** with a **Read** button for a PDF with no reading, reads it,
+and shows the preview in the same dialog. CSV and XLSX keep Import as their step.
 
 ### Several receipts in one file
 

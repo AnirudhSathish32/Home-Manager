@@ -280,10 +280,12 @@ function doc2Steps(state) {
   const parts = [], extraction = state.extraction, doc = state.doc, idle = !busy.inference;
   const next = (label, action, tone = "primary") => { const button = element("button", label, tone); button.type = "button"; button.disabled = !idle; button.addEventListener("click", action); return button; };
   // Import transactions (FR-26, docs/documents.md "Transaction imports"): primary when one saved account matches the PDF, else beside Record.
-  // Offered only on the latest version of a read PDF, and never while it is being read or recorded.
+  // Offered only on the latest version of a read PDF, and never while it is being read or recorded. It can be clicked only once
+  // the document is recorded; until then it shows beside Record, turned off.
   const offer = state.loaded && state.result && state.extractionChecked && !state.pending && !extraction?.pending && state.digest === doc.current_hash ? pdfImportOffer(doc) : null;
-  const importButton = offer && next("Import transactions", () => openImport(doc, {onDone: () => refreshDocumentV2(state)}), offer === "primary" ? "primary" : "secondary");
-  const recordTone = offer === "primary" ? "secondary" : "primary";
+  const recorded = extraction?.status === "succeeded" && extraction.publication && !extraction.publication.removed && extraction.publication.status !== "blocked";
+  const importButton = offer && next("Import transactions", () => openImport(doc, {onDone: () => refreshDocumentV2(state)}), offer === "primary" && recorded ? "primary" : "secondary");
+  if (importButton && !recorded) { importButton.disabled = true; importButton.title = "Record this document first."; }
   if (state.actionError) parts.push(alertBox(state.actionError, {tone: "error"}));
   if (!state.loaded) { /* The page's loading state says it. */ }
   else if (doc.deleted_at) parts.push(element("p", "This document is in Trash. Restore it from ⋯ to read or record it.", "muted small"));
@@ -300,19 +302,19 @@ function doc2Steps(state) {
   else if (extraction?.pending) parts.push(element("p", "Recording … progress shows in the sidebar.", "muted small"));
   else if (!extraction) {
     const row = element("div", "", "doc2-next-row");
-    const record = next("Record it", () => doc2Record(), recordTone);
-    row.append(element("p", "Read, but not recorded yet. Recording checks every amount against its source line.", "small"), ...(offer === "primary" ? [importButton, record] : [record, ...(importButton ? [importButton] : [])]));
+    const record = next("Record it", () => doc2Record());
+    row.append(element("p", "Read, but not recorded yet. Recording checks every amount against its source line.", "small"), record, ...(importButton ? [importButton] : []));
     if (!modelsConfigured.reasoning) row.append(modelNote("Recording needs a local reasoning model."));
     parts.push(row);
   } else if (["failed", "interrupted"].includes(extraction.status))
     parts.push(alertBox(`Home Manager couldn't record this document. ${extraction.error || ""}`.trim(), {tone: "error", action: next("Try again", () => doc2Record(true))}));
-  else if (extraction.status === "cancelled") parts.push(alertBox("Recording was cancelled before it finished.", {action: next("Record it", () => doc2Record(true), recordTone)}));
+  else if (extraction.status === "cancelled") parts.push(alertBox("Recording was cancelled before it finished.", {action: next("Record it", () => doc2Record(true))}));
   else if (extraction.publication?.removed) {
     // Its account was deleted with the record (FR-13); the document and its reading are untouched, so it can be recorded again.
     const row = element("div", "", "doc2-next-row");
-    const record = next("Record it", () => doc2Record(true), recordTone);
+    const record = next("Record it", () => doc2Record(true));
     row.append(element("p", "The account this was recorded into was deleted. Record it again to make a new account that waits for you to confirm it.", "small"),
-               ...(offer === "primary" ? [importButton, record] : [record, ...(importButton ? [importButton] : [])]));
+               record, ...(importButton ? [importButton] : []));
     parts.push(row);
   } else if (!extraction.publication)
     parts.push(element("p", `Filed as ${(extraction.documentType || "an unknown document").replaceAll("_", " ")}, which has no ledger record. Use Move to put it elsewhere.`, "muted small"));
@@ -333,7 +335,7 @@ function doc2Steps(state) {
 // The record (receipt.js keeps its row, pay stub and investment builders) with this page's header, decision and tabs.
 function doc2ClearRecord() {
   for (const id of ["doc2-panel-record", "doc2-why", "doc2-decision", "doc2-record-badge"]) $(id).replaceChildren();
-  $("doc2-record-title").textContent = "Recorded information";
+  $("doc2-record-title").textContent = "Recorded information"; $("doc2-panel-record").classList.remove("doc2-hide-edits");
   if (doc2) { doc2.record = null; doc2.type = null; doc2.cc = null; doc2.recordStatus = null; doc2.reload = null; doc2.awaitingAccount = false; }
 }
 async function doc2Extraction(state, parseId) {
@@ -432,7 +434,10 @@ async function doc2Ledger(state, target, type, id, kept) {
   // Warnings ask for a decision; once the user has decided (verify or reject), they are no longer shown.
   const decided = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
   $("doc2-why").replaceChildren(...(record.issues?.length && !decided ? [doc2Why(record.issues)] : []));
-  state.itemsSection = null;
+  // An approved statement's Correct buttons, its fields' and its rows', show only while the record's Correct is open (doc2ShowRowEdits).
+  const approved = type === "statement" && record.review_status === "verified" && record.review_source === "user";
+  target.classList.toggle("doc2-hide-edits", approved);
+  state.editsSection = approved ? target : null;
   doc2Decision(state, {recordType: type, recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source, correctable: record.correctable || [],
                        awaitingAccount: state.awaitingAccount, onOpen: () => doc2ShowRowEdits(state, true), onClose: () => doc2ShowRowEdits(state, false)});
   const find = ids => state.viewer.highlight(ids);
@@ -448,7 +453,7 @@ async function doc2Ledger(state, target, type, id, kept) {
     if (type === "statement") doc2RowSources(state, rows, record);
     // A receipt's row Correct and Delete show only while the record's Correct is open (doc2ShowRowEdits).
     const section = element("section", "", type === "receipt" ? "doc2-section doc2-hide-edits" : "doc2-section");
-    if (type === "receipt") state.itemsSection = section;
+    if (type === "receipt") state.editsSection = section;
     section.append(element("h3", type === "statement" ? `Transactions (${record.transactions.length})` : `Items (${record.items?.length || 0})`), rows);
     parts.push(section);
   }
@@ -514,12 +519,12 @@ function doc2Fields(state, type, record, find) {
       links.append(find);
     }
     if (correction && state.cc?.correctButton) {
-      const correct = element("button", "Correct", "link-button"); correct.type = "button"; correct.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
+      const correct = element("button", "Correct", "link-button doc2-row-edit"); correct.type = "button"; correct.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
       correct.addEventListener("click", () => state.cc.openCorrect(correction.field));
       links.append(correct);
     }
     if (end && fix(end) && state.cc?.correctButton) {
-      const correct = element("button", "Correct end", "link-button"); correct.type = "button";
+      const correct = element("button", "Correct end", "link-button doc2-row-edit"); correct.type = "button";
       correct.setAttribute("aria-label", "Correct period end");
       correct.addEventListener("click", () => state.cc.openCorrect(fix(end).field)); links.append(correct);
     }
@@ -589,7 +594,7 @@ function doc2DetailRow(state, record, list, label, detail, find, field = null) {
   }
   const correction = field && (record.correctable || []).find(item => item.field === field);
   if (correction && state.cc?.correctButton) {
-    const correct = element("button", "Correct", "link-button"); correct.type = "button"; correct.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
+    const correct = element("button", "Correct", "link-button doc2-row-edit"); correct.type = "button"; correct.setAttribute("aria-label", `Correct ${label.toLowerCase()}`);
     correct.addEventListener("click", () => state.cc.openCorrect(field));
     actions.append(correct);
   }
@@ -711,7 +716,7 @@ function doc2Pending(state, record) {
                   }, "secondary")});
 }
 function doc2ShowRowEdits(state, shown) {
-  const section = state.itemsSection;
+  const section = state.editsSection;
   if (!section) return;
   section.classList.toggle("doc2-hide-edits", !shown);
   if (shown) return;

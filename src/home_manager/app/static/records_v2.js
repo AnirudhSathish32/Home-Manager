@@ -462,7 +462,9 @@ function pdfImportOffer(doc) {
 // A PDF the import marked `imported` is still recordable: Record checks balances (docs/documents.md "Transaction imports", FR-18).
 const rc2Recordable = doc => doc.text_run_id && (!doc.ledger_status || (isPdf(doc) && doc.ledger_status === "imported")) && !PENDING.includes(doc.extraction_status);
 const rc2Record = doc => rc2Start(`/api/documents/${doc.id}/extraction-runs`, {parse_run_id: doc.text_run_id}, "Recording started. Follow it on Processing.");
-const rc2Importing = doc => !doc.deleted_at && !PENDING.includes(doc.parse_status) && !PENDING.includes(doc.extraction_status);
+// A PDF's transactions can be imported only once it is recorded, as on its document page (docs/documents.md "Transaction imports").
+const rc2Recorded = doc => Boolean(doc.ledger_status) && !["imported", "not_tracked"].includes(doc.ledger_status);
+const rc2Importing = doc => !doc.deleted_at && rc2Recorded(doc) && !PENDING.includes(doc.parse_status) && !PENDING.includes(doc.extraction_status);
 // The one most useful action for the document, as a text link: Restore, Import, Read or Record.
 function rc2Step(doc, stateCell) {
   const name = documentName(doc);
@@ -508,17 +510,10 @@ function rc2Menu(doc) {
     items.push(rc2Button("Delete", "danger-text", () => openLibraryAction([doc], "trash")));
   }
   items.push(element("small", doc.managed_path ? `Library/${doc.managed_path}` : "Managed copy pending", "managed-path"));
-  // Beside the step the row doesn't show (docs/documents.md "Transaction imports"): Record when Import leads, Import when Record or Read leads.
-  // An unread PDF offers Import too: the dialog reads it first (FR-27), and the picker doesn't list unread PDFs.
-  const primary = !doc.deleted_at && !isTable(doc) && rc2Importing(doc) && pdfImportOffer(doc) === "primary";
-  const offered = isPdf(doc) && rc2Importing(doc) && (pdfImportOffer(doc) === "secondary" || (!doc.text_run_id && !doc.pdf_import));
+  // A recorded PDF without a single matching account offers Import here (docs/documents.md "Transaction imports"); with one, Import is its step.
+  const offered = isPdf(doc) && rc2Importing(doc) && pdfImportOffer(doc) === "secondary";
   const more = [];
   let trigger = null;
-  if (primary && rc2Recordable(doc)) {
-    const record = rc2Button("Record", "", async () => { try { await rc2Record(doc); } catch (error) { busy.inference = false; controls(); throw error; } });
-    record.dataset.step = "true"; record.disabled = busy.inference;
-    more.push(record);
-  }
   // The menu closes on click; the dialog hands focus back to the opener, so the opener is the menu's button.
   if (offered) more.push(rc2Button("Import transactions", "", () => { trigger?.focus(); return openImport(doc, {onDone: () => rc2Draw()}); }));
   items.splice(2, 0, ...more);
