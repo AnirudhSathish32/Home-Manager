@@ -39,8 +39,27 @@ slices:
       Carried to SL-03: schedule kind (BL page 2: contract identity 5 other-table rows); P6's mid-page cut at a
       different column set starting a run of >= 2 rows; rejections that need roles (both debit and credit; unreadable
       amounts only in money columns, so FX's rate column is never parsed); anchors re-classed per candidate.
-  - {id: SL-03, status: in_progress, start_head: a602cad, provider: claude, model: claude-sonnet-5-5, attempts: ["r1: rate limit; left uncommitted partial diff (table_engine.py, statement_rows.py, new statement_dates.py, statement_tables.py), no handoff; r2 resumes from it"]}
-  - {id: SL-04, status: todo}
+  - id: SL-03
+    status: done
+    start_head: a602cad
+    end_head: e91b21b
+    commit: f7a09f2
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -q -> 243 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_statement_rebuild.py -q -> 218 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed"
+    attempts:
+      - "r1: rate limit; left uncommitted partial diff (table_engine.py, statement_rows.py, new statement_dates.py, statement_tables.py), no handoff"
+      - "r2: resumed from r1's diff; commits cd4bd67, 700b6c2, f7a09f2, 5ab2a34, e91b21b. 700b6c2 also carried the orchestrator's own uncommitted progress.yaml line unchanged (not a worker edit)."
+    notes: >-
+      Accepted as non-material: a balance-column candidate with no holding chain link and no balance heading loses ties
+      to "other" (neither is an amount, so no money decision changes); FX's foreign column is other. Issue texts added
+      for two cases P9 doesn't name (candidates disagree; roles can't be told). Carried: as_analysis() to SL-06;
+      prior_order on a real migrated library to SL-05; whether P6's mid-page cut at a different column set is needed
+      is for SL-04's generator to show.
+  - {id: SL-04, status: in_progress, start_head: e91b21b, provider: claude, model: claude-sonnet-5-5}
   - {id: SL-05, status: todo}
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
