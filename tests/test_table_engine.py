@@ -1,5 +1,6 @@
-"""The table engine, engine level (specs/pdf-table-engine/test-contract.md), slices SL-01 and SL-02: P-checks, tokens, columns and rows,
-then tables across pages, line classes (balance candidates, totals, summary anchors), unplaced lines and rejected rows (sc08 - sc10).
+"""The table engine, engine level (specs/pdf-table-engine/test-contract.md), slices SL-01 - SL-03: P-checks, tokens, columns and rows,
+then tables across pages, line classes (balance candidates, totals, summary anchors), unplaced lines and rejected rows (sc08 - sc10),
+then the statement layer (`stmt_*`: roles, signs, period, date order, schedules, notes and issues; SC-01 - SC-07, SC-16, SC-17, SC-23 - SC-25).
 
 `pcheck_*` say each synthetic fixture has the shape the contract intends when the real reader reads it; `sc21_*` is the token table;
 `rows_*` are the engine's rows for the fixtures (dates as printed tokens, descriptions, amount tokens per column, the columns found);
@@ -16,13 +17,15 @@ import json
 from pathlib import Path
 import re
 import socket
+import sqlite3
 from statistics import median
 
 import pytest
 
 from home_manager.documents import table_engine
 from home_manager.documents.table_engine import PageView, read, read_tokens
-from home_manager.finance import pdf_import
+from home_manager.finance import pdf_import, statement_dates, statement_rows
+from home_manager.finance import statement_tables as stt
 import pdf_import_fixtures as fx
 import statement_account_fixtures as sf
 import table_engine_fixtures as tf
@@ -780,3 +783,406 @@ def test_description_above_wr_above_reads_the_same_rows_as_wr_with_every_line_ci
 def test_description_above_is_not_used_when_the_first_date_line_has_the_heading_above_it(tmp_path):
     _, table = one_table(tmp_path, "WR")
     assert [len(row.line_ids) for row in table.rows] == tf.WR_LINES  # WR: its wrapped lines still join the row above.
+
+
+# === SL-03: the statement layer (finance/statement_tables.py) =============================================================
+# Expected values are the contract's, held in tests/table_engine_fixtures.py (WF_ROWS, DM_ROWS, ...). The engine reads each fixture's
+# saved reading with no store and no model; a stub `prior_order` stands for OD-2's lookup.
+
+CARDS = {"CS", "CS-split", "FX", "PD", "TD", "TD-bare"}
+ONE_TABLE = "page-1-table-1"
+
+
+def statement(tmp_path, name, pages=None, **options):
+    result = read_pages(tmp_path, pages) if pages is not None else reading_of(tmp_path, name)
+    return result, stt.read(result, statement_type="credit_card" if name in CARDS else "bank", currency="USD", **options)
+
+
+def squashed(text):
+    return " ".join(text.split())
+
+
+def recorded(reading):
+    return [(row["posted_date"], row["amount_minor"], squashed(row["description"])) for row in reading.rows]
+
+
+def role_list(reading, table_id=ONE_TABLE):
+    return list(reading.roles[table_id].values())
+
+
+# --- SC-01 / SC-05: roles by the chain, with and without headings ----------------------------------------------------------------
+
+@pytest.mark.parametrize("name, roles, balances", [
+    ("WF", ["in", "out", "balance"], [300000, None, 276545, 156545, None, 111345, 211345]),
+    ("WF-bare", ["balance", "out", "in"], [300000, None, 276545, 156545, None, 111345, 211345])])
+def test_stmt_sc01_sc05_wf_roles_are_found_by_the_chain_with_or_without_headings(tmp_path, name, roles, balances):
+    _, reading = statement(tmp_path, name)
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[6], row[7]) for row in tf.WF_ROWS]
+    assert [text for _, _, text in recorded(reading)][0] == "PAYROLL SYNTH CO" and all("CHECK" in recorded(reading)[index][2] for index in (1, 5))
+    assert role_list(reading) == roles and reading.decided == {"order": "day_over_12", "year": "period", "signs": {ONE_TABLE: "chain"}}
+    assert (reading.opening_minor, reading.closing_minor, reading.period) == (100000, 211345, ("2026-10-01", "2026-10-31"))
+    assert (reading.issues, reading.notes, reading.dropped, reading.pages) == ([], [], 0, {1})
+    assert [row["amount_minor"] for row in reading.rows if row["amount_minor"] in (120100, 120200, -120100, -120200, *[abs(b) for b in balances if b])] == []
+    assert [row["locator"]["balance_minor"] for row in reading.rows] == balances  # The printed balance rides on the row's locator.
+    assert all(row["transaction_date"] is None and row["currency"] == "USD" for row in reading.rows)
+
+
+def test_stmt_sc01_the_dated_summary_lines_are_the_statements_opening_and_closing_and_nothing_is_unplaced(tmp_path):
+    result, reading = statement(tmp_path, "WF")
+    (table,) = [table for table in reading.tables if table.kind == "transactions"]
+    assert len(table.rows) == 2 + 5 and len(reading.summary_anchors) == 2 and reading.unplaced == []  # 7 rows + 2 anchors = 9 date-and-amount lines.
+    assert [(anchor.kind, anchor.value) for anchor in reading.summary_anchors] == [("opening", Decimal("1000.00")), ("closing", Decimal("2113.45"))]
+
+
+def test_stmt_sc01_wf_flag_reads_the_same_rows(tmp_path):
+    _, plain = statement(tmp_path, "WF")
+    flagged_dir = tmp_path / "flag"
+    flagged_dir.mkdir()
+    _, flagged = statement(flagged_dir, "WF-flag")
+    assert recorded(flagged) == recorded(plain)
+
+
+# --- SC-02 / SC-06 a: day-first dates, and one broken link ------------------------------------------------------------------------
+
+def test_stmt_sc02_dm_reads_day_first_because_a_day_is_over_12(tmp_path):
+    _, reading = statement(tmp_path, "DM")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[5], row[6]) for row in tf.DM_ROWS]
+    assert reading.order == "DD/MM/YYYY" and reading.decided["order"] == "day_over_12" and reading.decided["year"] == "printed"
+    assert not {posted for posted, _, _ in recorded(reading)} & {"2026-01-10", "2026-02-10", "2026-03-10", "2026-05-10", "2026-06-10", "2026-08-10", "2026-12-10"}
+    assert (reading.issues, reading.dropped) == ([], 0) and role_list(reading) == ["out", "in", "balance"]
+    assert (reading.opening_minor, reading.closing_minor) == (1000000, 3375410)
+
+
+def test_stmt_sc06_a_brk_one_chain_issue_names_row_14_and_its_recorded_value_is_79700(tmp_path):
+    _, reading = statement(tmp_path, "BRK")
+    expected = [(row[5], row[6]) for row in tf.DM_ROWS]
+    expected[tf.BRK_ROW] = tf.BRK_EXPECTED
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == expected
+    assert reading.issues == ["Page 1 row 14: the balance 31,165.10 doesn't follow from the row above"]
+    assert reading.decided["signs"] == {ONE_TABLE: "chain_most"} and role_list(reading) == ["out", "in", "balance"]  # Tier b': the most holding links.
+
+
+# --- SC-03 / SC-04: wrapped rows, carried dates --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["WR", "WR-above"])
+def test_stmt_sc03_wr_descriptions_are_whole(tmp_path, name):
+    _, reading = statement(tmp_path, name)
+    assert recorded(reading) == [(row[8], row[7], row[6]) for row in tf.WR_ROWS]
+    assert (reading.issues, reading.notes, reading.dropped) == ([], [], 0)
+    assert [len(row["locator"]["line_ids"]) for row in reading.rows][4:] == [2 + (name == "WR-above"), 3 + (name == "WR-above"), 2 + (name == "WR-above")]
+
+
+def test_stmt_sc03_wr_split_records_r1_to_r7_and_lists_the_memo_line_as_a_rejected_row(tmp_path):
+    _, reading = statement(tmp_path, "WR-split")
+    assert recorded(reading) == [(row[8], row[7], row[6]) for row in tf.WR_ROWS]
+    assert len(reading.rows[6]["locator"]["line_ids"]) == 2
+    assert reading.issues == ["Page 1 row 8: No amount is printed."] and reading.dropped == 1 and "2026-11-27" not in {row["posted_date"] for row in reading.rows}
+
+
+def test_stmt_sc04_od_carried_dates_come_with_three_notes_and_no_review_reason(tmp_path):
+    _, reading = statement(tmp_path, "OD")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[5], row[6]) for row in tf.OD_ROWS]
+    assert reading.decided["order"] == "period" and reading.order == "MM/DD/YYYY"  # Every day is <= 12; day-first falls outside December.
+    assert reading.issues == [] and reading.dropped == 0
+    assert len(reading.notes) == 3
+    for note, (row, date) in zip(reading.notes, [(2, "12/03/2026"), (4, "12/05/2026"), (5, "12/05/2026")]):
+        assert note == f"Page 1 row {row}: no date is printed; it takes {date} from the row above"
+    assert [row["locator"]["row"] for row in reading.rows] == [1, 2, 3, 4, 5, 6]
+
+
+# --- SC-06 b: one row, no summary -------------------------------------------------------------------------------------------------
+
+def test_stmt_sc06_b_one_row_takes_its_sign_from_the_heading_and_says_why_it_needs_review(tmp_path):
+    _, reading = statement(tmp_path, "ONE")
+    assert recorded(reading) == [("2026-09-15", -2500, "SYNTH SERVICE FEE")] and reading.decided["signs"] == {ONE_TABLE: "labels"}
+    assert reading.issues == ["Page 1: the signs of these rows come from the column headings or the statement type, because there are too few rows "
+                              "and no printed summary to check them."]
+    assert (reading.opening_minor, reading.closing_minor) == (None, None) and reading.period == ("2026-09-01", "2026-09-30")
+
+
+# --- SC-07: signs from the summary and from sections --------------------------------------------------------------------------------
+
+def test_stmt_sc07_cs_signs_come_from_the_sections_and_the_card_check_holds(tmp_path):
+    _, reading = statement(tmp_path, "CS")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[4], row[5]) for row in tf.CS_ROWS]
+    assert reading.decided["signs"] == {ONE_TABLE: "summary"} and role_list(reading) == ["signed"] and reading.issues == []
+    assert (reading.opening_minor, reading.closing_minor) == (125000, 48162)  # Previous 1,250.00, new 481.62.
+
+
+def test_stmt_sc07_cs_split_sections_carry_onto_the_next_page_and_no_summary_says_why(tmp_path):
+    _, reading = statement(tmp_path, "CS-split")
+    assert [amount for _, amount, _ in recorded(reading)] == [50000, -12040, -5218, -1599, -300]  # Payments in; purchases and fees out.
+    assert len(reading.issues) == 1 and reading.issues[0].startswith("Page 1: the signs of these rows come from the column headings")
+
+
+def test_stmt_sc07_nb_the_summary_decides_which_column_is_money_out(tmp_path):
+    _, reading = statement(tmp_path, "NB")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[4], row[5]) for row in tf.NB_ROWS]
+    assert role_list(reading) == ["out", "in"] and reading.decided["signs"] == {ONE_TABLE: "summary"} and reading.issues == []
+
+
+def test_stmt_sc07_nb_without_its_summary_lines_nothing_is_decided_by_chain_or_summary_and_no_row_is_guessed(tmp_path):
+    _, reading = statement(tmp_path, "NB", pages=tf.nb_pages(summary=False))
+    assert reading.decided["signs"][ONE_TABLE] not in ("chain", "summary") and reading.rows == [] and reading.issues and reading.dropped == 4
+    assert reading.roles[ONE_TABLE] == {}
+
+
+# --- SC-08 / SC-09 / SC-10: pages, balance lines, schedules, unplaced lines ------------------------------------------------------------
+
+def test_stmt_sc08_k3_is_one_table_whose_rows_cite_three_pages(tmp_path):
+    result, reading = statement(tmp_path, "K3")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == list(zip(fx.K_POSTED, [row[7] for row in fx.K_ROWS]))
+    assert [amount for _, amount, _ in recorded(reading)] == [-450, -450, -4510, 200000, -50000, -500, 1999, -8240, 12]
+    assert [row["locator"]["page"] for row in reading.rows] == [1, 1, 1, 2, 2, 2, 3, 3, 3] and reading.pages == {1, 2, 3}
+    assert [table.pages for table in reading.tables] == [[1, 2, 3]] and reading.issues == [] and reading.unplaced == []
+    assert {row["locator"]["table_id"] for row in reading.rows} == {ONE_TABLE}
+
+
+def test_stmt_sc09_bl_the_balance_lines_are_anchors_the_daily_lines_a_balance_table_and_the_schedule_other_rows(tmp_path):
+    _, reading = statement(tmp_path, "BL")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [("2026-08-03", -70000), ("2026-08-15", 250000), ("2026-08-20", 15000)]
+    assert (reading.opening_minor, reading.closing_minor) == (100000, 295000) and reading.issues == [] and reading.dropped == 0
+    kinds = {table.id: table.kind for table in reading.tables}
+    assert sorted(kinds.values()) == ["balance", "schedule", "transactions"]
+    transactions = next(table for table in reading.tables if table.kind == "transactions")
+    assert [(anchor.kind, anchor.value) for anchor in transactions.anchors] == [("opening", Decimal("1000.00")), ("closing", Decimal("2950.00"))]
+    assert [total.value for total in transactions.totals] == [Decimal("700.00"), Decimal("2650.00")]
+    schedule = next(table for table in reading.tables if table.kind == "schedule")
+    daily = next(table for table in reading.tables if table.kind == "balance")
+    other_rows = len(schedule.rows) + len(daily.rows)
+    plain = [row for row in transactions.rows if not row.candidate]
+    assert (len(plain), len(transactions.anchors), other_rows, len(reading.unplaced)) == (3, 2, 5, 0)  # FR-08: 3 rows + 0 rejected + 2 anchors + 5 other + 0 unplaced = 10.
+    assert [token.text for row in schedule.rows for token in row.dates] == ["09/15/2026", "10/15/2026"] and reading.pages == {1}
+    assert not {row["posted_date"] for row in reading.rows} & {"2026-09-15", "2026-10-15"}
+
+
+def test_stmt_sc09_without_a_printed_period_nothing_is_a_schedule(tmp_path, monkeypatch):
+    """FR-09 as settled in D6: with no period the dates decide nothing (account-import-pdf 7-a unchanged)."""
+    monkeypatch.setattr(tf, "B_ABOVE", (*tf.B_ABOVE[:4], "Account statement for August"))
+    _, reading = statement(tmp_path, "BL")
+    assert reading.period is None and sorted(table.kind for table in reading.tables) == ["balance", "transactions"]
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)][3:] == [("2026-09-15", -12500), ("2026-10-15", -12500)]  # Rows, as before the schedule rule.
+
+
+def test_stmt_sc10_up_the_courtesy_line_is_one_unplaced_issue_and_not_a_row(tmp_path):
+    _, reading = statement(tmp_path, "UP")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [("2026-08-03", -70000), ("2026-08-15", 250000), ("2026-08-20", 15000)]
+    assert reading.issues == ['Page 1: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "08/12/2026 SYNTH COURTESY CREDIT 35.00"']
+    assert reading.dropped == 1 and [line.reason for line in reading.unplaced] == ["no_column"] and 3500 not in {row["amount_minor"] for row in reading.rows}
+
+
+def test_stmt_sc11_a_page_with_no_table_gets_its_note_and_is_not_an_engine_page(tmp_path):
+    _, reading = statement(tmp_path, "PR")
+    assert reading.notes == ["Page 2: no table was found in the printed columns, so its rows are the reading's; check them."] and reading.pages == {1}
+
+
+# --- FR-16: rejections that need the roles ------------------------------------------------------------------------------------------
+
+def test_stmt_fr16_a_row_with_both_a_debit_and_a_credit_is_rejected(tmp_path):
+    both = tf.b_pages(extra=[[(40, "08/25/2026"), (110, "BOTH SYNTH"), (330, "5.00"), (400, "5.00")]])
+    _, reading = statement(tmp_path, "B", pages=both)
+    assert [amount for _, amount, _ in recorded(reading)] == [-70000, 250000, 15000]
+    assert reading.issues == ["Page 1 row 4: Both a debit and a credit are printed."] and reading.dropped == 1
+
+
+def test_stmt_fr16_too_much_precision_rejects_a_row_only_in_a_money_column(tmp_path):
+    extra = tf.b_pages(extra=[[(40, "08/25/2026"), (110, "PRECISE SYNTH"), (330, "5.001")]])
+    _, reading = statement(tmp_path, "B", pages=extra)
+    assert [amount for _, amount, _ in recorded(reading)] == [-70000, 250000, 15000] and reading.issues == ['Page 1 row 4: The amount "5.001" can\'t be read.']
+
+
+def test_stmt_fr16_x_rejections_and_the_unplaced_line_are_listed_with_todays_reasons(tmp_path):
+    result = read_pages(tmp_path, sf.x_pages())
+    reading = stt.read(result, statement_type="bank", currency="USD")
+    assert recorded(reading) == [("2026-09-02", 1000, "GOOD")]
+    assert reading.issues[:4] == ["Page 1 row 2: More than one amount sits in the Amount column.", 'Page 1 row 3: The date "02/30/2026" is not a real date.',
+                                  'Page 1 row 4: The amount "1.2.3" can\'t be read.', 'Page 1 row 5: The amount "4.00 EUR" is not in USD.']
+    assert reading.issues[-1] == 'Page 1: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "09/03/2026 STRADDLE 100.00"'
+    assert reading.dropped == 5
+
+
+# --- SC-17: two chains that don't join ---------------------------------------------------------------------------------------------
+
+def test_stmt_sc17_cc_two_tables_are_both_recorded_with_one_two_accounts_issue_and_no_chain_issue(tmp_path):
+    _, reading = statement(tmp_path, "CC")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[5], row[6]) for row in tf.CC_ROWS]
+    assert reading.issues == ["This PDF may hold more than one account: the table on page 1 and the table on page 2 don't continue each other's "
+                              "balances. Both tables' rows were recorded."]
+    assert reading.decided["signs"] == {"page-1-table-1": "chain", "page-2-table-1": "chain"}
+    assert [role_list(reading, "page-1-table-1"), role_list(reading, "page-2-table-1")] == [["out", "in", "balance"], ["signed", "balance"]]
+
+
+def test_stmt_sc17_one_table_that_continues_its_own_balances_raises_no_two_accounts_issue(tmp_path):
+    _, reading = statement(tmp_path, "K3")
+    assert not any("more than one account" in issue for issue in reading.issues)
+
+
+# --- SC-16: dates whose order can't be told, and OD-2 --------------------------------------------------------------------------------
+
+def test_stmt_sc16_a_nd_records_nothing_and_says_so_once_per_page(tmp_path):
+    _, reading = statement(tmp_path, "ND")
+    assert reading.rows == [] and reading.order is None and reading.dropped == 4
+    assert reading.issues == ["Page 1 rows: the date order (month/day or day/month) can't be told from the printed dates.",
+                              "Page 2 rows: the date order (month/day or day/month) can't be told from the printed dates."]
+
+
+def test_stmt_sc16_b_nd_follows_the_order_prior_order_gives_for_the_account(tmp_path):
+    calls = []
+    _, reading = statement(tmp_path, "ND", prior_order=lambda: calls.append(1) or "DD/MM/YYYY")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == tf.ND_EXPECTED_DAY_FIRST
+    assert reading.issues == [] and reading.decided["order"] == "prior" and reading.order == "DD/MM/YYYY" and len(calls) == 1
+
+
+def test_stmt_sc16_c_a_prior_order_that_finds_nothing_leaves_nd_undecided(tmp_path):
+    _, reading = statement(tmp_path, "ND", prior_order=lambda: None)
+    assert reading.rows == [] and len(reading.issues) == 2
+
+
+def test_stmt_sc16_a_printed_day_over_12_or_the_period_never_asks_prior_order(tmp_path):
+    def forbidden():
+        raise AssertionError("prior_order was asked although the printed dates decide")
+    for name in ("DM", "WF", "OD"):
+        sub_dir = tmp_path / name
+        sub_dir.mkdir()
+        statement(sub_dir, name, prior_order=forbidden)
+
+
+def test_stmt_sc16_the_user_choice_decides_only_where_the_printed_dates_cannot(tmp_path):
+    _, chosen = statement(tmp_path, "ND", choices={"date_format": "DD/MM/YYYY"})
+    assert [(posted, amount) for posted, amount, _ in recorded(chosen)] == tf.ND_EXPECTED_DAY_FIRST and chosen.decided["order"] == "choice"
+    other = tmp_path / "dm"
+    other.mkdir()
+    _, dm = statement(other, "DM", choices={"date_format": "MM/DD/YYYY"})
+    assert dm.order == "DD/MM/YYYY"
+
+
+def test_stmt_sc16_the_order_decision_without_od2_reads_nd_prior_day_first_and_nd_not_at_all(tmp_path):
+    prior = read_pages(tmp_path, tf.nd_prior_pages())
+    other = tmp_path / "nd"
+    other.mkdir()
+    ambiguous = read_pages(other, tf.nd_pages())
+    assert (stt.decided_order(prior), stt.decided_order(ambiguous)) == ("DD/MM/YYYY", None)
+
+
+def _prior_database(tmp_path, rows):
+    """The tables prior_order reads, with the columns the library schema gives them (migrations/050_strict_tables.sql), loose-typed."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE accounts (id INTEGER PRIMARY KEY, account_last_four TEXT);"
+                     "CREATE TABLE parse_runs (id TEXT PRIMARY KEY, parser_version TEXT, status TEXT, result_json TEXT);"
+                     "CREATE TABLE extraction_runs (id TEXT PRIMARY KEY, parse_run_id TEXT);"
+                     "CREATE TABLE statements (id INTEGER PRIMARY KEY, account_id INTEGER, document_id INTEGER, extraction_run_id TEXT, period_end TEXT);")
+    for number, (last_four, document, period_end, pages, version, status) in enumerate(rows, 1):
+        folder = tmp_path / f"prior-{number}"
+        folder.mkdir()
+        read_pages(folder, pages)
+        db.execute("INSERT INTO accounts VALUES (?,?)", (number, last_four))
+        db.execute("INSERT INTO parse_runs VALUES (?,?,?,?)", (f"p{number}", version, status, (folder / "result.json").read_text(encoding="utf-8")))
+        db.execute("INSERT INTO extraction_runs VALUES (?,?)", (f"e{number}", f"p{number}"))
+        db.execute("INSERT INTO statements VALUES (?,?,?,?,?)", (number, number, document, f"e{number}", period_end))
+    return db
+
+
+def test_stmt_sc16_prior_order_reads_the_newest_other_statement_of_the_account_that_decides(tmp_path):
+    from home_manager.documents.pdf_reader import PDF_VERSION
+    db = _prior_database(tmp_path, [("7788", 11, "2026-02-28", tf.nd_prior_pages(), PDF_VERSION, "succeeded"),
+                                    ("7788", 12, "2026-03-31", tf.nd_pages(), PDF_VERSION, "succeeded"),  # Newer, but its dates decide nothing.
+                                    ("7799", 13, "2026-04-30", tf.nd_prior_pages(), PDF_VERSION, "succeeded")])
+    assert stt.prior_order(db, "7788", 99) == "DD/MM/YYYY"
+    assert stt.prior_order(db, "7788", 11) is None  # Its own document is never its own prior; the other ND decides nothing.
+    assert stt.prior_order(db, "7799", 99) == "DD/MM/YYYY" and stt.prior_order(db, "0000", 99) is None and stt.prior_order(db, None, 99) is None
+
+
+def test_stmt_sc16_prior_order_ignores_readings_that_are_not_pdf_pages_or_failed(tmp_path):
+    db = _prior_database(tmp_path, [("7788", 11, "2026-02-28", tf.nd_prior_pages(), "receipt-ocr-v1", "succeeded"),
+                                    ("7788", 12, "2026-03-31", tf.nd_prior_pages(), "pdf-pages-v1", "failed")])
+    assert stt.prior_order(db, "7788", 99) is None
+
+
+# --- R3, R4, R5: foreign amounts, pending rows, two dates ----------------------------------------------------------------------------
+
+def test_stmt_sc23_fx_the_foreign_amount_and_rate_columns_are_other_and_never_money(tmp_path):
+    _, reading = statement(tmp_path, "FX")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[5], row[6]) for row in tf.FX_ROWS]
+    assert role_list(reading) == ["other", "other", "signed"] and reading.issues == [] and reading.decided["signs"] == {ONE_TABLE: "summary"}
+    assert not {9217, 3850, 10850, 12987, -9217, -3850} & {row["amount_minor"] for row in reading.rows}
+
+
+def test_stmt_sc23_fx_a_rate_that_cannot_be_read_does_not_reject_the_row(tmp_path, monkeypatch):
+    rows = [(*row[:3], "1.2.3" if row[3] else "", *row[4:]) for row in tf.FX_ROWS]
+    monkeypatch.setattr(tf, "FX_ROWS", rows)
+    _, reading = statement(tmp_path, "FX")
+    assert [amount for _, amount, _ in recorded(reading)] == [-10000, -5000, -6000] and reading.issues == []
+
+
+def test_stmt_sc24_pd_pending_rows_are_not_recorded_and_each_is_one_issue(tmp_path):
+    _, reading = statement(tmp_path, "PD")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [("2026-10-05", -3000), ("2026-10-18", -1500)]
+    assert reading.issues == ['Page 1: a pending row isn\'t recorded until it posts: "10/30 SYNTH HOTEL 200.00"',
+                              'Page 1: a pending row isn\'t recorded until it posts: "10/31 SYNTH TAXI 12.50"']
+    assert [line.reason for line in reading.unplaced] == ["pending", "pending"] and reading.dropped == 2 and reading.decided["signs"] == {ONE_TABLE: "summary"}
+    assert reading.pages == {1}
+
+
+@pytest.mark.parametrize("name", ["TD", "TD-bare"])
+def test_stmt_sc25_two_date_columns_are_the_transaction_date_and_the_posted_date(tmp_path, name):
+    _, reading = statement(tmp_path, name)
+    assert [(row["transaction_date"], row["posted_date"], row["amount_minor"]) for row in reading.rows] == [(row[4], row[5], row[6]) for row in tf.TD_ROWS]
+    assert reading.issues == [] and reading.decided["signs"] == {ONE_TABLE: "summary"}
+
+
+# --- The shapes Record and PDF import will read ---------------------------------------------------------------------------------------
+
+def test_stmt_as_rebuild_is_the_old_rebuild_shape_plus_opening_closing_and_period(tmp_path):
+    _, reading = statement(tmp_path, "WF")
+    rebuild = reading.as_rebuild()
+    assert isinstance(rebuild, statement_dates.Rebuild) and rebuild.available and rebuild.pages == {1} and rebuild.dropped == 0
+    assert (rebuild.opening_minor, rebuild.closing_minor, rebuild.period) == (100000, 211345, ("2026-10-01", "2026-10-31"))
+    assert rebuild.rows == reading.rows and set(rebuild.rows[0]) == {"posted_date", "transaction_date", "description", "currency", "amount_minor", "locator"}
+    locator = rebuild.rows[1]["locator"]
+    assert set(locator) == {"rebuilt", "page", "table_id", "row", "balance_minor", "line_ids", "word_ids", "cell_ids", "quotes"}
+    assert (locator["rebuilt"], locator["page"], locator["table_id"], locator["row"], locator["balance_minor"]) == (True, 1, ONE_TABLE, 2, None)
+    assert len(locator["quotes"]) == len(locator["line_ids"]) == 1 and "CHECK" in locator["quotes"][0] and isinstance(locator["cell_ids"], list)
+
+
+def test_stmt_a_reading_without_a_layout_is_unavailable_with_the_old_note(tmp_path):
+    result = reading_of(tmp_path, "WF")
+    result.pages[0].layout = None
+    reading = stt.read(result, statement_type="bank", currency="USD")
+    assert reading.available is False and reading.notes == [statement_dates.NO_LAYOUT_NOTE] and reading.rows == [] and stt.engine_pages(result) == set()
+
+
+@pytest.mark.parametrize("name, pages", [("WF", {1}), ("BL", {1}), ("PR", {1}), ("K3", {1, 2, 3}), ("PD", {1}), ("CC", {1, 2})])
+def test_stmt_engine_pages_are_the_pages_holding_a_transactions_tables_rows(tmp_path, name, pages):
+    result = reading_of(tmp_path, name)
+    assert stt.engine_pages(result) == pages
+
+
+def test_stmt_the_moved_helpers_are_the_same_objects_statement_rows_exports_and_statement_dates_imports_no_pdf_import():
+    for name in ("Rebuild", "read_period", "placed", "duplicates", "PERIOD_SLACK"):
+        assert getattr(statement_rows, name) is getattr(statement_dates, name)
+    tree = ast.parse(Path(statement_dates.__file__).read_text(encoding="utf-8"))
+    imported = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)} | {alias.name for node in ast.walk(tree)
+                                                                                                      if isinstance(node, ast.Import) for alias in node.names}
+    assert not any("pdf_import" in name or "statement_rows" in name or "statement_tables" in name for name in imported)
+    rebuild = statement_dates.Rebuild(True)
+    assert (rebuild.opening_minor, rebuild.closing_minor, rebuild.period) == (None, None, None)
+
+
+def test_stmt_sc14_the_statement_reading_is_the_same_twice_for_every_fixture(tmp_path):
+    for name in tf.FIXTURES:
+        folder = tmp_path / name
+        folder.mkdir()
+        result = reading_of(folder, name)
+        kind = "credit_card" if name in CARDS else "bank"
+        first, second = (stt.read(result, statement_type=kind, currency="USD") for _ in range(2))
+        assert serialized(first) == serialized(second), name
+        assert json.dumps(first.rows, sort_keys=True) == json.dumps(second.rows, sort_keys=True)
+
+
+def test_stmt_engine_tables_are_not_changed_by_the_statement_layer(tmp_path):
+    """The statement layer works on copies: the engine's own reading of the same document is byte-identical before and after."""
+    result = reading_of(tmp_path, "BL")
+    before = serialized(read(result))
+    stt.read(result, statement_type="bank", currency="USD")
+    assert serialized(read(result)) == before

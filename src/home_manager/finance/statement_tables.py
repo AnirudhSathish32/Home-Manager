@@ -850,7 +850,7 @@ def prior_order(db, last_four, document_id):
     if not last_four:
         return None
     rows = db.execute("SELECT p.result_json FROM statements s JOIN accounts a ON a.id=s.account_id JOIN extraction_runs e ON e.id=s.extraction_run_id "
-                      "JOIN parse_runs p ON p.id=e.parse_run_id WHERE a.account_last_four=? AND s.document_id<>? AND p.status IN ('succeeded','partial') "
+                      "JOIN parse_runs p ON p.id=e.parse_run_id WHERE a.account_last_four=? AND s.document_id<>? AND p.status IN ('succeeded','partial') AND p.result_json IS NOT NULL "
                       f"AND p.parser_version IN ({','.join('?' * len(PDF_VERSIONS))}) ORDER BY s.period_end DESC, s.id DESC LIMIT ?",
                       (last_four, document_id, *PDF_VERSIONS, PRIOR_STATEMENTS)).fetchall()
     for row in rows:
