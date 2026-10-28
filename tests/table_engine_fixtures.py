@@ -275,12 +275,13 @@ def cs_pages():
 
 # --- NB (SC-07 variant) ----------------------------------------------------------------------------------------------------
 
-NB_ABOVE = ("SYNTH PLAIN BANK", "Account number 0000004040", "Beginning balance 100.00", "Ending balance 624.80", "Statement period 11/01/2026 to 11/30/2026")
+NB_ABOVE = ("SYNTH PLAIN BANK", "Account number 0000004040", "Beginning balance 100.00", "Ending balance 674.80", "Statement period 11/01/2026 to 11/30/2026")
 # (date, description, A, B, expected posted date, expected amount_minor)
 NB_ROWS = [
     ("11/03/2026", "SYNTH PAYROLL", "", "1,500.00", "2026-11-03", 150000),
     ("11/05/2026", "SYNTH RENT", "900.00", "", "2026-11-05", -90000),
     ("11/18/2026", "SYNTH UTILITY", "75.20", "", "2026-11-18", -7520),
+    ("11/25/2026", "SYNTH REFUND", "", "50.00", "2026-11-25", 5000),
 ]
 NB_ENGINE = [([row[0]], row[1], [row[2], row[3]]) for row in NB_ROWS]  # Columns A (right edge 380) and B (460).
 
@@ -513,11 +514,67 @@ def td_bare_pages():
     return td_pages(heading=False)
 
 
+# --- OR: a continuation page with one row (plan P4; not a contract fixture) ----------------------------------------------------
+
+OR_ABOVE = ("SYNTH ONEROW BANK", "Account number 0000007744", "Beginning balance 100.00", "Ending balance 149.00", "Statement period 07/01/2026 to 07/31/2026")
+# (page, date, description, withdrawal, deposit, balance); page 2 holds one row, drawn OR_SHIFT pt to the right, with no heading.
+OR_ROWS = [
+    (1, "07/03/2026", "COFFEE SYNTH", "4.25", "", "95.75"),
+    (1, "07/10/2026", "PAYROLL SYNTH", "", "100.00", "195.75"),
+    (1, "07/12/2026", "GROCERY SYNTH", "6.75", "", "189.00"),
+    (2, "07/28/2026", "PHONE SYNTH", "40.00", "", "149.00"),
+]
+OR_SHIFT = 6
+OR_ENGINE = [([row[1]], row[2], [row[3], row[4], row[5]]) for row in OR_ROWS]  # Left to right: Withdrawals, Deposits, Balance.
+
+
+def or_pages():
+    """OR: page 1 has the heading and three rows; page 2 has one row, with no heading, drawn 6 pt to the right of page 1's columns."""
+    items = lines_above(OR_ABOVE) + row_items(700, list(zip((40, 110, 330, 400, 470), HEADING5)))
+    y = 680
+    for row in (row for row in OR_ROWS if row[0] == 1):
+        items += row_items(y, [(40, row[1]), (110, row[2]), (330, row[3]), (400, row[4]), (470, row[5])])
+        y -= 20
+    row = OR_ROWS[3]
+    second = row_items(700, [(40 + OR_SHIFT, row[1]), (110 + OR_SHIFT, row[2]), (330 + OR_SHIFT, row[3]), (470 + OR_SHIFT, row[5])])
+    return [native("SYNTH ONEROW BANK", items, y), native("SYNTH ONEROW BANK second", second, 680)]
+
+
+# --- CS-split: sections carried onto a continuation page (plan P6; not a contract fixture) ---------------------------------------
+
+CSP_ABOVE = ("SYNTH SPLIT CARD", "Card number XXXX5599", "Statement period 10/05/2026 to 11/04/2026")
+CSP_ROWS = [  # (page, section, date, description, amount); page 2 has no heading, and prints a title only where the section changes.
+    (1, "Payments and Credits", "10/12", "PAYMENT THANK YOU", "500.00"),
+    (1, "Purchases", "10/07", "SYNTH GROCERY", "120.40"),
+    (1, "Purchases", "10/15", "SYNTH FUEL", "52.18"),
+    (2, "Purchases", "10/22", "SYNTH STREAMING", "15.99"),
+    (2, "Fees and Interest", "11/01", "SYNTH FEE", "3.00"),
+]
+CSP_ENGINE = [([row[2]], row[3], [row[4]]) for row in CSP_ROWS]
+CSP_SECTIONS = [row[1] for row in CSP_ROWS]
+
+
+def cs_split_pages():
+    pages, section = [], None
+    for number in (1, 2):
+        items = lines_above(CSP_ABOVE) + row_items(700, [(40, "Date"), (110, "Description"), (420, "Amount", True)]) if number == 1 else []
+        y = 680 if number == 1 else 700
+        for row in (row for row in CSP_ROWS if row[0] == number):
+            if row[1] != section:
+                section = row[1]
+                items += row_items(y, [(40, section)])
+                y -= 20
+            items += row_items(y, [(40, row[2]), (110, row[3]), (420, row[4], True)])
+            y -= 20
+        pages.append(native("SYNTH SPLIT CARD", items, y))
+    return pages
+
+
 # --- All of them -----------------------------------------------------------------------------------------------------------
 
 FIXTURES = {
     "WF": wf_pages, "WF-bare": wf_bare_pages, "WF-flag": wf_flag_pages, "DM": dm_pages, "BRK": brk_pages, "WR": wr_pages, "WR-split": wr_split_pages,
     "WR-above": wr_above_pages, "OD": od_pages, "ONE": one_pages, "CS": cs_pages, "NB": nb_pages, "K3": k3_pages, "B": b_pages, "BL": bl_pages,
     "UP": up_pages, "PR": pr_pages, "CC": cc_pages, "ND": nd_pages, "ND-prior": nd_prior_pages, "FX": fx_pages, "PD": pd_pages, "TD": td_pages,
-    "TD-bare": td_bare_pages,
+    "TD-bare": td_bare_pages, "OR": or_pages, "CS-split": cs_split_pages,
 }

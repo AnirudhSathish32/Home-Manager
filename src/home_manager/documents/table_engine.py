@@ -4,14 +4,21 @@
 or network call, uses no clock or randomness, and never opens the PDF. It imports nothing from `finance/`, so any consumer can
 use it. It reads the saved layout's words of `embedded_text` pages only.
 
-What it finds: tokens (dates, amounts, integers, text), columns by alignment with their zones, headings that label columns, and
-rows (wrapped descriptions, dateless rows, a date line over its amount line). It never converts money: amounts are exact `Decimal`
-tokens, and which column is money in or out is decided by the statement layer. Not here yet (the plan's later slices): a table's
-extent across a page and its pages, balance and total lines, unplaced lines, rejections beyond those named below, statement roles,
-signs and the period. One table is read per page.
+What it finds: tokens (dates, amounts, integers, text), columns by alignment with their zones, headings that label columns, tables
+(a page's tables, and a table continued over later pages with or without a repeated heading, at a page offset), and rows (wrapped
+descriptions, descriptions printed above their amounts, dateless rows, a date line over its amount line). Lines that are no rows are
+classed: balance lines inside a table are candidates (the statement layer decides by the balance column), totals, summary anchors
+outside every table, and unplaced lines (a date and an amount that sit in no column). It never converts money: amounts are exact
+`Decimal` tokens, and which column is money in or out is decided by the statement layer. Not here (later slices): statement roles,
+signs, the period and the date order, schedules and the rejections that need a role ("both a debit and a credit"). `read` takes the
+statement's currency only to reject an amount printed in another one (FR-16); the code stays on the amount token either way.
+
+Zones: columns come from alignment alone, but when a heading is printed the outermost amount zones are bounded by the heading labels
+beside them (`bound_by_headings`; handoff SL-02 explains why the extent-and-reach zones of the plan are not enough for statement-accounts
+X and T).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 import math
 import re
@@ -29,6 +36,11 @@ NO_AMOUNT = "No amount is printed."
 JOINED_AMOUNT = "The amount is printed against the description, so it can't be told apart from it."
 NO_DATE = "No date is printed."
 MORE_THAN_ONE = "More than one amount sits in the {name} column."
+TEXT_IN_AMOUNT = "Text that is not an amount sits in the {name} column."
+BAD_DATE = 'The date "{text}" is not a real date.'
+CANT_READ = 'The amount "{text}" can\'t be read.'
+NOT_IN_CURRENCY = 'The amount "{text}" is not in {currency}.'
+BLANK_DESCRIPTION = "The description is blank."
 
 INFINITY = math.inf
 
@@ -119,6 +131,7 @@ class EngineRow:
     carried_from: tuple[int, int] | None = None  # (page, row) whose date a dateless row takes (OD-1).
     section: str | None = None
     reject: str | None = None
+    candidate: str | None = None  # opening or closing: a balance line inside the table; the statement layer decides if it is an anchor.
 
 
 @dataclass
@@ -126,8 +139,9 @@ class Anchor:
     page: int
     line_id: str
     kind: str  # opening or closing
-    value: Decimal
-    inside_table: bool
+    value: Decimal  # Signed: a minus sign or parentheses make it negative.
+    inside_table: bool  # A candidate: the row with the same line stays in the table's rows, flagged, until the statement layer decides.
+    dated: bool = False  # The line also prints a date.
 
 
 @dataclass
@@ -143,7 +157,7 @@ class Unplaced:
     page: int
     line_id: str
     text: str
-    reason: str  # no_column or pending
+    reason: str  # no_column here; the statement layer adds pending
 
 
 @dataclass
@@ -386,10 +400,10 @@ class Layout:
         return next((column for column in self.columns if in_zone(box, column.zone)), None)
 
 
-def label_support(lines, first_row, view_box, alignment, centre, tolerance):
-    """Whether a multi-run text line within three visual rows above the table's first row prints a label aligned with the group (the
-    heading, with room for one title line between it and the row)."""
-    for index in range(first_row - 1, max(first_row - 4, -1), -1):
+def label_support(lines, lo, first_row, view_box, alignment, centre, tolerance):
+    """Whether a multi-run text line within three visual rows above the table's first row (and not above the segment's first line `lo`)
+    prints a label aligned with the group (the heading, with room for one title line between it and the row)."""
+    for index in range(first_row - 1, max(first_row - 4, lo - 1), -1):
         line = lines[index]
         if len(line.runs) >= 2 and all(token.kind == "text" for token in line.all_tokens()):
             for run in line.runs:
@@ -439,18 +453,20 @@ def zones_between(extents, reach):
     return list(zip(lefts, rights))
 
 
-def build_layout(view, lines, page, table_id):
-    """The page's date, description and amount columns with their zones, or None when it holds no table (plan P4)."""
+def build_layout(view, lines, lo, hi, table_id):
+    """The date, description and amount columns with their zones of the page's lines `lo` to `hi`, or None when they hold no table
+    (plan P4)."""
     tolerance = view.size * ALIGN
-    dated = {line.index for line in lines if line.free_tokens("date")}
-    date_entries = [(token, line.index) for line in lines for token in line.free_tokens("date")]
-    amount_entries = [(token, line.index) for line in lines if line.index in dated for token in line.free_tokens("amount")]
+    segment = lines[lo:hi]
+    dated = {line.index for line in segment if line.free_tokens("date")}
+    date_entries = [(token, line.index) for line in segment for token in line.free_tokens("date")]
+    amount_entries = [(token, line.index) for line in segment if line.index in dated for token in line.free_tokens("amount")]
     if not date_entries or not amount_entries:
         return None
     first_row = min(row for _, row in amount_entries)
 
     def supported(rows, alignment, centre):
-        return 1 if label_support(lines, first_row, view.box, alignment, centre, tolerance) else 0
+        return 1 if label_support(lines, lo, first_row, view.box, alignment, centre, tolerance) else 0
 
     amounts = [(alignment, [amount_entries[position][0] for position in positions]) for alignment, positions in choose_alignments(amount_entries, tolerance, supported)]
     if not amounts:
@@ -486,7 +502,18 @@ def build_layout(view, lines, page, table_id):
     return Layout(date_columns, description, amount_columns)
 
 
-# --- Rows (plan P5, rules 1 to 4) ----------------------------------------------------------------------------------------
+
+
+# --- Rows (plan P5) and line classes (plan P6) ---------------------------------------------------------------------------
+
+DATE_SHAPE = re.compile(rf"\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?|\d{{1,2}}([.-])\d{{1,2}}\1\d{{2,4}}|\d{{4}}-\d{{2}}-\d{{2}}|\d{{1,2}}-(?:{MONTH})-\d{{2,4}}",
+                        re.IGNORECASE)  # What a printed date looks like, whether or not it is a real one.
+OPENING = frozenset(("opening", "beginning", "previous", "starting"))
+CLOSING = frozenset(("closing", "ending", "new"))
+TOTAL = re.compile(r"(?:sub)?totals?")
+SECTION_WORDS = frozenset(("balance", "balances", "total", "totals", "subtotal", "summary"))
+UNIT_CODES = frozenset(("CR", "DR"))
+
 
 @dataclass
 class Reading:
@@ -497,11 +524,13 @@ class Reading:
     joined: bool = False  # An amount is printed against the description text.
     stray: bool = False  # An amount that fits no amount zone.
     used: set = field(default_factory=set)  # Word ids that are a date or an amount.
+    bad_date: str | None = None  # A date-shaped word in the date zone that is no real date.
+    text_in: list[Token] = field(default_factory=list)  # Text that is not an amount, wholly inside an amount zone.
 
 
 def read_line(line, layout, view):
     """What a visual row holds against the page's zones (plan P3, P5): the date tokens in a date zone, and the amounts. An amount
-    or integer inside a run whose first word sits in the description zone is text, unless its whole box lies in one amount zone and
+    or integer inside a run whose first word sits in the description zone is text, unless its whole box lies inside one amount zone and
     it is the row's only amount-shaped word centred in an amount zone (statement-accounts FR-30). An integer is an amount only
     where it fits an amount zone."""
     reading = Reading()
@@ -516,6 +545,12 @@ def read_line(line, layout, view):
                     taken.add(column.id)
                     reading.dates.append(token)
                     reading.used.update(token.word_ids)
+            elif token.kind == "text" and position == 0 and DATE_SHAPE.fullmatch(token.text) and any(in_zone(token.box, column.zone) for column in layout.dates):
+                reading.bad_date = token.text
+                reading.used.update(token.word_ids)
+            elif token.kind == "text" and not in_text and token.text not in CODES and token.text not in UNIT_CODES \
+                    and any(whole_inside(token.box, column.zone) for column in layout.amounts):
+                reading.text_in.append(token)
             elif token.kind in ("amount", "integer"):
                 candidates.append((token, in_text and position > 0))
     centred = [token for token, _ in candidates if any(in_zone(token.box, column.zone) for column in layout.amounts)]
@@ -537,6 +572,22 @@ def read_line(line, layout, view):
     return reading
 
 
+def label_of(column):
+    return " ".join(column.labels) if column and column.labels else "unlabelled"
+
+
+def reject_of(reading, layout):
+    """The reason a row that has its date and amounts is rejected, in today's words (FR-16), in today's order: the amount column
+    rules, then the date."""
+    if reading.extra:
+        return MORE_THAN_ONE.format(name=label_of(reading.extra[0][1]))
+    if reading.text_in:
+        return TEXT_IN_AMOUNT.format(name=label_of(layout.zone_of(reading.text_in[0].box)))
+    if reading.bad_date:
+        return BAD_DATE.format(text=reading.bad_date)
+    return None
+
+
 def is_heading(line, layout):
     """A text-only line with at least two runs in different zones, at least one of them an amount column's (plan P4)."""
     if len(line.runs) < 2 or any(token.kind != "text" for token in line.all_tokens()):
@@ -546,11 +597,11 @@ def is_heading(line, layout):
     return len(ids) >= 2 and any(column.kind == "amount" for column in zones if column)
 
 
-def heading_start(lines, first_row, layout):
+def heading_start(lines, lo, first_row, layout):
     """The heading lines directly above the table's first row, nearest first: one or two heading lines, with at most one title
     line between them and the row (`Payments and Credits`)."""
     found, index, skipped = [], first_row - 1, False
-    while index >= 0 and len(found) < 2:
+    while index >= lo and len(found) < 2:
         line = lines[index]
         if is_heading(line, layout):
             found.append(index)
@@ -562,31 +613,223 @@ def heading_start(lines, first_row, layout):
     return found
 
 
+def bound_by_headings(layout, heading_lines, view):
+    """Bound the outermost amount zones by the heading labels beside them, as the old reader's spans were (statement-accounts X and
+    T; escalated in handoff SL-02, the plan's extent-and-reach zones can't give their results): the first amount zone starts no
+    later than the midpoint between the label before its own label and its own label, and the last zone ends no later than the
+    midpoint between its own label and the label after it. Returns whether a zone moved."""
+    boxes = [union(view.box[word.id] for word in run) for line in heading_lines for run in line.runs]
+    owner = [layout.zone_of(box) for box in boxes]
+    first, last = layout.amounts[0], layout.amounts[-1]
+    moved = False
+    over = [box for box, column in zip(boxes, owner) if column is first]
+    if over:
+        label_left = min(box[0] for box in over)
+        before = [box[2] for box, column in zip(boxes, owner) if column is not first and box[2] <= label_left]
+        bound = (max(before) + label_left) / 2 if before else INFINITY
+        if layout.description.zone[0] < bound < first.zone[0]:
+            first.zone, layout.description.zone, moved = (bound, first.zone[1]), (layout.description.zone[0], bound), True
+    over = [box for box, column in zip(boxes, owner) if column is last]
+    if over:
+        label_right = max(box[2] for box in over)
+        after = [box[0] for box, column in zip(boxes, owner) if column is not last and box[0] >= label_right]
+        bound = (label_right + min(after)) / 2 if after else INFINITY
+        if last.zone[0] < bound < last.zone[1]:
+            last.zone, moved = (last.zone[0], bound), True
+    return moved
+
+
+def in_description(view, layout, words):
+    """Whether printed words are description text: the first starts in the description zone and none reaches the first amount
+    column's extent (a wrapped line may run past the zone's edge, which the headings can pull in, but not into an amount column)."""
+    return bool(words) and in_zone(view.box[words[0].id], layout.description.zone) and all(view.box[word.id][2] <= layout.amounts[0].extent[0] for word in words)
+
+
 def words_text(words, used):
     return " ".join(word.text for word in words if word.id not in used)
 
 
-def read_page(number, layout_page):
-    """The tables of one native page (one per page for now), or []."""
-    view = PageView(layout_page)
-    lines = tokenize_page(view)
-    table_id = f"page-{number}-table-1"
-    layout = build_layout(view, lines, number, table_id)
-    if layout is None:
+def words_of(line):
+    """The lower-case letters of each text word of a line: what a balance, total or section name is read from."""
+    return [re.sub(r"[^a-z]", "", token.text.lower()) for token in line.all_tokens() if token.kind == "text"]
+
+
+def balance_kind(words):
+    """opening or closing when the words name a balance (`Beginning Balance`, `New Balance`), else None (plan P6)."""
+    if "balance" not in words:
+        return None
+    return next(("opening" if word in OPENING else "closing" for word in words if word in OPENING or word in CLOSING), None)
+
+
+def only_amount(line):
+    """The line's only amount token, when it holds exactly one that can be read."""
+    amounts = [token for token in line.all_tokens() if token.kind == "amount"]
+    return amounts[0] if len(amounts) == 1 and amounts[0].value[0] is not None else None
+
+
+def value_of(token):
+    magnitude, marker, _ = token.value
+    return -magnitude if marker == "minus" else magnitude
+
+
+def title_line(line):
+    """A single run of text on its own line (a section title, when rows follow it)."""
+    return len(line.runs) == 1 and all(token.kind == "text" for token in line.all_tokens())
+
+
+def heading_like(line):
+    return len(line.runs) >= 2 and all(token.kind == "text" for token in line.all_tokens())
+
+
+def cuts(view, lines):
+    """The lines where a new table starts (plan P6): a section title that names a balance, totals or summary section, at or left of
+    the date column, directly above a line that holds a date or an amount (heading lines in between do not count)."""
+    rows = [line for line in lines if line.free_tokens("date") and line.free_tokens("amount")]
+    if not rows:
         return []
-    readings = [read_line(line, layout, view) for line in lines]
-    first = next((line.index for line in lines if readings[line.index].dates and readings[line.index].amounts), None)
-    if first is None:
-        return []
-    headings = heading_start(lines, first, layout)
-    start = min(headings) if headings else first
-    cells = {word_id: cell.id for table in layout_page.tables for cell in table.cells for word_id in cell.word_ids}
-    rows: list[EngineRow] = []
-    state = {"last_line": None, "section": None, "title": None}
-    starts = []  # The description words on each row's first line.
-    consumed = set()
+    left = median(min(token.box[0] for token in line.free_tokens("date")) for line in rows)
+    found = []
+    for line in lines[rows[0].index + 1:]:
+        if not title_line(line) or not SECTION_WORDS & set(words_of(line)) or view.box[line.words[0].id][0] > left + view.size * ALIGN:
+            continue
+        ahead = next((other for other in lines[line.index + 1:] if not heading_like(other)), None)
+        if ahead is not None and any(token.kind in ("date", "amount") for token in ahead.all_tokens()):
+            found.append(line.index)
+    return found
+
+
+@dataclass
+class Page:
+    number: int
+    view: PageView
+    lines: list[Line]
+    cells: dict[str, str]  # Word id to the native reader cell that holds it.
+    used: set = field(default_factory=set)  # Visual rows cited by a row, an anchor or a total.
+    cited: set = field(default_factory=set)  # Their word ids.
+
+    def mark(self, indexes):
+        for index in indexes:
+            self.used.add(index)
+            self.cited.update(word.id for word in self.lines[index].words)
+
+    def line_id(self, index):
+        ids = self.view.lines([word.id for word in self.lines[index].words])
+        return ids[0] if ids else ""
+
+
+@dataclass
+class Open:
+    """A table that may continue on the next page."""
+    table: EngineTable
+    layout: Layout
+    section: str | None = None
+    labels: list = field(default_factory=list)  # The heading's runs, top to bottom, as (text, box): what the columns' labels are read from.
+
+    def relabel(self):
+        for column in self.layout.columns:
+            column.labels[:] = [text for text, box in self.labels if self.layout.zone_of(box) is column]
+
+
+def shifted(layout, offset):
+    move = lambda pair: (pair[0] + offset, pair[1] + offset)  # noqa: E731
+    return Layout([replace(column, edge=column.edge + offset, extent=move(column.extent), zone=move(column.zone)) for column in layout.dates],
+                  replace(layout.description, edge=layout.description.edge + offset, extent=move(layout.description.extent), zone=move(layout.description.zone)),
+                  [replace(column, edge=column.edge + offset, extent=move(column.extent), zone=move(column.zone)) for column in layout.amounts])
+
+
+def aligned(token, column, offset, tolerance):
+    """Whether an amount sits at the column's edge plus the page offset in any alignment: a column whose first rows were all the
+    same width could have been taken for right-aligned when it is left-aligned (K's balances)."""
+    box = token.box
+    return any(abs(value - (edge + offset)) <= tolerance for value, edge in
+               ((edge_of(box, column.align), column.edge), (box[0], column.extent[0]), (box[2], column.extent[1]), (middle(box), sum(column.extent) / 2)))
+
+
+def extended(layout, added, size):
+    """The layout with extra amount columns (found on a later page, in the table's own frame): zones are cut again between the
+    extents, the outer ends stay where they were unless a new column is outermost."""
+    amounts = sorted([*layout.amounts, *added], key=lambda column: sum(column.extent) / 2)
+    centres = [sum(column.extent) / 2 for column in amounts]
+    gaps = [right - left for left, right in zip(centres, centres[1:])]
+    zones = zones_between([column.extent for column in amounts], median(gaps) / 2 if gaps else size * LONE_REACH)
+    if amounts[0] is layout.amounts[0]:
+        zones[0] = (layout.amounts[0].zone[0], zones[0][1])
+    if amounts[-1] is layout.amounts[-1]:
+        zones[-1] = (zones[-1][0], layout.amounts[-1].zone[1])
+    amounts = [replace(column, zone=zone) for column, zone in zip(amounts, zones)]
+    description = replace(layout.description, zone=(layout.description.zone[0], amounts[0].zone[0]))
+    return Layout(layout.dates, description, amounts)
+
+
+def continuation(view, lines, lo, hi, candidates):
+    """The previous page's table, latest first, that the segment's rows continue, with the page offset (the median difference of
+    the date column's left edge) and the columns they add (plan P4; FR-06). Most rows must have their dates and at least one
+    amount at a column's edge plus the offset, within the tolerance. An amount that fits no column makes a new column of the table
+    only when the page repeats the table's own heading (so the heading proves the same column set) and at least two rows (or one
+    row and its heading label) support it. Returns (open, offset, new columns) or None."""
+    rows = [line for line in lines[lo:hi] if line.free_tokens("date") and line.free_tokens("amount")]
+    if not rows:
+        return None
+    tolerance = view.size * ALIGN
+    first = rows[0].index
+    for opened in reversed(candidates):
+        layout = opened.layout
+        offset = median(min(token.box[0] for token in line.free_tokens("date")) - layout.dates[0].edge for line in rows)
+        fitting, leftover = 0, []
+        for line in rows:
+            dates = all(any(abs(token.box[0] - (column.edge + offset)) <= tolerance for column in layout.dates) for token in line.free_tokens("date"))
+            unmatched = [(token, line.index) for token in line.free_tokens("amount") if not any(aligned(token, column, offset, tolerance) for column in layout.amounts)]
+            fitting += dates and len(unmatched) < len(line.free_tokens("amount"))
+            leftover += unmatched
+        if fitting * 2 <= len(rows):
+            continue
+        if not leftover:
+            return opened, offset, []
+        drawn = [index for index in range(first - 1, max(first - 3, lo - 1), -1) if is_heading(lines[index], shifted(layout, offset))]
+        if not opened.table.headings or [" ".join(word.text for word in lines[index].words) for index in sorted(drawn)] != opened.table.headings:
+            continue
+        found = choose_alignments(leftover, tolerance, lambda rows_, alignment, centre: 1 if label_support(lines, lo, first, view.box, alignment, centre, tolerance) else 0)
+        if {position for _, positions in found for position in positions} != set(range(len(leftover))):
+            continue
+        added = []
+        for alignment, positions in found:
+            tokens = [leftover[position][0] for position in positions]
+            left, right = span(tokens)
+            added.append(Column(f"{opened.table.id}-column-{len(opened.layout.columns) + len(added) + 1}", "amount", alignment,
+                                median(edge_of(token.box, alignment) for token in tokens) - offset, (left - offset, right - offset), (0.0, 0.0)))
+        return opened, offset, added
+    return None
+
+
+def descriptions_above(page, layout, begin, hi, readings, headings):
+    """Plan P5.7: the table prints its descriptions above their amounts when every row's date line has a text-only line (inside the
+    description zone) directly above it, the first one included, and the last row's date line has none directly below. At least two
+    rows. (The plan also asks that no date line has one below; the next row's description is always directly below the row before, so
+    only the last row can show it.)"""
+    view = page.view
+
+    def text_only(index):
+        if index < begin or index >= hi or index in headings:
+            return False
+        line = page.lines[index]
+        return bool(line.tokens) and not readings[index].dates and not readings[index].amounts \
+            and all(token.kind == "text" for token in line.all_tokens()) and in_description(view, layout, line.words)
+
+    row_lines = [index for index in range(begin, hi) if readings[index].dates and readings[index].amounts]
+    return len(row_lines) >= 2 and all(text_only(index - 1) for index in row_lines) and not text_only(row_lines[-1] + 1)
+
+
+def scan(page, table, state, layout, begin, hi, readings, headings):
+    """Plan P5 and P6 over lines `begin` to `hi` against `layout`, appending rows (and a table's balance candidates and totals) to
+    `table`. Returns this segment's description words on each row's first line."""
+    view, lines = page.view, page.lines
+    rows, starts, consumed, waiting = [], [], set(), []
+    last = None
+    above = descriptions_above(page, layout, begin, hi, readings, headings)
 
     def make(indexes, reject=None):
+        nonlocal last
+        indexes = sorted(indexes)
         words = [word for index in indexes for word in lines[index].words]
         used = set().union(*(readings[index].used for index in indexes))
         amounts = {}
@@ -595,71 +838,199 @@ def read_page(number, layout_page):
         word_ids = [word.id for word in words]
         if state["title"] is not None:
             state["section"], state["title"] = state["title"], None
-        row = EngineRow(number, table_id, len(rows) + 1, view.lines(word_ids), word_ids, list(dict.fromkeys(cells[w] for w in word_ids if w in cells)),
+        row = EngineRow(page.number, table.id, 1 + sum(1 for other in table.rows if other.page == page.number), view.lines(word_ids), word_ids,
+                        list(dict.fromkeys(page.cells[word_id] for word_id in word_ids if word_id in page.cells)),
                         [token for index in indexes for token in readings[index].dates], words_text(words, used), amounts, section=state["section"],
                         reject=reject)
+        table.rows.append(row)
         rows.append(row)
         starts.append([word for word in lines[indexes[0]].words if word.id not in used])
-        state["last_line"] = indexes[-1]
+        page.mark(indexes)
+        last = indexes[-1]
         return row
 
-    for line in lines[start:]:
+    def with_waiting(index):
+        """The line, with the description lines printed directly above it when the table prints descriptions above its amounts."""
+        if above and waiting and waiting[-1] == index - 1:
+            return [*waiting, index]
+        return [index]
+
+    def candidate(row, line, kind, dated):
+        row.candidate, row.reject = kind, None
+        table.anchors.append(Anchor(page.number, row.line_ids[0] if row.line_ids else "", kind, value_of(only_amount(line)), True, dated))
+
+    def source():
+        return next((other for other in reversed(table.rows) if other.dates and not other.candidate), None)
+
+    for line in lines[begin:hi]:
         index = line.index
         if index in consumed or index in headings:
             continue
         reading = readings[index]
-        if reading.dates and reading.amounts:
-            row = make([index])
-            if reading.extra:
-                row.reject = MORE_THAN_ONE.format(name=" ".join(reading.extra[0][1].labels) or "unlabelled")
+        words = words_of(line)
+        kind = balance_kind(words) if len(reading.amounts) == 1 and not reading.extra and only_amount(line) is not None else None
+        if (reading.dates or reading.bad_date) and reading.amounts:
+            row = make(with_waiting(index), reject_of(reading, layout))
+            if kind and not reading.bad_date:
+                candidate(row, line, kind, bool(reading.dates))
         elif reading.dates:
             if reading.stray:
-                continue  # An amount that fits no column: an unplaced line (a later slice).
-            below = readings[index + 1] if index + 1 < len(lines) else None
-            if below and below.amounts and not below.dates and not below.stray:
-                make([index, index + 1])
+                continue  # An amount that fits no column: an unplaced line, listed once the page is read.
+            below = readings.get(index + 1) if index + 1 < hi else None
+            if below and below.amounts and not below.dates and not below.stray and not any(TOTAL.fullmatch(word) for word in words_of(lines[index + 1])):
+                make([*with_waiting(index), index + 1])
                 consumed.add(index + 1)
             else:
-                make([index], JOINED_AMOUNT if reading.joined else NO_AMOUNT)
+                make(with_waiting(index), JOINED_AMOUNT if reading.joined else NO_AMOUNT)
         elif reading.amounts:
-            source = next((row for row in reversed(rows) if row.dates), None)
-            row = make([index], None if source else NO_DATE)
-            row.carried_from = (source.page, source.row) if source else None
-        elif rows and state["last_line"] == index - 1 and all(in_zone(view.box[word.id], layout.description.zone) for word in line.words):
+            if any(TOTAL.fullmatch(word) for word in words):
+                for column_id, token in reading.amounts.items():
+                    if token.value[0] is not None:
+                        table.totals.append(Total(page.number, page.line_id(index), column_id, value_of(token)))
+                page.mark([index])
+                last = None
+                continue
+            earlier = source()
+            row = make(with_waiting(index), reject_of(reading, layout) or (None if earlier else NO_DATE))
+            row.carried_from = (earlier.page, earlier.row) if earlier else None
+            if kind:
+                candidate(row, line, kind, False)
+        elif rows and not above and last == index - 1 and in_description(view, layout, line.words):
             row = rows[-1]
             row.word_ids += [word.id for word in line.words]
             row.line_ids = view.lines(row.word_ids)
             row.description = " ".join(part for part in (row.description, words_text(line.words, ())) if part)
-            row.cell_ids = list(dict.fromkeys(cells[w] for w in row.word_ids if w in cells))
-            state["last_line"] = index
-        elif len(line.runs) == 1 and all(token.kind == "text" for token in line.all_tokens()):
+            row.cell_ids = list(dict.fromkeys(page.cells[word_id] for word_id in row.word_ids if word_id in page.cells))
+            page.mark([index])
+            last = index
+        elif above and line.tokens and all(token.kind == "text" for token in line.all_tokens()) and in_description(view, layout, line.words):
+            waiting[:] = [*waiting, index] if waiting and waiting[-1] == index - 1 else [index]
+        elif title_line(line):
             state["title"] = " ".join(word.text for word in line.words)  # A section title labels the rows below it; a footer has none.
-    if not rows:
-        return []
-    described = [word for words in starts for word in words]
-    if described:
-        boxes = [view.box[word.id] for word in described]
-        layout.description.extent = (min(box[0] for box in boxes), max(box[2] for box in boxes))
-        layout.description.edge = median(min(view.box[word.id][0] for word in words) for words in starts if words)
-    for index in sorted(headings):
-        for tokens in lines[index].tokens:
-            column = layout.zone_of(union(token.box for token in tokens))
-            if column:
-                column.labels.append(" ".join(token.text for token in tokens))
-    kind = "transactions" if sum(1 for row in rows if row.description) * 2 >= len(rows) else "balance" if len(layout.amounts) == 1 else "other"
-    return [EngineTable(table_id, [number], layout.columns, rows, kind, None, [" ".join(word.text for word in lines[index].words) for index in sorted(headings)])]
+    return starts
+
+
+@dataclass
+class PageReading:
+    opens: list[Open] = field(default_factory=list)  # The tables with rows on this page, in order.
+    created: list[EngineTable] = field(default_factory=list)  # The ones that start here.
+    anchors: list[Anchor] = field(default_factory=list)  # Summary anchors: balance lines outside every table.
+    unplaced: list[Unplaced] = field(default_factory=list)
+    others: list[str] = field(default_factory=list)  # Native reader tables no engine row, anchor or total cites.
+
+
+def read_page(number, layout_page, previous):
+    """The tables of one native page, with the previous page's open tables it may continue (plan P4, P6)."""
+    view = PageView(layout_page)
+    lines = tokenize_page(view)
+    page = Page(number, view, lines, {word_id: cell.id for table in layout_page.tables for cell in table.cells for word_id in cell.word_ids})
+    found = PageReading()
+    bounds = [0, *cuts(view, lines), len(lines)]
+    for lo, hi in zip(bounds, bounds[1:]):
+        free = [opened for opened in previous if all(opened is not other for other in found.opens)]
+        matched = continuation(view, lines, lo, hi, free)
+        if matched:
+            opened, offset, added = matched
+            if added:
+                opened.layout = extended(opened.layout, added, view.size)
+                opened.table.columns = opened.layout.columns
+                opened.relabel()
+            layout = shifted(opened.layout, offset)
+        else:
+            table_id = f"page-{number}-table-{len(found.created) + 1}"
+            layout = build_layout(view, lines, lo, hi, table_id)
+            if layout is None:
+                continue
+            opened = Open(EngineTable(table_id, [number], layout.columns, [], "other"), layout)
+        readings = {line.index: read_line(line, layout, view) for line in lines[lo:hi]}
+        if matched:
+            begin, headings = lo, ()
+        else:
+            first = next((index for index in range(lo, hi) if readings[index].dates and readings[index].amounts), None)
+            if first is None:
+                continue
+            headings = heading_start(lines, lo, first, layout)
+            begin = min(headings) if headings else first
+            opened.labels = [(" ".join(token.text for token in tokens), union(token.box for token in tokens)) for index in sorted(headings) for tokens in lines[index].tokens]
+            opened.table.headings = [" ".join(word.text for word in lines[index].words) for index in sorted(headings)]
+            if headings and bound_by_headings(layout, [lines[index] for index in sorted(headings)], view):
+                readings = {line.index: read_line(line, layout, view) for line in lines[lo:hi]}
+            opened.relabel()
+        state = {"section": opened.section, "title": None}
+        starts = scan(page, opened.table, state, layout, begin, hi, readings, headings)
+        opened.section = state["section"]
+        if not any(row.page == number for row in opened.table.rows):
+            continue
+        if matched:
+            if number not in opened.table.pages:
+                opened.table.pages.append(number)
+        else:
+            described = [word for words in starts for word in words]
+            if described:
+                boxes = [view.box[word.id] for word in described]
+                layout.description.extent = (min(box[0] for box in boxes), max(box[2] for box in boxes))
+                layout.description.edge = median(min(view.box[word.id][0] for word in words) for words in starts if words)
+            found.created.append(opened.table)
+        found.opens.append(opened)
+    for line in lines:
+        if line.index in page.used:
+            continue
+        kind, amount = balance_kind(words_of(line)), only_amount(line)
+        if kind and amount is not None:
+            found.anchors.append(Anchor(number, page.line_id(line.index), kind, value_of(amount), False, any(token.kind == "date" for token in line.all_tokens())))
+            page.mark([line.index])
+    if found.opens:
+        for line in lines:
+            tokens = line.all_tokens()
+            if line.index not in page.used and any(token.kind == "date" for token in tokens) and any(token.kind == "amount" for token in tokens):
+                found.unplaced.append(Unplaced(number, page.line_id(line.index), " ".join(word.text for word in line.words), "no_column"))
+    found.others = [table.id for table in layout_page.tables if not any(word_id in page.cited for cell in table.cells for word_id in cell.word_ids)]
+    return found
+
+
+def finish(table, currency):
+    """A table's kind from all its rows, then the rejections that need the whole table (a blank description) or the statement's
+    currency (plan P5.5, P6)."""
+    rows = [row for row in table.rows if not row.candidate]
+    described = sum(1 for row in rows if row.description)
+    amounts = [column for column in table.columns if column.kind == "amount"]
+    table.kind = "transactions" if rows and described * 2 >= len(rows) else "balance" if rows and len(amounts) == 1 else "other"
+    for row in rows:
+        if row.reject:
+            continue
+        if table.kind == "transactions" and not row.description.strip():
+            row.reject = BLANK_DESCRIPTION
+            continue
+        for token in row.amounts.values():
+            magnitude, _, code = token.value
+            if magnitude is None:
+                row.reject = CANT_READ.format(text=token.text)
+            elif currency and code and code != currency:
+                row.reject = NOT_IN_CURRENCY.format(text=token.text, currency=currency)
+            if row.reject:
+                break
 
 
 # --- Entry point (FR-01) ---------------------------------------------------------------------------------------------------
 
-def read(result):
-    """Read a saved reading (`PDFResult`) into its tables. Only `embedded_text` pages with a saved layout are read."""
-    tables, without = [], []
+def read(result, currency=None):
+    """Read a saved reading (`PDFResult`) into its tables. Only `embedded_text` pages with a saved layout are read. With the
+    statement's `currency` (an ISO code), a row whose printed amount carries another code is rejected (FR-16); without it the code
+    stays on the amount token for the statement layer."""
+    reading = EngineReading([])
+    previous = []
     for page in result.pages:
         if page.method != "embedded_text" or page.layout is None:
+            previous = []
             continue
-        found = read_page(page.number, page.layout)
-        tables += found
-        if not found:
-            without.append(page.number)
-    return EngineReading(tables, pages_without_tables=without)
+        found = read_page(page.number, page.layout, previous)
+        reading.tables += found.created
+        reading.summary_anchors += found.anchors
+        reading.unplaced += found.unplaced
+        reading.other_native_tables += found.others
+        if not found.opens:
+            reading.pages_without_tables.append(page.number)
+        previous = found.opens
+    for table in reading.tables:
+        finish(table, currency)
+    return reading
