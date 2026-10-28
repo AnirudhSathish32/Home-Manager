@@ -7,7 +7,7 @@ model_family: anthropic
 helper_subagents: 0
 resumed_from_attempt_1_diff: true     # attempt 1 (rate limit) left an uncommitted partial diff on a602cad; kept, debugged, committed in steps
 start_head: a602cad
-end_head: 4602f9e
+end_head: HEAD          # the handoff commit on top of code commit f7a09f2 (git log -1 on this file)
 commit: f7a09f2                        # last code/test commit; the handoff file is committed on top of it
 changed_files:
   - src/home_manager/finance/statement_dates.py       # new: Rebuild (+opening_minor, closing_minor, period), read_period, placed, duplicates, PERIOD_SLACK, NO_LAYOUT_NOTE
