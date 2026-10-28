@@ -53,6 +53,7 @@ ROLES_DIFFER = ("Page {page}: more than one reading of the amount columns fits t
 BOTH = "Both a debit and a credit are printed."
 MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
+CODE = re.compile(r"\b[A-Z]{3}\b")  # A printed currency code (CR and DR are two letters).
 PENDING_TITLE = re.compile(r"pending", re.IGNORECASE)
 IN_TITLE = re.compile(r"payment|credit|refund|return|deposit|addition", re.IGNORECASE)
 OUT_TITLE = re.compile(r"purchase|charge|fee|interest|advance|withdrawal|debit", re.IGNORECASE)
@@ -187,6 +188,7 @@ class Candidate:
     others: int = 0
     conflicts: int = 0
     labelled: bool = False
+    unsupported: bool = False  # A balance column nothing supports: no holding chain link and no heading that says balance (FX's foreign amount).
 
     @property
     def accepted(self):
@@ -226,10 +228,11 @@ class Sheet:
         if cell.magnitude is None or cell.minor is None:
             return table_engine.CANT_READ.format(text=cell.printed)
         reader = self.reader
-        symbol = next((char for char in cell.printed if char in SYMBOLS), None)
-        if reader.currency_given and ((cell.code and cell.code != reader.currency and not symbol) or (symbol and reader.currency not in SYMBOLS[symbol])
-                                      or (symbol and cell.code and cell.code not in (reader.currency, *[c for c in ("USD", "EUR", "GBP", "JPY") if False]) and False)):
-            return table_engine.NOT_IN_CURRENCY.format(text=cell.printed, currency=reader.currency)
+        if reader.currency_given:
+            symbol = next((char for char in cell.printed if char in SYMBOLS), None)
+            printed = CODE.search(cell.printed)
+            if (printed and printed.group() != reader.currency) or (symbol and reader.currency not in SYMBOLS[symbol]):
+                return table_engine.NOT_IN_CURRENCY.format(text=cell.printed, currency=reader.currency)
         return None
 
     def signed(self, cell, row, mode, default):
@@ -297,6 +300,7 @@ class Sheet:
         self.run_chain(found, chain, balance_at)
         self.run_summary(found)
         found.others = roles.count("other")
+        found.unsupported = balance_at is not None and found.holds == 0 and self.labels[balance_at] != "balance"
         found.conflicts = sum(1 for label, role in zip(self.labels, roles) if label is not None and label != role)
         found.labelled = any(self.labels) and all(label == role if label else role == "other" for label, role in zip(self.labels, roles))
         return found
@@ -517,7 +521,7 @@ class Reader:
         """Whether every date of the transactions tables (schedules aside) falls within the period ± 7 days under `order` and each table's
         rows are in non-decreasing order, by their first date or by their last."""
         start, end = self.effective
-        left_out = {id(row) for _, rows, _ in self.schedule_runs(order) for row in rows}
+        left_out = {id(row) for _, rows, whole in self.schedule_runs(order) if not whole for row in rows}  # A whole table outside the period is no evidence for an order.
         for table in self.transactions():
             first, last = [], []
             for row in self.plain(table):
@@ -637,10 +641,10 @@ class Reader:
         do; else the ones whose headings agree best do. None when the survivors still differ (the roles are undecided)."""
         for group in (pool, [c for c in pool if c.others == min(c.others for c in pool)]):
             if len({tuple(c.amounts) for c in group}) == 1:
-                return min(group, key=lambda c: (c.others, c.conflicts, c.order))
+                return min(group, key=lambda c: (c.unsupported, c.others, c.conflicts, c.order))
         fewest = min(c.conflicts for c in pool if c.others == min(d.others for d in pool))
         group = [c for c in pool if c.others == min(d.others for d in pool) and c.conflicts == fewest]
-        return min(group, key=lambda c: c.order) if len({tuple(c.amounts) for c in group}) == 1 else None
+        return min(group, key=lambda c: (c.unsupported, c.order)) if len({tuple(c.amounts) for c in group}) == 1 else None
 
     # --- Rows ----------------------------------------------------------------------------------------------------------------
 
@@ -756,6 +760,10 @@ class Reader:
                 self.issues.append(TWO_ACCOUNTS.format(first=first.pages[0], second=second.pages[0]))
                 return
 
+    def pages(self):
+        """The pages holding a transactions table's rows, recorded or not (pending rows count, schedules don't): Record gives these pages to the engine."""
+        return {row.page for table in self.transactions() for row in self.plain(table)} | {line.page for line in self.pending}
+
     def balances(self):
         anchors = sorted([*self.summary_anchors, *self.kept_anchors], key=self.reading_order)
         opening = next((anchor for anchor in anchors if anchor.kind == "opening"), None)
@@ -787,14 +795,14 @@ class Reader:
                 chains.append((table, candidate))
         self.joins(chains)
         self.issues += [ORDER_UNKNOWN.format(page=page) for page in sorted(self.order_pages)]
-        self.dropped += len(self.order_pages and []) + len(self.unplaced) + len(self.pending)
+        self.dropped += len(self.unplaced) + len(self.pending)
         self.issues += [UNPLACED.format(page=line.page, text=line.text) for line in self.unplaced]
         self.issues += [PENDING.format(page=line.page, text=line.text) for line in self.pending]
         self.issues += duplicates([(row, posted) for row, posted, _ in self.recorded])
         opening, closing = self.balances()
         self.notes = [NO_TABLE.format(page=page) for page in self.engine.pages_without_tables] + self.notes
         year = None if "none" in self.years else "period" if "period" in self.years else "choice" if "choice" in self.years else "printed" if self.years else None
-        return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, pages_of(self.engine),
+        return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, self.pages(),
                                 opening, closing, tuple(day.isoformat() for day in self.period) if self.period else None, self.order,
                                 {"order": self.order_source, "year": year, "signs": signs}, roles, True, self.tables, self.unplaced + self.pending,
                                 self.summary_anchors)
@@ -807,14 +815,9 @@ def laid_out(result):
     return all(page.layout is not None for page in result.pages if page.method == "embedded_text")
 
 
-def pages_of(engine):
-    """The pages that hold a transactions table's rows (recorded or not): the pages Record takes from the printed columns."""
-    return {row.page for table in engine.tables if table.kind == "transactions" for row in table.rows if not row.candidate}
-
-
 def engine_pages(result) -> set[int]:
     """The pages the engine reads rows from, whatever the currency or the choices; empty when the reading has no layout."""
-    return pages_of(table_engine.read(result, amounts=False)) if laid_out(result) else set()
+    return Reader(result).run().pages if laid_out(result) else set()
 
 
 def read(result, *, statement_type=None, currency="USD", fallback_period=None, choices=None, prior_order=None) -> StatementReading:

@@ -39,7 +39,7 @@ slices:
       Carried to SL-03: schedule kind (BL page 2: contract identity 5 other-table rows); P6's mid-page cut at a
       different column set starting a run of >= 2 rows; rejections that need roles (both debit and credit; unreadable
       amounts only in money columns, so FX's rate column is never parsed); anchors re-classed per candidate.
-  - {id: SL-03, status: in_progress, start_head: 04ed779, provider: claude, model: claude-sonnet-5-5}
+  - {id: SL-03, status: in_progress, start_head: a602cad, provider: claude, model: claude-sonnet-5-5, attempts: ["r1: rate limit; left uncommitted partial diff (table_engine.py, statement_rows.py, new statement_dates.py, statement_tables.py), no handoff; r2 resumes from it"]}
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
   - {id: SL-06, status: todo}

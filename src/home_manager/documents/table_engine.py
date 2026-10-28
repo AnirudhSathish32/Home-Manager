@@ -1001,8 +1001,8 @@ def finish(table, currency, amounts=True):
     layer, which knows which columns hold money."""
     rows = [row for row in table.rows if not row.candidate]
     described = sum(1 for row in rows if row.description)
-    amounts = [column for column in table.columns if column.kind == "amount"]
-    table.kind = "transactions" if rows and described * 2 >= len(rows) else "balance" if rows and len(amounts) == 1 else "other"
+    columns = [column for column in table.columns if column.kind == "amount"]
+    table.kind = "transactions" if rows and described * 2 >= len(rows) else "balance" if rows and len(columns) == 1 else "other"
     for row in rows:
         if row.reject:
             continue
