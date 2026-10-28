@@ -22,8 +22,8 @@ import table_engine_generator as gen
 from test_table_engine import no_network  # noqa: F401  C-net: autouse, so no test here connects to a non-loopback address.
 
 
-def context(case, index):
-    return f"seed {gen.SEED} case {index}: layout {case.choices}"
+def context(case, index, seed=gen.SEED):
+    return f"seed {seed} case {index}: layout {case.choices}"
 
 
 def read(case, folder):
@@ -32,13 +32,10 @@ def read(case, folder):
     return result
 
 
-@pytest.mark.parametrize("index", range(gen.CASES))
-def test_generator_only_case_reads_exactly(index, tmp_path):
-    """Every row of the statement, with its exact date, signed amount and description; no issue; the printed summary and period."""
-    case = gen.layout(index)
+def assert_reads_exactly(case, where, folder):
+    """Every row of the statement, with its exact date, signed amount and description; no issue; the printed summary and period; it reconciles."""
     answers = case.answers
-    reading = stt.read(read(case, tmp_path), statement_type="credit_card" if answers["kind"] == "card" else "bank")
-    where = context(case, index)
+    reading = stt.read(read(case, folder), statement_type="credit_card" if answers["kind"] == "card" else "bank")
     got = [(row["posted_date"], row["amount_minor"], " ".join(row["description"].split())) for row in reading.rows]
     expected = [(day, amount, " ".join(text.split())) for day, amount, text in answers["rows"]]
     assert got == expected, where
@@ -48,6 +45,24 @@ def test_generator_only_case_reads_exactly(index, tmp_path):
     if answers["opening"] is not None:  # Reconciles: the opening and the rows give the closing (a card's balance is what is owed).
         net = sum(row["amount_minor"] for row in reading.rows)
         assert reading.closing_minor == reading.opening_minor + (-net if answers["kind"] == "card" else net), where
+
+
+@pytest.mark.parametrize("index", range(gen.CASES))
+def test_generator_only_case_reads_exactly(index, tmp_path):
+    case = gen.layout(index)
+    assert_reads_exactly(case, context(case, index), tmp_path)
+
+
+# Cases of other seeds that the engine read wrongly before SL-04's repairs (a summary settling roles the chain leaves open; a neutral title not
+# ending a section; a dateless row counting as a row for descriptions printed above; CR in a money-out column), then a sweep of three more seeds.
+REGRESSIONS = ((3, 16), (5, 10), (6, 5), (9, 67), (gen.SEED, 157))
+SWEEP = tuple((seed, index) for seed in (1, 2, 3) for index in range(40))
+
+
+@pytest.mark.parametrize(("seed", "index"), REGRESSIONS + SWEEP)
+def test_generator_only_other_seeds_read_exactly(seed, index, tmp_path):
+    case = gen.layout(index, seed=seed)
+    assert_reads_exactly(case, context(case, index, seed), tmp_path)
 
 
 def test_generator_only_twice_gives_byte_identical_pdfs(tmp_path):
