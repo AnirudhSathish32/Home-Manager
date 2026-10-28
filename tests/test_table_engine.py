@@ -1186,3 +1186,34 @@ def test_stmt_engine_tables_are_not_changed_by_the_statement_layer(tmp_path):
     before = serialized(read(result))
     stt.read(result, statement_type="bank", currency="USD")
     assert serialized(read(result)) == before
+
+
+# --- FR-12 markers, FR-14 period fallbacks and years ---------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("marked", [("1,000.00 CR", "45.00 CR"), ("-1,000.00", "-45.00"), ("(1,000.00)", "(45.00)")])
+def test_stmt_fr12_a_rows_own_marker_marks_a_credit_on_a_card(tmp_path, monkeypatch, marked):
+    rows = [(*row[:3], marked[number], *row[4:]) if number < 2 else row for number, row in enumerate(tf.CS_ROWS)]
+    monkeypatch.setattr(tf, "CS_ROWS", rows)
+    _, reading = statement(tmp_path, "CS")
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[4], row[5]) for row in tf.CS_ROWS]  # The contract's CS values.
+    assert reading.issues == [] and reading.decided["signs"] == {ONE_TABLE: "summary"}
+
+
+def test_stmt_fr14_the_models_period_is_used_only_when_none_is_printed(tmp_path, monkeypatch):
+    monkeypatch.setattr(tf, "WF_ABOVE", tf.WF_ABOVE[:-1])
+    _, none = statement(tmp_path, "WF")
+    assert none.rows == [] and none.period is None and len(none.issues) == 7 and all("no year is printed and the statement period wasn't read" in issue for issue in none.issues)
+    other = tmp_path / "fallback"
+    other.mkdir()
+    _, fallback = statement(other, "WF", fallback_period=("2026-10-01", "2026-10-31"))
+    assert [(posted, amount) for posted, amount, _ in recorded(fallback)] == [(row[6], row[7]) for row in tf.WF_ROWS]
+    assert fallback.period is None and fallback.decided["year"] == "period"  # The printed period is what is reported; the fallback only places dates.
+    chosen = tmp_path / "choice"
+    chosen.mkdir()
+    _, choice = statement(chosen, "WF", choices={"year": 2026})
+    assert [(posted, amount) for posted, amount, _ in recorded(choice)] == [(row[6], row[7]) for row in tf.WF_ROWS] and choice.decided["year"] == "choice"
+
+
+def test_stmt_fr14_a_printed_period_wins_over_the_models(tmp_path):
+    _, reading = statement(tmp_path, "WF", fallback_period=("2025-01-01", "2025-01-31"))
+    assert reading.period == ("2026-10-01", "2026-10-31") and recorded(reading)[0][0] == "2026-10-02"
