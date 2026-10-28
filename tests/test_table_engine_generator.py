@@ -8,6 +8,10 @@ inputs (`evals/statement_layouts.py`), never from the engine.
 
 from collections import Counter
 from datetime import date
+from pathlib import Path
+import re
+import subprocess
+import sys
 
 import pytest
 
@@ -79,3 +83,34 @@ def test_generator_only_follows_its_own_rules():
             start, end = (date.fromisoformat(day) for day in answers["period"])
             assert layouts.decides_order(days, choices["dates"], start, end), where
         assert all(isinstance(amount, int) for _, amount, _ in answers["rows"]), where  # Money is in minor units.
+
+
+PROBE = Path(__file__).resolve().parents[1] / "scripts" / "statement_diagnose.py"
+MONEY = re.compile(r"\d[\d,]*\.\d{2}\b")
+
+
+@pytest.mark.parametrize("index", [4, 5, 20, 25])
+def test_generator_only_probe_prints_no_document_text_or_amounts(index, tmp_path):
+    """OD-6: the redacted probe (scripts/statement_diagnose.py) runs on a generated PDF and its output holds no word, date or amount the document
+    prints. Words the probe prints by design (column kinds and roles, `page`, `rows`) are the only ones the document may share with it."""
+    case = gen.layout(index)
+    pdf = gen.build(tmp_path / "statement.pdf", case)
+    card = case.answers["kind"] == "card"
+    done = subprocess.run([sys.executable, "-I", str(PROBE), str(pdf), "2026", *(["card"] if card else [])], capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, f"{context(case, index)}: {done.stderr[-300:]}"
+    output = done.stdout
+    printed = [text for page in case.pages for _, _, text, *_ in page["items"]]
+    # The document's own words are the capitalised ones (names, descriptions, headings); the probe's prose is lower case, apart from its
+    # section names (`Page`, `Table`) and the column names it prints as kinds, which a heading may share.
+    allowed = {"Date", "Description", "Details", "Amount", "Balance", "Posted", "Transaction", "Net", "Page", "Table"}
+    words = {word for text in printed for word in re.findall(r"[A-Z][A-Za-z]{2,}", text)} - allowed
+    leaked = sorted(word for word in words if re.search(rf"(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", output))
+    assert not leaked, f"{context(case, index)}: the probe printed document words {leaked}"
+    amounts = {money for text in printed for money in MONEY.findall(text)}
+    assert not amounts & set(MONEY.findall(output)) and not MONEY.search(output), f"{context(case, index)}: the probe printed an amount"
+    dates = {day for day, _, _ in case.answers["rows"]}
+    assert not any(day in output or day[2:] in output for day in dates), context(case, index)
+    for text in printed:
+        if re.fullmatch(r"[\d./-]{5,10}|\d{2}/\d{2}(/\d{2,4})?", text):
+            assert text not in output, f"{context(case, index)}: the probe printed the date {text}"
+    assert "=== Table engine" in output and "first chain-break row:" in output and "roles decided by" in output, output[-400:]
