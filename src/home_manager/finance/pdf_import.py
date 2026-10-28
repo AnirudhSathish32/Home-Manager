@@ -12,14 +12,13 @@ from dataclasses import dataclass, field
 from datetime import date
 import json
 import logging
-import math
 import re
-from statistics import median
 
 from ..core.logs import log_failure
 from ..core.money import MoneyError, currency_code, to_minor
-from ..documents.pdf_layout import PDFTable, point, visual_box
+from ..documents.pdf_layout import PDFTable
 from ..documents.pdf_reader import PDF_VERSIONS, PDFResult, read_result
+from ..documents.table_engine import PageView  # noqa: F401  (moved to the engine; scripts and tests import it from here)
 from .tabular import DATE_FORMATS, HEADER_NAMES
 
 log = logging.getLogger(__name__)
@@ -119,48 +118,6 @@ class Analysis:
 
 
 # --- Visual rows ---------------------------------------------------------------------------------------------------------
-
-class PageView:
-    """A native page's saved words grouped into visual rows (plan "Visual rows"): a word's baseline is its first character's
-    origin through page_to_preview, else the bottom of its box; a new row starts when a baseline differs by more than a quarter
-    of the font size from the first word of the row. This re-implements the reader's rule, which is a closure (pdf_layout.py)."""
-
-    def __init__(self, layout):
-        self.layout = layout
-        matrix = layout.page_to_preview
-        glyphs = [char for char in layout.characters if char.bbox and not char.generated and char.text and not char.text.isspace()]
-        self.size = max(1, median(char.font_size for char in glyphs) * math.hypot(matrix[0], matrix[1])) if glyphs else 1
-        self.box = {word.id: visual_box(matrix, word.bbox) for word in layout.words}
-        self.baseline = {}
-        for word in layout.words:
-            origin = layout.characters[word.character_indexes[0]].origin
-            self.baseline[word.id] = point(matrix, *origin)[1] if origin else self.box[word.id][3]
-        groups = []
-        for word in sorted(layout.words, key=lambda word: (self.baseline[word.id], self.box[word.id][0])):
-            if not groups or abs(self.baseline[word.id] - self.baseline[groups[-1][0].id]) > self.size * 0.25:
-                groups.append([])
-            groups[-1].append(word)
-        self.row_baseline = [self.baseline[group[0].id] for group in groups]
-        self.rows = [sorted(group, key=lambda word: self.box[word.id][0]) for group in groups]
-        self.row_of = {word.id: index for index, row in enumerate(self.rows) for word in row}
-        self.line_of = {word_id: line.id for line in layout.lines for word_id in line.word_ids}
-
-    def runs(self, index):
-        """A visual row's runs of words: a word closer than 1.5 font sizes to the one before it joins its run (plan "Heading texts")."""
-        groups = []
-        for word in self.rows[index]:
-            if not groups or self.box[word.id][0] - self.box[groups[-1][-1].id][2] > self.size * 1.5:
-                groups.append([])
-            groups[-1].append(word)
-        return groups
-
-    def texts(self, index):
-        """A visual row's texts, as (text, left, right): the text of each run and where it starts and ends."""
-        return [(" ".join(word.text for word in run), self.box[run[0].id][0], self.box[run[-1].id][2]) for run in self.runs(index)]
-
-    def lines(self, word_ids):
-        return list(dict.fromkeys(self.line_of[word_id] for word_id in word_ids if word_id in self.line_of))
-
 
 def is_heading(names):
     """A transactions heading has a date name and an amount, debit or credit name (matched stripped and lower-cased)."""
