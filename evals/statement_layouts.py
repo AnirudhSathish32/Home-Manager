@@ -401,8 +401,7 @@ class Case:
                 items += [(40, 780 - 12 * spot, text) for spot, text in enumerate(header)]
                 y = 780 - 12 * (len(header) - 1) - 36
             else:
-                if not self.sectioned:  # A running header is a one-run line: it would be read as the title of the rows below and end a carried section.
-                    items.append((40, 780, f"{self.name} statement continued"))
+                items.append((40, 780, f"{self.name} statement continued"))  # A running header: a title that names no direction.
                 y = 744
             show_heading = heading and (position == 0 or c["continuation_heading"])
             if show_heading:
