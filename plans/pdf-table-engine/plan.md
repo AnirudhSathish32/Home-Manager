@@ -1,6 +1,6 @@
 # One table engine for text PDFs, phase 1 (bank and card statements) — implementation plan
 Spec: specs/pdf-table-engine/spec.md (with specs/pdf-table-engine/test-contract.md)
-Spec sha256: 31d06e09ac86d98038369be6c963d04d07bc2030512fd68437fd6f6bcf200e3a
+Spec sha256: 2ccf1572417938e3088b566597b417ccfa09d16132a559cf2d17958ed4bf3839
 Review-Risk: HIGH
 Review-Risk-Rationale: It replaces how every text-PDF statement's dates, amounts and signs reach the ledger (Record and
 PDF import), so a defect would put wrong money into the household's books, and it changes a public API's preview rows.
@@ -15,6 +15,10 @@ splits it into milestones that can each be verified and reviewed on their own:
 - **M2, proof at scale**: SL-04 (the layout generator and the redacted probe).
 - **M3, the app uses it**: SL-05 (Record), SL-06 (PDF import and the index).
 - **M4, measurement**: SL-07 (evals and docs).
+
+**Contract amended (user, 2026-10-27, during SL-01).** Fixture NB printed one row in column B with no heading, which
+FR-04's two-row rule can't make a column; the user chose to add n4 (`11/25/2026 SYNTH REFUND`, 50.00 in B), so the
+ending balance is 674.80. No rule in this plan changed.
 
 Line numbers are from HEAD `3ee7d56`. All paths are under `src/home_manager/` unless they start with `tests/`, `evals/`,
 `scripts/` or `docs/`.

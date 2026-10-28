@@ -1,18 +1,18 @@
 {
   "feature": "pdf-table-engine",
   "spec": {
-    "sha256": "31d06e09ac86d98038369be6c963d04d07bc2030512fd68437fd6f6bcf200e3a",
+    "sha256": "2ccf1572417938e3088b566597b417ccfa09d16132a559cf2d17958ed4bf3839",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-27T15:51:15-04:00",
+    "approved_at": "2026-10-27T21:49:51-04:00",
     "approved_via": "agent",
-    "permission": "approve the spec then plan phase 1 only"
+    "permission": "Approve both, continue (re-approve spec and plan after the NB fixture amendment)"
   },
   "plan": {
-    "sha256": "2c54ab470d6799f3d7a4bf2e9573d79feae10fb816d19e6b33596a708acd6a23",
+    "sha256": "e9062960726231535e84793325df406acae727e0521c40230e4df81120063bf9",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-27T16:18:35-04:00",
+    "approved_at": "2026-10-27T21:49:51-04:00",
     "approved_via": "agent",
-    "permission": "approve the plan then start implmentation",
-    "spec_sha256": "31d06e09ac86d98038369be6c963d04d07bc2030512fd68437fd6f6bcf200e3a"
+    "permission": "Approve both, continue (re-approve spec and plan after the NB fixture amendment)",
+    "spec_sha256": "2ccf1572417938e3088b566597b417ccfa09d16132a559cf2d17958ed4bf3839"
   }
 }

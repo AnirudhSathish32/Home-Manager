@@ -1,8 +1,22 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: pdf-table-engine
-plan_sha256: 2c54ab470d6799f3d7a4bf2e9573d79feae10fb816d19e6b33596a708acd6a23
+plan_sha256: e9062960726231535e84793325df406acae727e0521c40230e4df81120063bf9
 slices:
-  - {id: SL-01, status: todo}
+  - id: SL-01
+    status: done
+    start_head: 4131858
+    end_head: cfdb7e4
+    commit: cfdb7e4
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -k \"pcheck or sc21 or rows or sc14\" -q -> 112 passed, 1 xfailed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_statement_rebuild.py -q -> 218 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed"
+    notes: >-
+      Escalation NB-P4: contract fixture NB had one row in column B (FR-04 needs two). User chose to add n4; spec and plan
+      re-approved (delegated) at spec 2ccf15724179 / plan e90629607262. The NB fixture update and removal of the strict
+      xfail are carried into SL-02 as its first step. First attempt hit a rate limit; resumed run committed cfdb7e4.
   - {id: SL-02, status: todo}
   - {id: SL-03, status: todo}
   - {id: SL-04, status: todo}

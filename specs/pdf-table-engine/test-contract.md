@@ -201,7 +201,7 @@ Card check: 1,250.00 − 1,045.00 + 276.62 = 481.62. Reading every row as a char
 2,571.62, which doesn't hold.
 
 ### NB: no balance column, no headings, printed summary (SC-07 variant)
-Lines above: `SYNTH PLAIN BANK`, `Account number 0000004040`, `Beginning balance 100.00`, `Ending balance 624.80`,
+Lines above: `SYNTH PLAIN BANK`, `Account number 0000004040`, `Beginning balance 100.00`, `Ending balance 674.80`,
 `Statement period 11/01/2026 to 11/30/2026`. No heading. Date left x 40, description left x 110, two amount columns
 right aligned at edges 380 (column A) and 460 (column B).
 
@@ -210,9 +210,11 @@ right aligned at edges 380 (column A) and 460 (column B).
 | n1 | 11/03/2026 | SYNTH PAYROLL | | 1,500.00 | 2026-11-03, 150000 |
 | n2 | 11/05/2026 | SYNTH RENT | 900.00 | | 2026-11-05, −90000 |
 | n3 | 11/18/2026 | SYNTH UTILITY | 75.20 | | 2026-11-18, −7520 |
+| n4 | 11/25/2026 | SYNTH REFUND | | 50.00 | 2026-11-25, 5000 |
 
-Summary: 100.00 + 1,500.00 − 975.20 = 624.80 holds with A out and B in. The reverse gives 100.00 + 975.20 − 1,500.00 =
-−424.80, which doesn't.
+Each column has two rows (FR-04; amended 2026-10-27, n4 added, because a one-row column can't form). Summary: 100.00 +
+1,550.00 − 975.20 = 674.80 holds with A out and B in. The reverse gives 100.00 + 975.20 − 1,550.00 = −474.80, which
+doesn't.
 
 ### K3: three pages, continuation with and without a heading (SC-08)
 account-import-pdf's K (`pdf_import_fixtures.k_pages`, k1–k9, expected values in that contract's K table) with two
@@ -318,7 +320,7 @@ Values cite their printed line where the fixture prints one; "missing" means `{"
 | OD | bank, checking | SYNTH DAILY BANK | 6630 | 2026-12-01 – 2026-12-31 | 200.00 | 437.85 |
 | ONE | bank, checking | SYNTH ONE BANK | 6611 | 2026-09-01 – 2026-09-30 | missing | missing |
 | CS | card | SYNTH REWARDS CARD | 5512 | 2026-10-05 – 2026-11-04 | 1,250.00 | 481.62 |
-| NB | bank, checking | SYNTH PLAIN BANK | 4040 | 2026-11-01 – 2026-11-30 | 100.00 | 624.80 |
+| NB | bank, checking | SYNTH PLAIN BANK | 4040 | 2026-11-01 – 2026-11-30 | 100.00 | 674.80 |
 | K3 | bank, checking | FIRST LOCAL BANK | 4821 | 2026-08-01 – 2026-08-31 | 1,000.00 | 2,378.61 |
 | B, BL, UP | bank, checking | SYNTH CHECKING BANK | 5521 | 2026-08-01 – 2026-08-31 | 1,000.00 | 2,950.00 |
 | PR | bank, checking | SYNTH CHECKING BANK | 5521 | 2026-08-01 – 2026-08-31 | 1,000.00 | 2,947.50 |
@@ -429,7 +431,7 @@ Evidence: `pytest tests/test_table_engine_record.py -k sc06`
 ## SC-07: signs from the summary and from sections
 Requirement IDs: FR-11, FR-12
 - CS, Record → C-exact(CS): p1 and p2 money in, q1–q4 money out. The card check holds (C-reconciles). C-no-row-review.
-- NB, Record → C-exact(NB): A is money out, B money in. C-reconciles.
+- NB, Record → C-exact(NB): A is money out (n2, n3), B money in (n1, n4). C-reconciles.
 - Engine on NB with the summary lines removed (no chain, no summary, no headings) → the roles can't be decided: no
   assignment is reported as decided by the chain or summary (FR-11, FR-13). What the outcome is in Record follows FR-13
   and is asserted only as `needs_review`.
