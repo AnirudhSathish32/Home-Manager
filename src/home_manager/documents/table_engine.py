@@ -916,6 +916,7 @@ class PageReading:
     created: list[EngineTable] = field(default_factory=list)  # The ones that start here.
     anchors: list[Anchor] = field(default_factory=list)  # Summary anchors: balance lines outside every table.
     unplaced: list[Unplaced] = field(default_factory=list)
+    periods: list[tuple] = field(default_factory=list)  # (page, line id, first date token, second date token), plan P8.
     others: list[str] = field(default_factory=list)  # Native reader tables no engine row, anchor or total cites.
 
 
@@ -979,6 +980,12 @@ def read_page(number, layout_page, previous):
         if kind and amount is not None:
             found.anchors.append(Anchor(number, page.line_id(line.index), kind, value_of(amount), False, any(token.kind == "date" for token in line.all_tokens())))
             page.mark([line.index])
+    for line in lines:
+        tokens = line.all_tokens()
+        dates = [token for token in tokens if token.kind == "date"]
+        if line.index not in page.used and len(dates) == 2 and all(token.value[2] is not None and token.value[2] > 999 for token in dates) \
+                and not any(token.kind == "amount" for token in tokens):
+            found.periods.append((number, page.line_id(line.index), dates[0], dates[1]))  # A candidate period line: outside every table, two dated, no amount.
     if found.opens:
         for line in lines:
             tokens = line.all_tokens()
@@ -988,9 +995,10 @@ def read_page(number, layout_page, previous):
     return found
 
 
-def finish(table, currency):
+def finish(table, currency, amounts=True):
     """A table's kind from all its rows, then the rejections that need the whole table (a blank description) or the statement's
-    currency (plan P5.5, P6)."""
+    currency (plan P5.5, P6). With `amounts` False the amount rejections (unreadable, another currency) are left to the statement
+    layer, which knows which columns hold money."""
     rows = [row for row in table.rows if not row.candidate]
     described = sum(1 for row in rows if row.description)
     amounts = [column for column in table.columns if column.kind == "amount"]
@@ -1001,7 +1009,7 @@ def finish(table, currency):
         if table.kind == "transactions" and not row.description.strip():
             row.reject = BLANK_DESCRIPTION
             continue
-        for token in row.amounts.values():
+        for token in row.amounts.values() if amounts else ():
             magnitude, _, code = token.value
             if magnitude is None:
                 row.reject = CANT_READ.format(text=token.text)
@@ -1013,10 +1021,11 @@ def finish(table, currency):
 
 # --- Entry point (FR-01) ---------------------------------------------------------------------------------------------------
 
-def read(result, currency=None):
+def read(result, currency=None, amounts=True):
     """Read a saved reading (`PDFResult`) into its tables. Only `embedded_text` pages with a saved layout are read. With the
     statement's `currency` (an ISO code), a row whose printed amount carries another code is rejected (FR-16); without it the code
-    stays on the amount token for the statement layer."""
+    stays on the amount token for the statement layer. With `amounts` False no row is rejected for its amounts (unreadable, another
+    currency): the statement layer does that, per column, once it knows which columns are money."""
     reading = EngineReading([])
     previous = []
     for page in result.pages:
@@ -1027,10 +1036,11 @@ def read(result, currency=None):
         reading.tables += found.created
         reading.summary_anchors += found.anchors
         reading.unplaced += found.unplaced
+        reading.period_lines += found.periods
         reading.other_native_tables += found.others
         if not found.opens:
             reading.pages_without_tables.append(page.number)
         previous = found.opens
     for table in reading.tables:
-        finish(table, currency)
+        finish(table, currency, amounts)
     return reading

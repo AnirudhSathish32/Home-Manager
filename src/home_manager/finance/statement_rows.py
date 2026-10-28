@@ -7,28 +7,23 @@ in the shape `ExtractionService.normalize` reads, and the review issues and reco
 for. A row that cannot be placed is listed as an issue, never guessed.
 """
 
-from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 
 from .pdf_import import BALANCE_NAMES, PageView, analyze, is_heading, make_spec, page_flags, read_shape, structure
+from .statement_dates import (  # noqa: F401  Moved; callers and tests import them from here.
+    NO_LAYOUT_NOTE,
+    PERIOD_SLACK,
+    Rebuild,
+    duplicates,
+    placed,
+    read_period,
+)
 
-NO_LAYOUT_NOTE = "Read this document again to take its rows from the printed columns."
 BALANCE_WORDS = (*BALANCE_NAMES, "daily ending balance", "daily balance")  # FR-27: what makes a title or heading name a balance.
 DATE_ORDERS = ("MM/DD/YYYY", "DD/MM/YYYY")
-PERIOD_SLACK = timedelta(days=7)  # The tolerance `ExtractionService.normalize` gives a row's date against the printed period.
 SECOND_HEADING = "Page {page}: rows after a second transactions heading on this page weren't read; check them against the statement."
 TITLE_NOTE = ('Page {page}: the line above the table headed "{heading}" names a balance, so its rows were taken from the reading, '
               "not the printed columns; check them.")
-
-
-@dataclass
-class Rebuild:
-    available: bool  # False: no layout (FR-23). The caller adds its own issue when the rebuild fails (P8).
-    pages: set[int] = field(default_factory=set)  # Rebuilt pages: at least one row in the selected tables, recorded or not.
-    rows: list[dict] = field(default_factory=list)  # Transactions in normalize's shape, in printed order, recorded rows only.
-    issues: list[str] = field(default_factory=list)  # Review reasons: rejected rows, missing years, duplicates, second headings.
-    notes: list[str] = field(default_factory=list)  # Record notes, not review reasons.
-    dropped: int = 0  # Rows of the rebuilt pages that were rejected or left out (FR-25's arithmetic check needs to know).
 
 
 def names_balance(text):
@@ -149,33 +144,6 @@ def rebuilt_pages(result) -> set[int]:
     return {row.page for row in rows}
 
 
-def read_period(value):
-    if isinstance(value, date):
-        return value
-    try:
-        return date.fromisoformat(value) if value else None
-    except ValueError:
-        return None
-
-
-def placed(shape, order, start, end):
-    """A printed date's ISO date, or why it can't be placed (FR-19). A four-digit year is read as printed; else the year is the
-    period's start year, or across a year end the end year for a month earlier than the start month."""
-    kind, first, second, full, short = shape
-    month, day = (first, second) if kind == "iso" or order == "MM/DD/YYYY" else (second, first)
-    year = full
-    if year is None:
-        if start is None or end is None:
-            return None, "no year is printed and the statement period wasn't read, so the date {date} can't be placed."
-        year = start.year if start.year == end.year else end.year if month < start.month else start.year
-        if short is not None and year % 100 != short:
-            return None, 'the printed year in "{date}" disagrees with the statement period.'
-    try:
-        return date(year, month, day).isoformat(), None
-    except ValueError:
-        return None, 'The date "{date}" is not a real date.'
-
-
 def date_order(rows, start, end):
     """The printed slash dates' order: the one a day over 12 decides, else the one under which every date falls inside the
     printed period (P12). None when it can't be told."""
@@ -249,15 +217,3 @@ def rebuild(result, *, statement_type, period_start, period_end, currency) -> Re
     return Rebuild(True, pages, transactions, issues, reading.notes, dropped)
 
 
-def duplicates(recorded):
-    """FR-29: one issue per pair of recorded rows with the same date, amount and description on different pages or tables."""
-    issues = []
-    for position, (first, posted) in enumerate(recorded):
-        for second, other in recorded[position + 1:]:
-            if (posted, first.amount_minor, " ".join(first.description.split()).casefold()) != (
-                    other, second.amount_minor, " ".join(second.description.split()).casefold()):
-                continue
-            if (first.page, first.table_id) != (second.page, second.table_id):
-                issues.append(f"The same row is printed twice: {posted} {first.description} {first.amount} on page {first.page} (row {first.row}) and "
-                              f"page {second.page} (row {second.row}). Both were recorded; check whether it is one payment.")
-    return issues
