@@ -59,7 +59,27 @@ slices:
       for two cases P9 doesn't name (candidates disagree; roles can't be told). Carried: as_analysis() to SL-06;
       prior_order on a real migrated library to SL-05; whether P6's mid-page cut at a different column set is needed
       is for SL-04's generator to show.
-  - {id: SL-04, status: in_progress, start_head: e91b21b, provider: claude, model: claude-sonnet-5-5}
-  - {id: SL-05, status: todo}
+  - id: SL-04
+    status: done
+    start_head: d3c4772
+    end_head: 3d0af39
+    commit: 0975daa
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine_generator.py -k generator_only -q -> 332 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -q -> 243 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_statement_rebuild.py -q -> 218 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals scripts -> all checks passed"
+    notes: >-
+      ALIGN unchanged at 0.75 (0.5 and 1.0 also pass). P6's mid-page cut at a different column set not needed by any
+      generated layout; not implemented. Four engine defect repairs reviewed by the orchestrator and accepted (no contract
+      value changes; no tie that changes money is broken by order): a printed summary narrows a chain tie only when it
+      leaves one money reading; a direction-less title doesn't end a section; dateless rows count for P5.7; CR in an out
+      column / DR in an in column counts as a conflict. Carried to SL-07 docs/open-work.md: a column printed only on
+      dateless rows is never found; a section title directly above a headless table's first row doesn't label it; a
+      two-digit year is placed only within the period's years; a 2-3 row headless last page with an in/out pair leaves a
+      one-row column. make() takes **overrides (for SL-07).
+  - {id: SL-05, status: in_progress, start_head: 3d0af39, provider: claude, model: claude-sonnet-5-5}
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
