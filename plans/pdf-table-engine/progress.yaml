@@ -17,8 +17,29 @@ slices:
       Escalation NB-P4: contract fixture NB had one row in column B (FR-04 needs two). User chose to add n4; spec and plan
       re-approved (delegated) at spec 2ccf15724179 / plan e90629607262. The NB fixture update and removal of the strict
       xfail are carried into SL-02 as its first step. First attempt hit a rate limit; resumed run committed cfdb7e4.
-  - {id: SL-02, status: todo}
-  - {id: SL-03, status: todo}
+  - id: SL-02
+    status: done
+    start_head: fd0c65a
+    end_head: 04ed779
+    commit: 5e82e70
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -q -> 189 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_pdf_imports.py tests/test_statement_rebuild.py -q -> 218 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed"
+    notes: >-
+      Plan repairs accepted by the orchestrator as non-material (no requirement or contract value changes):
+      (1) ZONES-X-T: when headings are printed, the outermost amount zones are bounded by the neighbouring heading
+      labels (bound_by_headings), as the old reader's spans were; headless pages keep P4's rule. Needed for
+      statement-accounts X (x2 unplaced, x3 two amounts) and T (12.34 stays the amount).
+      (2) P5.7-CRITERION: the plan's criterion failed on its own WR-above fixture; repaired to: >= 2 rows, every row has a
+      text-only line directly above it, the last row has none below.
+      (3) CURRENCY-PARAM: engine read(result, currency=None) optional; SL-03 applies the currency check.
+      Carried to SL-03: schedule kind (BL page 2: contract identity 5 other-table rows); P6's mid-page cut at a
+      different column set starting a run of >= 2 rows; rejections that need roles (both debit and credit; unreadable
+      amounts only in money columns, so FX's rate column is never parsed); anchors re-classed per candidate.
+  - {id: SL-03, status: in_progress, start_head: 04ed779, provider: claude, model: claude-sonnet-5-5}
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
   - {id: SL-06, status: todo}
