@@ -214,6 +214,12 @@ class Sheet:
         self.index = index
         self.cells = [{index[column_id]: self.cell(token) for column_id, token in row.amounts.items() if column_id in index} for row in self.rows]
         self.labels = [label_role(column.labels) for column in self.columns]
+        self.direction = {}  # id(row) -> in, out or None: its section's direction. A title that says neither (a page heading) does not end the one before it.
+        current, last = None, None
+        for row in self.rows:
+            if row.section != last:
+                current, last = title_direction(row.section) or current, row.section
+            self.direction[id(row)] = current
         self.anchor_of = {}  # Row position -> the table's anchor for that balance line.
         for position, row in enumerate(self.rows):
             if row.candidate and row.line_ids:
@@ -246,7 +252,7 @@ class Sheet:
         if cell.marker == "debit":
             return -cell.minor
         if cell.marker != "minus":  # A minus is read against the default; any other amount may take its section's direction.
-            direction = title_direction(row.section)
+            direction = self.direction.get(id(row))
             if direction:
                 return cell.minor if direction == "in" else -cell.minor
         return None if default is None else convention_sign(default, cell.marker, cell.minor)
@@ -256,6 +262,7 @@ class Sheet:
         found = Candidate(roles, mode, order, ["row"] * len(rows), [None] * len(rows), [None] * len(rows), [None] * len(rows))
         balance_at = roles.index("balance") if "balance" in roles else None
         money = [(position, role) for position, role in enumerate(roles) if role in ("in", "out", "signed")]
+        clashes = 0
         chain = [None] * len(rows)  # What a row adds to the chain: its signed amount, "break" (it cannot be read), or None (not a transaction).
         for index, row in enumerate(rows):
             cells = self.cells[index]
@@ -290,6 +297,7 @@ class Sheet:
                     found.unresolved = found.unresolved or value is None
                 else:
                     value = -cell.minor if (role == "out") != (cell.marker == "minus") else cell.minor
+                    clashes += (role == "out" and cell.marker == "credit") or (role == "in" and cell.marker == "debit")  # CR in a money-out column.
             if balance_at in cells and cells[balance_at].minor is not None:
                 found.balances[index] = -cells[balance_at].minor if cells[balance_at].marker == "minus" else cells[balance_at].minor
             if value is not None:
@@ -301,7 +309,7 @@ class Sheet:
         self.run_summary(found)
         found.others = roles.count("other")
         found.unsupported = balance_at is not None and found.holds == 0 and self.labels[balance_at] != "balance"
-        found.conflicts = sum(1 for label, role in zip(self.labels, roles) if label is not None and label != role)
+        found.conflicts = clashes + sum(1 for label, role in zip(self.labels, roles) if label is not None and label != role)
         found.labelled = any(self.labels) and all(label == role if label else role == "other" for label, role in zip(self.labels, roles))
         return found
 
@@ -644,6 +652,11 @@ class Reader:
                 return min(group, key=lambda c: (c.unsupported, c.others, c.conflicts, c.order))
         fewest = min(c.conflicts for c in pool if c.others == min(d.others for d in pool))
         group = [c for c in pool if c.others == min(d.others for d in pool) and c.conflicts == fewest]
+        if len({tuple(c.amounts) for c in group}) > 1:
+            # A chain that skips a column's rows (balances printed only beside the other column's rows) holds under readings of that column
+            # that differ on money; a printed summary that adds up under only some of them settles it.
+            held = [c for c in group if c.summary_holds]
+            group = held if held and len({tuple(c.amounts) for c in held}) == 1 else group
         return min(group, key=lambda c: (c.unsupported, c.order)) if len({tuple(c.amounts) for c in group}) == 1 else None
 
     # --- Rows ----------------------------------------------------------------------------------------------------------------

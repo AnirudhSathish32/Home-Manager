@@ -802,7 +802,7 @@ def continuation(view, lines, lo, hi, candidates):
 
 
 def descriptions_above(page, layout, begin, hi, readings, headings):
-    """Plan P5.7: the table prints its descriptions above their amounts when every row's date line has a text-only line (inside the
+    """Plan P5.7: the table prints its descriptions above their amounts when every row's amount line has a text-only line (inside the
     description zone) directly above it, the first one included, and the last row's date line has none directly below. At least two
     rows. (The plan also asks that no date line has one below; the next row's description is always directly below the row before, so
     only the last row can show it.)"""
@@ -815,7 +815,7 @@ def descriptions_above(page, layout, begin, hi, readings, headings):
         return bool(line.tokens) and not readings[index].dates and not readings[index].amounts \
             and all(token.kind == "text" for token in line.all_tokens()) and in_description(view, layout, line.words)
 
-    row_lines = [index for index in range(begin, hi) if readings[index].dates and readings[index].amounts]
+    row_lines = [index for index in range(begin, hi) if readings[index].amounts and index not in headings]  # A dateless row is a row too (OD-1).
     return len(row_lines) >= 2 and all(text_only(index - 1) for index in row_lines) and not text_only(row_lines[-1] + 1)
 
 
