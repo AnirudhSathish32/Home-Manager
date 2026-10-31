@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import logging
 import re
 from typing import Literal
 import unicodedata
@@ -20,6 +21,7 @@ from pydantic import Field, field_validator, model_validator
 from ..core import actor
 from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, RENT_LINE_KINDS, RENT_LINE_TYPES, receipt_category
 from ..core.formats import TABLES, extension
+from ..core.logs import log_failure
 from ..core.money import currency_code, format_minor, money, to_minor
 from ..core.paths import safe_path
 from ..core.trace import NULL
@@ -27,10 +29,13 @@ from ..documents.pdf_layout import PDF_EVIDENCE_BYTES
 from ..documents.pdf_reader import PDFResult, read_result
 from ..documents.receipt_schema import StrictModel
 from ..library.storage import digest_file, now
-from . import document_checks, paystub, pdf_import, splits
+from . import document_checks, paystub, pdf_import, splits, statement_tables
 from .tabular import MAX_BYTES, MappingError, parse_transactions, preview
 
+log = logging.getLogger(__name__)
+
 PDF_INTEGRITY = "Preserved evidence failed its integrity check. Nothing was imported."
+ENGINE_FAULT = "This PDF's rows couldn't be read from its printed columns. Read it again, or use Record."
 PDF_ONLY = "Year, date order, sign, ticks and table choices apply to PDF files only."
 # What must still be chosen before a PDF import (pdf_import.Analysis.required), as the refusal and the dialog say it.
 REQUIRED = {"year": "Choose the year: these dates print no year, or only two digits.",
@@ -1549,15 +1554,28 @@ class Ledger:
         currency = currency_code(currency) if currency else None
         account = account or (self.account(account_id, db) if account_id else None)
         match = None
+        last_four = account["account_last_four"] if account else None
+
+        def analyzed(**kwargs):
+            """The engine's analysis; the date order last decided for the account (OD-2) is looked up only when the printed dates can't tell it."""
+            prior = (lambda: statement_tables.prior_order(db, last_four, document_id)) if last_four else None
+            try:
+                return pdf_import.analyze(result, prior_order=prior, **choices, **kwargs)
+            except pdf_import.PDFImportError:
+                raise
+            except Exception as exc:  # An engine fault is refused, nothing is written (FR-24); the log keeps the exception and run, never text.
+                log_failure(log, "pdf import", exc, run=run["id"])
+                raise ValueError(ENGINE_FAULT) from None
         if account is None:  # A first look finds the last fours and the document's currency, which choose the account and so the sign.
-            first = pdf_import.analyze(result, account_type=account_type, currency=currency or "USD", **choices)
+            first = analyzed(account_type=account_type, currency=currency or "USD")
             match = self.account_match(db, first.last_fours, first.document_currency, home_currency)
             if match and account_type is None and currency in (None, db.execute("SELECT currency FROM accounts WHERE id=?", (match["account_id"],)).fetchone()[0]):
                 account = self.account(match["account_id"], db)
+                last_four = account["account_last_four"]
             else:
                 currency = currency or first.document_currency or home_currency or "USD"
-        analysis = pdf_import.analyze(result, account_type=account["account_type"] if account else account_type,
-                                      currency=account["currency"] if account else currency, **choices)
+                last_four = next(iter(first.last_fours)) if len(first.last_fours) == 1 else None
+        analysis = analyzed(account_type=account["account_type"] if account else account_type, currency=account["currency"] if account else currency)
         if match is None:
             match = self.account_match(db, analysis.last_fours, analysis.document_currency, home_currency)
         rows = {row.key: row for row in analysis.rows}

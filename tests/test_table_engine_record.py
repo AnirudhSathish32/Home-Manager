@@ -14,18 +14,19 @@ closing, CC's, ND's, ONE's) is `missing`; WF-summary-off cites two extra lines t
 import json
 import logging
 import re
+import time
 
 import pytest
 
 from home_manager.documents import extraction
 from home_manager.documents.pdf_reader import read_result
 from home_manager.documents.receipt_service import ReceiptService
-from home_manager.finance import statement_tables
+from home_manager.finance import pdf_import, statement_tables
 import pdf_import_fixtures as fx
 import statement_account_fixtures as sf
 import table_engine_fixtures as tf
 from test_pdf import pdf_store  # noqa: F401
-from test_pdf_imports import env  # noqa: F401  (the API environment of PDF import)
+from test_pdf_imports import candidates, env, opened  # noqa: F401  (the API environment of PDF import)
 from test_statement_rebuild import Recorded, s_replies
 from test_table_engine import no_network  # noqa: F401  C-net: autouse, nothing here connects to a non-loopback address.
 
@@ -524,6 +525,99 @@ def test_sc13_extract_again_rebuilds_the_undecided_statement_and_keeps_the_one_y
     assert not {posted for posted, _, _ in rows_of(y)} & {"2026-01-10", "2026-02-10", "2026-03-10", "2026-05-10", "2026-06-10", "2026-08-10", "2026-12-10"}
 
 
+def dm_z_pages():
+    """Z is DM with its footer text changed so the hashes differ."""
+    pages = tf.dm_pages()
+    pages[0]["items"] = [(x, y, "SYNTH DAYFIRST BANK statement page one of one, amounts shown in $ kept again" if text.startswith("SYNTH DAYFIRST BANK statement") else text)
+                         for x, y, text, *rest in pages[0]["items"]]
+    return pages
+
+
+def reopened(recorded, env_, model):
+    """The same Record handle after a restart: the store of the reopened library, the saved reading's lines."""
+    service = ReceiptService(env_.store)
+    parse_id = recorded.parse_id
+    return Recorded(env_.store, service, {"id": recorded.doc["id"]}, parse_id, sf.reading_lines(read_result(service.get(parse_id)["result"])), model)
+
+
+def snapshot(env_):
+    return (env_.sql("SELECT * FROM statements ORDER BY id"), env_.sql("SELECT * FROM transactions ORDER BY id"))
+
+
+def journey_j1_state(env_, model):
+    """DM captured and read twice (Y and Z, one account …4417), published with the old path's month-first rows, Z confirmed, both index rows
+    at the version before this feature (the contract's Doubles: `Ledger.publish_statement`, then `POST …/review`, then direct SQL)."""
+    y, _ = recorded_fixture(env_, model, "DM", file="y")
+    z, _ = recorded_fixture(env_, model, "DM", dm_z_pages(), file="z")
+    assert y.doc["current_hash"] != z.doc["current_hash"]
+    ledger = env_.manager.ledger
+    # Z is published first: in one account the ledger leaves a row the account already holds out of the statement published after it, so Z keeps
+    # its 8 rows and Y, offered the same 8, holds none until Extract again.
+    old_z = ledger.publish_statement(old_path_statement(z.doc, month_first_rows()), {"document_id": z.doc["id"], "blob_hash": z.doc["current_hash"],
+                                                                                    "source_key": "extraction:old", "run_id": "old"}, "needs_review")
+    old_y = ledger.publish_statement(old_path_statement(y.doc, month_first_rows()), {"document_id": y.doc["id"], "blob_hash": y.doc["current_hash"],
+                                                                                    "source_key": "extraction:old", "run_id": "old"}, "needs_review")
+    response = env_.client.post(f"/api/finance/records/statement/{old_z['id']}/review", json={"status": "verified"})
+    assert response.status_code == 200, response.text
+    with env_.store.connection() as db:
+        db.execute("UPDATE pdf_import_index SET analyzer_version = 2")
+    return y, z, old_y, old_z
+
+
+def wait_for_the_index(env_):
+    for _ in range(600):  # The backfill runs on the capture queue, started by opening the library.
+        if not env_.manager.busy():
+            return
+        time.sleep(.05)
+    raise AssertionError("the index job did not finish")
+
+
+def test_journey_j1_an_upgraded_library_is_indexed_again_and_extract_again_rebuilds_only_the_statement_you_did_not_confirm(tmp_path, local_model):
+    """SC-13 + SC-22 (J1), as amended 2026-10-31: Y and Z are in ONE account. The ledger leaves a row the account already holds out of a statement as a
+    duplicate, and DM's row 7 (2026-10-10 INTEREST CREDIT) reads the same both ways, so after Extract again Y holds 19 rows, and Z (confirmed) still
+    holds its 8. Starting the app changes no statement or transaction."""
+    with opened(tmp_path) as first:
+        y, z, old_y, old_z = journey_j1_state(first, local_model)
+        fingerprints = first.sql("SELECT parse_run_id,created_at FROM pdf_import_index ORDER BY parse_run_id")
+        assert len(first.sql("SELECT id FROM transactions WHERE statement_id=?", old_z["id"])) == 8
+        before = snapshot(first)
+        migrations = first.sql("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        with first.store.connection() as db:
+            waiting = pdf_import.pending(db)
+        assert sorted(waiting) == sorted([first.reading(y.doc), first.reading(z.doc)])  # Checkpoint 1: both readings wait for the index ...
+        assert candidates(first)["indexing"] is True  # ... and the picker says so.
+    with opened(tmp_path, configure=False) as second:  # Start the app.
+        wait_for_the_index(second)
+        assert snapshot(second) == before  # No transaction or statement changed.
+        rows = second.sql("SELECT parse_run_id,analyzer_version FROM pdf_import_index ORDER BY parse_run_id")  # Checkpoint 2.
+        assert len(rows) == 2 and all(version == pdf_import.ANALYZER_VERSION > 2 for _, version in rows)
+        assert candidates(second)["indexing"] is False
+        indexed = second.sql("SELECT parse_run_id,created_at FROM pdf_import_index ORDER BY parse_run_id")
+    with opened(tmp_path, configure=False) as third:  # Start-up again does not index again.
+        wait_for_the_index(third)
+        with third.store.connection() as db:
+            assert pdf_import.pending(db) == []
+        assert third.sql("SELECT parse_run_id,created_at FROM pdf_import_index ORDER BY parse_run_id") == indexed != fingerprints
+        z_again, y_again = reopened(z, third, local_model), reopened(y, third, local_model)
+        held = third.sql("SELECT * FROM transactions WHERE statement_id=? ORDER BY id", old_z["id"])
+        statement = third.sql("SELECT * FROM statements WHERE id=?", old_z["id"])
+        # Checkpoint 3: Extract again on Z keeps the statement you confirmed, and its 8 rows.
+        z_again.run(replies("DM"), force=True)
+        assert z_again.extraction["publication"]["status"] == "kept_reviewed"
+        assert third.sql("SELECT * FROM transactions WHERE statement_id=? ORDER BY id", old_z["id"]) == held and len(held) == 8
+        assert third.sql("SELECT * FROM statements WHERE id=?", old_z["id"]) == statement
+        # Checkpoint 4: Extract again on Y gives DM's 20 rows except the one Z holds, with no month-first date left.
+        record_ = y_again.run(replies("DM"), force=True)
+        assert record_["id"] == old_y["id"]
+        want = [(posted, amount, collapse(text)) for posted, amount, text in expected_dm() if (posted, text) != ("2026-10-10", "INTEREST CREDIT")]
+        assert len(want) == 19 and rows_of(y_again) == want
+        month_first = {"2026-01-10", "2026-02-10", "2026-03-10", "2026-05-10", "2026-06-10", "2026-08-10", "2026-12-10"}
+        assert not {posted for posted, _, _ in rows_of(y_again)} & month_first
+        assert len(third.sql("SELECT id FROM transactions WHERE statement_id=?", old_z["id"])) == 8  # Z unchanged.
+        assert third.sql("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") == migrations  # No schema change.
+        money(third)
+
+
 # --- SC-14: determinism ---------------------------------------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ["WF", "WR"])
@@ -627,6 +721,121 @@ def test_sc19_an_engine_fault_falls_back_to_the_models_rows_with_one_note_and_lo
     assert failures and len({entry.getMessage().split(" failed")[0] for entry in failures}) == 1  # The same failure, logged where it was caught.
     logged = " ".join(entry.getMessage() for entry in caplog.records)
     assert not any(text in logged for text in (*sf.S_DESCRIPTIONS, "SYNTH ACCTVERIFY", "PAYROLL SYNTH", "TRANSFER TO CHECKING", "1,500.00", "500.00", "000009000123456", "3456"))
+
+
+# --- PDF import (SL-06): SC-08 step 2, SC-12, SC-16's preview, SC-19 step 2 ----------------------------------------------------------------------
+
+def account_for(env_, name):
+    """An account matching the fixture's summary stub (SC-12 step 1): its institution, kind (a card, a savings account for DM, else checking) and last four, in USD."""
+    chosen = SPECS[name]
+    kind = "credit_card" if chosen["kind"] == "card" else "savings" if name in ("DM", "BRK") else "checking"
+    response = env_.client.post("/api/finance/accounts", json={"institution": chosen["name"], "account_type": kind, "currency": "USD", "last_four": chosen["ref"][0]})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def with_dollar_footers(pages):
+    """K's footers print no `$`, so Record couldn't read the amounts as USD (the contract's conventions give every native page one)."""
+    return [{**page, "items": [(x, y, text.replace(", kept", ", amounts shown in $, kept"), *rest) for x, y, text, *rest in page["items"]]} for page in pages]
+
+
+def counts_of(env_):
+    return [env_.sql(f"SELECT count(*) FROM {table}")[0][0] for table in ("transactions", "transaction_imports", "accounts")]
+
+
+def preview_of(env_, doc, account_id, **choices):
+    response = env_.preview(doc, account_id=account_id, **choices)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_sc08_k3_pdf_import_previews_the_nine_rows_with_page_three_linked_to_page_one_import(env, local_model):
+    pages = with_dollar_footers(tf.k3_pages())
+    recorded, _ = recorded_fixture(env, local_model, "K3", pages)
+    account_id = account_for(env, "K3")
+    before = counts_of(env)
+    preview = preview_of(env, recorded.doc, account_id)
+    assert counts_of(env) == before  # A preview writes nothing.
+    assert [(row["posted_date"], row["amount_minor"]) for row in preview["rows"]] == [(posted, row[7]) for posted, row in zip(fx.K_POSTED, fx.K_ROWS)]
+    assert [row["description"] for row in preview["rows"]] == [row[3] for row in fx.K_ROWS]
+    assert not [row for row in preview["rows"] if row["rejected"]] and preview["counts"]["rejected"] == 0 and preview["counts"].get("unplaced", 0) == 0
+    assert not [issue for issue in preview["issues"] if issue["code"] in ("unplaced_line", "rejected_row")]
+    keys = [row["key"] for row in preview["rows"]]
+    assert len(set(keys)) == 9  # Unique across pages.
+    first = next(table for table in preview["tables"] if table["kind"] != "continuation" and table["page"] == 1 and table["selectable"])
+    third = [row for row in preview["rows"] if row["page"] == 3]
+    assert len(third) == 3 and all(row["continued_from"] == 1 for row in third)
+    assert [table["linked_to"] for table in preview["tables"] if table["page"] == 3] == [first["id"]]
+    assert preview["required"] == [] and preview["blocked"] is None
+
+
+SC12 = ["WF", "WF-bare", "DM", "WR", "OD", "CS", "NB", "K3", "BL", "UP", "CC", "FX", "PD", "TD"]
+
+
+@pytest.mark.parametrize("name", SC12)
+def test_sc12_the_preview_agrees_with_record_import(env, local_model, name):
+    """SC-12: for each fixture in a fresh library, an account matching the summary stub, a preview with no choices (nothing is required: the engine
+    reads the printed period, the date order and the signs), then Record of the same reading. The preview's parsed, ticked rows in printed order
+    equal the recorded transactions; UP's and PD's unplaced lines are listed with page and text and are not importable."""
+    pages = with_dollar_footers(tf.FIXTURES[name]()) if name == "K3" else None
+    recorded, _ = recorded_fixture(env, local_model, name, pages)
+    blob = env.store.blob_path(recorded.doc["current_hash"])
+    original = blob.read_bytes()
+    account_id = account_for(env, name)
+    before = counts_of(env)
+    preview = preview_of(env, recorded.doc, account_id)
+    assert counts_of(env) == before and blob.read_bytes() == original  # The preview writes nothing and leaves the original alone (C-docs).
+    assert preview["required"] == [], preview["required"]  # No year, date-order or sign choice.
+    chosen = SPECS[name]["period"]
+    years = {int(chosen[0][:4]), int(chosen[1][:4])} if chosen else set()
+    ticked = [row for row in preview["rows"] if row["ticked"] and not row["rejected"]]
+    if years:
+        assert {int(row["posted_date"][:4]) for row in ticked} <= years  # The printed period's year, for rows that print none.
+    record_ = recorded.run(replies(name))
+    assert blob.read_bytes() == original
+    assert [(row["posted_date"], row["amount_minor"], collapse(row["description"])) for row in ticked] == rows_of(recorded), name
+    assert ticked and len(ticked) == len(rows_of(recorded)) and not [row for row in preview["rows"] if row["rejected"]]
+    unplaced = [issue for issue in preview["issues"] if issue["code"] == "unplaced_line"]
+    in_record = [issue for issue in record_["issues"] if "wasn't placed in any column" in issue or "a pending row" in issue]
+    assert [issue["message"] for issue in unplaced] == in_record, name  # Page and line text, as Record lists them.
+    assert all(issue["page"] and "\"" in issue["message"] for issue in unplaced)
+    assert preview["counts"].get("unplaced", 0) == len(unplaced) == {"UP": 1, "PD": 2}.get(name, 0)
+    for issue in unplaced:  # Not rows, so not importable.
+        quoted = issue["message"].split('"')[1]
+        assert not [row for row in preview["rows"] if row["description"] and row["description"] in quoted]
+    assert preview["counts"]["seen"] == len(preview["rows"]) + len(unplaced)  # The identity counts them (G13).
+
+
+def test_sc16_nd_the_date_order_is_a_required_choice_in_the_preview_import(env, local_model):
+    recorded, _ = recorded_fixture(env, local_model, "ND")
+    account_id = account_for(env, "ND")
+    before = counts_of(env)
+    preview = preview_of(env, recorded.doc, account_id)
+    assert preview["required"] == ["date_format"] and counts_of(env) == before
+    chosen = preview_of(env, recorded.doc, account_id, date_format="DD/MM/YYYY")
+    assert chosen["required"] == [] and [row["posted_date"] for row in chosen["rows"]] == [posted for posted, _ in tf.ND_EXPECTED_DAY_FIRST]
+
+
+def test_sc19_an_engine_fault_is_refused_with_a_4xx_and_nothing_written_import(env, local_model, monkeypatch, caplog):
+    """Step 2 of SC-19, on fixture S: the engine's entry point raises; the preview is a 4xx refusal with the message of G12, nothing is written, and the
+    response holds no traceback; the log carries the exception and no fixture text."""
+    recorded, _ = recorded_fixture(env, local_model, "S", sf.s_pages())
+    account_id = env.client.post("/api/finance/accounts", json={"institution": "SYNTH BANK", "account_type": "savings", "currency": "USD", "last_four": "3456"}).json()["id"]
+    before = counts_of(env)
+
+    def raising(*args, **options):
+        raise RuntimeError("injected engine fault")
+    monkeypatch.setattr(statement_tables, "engine_pages", raising)
+    monkeypatch.setattr(statement_tables, "read", raising)
+    with caplog.at_level(logging.DEBUG):
+        response = env.preview(recorded.doc, account_id=account_id)
+    assert 400 <= response.status_code < 500, response.text
+    assert "couldn't be read from its printed columns" in response.text and "Traceback" not in response.text and "injected engine fault" not in response.text
+    assert counts_of(env) == before
+    imported = env.run(recorded.doc, account_id=account_id, reading_id=env.reading(recorded.doc))
+    assert 400 <= imported.status_code < 500 and counts_of(env) == before
+    logged = " ".join(entry.getMessage() for entry in caplog.records)
+    assert "RuntimeError" in logged and not any(text in logged for text in (*sf.S_DESCRIPTIONS, "SYNTH ACCTVERIFY", "000009000123456"))
 
 
 # --- SC-23 – SC-25: card risks ---------------------------------------------------------------------------------------------------------------------
