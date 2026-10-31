@@ -572,55 +572,79 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
 
 ### Statement rows from the printed columns
 
-Code: `finance/statement_rows.py` (`rebuild`, `rebuilt_pages`), `documents/extraction.py` (`read`, `normalize`,
-`publish`), `finance/provenance.py`. Rows are rebuilt by PDF import's rules ([Transaction imports](#transaction-imports)),
-with no model and no network.
+Code: `documents/table_engine.py` (columns, rows, lines that are not rows), `finance/statement_tables.py` (what the columns
+mean, the period, the date order, notes and issues), `finance/statement_dates.py` (dates and the shape Record reads),
+`documents/extraction.py` (`read`, `publish`, `normalize`), `finance/provenance.py`. The rows come from the saved
+reading's words and their positions, with no model and no network. The same input always gives the same rows, ids and
+evidence (Extract again on an unchanged reading changes nothing).
 
-- **Which pages.** Recording a bank or credit-card statement PDF rebuilds the rows of every `embedded_text` page that
-  has a transactions table, a page flagged for overlapping or rotated text included. Those pages' transactions are the
-  rebuilt rows. A page with no transactions heading that continues none, a scanned (`vision_model`) page and a reading
-  saved without layout keep the model's rows and today's checks. A reading with no layout adds the note "Read this
-  document again to take its rows from the printed columns." Readings made before this are rebuilt on **Extract
-  again**; a statement you confirmed or rejected is not rewritten.
-- **Values.** The date is the Date cell; the description is the Description cell as printed; the amount is the Amount
-  cell or the one filled Debit/Withdrawals or Credit/Deposits cell, in minor units. A Balance column is never an
-  amount. With one Amount column a bank statement reads negative as money out and a card statement reads positive as
-  money out. A description printed in pieces with wide gaps ("ACCTVERIFY      PPD ID: 1234") stays one description:
-  text after it that ends before the Amount heading begins is description text, even past the midpoint between the
-  two headings (an amount-shaped word is placed as before). This narrows `account-import-pdf` FR-08's midpoint rule
-  for both features. The Balance cell is kept as the row's printed balance (`balance_minor` in its evidence), shown in
-  the document page's transactions table beside the amount and never read as one. A date with no year, or a two-digit
-  year, takes its year from the printed period (a month before the
-  period's start month falls in its end year); with no printed period such rows are not recorded and are listed. A
-  day/month order the dates can't settle is listed too.
-- **The model decides nothing there.** Its rows on a rebuilt page change no date, amount or direction and add no rows.
-  One that matches no rebuilt row (by date and amount) becomes a record note quoting it ("The reading listed a row the
-  printed columns don't have…"); notes show with the record but are not reasons for review. A rebuilt row the model
-  didn't list is still recorded. The missed-row check does not run on rebuilt pages.
-- **Rows that are not recorded** are review issues with page, row and reason, in PDF import's words, and the statement
-  needs review: a date or amount outside every column, a word straddling two columns, two amounts in one column, both
-  debit and credit, an impossible date, an unreadable amount, a currency other than the statement's. A rebuilt page
-  with a layout issue other than `unresolved_columns` still gives its rows and the statement needs review, naming the
-  page. The same row (date, amount, description) printed on two pages or tables is recorded twice with an issue naming
-  both places.
-- **Opening and closing balances in the table.** When the model cites a summary amount from a native table row, the
-  amount is copied from that row's cell (`native_values.anchor_summary`). A Beginning or Ending Balance row inside the
-  transactions table is found by its first printed cell, and its value is read from the Balance column when Amount is
-  blank.
-- **Balance tables.** A table whose title line (the row directly above its heading) or heading names a balance (or
-  "daily ending balance", "daily balance") is not read, starts no continuation, and ends a table that has no reader
-  table where its title or a second heading begins. A `Date | Amount | Balance` heading doesn't make a table a balance
-  table. When only a title excludes a table that has Description and Amount columns, a note says its rows came from the
-  reading.
-- **Checks** are unchanged and run on the rebuilt amounts. The arithmetic check is skipped when a row was dropped
-  or a model row on another page was left out, so it never reports a false mismatch.
-- **If the rebuild fails** the model's rows are used on every page with one issue ("The rows couldn't be rebuilt from
-  the printed columns…"); nothing else changes.
-- **Evidence.** A rebuilt row's evidence link keeps `{rebuilt, page, table_id, row, line_ids, word_ids, cell_ids,
-  quotes}`. `GET /api/provenance/transaction/{id}` gives `document: {id, page, lines, cells}`: the document, the row's
-  page, its line ids, and the words to highlight (`cells` is the row's word ids, or its table cells for a row of a
-  native table). A trace's **Open source** link for such a row adds the cells to `?lines=`, and the document page
-  lights those words.
+- **Which pages.** Recording a bank or credit-card statement PDF takes the rows of every `embedded_text` page that holds
+  a transactions table from the printed columns, a page flagged for overlapping or rotated text included. A page where
+  no table is found, a scanned (`vision_model`) page and a reading saved without layout keep the model's rows and the
+  missed-row check; a text page with no table adds the note "Page N: no table was found in the printed columns, so its
+  rows are the reading's; check them." A reading with no layout adds "Read this document again to take its rows from
+  the printed columns." Readings made before this are read again on **Extract again**; a statement you confirmed or
+  rejected is not rewritten. `EXTRACTION_VERSION` is `typed-extraction-v32-table-engine`, so Extract again never reuses
+  an older run.
+- **Columns are found by alignment, not headings.** Amounts that line up by right edge, left edge or centre on at least
+  two dated rows (one, with a heading over them) are a column; the date column is the dates at the left, a second date
+  column is the posted date, and the text between is the description. The tolerance is `ALIGN = 0.75` font sizes
+  (`table_engine.py`), which the layout generator confirmed (0.5 and 1.0 read the same 200 statements). Headings only
+  name columns and break ties. A table continues over later pages at the page's offset, with or without a repeated
+  heading; a heading with another number of columns, or another column set, starts a table of its own.
+- **What each amount column is.** For each transactions table the roles (balance, money in, money out, one signed
+  amount, other) are the first of: the assignment under which every printed running balance follows from the one above
+  (two or more links); the one that makes the printed summary hold (opening + in − out = closing, card: previous −
+  payments + charges = new, and any column totals); the one with the most holding links; the heading words; the
+  statement type's default. A balance column and an `other` column (a rate, a foreign amount) are never amounts. A
+  single unsigned amount column takes each row's sign from its own marker (`CR`/`DR`, minus, parentheses), then its
+  section title (payments and credits are money in; purchases, charges, fees and interest are money out), then the
+  type's default. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
+  the type with a review reason saying why.
+- **Values.** The date is the printed date; the description is the printed description, with wrapped lines joined and a
+  check number kept in it; the amount is in minor units. A dateless row takes the date of the row above, with a record
+  note ("Page P row R: no date is printed; it takes D from the row above"). A date with no year, or a two-digit year,
+  takes its year from the period. The period is the printed one (the line outside every table with exactly two dates
+  and no amount), else the model's summary period. The day/month order is the one a day over 12 decides, else the one
+  under which every date falls within the period (± 7 days) and rows don't run backwards, else the order last decided
+  for the same account's other statements (`statement_tables.prior_order`, at most ten, newest first), else the rows
+  are not recorded and one issue per page says so. The balance a row prints is kept as `balance_minor` in its
+  evidence and shown beside the amount, never read as one. A date line with no amount joins an amount line directly
+  below it; with none it is a rejected row.
+- **Opening and closing balances.** The statement's recorded opening (card: previous) and closing (new) balances are the
+  ones it prints, from a balance line inside the table or one above it, with or without a date. If the reading gave
+  another value, the record notes it ("The printed opening balance … was recorded; the reading gave …").
+- **The model decides nothing there.** Its rows on a page the engine read change no date, amount or direction and add
+  no rows. One that matches no engine row (by page, date and amount) becomes a record note ("The reading listed a row
+  the printed columns don't have…"); notes show with the record but are not reasons for review. An engine row the model
+  didn't list is still recorded.
+- **Lines that are not recorded** are review issues, and the statement needs review. Nothing printed is dropped
+  silently: every line with a date and an amount is a recorded row, a rejected row, a balance line, a column total, a
+  row of another table, or an **unplaced line** ("Page P: a printed line wasn't placed in any column, so it wasn't
+  recorded: "…""). Rejected rows keep PDF import's reasons (two amounts in a column, both debit and credit, an
+  impossible date, an unreadable amount, a currency other than the statement's) and add a page and row number counted
+  from 1 on that page's table. A pending transaction ("Pending transactions" section) is listed, not recorded. A
+  balance break is one issue at the first row where a printed balance doesn't follow from the one above ("Page P row R:
+  the balance … doesn't follow from the row above"). Two chains that don't join are one issue ("This PDF may hold more
+  than one account…") and both tables' rows are recorded. A page with a layout issue other than `unresolved_columns`
+  still gives its rows and the statement needs review, naming the page. The same row printed on two pages or tables is
+  recorded twice with an issue naming both places.
+- **Other tables are not read as transactions:** a balance table (dates and one amount column, no descriptions), a
+  fee or interest summary, a list of checks that repeats main-table rows, and a payment schedule (rows all dated outside
+  the period ± 7 days; with no period nothing is a schedule). A section title (`Daily ending balance`) or a balance
+  line in a table is a hint, not an exclusion: a table with descriptions whose balances chain is still read.
+- **Checks** run on the engine's amounts. The arithmetic check is skipped when a printed line wasn't recorded, so it
+  never reports a false mismatch.
+- **If the engine fails** (an exception) the model's rows are used on every page with one issue ("The rows couldn't be
+  rebuilt from the printed columns…"); the failure is logged by class and place, never with document text. The model's
+  rows are then anchored to a native table like any other reading, so a native table whose columns the reader couldn't
+  resolve leaves them out for review.
+- **Evidence.** A row's evidence link keeps `{rebuilt, page, table_id, row, balance_minor, line_ids, word_ids, cell_ids,
+  quotes}`: every line the row cites (a wrapped row cites all of them) and one quote per line. A row that is one row of a
+  native table, with every word in its cells, cites those cells (`cell_ids`) and no words; any other row, wrapped over
+  several table rows or with words outside the cells, cites every word. `GET /api/provenance/transaction/{id}` gives
+  `document: {id, page, lines, cells}`: the document, the row's page, its line ids, and the words or table cells to
+  highlight. A trace's **Open source** link for such a row adds them to `?lines=`, and the document page lights them.
 
 ### Model runs, queues and cancellation
 
