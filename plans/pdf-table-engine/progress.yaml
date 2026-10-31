@@ -80,6 +80,28 @@ slices:
       dateless rows is never found; a section title directly above a headless table's first row doesn't label it; a
       two-digit year is placed only within the period's years; a 2-3 row headless last page with an in/out pair leaves a
       one-row column. make() takes **overrides (for SL-07).
-  - {id: SL-05, status: in_progress, start_head: 3d0af39, provider: claude, model: claude-sonnet-5-5}
+  - id: SL-05
+    status: blocked
+    start_head: 3ec646c
+    end_head: 86030d3
+    commit: ae36886
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_statement_rebuild.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py -k \"not _import and not journey_j1 and not generator_only\" -q -> exit 1: 196 passed, 1 xfailed, 1 failed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_table_engine_generator.py -k \"generator_only or not generator\" -q -> 575 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals scripts -> all checks passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 browser tests -> 11 passed (worker only)"
+    attempts:
+      - "r1 (start_head recorded as 3d0af39, actual tree 3ec646c): weekly rate limit after 16 s, no changes"
+      - "r2: commits d9ce7cc..ae36886, handoff 86030d3"
+    notes: >-
+      Blocked on test_statement_rebuild.py::test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reporting_a_false_mismatch
+      (expects 0-based "Page 1 row 5"; engine is 1-based, says row 6) and on two contract contradictions awaiting the user: SC-11's second
+      Transactions request (PR page 2 lines aren't date-led, so missed_statement_lines sends none; strict xfail) and SC-19 step 1's 7 rows
+      (WF's native table has unresolved columns, so the fallback leaves all rows out). Repairs reviewed by the orchestrator and accepted as
+      non-material: table_engine.continuation (a heading with another column count starts its own table; statement-accounts D2) and
+      statement_tables.cited_words (one native-table row cites cells and no words; statement-accounts SC-19). Carried to SL-06: J1 as written
+      (Y and Z in one account) can't hold because the ledger drops duplicate rows; the SC-13 Extract-again test uses a separate account.
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
