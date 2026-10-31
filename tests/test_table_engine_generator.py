@@ -20,9 +20,9 @@ from evals import statement_layouts as layouts
 from home_manager.finance import statement_tables as stt
 import pdf_import_fixtures as fx
 import table_engine_generator as gen
-import test_table_engine_record as rec
 from test_pdf_imports import env  # noqa: F401  (the API environment Record runs in)
 from test_table_engine import no_network  # noqa: F401  C-net: autouse, so no test here connects to a non-loopback address.
+import test_table_engine_record as rec
 
 
 def context(case, index, seed=gen.SEED):
