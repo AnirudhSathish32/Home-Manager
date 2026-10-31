@@ -104,6 +104,6 @@ slices:
       without the change (test_agent_instance needs Windows-only socket.SO_EXCLUSIVEADDRUSE; tax/traces/cpa_pack/scenarios untouched by SL-05).
       Carried to SL-06: J1 as written (Y and Z in one account, 8 and 20 rows) can't hold because the ledger drops rows an account already has
       (same date, amount, text) and Y's row 7 reads the same both ways; SC-13's Extract-again test publishes Z in its own account. Needs a
-      contract decision before SL-06 implements J1.
-  - {id: SL-06, status: in_progress, start_head: PENDING, provider: claude, model: claude-sonnet-5-5}
+      contract decision before SL-06 implements J1. Decided 2026-10-31: one account, Y with 19 rows (contract amended in 3755252).
+  - {id: SL-06, status: in_progress, start_head: 3755252, provider: claude, model: claude-sonnet-5-5}
   - {id: SL-07, status: todo}
