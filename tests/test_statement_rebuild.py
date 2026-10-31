@@ -52,6 +52,11 @@ def analysis(result, sign="negative_is_outflow", **choices):
     return pdf_import.analyze(result, currency="USD", sign=sign, **choices)
 
 
+def legacy(result, sign="negative_is_outflow", **choices):
+    """The old reader (kept for the eval comparison): for the tests of its own internals."""
+    return pdf_import.analyze_legacy(result, currency="USD", sign=sign, **choices)
+
+
 def box_of(result, text, occurrence=-1):
     """A word's box in preview units, from the saved layout (the last occurrence by default)."""
     layout = fx.layout(result, 1)
@@ -189,7 +194,7 @@ def test_pcheck_x_the_rows_sit_as_the_contract_places_them(tmp_path):
     x3 = {word.text: view.box[word.id] for word in by_text["X3"]}
     assert all(spec.spans[amount][0] <= (x3[text][0] + x3[text][2]) / 2 < spec.spans[amount][1] for text in ("REF", "55.55", "5.00"))  # REF 55.55 beside 5.00.
     assert any(text.startswith("REF 55.55") for text, _, _ in view.texts(view.row_of[by_text["X3"][0].id]))  # REF and 55.55 are one run.
-    got = analysis(result)
+    got = legacy(result)
     assert [(row.rejected is None) for row in got.rows] == [True, False, False, False, False, False]
 
 
@@ -292,7 +297,8 @@ def test_rows_the_date_order_is_the_one_a_day_over_12_decides_else_the_one_that_
         directory = tmp_path / name
         directory.mkdir()
         cells = [(date, f"ROW{number}", "1.00", "") for number, date in enumerate(dates)]
-        return bank(read(directory, [sf.page(sf.X_ABOVE, cells, sf.COLUMNS4, sf.HEADING4, "SYNTH BANK")]), period)
+        # No period is printed here (X_ABOVE prints September's), because a printed period beats the one passed in (pdf-table-engine FR-14).
+        return bank(read(directory, [sf.page(sf.X_ABOVE[:3], cells, sf.COLUMNS4, sf.HEADING4, "SYNTH BANK")]), period)
     assert [row["posted_date"] for row in run("day", ["13/03/2026", "03/04/2026"], ("2026-03-01", "2026-04-30")).rows] == ["2026-03-13", "2026-04-03"]
     assert [row["posted_date"] for row in run("fits", ["03/10/2026", "03/11/2026"], ("2026-03-01", "2026-03-31")).rows] == ["2026-03-10", "2026-03-11"]
     both = run("both", ["03/04/2026", "03/05/2026"], ("2026-03-01", "2026-04-30"))
@@ -304,11 +310,14 @@ def test_rows_x_records_only_x1_and_lists_x2_to_x6_with_pdf_imports_reasons(tmp_
     result = read(tmp_path, sf.x_pages())
     built = bank(result)
     assert rows_of(built) == [("2026-09-02", 1000, "GOOD")]
+    # pdf-table-engine FR-04, FR-08, FR-20: x2's amount fits no column, so it is an unplaced line naming page 1 and quoting it, not a row;
+    # x3-x6 are rejected as before, now numbered rows 2-5 (x2 is no row).
     assert len(built.issues) == 5 and built.dropped == 5
-    assert all(issue.startswith(f"Page 1 row {number}: ") for number, issue in zip(range(1, 6), built.issues))
-    reasons = [issue.split(": ", 1)[1] for issue in built.issues]
-    assert reasons[0] == sf.X_REJECTED["x2"] and reasons[1] == sf.X_REJECTED["x3"] and reasons[2] == sf.X_REJECTED["x4"]
-    assert "can't be read" in reasons[3] and reasons[4] == 'The amount "4.00 EUR" is not in USD.'
+    assert all(issue.startswith(f"Page 1 row {number}: ") for number, issue in zip(range(2, 6), built.issues))
+    reasons = [issue.split(": ", 1)[1] for issue in built.issues[:4]]
+    assert reasons[0] == sf.X_REJECTED["x3"] and reasons[1] == sf.X_REJECTED["x4"]
+    assert "can't be read" in reasons[2] and reasons[3] == 'The amount "4.00 EUR" is not in USD.'
+    assert built.issues[4] == 'Page 1: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "09/03/2026 STRADDLE 100.00"'
     assert reasons == [row.rejected for row in analysis(result).rows[1:]]  # In PDF import's own words.
 
 
@@ -316,7 +325,7 @@ def test_rows_q_records_both_check_rows_and_lists_one_duplicate_issue_naming_bot
     built = bank(read(tmp_path, sf.q_pages()))
     assert built.pages == {1, 2} and len(built.rows) == 4
     assert [row["locator"]["page"] for row in built.rows if row["description"] == "CHECK 1001"] == [1, 2]
-    assert built.issues == ["The same row is printed twice: 2026-09-10 CHECK 1001 -75.00 on page 1 (row 1) and page 2 (row 1). Both were recorded; check whether it is one payment."]
+    assert built.issues == ["The same row is printed twice: 2026-09-10 CHECK 1001 -75.00 on page 1 (row 1) and page 2 (row 2). Both were recorded; check whether it is one payment."]  # Rows are numbered from 1 (P9): page 2's is its second.
 
 
 def test_rows_d_a_daily_balance_table_is_never_transactions_native_and_flagged(tmp_path):
@@ -346,16 +355,18 @@ def test_rows_a_balance_row_under_the_heading_does_not_cut_the_table(tmp_path):
 def test_rows_a_second_transactions_heading_on_a_rebuilt_page_is_listed(tmp_path):
     second = [(40, 300, "Date"), (110, 300, "Description"), (380, 300, "Amount"), (40, 280, "10/01"), (110, 280, "LATE ROW"), (380, 280, "9.00")]
     built = bank(read(tmp_path, sf.s_pages(flagged=True, extra=second)))
-    assert rows_of(built) == expected_s()
-    assert built.issues == ["Page 1: rows after a second transactions heading on this page weren't read; check them against the statement."]
+    # pdf-table-engine FR-06, FR-07, FR-08: the repeated heading is ignored and LATE ROW is a row of S's table; that issue is gone. Opening 0.00 + rows
+    # = 1,009.00 is not the printed 1,000.00, so the statement doesn't reconcile (the arithmetic check is Record's, in normalize).
+    assert rows_of(built) == [*expected_s(), ("2026-10-01", 900, "LATE ROW")]
+    assert built.issues == [] and (built.opening_minor, built.closing_minor) == (0, 100000)
 
 
 def test_rows_a_balance_title_above_a_transactions_shaped_table_leaves_the_page_to_the_model_with_a_note(tmp_path):
     above = (*sf.S_ABOVE[:5], "Daily Ending Balance")
     built = bank(read(tmp_path, sf.s_pages(above=above)))
-    assert built.rows == [] and built.pages == set()
-    assert built.notes == ['Page 1: the line above the table headed "Date | Description | Amount | Balance" names a balance, so its rows were taken '
-                           "from the reading, not the printed columns; check them."]
+    # pdf-table-engine D1, FR-09: the title is a hint; the rows have descriptions and the chain holds, so s1-s5 are recorded and there is no such note.
+    assert rows_of(built) == expected_s() and built.pages == {1}
+    assert built.notes == [] and built.issues == []
 
 
 def test_rows_a_reading_without_a_layout_is_not_available_and_says_to_read_again(tmp_path):
@@ -385,8 +396,8 @@ def test_rows_the_same_row_twice_in_one_table_is_two_rows_and_no_duplicate_issue
 
 # === FR-30: a number that continues the description (SC-27, SC-28, G5) ======================================================
 
-def test_fr30_the_analyzer_version_is_two_so_every_reading_is_indexed_again():
-    assert pdf_import.ANALYZER_VERSION == 2
+def test_fr30_the_analyzer_version_is_three_so_every_reading_is_indexed_again():
+    assert pdf_import.ANALYZER_VERSION == 3
 
 
 def test_sc27_s_flag_s1_to_s3_keep_1234567890_in_the_description_and_none_is_rejected(tmp_path):
@@ -401,7 +412,7 @@ def test_sc27_s_flag_s1_to_s3_keep_1234567890_in_the_description_and_none_is_rej
 def test_sc27_without_fr30_those_rows_are_rejected_so_the_change_is_what_lets_them_through(tmp_path, monkeypatch):
     result = read(tmp_path, sf.s_flag_pages())
     monkeypatch.setattr(pdf_import, "joined_amounts", lambda *args: [])
-    got = analysis(result)
+    got = legacy(result)  # An internal of the old reader.
     assert [row.rejected for row in got.rows[:3]] == ["The amount doesn't fit a column."] * 3 and got.rows[3].rejected is None
 
 
@@ -454,7 +465,7 @@ def test_fr30_edge_a_joined_only_amount_that_crosses_the_columns_edge_is_rejecte
     assert ("rejected_row", 1, 5) in [(issue.code, issue.page, issue.row) for issue in got.issues]
     built = bank(result)
     assert rows_of(built) == expected_s() and built.dropped == 1
-    assert built.issues == [f"Page 1 row 5: {NO_AMOUNT}"]
+    assert built.issues == [f"Page 1 row 6: {NO_AMOUNT}"]  # Rows are numbered from 1 (pdf-table-engine P9), as in SC-04 and SC-06.
 
 
 def test_fr30_a_joined_amount_in_a_native_table_page_is_not_touched(tmp_path):
@@ -651,7 +662,7 @@ def test_sc17_rejected_rows_are_issues_with_their_page_row_and_reason(pdf_store,
     by_row = {int(issue.split()[3].rstrip(":")): issue for issue in record["issues"] if issue.startswith("Page 1 row ")}
     # pdf-table-engine FR-04, FR-08, FR-20: x2's amount fits no column, so it is an unplaced line (page 1 and its text), not a row; x3-x6 are rejected as before.
     assert sorted(by_row) == [2, 3, 4, 5]
-    for number, reason in zip(range(2, 6), [row.rejected for row in got.rows[2:]]):
+    for number, reason in zip(range(2, 6), [row.rejected for row in got.rows[1:]]):
         assert by_row[number] == f"Page 1 row {number}: {reason}" and reason
     assert "More than one amount" in by_row[2] and "not a real date" in by_row[3]
     assert "can't be read" in by_row[4] and "not in USD" in by_row[5]
