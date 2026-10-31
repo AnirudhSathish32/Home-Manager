@@ -81,28 +81,29 @@ slices:
       two-digit year is placed only within the period's years; a 2-3 row headless last page with an in/out pair leaves a
       one-row column. make() takes **overrides (for SL-07).
   - id: SL-05
-    status: blocked
+    status: done
     start_head: 3ec646c
-    end_head: 86030d3
-    commit: ae36886
+    end_head: e356267
+    commit: 9f4278e
     provider: claude
     model: claude-sonnet-5-5
     verification:
-      - ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_statement_rebuild.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py -k \"not _import and not journey_j1 and not generator_only\" -q -> exit 1: 196 passed, 1 xfailed, 1 failed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_statement_rebuild.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py -k \"not _import and not journey_j1 and not generator_only\" -q -> 198 passed (orchestrator rerun)"
       - ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_table_engine_generator.py -k \"generator_only or not generator\" -q -> 575 passed (orchestrator rerun)"
       - ".venv/bin/ruff check src tests evals scripts -> all checks passed (orchestrator rerun)"
-      - "RUN_BROWSER_TESTS=1 browser tests -> 11 passed (worker only)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_table_engine_browser.py tests/test_statement_accounts_browser.py -q -> 11 passed (orchestrator rerun)"
     attempts:
-      - "r1 (start_head recorded as 3d0af39, actual tree 3ec646c): weekly rate limit after 16 s, no changes"
-      - "r2: commits d9ce7cc..ae36886, handoff 86030d3"
-      - "user decisions 2026-10-31: row 6 (1-based) approved; FR-19 missed-row check broadened (date anywhere); SC-19 step 1 on fixture S, fallback kept until D4. Spec ff85ea3e / plan bfa6d9bd re-approved (delegated). r3 dispatched for the three changes."
+      - "r1 (dispatched with start_head 3d0af39, tree at 3ec646c): weekly rate limit after 16 s, no changes"
+      - "r2: commits d9ce7cc..ae36886, handoff 86030d3; escalated row numbering, SC-11's second request, SC-19's rows"
+      - "user decisions 2026-10-31: row 6 (1-based); FR-19 missed-row check broadened (date anywhere); SC-19 step 1 on fixture S, fallback kept until D4. Spec ff85ea3e / plan bfa6d9bd re-approved (delegated) in 1175b62. Orchestrator full-suite probe: the broader check moved only SC-11."
+      - "r3: commit 9f4278e, handoff e356267"
     notes: >-
-      Blocked on test_statement_rebuild.py::test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reporting_a_false_mismatch
-      (expects 0-based "Page 1 row 5"; engine is 1-based, says row 6) and on two contract contradictions awaiting the user: SC-11's second
-      Transactions request (PR page 2 lines aren't date-led, so missed_statement_lines sends none; strict xfail) and SC-19 step 1's 7 rows
-      (WF's native table has unresolved columns, so the fallback leaves all rows out). Repairs reviewed by the orchestrator and accepted as
-      non-material: table_engine.continuation (a heading with another column count starts its own table; statement-accounts D2) and
-      statement_tables.cited_words (one native-table row cites cells and no words; statement-accounts SC-19). Carried to SL-06: J1 as written
-      (Y and Z in one account) can't hold because the ledger drops duplicate rows; the SC-13 Extract-again test uses a separate account.
+      Repairs reviewed by the orchestrator and accepted as non-material (no contract value changes): table_engine.continuation (a heading
+      with another column count starts its own table; statement-accounts D2) and statement_tables.cited_words (one native-table row cites
+      cells and no words; statement-accounts SC-19). Full suite on Linux has 55 failures + 20 errors outside this feature, identical with and
+      without the change (test_agent_instance needs Windows-only socket.SO_EXCLUSIVEADDRUSE; tax/traces/cpa_pack/scenarios untouched by SL-05).
+      Carried to SL-06: J1 as written (Y and Z in one account, 8 and 20 rows) can't hold because the ledger drops rows an account already has
+      (same date, amount, text) and Y's row 7 reads the same both ways; SC-13's Extract-again test publishes Z in its own account. Needs a
+      contract decision before SL-06 implements J1.
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
