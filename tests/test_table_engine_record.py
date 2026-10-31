@@ -90,10 +90,8 @@ def cited(lines, value, needle, quote=None):
     return {"value": value, "status": "proposed", "evidence": [{"line_id": printed_line(lines, needle)[0], "quote": quote or value}]}
 
 
-def summary_of(name):
-    """The `BankStatementSummary` or `CreditCardStatementSummary` reply for a fixture, each value citing its printed line."""
-    chosen = SPECS[name]
-
+def summary_from(chosen):
+    """The `BankStatementSummary` or `CreditCardStatementSummary` reply for a spec, each value citing its printed line."""
     def make(lines):
         card = chosen["kind"] == "card"
         found = {"issuer" if card else "institution": cited(lines, chosen["name"], chosen["name"]),
@@ -108,10 +106,14 @@ def summary_of(name):
     return make
 
 
+def summary_of(name):
+    return summary_from(SPECS[name])
+
+
 def replies(name, rows=None, answers=None):
-    """Classification, the summary and `Transactions` for a fixture. `rows` is a function of the lines giving the first Transactions answer's rows
-    (empty by default: on engine pages the model's rows decide nothing); `answers` replaces the whole Transactions list."""
-    chosen = SPECS[name]
+    """Classification, the summary and `Transactions` for a fixture (a name in SPECS, or a spec). `rows` is a function of the lines giving the first
+    Transactions answer's rows (empty by default: on engine pages the model's rows decide nothing); `answers` replaces the whole Transactions list."""
+    chosen = SPECS[name] if isinstance(name, str) else name
     card = chosen["kind"] == "card"
 
     def make(lines):
@@ -119,7 +121,7 @@ def replies(name, rows=None, answers=None):
         issuer = cited(lines, chosen["name"], chosen["name"])
         first = {"transactions": rows(lines) if rows else []}
         return {"Classification": [{"document_type": kind, "evidence": issuer["evidence"], "issuer": issuer, "document_date": sf.MISSING}],
-                "CreditCardStatementSummary" if card else "BankStatementSummary": [summary_of(name)(lines)],
+                "CreditCardStatementSummary" if card else "BankStatementSummary": [summary_from(chosen)(lines)],
                 "Transactions": answers(lines) if answers else [first] + [{"transactions": []}] * 6}
     return make
 

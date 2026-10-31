@@ -9,6 +9,7 @@ inputs (`evals/statement_layouts.py`), never from the engine.
 from collections import Counter
 from datetime import date
 from pathlib import Path
+import random
 import re
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from evals import statement_layouts as layouts
 from home_manager.finance import statement_tables as stt
 import pdf_import_fixtures as fx
 import table_engine_generator as gen
+import test_table_engine_record as rec
+from test_pdf_imports import env  # noqa: F401  (the API environment Record runs in)
 from test_table_engine import no_network  # noqa: F401  C-net: autouse, so no test here connects to a non-loopback address.
 
 
@@ -129,3 +132,50 @@ def test_generator_only_probe_prints_no_document_text_or_amounts(index, tmp_path
         if re.fullmatch(r"[\d./-]{5,10}|\d{2}/\d{2}(/\d{2,4})?", text):
             assert text not in output, f"{context(case, index)}: the probe printed the date {text}"
     assert "=== Table engine" in output and "first chain-break row:" in output and "roles decided by" in output, output[-400:]
+
+
+# --- SC-18: ten seeded cases end to end through Record -----------------------------------------------------------------------------------
+
+END_TO_END = sorted(random.Random(gen.SEED).sample(range(gen.CASES), 10))
+OPENING = re.compile(r"\b(?:beginning|opening|previous) balance\b", re.IGNORECASE)
+HEADER = re.compile(r"^(?:Statement period |Statement Period: |For the period |Billing cycle )")
+
+
+def record_spec(case):
+    """The model's summary for a generated statement, from the lines the generator printed above the table (page 1, x 40, y 730 or higher): its
+    institution, the last four of the printed account or card number, the printed period, and the opening and closing balances when it prints them.
+    Each value cites its line; the expected rows still come from the generator's inputs (`case.answers`)."""
+    above = [text for x, y, text, *rest in case.pages[0]["items"] if x == 40 and y >= 730]
+    answers = case.answers
+    account = next(text for text in above if text.startswith(("Account number ", "Card number ")))
+    chosen = rec.spec(answers["kind"], above[0], (account[-4:], account), None, None, None)
+    printed = next((text for text in above if HEADER.match(text)), None)
+    if printed:
+        chosen["period"] = (*answers["period"], printed, printed, printed)
+    for key, minor in (("opening", answers["opening"]), ("closing", answers["closing"])):
+        if minor is not None:
+            line = next(text for text in above if layouts.money(minor) in text and bool(OPENING.search(text)) == (key == "opening") and "balance" in text.lower())
+            chosen[key] = (layouts.money(minor), line)
+    return chosen
+
+
+def with_dollar_footer(pages):
+    """Every native page prints a footer with a `$` in it (the contract's conventions), so Record reads the amounts as USD."""
+    return [{**page, "items": [(x, y, text.replace(", kept", ", amounts shown in $, kept"), *rest) for x, y, text, *rest in page["items"]]} for page in pages]
+
+
+@pytest.mark.parametrize("index", END_TO_END)
+def test_sc18_end_to_end_through_record_case(index, env, local_model):
+    case = gen.layout(index)
+    chosen = record_spec(case)
+    recorded, _ = rec.recorded_fixture(env, local_model, f"generated-{index}", with_dollar_footer(case.pages))
+    record_ = recorded.run(rec.replies(chosen))
+    answers = case.answers
+    where = context(case, index)
+    expected = [(day, amount, text) for day, amount, text in answers["rows"]]
+    assert rec.rows_of(recorded) == [(day, amount, rec.collapse(text)) for day, amount, text in expected], where
+    assert not any(rec.ARITHMETIC in issue for issue in record_["issues"]), f"{where}: {record_['issues']}"
+    rec.no_row_review(record_)
+    rec.money(env)
+    if answers["opening"] is not None:  # Reconciled by the arithmetic check, not skipped.
+        assert recorded.extraction["result"]["normalized"]["cross_checks"] >= 1, where
