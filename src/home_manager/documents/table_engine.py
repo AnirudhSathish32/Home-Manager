@@ -169,6 +169,7 @@ class EngineTable:
     kind: str  # transactions, balance, schedule or other
     continues: str | None = None
     headings: list[str] = field(default_factory=list)  # The text of the heading lines, top to bottom.
+    labels: list[str] = field(default_factory=list)  # The heading's runs, top to bottom: also those over a column with no amount on the first page.
     anchors: list[Anchor] = field(default_factory=list)
     totals: list[Total] = field(default_factory=list)
 
@@ -629,6 +630,15 @@ def bound_by_headings(layout, heading_lines, view):
         bound = (max(before) + label_left) / 2 if before else INFINITY
         if layout.description.zone[0] < bound < first.zone[0]:
             first.zone, layout.description.zone, moved = (bound, first.zone[1]), (layout.description.zone[0], bound), True
+    for left, right in zip(layout.amounts, layout.amounts[1:]):
+        # Between two amount columns, each with a label: the midpoint between the labels (the old reader's heading spans), when it lies in the gap
+        # between the columns' extents (account-import-pdf 7-d: an amount across that midpoint belongs to neither).
+        one = [box[2] for box, column in zip(boxes, owner) if column is left]
+        two = [box[0] for box, column in zip(boxes, owner) if column is right]
+        if one and two and max(one) <= min(two):
+            bound = (max(one) + min(two)) / 2
+            if left.extent[1] < bound < right.extent[0] and abs(bound - left.zone[1]) > 0:
+                left.zone, right.zone, moved = (left.zone[0], bound), (bound, right.zone[1]), True
     over = [box for box, column in zip(boxes, owner) if column is last]
     if over:
         label_right = max(box[2] for box in over)
@@ -801,8 +811,9 @@ def continuation(view, lines, lo, hi, candidates):
         else:
             continue
         found = choose_alignments(leftover, tolerance, support)
-        if {position for _, positions in found for position in positions} != set(range(len(leftover))):
-            continue
+        if {position for _, positions in found for position in positions} != set(range(len(leftover))) \
+                and len({index for _, index in leftover}) * 2 > len(rows):
+            continue  # Stray amounts on at most half the rows stay unplaced lines of the table (account-import-pdf 7-d); more, and it is not this table.
         added = []
         for alignment, positions in found:
             tokens = [leftover[position][0] for position in positions]
@@ -881,7 +892,7 @@ def scan(page, table, state, layout, begin, hi, readings, headings):
         reading = readings[index]
         words = words_of(line)
         kind = balance_kind(words) if len(reading.amounts) == 1 and not reading.extra and only_amount(line) is not None else None
-        if (reading.dates or reading.bad_date) and reading.amounts:
+        if (reading.dates or reading.bad_date) and reading.amounts and not (reading.stray and reading.dates):
             row = make(with_waiting(index), reject_of(reading, layout))
             if kind and not reading.bad_date:
                 candidate(row, line, kind, bool(reading.dates))
@@ -966,6 +977,7 @@ def read_page(number, layout_page, previous):
             begin = min(headings) if headings else first
             opened.labels = [(" ".join(token.text for token in tokens), union(token.box for token in tokens)) for index in sorted(headings) for tokens in lines[index].tokens]
             opened.table.headings = [" ".join(word.text for word in lines[index].words) for index in sorted(headings)]
+            opened.table.labels = [text for text, _ in opened.labels]
             if headings and bound_by_headings(layout, [lines[index] for index in sorted(headings)], view):
                 readings = {line.index: read_line(line, layout, view) for line in lines[lo:hi]}
             opened.relabel()

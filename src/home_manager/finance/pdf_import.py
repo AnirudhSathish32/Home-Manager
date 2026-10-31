@@ -677,6 +677,10 @@ def column_texts(table, roles):
         role = "date" if column.kind == "date" else "description" if column.kind == "text" else ROLE_NAMES.get(roles.get(column.id, ""))
         if role and role not in found:
             found[role] = " ".join(column.labels) or role.capitalize()
+    for label in table.labels:  # A heading name over a column with no amount in it (K's Deposits on the first page) is still mapped.
+        role = next((name for name in ("amount", "debit", "credit") if label.strip().lower() in HEADER_NAMES[name]), None)
+        if role and not (role in found or (role == "amount" and ("debit" in found or "credit" in found)) or (role != "amount" and "amount" in found)):
+            found[role] = label
     return found
 
 
