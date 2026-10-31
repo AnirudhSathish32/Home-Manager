@@ -50,6 +50,7 @@ TOO_FEW = ("Page {page}: the signs of these rows come from the column headings o
 ROLES_UNKNOWN = "Page {page}: which amount columns are money in, money out or the balance can't be told, so its rows weren't recorded."
 ROLES_DIFFER = ("Page {page}: more than one reading of the amount columns fits the printed balances, so the signs of these rows are "
                 "taken from the column headings or the statement type; check them.")
+ROLES_UNKNOWN_ROW = "Which amount columns are money in, money out or the balance can't be told."
 BOTH = "Both a debit and a credit are printed."
 MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
@@ -84,9 +85,15 @@ class StatementReading:
     tables: list[EngineTable] = field(default_factory=list)
     unplaced: list[Unplaced] = field(default_factory=list)  # reason no_column (engine) or pending (R4).
     summary_anchors: list = field(default_factory=list)
+    others: list[str] = field(default_factory=list)  # Native reader tables nothing in the engine cites (the import lists them as other tables).
+    outcomes: dict = field(default_factory=dict)  # `outcome_key` -> what became of that row (`Reader.outcome_of`); the PDF import adapter reads it.
 
     def as_rebuild(self) -> Rebuild:
         return Rebuild(self.available, self.pages, self.rows, self.issues, self.notes, self.dropped, self.opening_minor, self.closing_minor, self.period)
+
+
+def outcome_key(table_id, page, row):
+    return f"{table_id}:{page}:{row}"
 
 
 # --- Small helpers -----------------------------------------------------------------------------------------------------------
@@ -411,6 +418,8 @@ class Reader:
         self.pending = []
         self.issues, self.notes, self.recorded, self.kept_anchors = [], [], [], []
         self.dropped, self.order_pages, self.years = 0, set(), set()
+        self.outcomes = {}
+        self.walk = {"previous": None}  # The chosen year walked through the rows (account-import-pdf FR-07's year rule).
         self.carry = {}  # id(row) -> the row whose date a dateless row takes (OD-1).
         self.period = self.effective = None  # The printed period; the one dates are placed and checked against (printed, else the fallback).
         self.order = self.order_source = None
@@ -698,52 +707,84 @@ class Reader:
         """A printed date's ISO date, or why not; the order is needed for a numeric date."""
         if token.value[3] == "slash" and order is None:
             return None, None
-        start, end = self.span()
-        iso, reason = self.place(token, order, start, end)
         full = token.value[2] is not None and token.value[2] > 99
+        year = self.choices.get("year")
+        if year and not full and self.effective is None:
+            # The year the user chose, walked through the rows in document order: it advances each time the month falls below the one before.
+            kind, first, second, _, _ = shape_of(token)
+            month = first if kind == "iso" or order == "MM/DD/YYYY" else second
+            walked = self.walk
+            if walked["previous"] is not None and month < walked["previous"]:
+                walked["year"] += 1
+            walked["previous"] = month
+            start, end = date(walked.setdefault("year", year), 1, 1), date(walked["year"], 12, 31)
+        else:
+            start, end = self.span()
+        iso, reason = self.place(token, order, start, end)
         self.years.add("printed" if full else "none" if iso is None else "period" if self.effective else "choice")
         return iso, reason
+
+    def outcome_of(self, table, row, state, *, reason=None, posted=None, amount=None, balance=None, text="", date="", needs=()):
+        """What became of one row, for the PDF import adapter: state is `ok`, `rejected` (reason), `needs` (a date waits for the order or the
+        year, `needs` says which) or `roles` (its table's columns couldn't be told). Record reads none of this."""
+        self.outcomes[outcome_key(table.id, row.page, row.row)] = dict(state=state, reason=reason, posted=posted, amount_minor=amount, balance_minor=balance, amount=text,
+                                                            date=date, needs=set(needs), line_ids=row.line_ids, word_ids=self.cited_words(row), cell_ids=row.cell_ids)
 
     def record(self, sheet, candidate):
         table = sheet.table
         dated = [column for column in table.columns if column.kind == "date"]
         balance_at = candidate.roles.index("balance") if "balance" in candidate.roles else None
+        money = [at for at, role in enumerate(candidate.roles) if role in ("in", "out", "signed")]
         for position, row in enumerate(sheet.rows):
             if candidate.kinds[position] == "anchor":
                 continue
             where = f"Page {row.page} row {row.row}"
             reason = candidate.reasons[position]
+            cells = sheet.cells[position]
+            source = self.carry.get(id(row))
+            tokens = row.dates or (source.dates if source else [])
+            shown = tokens[-1].text if tokens else ""
+            known = dict(amount=candidate.amounts[position], balance=candidate.balances[position] if balance_at is not None else None, text=money_text(cells, money),
+                         date=shown)
             if reason:
                 row.reject = reason
                 self.issues.append(f"{where}: {reason}")
                 self.dropped += 1
+                self.outcome_of(table, row, "rejected", reason=reason, **known)
                 continue
-            source = self.carry.get(id(row))
-            tokens = row.dates or (source.dates if source else [])
-            isos, failed = [], None
+            isos, failed, needs = [], None, set()
             for token in tokens:
                 iso, why = self.written(token, self.order, row)
                 if iso is None and why is None:
                     self.order_pages.add(row.page)
                     failed = failed or "order"
+                    needs.add("order")
                 elif iso is None:
                     failed = failed or why.format(date=token.text)
                     self.issues.append(f"{where}: {why.format(date=token.text)}")
+                    if why.startswith("no year is printed"):
+                        needs.add("year")
+                if token.value[3] == "slash" and (token.value[2] is None or token.value[2] <= 99) and self.span()[0] is None:
+                    needs.add("year")  # The year is a choice, whether or not the order is.
                 isos.append(iso)
             if failed:
                 row.reject = None if failed == "order" else failed
                 self.dropped += 1
+                if needs:
+                    self.outcome_of(table, row, "needs", needs=needs, **known)
+                else:
+                    self.outcome_of(table, row, "rejected", reason=failed, **known)
                 continue
             transaction, posted = (isos[0], isos[1]) if len(dated) > 1 and len(isos) > 1 else (None, isos[-1] if isos else None)
             if posted is None:
                 self.dropped += 1
+                self.outcome_of(table, row, "rejected", reason="No date is printed.", **known)
                 continue
             if not row.dates and source:
-                shown = posted if tokens[0].value[3] != "slash" else (f"{posted[8:]}/{posted[5:7]}/{posted[:4]}" if self.order == "DD/MM/YYYY"
-                                                                      else f"{posted[5:7]}/{posted[8:]}/{posted[:4]}")
-                self.notes.append(CARRIED.format(page=row.page, row=row.row, date=shown))
-            cells = sheet.cells[position]
-            money = [at for at, role in enumerate(candidate.roles) if role in ("in", "out", "signed")]
+                carried = posted if tokens[0].value[3] != "slash" else (f"{posted[8:]}/{posted[5:7]}/{posted[:4]}" if self.order == "DD/MM/YYYY"
+                                                                        else f"{posted[5:7]}/{posted[8:]}/{posted[:4]}")
+                self.notes.append(CARRIED.format(page=row.page, row=row.row, date=carried))
+            self.outcome_of(table, row, "ok", posted=posted, **known)
             transaction_row = {"posted_date": posted, "transaction_date": transaction, "description": row.description, "currency": self.currency,
                                "amount_minor": candidate.amounts[position],
                                "locator": {"rebuilt": True, "page": row.page, "table_id": table.id, "row": row.row,
@@ -756,9 +797,15 @@ class Reader:
     def unreadable(self, sheet, decision):
         """No role assignment could be told: the table's rows are not recorded and the page says so (plan P7.5)."""
         rows = [row for row in sheet.rows if not row.candidate]
-        for row in rows:
+        for position, row in enumerate(sheet.rows):
+            if row.candidate:
+                continue
             if row.reject:
                 self.issues.append(f"Page {row.page} row {row.row}: {row.reject}")
+            # An amount in another currency (or unreadable) is what the row shows, whichever column turns out to be money.
+            problem = next((text for text in (sheet.problem(cell) for cell in sheet.cells[position].values()) if text), None)
+            self.outcome_of(sheet.table, row, "roles", reason=row.reject or problem or ROLES_UNKNOWN_ROW, date=row.dates[-1].text if row.dates else "",
+                            text=money_text(sheet.cells[position], sorted(sheet.cells[position])))
         self.dropped += len(rows)
         for page in sorted({row.page for row in rows}):
             self.issues.append(ROLES_UNKNOWN.format(page=page))
@@ -828,7 +875,7 @@ class Reader:
         return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, self.pages(),
                                 opening, closing, tuple(day.isoformat() for day in self.period) if self.period else None, self.order,
                                 {"order": self.order_source, "year": year, "signs": signs}, roles, True, self.tables, self.unplaced + self.pending,
-                                self.summary_anchors)
+                                self.summary_anchors, self.engine.other_native_tables, self.outcomes)
 
 
 # --- Entry points ------------------------------------------------------------------------------------------------------------

@@ -789,9 +789,18 @@ def continuation(view, lines, lo, hi, candidates):
             continue
         if not leftover:
             return opened, offset, []
-        if not opened.table.headings or [" ".join(word.text for word in lines[index].words) for index in sorted(drawn)] != opened.table.headings:
+        if drawn:
+            if [" ".join(word.text for word in lines[index].words) for index in sorted(drawn)] != opened.table.headings:
+                continue
+            support = lambda rows_, alignment, centre: 1 if label_support(lines, lo, first, view.box, alignment, centre, tolerance) else 0  # noqa: E731
+        elif opened.labels:
+            # No heading on this page: the table's own heading labels (printed over a column with no amounts on its first page, as K's
+            # Deposits) stand in for it, moved by the page offset.
+            support = lambda rows_, alignment, centre, labels=opened.labels, shift=offset: 1 if any(  # noqa: E731
+                abs(edge_of(box, alignment) + shift - centre) <= tolerance for _, box in labels) else 0
+        else:
             continue
-        found = choose_alignments(leftover, tolerance, lambda rows_, alignment, centre: 1 if label_support(lines, lo, first, view.box, alignment, centre, tolerance) else 0)
+        found = choose_alignments(leftover, tolerance, support)
         if {position for _, positions in found for position in positions} != set(range(len(leftover))):
             continue
         added = []

@@ -9,7 +9,7 @@ for. A row that cannot be placed is listed as an issue, never guessed.
 
 from datetime import date
 
-from .pdf_import import BALANCE_NAMES, PageView, analyze, is_heading, make_spec, page_flags, read_shape, structure
+from .pdf_import import BALANCE_NAMES, PageView, analyze_legacy, is_heading, make_spec, page_flags, read_shape, structure
 from .statement_dates import (  # noqa: F401  Moved; callers and tests import them from here.
     NO_LAYOUT_NOTE,
     PERIOD_SLACK,
@@ -126,7 +126,7 @@ class Reading:
 
 def selected(result, currency, sign, date_format="auto"):
     reading = Reading(result)
-    analysis = analyze(result, tables=reading.ids, sign=sign, currency=currency, date_format=date_format)
+    analysis = analyze_legacy(result, tables=reading.ids, sign=sign, currency=currency, date_format=date_format)
     return reading, analysis, reading.kept(analysis.rows, analysis.tables)
 
 

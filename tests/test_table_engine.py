@@ -670,7 +670,7 @@ def test_rows_x_x1_is_a_row_x2_is_an_unplaced_line_and_x3_to_x6_are_rejected_wit
 def test_rows_x_the_reasons_are_the_old_readers_words(tmp_path):
     """FR-16: the same words as pdf_import's, row by row (x3 - x6)."""
     result = read_pages(tmp_path, sf.x_pages())
-    legacy = pdf_import.analyze(result, currency="USD")
+    legacy = pdf_import.analyze_legacy(result, currency="USD")
     assert [row.rejected for row in legacy.rows[2:]] == [row.reject for row in read(result, currency="USD").tables[0].rows[1:]]
 
 

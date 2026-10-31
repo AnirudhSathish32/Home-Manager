@@ -13,19 +13,22 @@ from datetime import date
 import json
 import logging
 import re
+from types import SimpleNamespace
 
 from ..core.logs import log_failure
 from ..core.money import MoneyError, currency_code, to_minor
+from ..documents import table_engine
 from ..documents.pdf_layout import PDFTable
 from ..documents.pdf_reader import PDF_VERSIONS, PDFResult, read_result
-from ..documents.table_engine import PageView  # noqa: F401  (moved to the engine; scripts and tests import it from here)
+from ..documents.table_engine import PageView, fits  # noqa: F401  (PageView moved to the engine; scripts and tests import it from here)
+from . import statement_tables
 from .tabular import DATE_FORMATS, HEADER_NAMES
 
 log = logging.getLogger(__name__)
 
 MAX_ROWS, MAX_CELL, MAX_ISSUES = 20_000, 2000, 200
 # Bump when what the analyzer finds changes (tables, last fours, currency): every PDF reading is indexed again at the next start.
-ANALYZER_VERSION = 2  # 2: FR-30, a number that continues the description is description text (specs/statement-accounts).
+ANALYZER_VERSION = 3  # 2: FR-30, a number that continues the description is description text (specs/statement-accounts). 3: the table engine (specs/pdf-table-engine FR-26).
 BALANCE_NAMES = ("balance", "running balance", "new balance", "ending balance")  # Never an amount (PDF import only).
 ROLES = ("date", "description", "amount", "debit", "credit")
 AMOUNT_ROLES = ("amount", "debit", "credit")
@@ -519,8 +522,8 @@ def printed_amount(raw):
 
 # --- Analysis ------------------------------------------------------------------------------------------------------------
 
-def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", sign=None, account_type=None, currency) -> Analysis:
-    """Read the saved `result` into an Analysis. `tables` are the ids of the transactions tables to import (None: all of them;
+def analyze_legacy(result: PDFResult, *, tables=None, year=None, date_format="auto", sign=None, account_type=None, currency) -> Analysis:
+    """The reader before the table engine, kept for the eval comparison (specs/pdf-table-engine FR-34). Read the saved `result` into an Analysis. `tables` are the ids of the transactions tables to import (None: all of them;
     a continuation follows the table it continues). `currency` is the account's. Raises PDFImportError over a limit."""
     currency = currency_code(currency)
     if date_format != "auto" and date_format not in DATE_FORMATS:
@@ -618,6 +621,242 @@ def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", si
     mapping: dict[str, str] = next((entry.table.columns for entry in used if not entry.parent), {})
     return Analysis([entry.table for entry in entries], rows, issues[:MAX_ISSUES], counts, [item for item in ("year", "date_format", "sign") if item in required],
                     mapping, last_fours(result), found_currency, default, used_sign, any("amount" in entry.table.columns for entry in used))
+
+
+# --- The table engine's analysis (specs/pdf-table-engine FR-21, plan P11) --------------------------------------------------
+
+STATEMENT_TYPES = {"credit_card": "credit_card", "checking": "bank", "savings": "bank"}
+ROLE_NAMES = {"in": "credit", "out": "debit", "signed": "amount"}
+NO_TABLE = "Page {page}: no transactions table found"
+MORE_THAN_ONE = table_engine.MORE_THAN_ONE.split("{")[0]  # "More than one amount sits in the "
+NATIVE_CELL = re.compile(r"-row-\d+-cell-\d+$")  # A native cell id is "<table id>-row-<r>-cell-<c>".
+
+
+def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", sign=None, account_type=None, currency, prior_order=None) -> Analysis:
+    """Read the saved `result` into an Analysis through the table engine and its statement layer (`statement_tables`). `tables` are the
+    ids of the transactions tables to import (None: all of them; a continuation follows the table it continues). `currency` is the
+    account's. `prior_order` gives the date order last decided for the account (OD-2) or None. `year`, `date_format` and `sign` are the
+    user's choices; they apply only where the printed columns can't decide. Raises PDFImportError over a limit."""
+    currency = currency_code(currency)
+    if date_format != "auto" and date_format not in DATE_FORMATS:
+        raise PDFImportError(f"Unknown date format {date_format}.")
+    default = SIGN_DEFAULTS.get(account_type)
+    if any(page.method == "embedded_text" and page.layout is None for page in result.pages):
+        blocked = ImportIssue(None, None, "reading_without_layout", NO_LAYOUT)
+        return Analysis([], [], [blocked], dict(seen=0, parsed=0, rejected=0, left_out=0, pages_without_rows=len(result.pages)), [], {}, {}, None,
+                        default, sign or default)
+    choices = {"year": year, "date_format": None if date_format == "auto" else date_format, "sign": sign}
+    kwargs = dict(statement_type=STATEMENT_TYPES.get(account_type), currency=currency, prior_order=prior_order)
+    reading = statement_tables.read(result, choices=choices, **kwargs)
+    needs_sign = False
+    if sign is None and default is None and any(outcome["state"] == "roles" for outcome in reading.outcomes.values()):
+        # A signed column whose signs nothing decides is a choice (account-import-pdf FR-07): read it once as if chosen, to have the rest of the rows.
+        guessed = statement_tables.read(result, choices={**choices, "sign": "negative_is_outflow"}, **kwargs)
+        left = sum(1 for outcome in guessed.outcomes.values() if outcome["state"] == "roles")
+        if left < sum(1 for outcome in reading.outcomes.values() if outcome["state"] == "roles"):
+            needs_sign = True
+            for key, outcome in guessed.outcomes.items():
+                if reading.outcomes.get(key, {}).get("state") == "roles":
+                    outcome["amount_minor"] = None
+            reading = guessed
+    return as_analysis(reading, result, tables=tables, needs_sign=needs_sign, default=default, sign=sign, currency=currency)
+
+
+class Piece:
+    """One page of one engine table, as the import shows it."""
+
+    def __init__(self, table, entry, rows, spec_table, first, parent=None):
+        self.table, self.entry, self.rows, self.spec_table, self.first, self.parent, self.top = table, entry, rows, spec_table, first, parent, 0.0
+        self.flags: list[str] = []
+
+
+def column_texts(table, roles):
+    """The heading words over each column of an engine table, by role: the columns the import maps (account-import-pdf FR-05)."""
+    found = {}
+    for column in table.columns:
+        role = "date" if column.kind == "date" else "description" if column.kind == "text" else ROLE_NAMES.get(roles.get(column.id, ""))
+        if role and role not in found:
+            found[role] = " ".join(column.labels) or role.capitalize()
+    return found
+
+
+def as_analysis(reading, result, *, tables, needs_sign, default, sign, currency) -> Analysis:
+    """The engine's statement reading in the import's shapes: one `ImportTable` per page of each transactions table (the first page's is
+    selectable, the later pages continue it), one `ImportRow` per row the engine found, unplaced and pending lines as issues."""
+    flags = page_flags(result)
+    issues: list[ImportIssue] = []
+    views = {}
+
+    def view_of(page):
+        if page not in views:
+            views[page] = PageView(next(item.layout for item in result.pages if item.number == page))
+        return views[page]
+
+    def top_of(page, rows):
+        """Where a piece starts on its page: the top baseline of the words of its rows' lines."""
+        view = view_of(page)
+        lines = {line.id: line.word_ids for line in view.layout.lines}
+        baselines = [view.baseline[word] for row in rows for line in row["line_ids"] for word in lines.get(line, []) if word in view.baseline]
+        return min(baselines) if baselines else 0.0
+
+    pieces: list[Piece] = []
+    rebuilt_on = {}
+    claimed_native = set()
+    for table in reading.tables:
+        if table.kind != "transactions":
+            continue
+        by_page = {}
+        for row in table.rows:
+            outcome = reading.outcomes.get(statement_tables.outcome_key(table.id, row.page, row.row))
+            if outcome is not None and not row.candidate:
+                by_page.setdefault(row.page, []).append((row, outcome))
+        first = None
+        for page in sorted(by_page):
+            rows = by_page[page]
+            outcomes = [outcome for _, outcome in rows]
+            native = next((NATIVE_CELL.sub("", cell) for outcome in outcomes for cell in outcome["cell_ids"][:1]), None)
+            if first is None:
+                if native:
+                    piece_id, kind = native, "transactions"
+                else:
+                    rebuilt_on[page] = rebuilt_on.get(page, 0) + 1
+                    piece_id, kind = f"page-{page}-import-table-{rebuilt_on[page]}", "rebuilt"
+            else:
+                piece_id, kind = f"page-{page}-import-continuation", "continuation"
+                if any(piece.entry.id == piece_id for piece in pieces):
+                    piece_id += f"-{1 + sum(1 for piece in pieces if piece.entry.id.startswith(piece_id))}"
+            columns = column_texts(table, reading.roles.get(table.id, {}))
+            headings = [" ".join(column.labels) for column in table.columns if column.labels]
+            if native:
+                claimed_native.add(native)
+            entry = ImportTable(piece_id, page, kind, first.entry.id if first else None, headings, dict(columns), [], len(rows), True, first is None)
+            piece = Piece(table, entry, rows, table, first, first)
+            piece.top = top_of(page, outcomes)
+            pieces.append(piece)
+            first = first or piece
+    # Selection: a continuation follows the table it continues.
+    known = {piece.entry.id: piece.entry.kind for piece in pieces}
+    others = []
+    for table in reading.tables:
+        if table.kind != "transactions":
+            for page in table.pages:
+                other = ImportTable(table.id if len(table.pages) == 1 else f"{table.id}-page-{page}", page, "other", None,
+                                    [" ".join(column.labels) for column in table.columns if column.labels] or list(table.headings), {}, [], 0, False, False)
+                if not any(item.id == other.id for item in others):
+                    others.append(other)
+    for page in result.pages:
+        if page.method != "embedded_text" or page.layout is None:
+            continue
+        for native in page.layout.tables:
+            if native.id in reading.others and native.id not in claimed_native:
+                names = [next((cell.text for cell in native.cells if cell.row == 0 and cell.column == column), "") for column in range(native.columns)]
+                others.append(ImportTable(native.id, page.number, "other", None, [name for name in names if name], {}, [], 0, False, False))
+    for other in others:
+        known[other.id] = "other"
+    for table_id in tables or []:
+        if table_id not in known:
+            raise PDFImportError(f"Table {table_id} is not in this reading; preview again.")
+        if known[table_id] == "other":
+            raise PDFImportError(f"Table {table_id} is not a transactions table.")
+    selectable = {piece.entry.id for piece in pieces if piece.entry.selectable}
+    chosen = selectable if tables is None else selectable & set(tables)
+    for piece in pieces:
+        piece.entry.selected = (piece.parent.entry.id if piece.parent else piece.entry.id) in chosen
+    used = [piece for piece in pieces if piece.entry.selected]
+    if sum(len(piece.rows) for piece in used) > MAX_ROWS:
+        raise PDFImportError(f"This PDF exceeds {MAX_ROWS:,} data rows, the most one import can hold.")
+    for piece in used:
+        for row, outcome in piece.rows:
+            if any(len(text) > MAX_CELL for text in (outcome["date"], row.description, outcome["amount"])):
+                raise PDFImportError(f"Page {piece.entry.page}, row {row.row}: a cell exceeds the {MAX_CELL:,}-character limit.")
+
+    # Page flags, scanned pages and pages without a table.
+    by_page = {}
+    for piece in pieces:
+        by_page.setdefault(piece.entry.page, []).append(piece)
+    for page in result.pages:
+        number = page.number
+        if page.method != "embedded_text":
+            issues.append(ImportIssue(number, None, "scanned_page", f"Page {number} is a scanned page; no rows imported. Use Record for scanned statements."))
+            continue
+        here = by_page.get(number, [])
+        if not here:
+            issues.append(ImportIssue(number, None, "no_table", NO_TABLE.format(page=number)))
+            continue
+        shown = [issue for issue in flags.get(number, []) if not (issue.code == "pdf_layout_review" and page.layout.issues == ["unresolved_columns"])]
+        if shown and any(piece.rows for piece in here):
+            issues.append(ImportIssue(number, None, shown[0].code, shown[0].message))
+            for piece in here:
+                piece.flags = [issue.message for issue in shown]
+
+    rows, parsed_issues = [], []
+    required = []
+    if any("order" in outcome["needs"] for piece in used for _, outcome in piece.rows):
+        required.append("date_format")
+    if any("year" in outcome["needs"] for piece in used for _, outcome in piece.rows):
+        required.append("year")
+    used_sign = sign or default
+    if needs_sign:
+        required.append("sign")
+    for piece in used:
+        entry = piece.entry
+        for row, outcome in piece.rows:
+            reject = outcome["reason"] if outcome["state"] in ("rejected", "roles") else None
+            posted, minor = outcome["posted"], outcome["amount_minor"]
+            labels = ([f"continued from page {piece.parent.entry.page}"] if piece.parent else []) + piece.flags
+            number = row.row if entry.kind == "transactions" else row.row - 1
+            if reject:
+                posted, minor = None, None
+                parsed_issues.append(ImportIssue(entry.page, row.row, "rejected_row", f"Page {entry.page} row {row.row}: {reject}"))
+            key = f"{entry.id}:{number}"
+            printed = outcome["amount"]
+            if reject and reject.startswith(MORE_THAN_ONE):
+                printed = money_words(view_of(entry.page), piece.table, reading.roles.get(piece.table.id, {}), row) or printed  # Nothing is joined or guessed.
+            rows.append(ImportRow(key, entry.page, entry.id, number, outcome["date"], row.description, printed, posted, minor, None if reject else currency,
+                                  not reject and not piece.flags, labels, reject, outcome["cell_ids"], outcome["line_ids"], outcome["word_ids"],
+                                  piece.parent.entry.page if piece.parent else None, outcome["balance_minor"]))
+            entry.rows.append(key)
+    unplaced = []
+    for line in reading.unplaced:
+        if line.page in {piece.entry.page for piece in used}:
+            unplaced.append(ImportIssue(line.page, None, "unplaced_line", (statement_tables.PENDING if line.reason == "pending" else statement_tables.UNPLACED)
+                                        .format(page=line.page, text=line.text)))
+    issues += parsed_issues + unplaced
+
+    found_currency = document_currency(result, [SimpleNamespace(amount=row.amount, debit="", credit="") for row in rows])
+    if found_currency and found_currency != currency:
+        issues.insert(0, ImportIssue(None, None, "document_currency_mismatch",
+                                     f"This PDF is in {found_currency}, but the account's currency is {currency}. No conversion is done; choose an account in {found_currency}."))
+    blocking = [issue for issue in issues if issue.code in BLOCKING]
+    issues = blocking + sorted((issue for issue in issues if issue.code not in BLOCKING), key=lambda issue: issue.page or 0)
+    rejected = sum(1 for row in rows if row.rejected)
+    sourced = {row.page for row in rows}
+    counts = dict(seen=len(rows) + len(unplaced), parsed=len(rows) - rejected, rejected=rejected, left_out=sum(1 for row in rows if not row.rejected and not row.ticked),
+                  pages_without_rows=sum(1 for page in result.pages if page.number not in sourced))
+    if unplaced:
+        counts["unplaced"] = len(unplaced)
+    tops = {id(piece.entry): piece.top for piece in pieces}
+    entries = sorted([*[piece.entry for piece in pieces], *others], key=lambda item: (item.page, tops[id(item)] if id(item) in tops else other_top(view_of, item, result)))
+    mapping = next((piece.entry.columns for piece in used if not piece.parent), {})
+    return Analysis(entries, rows, issues[:MAX_ISSUES], counts, [item for item in ("year", "date_format", "sign") if item in required],
+                    mapping, last_fours(result), found_currency, default, used_sign, any("amount" in piece.entry.columns for piece in used))
+
+
+def money_words(view, table, roles, row):
+    """The words a row prints in its money columns, left to right, as printed: what a row with more than one amount in a column shows."""
+    zones = [column.zone for column in table.columns if column.kind == "amount" and roles.get(column.id) in ("in", "out", "signed")]
+    words = [word for word in view.layout.words if word.id in set(row.word_ids) and any(fits(view.box[word.id], zone) for zone in zones)]
+    return " ".join(word.text for word in sorted(words, key=lambda word: view.box[word.id][0]))
+
+
+def other_top(view_of, item, result):
+    """Where a table that is not a transactions table starts on its page, for the listing order."""
+    layout = next(page.layout for page in result.pages if page.number == item.page)
+    native = next((table for table in layout.tables if table.id == item.id), None)
+    if native is None:
+        return 0.0
+    view = view_of(item.page)
+    return table_extent(view, native)[0]
 
 
 # --- Import index (migration 072; docs/documents.md "PDFs") -------------------------------------------------------------
