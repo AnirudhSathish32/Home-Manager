@@ -707,10 +707,9 @@ def test_sc19_an_engine_fault_falls_back_to_the_models_rows_with_one_note_and_lo
     cites, as `test_sc18_p8_a_rebuild_that_fails_in_read...` asserts."""
     def raising(*args, **options):
         raise RuntimeError("injected engine fault")
+    recorded, _ = recorded_fixture(env, local_model, "S", sf.s_pages())  # Captured (and indexed) before the fault, so the one logged failure is Record's.
     monkeypatch.setattr(statement_tables, "engine_pages", raising)
     monkeypatch.setattr(statement_tables, "read", raising)
-
-    recorded, _ = recorded_fixture(env, local_model, "S", sf.s_pages())
     with caplog.at_level(logging.DEBUG):
         record_ = recorded.run(s_replies())
     assert [amount for _, amount, _ in recorded.transactions()] == [36, 2, -38, 150000, -50000, 2]

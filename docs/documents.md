@@ -280,26 +280,37 @@ same for all three.
 
 **PDF**
 
-A PDF is imported from its **saved reading** (`finance/pdf_import.py analyze`, pure code, nothing decoded in the
-request). It makes no model or network call, and never touches the Inbox or Library file. A PDF stays a document that
+A PDF is imported from its **saved reading** (`finance/pdf_import.py analyze`, an adapter over the table engine, [Statement
+rows from the printed columns](#statement-rows-from-the-printed-columns); pure code, nothing decoded in the request). It makes no model or network call, and never touches the Inbox or Library file. A PDF stays a document that
 is read and recorded as before: it is not a table file, and `needs_text` and `ready_for_ledger` return the same PDFs
 (a PDF the import marked `imported` is still recordable, and still counts as ready for the ledger).
 - **What is read.** Only `embedded_text` pages. A scanned page is listed ("Page N is a scanned page; no rows imported.
   Use Record for scanned statements.") and contributes nothing. A PDF read before native layout was saved is blocked
   until **Read again**.
-- **Tables and rows.** Every native transactions table is listed (page, headings, row count) and ticked by default;
-  other native tables are listed as "not a transactions table". A table that continues on the next page is linked to
-  it ("continued from page N"). Pages with no native table are rebuilt from the saved words by baseline and the
-  heading's column positions, and so are rows printed below a native table the reader cut short. The import does this
-  itself; the reader's tables are unchanged. A balance column is never an amount.
+- **Tables and rows.** The engine finds the tables and rows (columns by alignment, with or without headings: Record reads
+  the same ones). `analyze` shows each engine table as one table per page: the first page's is listed (page, headings,
+  row count) and ticked by default, named after the reader's native table it sits on (`transactions`) or
+  `page-N-import-table-M` (`rebuilt`); every later page's is a `continuation` linked to it ("continued from page N",
+  `page-N-import-continuation`), however its headings are printed. A row's key is `<table id>:<row>`, unique across pages;
+  its row number is the reader's for a native table and counts from 0 for the others (the saved import records keep
+  them). Other tables (summaries, fee and daily balance tables, a payment schedule dated outside the printed period ±
+  7 days) are listed as "not a transactions table" and give no rows. A balance column is never an amount; the balance
+  chain, the printed summary or the headings decide which columns are money in and out.
+- **Lines that fit no column.** A printed line with a date and an amount that is no row of any table (an amount
+  across two columns, a courtesy line) is not a row and can't be imported: it is an issue with code `unplaced_line`, its
+  page and its text, and a pending-transactions row is one too. The counts gain `unplaced` (present when there are any),
+  and imported + duplicates + rejected + unplaced + left out = lines seen.
 - **Dates, amounts and signs are exact.** A four-digit year is read as printed. A date without a year (or with a
-  two-digit year) waits for the year you choose, and the current year is never assumed. A day/month order that the
-  column does not settle is a required choice. Amounts go through `core/money.to_minor`. Debit and Credit columns
-  decide the sign; a single Amount column uses the chosen account's default (card: positive is money out; checking or
-  savings: positive is money in; other types ask), which you can change. The choice is offered whenever any selected
+  two-digit year) takes its year from the **printed statement period**, and waits for the year you choose only when no
+  period is printed; the current year is never assumed. The day/month order is the one a day over 12 decides, else the
+  one that fits the period, else the one the account's earlier statements decided (`ledger.pdf_state` looks it up by the
+  account's last four), and only then a required choice. Amounts go through `core/money.to_minor`. A balance chain or a printed
+  summary that fixes the columns decides the sign first; otherwise Debit and Credit columns decide it, and a single
+  Amount column takes the row's own marker, its section title, then the chosen account's default (card: positive is
+  money out; checking or savings: positive is money in; other types ask), which you can change. The choice is offered whenever any selected
   table has an Amount column, even when another one has Debit and Credit columns. A row whose date or amount does not fit is
   rejected with a reason, never guessed.
-- **A number inside the description.** In a row rebuilt from the words, an amount-shaped word that continues the
+- **A number inside the description.** In a row not on a native table, an amount-shaped word that continues the
   description's printed text (joined to the word before it, closer than 1.5 font sizes, in a run that starts in the
   Description column) is description text, not an amount: `09/18 ACCTVERIFY PPD ID 1234567890 0.36` is 0.36 with that
   description, where it used to be rejected. It stays the row's amount only when its whole box lies inside one amount
@@ -308,8 +319,9 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   is the row's only amount but crosses its column's edge is rejected with "The amount is printed against the
   description, so it can't be told apart from it." (the row is listed, not lost). An amount printed apart from the
   description inside an amount column is rejected as before. Record rebuilds its rows the same way ([Typed
-  extraction](#typed-extraction)). Because this changes what the analyzer finds, `ANALYZER_VERSION` is 2: every PDF
-  reading is indexed again at the next start, and the picker shows `indexing: true` until that is done.
+  extraction](#typed-extraction)). Because this changes what the analyzer finds, `ANALYZER_VERSION` was bumped to 2, and the table engine took it to 3: every PDF
+  reading is indexed again at the next start, and the picker shows `indexing: true` until that is done. The reader before
+  the engine is kept as `analyze_legacy` for the eval comparison and `finance/statement_rows.py`.
 - **Flagged pages.** Rows from a page with a layout issue (other than the harmless `unresolved_columns` on a page whose
   rows are rebuilt) start unticked, with the page's message. Ticked rows import like any other.
 - **Account.** The dialog ignores the remembered CSV account. An account is preselected only when exactly one active
@@ -324,7 +336,9 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   with the same values is replaced, as for CSV. A statement row not yet counted says so.
 - **Refusals** name the next step and write nothing: recorded as a receipt, bill, pay stub, tax form or investment
   statement; in Trash; the reading, document or preserved blob changed since the preview; over 20,000 rows or 2,000
-  characters in a cell; nothing to import. A PDF recorded as a statement, or not recorded, can be imported.
+  characters in a cell; nothing to import; and a fault in the engine itself ("This PDF's rows couldn't be read from its
+  printed columns. Read it again, or use Record."), which is logged with the exception and the reading's id and never any
+  text. A PDF recorded as a statement, or not recorded, can be imported.
 - **Atomic and recorded.** The account, rows, evidence and the `transaction_imports` record (reading, tables, each
   table's columns in `mappings`, year, sign, ticks and counts, in `mapping_json` and `issues_json` with `kind: "pdf"`)
   are one transaction. It takes the write lock before checking the reading, so a reading saved meanwhile waits for the
