@@ -1,67 +1,47 @@
 ```yaml
 slice: SL-05
-result: escalated          # all built and verified except the items under `escalations`; one existing test fails on purpose (see 1)
+result: ready_for_verification   # r3: the three settled escalations are applied; all four verification commands exit 0
 provider: claude
 model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
-start_head: 3ec646c
-end_head: HEAD            # the handoff commit on top of code commit ae36886 (git log -1 on this file)
-commit: ae36886           # last code/test/docs commit; the handoff file is committed on top of it
-code_commits: [d9ce7cc, 06456a6, 5d9b3a5, 0e3d396, 147c58b, ae36886]
-changed_files:
-  - src/home_manager/documents/extraction.py          # P10: statement_tables.engine_pages / read (+ prior_order closure), printed opening/closing in normalize, EXTRACTION_VERSION v32
-  - src/home_manager/documents/table_engine.py        # one repair: a page heading of another column count starts its own table (continuation)
-  - src/home_manager/finance/statement_tables.py      # one repair: a row cites its native-table cells and no words only when it is one table row (cited_words)
-  - tests/test_table_engine_record.py                 # new: 31 passed + 1 xfail (Record side of the contract)
-  - tests/test_table_engine_generator.py              # +10 end-to-end Record cases (test_sc18_end_to_end_through_record_case[...])
-  - tests/test_table_engine_browser.py                # new: SC-03 step 4 (opt-in)
-  - tests/test_statement_rebuild.py                   # P8 patch targets retargeted; test_sc17_rejected_rows_are_issues_... updated to the contract's x2 change
-  - docs/documents.md                                 # "Statement rows from the printed columns" rewritten (heading kept)
+start_head: 1175b62        # r3 (r2 started at 3ec646c)
+end_head: HEAD             # the handoff commit on top of code commit 9f4278e (git log -1 on this file)
+commit: 9f4278e            # r3 code/test/docs commit; r2's code commits: d9ce7cc, 06456a6, 5d9b3a5, 0e3d396, 147c58b, ae36886
+code_commits: [d9ce7cc, 06456a6, 5d9b3a5, 0e3d396, 147c58b, ae36886, 9f4278e]
+changed_files:   # r3 only; r2's list is in "What was built" below and git log
+  - src/home_manager/documents/extraction.py          # ANY_DATE; missed_statement_lines flags a date anywhere (FR-19 / plan P10 bullet)
+  - tests/test_table_engine_record.py                 # SC-11 xfail removed; SC-19 step 1 rewritten on fixture S (imports s_replies from test_statement_rebuild)
+  - tests/test_statement_rebuild.py                   # T-edge "Page 1 row 5" -> "Page 1 row 6" (one value, nothing else)
+  - docs/documents.md                                 # "Statement rows the model skipped": the date may be anywhere in the line (heading kept)
   - plans/pdf-table-engine/handoffs/slice-SL-05.md
 checks:
   - command: ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_statement_rebuild.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py -k \"not _import and not journey_j1 and not generator_only\" -q"
-    exit_code: 1     # 196 passed, 1 xfailed, 1 failed in 218 s. The failure is test_sc17_a_rejected_row_turns_the_arithmetic_check_off_... (escalation 1); the xfail is escalation 2
+    exit_code: 0     # 198 passed, 0 failed, 0 xfailed, 200 s (SC-11 and the T-edge test pass; no other test changed)
   - command: ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_table_engine_generator.py -k \"generator_only or not generator\" -q"
-    exit_code: 0     # 575 passed (243 engine/statement tests + 332 generator_only tests), 68 s
+    exit_code: 0     # 575 passed, 61 s
   - command: ".venv/bin/ruff check src tests evals scripts"
     exit_code: 0
   - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_table_engine_browser.py tests/test_statement_accounts_browser.py -q"
-    exit_code: 0     # 11 passed (Edge is installed here: /usr/bin/microsoft-edge); run before the docs/import-order commits, which touch no code path
+    exit_code: 0     # 11 passed
   - command: ".venv/bin/python -m pytest tests/test_evals.py tests/test_layout_consumers.py tests/test_pdf_imports.py tests/test_pdf_layout.py -q"
-    exit_code: 0     # 218 passed; extra evidence, not in the slice's list
+    exit_code: 0     # 218 passed; extra evidence, not in the slice's list (the broader check moved none of them)
 escalations:
   - id: 1
-    kind: unlisted existing expected value (row numbers)
-    detail: >
-      `tests/test_statement_rebuild.py::test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reporting_a_false_mismatch`
-      (statement-accounts SC-17/FR-25, T-edge) asserts "Page 1 row 5: The amount is printed against the description…". The old reader numbered
-      rows from 0 (s1…s5 are rows 0–4, so t1 is row 5). The engine numbers them from 1 (plan P9; contract SC-04 "Page 1 row 2/4/5", SC-06 "Page 1 row 14"),
-      so t1 is row 6. The contract's "Scenarios this spec changes" lists T-edge as "unchanged" but only about the reason text. I did NOT edit the
-      expected value (rule: escalate); the test fails with `row 6` for `row 5`, the reason text is identical. The same renumbering will touch
-      `test_rows_x_records_only_x1_and_lists_x2_to_x6…` (SL-06 moves it to the engine, where x3–x6 are rows 2–5, as they were) — decide once for both.
-      Needed from you: confirm 1-based numbering and approve changing that one expected value to `row 6` (a one-character change), or say how to keep both.
+    status: resolved   # 1-based numbering confirmed; test_sc17_a_rejected_row_turns_the_arithmetic_check_off... now expects "Page 1 row 6" (9f4278e)
   - id: 2
-    kind: contract contradiction (SC-11)
-    detail: >
-      SC-11 says "the missed-row check ran for page 2: `local_model` received a second `Transactions` request whose lines include the interest line". PR's
-      page 2 is three prose lines that do not START with a date (`Interest of 0.42 was paid on 08/31/2026 …`). `extraction.missed_statement_lines` only flags
-      lines that match `ROW_DATE` at their start, and FR-19 keeps the check "as today", so no second request is made. Everything else in SC-11 holds
-      (4 rows incl. the stub's fee −250, the exact "Page 2: no table was found…" note once, no such note for page 1, reconciles). The literal bullet is
-      `test_sc11_pr_page_two_is_asked_about_again_with_its_own_lines_only`, marked `xfail(strict=True)` with this reason, so it turns red the day the check is
-      broadened. Needed: either amend SC-11 (check ran = `missed_statement_lines` found nothing), or say that the missed-row check should look for dates anywhere
-      in a line (that would add requests to many existing fixtures; I did not do it).
+    status: resolved   # FR-19 amended: missed_statement_lines flags a date anywhere in an uncited line with an amount besides it; SC-11's xfail removed, the test passes as written (9f4278e)
   - id: 3
-    kind: contract contradiction (SC-19 step 1)
-    detail: >
-      SC-19 step 1 says that with the engine faulted the statement's rows are the stub's 7 WF rows. WF's native table has `unresolved_columns` (SC-01's own
-      P-check), and today's fallback anchors each model row to the native table's cells: with no resolved amount column it says "Amount has no unambiguous
-      native source column" and leaves all 7 rows out ("A table row with an unresolved required amount was left out of the ledger"), so no row is
-      recorded. DM (also a native table with unresolved headings) does the same. That is the old path's behavior on exactly the layouts this feature fixes, not
-      something the fault changes. `test_sc19_an_engine_fault_…` asserts the rest of step 1 (REBUILD_FAILED exactly once, statement `needs_review`, no `rebuilt`
-      evidence, the failure logged once by class with no description, amount or account number) and not the rows. The old S fixture (native table resolves)
-      keeps its rows: `test_sc18_p8_*` still pass. Needed: amend SC-19's fixture (e.g. S, or WF without a native table) or accept the weaker assertion.
+    status: resolved   # SC-19 step 1 on fixture S: the stub's 6 rows [36, 2, -38, 150000, -50000, 2], needs_review, REBUILD_FAILED once, no `rebuilt` evidence, one failure logged with no description/amount/account number (9f4278e)
 ```
+
+## Round r3 (the three settled escalations)
+- **Missed-row check.** `ANY_DATE` is `ROW_DATE`'s date forms behind `(?<![\d/])`. `missed_statement_lines` flags an uncited, non-`BALANCE_LINE` line when removing some date match
+  leaves text holding an amount (`line_amounts` over the text before and after the date, joined by a space). The old rule (a date at the start, an amount after it) is a special case.
+  No other test in the four verification commands or in the extra PDF-import/evals/layout run changed.
+- **SC-19** uses the contract's engine-fault double (`statement_tables.engine_pages` and `read` raise `RuntimeError("injected engine fault")`) on `sf.s_pages()` with `s_replies()` imported from
+  `test_statement_rebuild` (that file's behavior is unchanged). `_import` (step 2) stays for SL-06.
+- The r2 text below is kept as it was; where it describes the three escalations as open, this section supersedes it.
 
 ## What was built
 - **`documents/extraction.py` (P10).** `read` calls `statement_tables.engine_pages(evidence)` (same exception fallback: `REBUILD_FAILED` and no rebuild on any page). `publish`
@@ -111,5 +91,4 @@ escalations:
 - `docs/documents.md` "Transaction imports" (SL-06) and the evals docs (SL-07).
 
 ## Open issues
-- The three escalations above. The T-edge failure keeps the first verification command's exit code at 1 until it is resolved (the one-line edit is yours to approve).
-- Please confirm or amend the two engine repairs above (continuation heading rule, `cited_words`).
+- None from r3. Still open from r2: please confirm or amend the two engine repairs (continuation heading rule, `cited_words`); SC-13's note about `journey_j1` (Y and Z in one account) is for SL-06.
