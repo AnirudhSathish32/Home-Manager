@@ -579,8 +579,12 @@ Evidence: `pytest tests/test_table_engine_generator.py`
 
 ## SC-19: the engine fails
 Requirement IDs: FR-24
-Engine fault double active. Fixture: WF, with a `Transactions` stub listing wf1–wf7 correctly.
-1. Record → the statement's rows are the stub's 7 rows; notes include `REBUILD_FAILED`'s text exactly
+Engine fault double active. Fixture: S (statement-accounts, `tests/statement_fixtures.py` `s_pages()`), with its
+`Transactions` stub (`s_replies()` in `tests/test_statement_rebuild.py`). WF isn't used: its native table has unresolved
+columns, so the old path leaves every model row out and step 1 couldn't show the fallback's rows.
+1. Record → the statement's rows are the stub's 6 rows, each amount taken from the native table cell it cites, as
+   today: 0.36, 0.02, −0.38, 1,500.00, −500.00, 0.02 (as `test_sc18_p8_a_rebuild_that_fails_in_read…` asserts); status
+   `needs_review`; notes include `REBUILD_FAILED`'s text exactly
    (`extraction.py:1283`). One failure is logged; no log record holds any fixture description, amount or the account
    number.
 2. PDF import preview → a 4xx refusal, nothing written (`transactions`, `transaction_imports`, `accounts` counts
@@ -632,6 +636,8 @@ Each is updated to the expected value given here, with the requirement that chan
 | `test_rows_a_second_transactions_heading_on_a_rebuilt_page_is_listed` | `LATE ROW` not read; issue "rows after a second transactions heading … weren't read" | The repeated heading is ignored and `10/01 LATE ROW 9.00` is a row of S's table: 2026-10-01, 900. That issue is gone. Opening 0.00 + rows = 1,009.00 ≠ 1,000.00, so the statement doesn't reconcile and needs review | FR-06, FR-07, FR-08 |
 | account-import-pdf SC-07 7-a | Payment schedule rows imported as `continued from page 1` (accepted risk D10) | Unchanged: X prints no period, so dates don't decide (FR-09). New variant 7-a′: X with `Statement period 09/01/2026 to 09/30/2026` printed above page 1's tables → page 3's two `Scheduled payment` rows are other-table rows, not importable, not unplaced; 4 rows, totals as step 1 | FR-09, FR-14 (D6) |
 | `test_fr30_edge_a_joined_only_amount…` (T-edge) | t1 rejected with today's reason | Unchanged: a dated line with no amount is a rejected row and keeps today's reason (FR-05 as settled in D6) | FR-05 |
+| `test_sc17_a_rejected_row_turns_the_arithmetic_check_off…` (T-edge) | `Page 1 row 5: …` (rows numbered from 0) | `Page 1 row 6: …`: rows are numbered from 1, as in SC-04 and SC-06 (plan P9); the reason text is unchanged | FR-15 (P9) |
+| The missed-row check (`extraction.missed_statement_lines`) | Flags an uncited line only when a date starts it | Flags an uncited line with a date anywhere and an amount other than the date (PR's interest line in SC-11). No other existing test changes (full-suite comparison, 2026-10-31) | FR-19 |
 | `test_fr30_the_analyzer_version_is_two…` | `ANALYZER_VERSION == 2` | `ANALYZER_VERSION == 3` | FR-26 |
 
 ---

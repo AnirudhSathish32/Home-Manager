@@ -1,6 +1,6 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: pdf-table-engine
-plan_sha256: e9062960726231535e84793325df406acae727e0521c40230e4df81120063bf9
+plan_sha256: bfa6d9bd48247aa18c9bed49faae2921fb81ed44f2a826a462813066b03bcd9f
 slices:
   - id: SL-01
     status: done
@@ -95,6 +95,7 @@ slices:
     attempts:
       - "r1 (start_head recorded as 3d0af39, actual tree 3ec646c): weekly rate limit after 16 s, no changes"
       - "r2: commits d9ce7cc..ae36886, handoff 86030d3"
+      - "user decisions 2026-10-31: row 6 (1-based) approved; FR-19 missed-row check broadened (date anywhere); SC-19 step 1 on fixture S, fallback kept until D4. Spec ff85ea3e / plan bfa6d9bd re-approved (delegated). r3 dispatched for the three changes."
     notes: >-
       Blocked on test_statement_rebuild.py::test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reporting_a_false_mismatch
       (expects 0-based "Page 1 row 5"; engine is 1-based, says row 6) and on two contract contradictions awaiting the user: SC-11's second

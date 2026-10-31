@@ -1,18 +1,18 @@
 {
   "feature": "pdf-table-engine",
   "spec": {
-    "sha256": "2ccf1572417938e3088b566597b417ccfa09d16132a559cf2d17958ed4bf3839",
+    "sha256": "ff85ea3e4058a9a7cbbcd54de2fe317dd5d360afe40d835b0156944fcc96a94b",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-27T21:49:51-04:00",
+    "approved_at": "2026-10-31T17:14:22-04:00",
     "approved_via": "agent",
-    "permission": "Approve both, continue (re-approve spec and plan after the NB fixture amendment)"
+    "permission": "Approve both, continue (re-approve spec and plan after the SL-05 amendments: FR-19 broader missed-row check, SC-19 on fixture S, T-edge row 6)"
   },
   "plan": {
-    "sha256": "e9062960726231535e84793325df406acae727e0521c40230e4df81120063bf9",
+    "sha256": "bfa6d9bd48247aa18c9bed49faae2921fb81ed44f2a826a462813066b03bcd9f",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-27T21:49:51-04:00",
+    "approved_at": "2026-10-31T17:14:22-04:00",
     "approved_via": "agent",
-    "permission": "Approve both, continue (re-approve spec and plan after the NB fixture amendment)",
-    "spec_sha256": "2ccf1572417938e3088b566597b417ccfa09d16132a559cf2d17958ed4bf3839"
+    "permission": "Approve both, continue (re-approve spec and plan after the SL-05 amendments: FR-19 broader missed-row check, SC-19 on fixture S, T-edge row 6)",
+    "spec_sha256": "ff85ea3e4058a9a7cbbcd54de2fe317dd5d360afe40d835b0156944fcc96a94b"
   }
 }

@@ -286,6 +286,9 @@ For each transactions table (with its continuations), with amount columns C1…C
   summary traces, `finance/document_traces.py:216–225`), with P9's note when the model's value differed (FR-07 as
   settled in D6). The field's evidence still cites the model's line; the printed anchor's line is added to the record's
   notes text.
+- `missed_statement_lines` (FR-19 as amended 2026-10-31): a line qualifies when a date appears anywhere in it (not
+  preceded by a digit or `/`) and the rest of the line, without that date, holds an amount; the balance/total exclusion
+  is unchanged.
 - A reading saved without layout: unchanged (`NO_LAYOUT_NOTE`, statement-accounts SC-18 b).
 - The model's rows on engine pages decide nothing; unmatched ones stay record notes (`:1781–1791`, unchanged).
 
