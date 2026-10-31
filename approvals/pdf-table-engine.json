@@ -1,18 +1,18 @@
 {
   "feature": "pdf-table-engine",
   "spec": {
-    "sha256": "66cc0b063da90211386095c9c5254e6eb0ed29be0031b74ae15a2ddc93cbf604",
+    "sha256": "41e0e64543c515f5abfeac548cbb08191cccb338a078d51644f6865b0eacfb4a",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-31T17:36:47-04:00",
+    "approved_at": "2026-10-31T18:59:22-04:00",
     "approved_via": "agent",
-    "permission": "Approve, start SL-06 (re-approve spec and plan after the J1 amendment: one account, Y with 19 rows)"
+    "permission": "Approve all (SL-06: two tests to the changed list, 7-a' period ends 09/20, P11 keeps the old import table names, the worker's other value changes listed, J1 Z before Y)"
   },
   "plan": {
-    "sha256": "bfa6d9bd48247aa18c9bed49faae2921fb81ed44f2a826a462813066b03bcd9f",
+    "sha256": "2e936134343341fea063a2b48580e3ec3ec1f86ba27be818b264bfe725b49e4f",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-10-31T17:36:47-04:00",
+    "approved_at": "2026-10-31T18:59:22-04:00",
     "approved_via": "agent",
-    "permission": "Approve, start SL-06 (re-approve spec and plan after the J1 amendment: one account, Y with 19 rows)",
-    "spec_sha256": "66cc0b063da90211386095c9c5254e6eb0ed29be0031b74ae15a2ddc93cbf604"
+    "permission": "Approve all (SL-06: two tests to the changed list, 7-a' period ends 09/20, P11 keeps the old import table names, the worker's other value changes listed, J1 Z before Y)",
+    "spec_sha256": "41e0e64543c515f5abfeac548cbb08191cccb338a078d51644f6865b0eacfb4a"
   }
 }

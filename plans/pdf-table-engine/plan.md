@@ -300,11 +300,13 @@ For each transactions table (with its continuations), with amount columns C1…C
   default or with no default (account-import-pdf FR-07: the user's sign choice replaces the default, never a chain or
   summary decision). `required` lists what is still open, as today.
 - Each engine table is shown as one `ImportTable` per page, as today: the first page's piece has kind
-  `transactions`, each later page's piece has kind `continuation`, id `page-<p>-table-<n>`, and `linked_to` the first
-  piece (`pdf_import.py:436` today). Rows map to `ImportRow` one to one with key `"<piece id>:<row>"`, so keys are
-  unique across pages; `continued_from` and the label `continued from page N` as today; flags from `page_flags` as
+  `transactions`, each later page's piece has kind `continuation`, and `linked_to` the first piece (`pdf_import.py:436` today). Piece
+  ids and `ImportRow.row` numbers stay as today (`page-<p>-import-table-<n>`, `page-<p>-import-continuation`, native
+  `page-<p>-layout-table-<n>`; native rows from 1, others from 0; amended 2026-10-31, as existing tests and stored
+  provenance pin them), and Record's locators use the same names; P9's 1-based numbers are for issue texts. Rows map to
+  `ImportRow` one to one with key `"<piece id>:<row>"`, so keys are unique across pages; `continued_from` and the label `continued from page N` as today; flags from `page_flags` as
   today. SC-08 step 2's test also asserts the keys are unique. Rejected rows keep `rejected`. Unplaced lines and pending
-  rows become `ImportIssue(page, None, "unplaced_line", <P9 text>)`, and `counts["unplaced"]` is added. The identity
+  rows become `ImportIssue(page, None, "unplaced_line", <P9 text>)`, and `counts["unplaced"]` is added when there is at least one (absent means 0). The identity
   becomes imported + duplicates + rejected + unplaced + left out = lines seen (contract G13, plan decision).
 - `ledger.pdf_state` (`:1553`, `:1559`): passes `prior_order` (a closure over `db` and the account's last four) and
   catches a non-`PDFImportError` exception from `analyze`, logging it with `log_failure` and raising

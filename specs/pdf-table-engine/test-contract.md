@@ -509,7 +509,8 @@ Initial state, built before the feature's start-up runs:
 - DM captured and read twice as two documents, Y and Z (Z is DM with its footer text changed so the hashes differ).
 - Statement Y published with the old path's rows: DM rows 1–8 with month-first dates (2026-01-10, 2026-02-10,
   2026-03-10, 2026-05-10, 2026-06-10, 2026-08-10, 2026-10-10, 2026-12-10) and their amounts; status `needs_review`.
-- Statement Z published with the same 8 rows, then confirmed by the user (`POST …/review {"status": "verified"}`).
+- Statement Z published with the same 8 rows, before Y (Y and Z share one account, so whichever is published second
+  has its duplicate rows left out by the ledger), then confirmed by the user (`POST …/review {"status": "verified"}`).
 - Both readings' `pdf_import_index` rows set to `analyzer_version = 2`.
 Checkpoints:
 1. Start the app → no transaction or statement row changes (snapshot of `statements` and `transactions` equal).
@@ -637,10 +638,17 @@ Each is updated to the expected value given here, with the requirement that chan
 | account-import-pdf SC-07 7-d | B2 rejected: the amount doesn't fit a column | B2 listed as an unplaced line with page 2 and its text; not importable; B1 imports | FR-04, FR-08, FR-21 |
 | `test_rows_a_balance_title_above_a_transactions_shaped_table_leaves_the_page_to_the_model_with_a_note` | No rows rebuilt; a note gives the page to the model | s1–s5 recorded from the printed columns; no such note (the title is a hint, the rows have descriptions and the chain holds) | D1, FR-09 |
 | `test_rows_a_second_transactions_heading_on_a_rebuilt_page_is_listed` | `LATE ROW` not read; issue "rows after a second transactions heading … weren't read" | The repeated heading is ignored and `10/01 LATE ROW 9.00` is a row of S's table: 2026-10-01, 900. That issue is gone. Opening 0.00 + rows = 1,009.00 ≠ 1,000.00, so the statement doesn't reconcile and needs review | FR-06, FR-07, FR-08 |
-| account-import-pdf SC-07 7-a | Payment schedule rows imported as `continued from page 1` (accepted risk D10) | Unchanged: X prints no period, so dates don't decide (FR-09). New variant 7-a′: X with `Statement period 09/01/2026 to 09/30/2026` printed above page 1's tables → page 3's two `Scheduled payment` rows are other-table rows, not importable, not unplaced; 4 rows, totals as step 1 | FR-09, FR-14 (D6) |
+| account-import-pdf SC-07 7-a | Payment schedule rows imported as `continued from page 1` (accepted risk D10) | Unchanged: X prints no period, so dates don't decide (FR-09). New variant 7-a′: X with `Statement period 09/01/2026 to 09/20/2026` printed (the end is 09/20, so page 3's first date, 10/01, is outside FR-09's period ± 7 days) above page 1's tables → page 3's two `Scheduled payment` rows are other-table rows, not importable, not unplaced; 4 rows, totals as step 1 | FR-09, FR-14 (D6) |
 | `test_fr30_edge_a_joined_only_amount…` (T-edge) | t1 rejected with today's reason | Unchanged: a dated line with no amount is a rejected row and keeps today's reason (FR-05 as settled in D6) | FR-05 |
 | `test_sc17_a_rejected_row_turns_the_arithmetic_check_off…` (T-edge) | `Page 1 row 5: …` (rows numbered from 0) | `Page 1 row 6: …`: rows are numbered from 1, as in SC-04 and SC-06 (plan P9); the reason text is unchanged | FR-15 (P9) |
 | The missed-row check (`extraction.missed_statement_lines`) | Flags an uncited line only when a date starts it | Flags an uncited line with a date anywhere and an amount other than the date (PR's interest line in SC-11). No other existing test changes (full-suite comparison, 2026-10-31) | FR-19 |
+| account-import-pdf `test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain` | Page 2's repeated heading starts a new table | One table across pages 1–3: (1, transactions), (2, continuation of page 1's), (3, continuation of page 1's); page 2's and 3's rows labelled `continued from page 1` (as K3 in SC-08) | FR-06 |
+| account-import-pdf `test_analyzer_sc07_a_second_heading_below_a_native_table_is_reported_and_its_rows_are_not_read` | Rows after the second heading not read; `second_heading` issue | The repeated heading is ignored: C2 and C3 are rows of the table; no `second_heading` issue (as `test_rows_a_second_transactions_heading…` above) | FR-06, FR-07 |
+| `test_rows_q_…` (duplicate row issue) | `… page 2 (row 1).` | `… page 2 (row 2).`: rows are numbered from 1 (plan P9) | FR-15 (P9) |
+| `test_fr30_edge_a_joined_only_amount…` (T-edge) `built.issues` | `Page 1 row 5: …` | `Page 1 row 6: …` (rows numbered from 1); its import-side `('rejected_row', 1, 5)` is unchanged (P11 keeps the import's numbering) | FR-15 (P9) |
+| `test_rows_the_date_order_…` | Its page printed X_ABOVE's September period while the test passed a March–April period | The page prints no period (X_ABOVE without its period line): a printed period now beats the one passed in, so the old page would make its rows a schedule | FR-14 |
+| SL-03's `test_stmt_sc08_k3…`, `test_stmt_as_rebuild…` (locator `table_id`) | One engine table id | The import's piece names as P11 keeps them (`page-1-import-table-1`, `page-<p>-import-continuation`, native `page-<p>-layout-table-<n>`) | FR-21, FR-22 |
+| SL-03's CS-split test | FR-13's "signs come from the column headings" issue | No issue: FR-13's reason is for a statement of one row and no summary; CS has five rows | FR-13 |
 | `test_fr30_the_analyzer_version_is_two…` | `ANALYZER_VERSION == 2` | `ANALYZER_VERSION == 3` | FR-26 |
 
 ---
