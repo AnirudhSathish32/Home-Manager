@@ -54,6 +54,7 @@ ROLES_UNKNOWN_ROW = "Which amount columns are money in, money out or the balance
 BOTH = "Both a debit and a credit are printed."
 MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
+NATIVE_CELL = re.compile(r"-row-\d+-cell-\d+$")  # A native cell id is "<table id>-row-<r>-cell-<c>".
 CODE = re.compile(r"\b[A-Z]{3}\b")  # A printed currency code (CR and DR are two letters).
 PENDING_TITLE = re.compile(r"pending", re.IGNORECASE)
 IN_TITLE = re.compile(r"payment|credit|refund|return|deposit|addition", re.IGNORECASE)
@@ -86,6 +87,7 @@ class StatementReading:
     unplaced: list[Unplaced] = field(default_factory=list)  # reason no_column (engine) or pending (R4).
     summary_anchors: list = field(default_factory=list)
     others: list[str] = field(default_factory=list)  # Native reader tables nothing in the engine cites (the import lists them as other tables).
+    pieces: dict = field(default_factory=dict)  # "<engine table id>:<page>" -> (id, kind, first piece's id): the table as each page shows it (`Reader.name_pieces`).
     outcomes: dict = field(default_factory=dict)  # `outcome_key` -> what became of that row (`Reader.outcome_of`); the PDF import adapter reads it.
 
     def as_rebuild(self) -> Rebuild:
@@ -419,6 +421,7 @@ class Reader:
         self.issues, self.notes, self.recorded, self.kept_anchors = [], [], [], []
         self.dropped, self.order_pages, self.years = 0, set(), set()
         self.outcomes = {}
+        self.pieces = {}
         self.walk = {"previous": None}  # The chosen year walked through the rows (account-import-pdf FR-07's year rule).
         self.carry = {}  # id(row) -> the row whose date a dateless row takes (OD-1).
         self.period = self.effective = None  # The printed period; the one dates are placed and checked against (printed, else the fallback).
@@ -787,7 +790,7 @@ class Reader:
             self.outcome_of(table, row, "ok", posted=posted, **known)
             transaction_row = {"posted_date": posted, "transaction_date": transaction, "description": row.description, "currency": self.currency,
                                "amount_minor": candidate.amounts[position],
-                               "locator": {"rebuilt": True, "page": row.page, "table_id": table.id, "row": row.row,
+                               "locator": {"rebuilt": True, "page": row.page, "table_id": self.piece_id(table, row.page), "row": row.row,
                                            "balance_minor": candidate.balances[position] if balance_at is not None else None,
                                            "line_ids": row.line_ids, "word_ids": self.cited_words(row), "cell_ids": row.cell_ids,
                                            "quotes": [self.lines[row.page].get(line_id, (0, ""))[1] for line_id in row.line_ids]}}
@@ -819,7 +822,8 @@ class Reader:
             cell = sheet.cells[position].get(candidate.roles.index("balance"))
             if cell is not None and balance is not None and not candidate.reasons[position]:
                 self.issues.append(CHAIN_BREAK.format(page=row.page, row=row.row, balance=cell.printed))
-        if decision.tier in ("labels", "default"):
+        if decision.tier in ("labels", "default") and (decision.differing or self.total < 2):
+            # FR-13 names the reason for a statement of one row; a longer one whose signs only the headings or the type give has none.
             page = next((row.page for row in sheet.rows if not row.candidate), table.pages[0])
             self.issues.append((ROLES_DIFFER if decision.differing else TOO_FEW).format(page=page))
 
@@ -840,12 +844,42 @@ class Reader:
         closing = next((anchor for anchor in reversed(anchors) if anchor.kind == "closing"), None)
         return (signed_minor(opening.value, self.currency) if opening else None, signed_minor(closing.value, self.currency) if closing else None)
 
+    # --- Pieces ----------------------------------------------------------------------------------------------------------------
+
+    def name_pieces(self):
+        """The table as each page shows it, named as PDF import has always named them and shared with the rows' locators: the first page of a
+        table on a native table of the reader is `transactions` with that table's id; otherwise `rebuilt`, `page-<p>-import-table-<n>`; every
+        later page is a `continuation`, `page-<p>-import-continuation`, of the first."""
+        rebuilt = {}
+        for table in self.transactions():
+            first = None
+            for page in sorted({row.page for row in table.rows if not row.candidate}):
+                rows = [row for row in table.rows if row.page == page]
+                if first is None:
+                    native = next((NATIVE_CELL.sub("", cell) for row in rows for cell in row.cell_ids[:1]), None)
+                    if native:
+                        found = (native, "transactions", None)
+                    else:
+                        rebuilt[page] = rebuilt.get(page, 0) + 1
+                        found = (f"page-{page}-import-table-{rebuilt[page]}", "rebuilt", None)
+                    first = found[0]
+                else:
+                    name = f"page-{page}-import-continuation"
+                    taken = [value[0] for value in self.pieces.values() if value[0].startswith(name)]
+                    found = (name + (f"-{len(taken) + 1}" if taken else ""), "continuation", first)
+                self.pieces[f"{table.id}:{page}"] = found
+
+    def piece_id(self, table, page):
+        return self.pieces.get(f"{table.id}:{page}", (table.id,))[0]
+
     # --- The statement -------------------------------------------------------------------------------------------------------
 
     def run(self):
         self.prepare()
         self.split_schedules()
         tables = self.transactions()
+        self.name_pieces()
+        self.total = sum(1 for table in tables for row in self.plain(table))
         self.single = len(tables) == 1
         roles, signs, chains = {}, {}, []
         for table in tables:
@@ -875,7 +909,7 @@ class Reader:
         return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, self.pages(),
                                 opening, closing, tuple(day.isoformat() for day in self.period) if self.period else None, self.order,
                                 {"order": self.order_source, "year": year, "signs": signs}, roles, True, self.tables, self.unplaced + self.pending,
-                                self.summary_anchors, self.engine.other_native_tables, self.outcomes)
+                                self.summary_anchors, self.engine.other_native_tables, self.pieces, self.outcomes)
 
 
 # --- Entry points ------------------------------------------------------------------------------------------------------------

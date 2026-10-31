@@ -629,7 +629,6 @@ STATEMENT_TYPES = {"credit_card": "credit_card", "checking": "bank", "savings": 
 ROLE_NAMES = {"in": "credit", "out": "debit", "signed": "amount"}
 NO_TABLE = "Page {page}: no transactions table found"
 MORE_THAN_ONE = table_engine.MORE_THAN_ONE.split("{")[0]  # "More than one amount sits in the "
-NATIVE_CELL = re.compile(r"-row-\d+-cell-\d+$")  # A native cell id is "<table id>-row-<r>-cell-<c>".
 
 
 def analyze(result: PDFResult, *, tables=None, year=None, date_format="auto", sign=None, account_type=None, currency, prior_order=None) -> Analysis:
@@ -704,8 +703,8 @@ def as_analysis(reading, result, *, tables, needs_sign, default, sign, currency)
         return min(baselines) if baselines else 0.0
 
     pieces: list[Piece] = []
-    rebuilt_on = {}
     claimed_native = set()
+    firsts = {}
     for table in reading.tables:
         if table.kind != "transactions":
             continue
@@ -714,30 +713,20 @@ def as_analysis(reading, result, *, tables, needs_sign, default, sign, currency)
             outcome = reading.outcomes.get(statement_tables.outcome_key(table.id, row.page, row.row))
             if outcome is not None and not row.candidate:
                 by_page.setdefault(row.page, []).append((row, outcome))
-        first = None
         for page in sorted(by_page):
             rows = by_page[page]
             outcomes = [outcome for _, outcome in rows]
-            native = next((NATIVE_CELL.sub("", cell) for outcome in outcomes for cell in outcome["cell_ids"][:1]), None)
-            if first is None:
-                if native:
-                    piece_id, kind = native, "transactions"
-                else:
-                    rebuilt_on[page] = rebuilt_on.get(page, 0) + 1
-                    piece_id, kind = f"page-{page}-import-table-{rebuilt_on[page]}", "rebuilt"
-            else:
-                piece_id, kind = f"page-{page}-import-continuation", "continuation"
-                if any(piece.entry.id == piece_id for piece in pieces):
-                    piece_id += f"-{1 + sum(1 for piece in pieces if piece.entry.id.startswith(piece_id))}"
+            piece_id, kind, parent_id = reading.pieces.get(f"{table.id}:{page}", (f"page-{page}-import-continuation", "continuation", None))
+            first = firsts.get(parent_id) if parent_id else None
             columns = column_texts(table, reading.roles.get(table.id, {}))
             headings = [" ".join(column.labels) for column in table.columns if column.labels]
-            if native:
-                claimed_native.add(native)
+            if kind == "transactions":
+                claimed_native.add(piece_id)
             entry = ImportTable(piece_id, page, kind, first.entry.id if first else None, headings, dict(columns), [], len(rows), True, first is None)
             piece = Piece(table, entry, rows, table, first, first)
             piece.top = top_of(page, outcomes)
             pieces.append(piece)
-            first = first or piece
+            firsts[piece_id] = piece
     # Selection: a continuation follows the table it continues.
     known = {piece.entry.id: piece.entry.kind for piece in pieces}
     others = []
@@ -811,7 +800,7 @@ def as_analysis(reading, result, *, tables, needs_sign, default, sign, currency)
             number = row.row if entry.kind == "transactions" else row.row - 1
             if reject:
                 posted, minor = None, None
-                parsed_issues.append(ImportIssue(entry.page, row.row, "rejected_row", f"Page {entry.page} row {row.row}: {reject}"))
+                parsed_issues.append(ImportIssue(entry.page, number, "rejected_row", f"Page {entry.page} row {number}: {reject}"))
             key = f"{entry.id}:{number}"
             printed = outcome["amount"]
             if reject and reject.startswith(MORE_THAN_ONE):

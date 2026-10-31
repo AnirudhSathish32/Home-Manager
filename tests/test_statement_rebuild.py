@@ -41,7 +41,7 @@ def rows_of(built):
 
 
 def bank(result, period=SEPTEMBER):
-    return rebuild(result, statement_type="bank", period_start=period[0], period_end=period[1], currency="USD")
+    return statement_tables.read(result, statement_type="bank", currency="USD", fallback_period=period).as_rebuild()
 
 
 def expected_s():
