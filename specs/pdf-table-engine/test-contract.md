@@ -517,8 +517,11 @@ Checkpoints:
 2. Let the index job finish → both index rows have the new `ANALYZER_VERSION` (greater than 2);
    `indexing: false`. Running start-up again doesn't re-index (pending is empty).
 3. Extract again on Z → `kept_reviewed`; Z's statement and its 8 rows are unchanged (snapshot equal).
-4. Extract again on Y → Y now holds DM's 20 rows exactly (C-exact(DM)), and none of the month-first dates.
-Expected final state: Z unchanged with 8 rows; Y with 20 rows; no schema change (the migration list is the same as before
+4. Extract again on Y → Y now holds DM's 20 rows except `2026-10-10 INTEREST CREDIT`, and none of the month-first
+   dates: 19 rows, each equal to its DM row (C-exact(DM) less that row). Y and Z are in one account, and that row reads
+   the same both ways (10/10), so Z already holds it and the ledger leaves Y's copy out as a duplicate (unchanged
+   ledger rule). The account holds DM's 20 rows once each: Y's 19 and Z's row 7.
+Expected final state: Z unchanged with 8 rows; Y with 19 rows; no schema change (the migration list is the same as before
 the feature). C-docs.
 Evidence: `pytest tests/test_table_engine_record.py -k journey_j1`
 
