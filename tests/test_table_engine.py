@@ -909,10 +909,10 @@ def test_stmt_sc07_cs_signs_come_from_the_sections_and_the_card_check_holds(tmp_
     assert (reading.opening_minor, reading.closing_minor) == (125000, 48162)  # Previous 1,250.00, new 481.62.
 
 
-def test_stmt_sc07_cs_split_sections_carry_onto_the_next_page_and_no_summary_says_why(tmp_path):
+def test_stmt_sc07_cs_split_sections_carry_onto_the_next_page(tmp_path):
     _, reading = statement(tmp_path, "CS-split")
     assert [amount for _, amount, _ in recorded(reading)] == [50000, -12040, -5218, -1599, -300]  # Payments in; purchases and fees out.
-    assert len(reading.issues) == 1 and reading.issues[0].startswith("Page 1: the signs of these rows come from the column headings")
+    assert reading.issues == []  # FR-13 names the reason for a statement of one row; five rows whose sections give the signs have none.
 
 
 def test_stmt_sc07_nb_the_summary_decides_which_column_is_money_out(tmp_path):
@@ -935,7 +935,8 @@ def test_stmt_sc08_k3_is_one_table_whose_rows_cite_three_pages(tmp_path):
     assert [amount for _, amount, _ in recorded(reading)] == [-450, -450, -4510, 200000, -50000, -500, 1999, -8240, 12]
     assert [row["locator"]["page"] for row in reading.rows] == [1, 1, 1, 2, 2, 2, 3, 3, 3] and reading.pages == {1, 2, 3}
     assert [table.pages for table in reading.tables] == [[1, 2, 3]] and reading.issues == [] and reading.unplaced == []
-    assert {row["locator"]["table_id"] for row in reading.rows} == {ONE_TABLE}
+    # A row's locator names the table as its page shows it, as PDF import names it: the first page (no native table), then each later page's continuation.
+    assert [row["locator"]["table_id"] for row in reading.rows[::3]] == ["page-1-import-table-1", "page-2-import-continuation", "page-3-import-continuation"]
 
 
 def test_stmt_sc09_bl_the_balance_lines_are_anchors_the_daily_lines_a_balance_table_and_the_schedule_other_rows(tmp_path):
@@ -1141,7 +1142,7 @@ def test_stmt_as_rebuild_is_the_old_rebuild_shape_plus_opening_closing_and_perio
     assert rebuild.rows == reading.rows and set(rebuild.rows[0]) == {"posted_date", "transaction_date", "description", "currency", "amount_minor", "locator"}
     locator = rebuild.rows[1]["locator"]
     assert set(locator) == {"rebuilt", "page", "table_id", "row", "balance_minor", "line_ids", "word_ids", "cell_ids", "quotes"}
-    assert (locator["rebuilt"], locator["page"], locator["table_id"], locator["row"], locator["balance_minor"]) == (True, 1, ONE_TABLE, 2, None)
+    assert (locator["rebuilt"], locator["page"], locator["table_id"], locator["row"], locator["balance_minor"]) == (True, 1, "page-1-layout-table-1", 2, None)  # The reader's own table the row sits on, as PDF import names it.
     assert len(locator["quotes"]) == len(locator["line_ids"]) == 1 and "CHECK" in locator["quotes"][0] and isinstance(locator["cell_ids"], list)
 
 
