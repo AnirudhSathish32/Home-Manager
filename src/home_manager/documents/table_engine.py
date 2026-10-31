@@ -764,7 +764,8 @@ def extended(layout, added, size):
 def continuation(view, lines, lo, hi, candidates):
     """The previous page's table, latest first, that the segment's rows continue, with the page offset (the median difference of
     the date column's left edge) and the columns they add (plan P4; FR-06). Most rows must have their dates and at least one
-    amount at a column's edge plus the offset, within the tolerance. An amount that fits no column makes a new column of the table
+    amount at a column's edge plus the offset, within the tolerance; a heading on the page with another number of columns than the
+    table's own (a daily balance table under the same date and amount columns) starts a table of its own. An amount that fits no column makes a new column of the table
     only when the page repeats the table's own heading (so the heading proves the same column set) and at least two rows (or one
     row and its heading label) support it. Returns (open, offset, new columns) or None."""
     rows = [line for line in lines[lo:hi] if line.free_tokens("date") and line.free_tokens("amount")]
@@ -775,6 +776,9 @@ def continuation(view, lines, lo, hi, candidates):
     for opened in reversed(candidates):
         layout = opened.layout
         offset = median(min(token.box[0] for token in line.free_tokens("date")) - layout.dates[0].edge for line in rows)
+        drawn = [index for index in range(first - 1, max(first - 3, lo - 1), -1) if is_heading(lines[index], shifted(layout, offset))]
+        if opened.labels and drawn and sum(len(lines[index].tokens) for index in drawn) != len(opened.labels):
+            continue  # A heading of another column set (a daily balance table under the same date and amount columns) starts its own table.
         fitting, leftover = 0, []
         for line in rows:
             dates = all(any(abs(token.box[0] - (column.edge + offset)) <= tolerance for column in layout.dates) for token in line.free_tokens("date"))
@@ -785,7 +789,6 @@ def continuation(view, lines, lo, hi, candidates):
             continue
         if not leftover:
             return opened, offset, []
-        drawn = [index for index in range(first - 1, max(first - 3, lo - 1), -1) if is_heading(lines[index], shifted(layout, offset))]
         if not opened.table.headings or [" ".join(word.text for word in lines[index].words) for index in sorted(drawn)] != opened.table.headings:
             continue
         found = choose_alignments(leftover, tolerance, lambda rows_, alignment, centre: 1 if label_support(lines, lo, first, view.box, alignment, centre, tolerance) else 0)

@@ -25,7 +25,7 @@ from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
-from ..finance import document_checks, statement_rows
+from ..finance import document_checks, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
@@ -42,7 +42,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v31-bill-kinds"
+EXTRACTION_VERSION = "typed-extraction-v32-table-engine"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1678,7 +1678,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
     when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
     printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks). bill_kind: the
     form a bill was read with (specs/bill-kinds), or None for a bill read without kinds. rebuild: a statement's rows rebuilt from its
-    printed columns (finance/statement_rows.py), which replace the model's rows on their pages (specs/statement-accounts FR-20)."""
+    printed columns (finance/statement_tables.py), which replace the model's rows on their pages (specs/statement-accounts FR-20)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -1809,6 +1809,14 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             issues.extend(rebuild.issues)
             record_notes.extend(rebuild.notes)
             skipped += rebuild.dropped
+        # FR-07: the opening and closing balances printed on the statement are the record's, whatever the reading gave (a card's previous and new balance).
+        keys = ("previous_balance_minor", "statement_balance_minor") if card else ("opening_balance_minor", "closing_balance_minor")
+        for name, key, printed in zip(("opening", "closing"), keys, (rebuild.opening_minor, rebuild.closing_minor) if rebuild is not None and rebuild.available else (None, None)):
+            if printed is None:
+                continue
+            if record.get(key) is not None and record[key] != printed and currency:
+                record_notes.append(f"The printed {name} balance {format_minor(printed, currency)} was recorded; the reading gave {format_minor(record[key], currency)}.")
+            record[key], record["summary"][key.removesuffix("_minor")] = printed, printed  # summary_json is keyed by field name.
         if record_notes:
             record["notes"] = record_notes
         net = sum(row["amount_minor"] for row in record["transactions"])
@@ -3187,9 +3195,16 @@ class ExtractionService:
         rebuild = None
         if evidence is not None and currency is not None:  # The pages the reading rebuilt (read), with the statement's own currency and period.
             period = [iso_date(field.value) if field.status == "proposed" else None for field in (header.period_start, header.period_end)]
+            reference = header.account_reference
+            digits = last_four(reference.value, [cite.quote for cite in reference.evidence]) if reference.status == "proposed" else None
+
+            def earlier_order():  # OD-2: the date order last decided for this account, from its other statements.
+                with self.store.connection() as db:
+                    return statement_tables.prior_order(db, digits, run["document_id"])
             try:
-                rebuild = statement_rows.rebuild(evidence, statement_type="credit_card" if kind == "credit_card_statement" else "bank",
-                                                 period_start=period[0], period_end=period[1], currency=currency)
+                rebuild = statement_tables.read(evidence, statement_type="credit_card" if kind == "credit_card_statement" else "bank", currency=currency,
+                                                fallback_period=(period[0], period[1]) if period[0] and period[1] else None,
+                                                prior_order=earlier_order if digits else None)
             except Exception as exc:  # P8
                 log_failure(log, "statement row rebuild", exc)
                 notes.append(REBUILD_FAILED)
@@ -3372,7 +3387,7 @@ class ExtractionService:
         statement_pdf = classification.document_type in ("bank_statement", "credit_card_statement") and hasattr(evidence, "pages")
         if statement_pdf:
             try:
-                rebuilt = statement_rows.rebuilt_pages(evidence)
+                rebuilt = statement_tables.engine_pages(evidence)
             except Exception as exc:  # P8: any failure of the rebuild falls back to the reading, on every page.
                 log_failure(log, "statement row rebuild", exc)
                 rebuild_failed = True

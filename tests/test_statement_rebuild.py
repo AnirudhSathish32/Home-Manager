@@ -15,7 +15,7 @@ from home_manager.documents.layout_context import native_page
 from home_manager.documents.pdf_reader import read_result
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
-from home_manager.finance import pdf_import, statement_rows
+from home_manager.finance import pdf_import, statement_rows, statement_tables
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.statement_rows import NO_LAYOUT_NOTE, rebuild, rebuilt_pages
 import pdf_import_fixtures as fx
@@ -649,11 +649,14 @@ def test_sc17_rejected_rows_are_issues_with_their_page_row_and_reason(pdf_store,
     assert recorded.transactions() == [("2026-09-02", 1000, "GOOD")]
     assert record["review_status"] == "needs_review"
     by_row = {int(issue.split()[3].rstrip(":")): issue for issue in record["issues"] if issue.startswith("Page 1 row ")}
-    assert sorted(by_row) == [1, 2, 3, 4, 5]
-    for number, reason in zip(range(1, 6), [row.rejected for row in got.rows[1:]]):
+    # pdf-table-engine FR-04, FR-08, FR-20: x2's amount fits no column, so it is an unplaced line (page 1 and its text), not a row; x3-x6 are rejected as before.
+    assert sorted(by_row) == [2, 3, 4, 5]
+    for number, reason in zip(range(2, 6), [row.rejected for row in got.rows[2:]]):
         assert by_row[number] == f"Page 1 row {number}: {reason}" and reason
-    assert "doesn't fit a column" in by_row[1] and "More than one amount" in by_row[2] and "not a real date" in by_row[3]
+    assert "More than one amount" in by_row[2] and "not a real date" in by_row[3]
     assert "can't be read" in by_row[4] and "not in USD" in by_row[5]
+    assert [issue for issue in record["issues"] if "wasn't placed in any column" in issue] == [
+        'Page 1: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "09/03/2026 STRADDLE 100.00"']
 
 
 def test_sc18_a_scanned_page_keeps_the_models_row_while_page_one_comes_from_the_rebuild(pdf_store, local_model):
@@ -827,7 +830,7 @@ def test_sc18_p8_a_rebuild_that_fails_in_read_falls_back_to_the_models_rows_on_e
 
     def broken(result):
         raise RuntimeError("synthetic failure")
-    monkeypatch.setattr(statement_rows, "rebuilt_pages", broken)
+    monkeypatch.setattr(statement_tables, "engine_pages", broken)
     record = recorded.run(s_replies())
     assert [issue for issue in record["issues"] if issue == REBUILD_FAILED] == [REBUILD_FAILED]
     # As today: the model's six rows, each amount taken from the native table's cell it cites (the misread s2 and the extra row become 0.02).
@@ -840,7 +843,7 @@ def test_sc18_p8_a_rebuild_that_fails_in_publish_is_one_issue_and_the_models_row
 
     def broken(*args, **options):
         raise pdf_import.PDFImportError("synthetic limit")
-    monkeypatch.setattr(statement_rows, "rebuild", broken)
+    monkeypatch.setattr(statement_tables, "read", broken)
     record = recorded.run(s_replies())
     assert record["issues"].count(REBUILD_FAILED) == 1 and len(recorded.transactions()) == 6
 

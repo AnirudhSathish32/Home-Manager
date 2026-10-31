@@ -403,6 +403,7 @@ class Reader:
         self.default = OUT_DEFAULT if self.card else IN_DEFAULT if self.statement_type == "bank" else None
         self.lines = {page.number: {line.id: (position, line.text) for position, line in enumerate(page.layout.lines)}
                       for page in result.pages if page.method == "embedded_text" and page.layout is not None}
+        self.cell_words = {cell.id: set(cell.word_ids) for page in result.pages if page.layout is not None for table in page.layout.tables for cell in table.cells}
         self.engine = table_engine.read(result, amounts=False)
         self.tables = copy.deepcopy(self.engine.tables)
         self.summary_anchors = copy.deepcopy(self.engine.summary_anchors)
@@ -419,6 +420,15 @@ class Reader:
 
     def reading_order(self, anchor):
         return anchor.page, self.lines[anchor.page].get(anchor.line_id, (0, ""))[0]
+
+    def cited_words(self, row):
+        """The words a row cites. A row that is one row of a native table, whose words all sit in its cells, cites those cells and no words
+        (as before the engine: statement-accounts SC-19); any other row (wrapped over several table rows, or with words outside the cells)
+        cites every word of its lines (pdf-table-engine FR-22)."""
+        cells = row.cell_ids
+        if cells and len({cell.rsplit("-cell-", 1)[0] for cell in cells}) == 1 and set(row.word_ids) <= set().union(*(self.cell_words.get(cell, set()) for cell in cells)):
+            return []
+        return row.word_ids
 
     def line_text(self, page, line_ids):
         return " ".join(self.lines[page].get(line_id, (0, ""))[1] for line_id in line_ids)
@@ -738,7 +748,7 @@ class Reader:
                                "amount_minor": candidate.amounts[position],
                                "locator": {"rebuilt": True, "page": row.page, "table_id": table.id, "row": row.row,
                                            "balance_minor": candidate.balances[position] if balance_at is not None else None,
-                                           "line_ids": row.line_ids, "word_ids": row.word_ids, "cell_ids": row.cell_ids,
+                                           "line_ids": row.line_ids, "word_ids": self.cited_words(row), "cell_ids": row.cell_ids,
                                            "quotes": [self.lines[row.page].get(line_id, (0, ""))[1] for line_id in row.line_ids]}}
             self.recorded.append((SimpleNamespace(page=row.page, table_id=table.id, amount_minor=candidate.amounts[position],
                                                   description=row.description, amount=money_text(cells, money), row=row.row), posted, transaction_row))
