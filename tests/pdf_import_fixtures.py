@@ -210,7 +210,7 @@ def x_cells(*ids, only_withdrawals=False):
     return [(row[2], row[3], row[4], row[5], row[6]) for row in rows]
 
 
-def x_pages(variant=None, b2_x=None):
+def x_pages(variant=None, b2_x=None, period=None):
     """X: page 1 holds a summary table and a transactions table (A1, A2), page 2 headerless rows B1 and B2, and page 3
     the fee summary. Variants: 7a (page 3 is a payment schedule with two headerless rows), 7b (page 2 has its own
     headings, page 3 has headerless rows), 7c (page 1 prints only withdrawals, so it has no native table), 7d (B2's
@@ -218,6 +218,8 @@ def x_pages(variant=None, b2_x=None):
     `12345` placed in the Withdrawals span)."""
     first = table_items(X_SUMMARY, 700, COLUMNS[:2]) + table_items([HEADING5, *x_cells("A1", "A2", only_withdrawals=variant == "7c")], 560)
     first.append(footer("FIRST LOCAL BANK statement page one of three, kept for your records", 500))
+    if period:  # 7-a': the printed statement period above page 1's tables, which makes a later page of dates outside it a schedule.
+        first.append((40, 760, period))
     second = x_cells("B1", "B2")
     items2 = table_items(second, 700)
     if variant == "7d":

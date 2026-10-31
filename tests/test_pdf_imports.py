@@ -558,6 +558,21 @@ def test_analyzer_sc07_7a_a_payment_schedule_page_is_counted(tmp_path):
     assert totals(analysis) == (fx.X_TOTALS[0] - 5000, fx.X_TOTALS[1]) and analysis.issues == []  # The title line has no date: not a row.
 
 
+# The contract prints 09/30/2026 as the end, but FR-09 counts dates within 7 days of the period as inside it and 10/01 is one day after 09/30, so the end is 09/20 (handoff escalation).
+X_PERIOD = "Statement period 09/01/2026 to 09/20/2026"
+
+
+def test_analyzer_sc07_7a_prime_a_schedule_page_outside_the_printed_period_is_other_table_rows(tmp_path):
+    """7-a' (FR-09, FR-14): with the period printed, page 3's two Scheduled payment rows are other-table rows: not importable, not unplaced."""
+    analysis = analyze(tmp_path, fx.x_pages("7a", period=X_PERIOD), **X_CHOICES)
+    assert [(row.page, row.description) for row in analysis.rows] == [(1, "A1"), (1, "A2"), (2, "B1"), (2, "B2")]
+    assert totals(analysis) == fx.X_TOTALS
+    assert not [issue for issue in analysis.issues if issue.code == "unplaced_line"] and "unplaced" not in analysis.counts
+    assert analysis.counts == dict(seen=4, parsed=4, rejected=0, left_out=0, pages_without_rows=1)
+    third = [table for table in analysis.tables if table.page == 3]
+    assert third and all(table.kind == "other" and not table.selectable and not table.selected and table.rows == [] for table in third)
+
+
 def test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain(tmp_path):
     analysis = analyze(tmp_path, fx.x_pages("7b"), **X_CHOICES)
     assert [(table.page, table.kind, table.linked_to) for table in analysis.tables if table.kind != "other"] == [
@@ -573,14 +588,16 @@ def test_analyzer_sc07_7c_a_column_blank_on_every_row_is_rebuilt_from_the_words(
     assert totals(analysis) == fx.X_7C_TOTALS and [issue.message for issue in analysis.issues] == ["Page 3: no transactions table found"]
 
 
-def test_analyzer_sc07_7d_an_amount_straddling_two_columns_rejects_its_row(tmp_path):
+def test_analyzer_sc07_7d_an_amount_straddling_two_columns_is_an_unplaced_line(tmp_path):
+    """7-d as changed by pdf-table-engine (FR-04, FR-08, FR-21): B2 is not a row but an unplaced line naming page 2 and its text; B1 imports."""
     analysis = analyze(tmp_path, fx.x_pages("7d"), **X_CHOICES)
-    b1, b2 = analysis.rows[2:]
-    assert b1.rejected is None and b1.amount_minor == -100
-    assert b2.rejected == "The amount doesn't fit a column." and b2.amount_minor is None and not b2.ticked and b2.page == 2
-    assert (b2.date, b2.description, b2.amount) == ("09/04/2026", "B2", "2.00")  # Still shown as printed.
-    assert analysis.counts == dict(seen=4, parsed=3, rejected=1, left_out=0, pages_without_rows=1)
-    assert ("rejected_row", 2, 1) in [(issue.code, issue.page, issue.row) for issue in analysis.issues]
+    [b1] = analysis.rows[2:]
+    assert b1.rejected is None and b1.amount_minor == -100 and b1.page == 2
+    assert "B2" not in [row.description for row in analysis.rows]
+    [line] = [issue for issue in analysis.issues if issue.code == "unplaced_line"]
+    assert line.page == 2 and line.message == 'Page 2: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "09/04/2026 B2 2.00 1,011.00"'
+    assert analysis.counts == dict(seen=4, parsed=3, rejected=0, left_out=0, pages_without_rows=1, unplaced=1)  # 3 + 0 + 0 + 1 = 4.
+    assert not [issue for issue in analysis.issues if issue.code == "rejected_row"]
 
 
 def test_analyzer_sc07_7e_two_amounts_in_one_amount_column_reject_the_row(tmp_path):
@@ -1250,12 +1267,13 @@ def test_sc07_7c_a_page_with_a_column_blank_on_every_row_is_rebuilt_and_imported
     assert env.ok_import(doc, reading=reading, account_id=a, date_format="MM/DD/YYYY")["inserted"] == 4
 
 
-def test_sc07_7d_and_7e_rows_that_do_not_fit_their_columns_are_rejected_and_the_rest_import(env):
+def test_sc07_7d_an_amount_that_fits_no_column_is_listed_as_an_unplaced_line_and_the_rest_import(env):
     a, doc, preview, reading = x_import(env, "7d")
-    [b2] = [row for row in preview["rows"] if row["description"] == "B2"]
-    assert (b2["status"], b2["page"], b2["ticked"]) == ("rejected", 2, False) and "doesn't fit a column" in b2["rejected"]
+    assert "B2" not in [row["description"] for row in preview["rows"]]  # Not a row, so not importable.
+    [line] = [issue for issue in preview["issues"] if issue["code"] == "unplaced_line"]
+    assert line["page"] == 2 and "09/04/2026 B2 2.00" in line["message"] and preview["counts"]["unplaced"] == 1
     result = env.ok_import(doc, reading=reading, account_id=a, date_format="MM/DD/YYYY")
-    assert (result["inserted"], result["rejected"]) == (3, 1) and "B2" not in [row[5] for row in ledger_rows(env, a)]
+    assert (result["inserted"], result["rejected"]) == (3, 0) and "B2" not in [row[5] for row in ledger_rows(env, a)]
 
 
 def test_sc07_7e_text_in_an_amount_column_rejects_that_row(env):
@@ -1264,6 +1282,15 @@ def test_sc07_7e_text_in_an_amount_column_rejects_that_row(env):
     assert b1["status"] == "rejected" and b1["page"] == 2
     result = env.ok_import(doc, reading=reading, account_id=a, date_format="MM/DD/YYYY")
     assert (result["inserted"], result["rejected"]) == (3, 1) and [row[5] for row in ledger_rows(env, a)] == ["A1", "A2", "B2"]
+
+
+def test_sc07_7a_prime_a_schedule_page_outside_the_printed_period_is_not_importable(env):
+    a = env.account("A")
+    doc = env.add("x.pdf", fx.x_pages("7a", period=X_PERIOD))
+    preview = env.ok_preview(doc, account_id=a, date_format="MM/DD/YYYY")
+    assert [row["description"] for row in preview["rows"]] == ["A1", "A2", "B1", "B2"] and not [issue for issue in preview["issues"] if issue["code"] == "unplaced_line"]
+    assert (preview["totals"]["outflow_minor"], preview["totals"]["inflow_minor"]) == fx.X_TOTALS
+    assert env.ok_import(doc, reading=preview["reading_id"], account_id=a, date_format="MM/DD/YYYY")["inserted"] == 4
 
 
 def test_sc07_7a_a_later_page_with_dated_amounts_is_counted_with_the_preview_totals_as_the_check(env):
