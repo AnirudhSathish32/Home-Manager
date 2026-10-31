@@ -548,8 +548,8 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
   - The document page shows the account type with the statement's fields. A bank statement offers no statement
     balance, minimum payment or due date, and a card statement offers no opening or closing balance
     (`ledger.OTHER_STATEMENT_FIELDS`).
-- **Statement rows the model skipped.** After Record, any line the model was given that starts with a date, prints an
-  amount after it, and isn't a balance or total line is checked. If no transaction or summary field cites it, the model
+- **Statement rows the model skipped.** After Record, any line the model was given that holds a date anywhere in it (not
+  right after a digit or `/`), prints an amount other than the date, and isn't a balance or total line is checked. If no transaction or summary field cites it, the model
   is asked once more for the rows in those lines alone, with the printed period (`missed_statement_lines`,
   `missed_rows`). Rows it finds are checked like the others and placed in printed order. Any still left out become a
   review note quoting up to three of them. The instruction also names small amounts, such as account-verification

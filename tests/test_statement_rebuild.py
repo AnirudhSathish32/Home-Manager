@@ -854,7 +854,7 @@ def test_sc17_a_rejected_row_turns_the_arithmetic_check_off_rather_than_reportin
     record = recorded.run(s_replies())
     assert recorded.transactions() == expected_s()
     assert not any("Statement arithmetic" in issue for issue in record["issues"])
-    assert f"Page 1 row 5: {NO_AMOUNT}" in record["issues"]
+    assert f"Page 1 row 6: {NO_AMOUNT}" in record["issues"]
 
 
 # === A description printed in pieces (the user's bank statement) ============================================================

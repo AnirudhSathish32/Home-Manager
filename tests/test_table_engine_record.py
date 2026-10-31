@@ -26,7 +26,7 @@ import statement_account_fixtures as sf
 import table_engine_fixtures as tf
 from test_pdf import pdf_store  # noqa: F401
 from test_pdf_imports import env  # noqa: F401  (the API environment of PDF import)
-from test_statement_rebuild import Recorded
+from test_statement_rebuild import Recorded, s_replies
 from test_table_engine import no_network  # noqa: F401  C-net: autouse, nothing here connects to a non-loopback address.
 
 ARITHMETIC = "Statement arithmetic does not reconcile"
@@ -467,8 +467,6 @@ def test_sc11_pr_page_two_keeps_the_models_row_and_carries_the_no_table_note(env
     checked(recorded)
 
 
-@pytest.mark.xfail(strict=True, reason="Contract contradiction (escalated in the SL-05 handoff): PR's page 2 lines are prose that doesn't start with a date, and "
-                   "extraction.missed_statement_lines (ROW_DATE) only flags lines that do, so 'the missed-row check as today' sends no second Transactions request.")
 def test_sc11_pr_page_two_is_asked_about_again_with_its_own_lines_only(env, local_model):
     recorded, _ = recorded_fixture(env, local_model, "PR")
     before = len(local_model["requests"])
@@ -610,26 +608,25 @@ def test_sc17_cc_both_tables_are_recorded_with_one_two_accounts_issue(env, local
 # --- SC-19: the engine fails (Record) -----------------------------------------------------------------------------------------------------------------
 
 def test_sc19_an_engine_fault_falls_back_to_the_models_rows_with_one_note_and_logs_no_document_text(env, local_model, monkeypatch, caplog):
-    """Step 1 of SC-19 says the statement's rows are the stub's 7 rows. WF's native table has unresolved columns (a P-check of SC-01), and today's
-    fallback anchors each model row to the native table's cells: with no resolved amount column it leaves the rows out for review (escalated in the
-    handoff). So this asserts the rest of step 1: the fallback is taken on every page, the note is exact and single, nothing the engine read is
-    recorded, and the log holds no document text."""
+    """Step 1 of SC-19, on fixture S (WF's native table has unresolved columns, so the old path would leave every model row out): the engine's
+    entry points raise, the fallback is taken on every page, and the statement holds the stub's six rows, each amount from the native table cell it
+    cites, as `test_sc18_p8_a_rebuild_that_fails_in_read...` asserts."""
     def raising(*args, **options):
         raise RuntimeError("injected engine fault")
     monkeypatch.setattr(statement_tables, "engine_pages", raising)
     monkeypatch.setattr(statement_tables, "read", raising)
 
-    def listed(lines):
-        return [row_stub(lines, row[6], row[2], row[3] or row[4], "credit" if row[7] > 0 else "debit", f"{row[2]} {row[3] or row[4]}") for row in tf.WF_ROWS]
-    recorded, _ = recorded_fixture(env, local_model, "WF")
+    recorded, _ = recorded_fixture(env, local_model, "S", sf.s_pages())
     with caplog.at_level(logging.DEBUG):
-        record_ = recorded.run(replies("WF", listed))
-    assert record_["issues"].count(REBUILD_FAILED) == 1 and record_["review_status"] == "needs_review"
+        record_ = recorded.run(s_replies())
+    assert [amount for _, amount, _ in recorded.transactions()] == [36, 2, -38, 150000, -50000, 2]
+    assert record_["review_status"] == "needs_review"
+    assert (record_["issues"] + recorded.notes()).count(REBUILD_FAILED) == 1
     assert env.sql("SELECT count(*) FROM financial_evidence_links WHERE locator_json LIKE '%\"rebuilt\": true%'")[0][0] == 0
     failures = [entry for entry in caplog.records if "failed" in entry.getMessage() and "RuntimeError" in entry.getMessage()]
     assert failures and len({entry.getMessage().split(" failed")[0] for entry in failures}) == 1  # The same failure, logged where it was caught.
     logged = " ".join(entry.getMessage() for entry in caplog.records)
-    assert not any(text in logged for text in ("PAYROLL SYNTH", "GROCERY SYNTH", "RENT SYNTH", "2,000.00", "1,200.00", "0000009988", "9988"))
+    assert not any(text in logged for text in (*sf.S_DESCRIPTIONS, "SYNTH ACCTVERIFY", "PAYROLL SYNTH", "TRANSFER TO CHECKING", "1,500.00", "500.00", "000009000123456", "3456"))
 
 
 # --- SC-23 – SC-25: card risks ---------------------------------------------------------------------------------------------------------------------

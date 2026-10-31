@@ -899,8 +899,9 @@ STATEMENT_ROWS = (" direction is debit when money leaves the account holder (pur
                   "deposits and their reversals. Never list a beginning, ending or daily balance or a total as a row. amount is the "
                   "transaction's own amount, never the running balance printed after it on the same line (in '09/18 DEPOSIT 0.02 0.38' "
                   "the amount is 0.02 and 0.38 is the balance). Resolve the year from the statement period or use null.")
-# A statement line that starts with a date and prints an amount after it looks like a transaction row; balance and total lines don't count.
+# A statement line that holds a date and, besides it, an amount looks like a transaction row; balance and total lines don't count.
 ROW_DATE = re.compile(r"\s*(?:\d{1,2}/\d{1,2}(?:/\d{4}|/\d{2})?|\d{4}-\d{2}-\d{2})(?![\d/])")
+ANY_DATE = re.compile(r"(?<![\d/])" + ROW_DATE.pattern[len(r"\s*"):])
 BALANCE_LINE = re.compile(r"\b(?:beginning|ending|opening|closing|new|previous|daily|average)\s+(?:ledger\s+)?balance\b|\btotals?\b", re.IGNORECASE)
 
 
@@ -924,11 +925,12 @@ def balance_taken(row, magnitude, line_text, currency):
 
 
 def missed_statement_lines(lines, rows, header):
-    """The lines that look like a transaction row (ROW_DATE) and that no transaction and no summary field cites: rows the model skipped."""
+    """The lines that look like a transaction row (a date anywhere in the line, and an amount in the rest of it) and that no transaction and no
+    summary field cites: rows the model skipped."""
     cited = {cite.line_id for row in rows for cite in row.evidence}
     cited.update(cite.line_id for name in type(header).model_fields for item in summary_parts(getattr(header, name)) for cite in item.evidence)
-    return [line for line in lines if line.id not in cited and (start := ROW_DATE.match(line.text))
-            and line_amounts(line.text[start.end():]) and not BALANCE_LINE.search(line.text)]
+    return [line for line in lines if line.id not in cited and not BALANCE_LINE.search(line.text)
+            and any(line_amounts(line.text[:date.start()] + " " + line.text[date.end():]) for date in ANY_DATE.finditer(line.text))]
 
 
 COLUMN_WORDS =re.compile(r"\b(?:(?P<current>current|this\s+(?:pay\s+)?period)|(?P<ytd>ytd|year[ -]?to[ -]?date)|(?P<hours>hours?|hrs)|(?P<rate>rate))\b",
