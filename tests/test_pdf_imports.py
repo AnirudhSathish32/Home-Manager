@@ -558,7 +558,7 @@ def test_analyzer_sc07_7a_a_payment_schedule_page_is_counted(tmp_path):
     assert totals(analysis) == (fx.X_TOTALS[0] - 5000, fx.X_TOTALS[1]) and analysis.issues == []  # The title line has no date: not a row.
 
 
-# The contract prints 09/30/2026 as the end, but FR-09 counts dates within 7 days of the period as inside it and 10/01 is one day after 09/30, so the end is 09/20 (handoff escalation).
+# The contract's 7-a' period ends 09/20: FR-09 counts dates within 7 days of the period as inside it, so the end must be 7+ days before page 3's first date, 10/01.
 X_PERIOD = "Statement period 09/01/2026 to 09/20/2026"
 
 
@@ -573,11 +573,13 @@ def test_analyzer_sc07_7a_prime_a_schedule_page_outside_the_printed_period_is_ot
     assert third and all(table.kind == "other" and not table.selectable and not table.selected and table.rows == [] for table in third)
 
 
-def test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain(tmp_path):
+def test_analyzer_sc07_7b_a_repeated_transactions_heading_does_not_end_the_chain(tmp_path):
+    """7-b as changed by pdf-table-engine (FR-06): page 2's repeated heading is ignored, so pages 1-3 are one table, as K3 is in SC-08."""
     analysis = analyze(tmp_path, fx.x_pages("7b"), **X_CHOICES)
+    first = next(table for table in analysis.tables if table.kind == "transactions")
     assert [(table.page, table.kind, table.linked_to) for table in analysis.tables if table.kind != "other"] == [
-        (1, "transactions", None), (2, "transactions", None), (3, "continuation", analysis.tables[-2].id)]
-    assert [row.labels for row in analysis.rows] == [[]] * 4 + [["continued from page 2"]] * 2
+        (1, "transactions", None), (2, "continuation", first.id), (3, "continuation", first.id)]
+    assert [row.labels for row in analysis.rows] == [[]] * 2 + [["continued from page 1"]] * 4
     assert [(row.description, row.amount_minor) for row in analysis.rows[4:]] == [("C1", -300), ("C2", 400)]
 
 
@@ -619,15 +621,15 @@ def test_analyzer_sc07_a_summary_below_a_transactions_table_is_listed_and_nothin
     assert [row.description for row in analysis.rows] == ["A1", "A2"] and analysis.issues == []
 
 
-def test_analyzer_sc07_a_second_heading_below_a_native_table_is_reported_and_its_rows_are_not_read(tmp_path):
-    """Plan "Rows below a native table": the visual rows after a second transactions heading are reported, not guessed. The
-    blank-description row before the heading is a below-table row (row 3, rejected)."""
+def test_analyzer_sc07_a_second_heading_below_a_native_table_is_ignored_and_its_rows_are_read(tmp_path):
+    """As changed by pdf-table-engine (FR-06, FR-07): the repeated transactions heading is ignored, so C2 and C3 are rows of the table and
+    there is no `second_heading` issue. The blank-description row before the heading is a below-table row (row 3, rejected)."""
     result = read(tmp_path, fx.second_heading_pages())
     assert len(fx.native_transactions_tables(result, 1)) == 1 and len(fx.heading_rows(result, 1)) == 2  # P-check: the second heading is a visual row.
     analysis = pdf_import.analyze(result, currency="USD", **X_CHOICES)
-    assert [(row.row, row.description, row.rejected) for row in analysis.rows] == [(1, "A1", None), (2, "A2", None), (3, "", "The description is blank.")]
-    assert "C2" not in [row.description for row in analysis.rows] and "C3" not in [row.description for row in analysis.rows]
-    assert [issue.message for issue in analysis.issues if issue.code == "second_heading"] == ["Page 1: rows after a second transactions heading on this page were not read."]
+    assert [(row.row, row.description, row.rejected) for row in analysis.rows] == [
+        (1, "A1", None), (2, "A2", None), (3, "", "The description is blank."), (4, "C2", None), (5, "C3", None)]
+    assert not [issue for issue in analysis.issues if issue.code == "second_heading"]
 
 
 # --- SC-08: flagged pages ----------------------------------------------------------------------------------------------------
