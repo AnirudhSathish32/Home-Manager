@@ -5,8 +5,26 @@ verification_policy: >-
   Each slice runs only its targeted checks (implement-slice). The full suite runs once after SL-05 and is compared test by
   test against the pre-feature baseline (receipt-item-table's last run: 54 failed, 20 errors, all pre-existing).
 slices:
-  - {id: SL-01, status: todo}
-  - {id: SL-02, status: todo}
+  - id: SL-01
+    status: done
+    start_head: 5c9f014
+    end_head: 56c0f44
+    commit: 3dde201
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-01-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_migrations.py -k 075 -q -> 1 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py -q -> 16 passed (orchestrator rerun)"
+      - "SL-01 regression files (spending_splits, receipt_item_table, reextraction, bills_ledger, migrations, family_inbox, family_routing) -> 120 passed, 1 skipped (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+    notes: "Diff reviewed against the plan's Stored data section and P6. The family delivery test asserts equal shares; exact 445/4347/1400 waits for SL-02."
+  - id: SL-02
+    status: in_progress
+    start_head: 3e1d0d0
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-02-r1
   - {id: SL-03, status: todo}
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
