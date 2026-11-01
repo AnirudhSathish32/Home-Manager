@@ -128,4 +128,4 @@ slices:
       stop a continuation; zone bound at the heading-label midpoint; a dated line with a stray amount is unplaced; EngineTable.labels;
       FR-13's reason only for a one-row statement). Carried to SL-07 docs/open-work.md: index backfill now runs the engine on every
       reading (time per reading on a large library not measured); scripts/statement_diagnose.py still imports old pdf_import internals.
-  - {id: SL-07, status: todo}
+  - {id: SL-07, status: in_progress, start_head: 0605790, provider: claude, model: claude-sonnet-5-5}
