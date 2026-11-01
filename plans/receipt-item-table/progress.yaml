@@ -1,6 +1,10 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: receipt-item-table
 plan_sha256: b93f6e1850514a132075a77b3c8f3f2ccfaea103114ca7da92221e2cf348d53b
+verification_policy: >-
+  User instruction (2026-11-01, after SL-01): SL-02 and SL-03 run only their targeted checks. The full non-browser suite
+  runs once, after SL-03, as the final verification, compared against SL-01's baseline (54 failed, 20 errors, all
+  pre-existing). This replaces the plan's "each slice ends with the full suite" for the remaining slices.
 slices:
   - id: SL-01
     status: done
@@ -20,7 +24,24 @@ slices:
       START_HEAD c81cd11, so they predate this feature. Not rerun by the orchestrator (about 22 minutes); to be compared
       against this baseline in the final full run.
   - id: SL-02
+    status: done
+    start_head: b5427c8
+    end_head: a0a3c08
+    commit: bfbbc04
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py -q -> 4 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_planned_bugfixes_browser.py tests/test_document_v2_browser.py tests/test_browser.py -q -> 11 passed, 3 failed (orchestrator rerun)"
+      - "same command at START_HEAD b5427c8 in a temporary worktree -> the same 3 failed, 11 passed (orchestrator)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+      - "full non-browser suite deferred to the final verification (verification_policy)"
+    notes: >-
+      The 3 browser failures predate SL-02 (extraction output failed validation in the fake model's replies):
+      test_idle_badge_read_filter_and_record_selected, test_document_page_states_find_correct_and_decide,
+      test_real_browser_configures_scans_and_inspects_versions. The planned-bugfix price/Undo test and
+      test_document_forms_show_printed_details_and_change_the_kind pass. Screenshot /tmp/sl02-shots/after/documents_14-1440-light.png
+      reviewed: footer amounts under Line total, source cell last.
+  - id: SL-03
     status: in_progress
     start_head: PLACEHOLDER
-  - id: SL-03
-    status: todo
