@@ -26,7 +26,9 @@ import tomllib
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.documents.extraction import EXTRACTION_VERSION
+from home_manager.documents.pdf_reader import PDFResult, read_result
 from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.finance import statement_rows, statement_tables
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.model_client import DEFAULT_TEMPERATURE, check_connection, model_identity, recording
@@ -35,7 +37,7 @@ from home_manager.models.vision import VISION_VERSION, Sampling, VisionConfig
 
 from .corpus import Corpus, write_json
 from .decision import rules as decision_rules
-from .graders import failure_kind, grade
+from .graders import failure_kind, grade, table_reader
 from .guard import GuardError, check_server, install_network_guard
 
 RUN_FORMAT = "home-manager-eval-run/1"
@@ -151,6 +153,37 @@ def run_case(case, candidate, base_url, timeout=CASE_TIMEOUT, sampling=None):
     return status, record, details, outputs
 
 
+def table_readers(case, answers, evidence):
+    """docs/evals.md "The two table readers": for a native-PDF bank or card statement whose row list the donor confirmed complete, the old
+    reader (`statement_rows.rebuild`, which reads through `pdf_import.analyze_legacy`) and the table engine (`statement_tables.read`) each
+    read the saved reading, given the statement's own currency and period, as Record gives them from the model's summary. Neither uses a
+    model, so these counts measure the readers and nothing else. None when the case is not such a statement."""
+    kind = case.info.document_type
+    if (kind not in ("bank_statement", "credit_card_statement") or case.info.source_kind != "native_pdf" or not isinstance(evidence, PDFResult)
+            or not answers.rows_complete or answers.rows is None):
+        return None
+    given = {name: answers.fields[name].value if answers.fields[name].state != "unchecked" else None for name in ("currency", "period_start", "period_end")}
+    currency = given["currency"] or case.info.home_currency or "USD"
+    statement_type = "credit_card" if kind == "credit_card_statement" else "bank"
+    out = {}
+    for reader in ("legacy", "engine"):
+        unplaced = None
+        try:
+            if reader == "legacy":
+                rebuild = statement_rows.rebuild(evidence, statement_type=statement_type, period_start=given["period_start"],
+                                                 period_end=given["period_end"], currency=currency)
+            else:
+                period = (given["period_start"], given["period_end"]) if given["period_start"] and given["period_end"] else None
+                reading = statement_tables.read(evidence, statement_type=statement_type, currency=currency, fallback_period=period)
+                rebuild, unplaced = reading.as_rebuild(), len(reading.unplaced)
+            if not rebuild.available:
+                return None
+            out[reader] = table_reader(answers, rebuild, unplaced)
+        except Exception:  # A reader that raises recorded nothing; that is a result, not a stop.
+            out[reader] = table_reader(answers, None, failed=True)
+    return out
+
+
 def pipeline(case, candidate, base_url, timeout, sampling, attempts):
     """Capture, reading and extraction for one case. Returns (status, record, details)."""
     def failed(status, stage, run, details):
@@ -188,6 +221,9 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
             details = {"wall_seconds": wall, "reading": telemetry(reading["model_runs"])}
             if reading["status"] not in ("succeeded", "partial"):
                 return failed("read_failed", "transcription", reading, details)
+            readers = table_readers(case, case.answers(), read_result(reading["result"]) if reading["result"] else None)
+            if readers:
+                details["table_readers"] = readers
             with manager.store.connection() as db:
                 row = db.execute("SELECT id FROM extraction_runs WHERE document_id=? ORDER BY created_at DESC LIMIT 1", (document["id"],)).fetchone()
             if row is None:

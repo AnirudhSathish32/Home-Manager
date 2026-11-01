@@ -1,4 +1,4 @@
-"""A synthetic corpus: 44 invented receipts, bank and card statements, pay stubs and bills with known answers.
+"""A synthetic corpus: 48 invented receipts, bank and card statements, pay stubs and bills with known answers.
 
   python -m evals.synthetic OUT_FOLDER
 
@@ -8,7 +8,9 @@ end to end against a local model before running the private corpus. Every case i
 Most cases are drawn as images (read by the vision model); some are PDFs with a text layer (read without it). The
 documents are generated from a fixed seed, so the same corpus comes out every time. Each case's tags name the edge it
 tests (corpus.TAGS): long and multi-page documents, other currencies, a prompt-injection line, an invoice-looking
-receipt, a receipt without items, repeated rows, other date formats, faded print, year-to-date columns, and returns.
+receipt, a receipt without items, repeated rows, other date formats, faded print, year-to-date columns, returns, and text-PDF
+statements printed in aligned columns (tag aligned: a Wells Fargo-style two-line heading, day-first dates, wrapped
+descriptions, a card statement with sections), drawn by evals/statement_layouts.py so their answers come from its inputs.
 Every answer is consistent with the printed text: items add up to the subtotal, subtotal, tax and tip to the total,
 transactions to the closing balance, and pay lines to gross and net pay.
 """
@@ -23,9 +25,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from home_manager.core.answers import CRITICAL, ROWS, Answers, FieldAnswer
 
+from . import statement_layouts
 from .corpus import CaseInfo, Corpus, write_json
 
 SEED = 20261003
+LAYOUT_SEED = SEED + 1  # The aligned-column statements' own seed: drawing them never touches the other documents' random draws.
 PDF_LINES_PER_PAGE = 50
 SHOPS = [  # Printed name, the name a person would type, the kind of things it sells.
     ("CORNER COFFEE", "Corner Coffee", "cafe"), ("HILLSIDE HARDWARE", "Hillside Hardware", "hardware"),
@@ -67,9 +71,11 @@ def random_day(rng, start=date(2026, 1, 5), end=date(2026, 9, 25)):
     return start + timedelta(days=rng.randrange((end - start).days))
 
 
-def case(document_type, lines, fields, rows, tags=(), source="png", faded=False):
+def case(document_type, lines, fields, rows, tags=(), source="png", faded=False, layout=None):
+    """layout: positioned pages ({"items": [(x, y, text), ...]}) for a PDF whose columns are placed by position; lines are then its texts."""
     assert set(fields) == set(CRITICAL[document_type]), (document_type, set(fields) ^ set(CRITICAL[document_type]))
-    return {"document_type": document_type, "lines": lines, "fields": fields, "rows": rows, "tags": list(tags), "source": source, "faded": faded}
+    return {"document_type": document_type, "lines": lines, "fields": fields, "rows": rows, "tags": list(tags), "source": source, "faded": faded,
+            "layout": layout}
 
 
 def receipt(rng, shop, *, count=None, items=None, charge=None, currency="USD", exponent=2, symbol="", tax_rate=825, tip=None,
@@ -195,6 +201,31 @@ def bill(rng, printed, name, lines, *, past_due=0, account="4821", tags=(), sour
     return case("bill", text, fields, rows, tags, source)
 
 
+def aligned_statement(index, kind, tags=("aligned",), **choices):
+    """A bank or card statement printed in aligned columns, drawn by the layout generator (evals/statement_layouts.py): its rows, period
+    and balances are the generator's own inputs, never a reader's output. The period and the summary are always printed. `choices` fix
+    what the generator would draw (see its `draw`); every one of its rules still applies."""
+    layout = statement_layouts.make(LAYOUT_SEED, index, kind=kind, period_wanted=True, summary=True, small_days=False, date_once=False,
+                                    cross_year=False, **choices)
+    answers = layout.answers
+    assert answers["period"] and answers["opening"] is not None and answers["closing"] is not None, layout.choices
+    # Every native page prints a footer with a "$" in it, so the app reads the amounts as USD and the reader never sends the page to vision.
+    pages = [{"items": [(x, y, text.replace(", kept", ", amounts shown in $ (USD), kept")) for x, y, text in page["items"]]} for page in layout.pages]
+    lines = [text for page in pages for _, _, text in page["items"]]
+    name = pages[0]["items"][0][2]  # The statement's first printed line: the issuer.
+    start, end = answers["period"]
+    rows = [{"posted_date": day, "description": description, "amount_minor": amount} for day, amount, description in answers["rows"]]
+    if kind == "card":
+        document_type = "credit_card_statement"
+        fields = {"institution": name.title(), "period_start": start, "period_end": end, "due_date": None, "currency": "USD",
+                  "previous_balance_minor": answers["opening"], "statement_balance_minor": answers["closing"], "minimum_payment_minor": None}
+    else:
+        document_type = "bank_statement"
+        fields = {"institution": name.title(), "period_start": start, "period_end": end, "currency": "USD",
+                  "opening_balance_minor": answers["opening"], "closing_balance_minor": answers["closing"]}
+    return case(document_type, lines, fields, rows, tags, "pdf", layout=pages)
+
+
 def documents():
     """Every synthetic document, in a fixed order, from the fixed seed."""
     rng = random.Random(SEED)
@@ -245,6 +276,16 @@ def documents():
                                                           ("Basic plan", "Casey 555-203-3333", 2000), ("Apple TV+", "Alex 555-201-1111", 999),
                                                           ("Taxes, surcharges and fees", None, 1800)], past_due=1250),
             bill(rng, "OAKWOOD APARTMENTS", "Oakwood Apartments", [("Rent", None, 150000), ("Water", None, 4520), ("Trash", None, 1500)], account="7788")]
+    # Text-PDF statements in aligned columns, after everything above so that no other document changes: a Wells Fargo-style two-line heading
+    # (Deposits/ over Additions, Withdrawals/ over Subtractions, Ending daily over balance, dates without a year, a daily balance table after
+    # the rows), dates printed DD/MM/YYYY, descriptions wrapped over up to three lines (on two pages), and a card statement with sections.
+    # The index only picks which drawn labels and words print; it was chosen for what prints, never for how a reader does.
+    out += [aligned_statement(37, "bank", signs="inout", heading="known2", dates="mdy_short", balance=True, columns=0, wrap=1, rows=15,
+                              extras=("daily",), continuation_heading=True),
+            aligned_statement(1, "bank", signs="signed", heading="known1", dates="dmy4", balance=True, rows=11, wrap=1, extras=()),
+            aligned_statement(2, "bank", signs="signed", heading="known1", dates="mdy4", balance=False, rows=29, wrap=3, extras=(),
+                              continuation_heading=True),
+            aligned_statement(3, "card", signs="sectioned", heading="known1", dates="mdy4", balance=False, rows=11, wrap=1, extras=())]
     for document in out:
         assert all(set(row) == set(ROWS[document["document_type"]][1]) for row in document["rows"])
     return out
@@ -252,6 +293,8 @@ def documents():
 
 def pages(document):
     """The document's lines split into pages: one image, or PDF pages of PDF_LINES_PER_PAGE lines with a page footer."""
+    if document["layout"]:
+        return document["layout"]
     lines = document["lines"]
     if document["source"] == "png":
         return [lines]
@@ -277,15 +320,25 @@ def draw(lines, path, faded=False, rng=None):
     image.save(path)
 
 
+def escape(text):
+    assert text.isascii(), text
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
 def write_pdf(page_lines, path):
     """A PDF with a real text layer (Helvetica), one text line per printed line, so the app reads it without a vision model."""
-    def escape(text):
-        assert text.isascii(), text
-        return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    assemble([("BT /F1 10 Tf 13 TL 50 760 Td " + " ".join(f"({escape(line)}) Tj T*" for line in lines) + " ET").encode("ascii") for lines in page_lines], path)
 
+
+def write_layout_pdf(pages, path):
+    """A PDF with a real text layer whose every text is placed at its own x and y (10 pt Helvetica), so that columns line up by position."""
+    assemble([" ".join(f"BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({escape(text)}) Tj ET" for x, y, text in page["items"]).encode("ascii") for page in pages], path)
+
+
+def assemble(streams, path):
+    """The PDF with one page per content stream."""
     body, kids, number = {}, [], 4
-    for lines in page_lines:
-        stream = ("BT /F1 10 Tf 13 TL 50 760 Td " + " ".join(f"({escape(line)}) Tj T*" for line in lines) + " ET").encode("ascii")
+    for stream in streams:
         body[number] = b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream"
         body[number + 1] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> "
                             f"/Contents {number} 0 R >>").encode()
@@ -314,7 +367,9 @@ def create(root):
         folder = corpus.case_folder("synthetic", case_id)
         folder.mkdir(parents=True, exist_ok=True)
         split_pages = pages(document)
-        if document["source"] == "pdf":
+        if document["layout"]:
+            write_layout_pdf(split_pages, folder / "original.pdf")
+        elif document["source"] == "pdf":
             write_pdf(split_pages, folder / "original.pdf")
         else:
             draw(document["lines"], folder / "original.png", document["faded"], rng)

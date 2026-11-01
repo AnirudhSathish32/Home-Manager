@@ -1,8 +1,10 @@
 """The eval suite (evals/) on synthetic data only: grading, the local-only guard, intake, a full run and the summary allowlist."""
 
+import hashlib
 import json
 from pathlib import Path
 import random
+import re
 import subprocess
 import sys
 import zipfile
@@ -270,11 +272,11 @@ def test_a_dry_run_checks_everything_and_writes_nothing(tmp_path, local_model):
     create_synthetic(corpus.root)
     said = []
     assert run(corpus, config_for(local_model), repeat=3, network_guard=False, echo=said.append, dry_run=True) is None
-    assert said[0].startswith("Dry run: 44 test cases x 1 candidates x 3 repeats = 132 documents.")
+    assert said[0].startswith("Dry run: 48 test cases x 1 candidates x 3 repeats = 144 documents.")
     assert local_model["requests"] == [] and not (corpus.root / "results").exists()
     said.clear()
     run(corpus, config_for(local_model), network_guard=False, echo=said.append, dry_run=True, compare_schema=True)
-    assert said[0].startswith("Dry run: 44 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
+    assert said[0].startswith("Dry run: 48 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
 
 
 def test_a_model_that_cannot_load_is_one_load_failure_per_case(tmp_path, local_model, monkeypatch):
@@ -314,9 +316,9 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
     created = create_synthetic(tmp_path / "synthetic")
     corpus = Corpus(tmp_path / "synthetic")
     cases = corpus.cases(split="test")
-    assert len(created) == len(set(created)) == len(cases) == 44
+    assert len(created) == len(set(created)) == len(cases) == 48
     assert {kind: sum(case.info.document_type == kind for case in cases) for kind in ROWS} == {
-        "receipt": 24, "bank_statement": 6, "credit_card_statement": 5, "paystub": 7, "bill": 2}
+        "receipt": 24, "bank_statement": 9, "credit_card_statement": 6, "paystub": 7, "bill": 2}
     assert {tag for case in cases for tag in case.info.tags} == set(TAGS)  # Every edge is tested at least once.
     assert all(case.answers().rows_complete for case in cases)
     assert {case.original.suffix for case in cases} == {".png", ".pdf"} and max(case.info.pages for case in cases) >= 6
@@ -330,6 +332,31 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
     custom.write_text('[sampling]\ntemperature = 5\n[[candidate]]\nvision = "v"\nreasoning = "r"\n', encoding="utf-8")
     with pytest.raises(ValueError):
         load_config(custom)
+
+
+EXISTING_DOCUMENTS = "fbabda291e8cc424a7658a29b1a010aa3af93050fd9b75ef53e8af1d84a94609"  # sha256 of the 44 documents of the corpus before the aligned statements.
+
+
+def test_the_aligned_statements_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
+    """FR-34 / SC-20: the existing 44 cases keep their ids and answers; four text-PDF statements in aligned columns follow them."""
+    everything = documents()
+    keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
+    assert hashlib.sha256(json.dumps([{key: document[key] for key in keys} for document in everything[:44]], sort_keys=True).encode()).hexdigest() == EXISTING_DOCUMENTS
+    added = everything[44:]
+    assert [document["document_type"] for document in added] == ["bank_statement"] * 3 + ["credit_card_statement"]
+    assert all(document["tags"] == ["aligned"] and document["source"] == "pdf" and document["layout"] for document in added)
+    # What the four print: the Wells Fargo-style two-line heading and daily balances, day-first dates, wrapped descriptions over two pages, sections.
+    texts = ["\n".join(document["lines"]) for document in added]
+    assert all(word in texts[0] for word in ("Deposits/", "Additions", "Withdrawals/", "Subtractions", "Ending daily", "Daily ending balance"))
+    assert any(int(row["posted_date"][8:10]) > 12 for row in added[1]["rows"]) and "/" in texts[1] and re.search(r"\b1[3-9]/\d\d/\d{4}\b|\b2\d/\d\d/\d{4}\b|\b3[01]/\d\d/\d{4}\b", texts[1])
+    assert len(added[2]["layout"]) == 2 and max(len(row["description"].split()) for row in added[2]["rows"]) >= 5
+    assert any(title in texts[3] for title in ("Payments and Credits", "Payments", "Credits and Refunds")) and any(title in texts[3] for title in ("Purchases", "Charges and Interest"))
+    created = create_synthetic(tmp_path / "synthetic")
+    assert len(created) == 48 and all(len(identifier) == 16 for identifier in created)
+    corpus = Corpus(tmp_path / "synthetic")
+    aligned = [case for case in corpus.cases() if "aligned" in case.info.tags]
+    assert len(aligned) == 4 and all(case.info.source_kind == "native_pdf" and case.original.read_bytes().startswith(b"%PDF") for case in aligned)
+    assert all(case.answers().rows_complete and case.answers().document_type in ("bank_statement", "credit_card_statement") for case in aligned)
 
 
 def test_every_synthetic_answer_is_printed_and_adds_up():

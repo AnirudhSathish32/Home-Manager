@@ -5,6 +5,7 @@ confirmed the list complete. Rows match as a multiset, so two identical lattes a
 Every mismatch gets one error category from a fixed list, so reports carry no values.
 """
 
+from collections import Counter
 from datetime import date
 import re
 
@@ -166,6 +167,33 @@ def arithmetic(kind, record):
         if lines and known(record.get("total_minor"), *lines):
             checks.append(sum(lines) == record["total_minor"])
     return all(checks) if checks else None
+
+
+def table_reader(answers, rebuild, unplaced=None, failed=False):
+    """How one table reader did on a text-PDF statement (specs/pdf-table-engine FR-34). `rebuild` is the reader's `Rebuild`: its rows are
+    in the order printed, with posted_date and a signed amount_minor (money out negative, for a card statement too). Counts only, no values.
+
+    rows       the printed rows the donor confirmed (the answers' row list)
+    recorded   the rows the reader recorded
+    exact      printed rows recorded with exactly the right date and signed amount (so the right direction); a repeated row counts once each
+    reconciled whether the recorded rows take the answers' opening balance to the answers' closing one (a card statement's previous
+               balance to its new balance); None when either balance is not among the checked answers
+    dropped    rows the reader read but did not record, as it counted them (rejected rows, undated rows, and the engine's unplaced lines)
+    unplaced   printed lines the reader named as placed in no column (None for the old reader, which does not name them)
+    failed     the reader raised, so it recorded nothing
+    """
+    expected = Counter((row["posted_date"], row["amount_minor"]) for row in answers.rows)
+    recorded = [] if failed else rebuild.rows
+    exact = sum((expected & Counter((row["posted_date"], row["amount_minor"]) for row in recorded)).values())
+    card = answers.document_type == "credit_card_statement"
+    names = ("previous_balance_minor", "statement_balance_minor") if card else ("opening_balance_minor", "closing_balance_minor")
+    opening, closing = (answers.fields[name].value if answers.fields[name].state != "unchecked" else None for name in names)
+    reconciled = None
+    if isinstance(opening, int) and isinstance(closing, int):
+        moved = sum(row["amount_minor"] for row in recorded)
+        reconciled = not failed and (opening - moved if card else opening + moved) == closing
+    return {"rows": len(answers.rows), "recorded": len(recorded), "exact": exact, "reconciled": reconciled,
+            "dropped": 0 if failed else rebuild.dropped, "unplaced": unplaced, "failed": failed}
 
 
 def score(grades):
