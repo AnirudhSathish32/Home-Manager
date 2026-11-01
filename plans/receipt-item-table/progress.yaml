@@ -64,3 +64,30 @@ final_verification:
     test_agent_guards, test_cpa_pack, test_engine_worksheets, test_scenarios, test_tax_engines, test_tax_family,
     test_tax_year, test_tax_zen, test_traces). No new failure. Skipped rose from 102 to 107: the five opt-in browser tests
     in tests/test_receipt_items_browser.py.
+code_review:
+  - round: 1
+    reviewer: "codex / gpt-6.1-sol (reasoningEffort high), via t3, 0 helper subagents"
+    independence: model-family
+    risk: "HIGH (approved_plan_high_risk, changed_lines_over_limit)"
+    range: ebedfef..681a84c
+    verdict: "1 MAJOR, 1 MINOR, no BLOCKER"
+    findings:
+      - id: CR1-M1
+        severity: MAJOR
+        where: "src/home_manager/finance/ledger.py item_table, abs(counted) != 1"
+        summary: >-
+          abs() applies the Decimal context: quantity "1e1000000" raises decimal.Overflow (record fails to load), and
+          "1.00000000000000000000000000001" / "0.99999999999999999999999999999" round to 1 and wrongly show the line
+          total as Unit price. Fix: compare with Decimal(1)/Decimal(-1) or copy_abs(); add regression tests.
+        orchestrator_check: "reproduced (Overflow; long fraction compares equal to 1)"
+        status: open
+      - id: CR1-m1
+        severity: MINOR
+        where: "docs/money.md Item categories and splits (Unit price and Paid bullets)"
+        summary: >-
+          Docs say any count other than 1 shows "—" (code also accepts -1), and that tax falls back to every item only
+          when none is marked taxed (code falls back whenever the taxed amounts sum to zero; badge needs a non-zero basis).
+        orchestrator_check: "confirmed against ledger.py item_table and splits.tax_basis"
+        status: open
+    verified_by_reviewer: "allocate matches the baseline on 10,000 deterministic cases; footer spans correct for all Code/Paid combinations; source cell last; no browser money arithmetic; tests assert hand-worked values"
+    not_covered: "browser assertions for Paid hidden when every share is absent, mixed missing-share rows, rejected items through the full record/UI path"
