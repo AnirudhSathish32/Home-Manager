@@ -2,6 +2,9 @@
 Spec sha256: the bundle hash (spec.md + this file) comes from the user's gate tooling (`$HOME/.agent-harness/gate.py`;
 there's no `scripts/gate.py` in this repository). It isn't copied here, because writing it in would change it.
 
+Split (user, 2026-11-01): the item-table scenarios SC-02, SC-11, SC-12 and SC-17 moved to
+`specs/receipt-item-table/test-contract.md`. SC-19 is new.
+
 Every expected value comes from `spec.md`, or is worked out by hand below from the synthetic fixtures. None comes from
 running the current code. Where the spec leaves an outcome open, it is listed under "Gaps", not invented.
 
@@ -25,13 +28,14 @@ running the current code. Where the spec leaves an outcome open, it is listed un
   - **C-cited:** every stored tax line and item tax code has an evidence link whose line ids are the fixture line it
     cites. Find on the page highlights that line.
   - **C-noissue / C-issue(text):** the receipt's `issues` hold no tax-line issue, or hold one containing text.
-- **Test files (new)**
-  - `tests/receipt_tax_fixtures.py`: the fixtures and stub answers below.
-  - `tests/test_receipt_tax_codes.py`: reading, keeping and sharing (SC-01, SC-03 – SC-10, SC-13 – SC-16, SC-18).
-  - `tests/test_splits_by_code.py`: unit tests of the share rule with no database (FR-14 – FR-18, FR-23), each
+- **Test files**
+  - `tests/receipt_item_fixtures.py` (created by `receipt-item-table`): extended with R0 and the stub variants below.
+  - `tests/test_receipt_tax_codes.py` (new): reading, keeping and sharing (SC-01, SC-03 – SC-10, SC-13 – SC-16,
+    SC-18).
+  - `tests/test_splits_by_code.py` (new): unit tests of the share rule with no database (FR-14 – FR-18, FR-23), each
     independent.
-  - `tests/test_receipt_items_browser.py`: the item table and footer (SC-02, SC-11, SC-12, SC-17, plus FR-06 and
-    FR-07).
+  - `tests/test_receipt_items_browser.py` (created by `receipt-item-table`): extended with the footer tax lines and
+    the tax-code note (SC-15 step 3, SC-19).
 - **Cleanup.** pytest removes `tmp_path`. Browser tests close the browser and the server through `document_server`.
 
 ### Doubles
@@ -76,13 +80,6 @@ The `taxed: false` answers reproduce the reported bug. FR-11 says tax lines over
 - Total 621.61.
 - Expected (from the doc): 162, 53999, 8000.
 
-**G: grocery count and weight.** Lines `SYNTH MARKET`, `2026-10-03`, `BANANAS 2.31 lb @ 0.59/lb 1.36`,
-`3 @ YOGURT 4.50`, `MILK 3.49`, `SUBTOTAL 9.35`, `TAX 0.00`, `TOTAL 9.35`.
-- Yogurt is read with quantity 3, no unit price, line 4.50.
-- Milk has no quantity and no unit price.
-
-**N: a return.** R's lines with `RETURN` above the filter's line, and the filter read as returned (line −12.99).
-
 ## SC-01 — Recording the user's receipt shares tax by code
 Requirement IDs: FR-08, FR-09, FR-10, FR-11, FR-12, FR-14, FR-15
 Nondeterministic components: model stubbed with R0
@@ -98,42 +95,20 @@ Actions/checkpoints:
 Expected final state:
 - Database: 1 receipt, 3 items, 2 tax lines, 3 split rows as above. Nothing else is added beyond what recording
   already adds.
-- UI: not checked here (SC-02).
+- UI: not checked here (SC-19).
 Failure/retry/restart variants:
 - Record the same document again (a second Record) → still 2 tax lines and 3 split rows. No duplicates.
 Evidence: pytest output for `tests/test_receipt_tax_codes.py::test_sc01…`.
 
-## SC-02 — The item table on the document page
-Requirement IDs: FR-01 – FR-07, FR-19
-Nondeterministic components: model stubbed with R0; real browser (Edge), opt-in
-Initial state: `document_server` with a seed that records R with R0 (SC-01's state).
-Actions/checkpoints:
-1. Open the receipt's document page → the item table's column titles read Item, Code, Qty, Unit price, Category,
-   Line total, Paid, in that order (FR-01).
-2. Ruffles row → 071057174, 1, $4.29, $4.29, $4.45. Qty 1 is a plain value with no "not printed" mark (FR-02, D3).
-3. Little Veg row → 211180042, 10, $4.19, $41.90, $43.47 "with B tax".
-4. Water filter row → 07200120, 1, $12.99, $12.99, $14.00 "with T tax".
-5. No Paid cell reads "—" (FR-05).
-6. Footer → Subtotal $59.18. Under Tax: "B · 7.75% on $46.19 · $1.73" and "T · 7.75% on $12.99 · $1.01", each with
-   Find. Total $61.92. The amounts sit in the Line total column (FR-07, FR-19).
-7. Click Find on the B tax line → the B line of the source is highlighted (C-cited).
-8. Click Correct on Tax → the tax correction opens for the field `tax` (FR-07). Cancel it.
-9. Reload the page → the same table.
-Expected final state: UI as above. Database unchanged by the visit.
-Failure/retry/restart variants: none.
-Evidence: browser test output, plus synthetic before and after screenshots (`scripts/ui_shots.py`) at desktop and
-phone widths.
-
 ## SC-03 — Receipts without tax lines keep today's sharing (regression)
-Requirement IDs: FR-05, FR-11
+Requirement IDs: FR-11
 Nondeterministic components: model stubbed with D
 Initial state: empty library.
 Actions/checkpoints:
 1. Record D → no tax lines stored. The taxed flags are the model's answers (1, 1, 0).
-2. Shares → 162, 53999, 8000. C-sum(62161).
-3. Open the page (browser) → Groceries' Paid shows $80.00 with no "with tax" note. The footer has one Tax line, $40.12.
-Expected final state: as today, apart from the new columns.
-Evidence: pytest, plus the browser test.
+2. Shares → 162, 53999, 8000. C-sum(62161). C-noissue.
+Expected final state: as today. (The page for D is `receipt-item-table` SC-20.)
+Evidence: pytest.
 
 ## SC-04 — Tax lines that don't add up fall back
 Requirement IDs: FR-16
@@ -238,25 +213,6 @@ Actions/checkpoints:
    SC-01 share × 5700 / 6192.
 Evidence: pytest.
 
-## SC-11 — Count and weight in the table
-Requirement IDs: FR-02, FR-03, FR-25
-Nondeterministic components: model stubbed with G; browser
-Initial state: `document_server` seeded with G.
-Actions/checkpoints:
-1. Bananas row → Qty "2.31 lb", Unit price "$0.59/lb", Line total $1.36.
-2. Yogurt row → Qty 3, Unit price "—", Line total $4.50.
-3. Milk row → Qty 1, Unit price $3.49.
-4. Printed details has no line for Bananas or Yogurt (FR-25).
-Evidence: browser test.
-
-## SC-12 — Returned items
-Requirement IDs: FR-04, FR-05
-Nondeterministic components: model stubbed with N; browser
-Initial state: `document_server` seeded with N.
-Actions/checkpoints:
-1. The filter row's Line total and Paid are both negative. Paid is the stored share, shown as stored.
-Evidence: browser test.
-
 ## SC-13 — Tax lines without codes
 Requirement IDs: FR-21
 Nondeterministic components: stub for the lines `SYNTH SHOP`, `LAMP 10.00`, `CARDS 5.00`, `SUBTOTAL 15.00`,
@@ -317,18 +273,25 @@ Failure/retry/restart variants: the same stub with every flag answered (true, fa
 1573. C-sum(6192).
 Evidence: pytest, plus a unit test in `test_splits_by_code.py`.
 
-## SC-17 — Printed details and the tax-code note
-Requirement IDs: FR-25, FR-26
-Nondeterministic components: R0; browser
-Initial state: SC-02's server.
+## SC-19 — Tax lines and tax codes on the document page
+Requirement IDs: FR-19, FR-26
+Nondeterministic components: model stubbed with R0; real browser, opt-in
+Initial state: `document_server` with a seed that records R with R0 (SC-01's state).
 Actions/checkpoints:
-1. Printed details has no "10 × $4.19" line for Little Veg.
-2. Ruffles' Paid reads $4.45 "with B tax". Its row's tooltip reads "Tax code BF".
-Evidence: browser test.
+1. Paid → Ruffles $4.45 "with B tax", Little Veg $43.47 "with B tax", Water filter $14.00 "with T tax" (FR-26).
+2. Ruffles' row tooltip reads "Tax code BF". No column is added: the header is still `receipt-item-table` FR-01's.
+3. Footer → Subtotal $59.18. Under Tax: "B · 7.75% on $46.19 · $1.73" and "T · 7.75% on $12.99 · $1.01", each with
+   Find. Total $61.92. The amounts sit in the Line total column (FR-19).
+4. Click Find on the B tax line → the B line of the source is highlighted (C-cited).
+5. Click Correct on Tax → the tax correction opens for the field `tax`. Cancel it.
+6. Reload the page → the same table.
+Expected final state: UI as above. Database unchanged by the visit.
+Failure/retry/restart variants: on SC-04's receipt (tax lines kept but not used) the footer shows the one Tax line,
+$2.84, and the Paid notes read "with tax".
+Evidence: browser test output, plus synthetic before and after screenshots (`scripts/ui_shots.py`) at desktop and
+phone widths.
 
 ## Other FR checks (no journey)
-- **FR-06:** on D, which has no product codes, the table has no Code column. On R it has one. Checked in the SC-03 and
-  SC-02 browser tests.
 - **FR-20:** checked by review, not by a test: the `docs/money.md` section and the `docs/open-work.md` entry.
 
 ## Evals (user-run, live model)
@@ -342,13 +305,6 @@ Evidence: browser test.
 ## Traceability
 | FR | Scenarios | Test file |
 |---|---|---|
-| FR-01 | SC-02 | test_receipt_items_browser.py |
-| FR-02 | SC-02, SC-11 | test_receipt_items_browser.py |
-| FR-03 | SC-02, SC-11 | test_receipt_items_browser.py |
-| FR-04 | SC-02, SC-12 | test_receipt_items_browser.py |
-| FR-05 | SC-02, SC-03, SC-12 | test_receipt_items_browser.py |
-| FR-06 | SC-02, SC-03 | test_receipt_items_browser.py |
-| FR-07 | SC-02 | test_receipt_items_browser.py |
 | FR-08 | SC-01 | test_receipt_tax_codes.py |
 | FR-09 | SC-01, SC-15 | test_receipt_tax_codes.py |
 | FR-10 | SC-01, SC-06 | test_receipt_tax_codes.py, test_splits_by_code.py |
@@ -360,20 +316,20 @@ Evidence: browser test.
 | FR-16 | SC-04, SC-05, SC-07 | test_receipt_tax_codes.py, test_splits_by_code.py |
 | FR-17 | SC-07 | test_receipt_tax_codes.py |
 | FR-18 | SC-05, SC-06 | test_receipt_tax_codes.py, test_splits_by_code.py |
-| FR-19 | SC-02, SC-15 | test_receipt_items_browser.py |
+| FR-19 | SC-15, SC-19 | test_receipt_items_browser.py |
 | FR-20 | review | — |
 | FR-21 | SC-13 | test_receipt_tax_codes.py |
 | FR-22 | SC-14 | test_receipt_tax_codes.py |
 | FR-23 | SC-15 | test_receipt_tax_codes.py, test_splits_by_code.py |
 | FR-24 | SC-16, evals | test_receipt_tax_codes.py, evals/ |
-| FR-25 | SC-11, SC-17 | test_receipt_items_browser.py |
-| FR-26 | SC-17 | test_receipt_items_browser.py |
+| FR-26 | SC-19 | test_receipt_items_browser.py |
 | FR-27 | SC-04, SC-07 | test_receipt_tax_codes.py |
 | FR-28 | SC-07 | test_receipt_tax_codes.py |
 | FR-29 | SC-18 | test_receipt_tax_codes.py, test_splits_by_code.py |
 
 Commands: `python -m pytest tests/test_splits_by_code.py tests/test_receipt_tax_codes.py`. The browser tests need
-`RUN_BROWSER_TESTS=1` and `python -m pytest tests/test_receipt_items_browser.py`.
+`RUN_BROWSER_TESTS=1` and `python -m pytest tests/test_receipt_items_browser.py` (which then also runs
+`receipt-item-table`'s scenarios).
 
 ## Gaps
 None open. G1 – G3 were settled by the user on 2026-10-26 (spec D4) and became FR-27 – FR-29.

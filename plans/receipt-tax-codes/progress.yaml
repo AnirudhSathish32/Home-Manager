@@ -1,0 +1,12 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: receipt-tax-codes
+plan_sha256: d18c3e39142f62ee781037fd454f58e84b41ab0ea6f86b6a129ead4c9140bb55
+verification_policy: >-
+  Each slice runs only its targeted checks (implement-slice). The full suite runs once after SL-05 and is compared test by
+  test against the pre-feature baseline (receipt-item-table's last run: 54 failed, 20 errors, all pre-existing).
+slices:
+  - {id: SL-01, status: todo}
+  - {id: SL-02, status: todo}
+  - {id: SL-03, status: todo}
+  - {id: SL-04, status: todo}
+  - {id: SL-05, status: todo}

@@ -1,0 +1,18 @@
+{
+  "feature": "receipt-tax-codes",
+  "spec": {
+    "sha256": "cb0c4c79db2067d9261f2cda498281ca7c8ac70c10f1a926b3eefabdf2b5dcb6",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-01T16:18:08-05:00",
+    "approved_via": "agent",
+    "permission": "so approve the tax codex spec then run plan spec"
+  },
+  "plan": {
+    "sha256": "d18c3e39142f62ee781037fd454f58e84b41ab0ea6f86b6a129ead4c9140bb55",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-01T18:47:18-05:00",
+    "approved_via": "agent",
+    "permission": "approve and implement",
+    "spec_sha256": "cb0c4c79db2067d9261f2cda498281ca7c8ac70c10f1a926b3eefabdf2b5dcb6"
+  }
+}
