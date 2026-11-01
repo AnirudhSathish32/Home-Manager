@@ -173,6 +173,7 @@ class EngineTable:
     labels: list[str] = field(default_factory=list)  # The heading's runs, top to bottom: also those over a column with no amount on the first page.
     anchors: list[Anchor] = field(default_factory=list)
     totals: list[Total] = field(default_factory=list)
+    lead: str | None = None  # The title line directly above a headless table's first row: a section title or a page's, which can't be told apart.
 
 
 @dataclass
@@ -979,7 +980,8 @@ def read_page(number, layout_page, previous):
             headings = heading_start(lines, lo, first, layout)
             begin = min(headings) if headings else first
             if not headings and first > lo and title_line(lines[first - 1]):
-                title = " ".join(word.text for word in lines[first - 1].words)  # A section title directly above a headless table labels its rows.
+                title = " ".join(word.text for word in lines[first - 1].words)  # A title directly above a headless table labels its rows.
+                opened.table.lead = title
             opened.labels = [(" ".join(token.text for token in tokens), union(token.box for token in tokens)) for index in sorted(headings) for tokens in lines[index].tokens]
             opened.table.headings = [" ".join(word.text for word in lines[index].words) for index in sorted(headings)]
             opened.table.labels = [text for text, _ in opened.labels]

@@ -58,19 +58,19 @@ DUPLICATE = ("The same row is printed twice: {posted} {description} {amount} on 
 
 def duplicate_pairs(recorded):
     """FR-29: each pair of recorded rows with the same date, amount and description on different pages or tables, as (first, second,
-    posted) in the order the rows were recorded. Rows are grouped by that key first, so a long statement isn't compared pair by pair."""
+    posted) in the order the rows were recorded. Rows are grouped by that key and then by page and table, and only rows of different
+    groups are paired, so the work is the pairs found, not every pair of rows."""
     groups = {}
     for position, (row, posted) in enumerate(recorded):
-        groups.setdefault((posted, row.amount_minor, " ".join(row.description.split()).casefold()), []).append(position)
+        key = (posted, row.amount_minor, " ".join(row.description.split()).casefold())
+        groups.setdefault(key, {}).setdefault((row.page, row.table_id), []).append(position)
     pairs = []
-    for positions in groups.values():
-        for at, position in enumerate(positions):
-            first, posted = recorded[position]
-            for other in positions[at + 1:]:
-                second = recorded[other][0]
-                if (first.page, first.table_id) != (second.page, second.table_id):
-                    pairs.append((position, other, first, second, posted))
-    return [(first, second, posted) for _, _, first, second, posted in sorted(pairs, key=lambda pair: pair[:2])]
+    for places in groups.values():
+        lists = list(places.values())
+        for at, one in enumerate(lists):
+            for other in lists[at + 1:]:
+                pairs += [(min(a, b), max(a, b)) for a in one for b in other]
+    return [(recorded[a][0], recorded[b][0], recorded[a][1]) for a, b in sorted(pairs)]
 
 
 def duplicates(recorded):

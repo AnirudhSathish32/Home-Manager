@@ -303,7 +303,8 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
 - **The money issues Record raises** are the preview's issues too, and are saved with the import: a balance chain break
   (`balance_chain_break`, with the row as the import numbers it), a printed total the rows don't add up to
   (`total_mismatch`), two chains that don't join (`two_accounts`), signs only the headings or the type give
-  (`roles_differ`, `signs_unchecked`) and a row printed twice (`duplicate_row`). They don't untick rows.
+  (`roles_differ`, `signs_unchecked`) and a row printed twice (`duplicate_row`). One is shown only when every table it is
+  about is imported, and none unticks rows.
 - **Dates, amounts and signs are exact.** A four-digit year is read as printed. A date without a year (or with a
   two-digit year) takes its year from the **printed statement period**, and waits for the year you choose only when no
   period is printed; the current year is never assumed. The day/month order is the one a day over 12 decides, else the
@@ -615,11 +616,13 @@ evidence (Extract again on an unchanged reading changes nothing).
   (two or more links); the one that makes the printed summary hold (opening + in − out = closing, card: previous −
   payments + charges = new, and any column totals); the one with the most holding links; the heading words; the
   statement type's default. A balance column and an `other` column (a rate, a foreign amount) are never amounts, and a
-  column headed Balance is never money however its numbers add up. A printed balance marked `DR` is a bank balance
+  column headed Balance is never money however its numbers add up (`Balance Transfers` is not such a heading; it is a
+  kind of charge). A printed balance marked `DR` is a bank balance
   overdrawn and one marked `CR` a card balance in the holder's favour; both are negative (a card's balance is what is
   owed), in the running balances and in the opening and closing balances alike. A single unsigned amount column takes each row's sign from its own marker (`CR`/`DR`, minus, parentheses), then its
-  section title (payments and credits are money in; purchases, charges, fees and interest are money out; a title
-  directly above a table with no heading counts too), then the type's default. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
+  section title (payments and credits are money in; purchases, charges, fees and interest are money out), then the
+  type's default. A title directly above a table with no heading may be a page's title (`Credit Card Activity`), so its
+  direction is used only when the balance chain or the printed summary checks it; it always marks pending rows. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
   the type with a review reason saying why.
 - **Values.** The date is the printed date; the description is the printed description, with wrapped lines joined and a
   check number kept in it; the amount is in minor units. A dateless row takes the date of the row above, with a record
@@ -647,9 +650,12 @@ evidence (Extract again on an unchanged reading changes nothing).
   from 1 on that page's table. A pending transaction ("Pending transactions" section) is listed, not recorded. A
   balance break is one issue at the first row where a printed balance doesn't follow from the one above ("Page P row R:
   the balance … doesn't follow from the row above"). Two chains that don't join are one issue ("This PDF may hold more
-  than one account…") and both tables' rows are recorded. A printed column total of money in or money out that isn't the
-  sum of the column's rows (all of them, those above it, its page's, or those since the column's previous total) is an
-  issue ("Page P: the printed total … doesn't match the rows above it…"), however the roles were decided. A page with a layout issue other than `unresolved_columns`
+  than one account…") and both tables' rows are recorded. A printed column total that isn't the sum of the column's
+  printed amounts is an issue ("Page P: the printed total … doesn't match the rows above it…"), however the roles were
+  decided. Each amount counts with its printed sign (a reversal printed with a minus, or a CR in a money-out column,
+  counts against the total). A total whose words name the section directly above it (`Total ATM Withdrawals`) is that
+  section's, pending rows included; any other total may be the table's, the rows above it, its page's, those since the
+  column's previous total, or the section above it. A signed column whose amounts print CR or DR isn't checked. A page with a layout issue other than `unresolved_columns`
   still gives its rows and the statement needs review, naming the page. The same row printed on two pages or tables is
   recorded twice with an issue naming both places.
 - **Other tables are not read as transactions:** a balance table (dates and one amount column, no descriptions), a

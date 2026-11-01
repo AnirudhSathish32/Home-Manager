@@ -1324,3 +1324,95 @@ def test_sl08_f7_rows_printed_twice_are_found_in_record_order_without_comparing_
     assert [(first.page, first.row, second.page, second.row) for first, second, _ in pairs] == [(1, 1, 2, 1), (1, 2, 2, 2), (2, 1, 1, 3)]
     many = [(row(1 + number % 2, "t1", number, f"SYNTH {number}", number), "2026-10-01") for number in range(20000)]
     assert statement_dates.duplicate_pairs(many) == []
+
+
+# === SL-09: the hunk re-review's findings (plans/pdf-table-engine/progress.yaml SL-09) ================================================
+
+def card(tmp_path, pages):
+    return stt.read(read_pages(tmp_path, pages), statement_type="credit_card", currency="USD")
+
+
+def test_sl09_n1_a_balance_transfers_column_is_money_not_the_running_balance(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW CARD", "Previous Balance 0.00", "New Balance 300.00", REVIEW_PERIOD), ("Balance Transfers",),
+                        [("10/03/2026", "SYNTH TRANSFER ONE", "100.00"), ("10/08/2026", "SYNTH TRANSFER TWO", "200.00")], edges=(400,), name="SYNTH REVIEW CARD")
+    reading = card(tmp_path, pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [-10000, -20000] and reading.issues == []
+    assert stt.label_role(["Balance", "Transfers"]) is None and stt.label_role(["Ending daily", "balance"]) == "balance"
+
+
+def test_sl09_n2_a_page_title_above_a_headless_table_gives_no_direction_that_nothing_checks(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW CARD", "Card number XXXX7003", REVIEW_PERIOD), (),
+                        [("Credit Card Activity",), ("10/03/2026", "SYNTH SHOP", "20.00"), ("10/08/2026", "SYNTH FUEL", "40.00")], name="SYNTH REVIEW CARD")
+    reading = card(tmp_path, pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [-2000, -4000]  # Purchases on a card: money out, by the type's default.
+    assert reading.decided["signs"] == {ONE_TABLE: "default"}
+
+
+def test_sl09_n2_a_lead_titles_direction_is_still_used_when_the_summary_checks_it(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW CARD", "Previous Balance 100.00", "New Balance 40.00", REVIEW_PERIOD), (),
+                        [("Payments and Credits",), ("10/03/2026", "SYNTH PAYMENT", "50.00"), ("10/08/2026", "SYNTH RETURN", "10.00")], name="SYNTH REVIEW CARD")
+    reading = card(tmp_path, pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [5000, 1000] and reading.issues == []  # 100.00 - 60.00 = 40.00
+
+
+def test_sl09_n3_a_reversal_printed_with_a_minus_counts_against_its_columns_total(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"),
+                        [("10/02/2026", "SYNTH FEE", "10.00", ""), ("10/05/2026", "SYNTH FEE REVERSED", "-2.00", ""), ("10/09/2026", "SYNTH PAY", "", "100.00"),
+                         ("", "Totals", "8.00", "100.00")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, 200, 10000] and reading.checks == []
+
+
+def section_pages(section_total):
+    return plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"),
+                       [("10/02/2026", "SYNTH FEE", "10.00", ""), ("ATM Withdrawals",), ("10/05/2026", "SYNTH ATM ONE", "20.00", ""),
+                        ("10/06/2026", "SYNTH ATM TWO", "30.00", ""), ("", "Total ATM Withdrawals", section_total, ""), ("10/09/2026", "SYNTH PAY", "", "100.00")])
+
+
+def test_sl09_n4_a_total_that_names_its_section_is_that_sections_total(tmp_path):
+    _, good = statement(tmp_path, "review", pages=section_pages("50.00"))
+    assert [amount for _, amount, _ in recorded(good)] == [-1000, -2000, -3000, 10000] and good.checks == []
+    other = tmp_path / "wrong"
+    other.mkdir()
+    _, wrong = statement(other, "review", pages=section_pages("60.00"))  # 60.00 is every withdrawal above it, not the section's.
+    assert wrong.issues == ["Page 1: the printed total 60.00 doesn't match the rows above it, whose amounts in that column add up to 50.00; check the rows."]
+
+
+def pending_total_pages(total):
+    return plain_pages(("SYNTH REVIEW CARD", "Card number XXXX7003", REVIEW_PERIOD), ("Amount",),
+                       [("10/02/2026", "SYNTH SHOP", "25.00"), ("10/04/2026", "SYNTH BOOKS", "15.00"), ("Pending transactions",),
+                        ("10/30/2026", "SYNTH HOTEL", "5.00"), ("10/31/2026", "SYNTH TAXI", "7.00"), ("", "Total pending transactions", total)],
+                       edges=(400,), name="SYNTH REVIEW CARD")
+
+
+def test_sl09_n4_a_pending_sections_total_counts_its_pending_rows(tmp_path):
+    good = card(tmp_path, pending_total_pages("12.00"))
+    assert [amount for _, amount, _ in recorded(good)] == [-2500, -1500] and [check.code for check in good.checks] == []
+    assert [line.reason for line in good.unplaced] == ["pending", "pending"]
+    other = tmp_path / "wrong"
+    other.mkdir()
+    wrong = card(other, pending_total_pages("13.00"))
+    assert [check.code for check in wrong.checks] == ["total_mismatch"] and "add up to 12.00" in wrong.checks[0].text()
+
+
+def test_sl09_f4_a_signed_columns_printed_total_is_checked(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Beginning balance 100.00", "Ending balance 130.00", REVIEW_PERIOD), ("Amount",),
+                        [("10/02/2026", "SYNTH PAY ONE", "10.00"), ("10/05/2026", "SYNTH PAY TWO", "20.00"), ("", "Total", "40.00")], edges=(400,))
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [1000, 2000]
+    assert reading.issues == ["Page 1: the printed total 40.00 doesn't match the rows above it, whose amounts in that column add up to 30.00; check the rows."]
+
+
+def test_sl09_n5_an_issue_about_a_table_left_out_of_the_import_isnt_shown(tmp_path):
+    result = reading_of(tmp_path, "CC")
+    everything = pdf_import.analyze(result, currency="USD", account_type="checking")
+    assert [issue.code for issue in everything.issues if issue.code == "two_accounts"] == ["two_accounts"]
+    first = next(table.id for table in everything.tables if table.selectable)
+    only_first = pdf_import.analyze(result, tables=[first], currency="USD", account_type="checking")
+    assert [table.id for table in only_first.tables if table.selected] == [first]
+    assert not [issue for issue in only_first.issues if issue.code in ("two_accounts", "balance_chain_break", "duplicate_row", "total_mismatch")]
+
+
+def test_sl09_f7_identical_rows_of_one_table_are_no_pairs_and_no_pairwise_work():
+    row = SimpleNamespace(page=1, table_id="t1", row=1, description="SYNTH SAME", amount="1.00", amount_minor=100)
+    assert statement_dates.duplicate_pairs([(row, "2026-10-01")] * 50000) == []

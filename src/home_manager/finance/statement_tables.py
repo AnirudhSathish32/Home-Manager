@@ -63,6 +63,7 @@ IN_TITLE = re.compile(r"payment|credit|refund|return|deposit|addition", re.IGNOR
 OUT_TITLE = re.compile(r"purchase|charge|fee|interest|advance|withdrawal|debit", re.IGNORECASE)
 OUT_LABEL = re.compile(r"withdraw|debit|paid out|subtraction|money out", re.IGNORECASE)
 IN_LABEL = re.compile(r"deposit|credit|paid in|addition|money in", re.IGNORECASE)
+TRANSFER_LABEL = re.compile(r"transfer", re.IGNORECASE)  # `Balance Transfers` is a kind of charge, not the running balance.
 OTHER_LABEL = re.compile(r"\bforeign\b|\brate\b|\bexchange\b|\bfx\b", re.IGNORECASE)
 LEAVES_THE_AMOUNT = (table_engine.JOINED_AMOUNT, table_engine.MORE_THAN_ONE.split("{")[0], table_engine.TEXT_IN_AMOUNT.split("{")[0])
 
@@ -79,6 +80,7 @@ class Check:
     template: str
     args: dict = field(default_factory=dict)
     rows: dict = field(default_factory=dict)
+    tables: tuple = ()  # The engine tables it is about: the import shows it only when every one of them is imported.
 
     def text(self, number=None):
         number = number or (lambda table_id, page, row: row)
@@ -150,7 +152,7 @@ def label_role(labels):
         return None
     if OTHER_LABEL.search(text):
         return "other"
-    if "balance" in text:
+    if "balance" in text and not TRANSFER_LABEL.search(text):
         return "balance"
     out, money_in = OUT_LABEL.search(text), IN_LABEL.search(text)
     if out and not money_in:
@@ -177,6 +179,23 @@ def convention_sign(convention, marker, magnitude):
     if marker == "debit":
         return -magnitude
     return magnitude if (convention == IN_DEFAULT) != (marker == "minus") else -magnitude
+
+
+TOTAL_WORDS = frozenset(("total", "totals", "subtotal", "subtotals", "for", "the", "this", "of", "and", "all", "period"))
+
+
+def section_words(text):
+    """The words of a section title or a total line that name what it is about (`Total ATM Withdrawals` and `ATM Withdrawals`: atm, withdrawals)."""
+    return set(re.findall(r"[a-z]+", (text or "").lower())) - TOTAL_WORDS
+
+
+def column_value(cell, role):
+    """A printed amount in its column's own terms, for adding up against the column's printed total: a minus is a reversal, and so is a CR
+    in a money-out column or a DR in a money-in column. In a signed column a CR or DR gives None (the total's sign can't be told)."""
+    if role == "signed" and cell.marker in ("credit", "debit"):
+        return None
+    reversed_ = cell.marker == "minus" or (role == "out" and cell.marker == "credit") or (role == "in" and cell.marker == "debit")
+    return -cell.minor if reversed_ else cell.minor
 
 
 def money_text(row_cells, positions):
@@ -246,11 +265,17 @@ class Sheet:
         self.cells = [{index[column_id]: self.cell(token) for column_id, token in row.amounts.items() if column_id in index} for row in self.rows]
         self.labels = [label_role(column.labels) for column in self.columns]
         self.direction = {}  # id(row) -> in, out or None: its section's direction. A title that says neither (a page heading) does not end the one before it.
-        current, last = None, None
+        self.unverified = set()  # id(row) of rows whose direction is the table's lead title's: it may be a page title, so only the arithmetic may use it.
+        current, last, lead = None, None, False
         for row in self.rows:
             if row.section != last:
-                current, last = title_direction(row.section) or current, row.section
+                direction = title_direction(row.section)
+                if direction:
+                    current, lead = direction, row.section == table.lead
+                last = row.section
             self.direction[id(row)] = current
+            if lead:
+                self.unverified.add(id(row))
         self.anchor_of = {}  # Row position -> the table's anchor for that balance line.
         for position, row in enumerate(self.rows):
             if row.candidate and row.line_ids:
@@ -272,8 +297,9 @@ class Sheet:
                 return table_engine.NOT_IN_CURRENCY.format(text=cell.printed, currency=reader.currency)
         return None
 
-    def signed(self, cell, row, mode, default):
-        """A signed-column cell's signed amount in minor units, or None when its sign can't be read (FR-12)."""
+    def signed(self, cell, row, mode, default, checked=False):
+        """A signed-column cell's signed amount in minor units, or None when its sign can't be read (FR-12). `checked`: no balance chain or
+        summary will check the reading, so a lead title's direction (`unverified`) isn't used."""
         if mode == "bank":
             return convention_sign(IN_DEFAULT, cell.marker, cell.minor)
         if mode == "card":
@@ -283,12 +309,12 @@ class Sheet:
         if cell.marker == "debit":
             return -cell.minor
         if cell.marker != "minus":  # A minus is read against the default; any other amount may take its section's direction.
-            direction = self.direction.get(id(row))
+            direction = None if checked and id(row) in self.unverified else self.direction.get(id(row))
             if direction:
                 return cell.minor if direction == "in" else -cell.minor
         return None if default is None else convention_sign(default, cell.marker, cell.minor)
 
-    def evaluate(self, roles, mode, default, order):
+    def evaluate(self, roles, mode, default, order, checked=False):
         rows = self.rows
         found = Candidate(roles, mode, order, ["row"] * len(rows), [None] * len(rows), [None] * len(rows), [None] * len(rows))
         balance_at = roles.index("balance") if "balance" in roles else None
@@ -324,7 +350,7 @@ class Sheet:
                 position, role = present[0]
                 cell = cells[position]
                 if role == "signed":
-                    value = self.signed(cell, row, mode, default)
+                    value = self.signed(cell, row, mode, default, checked)
                     found.unresolved = found.unresolved or value is None
                 else:
                     value = -cell.minor if (role == "out") != (cell.marker == "minus") else cell.minor
@@ -439,7 +465,7 @@ class Reader:
         self.tables = copy.deepcopy(self.engine.tables)
         self.summary_anchors = copy.deepcopy(self.engine.summary_anchors)
         self.unplaced = copy.deepcopy(self.engine.unplaced)
-        self.pending = []
+        self.pending, self.pending_rows = [], {}
         self.issues, self.notes, self.recorded, self.kept_anchors = [], [], [], []
         self.dropped, self.order_pages, self.years = 0, set(), set()
         self.outcomes = {}
@@ -451,8 +477,8 @@ class Reader:
         self.order = self.order_source = None
         self.single = False
 
-    def check(self, code, page, template, rows=None, /, **args):
-        found = Check(code, page, template, args, rows or {})
+    def check(self, code, page, template, rows, tables, /, **args):
+        found = Check(code, page, template, args, rows or {}, tuple(tables))
         self.checks.append(found)
         self.issues.append(found.text())
 
@@ -492,6 +518,7 @@ class Reader:
             for row in table.rows:
                 if not row.candidate and row.section and PENDING_TITLE.search(row.section):
                     self.pending.append(Unplaced(row.page, row.line_ids[0] if row.line_ids else "", self.line_text(row.page, row.line_ids), "pending"))
+                    self.pending_rows.setdefault(table.id, []).append(row)  # A printed total may count them.
                 else:
                     kept.append(row)
             table.rows = kept
@@ -672,14 +699,14 @@ class Reader:
         # Headings, then the type default (P7.5 c, d): a signed column's signs come from each row's own marker, its section, then the default,
         # which the user's sign choice replaces (account-import-pdf FR-07).
         default = self.choices.get("sign") or self.default
-        labelled = [again for again in (sheet.evaluate(c.roles, "row", default, c.order) if "signed" in c.roles else c
+        labelled = [again for again in (sheet.evaluate(c.roles, "row", default, c.order, True) if "signed" in c.roles else c
                                         for c in candidates if c.labelled and c.mode in (None, "row")) if again.usable]
         if labelled:
             chosen = self.resolve(labelled)
             if chosen is not None:
                 return Decision("labels", chosen, differing)
         if len(sheet.columns) == 1 and sheet.labels[0] in (None, "signed"):
-            single = sheet.evaluate(("signed",), "row", default, 0)
+            single = sheet.evaluate(("signed",), "row", default, 0, True)
             if single.usable:
                 return Decision("default", single, differing)
         return Decision(differing=differing)
@@ -855,45 +882,70 @@ class Reader:
             row = sheet.rows[position]
             cell = sheet.cells[position].get(candidate.roles.index("balance"))
             if cell is not None and balance is not None and not candidate.reasons[position]:
-                self.check("balance_chain_break", row.page, CHAIN_BREAK, {"row": (table.id, row.page, row.row)}, page=row.page, balance=cell.printed)
+                self.check("balance_chain_break", row.page, CHAIN_BREAK, {"row": (table.id, row.page, row.row)}, [table.id], page=row.page, balance=cell.printed)
         if decision.tier in ("labels", "default") and (decision.differing or self.total < 2):
             # FR-13 names the reason for a statement of one row; a longer one whose signs only the headings or the type give has none.
             page = next((row.page for row in sheet.rows if not row.candidate), table.pages[0])
-            self.check("roles_differ" if decision.differing else "signs_unchecked", page, ROLES_DIFFER if decision.differing else TOO_FEW, page=page)
+            self.check("roles_differ" if decision.differing else "signs_unchecked", page, ROLES_DIFFER if decision.differing else TOO_FEW, None, [table.id],
+                       page=page)
         self.check_totals(sheet, candidate)
 
     def check_totals(self, sheet, candidate):
-        """FR-11, P7.6: every printed total of a money-in or money-out column is checked against the amounts printed in that column, however
-        the roles were decided. It holds when it is the sum of the table's rows, of the rows above it, of its page's rows above it, or of the
-        rows since the column's previous total (a subtotal per page or per section)."""
+        """FR-11, P7.6: every printed column total is checked against the amounts printed in its column, however the roles were decided, each
+        amount with its printed sign (a reversal printed with a minus, or a CR in a money-out column, counts against the total). A total whose
+        words name the section of the rows directly above it is that section's total, its pending rows included. Any other total holds when
+        it is the sum of the table's rows, of the rows above it, of its page's rows above it, of the rows since the column's previous total,
+        or of the section directly above it. A signed column whose amounts print CR or DR isn't checked: its total's sign can't be told."""
         position_of = lambda page, line_id: (page, self.lines.get(page, {}).get(line_id, (0, ""))[0])  # noqa: E731
+        table = sheet.table
+        rows = [(row, sheet.cells[index], False) for index, row in enumerate(sheet.rows) if candidate.kinds[index] == "row"]
+        rows += [(row, {sheet.index[column_id]: sheet.cell(token) for column_id, token in row.amounts.items() if column_id in sheet.index}, True)
+                 for row in self.pending_rows.get(table.id, [])]
         previous = {}
-        for total in sorted(sheet.table.totals, key=lambda total: position_of(total.page, total.line_id)):
+        for total in sorted(table.totals, key=lambda total: position_of(total.page, total.line_id)):
             position = sheet.index.get(total.column_id)
-            printed = minor_of(total.value, self.currency)
-            if position is None or candidate.roles[position] not in ("in", "out") or printed is None:
+            magnitude = minor_of(total.value, self.currency)
+            role = candidate.roles[position] if position is not None else None
+            if role not in ("in", "out", "signed") or magnitude is None:
                 continue
+            printed = -magnitude if total.value < 0 else magnitude
             at = position_of(total.page, total.line_id)
             since = previous.get(position)
-            amounts = []  # (where, minor) of every row printing an amount in the column
-            for index, row in enumerate(sheet.rows):
-                cell = sheet.cells[index].get(position)
-                if candidate.kinds[index] == "row" and cell is not None and cell.minor is not None:
-                    amounts.append((position_of(row.page, row.line_ids[0]) if row.line_ids else (row.page, 0), cell.minor))
-            above = [(where, minor) for where, minor in amounts if where < at]
-            sums = {sum(minor for _, minor in amounts), sum(minor for _, minor in above), sum(minor for where, minor in above if where[0] == total.page),
-                    sum(minor for where, minor in above if since is None or where > since)}
             previous[position] = at
+            entries = []  # (where, section, signed minor, pending) of every row printing an amount in the column, in reading order
+            for row, cells, is_pending in rows:
+                cell = cells.get(position)
+                if cell is not None and cell.minor is not None:
+                    entries.append((position_of(row.page, row.line_ids[0]) if row.line_ids else (row.page, 0), row.section, column_value(cell, role), is_pending))
+            entries.sort(key=lambda entry: entry[0])
+            if role == "signed" and any(value is None for _, _, value, _ in entries):
+                continue
+            above = [entry for entry in entries if entry[0] < at]
+            section = above[-1][1] if above else None
+            run = []
+            for entry in reversed(above):
+                if entry[1] != section:
+                    break
+                run.append(entry)
+            posted = [entry for entry in above if not entry[3]]
+            named = section is not None and section_words(section) and section_words(section) <= section_words(self.line_text(total.page, [total.line_id]))
+            if named:
+                sums, summed = {sum(entry[2] for entry in run)}, sum(entry[2] for entry in run)
+            else:
+                sums = {sum(entry[2] for entry in entries if not entry[3]), sum(entry[2] for entry in posted),
+                        sum(entry[2] for entry in posted if entry[0][0] == total.page), sum(entry[2] for entry in posted if since is None or entry[0] > since),
+                        sum(entry[2] for entry in run)}
+                summed = sum(entry[2] for entry in posted)
             if printed not in sums:
-                summed, exponent = sum(minor for _, minor in above), EXPONENTS[currency_code(self.currency)]
-                self.check("total_mismatch", total.page, TOTAL_OFF, page=total.page, total=f"{abs(total.value):,}",
+                exponent = EXPONENTS[currency_code(self.currency)]
+                self.check("total_mismatch", total.page, TOTAL_OFF, None, [table.id], page=total.page, total=f"{total.value:,}",
                            summed=f"{Decimal(summed).scaleb(-exponent):,.{exponent}f}")
 
     def joins(self, chains):
         """FR-17: two chains that each hold but don't join are one issue; both tables' rows were recorded."""
         for (first, one), (second, two) in zip(chains, chains[1:]):
             if one.implied_close != two.implied_open:
-                self.check("two_accounts", first.pages[0], TWO_ACCOUNTS, first=first.pages[0], second=second.pages[0])
+                self.check("two_accounts", first.pages[0], TWO_ACCOUNTS, None, [first.id, second.id], first=first.pages[0], second=second.pages[0])
                 return
 
     def pages(self):
@@ -966,6 +1018,7 @@ class Reader:
         self.issues += [PENDING.format(page=line.page, text=line.text) for line in self.pending]
         for first, second, posted in duplicate_pairs([(row, posted) for row, posted, _ in self.recorded]):
             self.check("duplicate_row", first.page, DUPLICATE, {"first_row": (first.table_id, first.page, first.row), "second_row": (second.table_id, second.page, second.row)},
+                       [first.table_id, second.table_id],
                        posted=posted, description=first.description, amount=first.amount, first_page=first.page, second_page=second.page)
         opening, closing = self.balances()
         self.notes = [NO_TABLE.format(page=page) for page in self.engine.pages_without_tables] + self.notes

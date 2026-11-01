@@ -166,10 +166,11 @@ What is not built:
     (the plan's P6); no generated layout needs it, a real one might.
 - **Not in phase 1 by design:** decimal-comma amounts (`1.234,56`) are rejected as unreadable; scanned (vision) pages keep
   the model's rows; per-institution templates.
-- **A page or document title directly above a headless table** labels its rows like a section title, so a title whose
-  words name a direction (for example a card's `Credit Card Activity`, read as money in) gives a single unsigned column's
-  rows that direction when neither the chain nor the summary decides the signs. A section title inside a table has always
-  done this. Telling page titles from section titles isn't built.
+- **Telling a page title from a section title.** A title directly above a table with no heading is used for its
+  direction only when the balance chain or the printed summary checks it, so a headless card table whose only section
+  title sits directly above it, with neither printed, takes the type's default instead of that section's direction.
+- **Column totals not checked:** a signed column whose amounts print CR or DR (the total's sign can't be told), and a
+  total whose words don't name its section is accepted when it matches any of the scopes it might cover.
 - **Index backfill time.** `pdf_import.backfill` now runs the engine on every saved reading (`ANALYZER_VERSION = 3`), so
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.
