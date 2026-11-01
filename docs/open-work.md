@@ -170,6 +170,9 @@ What is not built:
   direction only when the balance chain or the printed summary checks it, so a headless card table whose only section
   title sits directly above it, with neither printed, takes the type's default instead of that section's direction
   (with an issue naming the title when the two differ).
+- **Card headings `Charges | Credits` or `Purchases | Credits`.** The heading words for money out don't include
+  "charge" or "purchase", so with two such columns the charges column is read as `other` and its rows are rejected as
+  having no amount. Found by the SL-10 review; not changed.
 - **Column totals are a loose check.** A total passes when any plausible group of rows adds up to it, so a misprinted
   total that happens to equal another group (a section total equal to every withdrawal above it) isn't caught. Deciding
   which rows each total covers was tried and gave false alarms on grand totals, per-page subtotals and pending rows;

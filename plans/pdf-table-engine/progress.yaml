@@ -194,8 +194,9 @@ slices:
       amount prints CR/DR. N5 Check.tables; the import shows a check only when every table it names is imported (replaces page filtering).
       F7 duplicate_pairs groups by key then by (page, table) and pairs only across groups.
   - id: SL-10
-    status: implemented, awaiting review (fresh Claude subagent)
+    status: done (reviewed: fresh Claude general-purpose subagent, context-only; findings 1-4 fixed in SL-11)
     start_head: e7da227
+    commit: 7cdc2cb
     provider: claude
     model: claude-opus-5-5
     origin: >-
@@ -213,3 +214,20 @@ slices:
       rows), the rows above it (with and without pending), its page's rows above it, the rows since the previous total, or the section run;
       section_words/TOTAL_WORDS removed. The SL-09 test that a section total of 60.00 is flagged was replaced: 60.00 now passes (it equals
       every withdrawal above it), 70.00 is flagged.
+  - id: SL-11
+    status: implemented (not reviewed)
+    start_head: 7cdc2cb
+    provider: claude
+    model: claude-opus-5-5
+    origin: >-
+      Claude review of 7cdc2cb: 1 MAJOR, 3 MINOR (fixed here), 3 INFO (not changed: the mismatch message always quotes the posted rows above;
+      lead_title_unchecked wording under a chosen sign; card headings Charges/Purchases | Credits, logged in docs/open-work.md).
+    verification:
+      - "the 13-file regression set -> 1035 passed; ruff clean"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -k \"sl11 or sl10_fd or sl09_n2_a_page\" -q -> 12 passed; 6 fail with src/ at 7cdc2cb (the rest are guard cases)"
+      - "RUN_BROWSER_TESTS=1 the four browser files -> 27 passed, 1 failed: the same date-dependent receipt test as SL-09/SL-10 (not this feature)"
+    notes: >-
+      1 Sheet.run_summary adds column totals with column_value and compares with total_value, as check_totals does, so a correct net
+      total beside a reversal no longer makes a statement's roles undecidable. 2 title_direction ignores "credit card" (the card's name);
+      the sl09_n2 test now asserts no issues. 3 check_totals also accepts the sum of the last one, two, ... sections above a total. 4 Total
+      keeps its printed marker; total_value reads a CR total in money-out (DR in money-in) as a net reversal.

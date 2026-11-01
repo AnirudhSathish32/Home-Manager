@@ -60,6 +60,7 @@ MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
 NATIVE_CELL = re.compile(r"-row-\d+-cell-\d+$")  # A native cell id is "<table id>-row-<r>-cell-<c>".
 CODE = re.compile(r"\b[A-Z]{3}\b")  # A printed currency code (CR and DR are two letters).
+CARD_NAME = re.compile(r"credit\s+card", re.IGNORECASE)
 PENDING_TITLE = re.compile(r"pending", re.IGNORECASE)
 IN_TITLE = re.compile(r"payment|credit|refund|return|deposit|addition", re.IGNORECASE)
 OUT_TITLE = re.compile(r"purchase|charge|fee|interest|advance|withdrawal|debit", re.IGNORECASE)
@@ -168,6 +169,7 @@ def title_direction(title):
     """A section title's direction for FR-12: in (payments, credits, refunds), out (purchases, charges, fees, interest, advances), else None."""
     if not title:
         return None
+    title = CARD_NAME.sub(" ", title)  # `Credit Card Activity` names the card, not a direction (`Credit Card Payments` still says in).
     money_in, out = IN_TITLE.search(title), OUT_TITLE.search(title)
     return "in" if money_in and not out else "out" if out and not money_in else None
 
@@ -190,6 +192,16 @@ def column_value(cell, role):
         return None
     reversed_ = cell.marker == "minus" or (role == "out" and cell.marker == "credit") or (role == "in" and cell.marker == "debit")
     return -cell.minor if reversed_ else cell.minor
+
+
+def total_value(total, role, currency):
+    """A printed column total in minor units, in its column's own terms as `column_value` reads the amounts: a minus, or a CR in a
+    money-out column (DR in a money-in column), is a net reversal. None when it can't be read, or for a signed column's CR or DR."""
+    magnitude = minor_of(total.value, currency)
+    if magnitude is None or (role == "signed" and total.marker in ("credit", "debit")):
+        return None
+    reversed_ = total.value < 0 or (role == "out" and total.marker == "credit") or (role == "in" and total.marker == "debit")
+    return -magnitude if reversed_ else magnitude
 
 
 def money_text(row_cells, positions):
@@ -425,11 +437,12 @@ class Sheet:
         holds = card if reader.card else bank if reader.statement_type == "bank" else bank or card
         for total in self.table.totals:
             position = self.index.get(total.column_id)
-            if position is None or found.roles[position] not in ("in", "out"):
+            role = found.roles[position] if position is not None else None
+            if role not in ("in", "out"):
                 continue
-            printed = minor_of(total.value, reader.currency)
-            summed = sum(self.cells[index][position].minor for index in found.accepted if position in self.cells[index])
-            holds = holds and printed == summed
+            printed = total_value(total, role, reader.currency)
+            summed = sum(column_value(self.cells[index][position], role) for index in found.accepted if position in self.cells[index])
+            holds = holds and printed == summed  # Each amount with its printed sign, as check_totals adds them.
         found.summary_holds = holds
 
 
@@ -906,11 +919,10 @@ class Reader:
         previous = {}
         for total in sorted(table.totals, key=lambda total: position_of(total.page, total.line_id)):
             position = sheet.index.get(total.column_id)
-            magnitude = minor_of(total.value, self.currency)
             role = candidate.roles[position] if position is not None else None
-            if role not in ("in", "out", "signed") or magnitude is None:
+            printed = total_value(total, role, self.currency) if role in ("in", "out", "signed") else None
+            if printed is None:
                 continue
-            printed = -magnitude if total.value < 0 else magnitude
             at = position_of(total.page, total.line_id)
             since = previous.get(position)
             previous[position] = at
@@ -923,21 +935,19 @@ class Reader:
             if role == "signed" and any(value is None for _, _, value, _ in entries):
                 continue
             above = [entry for entry in entries if entry[0] < at]
-            section = above[-1][1] if above else None
-            run = []
-            for entry in reversed(above):
-                if entry[1] != section:
-                    break
-                run.append(entry)
             posted = [entry for entry in above if not entry[3]]
             total_of = lambda group: sum(entry[2] for entry in group)  # noqa: E731
             sums = {total_of(entry for entry in entries if not entry[3]), total_of(entries), total_of(posted), total_of(above),
-                    total_of(entry for entry in posted if entry[0][0] == total.page), total_of(entry for entry in posted if since is None or entry[0] > since),
-                    total_of(run)}
+                    total_of(entry for entry in posted if entry[0][0] == total.page), total_of(entry for entry in posted if since is None or entry[0] > since)}
+            running = 0  # The last section above, the last two, and so on (`Total Fees and Interest` after Withdrawals, Fees and Interest).
+            for index in range(len(above) - 1, -1, -1):
+                running += above[index][2]
+                if index == 0 or above[index - 1][1] != above[index][1]:
+                    sums.add(running)
             summed = total_of(posted)
             if printed not in sums:
                 exponent = EXPONENTS[currency_code(self.currency)]
-                self.check("total_mismatch", total.page, TOTAL_OFF, None, [table.id], page=total.page, total=f"{total.value:,}",
+                self.check("total_mismatch", total.page, TOTAL_OFF, None, [table.id], page=total.page, total=f"{total.value:,}" + {"credit": " CR", "debit": " DR"}.get(total.marker, ""),
                            summed=f"{Decimal(summed).scaleb(-exponent):,.{exponent}f}")
 
     def joins(self, chains):

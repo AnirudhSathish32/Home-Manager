@@ -1345,7 +1345,7 @@ def test_sl09_n2_a_page_title_above_a_headless_table_gives_no_direction_that_not
                         [("Credit Card Activity",), ("10/03/2026", "SYNTH SHOP", "20.00"), ("10/08/2026", "SYNTH FUEL", "40.00")], name="SYNTH REVIEW CARD")
     reading = card(tmp_path, pages)
     assert [amount for _, amount, _ in recorded(reading)] == [-2000, -4000]  # Purchases on a card: money out, by the type's default.
-    assert reading.decided["signs"] == {ONE_TABLE: "default"}
+    assert reading.decided["signs"] == {ONE_TABLE: "default"} and reading.issues == []  # SL-11: the card's name gives no direction.
 
 
 def test_sl09_n2_a_lead_titles_direction_is_still_used_when_the_summary_checks_it(tmp_path):
@@ -1457,14 +1457,15 @@ def test_sl10_fc_cr_in_money_out_is_money_in_and_dr_in_money_in_is_money_out(tmp
 
 @pytest.mark.parametrize("sections, total", [
     ((("Fees", "5.00"), ("Interest", "3.00")), ("Total Fees and Interest", "8.00")),
-    ((("ATM Withdrawals", "20.00"), ("Withdrawals", "10.00")), ("Total Withdrawals", "30.00"))])
+    ((("ATM Withdrawals", "20.00"), ("Withdrawals", "10.00")), ("Total Withdrawals", "30.00")),
+    ((("Withdrawals", "10.00"), ("Fees", "5.00"), ("Interest", "3.00")), ("Total Fees and Interest", "8.00"))])
 def test_sl10_fd_a_grand_total_over_several_sections_holds(tmp_path, sections, total):
     rows = [("10/02/2026", "SYNTH PAY", "", "100.00")]
     for number, (title, amount) in enumerate(sections, 3):
         rows += [(title,), (f"10/0{number}/2026", f"SYNTH {title.upper()}", amount, "")]
     pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"), [*rows, ("", total[0], total[1], "")])
     _, reading = statement(tmp_path, "review", pages=pages)
-    assert reading.checks == [] and len(reading.rows) == 3
+    assert reading.checks == [] and len(reading.rows) == 1 + len(sections)
 
 
 def test_sl10_fe_a_grand_total_with_the_pending_rows_holds(tmp_path):
@@ -1482,3 +1483,29 @@ def test_sl10_fd_a_subtotal_per_page_of_a_section_over_two_pages_holds(tmp_path)
                                                                                ("", "Subtotal Withdrawals", "10.00", "")])
     _, reading = statement(tmp_path, "review", pages=first + second)
     assert [amount for _, amount, _ in recorded(reading)] == [10000, -1000, -2000, -600, -400] and reading.checks == []
+
+
+# === SL-11: the third hunk review's findings (plans/pdf-table-engine/progress.yaml SL-11) ==============================================
+
+def test_sl11_a_correct_net_total_beside_a_reversal_lets_the_summary_decide(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Beginning balance 100.00", "Ending balance 237.00", REVIEW_PERIOD), (),
+                        [("10/02/2026", "SYNTH FEE", "10.00", ""), ("10/03/2026", "SYNTH PAY", "", "100.00"), ("10/04/2026", "SYNTH FEE BACK", "2.00 CR", ""),
+                         ("10/05/2026", "SYNTH REFUND", "", "50.00"), ("10/06/2026", "SYNTH CHARGE", "5.00", ""), ("", "Totals", "13.00", "150.00")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    # 10.00 - 2.00 + 5.00 = 13.00 out, 150.00 in; 100.00 - 10.00 + 100.00 + 2.00 + 50.00 - 5.00 = 237.00.
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, 10000, 200, 5000, -500]
+    assert reading.decided["signs"] == {ONE_TABLE: "summary"} and reading.issues == []
+
+
+@pytest.mark.parametrize("title, direction", [("Credit Card Activity", None), ("Credit Card Transactions", None), ("Credit Card Payments", "in"),
+                                              ("Payments and Credits", "in"), ("Purchases", "out")])
+def test_sl11_a_credit_card_title_names_the_card_not_a_direction(title, direction):
+    assert stt.title_direction(title) == direction
+
+
+def test_sl11_a_net_total_printed_with_cr_is_a_net_reversal(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"),
+                        [("10/02/2026", "SYNTH FEE", "5.00", ""), ("10/03/2026", "SYNTH FEE BACK", "10.00 CR", ""), ("10/05/2026", "SYNTH PAY", "", "100.00"),
+                         ("", "Totals", "5.00 CR", "100.00")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [-500, 1000, 10000] and reading.checks == []  # 5.00 - 10.00 = 5.00 CR.

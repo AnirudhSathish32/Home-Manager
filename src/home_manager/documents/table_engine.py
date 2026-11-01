@@ -151,6 +151,7 @@ class Total:
     line_id: str
     column_id: str
     value: Decimal
+    marker: str | None = None  # The total's printed marker: a net total may print CR or DR.
 
 
 @dataclass
@@ -912,7 +913,7 @@ def scan(page, table, state, layout, begin, hi, readings, headings):
             if any(TOTAL.fullmatch(word) for word in words):
                 for column_id, token in reading.amounts.items():
                     if token.value[0] is not None:
-                        table.totals.append(Total(page.number, page.line_id(index), column_id, value_of(token)))
+                        table.totals.append(Total(page.number, page.line_id(index), column_id, value_of(token), token.value[1]))
                 page.mark([index])
                 last = None
                 continue

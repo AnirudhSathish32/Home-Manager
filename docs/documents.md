@@ -620,8 +620,8 @@ evidence (Extract again on an unchanged reading changes nothing).
   kind of charge). A printed balance marked `DR` is a bank balance
   overdrawn and one marked `CR` a card balance in the holder's favour; both are negative (a card's balance is what is
   owed), in the running balances and in the opening and closing balances alike. A single unsigned amount column takes each row's sign from its own marker (`CR`/`DR`, minus, parentheses), then its
-  section title (payments and credits are money in; purchases, charges, fees and interest are money out), then the
-  type's default. A title directly above a table with no heading may be a page's title (`Credit Card Activity`), so its
+  section title (payments and credits are money in; purchases, charges, fees and interest are money out; `Credit Card`
+  in a title names the card and says nothing), then the type's default. A title directly above a table with no heading may be a page's title (`Credit Card Activity`), so its
   direction is used only when the balance chain or the printed summary checks it (it always marks pending rows). When
   nothing checks it and it would have given other signs, that is an issue naming the title. A `CR` printed in a money-out
   column is money in, and a `DR` in a money-in column money out. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
@@ -657,7 +657,9 @@ evidence (Extract again on an unchanged reading changes nothing).
   decided. Each amount counts with its printed sign (a reversal printed with a minus, or a CR in a money-out column,
   counts against the total). Which rows a total covers isn't decided: it holds when any plausible group adds up to it
   (the table's rows, those above it, its page's, those since the column's previous total, or the section above it, with
-  or without pending rows), so only a total that no group adds up to is an issue. A signed column whose amounts print
+  or without pending rows, or the last few sections above it), so only a total that no group adds up to is an issue. A
+  total printed with `CR` in a money-out column is a net reversal. The printed summary's column totals are added the
+  same way, so a correct net total beside a reversal never stops the summary from deciding the roles. A signed column whose amounts print
   CR or DR isn't checked. A page with a layout issue other than `unresolved_columns`
   still gives its rows and the statement needs review, naming the page. The same row printed on two pages or tables is
   recorded twice with an issue naming both places.
