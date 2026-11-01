@@ -252,6 +252,44 @@ def shown_details(found, currency):
     return shown
 
 
+def item_table(item, receipt, basis_by_id, currency):
+    """What a receipt item's row shows beyond its stored fields (specs/receipt-item-table FR-02, FR-03, FR-05), worked out
+    here because the browser does no money work: qty (a weight, the printed quantity, or "1"), unit_price ({display, per} or
+    None for "—") and tax_included (the stored share holds part of the receipt's tax). basis_by_id: splits.tax_basis of the
+    shared items by id (empty when the receipt isn't divided). Nothing here is stored."""
+    details = item.get("details") or {}
+    weight = details.get("weight") or {}
+    weight = weight if weight.get("display") else {}
+    per_weight = details.get("price_per_weight") or {}
+    quantity = " ".join((item.get("quantity") or "").split())
+    qty = weight["display"] if weight else quantity or "1"
+    if weight:
+        text = " ".join(str(per_weight.get("text") or "").split())
+        if not text:
+            unit_price = None  # A weight without a printed price per weight: nothing is calculated.
+        else:
+            unit = per_weight.get("unit") or weight.get("unit")
+            number = (text[1:] if unicodedata.category(text[0]) == "Sc" else text).replace(",", "")
+            unit_price = ({"display": f"{number} {currency_code(currency)}", "per": unit} if re.fullmatch(r"\d+(\.\d+)?", number)
+                          else {"display": f"{text}/{unit}" if unit else text, "per": None})
+    elif item.get("unit_price_minor") is not None:
+        unit_price = {"display": format_minor(item["unit_price_minor"], currency), "per": None}
+    else:
+        try:
+            counted = Decimal(quantity) if quantity else None
+        except InvalidOperation:
+            counted = None
+        if quantity and (counted is None or not counted.is_finite() or abs(counted) != 1):
+            unit_price = None  # More than one, a fraction or text: the price of one isn't the line total.
+        elif item.get("line_total_minor") is not None:
+            unit_price = {"display": format_minor(item["line_total_minor"], currency), "per": None}
+        else:
+            unit_price = None
+    taxed = (bool(receipt["tax_minor"]) and item.get("share_minor") is not None and sum(basis_by_id.values()) != 0
+             and basis_by_id.get(item["id"], 0) != 0)
+    return {"qty": qty, "unit_price": unit_price, "tax_included": taxed}
+
+
 def field_labels(record_type, bill=False):
     """What a record type's correctable fields are called (a bill's as BILL_SHOWN names them)."""
     if record_type == "transaction":
@@ -1766,8 +1804,12 @@ class Ledger:
                 shares = dict(db.execute("SELECT receipt_item_id,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                                          "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
                 bill = row["document_kind"] == "bill"
+                found = None if bill else self.split_inputs(db, record_id)
+                basis = dict(zip((entry["id"] for entry in found[1]), splits.tax_basis(found[1]))) if found else {}
                 for item in value["items"]:
                     item["share_minor"] = shares.get(item["id"])
+                    if not bill:
+                        item["table"] = item_table(item, row, basis, row["currency"])
                     item["correctable"] = [{"field": "price", "label": "Price", "kind": "receipt_money",
                                             "value": money(abs(item["line_total_minor"]), row["currency"])["decimal"] if item["line_total_minor"] is not None else None}]
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").

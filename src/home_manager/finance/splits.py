@@ -47,6 +47,14 @@ def item_amount(item):
     return total + discount if total < 0 else total - discount
 
 
+def tax_basis(items):
+    """What each item weighs when the receipt's tax is shared: its amount where the receipt marks it taxed, or every item's
+    amount when no taxed item has one (the rule allocate() spreads tax by, and the rule behind an item's "with tax" note)."""
+    base = [item_amount(item) for item in items]
+    taxed = [value if item.get("taxed") else 0 for item, value in zip(items, base)]
+    return taxed if sum(taxed) else base
+
+
 def record(recorder, values, target, labels, currency):
     """A live recorder (core/trace.py) gets each share rounded down, and the cents largest-remainder rounding handed out
     as the rounding row, so the steps add up to target."""
@@ -81,8 +89,7 @@ def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currenc
     if subtotal is not None:
         spread(subtotal - sum(base), base)
     if tax:
-        taxed = [value if item.get("taxed") else 0 for item, value in zip(items, base)]
-        spread(tax, taxed if sum(taxed) else base)
+        spread(tax, tax_basis(items))
     if tip:
         extra.append((DINING, Fraction(tip)))
     difference = target - sum(amounts) - sum(amount for _, amount in extra)
