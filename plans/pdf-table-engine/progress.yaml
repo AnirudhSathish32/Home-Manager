@@ -128,4 +128,22 @@ slices:
       stop a continuation; zone bound at the heading-label midpoint; a dated line with a stray amount is unplaced; EngineTable.labels;
       FR-13's reason only for a one-row statement). Carried to SL-07 docs/open-work.md: index backfill now runs the engine on every
       reading (time per reading on a large library not measured); scripts/statement_diagnose.py still imports old pdf_import internals.
-  - {id: SL-07, status: in_progress, start_head: 0605790, provider: claude, model: claude-sonnet-5-5}
+  - id: SL-07
+    status: done
+    start_head: a59932c
+    end_head: b1eeece
+    commit: b65eb87
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_evals.py -q -> 21 passed (orchestrator rerun)"
+      - ".venv/bin/python -m evals.synthetic <tmp> -> 48 cases (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals scripts -> all checks passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests -q -> 54 failed, 2071 passed, 102 skipped, 20 errors (orchestrator rerun); failure set equals the pre-SL-05 baseline at 46a29f5 less the fixed T-edge test; all unrelated (Windows-only socket option in test_agent_instance; tax, traces, cpa_pack, scenarios, agent_findings/guards)"
+      - "RUN_BROWSER_TESTS=1 the four browser files -> 28 passed (orchestrator rerun)"
+    notes: >-
+      Accepted as non-material: P12's "engine <= old on dropped" is shown but not compared, because the engine reports every unplaced
+      line (FR-08) while the old reader drops lines uncounted; SC-20's comparison (exact rows, reconciled statements) is unchanged.
+      On the synthetic corpus the engine reads the four aligned statements exactly (66 rows, all reconcile); the old reader gets 5 of 29
+      on the wrapped one and nothing on the others. Older open-work.md entries under "PDF transaction import, still open" were not
+      re-audited and may be partly stale. D4 (remove the old path) waits on the user's corpus run.
