@@ -41,9 +41,13 @@ def test_receipt_money_item_price_undo_and_pay_period(tmp_path):
         row_form = page.locator('.doc2-row-form .cc-form')
         row_form.get_by_label('Price', exact=True).fill('19.00')
         row_form.get_by_role('button', name='Save', exact=True).click()
-        expect(page.locator('.ledger-rows tbody tr').first).to_contain_text('19.00 USD')
+        # Unit price also shows the seeded 18.00, so the check is on the Line total cell alone.
+        first = page.locator('.ledger-rows tbody tr').first.locator('[data-col=line_total]')
+        expect(first).to_contain_text('19.00 USD')
+        expect(first).not_to_contain_text('18.00 USD')
         page.locator('.toast').last.get_by_role('button', name='Undo', exact=True).click()
-        expect(page.locator('.ledger-rows tbody tr').first).to_contain_text('18.00 USD')
+        expect(first).to_contain_text('18.00 USD')
+        expect(first).not_to_contain_text('19.00 USD')
         # A synthetic paystub publication, so both range endpoints use the same real correction API.
         doc = manager.store.document(ids['receipt_doc'])
         rid = income(manager.ledger, doc)

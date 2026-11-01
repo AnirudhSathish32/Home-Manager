@@ -291,6 +291,24 @@ function billLines(record, categories, onSaved, find, correctField = null) {
   }
   return wrap;
 }
+// A receipt's item columns in order: [data-col key, title, numeric]. Every amount and count is text the server made (item.table).
+const RECEIPT_COLUMNS = [["item", "Item", false], ["code", "Code", false], ["qty", "Qty", true], ["unit_price", "Unit price", true],
+                         ["category", "Category", false], ["line_total", "Line total", true], ["paid", "Paid", true]];
+function receiptCell(key, row, record, categories, onSaved) {
+  // The nodes for one receipt item's cell.
+  if (key === "item") return [document.createTextNode(row.description)];
+  if (key === "code") return [document.createTextNode(row.product_code || "—")];
+  if (key === "qty") return [document.createTextNode(row.table?.qty || "—")];
+  if (key === "unit_price") {
+    const price = row.table?.unit_price;
+    return price ? [amount(price.display, {signed: false}), ...(price.per ? [document.createTextNode(`/${price.per}`)] : [])] : [document.createTextNode("—")];
+  }
+  if (key === "category") return [categories.length ? itemCategorySelect(record.id, row, categories, onSaved) : document.createTextNode(row.category ? categoryLabel(row.category) : "—")];
+  if (key === "line_total") return [amount(row.display.line_total_minor || "—", {signed: false})];
+  // Paid: the item's stored share, shown as stored; "with tax" only when the share includes part of the receipt's tax.
+  if (row.share_minor == null) return [document.createTextNode("—")];
+  return [amount(row.display.share_minor, {signed: false}), ...(row.table?.tax_included ? [element("small", "with tax", "muted block")] : [])];
+}
 function ledgerRows(record, categories, onSaved, find, correctField = null) {
   if (record.document_kind === "bill" && record.items) return billLines(record, categories, onSaved, find, correctField);
   // Items or transactions exactly as recorded, each linked to its source line. Receipt items carry their own category
@@ -302,49 +320,62 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
   const table = element("table", "", "ledger-rows");
   // Product codes are printed on shop receipts, not restaurant bills: the column appears only when a row has one.
   const codes = Boolean(record.items?.some(row => row.product_code));
-  const shares = Boolean(record.items?.some(row => row.display.share_minor));
+  // Paid shows whenever an item has a stored share, even when it equals the line total (docs/money.md "Item categories and splits").
+  const shares = Boolean(record.items?.some(row => row.share_minor != null));
   // A statement row read from its printed columns carries the balance the statement prints after it, as the server formats it.
   const balances = Boolean(!record.items && rows.some(row => row.display.balance_minor));
-  const columns = record.items ? ["Item", "Code", "Price", "Category", "Paid", ""] : ["Posted", "Description", "Amount", "Balance", ""];
-  const shown = index => record.items ? !((index === 1 && !codes) || (index === 4 && !shares)) : index !== 3 || balances;
+  // One list of receipt columns, in order: the header, the cells, the numeric alignment and the footer spans all read it.
+  const receiptColumns = record.items ? RECEIPT_COLUMNS.filter(([key]) => (key !== "code" || codes) && (key !== "paid" || shares)) : [];
+  const columns = ["Posted", "Description", "Amount", "Balance", ""];
+  const shown = index => index !== 3 || balances;
   const head = document.createElement("tr");
-  columns.forEach((title, index) => {
+  if (record.items) {
+    for (const [key, title, numeric] of receiptColumns) {
+      const th = head.appendChild(element("th", title, numeric ? "numeric" : "")); th.scope = "col"; th.dataset.col = key;
+    }
+    head.appendChild(element("th")).dataset.col = "source";
+  } else columns.forEach((title, index) => {
     if (!shown(index)) return;
-    const th = head.appendChild(element("th", title, index === 2 || index === 4 || (!record.items && index === 3) ? "numeric" : "")); th.scope = "col";
+    const th = head.appendChild(element("th", title, index === 2 || index === 3 ? "numeric" : "")); th.scope = "col";
   });
   table.appendChild(document.createElement("thead")).appendChild(head);
   const body = table.appendChild(document.createElement("tbody"));
   for (const row of rows.slice(0, 200)) {
     const tr = document.createElement("tr");
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
-    const paid = row.line_total_minor == null ? "—" : row.share_minor !== row.line_total_minor && row.display.share_minor ? row.display.share_minor : "—";
-    const values = record.items ? [row.description, row.product_code || "", row.display.line_total_minor || "—", "", paid]
-      : [row.posted_date, row.description_raw, row.display.amount_minor, row.display.balance_minor || "—"];
-    values.forEach((value, index) => {
-      if (!shown(index)) return;
-      const balance = !record.items && index === 3, money = index === 2 || index === 4 || balance;
-      const td = tr.appendChild(element("td", money || index === 3 ? "" : value, money ? "numeric" : ""));
-      // Statement rows carry a direction; item prices and a running balance don't.
-      if (money) td.appendChild(amount(value, {signed: !record.items && !balance}));
-      if (record.items && index === 4 && paid !== "—") td.append(element("small", "with tax", "muted block"));
-      if (record.items && index === 3) td.appendChild(categories.length ? itemCategorySelect(record.id, row, categories, onSaved)
-                                                        : document.createTextNode(row.category ? categoryLabel(row.category) : "—"));
-    });
+    if (record.items) {
+      for (const [key, , numeric] of receiptColumns) {
+        const td = tr.appendChild(element("td", "", numeric ? "numeric" : "")); td.dataset.col = key;
+        td.append(...receiptCell(key, row, record, categories, onSaved));
+      }
+    } else {
+      const values = [row.posted_date, row.description_raw, row.display.amount_minor, row.display.balance_minor || "—"];
+      values.forEach((value, index) => {
+        if (!shown(index)) return;
+        const balance = index === 3, money = index === 2 || balance;
+        const td = tr.appendChild(element("td", money ? "" : value, money ? "numeric" : ""));
+        // Statement rows carry a direction; a running balance doesn't.
+        if (money) td.appendChild(amount(value, {signed: !balance}));
+      });
+    }
     const cell = row.cell_evidence?.line_total || row.cell_evidence?.amount;
     const sourceIds = cell?.source === "pdf_text" ? [cell.cell_id] : row.line_ids;
     const source = document.createElement("td"); if (sourceIds?.length) source.appendChild(sourceButton(sourceIds, find)); tr.appendChild(source);
+    if (record.items) source.dataset.col = "source";
     body.appendChild(tr);
   }
   if (record.items) {
     const foot = table.appendChild(element("tfoot"));
+    // The label spans every column before Line total, so the amount sits under it; the buttons span Paid and the source cell.
+    const before = receiptColumns.findIndex(([key]) => key === "line_total"), after = receiptColumns.length - before;  // after: Paid (when shown) and the source cell
     for (const [label, field] of [["Subtotal", "subtotal"], ["Tax", "tax"], ["Tip", "tip"], ["Not matched to an item", "unmatched"], ["Total", "total"]]) {
       if (field === "unmatched" && !record.unmatched_minor) continue;
       if (field === "tip" && !showsTip(record)) continue;
-      const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = codes ? 2 : 1;
+      const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = before;
       // A receipt paid partly by gift card: its printed total here, what was paid in its Paid line (document_v2.js doc2Paid).
       const shown = field === "total" && record.paid_summary ? record.printed_total?.display : record.display[`${field}_minor`];
-      const value = element("td", "", "numeric"); value.append(amount(shown || "—", {signed: false}));
-      const actions = element("td"); actions.colSpan = shares ? 3 : 2;
+      const value = element("td", "", "numeric"); value.dataset.col = "line_total"; value.append(amount(shown || "—", {signed: false}));
+      const actions = element("td"); actions.colSpan = after;
       if (correctField && field !== "unmatched") {
         const button = element("button", "Correct", "link-button doc2-row-edit"); button.type = "button"; button.setAttribute("aria-label", `Correct ${field}`);
         button.addEventListener("click", () => correctField(field)); actions.append(button);
