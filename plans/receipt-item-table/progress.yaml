@@ -55,6 +55,10 @@ slices:
       - "FR-30: docs/money.md \"Item categories and splits\" diff reviewed by the orchestrator; heading unchanged"
     notes: >-
       Fixture R has no tenders or savings, so Printed details is absent for it; sc17 accepts that, as the plan allows.
+  - id: SL-04
+    status: in_progress
+    start_head: 739cd27
+    scope: "fixes for code review round 1 (CR1-M1, CR1-m1)"
 final_verification:
   head: 6589985
   command: ".venv/bin/python -m pytest -q"
