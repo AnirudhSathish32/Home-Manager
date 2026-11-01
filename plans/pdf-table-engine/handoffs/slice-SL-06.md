@@ -1,14 +1,14 @@
 ```yaml
 slice: SL-06
-result: ready_for_verification_with_escalations   # two existing analyzer tests fail by design (escalation 1); everything else in the slice's commands passes
+result: ready_for_verification   # r3: all four verification commands exit 0; escalations 1-4 resolved by the user and the contract/plan amendment (3b46c5a)
 provider: claude
 model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
-start_head: 90bf5b1
-end_head: HEAD            # the handoff commit on top of code commit ba227c0 (git log -1 on this file)
-commit: ba227c0           # last code/test/docs commit
-code_commits: [1e726c2, 68b7aeb, 284ff12, a995034, dd40b48, df8367c, d29bfb5, ba227c0]
+start_head: ba6b1c6       # r3 start; r1 started at 90bf5b1
+end_head: HEAD            # the handoff commit on top of code commit 2067fc9 (git log -1 on this file)
+commit: 2067fc9           # last code/test commit (r1 code commits: 1e726c2, 68b7aeb, 284ff12, a995034, dd40b48, df8367c, d29bfb5, ba227c0)
+code_commits: [1e726c2, 68b7aeb, 284ff12, a995034, dd40b48, df8367c, d29bfb5, ba227c0, 2067fc9]
 changed_files:
   - src/home_manager/finance/pdf_import.py          # analyze = adapter over the engine (as_analysis); analyze_legacy = the old body; ANALYZER_VERSION = 3
   - src/home_manager/finance/statement_tables.py    # per-row outcomes, shared piece names, year walk, FR-13 reason for a one-row statement, outcome_key
@@ -17,42 +17,27 @@ changed_files:
   - src/home_manager/documents/table_engine.py      # five engine repairs (escalation 4)
   - docs/documents.md                               # "Transaction imports" (PDF part), headings kept
   - tests/test_table_engine_record.py               # _import tests (SC-08 step 2, SC-12 x14, SC-16, SC-19 step 2) and journey_j1
-  - tests/test_pdf_imports.py                       # 7-d updated (analyzer + import), 7-a' added (analyzer + import), X_PERIOD
+  - tests/test_pdf_imports.py                       # 7-d, 7-a', X_PERIOD; r3: the 7-b and second-heading analyzer tests renamed and updated to the contract
   - tests/pdf_import_fixtures.py                    # x_pages(period=...) for 7-a'
   - tests/test_statement_rebuild.py                 # bank()/analysis() on the engine; listed changes; legacy() helper
   - tests/test_table_engine.py                      # patch target of the x-reasons test; three SL-03 tests follow the shared piece names / FR-13
   - plans/pdf-table-engine/handoffs/slice-SL-06.md
-checks:
+checks:   # r3 run on 2067fc9
   - command: ".venv/bin/python -m pytest tests/test_table_engine_record.py -k \"_import or journey_j1\" -q"
     exit_code: 0     # 18 passed
   - command: ".venv/bin/python -m pytest tests/test_statement_rebuild.py tests/test_pdf_imports.py tests/test_imports.py tests/test_layout_consumers.py -q"
-    exit_code: 1     # 239 passed, 2 failed: test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain, test_analyzer_sc07_a_second_heading_below_a_native_table_is_reported_and_its_rows_are_not_read (escalation 1)
+    exit_code: 0     # 241 passed
   - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_pdf_imports_browser.py -q"
     exit_code: 0     # 10 passed
-  - command: ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_statement_rebuild.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py -k \"not generator_only\" -q"
-    exit_code: 0     # 227 passed (the SL-05 command)
-  - command: ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_table_engine_generator.py -k \"generator_only or not generator\" -q"
-    exit_code: 0     # 575 passed (extra: the engine and the generator after my engine repairs)
-  - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_table_engine_browser.py tests/test_statement_accounts_browser.py -q"
-    exit_code: 0     # 11 passed (extra)
-  - command: ".venv/bin/python -m pytest tests/test_migrations.py tests/test_evals.py tests/test_pdf_layout.py -q"
-    exit_code: 0     # 76 passed (extra)
   - command: ".venv/bin/ruff check src tests evals scripts"
     exit_code: 0
+  - note: "r1 also ran, all exit 0 (engine edits unchanged in r3): the SL-05 command (227 passed), tests/test_table_engine.py + test_table_engine_generator.py (575), test_table_engine_browser + test_statement_accounts_browser (11), test_migrations + test_evals + test_pdf_layout (76)"
 skipped_checks: [mypy, the full suite (the known unrelated Linux failures are outside the slice)]
 escalations:
-  - id: 1
-    status: open
-    what: two existing analyzer tests the contract's "Scenarios this spec changes" doesn't list fail, because FR-06 (a repeated heading is ignored) makes them untrue. Left unchanged and failing.
-  - id: 2
-    status: open
-    what: 7-a' as the contract prints it cannot hold under FR-09; the test uses 09/20 as the period's end
-  - id: 3
-    status: open
-    what: the plan's piece ids (page-<p>-table-<n>) contradict ~8 unchanged tests; the old ids and row numbers were kept
-  - id: 4
-    status: for_review
-    what: five repairs in the SL-01..03 engine code that SL-06 needed (and one in SL-03's FR-13 rule)
+  - {id: 1, status: resolved, what: "the 7-b and second-heading analyzer tests are now listed in the contract; updated to the listed values in r3 (renamed ..._7b_a_repeated_transactions_heading_does_not_end_the_chain and ..._a_second_heading_below_a_native_table_is_ignored_and_its_rows_are_read)"}
+  - {id: 2, status: resolved, what: "7-a' period now ends 09/20 in the contract; X_PERIOD already matched, its comment no longer calls this a contradiction"}
+  - {id: 3, status: resolved, what: "plan P11 amended to keep today's piece ids and row numbers and counts['unplaced'] only when >= 1; the code already did this, no change"}
+  - {id: 4, status: resolved, what: "engine repairs a-e and the unlisted value changes accepted and listed in the contract; no change"}
 helper_subagents_used: none
 ```
 
@@ -91,6 +76,7 @@ helper_subagents_used: none
   SL-03's `test_stmt_sc08_k3…` and `test_stmt_as_rebuild…` expect the shared piece names in `locator["table_id"]`; SL-03's CS-split test no longer expects the FR-13 issue (renamed, see escalation 4 e).
 
 ## Escalations
+All four were settled by the user and the contract/plan amendment in 3b46c5a (status in the header). The original text follows for the record.
 1. **Two existing tests fail by design and are left as they were** (FR-06, the engine ignores a repeated heading; the contract lists no change for them):
    - `test_analyzer_sc07_7b_a_new_transactions_table_ends_the_chain`: page 2 repeats the heading, page 3 has none. X-7b and K3 are the same shape (K3's page 2 is a native table too), and SC-08 step 2
      says K3's page 3 is linked to page 1's table, so the engine gives one table: pieces (1, transactions), (2, continuation → page 1's), (3, continuation → page 1's); labels `[[]]*2 + [["continued from page 1"]]*4`.
@@ -116,7 +102,11 @@ helper_subagents_used: none
    ("Z unchanged with 8 rows" needs Z first; Y then holds none until Extract again); (ii) a rejected row in an unreadable-roles table shows the first cell problem (e.g. "not in USD") else
    "Which amount columns are money in, money out or the balance can't be told."; (iii) `ImportRow.amount` of a "More than one amount" row is rebuilt from the words in the money columns (`12345 1.00`), as before.
 
+## Round r3
+r2 hit a rate limit before doing anything. r3 changed only `tests/test_pdf_imports.py`: the 7-b analyzer test now expects one table across pages 1-3 (pieces (1, transactions), (2, continuation of page 1's),
+(3, continuation of page 1's); rows of pages 2 and 3 labelled `continued from page 1`); the second-heading analyzer test expects C2 and C3 as rows 4 and 5 (after the rejected blank-description row 3) and no
+`second_heading` issue; the X_PERIOD comment follows the amended contract. Nothing else in those tests changed. The code already matched the amended P11 (piece ids, row numbers, `unplaced` only when >= 1).
+
 ## Open issues
-- Escalations 1–3 need a decision; the two failing tests are the only red tests in the slice's commands.
-- The index (`index_row`) now runs the engine for every reading; the time per reading was not measured on a large library.
+- None blocking. The index (`index_row`) now runs the engine for every reading; the time per reading was not measured on a large library.
 - `scripts/statement_diagnose.py` still imports `PageView`, `assign`, `is_heading`, `native_spec` from `pdf_import` (unchanged); nothing else in `scripts/` or `evals/` calls `analyze`.
