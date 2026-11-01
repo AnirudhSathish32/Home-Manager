@@ -113,4 +113,5 @@ slices:
     attempts:
       - "r1: commits 1e726c2..ba227c0, handoff 31d6087; 2 unlisted pdf-import tests failing by design (FR-06), 7-a' period contradiction, P11 piece ids, unlisted value changes. Orchestrator rerun: 18 passed; 239 passed + 2 failed; 470 passed; ruff clean."
       - "user decisions 2026-10-31: approve all; contract and plan amended (P11 keeps old import names), approvals renewed (delegated). Engine repairs a-e accepted by the orchestrator as non-material. r2 dispatched to update the two tests."
+      - "r2: session limit 4 s after start (resets 8:40pm ET 2026-10-31), no changes; tree clean at 3b46c5a. Retry as r3 with the same brief."
   - {id: SL-07, status: todo}
