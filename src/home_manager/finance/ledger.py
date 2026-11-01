@@ -291,6 +291,15 @@ def item_table(item, receipt, basis_by_id, currency):
     return {"qty": qty, "unit_price": unit_price, "tax_included": taxed}
 
 
+def rate_display(rate_text):
+    """A printed tax rate as the page shows it ("7.75000" gives "7.75%", "10.000" gives "10%"), or None when it isn't a number."""
+    try:
+        rate = Decimal((rate_text or "").strip().rstrip("%").strip())
+    except InvalidOperation:
+        return None
+    return f"{format(rate.normalize(), 'f')}%" if rate.is_finite() else None
+
+
 def field_labels(record_type, bill=False):
     """What a record type's correctable fields are called (a bill's as BILL_SHOWN names them)."""
     if record_type == "transaction":
@@ -723,7 +732,9 @@ class Ledger:
                 "document_kind": record.get("document_kind", "receipt"), "issue_date": record.get("issue_date"), "due_date": record.get("due_date"),
                 "period_start": record.get("period_start"), "period_end": record.get("period_end"),
                 "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("account_last_four"),
-                "invoice_json": json.dumps(record["invoice"]) if record.get("invoice") else None})
+                "invoice_json": json.dumps(record["invoice"]) if record.get("invoice") else None,
+                # Which tax rule this reading set up; None for a record published without one (docs/money.md "Item categories and splits").
+                "tax_source": record.get("tax_source")})
             kept = 0
             if source.get("kind_change") and kind:
                 # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
@@ -749,6 +760,11 @@ class Ledger:
                                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                                [(receipt_id, position, reward["kind"], reward["description"], reward["amount"], reward["expires"], reward["link"],
                                  json.dumps(reward["locator"]), now(), now()) for position, reward in enumerate(record.get("rewards", []), 1)])
+                db.execute("DELETE FROM receipt_tax_lines WHERE receipt_id=?", (receipt_id,))
+                db.executemany("INSERT INTO receipt_tax_lines(receipt_id,position,code,rate_text,taxable_minor,amount_minor,locator_json,created_at,updated_at) "
+                               "VALUES(?,?,?,?,?,?,?,?,?)",
+                               [(receipt_id, position, line["code"], line.get("rate_text"), line.get("taxable_minor"), line.get("amount_minor"),
+                                 json.dumps(line["locator"]), now(), now()) for position, line in enumerate(record.get("tax_lines", []), 1)])
                 self.refresh_splits(db, receipt_id)
         return self._published("receipt", receipt_id, written, items=len(record["items"]), kept=kept)
 
@@ -989,7 +1005,7 @@ class Ledger:
             taxed = None if item.get("taxed") is None else int(item["taxed"])
             values = (item["description"], item.get("product_code"), item.get("quantity"), item.get("unit_price_minor"), item["line_total_minor"],
                       item.get("discount_minor"), taxed, item.get("line_holder"), item.get("line_kind"), item.get("line_type"),
-                      json.dumps(item["details"]) if item.get("details") else None)
+                      json.dumps(item["details"]) if item.get("details") else None, item.get("tax_code"))
             # Whose line it is: as the family sent it, else the person's own choice from before, else nobody yet.
             member, member_source = item.get("member_id"), item.get("member_source") or ("configured" if item.get("member_id") else None)
             if position in matched:
@@ -999,13 +1015,13 @@ class Ledger:
                 if member is None and earlier_item["member_source"] == "user":
                     member, member_source = earlier_item["member_id"], "user"
                 db.execute("UPDATE receipt_items SET description=?,product_code=?,quantity=?,unit_price_minor=?,line_total_minor=?,discount_minor=?,taxed=?,"
-                           "line_holder=?,line_kind=?,line_type=?,details_json=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
+                           "line_holder=?,line_kind=?,line_type=?,details_json=?,tax_code=?,category=?,category_source=?,member_id=?,member_source=?,review_status=?,updated_at=? WHERE id=?",
                            (*values, category, category_source if category else None, member, member_source, status, now(), item_id))
                 db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item_id,))
             else:
                 item_id = db.execute("INSERT INTO receipt_items(receipt_id,position,description,product_code,quantity,unit_price_minor,line_total_minor,discount_minor,"
-                                     "taxed,line_holder,line_kind,line_type,details_json,category,category_source,member_id,member_source,review_status,"
-                                     "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                     "taxed,line_holder,line_kind,line_type,details_json,tax_code,category,category_source,member_id,member_source,review_status,"
+                                     "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                      (receipt_id, position, *values, category, category_source if category else None, member, member_source,
                                       status, now(), now())).lastrowid
             self.add_evidence(db, "receipt_item", item_id, source, item["locator"])
@@ -1843,6 +1859,16 @@ class Ledger:
                     reward = dict(reward)
                     reward["line_ids"] = json.loads(reward.pop("locator_json")).get("line_ids", [])
                     value["rewards"].append(reward)
+                # The per-code tax lines the receipt printed, in printed order. Stored as magnitudes; the receipt's tax gives the sign.
+                direction = -1 if (row["tax_minor"] or 0) < 0 else 1
+                value["tax_lines"] = []
+                for line in db.execute("SELECT * FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (record_id,)):
+                    line = dict(line)
+                    line["line_ids"] = json.loads(line.pop("locator_json")).get("line_ids", [])
+                    line["rate_display"] = rate_display(line["rate_text"])
+                    for column in ("taxable_minor", "amount_minor"):
+                        line[column] = None if line[column] is None else direction * line[column]
+                    value["tax_lines"].append(line)
                 # Sale or return, as a correction sets it, and the tag the page shows (docs/money.md "Returns").
                 value["direction"] = self.effective_receipt_direction(db, row)
                 value["sale_label"] = sale_label(row["total_minor"], [item["line_total_minor"] for item in value["items"]])
@@ -1918,7 +1944,7 @@ class Ledger:
                     row["balance_minor"] = next((entry["locator"]["balance_minor"] for entry in evidence
                                                  if isinstance(entry["locator"].get("balance_minor"), int)), None)
         # Exact display strings: the browser never does money arithmetic.
-        for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", [])]:
+        for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", []), *value.get("tax_lines", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()
                               if key.endswith("_minor") and isinstance(amount, int)}
         if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).

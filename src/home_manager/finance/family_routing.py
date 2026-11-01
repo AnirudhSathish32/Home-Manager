@@ -255,11 +255,16 @@ def record_payload(store, record_type, record_id):
             items = [{"description": item["description"], "product_code": item["product_code"], "quantity": item["quantity"],
                       "unit_price_minor": item["unit_price_minor"], "line_total_minor": item["line_total_minor"],
                       "discount_minor": item["discount_minor"], "taxed": None if item["taxed"] is None else bool(item["taxed"]),
-                      "category": item["category"], "line_holder": item["line_holder"], "line_kind": item["line_kind"], "member_id": item["member_id"],
+                      "tax_code": item["tax_code"], "category": item["category"], "line_holder": item["line_holder"], "line_kind": item["line_kind"], "member_id": item["member_id"],
                       "member_source": "configured" if item["member_id"] else None, "locator": {"family": True}}
                      for item in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (record_id,))]
+            # The tax a copy shares as this record does: the rule that was set up and the per-code lines (publish_receipt's shape).
+            tax_lines = [{"code": line["code"], "rate_text": line["rate_text"], "taxable_minor": line["taxable_minor"], "amount_minor": line["amount_minor"],
+                          "locator": {"family": True}}
+                         for line in db.execute("SELECT * FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (record_id,))]
             record = {**base, "merchant": name(row["merchant_id"]), "purchase_date": row["purchase_date"], "subtotal_minor": row["subtotal_minor"],
                       "tax_minor": row["tax_minor"], "tip_minor": row["tip_minor"], "total_minor": row["total_minor"], "items": items,
+                      "tax_source": row["tax_source"], "tax_lines": tax_lines,
                       "description": row["description"], "location": row["location"], "category": row["category"], "recurrence": row["recurrence"],
                       "payment_last_four": row["payment_last_four"], "return_days_printed": row["return_days_printed"],
                       "return_policy_quote": row["return_policy_quote"], "document_kind": row["document_kind"], "issue_date": row["issue_date"],

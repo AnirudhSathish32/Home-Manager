@@ -1,6 +1,7 @@
 """Family inbox: upload once to the family, route to one person or share a cost, and each person's library receives it."""
 
 from datetime import date
+import json
 
 import pytest
 
@@ -172,3 +173,40 @@ def test_upload_to_the_family_route_share_and_retract(tmp_path):
     finally:
         mom.close()
         dad.close()
+
+
+def test_a_delivered_receipt_keeps_its_tax_codes_lines_and_source(tmp_path):
+    """The member's copy is published with the codes, tax source and per-code tax lines the family's record holds (specs/
+    receipt-tax-codes FR-12), so it shares tax as the family's record does."""
+    from home_manager.finance.family_routing import apply_delivery, record_payload
+    from test_receipt_tax_codes import r_receipt
+    family, person = Store(tmp_path / "family"), Store(tmp_path / "person")
+    try:
+        inbox_scan(family, {"mart.png": b"family synthetic mart receipt"})
+        sent = Ledger(family).publish_receipt(r_receipt(), source_of(documents_by_name(family)["mart.png"], "extraction:mart"), "verified")["id"]
+        record, row = record_payload(family, "receipt", sent)
+        record = json.loads(json.dumps(record))  # As it travels in a delivery.
+        document = family.blob_path(row["blob_hash"]).read_bytes()
+        delivery = {"key": "tax-key-1", "action": "record", "record_type": "receipt", "record": record, "name": "mart.png",
+                    "blob_hash": row["blob_hash"], "share": None}
+        copy = apply_delivery(person, delivery, document)["record"][1]
+        apply_delivery(person, delivery, document)  # Applied twice: updated, not duplicated.
+
+        def kept(store, receipt_id):
+            with store.connection() as db:
+                return ([tuple(r) for r in db.execute("SELECT tax_source FROM receipts WHERE id=?", (receipt_id,))],
+                        [tuple(r) for r in db.execute("SELECT position,description,tax_code,taxed FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))],
+                        [tuple(r) for r in db.execute("SELECT position,code,rate_text,taxable_minor,amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position",
+                                                      (receipt_id,))],
+                        [tuple(r) for r in db.execute("SELECT i.position,s.category,s.amount_minor FROM category_splits s JOIN receipt_items i ON i.id=s.receipt_item_id "
+                                                      "WHERE s.receipt_id=? AND s.transaction_id IS NULL ORDER BY i.position", (receipt_id,))])
+        assert kept(person, copy) == kept(family, sent)
+        source, items, lines, _ = kept(person, copy)
+        assert source == [("tax_lines",)] and [code for _, _, code, _ in items] == ["BF", "BF", "T"]
+        assert lines == [(1, "T", "7.75000", 1299, 101), (2, "B", "7.75000", 4619, 173)]
+        with person.connection() as db:
+            assert db.execute("SELECT count(*) FROM receipt_tax_lines").fetchone()[0] == 2
+        assert_ledger_healthy(person)
+    finally:
+        family.close()
+        person.close()

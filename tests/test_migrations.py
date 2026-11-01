@@ -714,3 +714,49 @@ def test_another_table_named_pdf_import_index_stops_the_upgrade_at_072(tmp_path)
         Store(root)
     assert (failure.value.number, failure.value.version) == (72, 71) and "step 072" in str(failure.value)
     assert version_of(root) == 71
+
+
+def test_075_adds_tax_codes_and_lines_and_changes_no_existing_receipt():
+    """Receipt tax codes (docs/money.md "Item categories and splits"): items gain a NULL tax code, receipts a NULL tax source and
+    a table of per-code tax lines starts empty. Every column a receipt, item and split already had stays equal."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 75:
+                db.executescript(script.read_text())
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", ("a" * 64,))
+        db.execute("INSERT INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
+        document = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                              "VALUES('root','r.png','r.png',?,'t','t','job')", ("a" * 64,)).lastrowid
+        receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,subtotal_minor,tax_minor,total_minor,currency,review_status,created_at,updated_at) "
+                             "VALUES(?,?,5918,274,6192,'USD','verified','t','t')", (document, "a" * 64)).lastrowid
+        for position, (total, taxed, category) in enumerate(((429, 0, "groceries"), (4190, 0, "groceries"), (1299, 1, "household supplies")), 1):
+            item = db.execute("INSERT INTO receipt_items(receipt_id,position,description,line_total_minor,taxed,category,review_status) "
+                              "VALUES(?,?,'x',?,?,?,'verified')", (receipt, position, total, taxed, category)).lastrowid
+            db.execute("INSERT INTO category_splits(receipt_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?)",
+                       (receipt, item, category, total + (274 if taxed else 0)))
+        db.commit()
+        before = {table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() for table in ("receipts", "receipt_items", "category_splits")}
+        columns = {table: [row[1] for row in db.execute(f"PRAGMA table_info({table})")] for table in before}
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 74
+        storage.apply_migrations(db, 74)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        for table, old_rows in before.items():
+            old = columns[table]
+            after = db.execute(f"SELECT {','.join(old)} FROM {table} ORDER BY id").fetchall()
+            assert [tuple(row) for row in after] == [tuple(row) for row in old_rows]
+        assert db.execute("SELECT tax_source FROM receipts").fetchall() == [(None,)]
+        assert db.execute("SELECT tax_code FROM receipt_items").fetchall() == [(None,)] * 3
+        assert db.execute("SELECT count(*) FROM receipt_tax_lines").fetchone()[0] == 0
+        # The new table is strict and refuses a tax source or amount of the wrong kind.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE receipts SET tax_source='guessed'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO receipt_tax_lines(receipt_id,position,code,amount_minor,locator_json) VALUES(?,1,'B','1.73','{}')", (receipt,))
+        db.execute("INSERT INTO receipt_tax_lines(receipt_id,position,code,amount_minor,locator_json) VALUES(?,1,'B',173,'{}')", (receipt,))
+        db.commit()  # The pragma only takes effect between transactions.
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("DELETE FROM receipts WHERE id=?", (receipt,))  # The lines go with their receipt.
+        assert db.execute("SELECT count(*) FROM receipt_tax_lines").fetchone()[0] == 0
+    finally:
+        db.close()
