@@ -865,3 +865,44 @@ def test_sc25_two_date_columns_are_the_transaction_date_and_the_posted_date(env,
     assert dates == [(row[4], row[5]) for row in tf.TD_ROWS]
     reconciles(recorded, record_)
     checked(recorded)
+
+
+# --- SL-08: the code review's findings (plans/pdf-table-engine/progress.yaml SL-08) ---------------------------------------------------
+
+def test_sl08_f3_brks_chain_break_is_in_the_preview_and_the_saved_import_import(env, local_model):
+    recorded, _ = recorded_fixture(env, local_model, "BRK")
+    account_id = account_for(env, "BRK")
+    preview = preview_of(env, recorded.doc, account_id)
+    [row] = [row for row in preview["rows"] if (row["posted_date"], row["amount_minor"]) == tf.BRK_EXPECTED]
+    [issue] = [issue for issue in preview["issues"] if issue["code"] == "balance_chain_break"]
+    assert (issue["page"], issue["row"]) == (1, row["row"])
+    assert issue["message"].startswith(f"Page 1 row {row['row']}: the balance ") and issue["message"].endswith(" doesn't follow from the row above")
+    env.ok_import(recorded.doc, reading=preview["reading_id"], account_id=account_id)
+    [(saved,)] = env.sql("SELECT issues_json FROM transaction_imports")
+    assert issue["message"] in json.dumps(json.loads(saved))
+
+
+def test_sl08_f3_ccs_two_accounts_issue_is_in_the_preview_import(env, local_model):
+    recorded, _ = recorded_fixture(env, local_model, "CC")
+    preview = preview_of(env, recorded.doc, account_for(env, "CC"))
+    assert [issue["message"] for issue in preview["issues"] if issue["code"] == "two_accounts"] == [statement_tables.TWO_ACCOUNTS.format(first=1, second=2)]
+
+
+def test_sl08_f6_the_printed_period_is_the_records_when_the_reading_gives_none(env, local_model):
+    recorded, _ = recorded_fixture(env, local_model, "WF")
+    record_ = recorded.run(replies({**SPECS["WF"], "period": None}))
+    exact_wf(recorded)
+    assert env.sql("SELECT period_start, period_end FROM statements") == [("2026-10-01", "2026-10-31")]
+    assert not any(note.startswith("The printed statement period") for note in recorded.notes())
+    assert not any("period" in issue.lower() for issue in record_["issues"]), record_["issues"]
+
+
+def test_sl08_f6_the_printed_period_wins_over_the_readings_with_a_note(env, local_model):
+    recorded, _ = recorded_fixture(env, local_model, "WF")
+    wrong = {**SPECS["WF"], "period": ("2026-09-01", "2026-09-30", "Statement period", "10/01/2026", "10/31/2026")}
+    record_ = recorded.run(replies(wrong))
+    exact_wf(recorded)
+    assert env.sql("SELECT period_start, period_end FROM statements") == [("2026-10-01", "2026-10-31")]
+    assert [note for note in recorded.notes() if note.startswith("The printed statement period")] == [
+        "The printed statement period 2026-10-01 to 2026-10-31 was recorded; the reading gave 2026-09-01 to 2026-09-30."]
+    assert not any("outside the statement period" in issue for issue in record_["issues"]), record_["issues"]

@@ -814,7 +814,19 @@ def as_analysis(reading, result, *, tables, needs_sign, default, sign, currency)
         if line.page in {piece.entry.page for piece in used}:
             unplaced.append(ImportIssue(line.page, None, "unplaced_line", (statement_tables.PENDING if line.reason == "pending" else statement_tables.UNPLACED)
                                         .format(page=line.page, text=line.text)))
-    issues += parsed_issues + unplaced
+    # The statement layer's issues about the money (a chain break, a total that doesn't add up, two accounts, signs only the headings
+    # give, a row printed twice), with rows numbered as the import numbers them.
+    used_pages = {piece.entry.page for piece in used}
+
+    def numbered(table_id, page, row):
+        return row if reading.pieces.get(f"{table_id}:{page}", (None, "rebuilt"))[1] == "transactions" else row - 1
+
+    checked = []
+    for check in reading.checks:
+        if check.page is None or ({check.page} | {where[1] for where in check.rows.values()}) & used_pages:
+            row = numbered(*check.rows["row"]) if "row" in check.rows else None
+            checked.append(ImportIssue(check.page, row, check.code, check.text(numbered)))
+    issues += parsed_issues + unplaced + checked
 
     found_currency = document_currency(result, [SimpleNamespace(amount=row.amount, debit="", credit="") for row in rows])
     if found_currency and found_currency != currency:

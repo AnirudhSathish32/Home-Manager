@@ -1760,11 +1760,19 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         card = kind == "credit_card_statement"
         record.update(statement_type="credit_card" if card else "bank", institution=record.pop("issuer", None) or record.get("institution"),
                       summary={name: record.get(name + "_minor") for name in HEADERS[kind] if name in AMOUNTS})
+        found, record_notes = [], []  # found: (page, transaction), rebuilt rows first, then the model's rows of the other pages.
+        # FR-14: the period printed on the statement is the record's, whatever the reading gave, as the printed balances are (FR-07 below).
+        printed_period = rebuild.period if rebuild is not None and rebuild.available else None
+        if printed_period:
+            given = (record.get("period_start"), record.get("period_end"))
+            if any(given) and given != printed_period:
+                record_notes.append(f"The printed statement period {printed_period[0]} to {printed_period[1]} was recorded; the reading gave "
+                                    f"{given[0] or 'no start'} to {given[1] or 'no end'}.")
+            record["period_start"], record["period_end"] = printed_period
         start, end = (date.fromisoformat(record[key]) if record[key] else None for key in ("period_start", "period_end"))
         if start and end and start > end:
             issues.append("The statement period starts after it ends.")
         record["transactions"] = []
-        found, record_notes = [], []  # found: (page, transaction), rebuilt rows first, then the model's rows of the other pages.
         skipped = 0
         rebuilt = rebuild.pages if rebuild is not None and rebuild.available else set()
         unmatched = [(row["locator"]["page"], row["posted_date"], row["amount_minor"]) for row in rebuild.rows] if rebuilt else []

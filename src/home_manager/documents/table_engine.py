@@ -142,6 +142,7 @@ class Anchor:
     value: Decimal  # Signed: a minus sign or parentheses make it negative.
     inside_table: bool  # A candidate: the row with the same line stays in the table's rows, flagged, until the statement layer decides.
     dated: bool = False  # The line also prints a date.
+    marker: str | None = None  # The amount's printed marker (minus, plus, credit, debit): what a CR or DR balance means is the statement layer's.
 
 
 @dataclass
@@ -880,7 +881,8 @@ def scan(page, table, state, layout, begin, hi, readings, headings):
 
     def candidate(row, line, kind, dated):
         row.candidate, row.reject = kind, None
-        table.anchors.append(Anchor(page.number, row.line_ids[0] if row.line_ids else "", kind, value_of(only_amount(line)), True, dated))
+        amount = only_amount(line)
+        table.anchors.append(Anchor(page.number, row.line_ids[0] if row.line_ids else "", kind, value_of(amount), True, dated, amount.value[1]))
 
     def source():
         return next((other for other in reversed(table.rows) if other.dates and not other.candidate), None)
@@ -967,6 +969,7 @@ def read_page(number, layout_page, previous):
                 continue
             opened = Open(EngineTable(table_id, [number], layout.columns, [], "other"), layout)
         readings = {line.index: read_line(line, layout, view) for line in lines[lo:hi]}
+        title = None
         if matched:
             begin, headings = lo, ()
         else:
@@ -975,13 +978,15 @@ def read_page(number, layout_page, previous):
                 continue
             headings = heading_start(lines, lo, first, layout)
             begin = min(headings) if headings else first
+            if not headings and first > lo and title_line(lines[first - 1]):
+                title = " ".join(word.text for word in lines[first - 1].words)  # A section title directly above a headless table labels its rows.
             opened.labels = [(" ".join(token.text for token in tokens), union(token.box for token in tokens)) for index in sorted(headings) for tokens in lines[index].tokens]
             opened.table.headings = [" ".join(word.text for word in lines[index].words) for index in sorted(headings)]
             opened.table.labels = [text for text, _ in opened.labels]
             if headings and bound_by_headings(layout, [lines[index] for index in sorted(headings)], view):
                 readings = {line.index: read_line(line, layout, view) for line in lines[lo:hi]}
             opened.relabel()
-        state = {"section": opened.section, "title": None}
+        state = {"section": opened.section, "title": title}
         starts = scan(page, opened.table, state, layout, begin, hi, readings, headings)
         opened.section = state["section"]
         if not any(row.page == number for row in opened.table.rows):
@@ -1002,7 +1007,8 @@ def read_page(number, layout_page, previous):
             continue
         kind, amount = balance_kind(words_of(line)), only_amount(line)
         if kind and amount is not None:
-            found.anchors.append(Anchor(number, page.line_id(line.index), kind, value_of(amount), False, any(token.kind == "date" for token in line.all_tokens())))
+            found.anchors.append(Anchor(number, page.line_id(line.index), kind, value_of(amount), False, any(token.kind == "date" for token in line.all_tokens()),
+                                        amount.value[1]))
             page.mark([line.index])
     for line in lines:
         tokens = line.all_tokens()

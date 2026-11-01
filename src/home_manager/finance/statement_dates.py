@@ -52,15 +52,28 @@ def placed(shape, order, start, end):
         return None, 'The date "{date}" is not a real date.'
 
 
+DUPLICATE = ("The same row is printed twice: {posted} {description} {amount} on page {first_page} (row {first_row}) and page {second_page} "
+             "(row {second_row}). Both were recorded; check whether it is one payment.")
+
+
+def duplicate_pairs(recorded):
+    """FR-29: each pair of recorded rows with the same date, amount and description on different pages or tables, as (first, second,
+    posted) in the order the rows were recorded. Rows are grouped by that key first, so a long statement isn't compared pair by pair."""
+    groups = {}
+    for position, (row, posted) in enumerate(recorded):
+        groups.setdefault((posted, row.amount_minor, " ".join(row.description.split()).casefold()), []).append(position)
+    pairs = []
+    for positions in groups.values():
+        for at, position in enumerate(positions):
+            first, posted = recorded[position]
+            for other in positions[at + 1:]:
+                second = recorded[other][0]
+                if (first.page, first.table_id) != (second.page, second.table_id):
+                    pairs.append((position, other, first, second, posted))
+    return [(first, second, posted) for _, _, first, second, posted in sorted(pairs, key=lambda pair: pair[:2])]
+
+
 def duplicates(recorded):
-    """FR-29: one issue per pair of recorded rows with the same date, amount and description on different pages or tables."""
-    issues = []
-    for position, (first, posted) in enumerate(recorded):
-        for second, other in recorded[position + 1:]:
-            if (posted, first.amount_minor, " ".join(first.description.split()).casefold()) != (
-                    other, second.amount_minor, " ".join(second.description.split()).casefold()):
-                continue
-            if (first.page, first.table_id) != (second.page, second.table_id):
-                issues.append(f"The same row is printed twice: {posted} {first.description} {first.amount} on page {first.page} (row {first.row}) and "
-                              f"page {second.page} (row {second.row}). Both were recorded; check whether it is one payment.")
-    return issues
+    """FR-29: one issue per pair of `duplicate_pairs`."""
+    return [DUPLICATE.format(posted=posted, description=first.description, amount=first.amount, first_page=first.page, first_row=first.row,
+                             second_page=second.page, second_row=second.row) for first, second, posted in duplicate_pairs(recorded)]

@@ -19,6 +19,7 @@ import re
 import socket
 import sqlite3
 from statistics import median
+from types import SimpleNamespace
 
 import pytest
 
@@ -1218,3 +1219,108 @@ def test_stmt_fr14_the_models_period_is_used_only_when_none_is_printed(tmp_path,
 def test_stmt_fr14_a_printed_period_wins_over_the_models(tmp_path):
     _, reading = statement(tmp_path, "WF", fallback_period=("2025-01-01", "2025-01-31"))
     assert reading.period == ("2026-10-01", "2026-10-31") and recorded(reading)[0][0] == "2026-10-02"
+
+
+# === SL-08: the code review's findings (plans/pdf-table-engine/progress.yaml SL-08) ==================================================
+# Each statement is built here, its expected values written out by hand.
+
+REVIEW_PERIOD = "Statement period 10/01/2026 to 10/31/2026"
+
+
+def plain_pages(above, labels, rows, edges=(400, 500), name="SYNTH REVIEW BANK"):
+    """One page: lines above, a heading (Date, Description, then `labels` over the amount columns; none when `labels` is empty) and
+    `rows` of (date, description, amount texts at `edges`...); a row of one text is a section title at the date column."""
+    items = sf.lines_above(above)
+    y = 700
+    if labels:
+        items += tf.row_items(y, [(40, "Date"), (110, "Description"), *[(edge, label, True) for edge, label in zip(edges, labels)]])
+        y -= 20
+    for row in rows:
+        items += tf.row_items(y, [(40, row[0])] if len(row) == 1 else [(40, row[0]), (110, row[1]), *[(edge, text, True) for edge, text in zip(edges, row[2:])]])
+        y -= 20
+    items.append(sf.words_footer(name, y))
+    return [{"items": items}]
+
+
+def test_sl08_f1_a_banks_dr_balances_are_overdrawn_so_each_amount_keeps_its_printed_sign(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Beginning balance 100.00 DR", "Ending balance 125.00 DR", REVIEW_PERIOD), ("Amount", "Balance"),
+                        [("10/02/2026", "SYNTH FEE", "-10.00", "110.00 DR"), ("10/05/2026", "SYNTH CARD", "-20.00", "130.00 DR"),
+                         ("10/09/2026", "SYNTH DEPOSIT", "5.00", "125.00 DR")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, -2000, 500]
+    assert (reading.opening_minor, reading.closing_minor) == (-10000, -12500)
+    assert [row["locator"]["balance_minor"] for row in reading.rows] == [-11000, -13000, -12500]
+    assert reading.issues == [] and reading.decided["signs"] == {ONE_TABLE: "chain"}
+
+
+def test_sl08_f1_a_cards_cr_balance_is_in_the_holders_favour(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW CARD", "Previous Balance 50.00 CR", "New Balance 10.00", REVIEW_PERIOD), ("Amount", "Balance"),
+                        [("10/03/2026", "SYNTH SHOP", "20.00", "30.00 CR"), ("10/08/2026", "SYNTH FUEL", "40.00", "10.00")], name="SYNTH REVIEW CARD")
+    result = read_pages(tmp_path, pages)
+    reading = stt.read(result, statement_type="credit_card", currency="USD")
+    assert [amount for _, amount, _ in recorded(reading)] == [-2000, -4000]  # Two charges.
+    assert (reading.opening_minor, reading.closing_minor) == (-5000, 1000)
+    assert [row["locator"]["balance_minor"] for row in reading.rows] == [-3000, 1000]
+    assert reading.issues == []
+
+
+def test_sl08_f2_a_column_headed_balance_is_never_the_money_however_its_numbers_add_up(tmp_path):
+    # Read the other way round, Amount chains as the balance with Balance as the money: 10.00 + 10.00 = 20.00, 20.00 + 20.00 = 40.00.
+    pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Amount", "Balance"),
+                        [("10/02/2026", "SYNTH ONE", "10.00", "1.00"), ("10/05/2026", "SYNTH TWO", "20.00", "10.00"),
+                         ("10/09/2026", "SYNTH THREE", "40.00", "20.00")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == [1000, 2000, 4000] and role_list(reading) == ["signed", "balance"]
+    assert reading.issues == ["Page 1 row 2: the balance 10.00 doesn't follow from the row above"]
+
+
+def totals_pages(withdrawn, deposited):
+    return plain_pages(("SYNTH REVIEW BANK", "Beginning balance 100.00", "Ending balance 100.00", REVIEW_PERIOD), ("Withdrawals", "Deposits"),
+                       [("10/02/2026", "SYNTH FEE", "10.00", ""), ("10/05/2026", "SYNTH REFUND", "", "10.00"), ("", "Totals", withdrawn, deposited)])
+
+
+def test_sl08_f4_a_printed_total_that_the_rows_dont_add_up_to_is_a_review_issue_however_the_signs_were_decided(tmp_path):
+    _, reading = statement(tmp_path, "review", pages=totals_pages("20.00", "20.00"))
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, 1000]  # The net still takes 100.00 to 100.00.
+    assert reading.issues == ["Page 1: the printed total 20.00 doesn't match the rows above it, whose amounts in that column add up to 10.00; check the rows."] * 2
+    assert [(check.code, check.page) for check in reading.checks] == [("total_mismatch", 1)] * 2
+
+
+def test_sl08_f4_totals_that_add_up_raise_nothing(tmp_path):
+    _, reading = statement(tmp_path, "review", pages=totals_pages("10.00", "10.00"))
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, 1000] and reading.issues == [] and reading.checks == []
+
+
+def test_sl08_f5_a_section_title_directly_above_a_headless_table_labels_its_rows(tmp_path):
+    pages = tf.cs_pages()
+    pages[0]["items"] = [item for item in pages[0]["items"] if not (item[1] == 700 and item[2] in ("Date", "Description", "Amount"))]
+    _, reading = statement(tmp_path, "CS", pages=pages)
+    assert [(posted, amount) for posted, amount, _ in recorded(reading)] == [(row[4], row[5]) for row in tf.CS_ROWS]  # Payments stay money in.
+    assert reading.issues == []
+
+
+def test_sl08_f5_a_headless_table_under_a_pending_title_records_nothing(tmp_path):
+    pages = plain_pages(("SYNTH REVIEW CARD", "Card number XXXX7002", REVIEW_PERIOD), (),
+                        [("Pending transactions",), ("10/30/2026", "SYNTH HOTEL", "200.00"), ("10/31/2026", "SYNTH TAXI", "12.50")], name="SYNTH REVIEW CARD")
+    reading = stt.read(read_pages(tmp_path, pages), statement_type="credit_card", currency="USD")
+    assert reading.rows == [] and [line.reason for line in reading.unplaced] == ["pending", "pending"]
+    assert reading.issues == ['Page 1: a pending row isn\'t recorded until it posts: "10/30/2026 SYNTH HOTEL 200.00"',
+                              'Page 1: a pending row isn\'t recorded until it posts: "10/31/2026 SYNTH TAXI 12.50"']
+
+
+def test_sl08_f3_the_money_issues_are_checks_numbered_by_engine_table_page_and_row(tmp_path):
+    _, reading = statement(tmp_path, "BRK")
+    [check] = reading.checks
+    assert (check.code, check.page, check.rows) == ("balance_chain_break", 1, {"row": (ONE_TABLE, 1, 14)})
+    assert check.text() in reading.issues and check.text(lambda table_id, page, row: row - 1).startswith("Page 1 row 13: ")
+
+
+def test_sl08_f7_rows_printed_twice_are_found_in_record_order_without_comparing_every_pair():
+    row = lambda page, table, number, text, minor: SimpleNamespace(page=page, table_id=table, row=number, description=text, amount="1.00", amount_minor=minor)  # noqa: E731
+    recorded_rows = [(row(1, "t1", 1, "SYNTH A", 100), "2026-10-01"), (row(1, "t1", 2, "SYNTH B", 100), "2026-10-01"),
+                     (row(2, "t1", 1, "synth  a", 100), "2026-10-01"), (row(2, "t1", 2, "SYNTH B", 100), "2026-10-01"),
+                     (row(1, "t1", 3, "SYNTH A", 100), "2026-10-01")]
+    pairs = statement_dates.duplicate_pairs(recorded_rows)
+    assert [(first.page, first.row, second.page, second.row) for first, second, _ in pairs] == [(1, 1, 2, 1), (1, 2, 2, 2), (2, 1, 1, 3)]
+    many = [(row(1 + number % 2, "t1", number, f"SYNTH {number}", number), "2026-10-01") for number in range(20000)]
+    assert statement_dates.duplicate_pairs(many) == []

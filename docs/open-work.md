@@ -158,8 +158,6 @@ What is not built:
 - **Layouts the engine does not read yet** (found by the layout generator; it keeps clear of each):
   - A column printed only on dateless rows (for example an end-of-day balance beside the last row of each day, with dates
     printed once a day) is never found; its amounts end up in the description. Columns are built from dated lines.
-  - A section title directly above a headless table's first row doesn't label the rows below it, so that section's
-    direction (for example `Payments and Credits`) isn't used for them.
   - A two-digit year is placed only within the period's years, so a payment schedule dated in the next year has no year at
     all.
   - A last page of two or three rows with a money in/out pair and no heading leaves one column with one row, which
@@ -168,6 +166,10 @@ What is not built:
     (the plan's P6); no generated layout needs it, a real one might.
 - **Not in phase 1 by design:** decimal-comma amounts (`1.234,56`) are rejected as unreadable; scanned (vision) pages keep
   the model's rows; per-institution templates.
+- **A page or document title directly above a headless table** labels its rows like a section title, so a title whose
+  words name a direction (for example a card's `Credit Card Activity`, read as money in) gives a single unsigned column's
+  rows that direction when neither the chain nor the summary decides the signs. A section title inside a table has always
+  done this. Telling page titles from section titles isn't built.
 - **Index backfill time.** `pdf_import.backfill` now runs the engine on every saved reading (`ANALYZER_VERSION = 3`), so
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.

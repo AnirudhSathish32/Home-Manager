@@ -23,11 +23,11 @@ import re
 from types import SimpleNamespace
 
 from ..core.logs import log_failure
-from ..core.money import SYMBOLS, MoneyError, to_minor
+from ..core.money import EXPONENTS, SYMBOLS, MoneyError, currency_code, to_minor
 from ..documents import table_engine
 from ..documents.pdf_reader import PDF_VERSIONS, read_result
 from ..documents.table_engine import EngineTable, Unplaced
-from .statement_dates import NO_LAYOUT_NOTE, PERIOD_SLACK, Rebuild, duplicates, placed, read_period
+from .statement_dates import DUPLICATE, NO_LAYOUT_NOTE, PERIOD_SLACK, Rebuild, duplicate_pairs, placed, read_period
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,8 @@ ROLES_UNKNOWN = "Page {page}: which amount columns are money in, money out or th
 ROLES_DIFFER = ("Page {page}: more than one reading of the amount columns fits the printed balances, so the signs of these rows are "
                 "taken from the column headings or the statement type; check them.")
 ROLES_UNKNOWN_ROW = "Which amount columns are money in, money out or the balance can't be told."
+TOTAL_OFF = ("Page {page}: the printed total {total} doesn't match the rows above it, whose amounts in that column add up to {summed}; "
+             "check the rows.")
 BOTH = "Both a debit and a credit are printed."
 MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
@@ -66,6 +68,22 @@ LEAVES_THE_AMOUNT = (table_engine.JOINED_AMOUNT, table_engine.MORE_THAN_ONE.spli
 
 
 # --- Results -----------------------------------------------------------------------------------------------------------------
+
+@dataclass
+class Check:
+    """A review issue about the statement's money (a chain break, a total that doesn't add up, two accounts, signs only the headings
+    give, a row printed twice) that the PDF import shows too. `rows` name the template's row numbers by (engine table id, page, row), so
+    the import can number them its own way; `text()` numbers them as Record does."""
+    code: str
+    page: int | None
+    template: str
+    args: dict = field(default_factory=dict)
+    rows: dict = field(default_factory=dict)
+
+    def text(self, number=None):
+        number = number or (lambda table_id, page, row: row)
+        return self.template.format(**self.args, **{name: number(*where) for name, where in self.rows.items()})
+
 
 @dataclass
 class StatementReading:
@@ -89,6 +107,7 @@ class StatementReading:
     others: list[str] = field(default_factory=list)  # Native reader tables nothing in the engine cites (the import lists them as other tables).
     pieces: dict = field(default_factory=dict)  # "<engine table id>:<page>" -> (id, kind, first piece's id): the table as each page shows it (`Reader.name_pieces`).
     outcomes: dict = field(default_factory=dict)  # `outcome_key` -> what became of that row (`Reader.outcome_of`); the PDF import adapter reads it.
+    checks: list[Check] = field(default_factory=list)  # The issues about the money, also in `issues`, for the PDF import to show.
 
     def as_rebuild(self) -> Rebuild:
         return Rebuild(self.available, self.pages, self.rows, self.issues, self.notes, self.dropped, self.opening_minor, self.closing_minor, self.period)
@@ -108,9 +127,12 @@ def minor_of(value, currency):
         return None
 
 
-def signed_minor(value, currency):
-    minor = minor_of(value, currency)
-    return None if minor is None else -minor if value < 0 else minor
+def held(minor, marker, card):
+    """A printed balance in minor units, signed: a minus is negative; DR is a bank balance overdrawn and CR a card balance in the
+    holder's favour, both negative (a card's balance is what is owed). None stays None."""
+    if minor is None:
+        return None
+    return -minor if marker == "minus" or marker == ("credit" if card else "debit") else minor
 
 
 def shape_of(token):
@@ -308,7 +330,7 @@ class Sheet:
                     value = -cell.minor if (role == "out") != (cell.marker == "minus") else cell.minor
                     clashes += (role == "out" and cell.marker == "credit") or (role == "in" and cell.marker == "debit")  # CR in a money-out column.
             if balance_at in cells and cells[balance_at].minor is not None:
-                found.balances[index] = -cells[balance_at].minor if cells[balance_at].marker == "minus" else cells[balance_at].minor
+                found.balances[index] = held(cells[balance_at].minor, cells[balance_at].marker, self.reader.card)
             if value is not None:
                 chain[index] = value
             found.reasons[index] = reason
@@ -335,7 +357,7 @@ class Sheet:
             if kind == "anchor":
                 anchor = self.anchor_of.get(index)
                 if anchor is not None and anchor.kind == "opening" and previous is None and found.implied_open is None:
-                    previous, accrued = signed_minor(anchor.value, self.reader.currency), 0
+                    previous, accrued = self.reader.anchor_minor(anchor), 0
                     found.implied_open = previous
                 continue
             if kind == "neutral":
@@ -374,7 +396,7 @@ class Sheet:
         closing = next((anchor for anchor in reversed(anchors) if anchor.kind == "closing"), None)
         if opening is None or closing is None:
             return
-        first, last = signed_minor(opening.value, reader.currency), signed_minor(closing.value, reader.currency)
+        first, last = reader.anchor_minor(opening), reader.anchor_minor(closing)
         if first is None or last is None:
             return
         found.printed = True
@@ -421,6 +443,7 @@ class Reader:
         self.issues, self.notes, self.recorded, self.kept_anchors = [], [], [], []
         self.dropped, self.order_pages, self.years = 0, set(), set()
         self.outcomes = {}
+        self.checks = []
         self.pieces = {}
         self.walk = {"previous": None}  # The chosen year walked through the rows (account-import-pdf FR-07's year rule).
         self.carry = {}  # id(row) -> the row whose date a dateless row takes (OD-1).
@@ -428,7 +451,16 @@ class Reader:
         self.order = self.order_source = None
         self.single = False
 
+    def check(self, code, page, template, rows=None, /, **args):
+        found = Check(code, page, template, args, rows or {})
+        self.checks.append(found)
+        self.issues.append(found.text())
+
     # --- Reading order and text ----------------------------------------------------------------------------------------------
+
+    def anchor_minor(self, anchor):
+        """A printed opening or closing balance in minor units, its CR or DR read as `held` reads a running balance's."""
+        return held(minor_of(anchor.value, self.currency), "minus" if anchor.value < 0 else anchor.marker, self.card)
 
     def reading_order(self, anchor):
         return anchor.page, self.lines[anchor.page].get(anchor.line_id, (0, ""))[0]
@@ -623,6 +655,8 @@ class Reader:
             return Decision()
         candidates = []
         for roles in self.assignments(len(sheet.columns)):
+            if any(label == "balance" and role in ("in", "out", "signed") for label, role in zip(sheet.labels, roles)):
+                continue  # A column headed Balance is never money, however its numbers add up.
             for mode in (("row", "bank", "card") if "signed" in roles else (None,)):
                 candidates.append(sheet.evaluate(roles, mode, self.default, len(candidates)))
         usable = [candidate for candidate in candidates if candidate.usable]
@@ -821,17 +855,45 @@ class Reader:
             row = sheet.rows[position]
             cell = sheet.cells[position].get(candidate.roles.index("balance"))
             if cell is not None and balance is not None and not candidate.reasons[position]:
-                self.issues.append(CHAIN_BREAK.format(page=row.page, row=row.row, balance=cell.printed))
+                self.check("balance_chain_break", row.page, CHAIN_BREAK, {"row": (table.id, row.page, row.row)}, page=row.page, balance=cell.printed)
         if decision.tier in ("labels", "default") and (decision.differing or self.total < 2):
             # FR-13 names the reason for a statement of one row; a longer one whose signs only the headings or the type give has none.
             page = next((row.page for row in sheet.rows if not row.candidate), table.pages[0])
-            self.issues.append((ROLES_DIFFER if decision.differing else TOO_FEW).format(page=page))
+            self.check("roles_differ" if decision.differing else "signs_unchecked", page, ROLES_DIFFER if decision.differing else TOO_FEW, page=page)
+        self.check_totals(sheet, candidate)
+
+    def check_totals(self, sheet, candidate):
+        """FR-11, P7.6: every printed total of a money-in or money-out column is checked against the amounts printed in that column, however
+        the roles were decided. It holds when it is the sum of the table's rows, of the rows above it, of its page's rows above it, or of the
+        rows since the column's previous total (a subtotal per page or per section)."""
+        position_of = lambda page, line_id: (page, self.lines.get(page, {}).get(line_id, (0, ""))[0])  # noqa: E731
+        previous = {}
+        for total in sorted(sheet.table.totals, key=lambda total: position_of(total.page, total.line_id)):
+            position = sheet.index.get(total.column_id)
+            printed = minor_of(total.value, self.currency)
+            if position is None or candidate.roles[position] not in ("in", "out") or printed is None:
+                continue
+            at = position_of(total.page, total.line_id)
+            since = previous.get(position)
+            amounts = []  # (where, minor) of every row printing an amount in the column
+            for index, row in enumerate(sheet.rows):
+                cell = sheet.cells[index].get(position)
+                if candidate.kinds[index] == "row" and cell is not None and cell.minor is not None:
+                    amounts.append((position_of(row.page, row.line_ids[0]) if row.line_ids else (row.page, 0), cell.minor))
+            above = [(where, minor) for where, minor in amounts if where < at]
+            sums = {sum(minor for _, minor in amounts), sum(minor for _, minor in above), sum(minor for where, minor in above if where[0] == total.page),
+                    sum(minor for where, minor in above if since is None or where > since)}
+            previous[position] = at
+            if printed not in sums:
+                summed, exponent = sum(minor for _, minor in above), EXPONENTS[currency_code(self.currency)]
+                self.check("total_mismatch", total.page, TOTAL_OFF, page=total.page, total=f"{abs(total.value):,}",
+                           summed=f"{Decimal(summed).scaleb(-exponent):,.{exponent}f}")
 
     def joins(self, chains):
         """FR-17: two chains that each hold but don't join are one issue; both tables' rows were recorded."""
         for (first, one), (second, two) in zip(chains, chains[1:]):
             if one.implied_close != two.implied_open:
-                self.issues.append(TWO_ACCOUNTS.format(first=first.pages[0], second=second.pages[0]))
+                self.check("two_accounts", first.pages[0], TWO_ACCOUNTS, first=first.pages[0], second=second.pages[0])
                 return
 
     def pages(self):
@@ -842,7 +904,7 @@ class Reader:
         anchors = sorted([*self.summary_anchors, *self.kept_anchors], key=self.reading_order)
         opening = next((anchor for anchor in anchors if anchor.kind == "opening"), None)
         closing = next((anchor for anchor in reversed(anchors) if anchor.kind == "closing"), None)
-        return (signed_minor(opening.value, self.currency) if opening else None, signed_minor(closing.value, self.currency) if closing else None)
+        return (self.anchor_minor(opening) if opening else None, self.anchor_minor(closing) if closing else None)
 
     # --- Pieces ----------------------------------------------------------------------------------------------------------------
 
@@ -902,14 +964,16 @@ class Reader:
         self.dropped += len(self.unplaced) + len(self.pending)
         self.issues += [UNPLACED.format(page=line.page, text=line.text) for line in self.unplaced]
         self.issues += [PENDING.format(page=line.page, text=line.text) for line in self.pending]
-        self.issues += duplicates([(row, posted) for row, posted, _ in self.recorded])
+        for first, second, posted in duplicate_pairs([(row, posted) for row, posted, _ in self.recorded]):
+            self.check("duplicate_row", first.page, DUPLICATE, {"first_row": (first.table_id, first.page, first.row), "second_row": (second.table_id, second.page, second.row)},
+                       posted=posted, description=first.description, amount=first.amount, first_page=first.page, second_page=second.page)
         opening, closing = self.balances()
         self.notes = [NO_TABLE.format(page=page) for page in self.engine.pages_without_tables] + self.notes
         year = None if "none" in self.years else "period" if "period" in self.years else "choice" if "choice" in self.years else "printed" if self.years else None
         return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, self.pages(),
                                 opening, closing, tuple(day.isoformat() for day in self.period) if self.period else None, self.order,
                                 {"order": self.order_source, "year": year, "signs": signs}, roles, True, self.tables, self.unplaced + self.pending,
-                                self.summary_anchors, self.engine.other_native_tables, self.pieces, self.outcomes)
+                                self.summary_anchors, self.engine.other_native_tables, self.pieces, self.outcomes, self.checks)
 
 
 # --- Entry points ------------------------------------------------------------------------------------------------------------

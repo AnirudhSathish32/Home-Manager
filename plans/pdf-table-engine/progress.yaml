@@ -147,3 +147,26 @@ slices:
       On the synthetic corpus the engine reads the four aligned statements exactly (66 rows, all reconcile); the old reader gets 5 of 29
       on the wrapped one and nothing on the others. Older open-work.md entries under "PDF transaction import, still open" were not
       re-audited and may be partly stale. D4 (remove the old path) waits on the user's corpus run.
+  - id: SL-08
+    status: implemented (uncommitted, awaiting the hunk re-review)
+    start_head: a8b4891
+    provider: claude
+    model: claude-opus-5-5
+    origin: >-
+      review-code on SL-01..SL-07 (Codex gpt-6.1-sol, high, model-family independence, 2026-11-01): 6 MAJOR (F1-F6), 1 MINOR (F7).
+      The user chose to fix them directly, without the spec/plan/review-plan steps.
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_statement_rebuild.py tests/test_pdf_imports.py -k \"not generator_only\" -q -> 461 passed + the 2 changed tests below"
+      - ".venv/bin/python -m pytest tests/test_table_engine_record.py tests/test_table_engine_generator.py tests/test_evals.py tests/test_statement_accounts.py tests/test_statement_forms.py tests/test_extraction.py tests/test_provenance.py tests/test_reextraction.py tests/test_imports.py tests/test_layout_consumers.py tests/test_pdf_imports.py -q -> 681 passed"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py tests/test_table_engine_record.py -k sl08 -q -> 13 passed; all 13 fail with src/ reverted to a8b4891"
+      - "RUN_BROWSER_TESTS=1 the four browser files -> 28 passed"
+      - ".venv/bin/ruff check src tests evals scripts -> all checks passed"
+    notes: >-
+      F1 Anchor keeps its marker; statement_tables.held reads DR (bank) and CR (card) balances as negative, for running balances and anchors.
+      F2 a Balance-headed column never takes a money role. F3 Reader.check records Check(code, page, template, args, rows); pdf_import
+      shows them as ImportIssues with its own row numbers (saved in issues_json; rows stay ticked). F4 check_totals: every in/out column
+      total against the column's rows (all, above it, its page's, since the previous total). F5 a title line directly above a headless
+      table's first row seeds its section (open-work entry replaced by the page-title risk). F6 normalize takes rebuild.period, noting a
+      different model period. F7 duplicate_pairs groups by key. Changed tests: test_pdf_imports 7-a and 7-c now expect the chain-break
+      issue their fixtures' printed balances give (both breaks are real in the printed numbers). Not done: F7's early row-limit check
+      and candidate retention (no change needed for correctness).

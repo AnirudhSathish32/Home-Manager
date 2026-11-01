@@ -555,7 +555,10 @@ def test_analyzer_sc07_7a_a_payment_schedule_page_is_counted(tmp_path):
     assert [(row.page, row.date, row.description, row.amount_minor, row.labels) for row in schedule] == [
         (3, "10/01/2026", "Scheduled payment", -2500, ["continued from page 1"]), (3, "11/01/2026", "Scheduled payment", -2500, ["continued from page 1"])]
     assert [row.posted_date for row in schedule] == ["2026-10-01", "2026-11-01"] and all(row.ticked for row in schedule)
-    assert totals(analysis) == (fx.X_TOTALS[0] - 5000, fx.X_TOTALS[1]) and analysis.issues == []  # The title line has no date: not a row.
+    assert totals(analysis) == (fx.X_TOTALS[0] - 5000, fx.X_TOTALS[1])  # The title line has no date: not a row.
+    # pdf-table-engine FR-15 (review F3): the schedule's printed balance 975.00 isn't 1,011.00 less 25.00, and the import says so.
+    assert [(issue.page, issue.row, issue.code, issue.message) for issue in analysis.issues] == [
+        (3, 0, "balance_chain_break", "Page 3 row 0: the balance 975.00 doesn't follow from the row above")]
 
 
 # The contract's 7-a' period ends 09/20: FR-09 counts dates within 7 days of the period as inside it, so the end must be 7+ days before page 3's first date, 10/01.
@@ -587,7 +590,9 @@ def test_analyzer_sc07_7c_a_column_blank_on_every_row_is_rebuilt_from_the_words(
     analysis = analyze(tmp_path, fx.x_pages("7c"), **X_CHOICES)
     assert [(table.page, table.kind, table.selected) for table in analysis.tables] == [(1, "other", False), (1, "rebuilt", True), (2, "continuation", True), (3, "other", False)]
     assert [(row.description, row.amount_minor) for row in analysis.rows] == [("A1", -1000), ("A2", -2000), ("B1", -100), ("B2", 200)]
-    assert totals(analysis) == fx.X_7C_TOTALS and [issue.message for issue in analysis.issues] == ["Page 3: no transactions table found"]
+    # pdf-table-engine FR-15 (review F3): A2's 20.00 printed as a withdrawal doesn't take 990.00 to 1,010.00, and the import says so.
+    assert totals(analysis) == fx.X_7C_TOTALS and [issue.message for issue in analysis.issues] == [
+        "Page 1 row 1: the balance 1,010.00 doesn't follow from the row above", "Page 3: no transactions table found"]
 
 
 def test_analyzer_sc07_7d_an_amount_straddling_two_columns_is_an_unplaced_line(tmp_path):
