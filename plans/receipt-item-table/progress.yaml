@@ -1,0 +1,10 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: receipt-item-table
+plan_sha256: b93f6e1850514a132075a77b3c8f3f2ccfaea103114ca7da92221e2cf348d53b
+slices:
+  - id: SL-01
+    status: todo
+  - id: SL-02
+    status: todo
+  - id: SL-03
+    status: todo

@@ -1,0 +1,18 @@
+{
+  "feature": "receipt-item-table",
+  "spec": {
+    "sha256": "f9ace30ba4a003c8b40c1a0b284fdcac6e3460b662182abda1e8d558fd0fd5f2",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-01T13:48:57-05:00",
+    "approved_via": "agent",
+    "permission": "edit the contract then approve then send the plan for review"
+  },
+  "plan": {
+    "sha256": "b93f6e1850514a132075a77b3c8f3f2ccfaea103114ca7da92221e2cf348d53b",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-01T13:54:26-05:00",
+    "approved_via": "agent",
+    "permission": "approve the plan then implement the slices",
+    "spec_sha256": "f9ace30ba4a003c8b40c1a0b284fdcac6e3460b662182abda1e8d558fd0fd5f2"
+  }
+}
