@@ -53,6 +53,8 @@ ROLES_DIFFER = ("Page {page}: more than one reading of the amount columns fits t
 ROLES_UNKNOWN_ROW = "Which amount columns are money in, money out or the balance can't be told."
 TOTAL_OFF = ("Page {page}: the printed total {total} doesn't match the rows above it, whose amounts in that column add up to {summed}; "
              "check the rows.")
+LEAD_UNCHECKED = ('Page {page}: the title "{title}" directly above the table may be the page\'s rather than a section\'s, so it didn\'t decide the '
+                  "signs of the rows below it; they come from the column headings or the statement type, and nothing printed checks them. Check them.")
 BOTH = "Both a debit and a credit are printed."
 MORE_THAN_ONE_ROW = "More than one amount is printed for this row."
 
@@ -181,14 +183,6 @@ def convention_sign(convention, marker, magnitude):
     return magnitude if (convention == IN_DEFAULT) != (marker == "minus") else -magnitude
 
 
-TOTAL_WORDS = frozenset(("total", "totals", "subtotal", "subtotals", "for", "the", "this", "of", "and", "all", "period"))
-
-
-def section_words(text):
-    """The words of a section title or a total line that name what it is about (`Total ATM Withdrawals` and `ATM Withdrawals`: atm, withdrawals)."""
-    return set(re.findall(r"[a-z]+", (text or "").lower())) - TOTAL_WORDS
-
-
 def column_value(cell, role):
     """A printed amount in its column's own terms, for adding up against the column's printed total: a minus is a reversal, and so is a CR
     in a money-out column or a DR in a money-in column. In a signed column a CR or DR gives None (the total's sign can't be told)."""
@@ -266,13 +260,13 @@ class Sheet:
         self.labels = [label_role(column.labels) for column in self.columns]
         self.direction = {}  # id(row) -> in, out or None: its section's direction. A title that says neither (a page heading) does not end the one before it.
         self.unverified = set()  # id(row) of rows whose direction is the table's lead title's: it may be a page title, so only the arithmetic may use it.
-        current, last, lead = None, None, False
+        current, last, lead, opening = None, None, False, table.lead is not None  # Only the table's first section can be the lead title's.
         for row in self.rows:
             if row.section != last:
                 direction = title_direction(row.section)
                 if direction:
-                    current, lead = direction, row.section == table.lead
-                last = row.section
+                    current, lead = direction, opening and row.section == table.lead
+                opening, last = False, row.section
             self.direction[id(row)] = current
             if lead:
                 self.unverified.add(id(row))
@@ -353,7 +347,7 @@ class Sheet:
                     value = self.signed(cell, row, mode, default, checked)
                     found.unresolved = found.unresolved or value is None
                 else:
-                    value = -cell.minor if (role == "out") != (cell.marker == "minus") else cell.minor
+                    value = -column_value(cell, role) if role == "out" else column_value(cell, role)  # CR in a money-out column is money in.
                     clashes += (role == "out" and cell.marker == "credit") or (role == "in" and cell.marker == "debit")  # CR in a money-out column.
             if balance_at in cells and cells[balance_at].minor is not None:
                 found.balances[index] = held(cells[balance_at].minor, cells[balance_at].marker, self.reader.card)
@@ -888,14 +882,22 @@ class Reader:
             page = next((row.page for row in sheet.rows if not row.candidate), table.pages[0])
             self.check("roles_differ" if decision.differing else "signs_unchecked", page, ROLES_DIFFER if decision.differing else TOO_FEW, None, [table.id],
                        page=page)
+        if decision.tier in ("labels", "default") and sheet.unverified and "signed" in candidate.roles:
+            # The lead title may be a section's after all: say so when it would have given these rows other signs.
+            default = self.choices.get("sign") or self.default
+            titled = sheet.evaluate(candidate.roles, "row", default, candidate.order)
+            if titled.amounts != candidate.amounts:
+                page = next((row.page for row in sheet.rows if id(row) in sheet.unverified), table.pages[0])
+                self.check("lead_title_unchecked", page, LEAD_UNCHECKED, None, [table.id], page=page, title=table.lead)
         self.check_totals(sheet, candidate)
 
     def check_totals(self, sheet, candidate):
         """FR-11, P7.6: every printed column total is checked against the amounts printed in its column, however the roles were decided, each
-        amount with its printed sign (a reversal printed with a minus, or a CR in a money-out column, counts against the total). A total whose
-        words name the section of the rows directly above it is that section's total, its pending rows included. Any other total holds when
-        it is the sum of the table's rows, of the rows above it, of its page's rows above it, of the rows since the column's previous total,
-        or of the section directly above it. A signed column whose amounts print CR or DR isn't checked: its total's sign can't be told."""
+        amount with its printed sign (a reversal printed with a minus, or a CR in a money-out column, counts against the total). Which rows a
+        total covers isn't decided: it holds when it is the sum of any plausible group (the table's rows, the rows above it, its page's rows
+        above it, the rows since the column's previous total, the section directly above it, each with or without the pending rows where
+        they count), so only a total no group adds up to is an issue. A signed column whose amounts print CR or DR isn't checked: its
+        total's sign can't be told."""
         position_of = lambda page, line_id: (page, self.lines.get(page, {}).get(line_id, (0, ""))[0])  # noqa: E731
         table = sheet.table
         rows = [(row, sheet.cells[index], False) for index, row in enumerate(sheet.rows) if candidate.kinds[index] == "row"]
@@ -928,14 +930,11 @@ class Reader:
                     break
                 run.append(entry)
             posted = [entry for entry in above if not entry[3]]
-            named = section is not None and section_words(section) and section_words(section) <= section_words(self.line_text(total.page, [total.line_id]))
-            if named:
-                sums, summed = {sum(entry[2] for entry in run)}, sum(entry[2] for entry in run)
-            else:
-                sums = {sum(entry[2] for entry in entries if not entry[3]), sum(entry[2] for entry in posted),
-                        sum(entry[2] for entry in posted if entry[0][0] == total.page), sum(entry[2] for entry in posted if since is None or entry[0] > since),
-                        sum(entry[2] for entry in run)}
-                summed = sum(entry[2] for entry in posted)
+            total_of = lambda group: sum(entry[2] for entry in group)  # noqa: E731
+            sums = {total_of(entry for entry in entries if not entry[3]), total_of(entries), total_of(posted), total_of(above),
+                    total_of(entry for entry in posted if entry[0][0] == total.page), total_of(entry for entry in posted if since is None or entry[0] > since),
+                    total_of(run)}
+            summed = total_of(posted)
             if printed not in sums:
                 exponent = EXPONENTS[currency_code(self.currency)]
                 self.check("total_mismatch", total.page, TOTAL_OFF, None, [table.id], page=total.page, total=f"{total.value:,}",

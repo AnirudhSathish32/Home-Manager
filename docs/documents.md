@@ -303,7 +303,7 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
 - **The money issues Record raises** are the preview's issues too, and are saved with the import: a balance chain break
   (`balance_chain_break`, with the row as the import numbers it), a printed total the rows don't add up to
   (`total_mismatch`), two chains that don't join (`two_accounts`), signs only the headings or the type give
-  (`roles_differ`, `signs_unchecked`) and a row printed twice (`duplicate_row`). One is shown only when every table it is
+  (`roles_differ`, `signs_unchecked`, `lead_title_unchecked`) and a row printed twice (`duplicate_row`). One is shown only when every table it is
   about is imported, and none unticks rows.
 - **Dates, amounts and signs are exact.** A four-digit year is read as printed. A date without a year (or with a
   two-digit year) takes its year from the **printed statement period**, and waits for the year you choose only when no
@@ -622,7 +622,9 @@ evidence (Extract again on an unchanged reading changes nothing).
   owed), in the running balances and in the opening and closing balances alike. A single unsigned amount column takes each row's sign from its own marker (`CR`/`DR`, minus, parentheses), then its
   section title (payments and credits are money in; purchases, charges, fees and interest are money out), then the
   type's default. A title directly above a table with no heading may be a page's title (`Credit Card Activity`), so its
-  direction is used only when the balance chain or the printed summary checks it; it always marks pending rows. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
+  direction is used only when the balance chain or the printed summary checks it (it always marks pending rows). When
+  nothing checks it and it would have given other signs, that is an issue naming the title. A `CR` printed in a money-out
+  column is money in, and a `DR` in a money-in column money out. Where roles can't be told, nothing is guessed: the rows are listed, or recorded from the headings or
   the type with a review reason saying why.
 - **Values.** The date is the printed date; the description is the printed description, with wrapped lines joined and a
   check number kept in it; the amount is in minor units. A dateless row takes the date of the row above, with a record
@@ -653,9 +655,10 @@ evidence (Extract again on an unchanged reading changes nothing).
   than one account…") and both tables' rows are recorded. A printed column total that isn't the sum of the column's
   printed amounts is an issue ("Page P: the printed total … doesn't match the rows above it…"), however the roles were
   decided. Each amount counts with its printed sign (a reversal printed with a minus, or a CR in a money-out column,
-  counts against the total). A total whose words name the section directly above it (`Total ATM Withdrawals`) is that
-  section's, pending rows included; any other total may be the table's, the rows above it, its page's, those since the
-  column's previous total, or the section above it. A signed column whose amounts print CR or DR isn't checked. A page with a layout issue other than `unresolved_columns`
+  counts against the total). Which rows a total covers isn't decided: it holds when any plausible group adds up to it
+  (the table's rows, those above it, its page's, those since the column's previous total, or the section above it, with
+  or without pending rows), so only a total that no group adds up to is an issue. A signed column whose amounts print
+  CR or DR isn't checked. A page with a layout issue other than `unresolved_columns`
   still gives its rows and the statement needs review, naming the page. The same row printed on two pages or tables is
   recorded twice with an issue naming both places.
 - **Other tables are not read as transactions:** a balance table (dates and one amount column, no descriptions), a

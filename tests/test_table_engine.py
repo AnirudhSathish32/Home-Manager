@@ -1369,13 +1369,14 @@ def section_pages(section_total):
                         ("10/06/2026", "SYNTH ATM TWO", "30.00", ""), ("", "Total ATM Withdrawals", section_total, ""), ("10/09/2026", "SYNTH PAY", "", "100.00")])
 
 
-def test_sl09_n4_a_total_that_names_its_section_is_that_sections_total(tmp_path):
-    _, good = statement(tmp_path, "review", pages=section_pages("50.00"))
-    assert [amount for _, amount, _ in recorded(good)] == [-1000, -2000, -3000, 10000] and good.checks == []
-    other = tmp_path / "wrong"
-    other.mkdir()
-    _, wrong = statement(other, "review", pages=section_pages("60.00"))  # 60.00 is every withdrawal above it, not the section's.
-    assert wrong.issues == ["Page 1: the printed total 60.00 doesn't match the rows above it, whose amounts in that column add up to 50.00; check the rows."]
+@pytest.mark.parametrize("printed, flagged", [("50.00", False), ("60.00", False), ("70.00", True)])
+def test_sl10_a_section_total_holds_when_any_plausible_group_adds_up_to_it(tmp_path, printed, flagged):
+    """SL-10 (option B): which rows a total covers isn't decided. 50.00 is the section, 60.00 every withdrawal above it (so a section total
+    misprinted as 60.00 isn't caught: the price of no false alarms); 70.00 is no group's sum."""
+    _, reading = statement(tmp_path, "review", pages=section_pages(printed))
+    assert [amount for _, amount, _ in recorded(reading)] == [-1000, -2000, -3000, 10000]
+    assert reading.issues == ([f"Page 1: the printed total {printed} doesn't match the rows above it, whose amounts in that column add up to 60.00; check the rows."]
+                              if flagged else [])
 
 
 def pending_total_pages(total):
@@ -1392,7 +1393,7 @@ def test_sl09_n4_a_pending_sections_total_counts_its_pending_rows(tmp_path):
     other = tmp_path / "wrong"
     other.mkdir()
     wrong = card(other, pending_total_pages("13.00"))
-    assert [check.code for check in wrong.checks] == ["total_mismatch"] and "add up to 12.00" in wrong.checks[0].text()
+    assert [check.code for check in wrong.checks] == ["total_mismatch"] and "printed total 13.00" in wrong.checks[0].text()
 
 
 def test_sl09_f4_a_signed_columns_printed_total_is_checked(tmp_path):
@@ -1416,3 +1417,68 @@ def test_sl09_n5_an_issue_about_a_table_left_out_of_the_import_isnt_shown(tmp_pa
 def test_sl09_f7_identical_rows_of_one_table_are_no_pairs_and_no_pairwise_work():
     row = SimpleNamespace(page=1, table_id="t1", row=1, description="SYNTH SAME", amount="1.00", amount_minor=100)
     assert statement_dates.duplicate_pairs([(row, "2026-10-01")] * 50000) == []
+
+
+# === SL-10: the second hunk review's findings (plans/pdf-table-engine/progress.yaml SL-10) =============================================
+
+def headless_card(tmp_path, above, rows):
+    return card(tmp_path, plain_pages(("SYNTH REVIEW CARD", "Card number XXXX7003", REVIEW_PERIOD, *above), (), rows, name="SYNTH REVIEW CARD"))
+
+
+def test_sl10_fa_a_later_section_with_the_lead_titles_text_keeps_its_direction(tmp_path):
+    reading = headless_card(tmp_path, (), [("Payments and Credits",), ("10/03/2026", "SYNTH PAYMENT ONE", "50.00"), ("Purchases",),
+                                           ("10/05/2026", "SYNTH SHOP", "20.00"), ("Payments and Credits",), ("10/09/2026", "SYNTH PAYMENT TWO", "30.00")])
+    assert [amount for _, amount, _ in recorded(reading)][1:] == [-2000, 3000]  # Only the first section can be a page's title.
+
+
+def test_sl10_fb_a_lead_title_that_would_have_given_other_signs_is_a_review_issue(tmp_path):
+    reading = headless_card(tmp_path, (), [("Payments and Credits",), ("10/03/2026", "SYNTH PAYMENT", "50.00"), ("Purchases",),
+                                           ("10/05/2026", "SYNTH SHOP", "20.00")])
+    assert [amount for _, amount, _ in recorded(reading)] == [-5000, -2000]  # The card's default; nothing printed checks the title.
+    assert [check.code for check in reading.checks] == ["lead_title_unchecked"]
+    assert reading.issues == ['Page 1: the title "Payments and Credits" directly above the table may be the page\'s rather than a section\'s, so it '
+                              "didn't decide the signs of the rows below it; they come from the column headings or the statement type, and nothing "
+                              "printed checks them. Check them."]
+
+
+def test_sl10_fb_a_lead_title_that_agrees_with_the_default_raises_nothing(tmp_path):
+    reading = headless_card(tmp_path, (), [("Purchases",), ("10/03/2026", "SYNTH SHOP", "20.00"), ("10/05/2026", "SYNTH FUEL", "40.00")])
+    assert [amount for _, amount, _ in recorded(reading)] == [-2000, -4000] and reading.issues == []
+
+
+@pytest.mark.parametrize("withdrawn, deposited, amounts", [("2.00 CR", "", [-1000, 200, 10000]), ("", "2.00 DR", [-1000, -200, 10000])])
+def test_sl10_fc_cr_in_money_out_is_money_in_and_dr_in_money_in_is_money_out(tmp_path, withdrawn, deposited, amounts):
+    pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"),
+                        [("10/02/2026", "SYNTH FEE", "10.00", ""), ("10/05/2026", "SYNTH ADJUSTMENT", withdrawn, deposited),
+                         ("10/09/2026", "SYNTH PAY", "", "100.00")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert [amount for _, amount, _ in recorded(reading)] == amounts and reading.issues == []
+
+
+@pytest.mark.parametrize("sections, total", [
+    ((("Fees", "5.00"), ("Interest", "3.00")), ("Total Fees and Interest", "8.00")),
+    ((("ATM Withdrawals", "20.00"), ("Withdrawals", "10.00")), ("Total Withdrawals", "30.00"))])
+def test_sl10_fd_a_grand_total_over_several_sections_holds(tmp_path, sections, total):
+    rows = [("10/02/2026", "SYNTH PAY", "", "100.00")]
+    for number, (title, amount) in enumerate(sections, 3):
+        rows += [(title,), (f"10/0{number}/2026", f"SYNTH {title.upper()}", amount, "")]
+    pages = plain_pages(("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD), ("Withdrawals", "Deposits"), [*rows, ("", total[0], total[1], "")])
+    _, reading = statement(tmp_path, "review", pages=pages)
+    assert reading.checks == [] and len(reading.rows) == 3
+
+
+def test_sl10_fe_a_grand_total_with_the_pending_rows_holds(tmp_path):
+    reading = card(tmp_path, plain_pages(("SYNTH REVIEW CARD", "Card number XXXX7003", REVIEW_PERIOD), ("Amount",),
+                                         [("10/02/2026", "SYNTH SHOP", "25.00"), ("10/04/2026", "SYNTH BOOKS", "15.00"), ("Pending transactions",),
+                                          ("10/30/2026", "SYNTH HOTEL", "5.00"), ("", "Total", "45.00")], edges=(400,), name="SYNTH REVIEW CARD"))
+    assert [amount for _, amount, _ in recorded(reading)] == [-2500, -1500] and reading.checks == []
+
+
+def test_sl10_fd_a_subtotal_per_page_of_a_section_over_two_pages_holds(tmp_path):
+    above = ("SYNTH REVIEW BANK", "Account number 0000001234", REVIEW_PERIOD)
+    first = plain_pages(above, ("Withdrawals", "Deposits"), [("10/02/2026", "SYNTH PAY", "", "100.00"), ("Withdrawals",), ("10/03/2026", "SYNTH ONE", "10.00", ""),
+                                                             ("10/04/2026", "SYNTH TWO", "20.00", ""), ("", "Subtotal Withdrawals", "30.00", "")])
+    second = plain_pages(("SYNTH REVIEW BANK",), ("Withdrawals", "Deposits"), [("10/05/2026", "SYNTH THREE", "6.00", ""), ("10/06/2026", "SYNTH FOUR", "4.00", ""),
+                                                                               ("", "Subtotal Withdrawals", "10.00", "")])
+    _, reading = statement(tmp_path, "review", pages=first + second)
+    assert [amount for _, amount, _ in recorded(reading)] == [10000, -1000, -2000, -600, -400] and reading.checks == []

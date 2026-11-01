@@ -168,9 +168,12 @@ What is not built:
   the model's rows; per-institution templates.
 - **Telling a page title from a section title.** A title directly above a table with no heading is used for its
   direction only when the balance chain or the printed summary checks it, so a headless card table whose only section
-  title sits directly above it, with neither printed, takes the type's default instead of that section's direction.
-- **Column totals not checked:** a signed column whose amounts print CR or DR (the total's sign can't be told), and a
-  total whose words don't name its section is accepted when it matches any of the scopes it might cover.
+  title sits directly above it, with neither printed, takes the type's default instead of that section's direction
+  (with an issue naming the title when the two differ).
+- **Column totals are a loose check.** A total passes when any plausible group of rows adds up to it, so a misprinted
+  total that happens to equal another group (a section total equal to every withdrawal above it) isn't caught. Deciding
+  which rows each total covers was tried and gave false alarms on grand totals, per-page subtotals and pending rows;
+  revisit with what the corpus run shows. A signed column whose amounts print CR or DR isn't checked.
 - **Index backfill time.** `pdf_import.backfill` now runs the engine on every saved reading (`ANALYZER_VERSION = 3`), so
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.

@@ -172,8 +172,9 @@ slices:
       issue their fixtures' printed balances give (both breaks are real in the printed numbers). Not done: F7's early row-limit check
       and candidate retention (no change needed for correctness).
   - id: SL-09
-    status: implemented, awaiting review (fresh Claude subagent, the user's choice: the Codex budget is spent)
+    status: done (reviewed: fresh Claude general-purpose subagent, context-only independence; findings F-A..F-E fixed in SL-10)
     start_head: f0e46d8
+    commit: e7da227
     provider: claude
     model: claude-opus-5-5
     origin: >-
@@ -192,3 +193,23 @@ slices:
       Reader.pending_rows); other totals may match any scope, the section run added. F4 signed-column totals now checked, skipped when an
       amount prints CR/DR. N5 Check.tables; the import shows a check only when every table it names is imported (replaces page filtering).
       F7 duplicate_pairs groups by key then by (page, table) and pairs only across groups.
+  - id: SL-10
+    status: implemented, awaiting review (fresh Claude subagent)
+    start_head: e7da227
+    provider: claude
+    model: claude-opus-5-5
+    origin: >-
+      Claude review of e7da227: F-A, F-B, F-C MAJOR; F-D, F-E MINOR. The user chose option B for totals (accept a total any plausible group
+      of rows adds up to; never decide a total's scope) over refining the scope rules.
+    verification:
+      - "the 13-file regression set (as SL-09) -> 1027 passed; ruff clean"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -k sl10 -q -> 12 passed; 9 fail with src/ at e7da227 (the other 3 are guards: 50.00 section total, a lead title agreeing with the default, a per-page subtotal)"
+      - "RUN_BROWSER_TESTS=1 the four browser files -> 27 passed, 1 failed: the same date-dependent test_document_page_states_find_correct_and_decide as SL-09 (not this feature)"
+    notes: >-
+      F-A the lead title's direction is unverified only for the table's first section run (a later same-text title is a real section).
+      F-B labels/default tiers re-evaluate with the lead direction; if the amounts differ, a lead_title_unchecked issue names the title.
+      F-C Sheet.evaluate signs in/out cells with column_value: CR in money-out is money in, DR in money-in is money out (the conflict count
+      for ties is unchanged). Option B: check_totals' named-section rule removed; a total holds against the table (with and without pending
+      rows), the rows above it (with and without pending), its page's rows above it, the rows since the previous total, or the section run;
+      section_words/TOTAL_WORDS removed. The SL-09 test that a section total of 60.00 is flagged was replaced: 60.00 now passes (it equals
+      every withdrawal above it), 70.00 is flagged.
