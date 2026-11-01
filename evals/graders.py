@@ -178,8 +178,9 @@ def table_reader(answers, rebuild, unplaced=None, failed=False):
     exact      printed rows recorded with exactly the right date and signed amount (so the right direction); a repeated row counts once each
     reconciled whether the recorded rows take the answers' opening balance to the answers' closing one (a card statement's previous
                balance to its new balance); None when either balance is not among the checked answers
-    dropped    rows the reader read but did not record, as it counted them (rejected rows, undated rows, and the engine's unplaced lines)
-    unplaced   printed lines the reader named as placed in no column (None for the old reader, which does not name them)
+    dropped    what the reader itself counted as read but not recorded (rejected rows, undated rows, and the engine's unplaced lines). The old
+               reader counts no line it never took for a row, so this is not comparable between the two readers
+    unplaced   printed lines the engine found no column for and listed (None for the old reader, which names none)
     failed     the reader raised, so it recorded nothing
     """
     expected = Counter((row["posted_date"], row["amount_minor"]) for row in answers.rows)

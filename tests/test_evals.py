@@ -13,14 +13,16 @@ import pytest
 
 from evals import intake
 from evals.corpus import TAGS, Corpus
-from evals.graders import FAILURE_KINDS, arithmetic, compare, failure_kind, grade, match_rows, same_name, score
+from evals.graders import FAILURE_KINDS, arithmetic, compare, failure_kind, grade, match_rows, same_name, score, table_reader
 from evals.guard import GuardError, _hook, check_server
 from evals.report import check_summary
 from evals.run import load_config, run
 from evals.synthetic import create as create_synthetic
 from evals.synthetic import documents, money
+from home_manager.core.answers import CRITICAL as CRITICAL_FIELDS
 from home_manager.core.answers import ROWS, Answers, empty_answers
 from home_manager.core.money import EXPONENTS
+from home_manager.finance.statement_dates import Rebuild
 from test_donations import DESCRIBE, extracted  # noqa: F401
 from test_extraction import MISSING, RECEIPT, classification, identity, receipt, receipt_items, receipt_summary  # noqa: F401
 
@@ -91,6 +93,32 @@ def test_arithmetic_checks_the_models_own_numbers():
     # A bill's lines make up its new charges; a past-due balance is in the amount due, not in them.
     phone = {"total_minor": 1500, "amount_due_minor": 2000, "items": [{"line_total_minor": 1000}, {"line_total_minor": 500}]}
     assert arithmetic("bill", phone) is True and arithmetic("bill", {**phone, "total_minor": 2000}) is False
+
+
+def test_table_reader_counts_exact_rows_and_reconciliation_and_never_values():
+    def statement(kind, opening, closing, rows, state="correct"):
+        names = ("previous_balance_minor", "statement_balance_minor") if kind == "credit_card_statement" else ("opening_balance_minor", "closing_balance_minor")
+        fields = {name: {"value": None, "state": "correct"} for name in CRITICAL_FIELDS[kind]}
+        fields.update({names[0]: {"value": opening, "state": state}, names[1]: {"value": closing, "state": state}})
+        return Answers(document_type=kind, fields=fields, rows=[{"posted_date": day, "description": "X", "amount_minor": amount} for day, amount in rows],
+                       rows_state="correct", rows_complete=True)
+
+    def read(*rows, dropped=0):
+        return Rebuild(True, rows=[{"posted_date": day, "amount_minor": amount} for day, amount in rows], dropped=dropped)
+
+    bank = statement("bank_statement", 1000, 1300, [("2026-10-01", -200), ("2026-10-01", -200), ("2026-10-02", 700)])
+    assert table_reader(bank, read(("2026-10-01", -200), ("2026-10-01", -200), ("2026-10-02", 700))) == {
+        "rows": 3, "recorded": 3, "exact": 3, "reconciled": True, "dropped": 0, "unplaced": None, "failed": False}
+    # A repeated row counts once each; a wrong direction, a wrong date and an extra row are not exact; recorded rows still decide reconciliation.
+    wrong = table_reader(bank, read(("2026-10-01", -200), ("2026-10-02", -700), ("2026-10-03", 700), ("2026-10-03", 5), dropped=2), unplaced=1)
+    assert (wrong["recorded"], wrong["exact"], wrong["reconciled"], wrong["dropped"], wrong["unplaced"]) == (4, 1, False, 2, 1)
+    # A card statement's charges are negative and add to what is owed.
+    card = statement("credit_card_statement", 1000, 1500, [("2026-10-01", -700), ("2026-10-02", 200)])
+    assert table_reader(card, read(("2026-10-01", -700), ("2026-10-02", 200)))["reconciled"] is True
+    assert table_reader(card, read(("2026-10-01", 700), ("2026-10-02", 200)))["reconciled"] is False
+    # Balances nobody checked cannot be reconciled; a reader that raised recorded nothing.
+    assert table_reader(statement("bank_statement", None, None, [("2026-10-01", 1)], "unchecked"), read(("2026-10-01", 1)))["reconciled"] is None
+    assert table_reader(bank, None, failed=True) == {"rows": 3, "recorded": 0, "exact": 0, "reconciled": False, "dropped": 0, "unplaced": None, "failed": True}
 
 
 def test_every_failure_gets_one_kind():
@@ -337,7 +365,7 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
 EXISTING_DOCUMENTS = "fbabda291e8cc424a7658a29b1a010aa3af93050fd9b75ef53e8af1d84a94609"  # sha256 of the 44 documents of the corpus before the aligned statements.
 
 
-def test_the_aligned_statements_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
+def test_table_engine_aligned_statements_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
     """FR-34 / SC-20: the existing 44 cases keep their ids and answers; four text-PDF statements in aligned columns follow them."""
     everything = documents()
     keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
@@ -375,6 +403,81 @@ def test_every_synthetic_answer_is_printed_and_adds_up():
         assert arithmetic(kind, record) is expected, document["lines"][0]
         Answers(document_type=kind, fields={name: {"value": value, "state": "correct"} for name, value in document["fields"].items()},
                 rows=document["rows"], rows_state="correct", rows_complete=True)
+
+
+# The two table readers --------------------------------------------------------------------------------------------------
+
+def test_table_engine_and_the_old_reader_are_compared_on_text_pdf_statements(tmp_path, local_model):
+    """SC-20: `evals.run.run` over the synthetic corpus's text-PDF statements reports the old reader and the engine side by side."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    statements = [case for case in corpus.cases() if case.info.document_type in ("bank_statement", "credit_card_statement") and case.info.source_kind == "native_pdf"]
+    aligned = {case.id for case in statements if "aligned" in case.info.tags}
+    assert len(statements) == 7 and len(aligned) == 4  # The four aligned ones and the three statements of flowed text.
+    folder = run(corpus, config_for(local_model), case_ids=[case.id for case in statements], network_guard=False, echo=lambda _: None)
+    lines = [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    by_case = {line["case_id"]: line["details"]["table_readers"] for line in lines}
+    assert set(by_case) == {case.id for case in statements}
+    # The engine records every printed row of the four aligned statements with the right date, amount and direction, and each reconciles.
+    for case in statements:
+        if case.id in aligned:
+            engine = by_case[case.id]["engine"]
+            assert engine == {"rows": len(case.answers().rows), "recorded": len(case.answers().rows), "exact": len(case.answers().rows),
+                              "reconciled": True, "dropped": 0, "unplaced": 0, "failed": False}, case.info.tags
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"]
+    old, engine = summary["legacy"], summary["engine"]
+    assert old["documents"] == engine["documents"] == 7 and old["rows"] == engine["rows"] == sum(len(case.answers().rows) for case in statements)
+    assert old["reconcilable"] == engine["reconcilable"] == 7 and old["failed"] == engine["failed"] == 0
+    assert old["unplaced"] is None and isinstance(engine["unplaced"], int)  # The old reader names no unplaced lines.
+    # The engine is at least as good as the old reader on each metric, over the corpus and on every statement.
+    assert engine["exact"] >= old["exact"] and engine["reconciled"] >= old["reconciled"]
+    assert engine["exact_share"] >= old["exact_share"] and engine["reconciled_share"] >= old["reconciled_share"]
+    for each in by_case.values():
+        assert each["engine"]["exact"] >= each["legacy"]["exact"] and bool(each["engine"]["reconciled"]) >= bool(each["legacy"]["reconciled"])
+    assert engine["exact"] >= sum(len(case.answers().rows) for case in statements if case.id in aligned) and engine["reconciled"] >= 4
+    # summary.json passes the report's allowlist and holds no description, amount or date of any statement.
+    text = (folder / "summary.json").read_text(encoding="utf-8")
+    check_summary(json.loads(text))
+    for case in statements:
+        for row in case.answers().rows:
+            assert row["description"] not in text and money(abs(row["amount_minor"])) not in text and row["posted_date"] not in text
+    # report.md shows both readers side by side.
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "side by side (7 statements" in report
+    table = [line for line in report.splitlines() if line.startswith(("| Reader |", "| Old reader |", "| Table engine |"))]
+    assert len(table) == 3 and "Unplaced lines" in table[0]
+    assert f"| Old reader | {old['exact']} of {old['rows']} (" in table[1] and f"| Table engine | {engine['exact']} of {engine['rows']} (" in table[2]
+    assert f" | {engine['unplaced']} | {engine['dropped']} | {engine['failed']} |" in table[2] and " | n/a | " in table[1]
+
+
+def test_table_engine_comparison_leaves_out_what_is_not_a_text_pdf_statement_and_counts_a_failing_reader(tmp_path, local_model, monkeypatch):
+    """Receipts and statement images have no table readers to compare; a reader that raises recorded nothing, and is counted."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    cases = corpus.cases()
+    others = [case.id for case in cases if case.info.document_type == "receipt"][:1] + [case.id for case in cases if case.info.source_kind == "scan" and case.info.document_type == "bank_statement"][:1]
+    folder = run(corpus, config_for(local_model), case_ids=others, network_guard=False, echo=lambda _: None)
+    assert all("table_readers" not in json.loads(text)["details"] for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines())
+    assert "table_readers" not in json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert "side by side" not in (folder / "report.md").read_text(encoding="utf-8")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("injected engine fault")
+
+    monkeypatch.setattr("evals.run.statement_tables.read", broken)
+    aligned = [case.id for case in cases if "aligned" in case.info.tags][:3]
+    folder = run(corpus, config_for(local_model), case_ids=aligned, network_guard=False, echo=lambda _: None)
+    readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"]
+    assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["reconciled"] == 0 and readers["legacy"]["failed"] == 0
+    assert readers["engine"]["recorded"] == 0 and readers["engine"]["rows"] == readers["legacy"]["rows"]
+
+
+def test_table_engine_comparison_is_suppressed_in_the_summary_for_few_statements(tmp_path, local_model):
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    chosen = [case.id for case in corpus.cases() if "aligned" in case.info.tags][:2]
+    folder = run(corpus, config_for(local_model), case_ids=chosen, network_guard=False, echo=lambda _: None)
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"] == {"suppressed": True}
 
 
 # The shareable summary -----------------------------------------------------------------------------------------------

@@ -411,17 +411,20 @@ def reader_comparison(stats):
     if not counts["engine"]["documents"]:
         return []
     out = ["", f"Text-PDF statements read by the old reader and by the table engine, side by side ({counts['engine']['documents']} statements, "
-           "read from the saved reading with no model; more exact rows and reconciled statements are better, fewer unrecorded rows are better):", "",
-           "| Reader | Printed rows recorded exactly (date, amount, direction) | Statements that reconcile | Rows read but not recorded | Unplaced lines | Reader failed |",
+           "read from the saved reading with no model; more exact rows and more reconciled statements are better):", "",
+           "| Reader | Printed rows recorded exactly (date, amount, direction) | Statements that reconcile | Unplaced lines | Counted and left out | Reader failed |",
            "|---|---|---|---|---|---|"]
     for reader in READERS:
         each = counts[reader]
         unplaced = each["unplaced"] if reader == "engine" else "n/a"
         out.append(f"| {READER_NAMES[reader]} | {each['exact']} of {each['rows']} ({percent(each['exact'], each['rows'])}) | "
-                   f"{each['reconciled']} of {each['reconcilable']} ({percent(each['reconciled'], each['reconcilable'])}) | {each['dropped']} | "
-                   f"{unplaced} | {each['failed']} |")
+                   f"{each['reconciled']} of {each['reconcilable']} ({percent(each['reconciled'], each['reconcilable'])}) | {unplaced} | "
+                   f"{each['dropped']} | {each['failed']} |")
     return out + ["", "Exact means the date and the signed amount both equal the printed row's. Reconciles means the recorded rows take the "
-                  "opening balance to the closing balance. The old reader names no unplaced lines; what it leaves out is in the rows it did not record."]
+                  "opening balance to the closing balance. Unplaced lines are printed lines the engine found no column for and listed for review; "
+                  "the old reader names none, and what it never took for a row is in no count. Counted and left out is what each reader "
+                  "itself counted as read but not recorded (rejected rows, undated rows and, for the engine, unplaced lines), so it is not "
+                  "comparable between the two."]
 
 
 def markdown(manifest, results, regressions, previous):
