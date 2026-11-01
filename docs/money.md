@@ -554,9 +554,10 @@ the server. The page calculates nothing.
 - **Line total** is the item's own printed amount, before tax. A returned item's is negative.
 - **Paid** is the item's allocated share of what was paid, as stored. The receipt's tax is spread over its taxed items,
   or over every item when the taxed items' amounts add up to zero. Paid reads "with tax" when the receipt has tax, the
-  item has a share, and the item's weight in that spread is not zero (an untaxed item, when some items are taxed, or
-  an item whose amount is zero, carries none of the tax). It reads "—" when the item has no stored share, such as a
-  receipt with no total. The column is hidden when no item has a share. A returned item's Paid is negative.
+  item has a share, and the item's weight in that spread is not zero (an item whose amount is zero never carries tax.
+  An untaxed item carries none unless the taxed items' amounts add up to zero, when every item's amount is its
+  weight). It reads "—" when the item has no stored share, such as a receipt with no total. The column is hidden when
+  no item has a share. A returned item's Paid is negative.
 
 Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
 **Not matched to an item**. A difference over one cent between subtotal + tax + tip and total is called out. Under
