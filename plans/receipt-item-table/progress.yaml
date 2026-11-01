@@ -56,9 +56,18 @@ slices:
     notes: >-
       Fixture R has no tenders or savings, so Printed details is absent for it; sc17 accepts that, as the plan allows.
   - id: SL-04
-    status: in_progress
-    start_head: 739cd27
+    status: done
     scope: "fixes for code review round 1 (CR1-M1, CR1-m1)"
+    start_head: 24950d0
+    end_head: c637d56
+    commit: c90a340
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_receipt_item_table.py -q -> 60 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_spending_splits.py tests/test_receipt_kinds.py -q -> 51 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+      - "full suite deferred to after the review loop"
 final_verification:
   head: 6589985
   command: ".venv/bin/python -m pytest -q"
@@ -84,7 +93,7 @@ code_review:
           "1.00000000000000000000000000001" / "0.99999999999999999999999999999" round to 1 and wrongly show the line
           total as Unit price. Fix: compare with Decimal(1)/Decimal(-1) or copy_abs(); add regression tests.
         orchestrator_check: "reproduced (Overflow; long fraction compares equal to 1)"
-        status: open
+        status: fixed in SL-04 (c90a340)
       - id: CR1-m1
         severity: MINOR
         where: "docs/money.md Item categories and splits (Unit price and Paid bullets)"
@@ -92,6 +101,6 @@ code_review:
           Docs say any count other than 1 shows "—" (code also accepts -1), and that tax falls back to every item only
           when none is marked taxed (code falls back whenever the taxed amounts sum to zero; badge needs a non-zero basis).
         orchestrator_check: "confirmed against ledger.py item_table and splits.tax_basis"
-        status: open
+        status: fixed in SL-04 (c90a340)
     verified_by_reviewer: "allocate matches the baseline on 10,000 deterministic cases; footer spans correct for all Code/Paid combinations; source cell last; no browser money arithmetic; tests assert hand-worked values"
     not_covered: "browser assertions for Paid hidden when every share is absent, mixed missing-share rows, rejected items through the full record/UI path"
