@@ -1,7 +1,7 @@
-"""The receipt item table on the document page (specs/receipt-item-table FR-01 – FR-07; test contract SC-02, SC-11 steps 1-3,
-SC-12, SC-20): its columns, Qty and Unit price, Line total and Paid, and the footer under Line total. Synthetic receipts
-(tests/receipt_item_fixtures.py) read and recorded through the real path. Each scenario checks the stored receipt and its
-shares by SQL against the contract's hand-worked values before it looks at the page."""
+"""The receipt item table on the document page (specs/receipt-item-table FR-01 – FR-07, FR-25; test contract SC-02, SC-11,
+SC-12, SC-17, SC-20): its columns, Qty and Unit price, Line total and Paid, the footer under Line total, and Printed details
+without the counts. Synthetic receipts (tests/receipt_item_fixtures.py) read and recorded through the real path. Each scenario
+checks the stored receipt and its shares by SQL against the contract's hand-worked values before it looks at the page."""
 import pytest
 
 from document_forms_fixtures import record_document
@@ -151,7 +151,7 @@ def test_sc02_item_table(tmp_path):
 
 @browser_test
 def test_sc11_count_and_weight(tmp_path):
-    """SC-11 steps 1-3 (FR-02, FR-03): a weighed item, a counted item with no unit price, and a plain one."""
+    """SC-11 (FR-02, FR-03, FR-25): a weighed item, a counted item with no unit price, and a plain one."""
     playwright = pytest.importorskip("playwright.sync_api")
     expect = playwright.expect
     with document_server(tmp_path, TOKEN, seed=seed) as (base, ids, manager), playwright.sync_playwright() as driver:
@@ -166,6 +166,32 @@ def test_sc11_count_and_weight(tmp_path):
         assert (bananas["qty"], bananas["unit_price"], bananas["line_total"]) == ("2.31 lb", "$0.59/lb", "$1.36")
         assert (yogurt["qty"], yogurt["unit_price"], yogurt["line_total"]) == ("3", "—", "$4.50")
         assert (milk["qty"], milk["unit_price"]) == ("1", "$3.49")
+        # 4. Printed details has no line for Bananas or Yogurt (FR-25): G has no tenders, so the section may be absent.
+        for section in page.locator(".doc2-details-section").all():
+            text = section.inner_text()
+            assert "BANANAS" not in text and "YOGURT" not in text and "2.31 lb" not in text
+        assert failures == []
+        browser.close()
+
+
+@browser_test
+def test_sc17_printed_details_without_counts(tmp_path):
+    """SC-17 (FR-25): Printed details has no "10 × $4.19" line for Little Veg; the item table shows the count and price."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        assert stored(manager, ids["r_record"])[0] == R_AMOUNTS
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["r_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
+        veg = cells(table_row(page, "LITLE VEGET"))
+        assert (veg["qty"], veg["unit_price"]) == ("10", "$4.19")
+        # R has no tenders or savings, so Printed details may be absent; if it shows, it has no item or count line.
+        for section in page.locator(".doc2-details-section").all():
+            text = section.inner_text()
+            assert "LITLE VEGET" not in text and "10 ×" not in text and "4.19" not in text
         assert failures == []
         browser.close()
 

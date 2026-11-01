@@ -539,10 +539,28 @@ One receipt can hold several kinds of spending. A Costco trip might include a fo
 (furniture & decor) and eggs, bacon and milk (groceries). So categories belong to **receipt items**, not to whole
 receipts (migration 032, `finance/splits.py`).
 
-On the document, **Price** shows the item's own printed amount. **Paid** shows its allocated share with "with tax"
-only when it differs; an item with no price shows a dash. Subtotal, Tax, Tip and Total appear below the items with
-Correct controls, along with any amount **Not matched to an item**. A difference over one cent between subtotal +
-tax + tip and total is called out. This display does not change how the ledger allocates shares.
+On the document, a receipt's items are a table with these columns, left to right: **Item**, **Code**, **Qty**,
+**Unit price**, **Category**, **Line total**, **Paid** and the source button. Everything shown is stored or worked out on
+the server. The page calculates nothing.
+
+- **Code** is the printed product code. The column is hidden when no item has one, as on a restaurant receipt. An item
+  without a code in a table that has the column shows "—".
+- **Qty** is the weight when one was printed (2.31 lb), else the printed count (10), else 1. Showing 1 does not store a
+  quantity.
+- **Unit price** is the printed price per weight, with its unit ($0.59/lb), for a weighed item. For any other item it
+  is the printed unit price. An item with no printed unit price whose quantity is 1 shows its line total, since that is
+  the price of one. Any other count with no unit price shows "—", as does a weighed item with no printed price per
+  weight. It is never calculated by dividing.
+- **Line total** is the item's own printed amount, before tax. A returned item's is negative.
+- **Paid** is the item's allocated share of what was paid, as stored. It reads "with tax" when part of the receipt's
+  tax is in it, which is when the receipt has tax, the item has a share, and the item is one the tax is spread over (a
+  taxed item, or any item when none is marked taxed). It reads "—" when the item has no stored share, such as a
+  receipt with no total. The column is hidden when no item has a share. A returned item's Paid is negative.
+
+Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
+**Not matched to an item**. A difference over one cent between subtotal + tax + tip and total is called out. Under
+Printed details a receipt shows its payments and savings but no per-item lines, because the weight and count are in the
+table. This display does not change how the ledger allocates shares.
 
 The Transactions **Charges** view labels an itemised charge **Split by items**, linking to Items. Changing the
 whole charge's category in its drawer asks before replacing the item split. Read-only category cells explain

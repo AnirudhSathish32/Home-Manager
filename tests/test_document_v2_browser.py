@@ -121,8 +121,13 @@ def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
         assert page.evaluate(NO_OVERFLOW)
         # 2. Grocery: weights and counts beside their items, tenders apart from the items, and Total · Gift card · Paid.
         open_document(page, base, ids["forms_grocery_doc"])
-        expect(details).to_contain_text("2.31 lb @ 0.59/lb")
-        expect(details.locator("dd", has_text="2 ×")).to_contain_text("2.00")
+        # FR-25: the weight and the count are in the item table, not under Printed details.
+        expect(details).not_to_contain_text("2.31 lb")
+        expect(details).not_to_contain_text("2 ×")
+        table = page.locator(".ledger-rows")
+        expect(table).to_contain_text("2.31 lb")
+        expect(table).to_contain_text("0.59")
+        expect(table.locator("td[data-col=qty]", has_text="2")).not_to_have_count(0)
         for text in ("Gift card ****5555", "5.00", "EBT", "3.55"):
             expect(details).to_contain_text(text)
         items = page.locator("#doc2-panel-record .doc2-section", has=page.locator("h3", has_text="Items"))

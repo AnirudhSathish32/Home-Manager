@@ -618,19 +618,6 @@ function doc2DetailList(state, record, find) {
     doc2DetailRow(state, record, list, label, tender, find, `detail:tenders.${index + 1}.amount`);
   });
   (details.deposit_splits || []).forEach(split => doc2DetailRow(state, record, list, `Direct deposit${split.last_four ? ` ****${split.last_four}` : ""}`, split, find));
-  // A grocery row's weight and price per weight, or its count and unit price, beside the item it belongs to.
-  for (const item of record.items || []) {
-    const weight = item.details?.weight, per = item.details?.price_per_weight;
-    if (weight) {
-      list.append(element("dt", item.description), element("dd", `${weight.display}${per ? ` @ ${per.text}/${per.unit || weight.unit || ""}` : ""}`, "doc2-value"));
-      continue;
-    }
-    if (item.quantity && item.display?.unit_price_minor && record.receipt_kind === "grocery") {
-      const value = element("dd", "", "doc2-value");
-      value.append(document.createTextNode(`${item.quantity} × `), amount(item.display.unit_price_minor, {signed: false}));
-      list.append(element("dt", item.description), value);
-    }
-  }
   return list.children.length ? section : null;
 }
 // "Total 8.55 · Gift card −5.00 · Paid 3.55": Paid opens how it's worked out.
