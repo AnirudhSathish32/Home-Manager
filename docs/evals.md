@@ -92,7 +92,7 @@ in `tests/test_layout_consumers.py`. No configured-model or private-corpus accur
   retries, so first-try validity is measured.
 - **Two suites** (`evals/`, flat layout):
   - **Documents suite** (`python -m evals.run`): whole documents end to end through the real pipeline. It runs on the
-    44-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
+    48-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
     exchange printed without minus signs) have negative answers, so they measure `return_marker`, `returned` and the
     sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out. Its two bills (a
     family phone plan read per line with a past-due balance, and rent with water and trash) measure the provider, dates,
@@ -151,6 +151,46 @@ The report names a winner, or says that no model passes the gate.
   cases, and Cohen's kappa at least 0.6. An uncalibrated judge's scores are labelled as such and left out of the
   decision rule.
 - **No hand labels exist yet,** so no judge is calibrated.
+
+## The two table readers
+
+Text-PDF bank and card statements are read from their printed columns, and the app has two readers for them: the **old
+reader** (the heading-first `finance/statement_rows.py rebuild`, built on `pdf_import.analyze_legacy`) and the **table
+engine** (`documents/table_engine.py` with `finance/statement_tables.py`, [documents](documents.md#statement-rows-from-the-printed-columns)).
+The documents suite compares them (`evals/run.py table_readers`, `evals/graders.py table_reader`), so the old one can be
+removed once the engine is shown to do at least as well on the donated corpus ([open work](open-work.md)).
+
+- **What is compared.** Every native-PDF bank or card statement whose row list was confirmed complete. Both readers read
+  the same saved reading, with no model and no network, given the statement's own currency and period as Record gets
+  them from the model's summary. So the counts measure the readers, not the model, and are the same for every candidate.
+  A statement image, a scan and a receipt are not compared.
+- **Per reader, in `results.jsonl` and `summary.json`:**
+  - **Exact rows:** the printed rows recorded with the right date and the right signed amount (so the right direction;
+    money out is negative for a card statement too), against the confirmed rows as a multiset. Shown with its
+    denominator, the rows printed.
+  - **Reconciled statements:** those whose recorded rows take the confirmed opening balance to the confirmed closing
+    balance (a card's previous balance to its new balance), of the statements that have both balances checked.
+  - **Unplaced lines:** printed lines with a date and an amount that the engine found no column for and listed for review
+    ([documents](documents.md#statement-rows-from-the-printed-columns)). The old reader names none, so its count is
+    null in `summary.json` and "n/a" in the report; what it never took for a row is in no count.
+  - **Counted and left out** (`dropped`): what each reader itself counted as read but not recorded. It is shown, not
+    compared: the old reader doesn't count a line it never took for a row, so it can read less and count less.
+  - **Reader failed:** a reader that raised recorded nothing, and the count says so. The comparison never stops a run.
+- **The summary** adds `table_readers: {legacy, engine}` per candidate with `documents`, `rows`, `recorded`, `exact`,
+  `exact_share`, `reconcilable`, `reconciled`, `reconciled_share`, `dropped`, `unplaced` and `failed`: counts and
+  shares only, so it holds no description, amount or date and still passes the allowlist. Fewer than 3 statements are
+  suppressed like any other cell. **report.md** shows the two readers side by side in each candidate's section.
+- **The gate for the old reader.** The engine should be at least the old reader on exact rows and on reconciled
+  statements. On the synthetic corpus it is: it reads the four aligned statements exactly and the old reader does not;
+  the three statements of flowed text read by neither (below) tie at zero.
+- **The aligned cases.** The synthetic corpus has four text-PDF statements printed in aligned columns, tag `aligned`,
+  drawn by the layout generator (`evals/statement_layouts.py`, [documents](documents.md#statement-rows-from-the-printed-columns))
+  from fixed choices, so their answers come from the generator's inputs and never from a reader: a Wells Fargo-style
+  two-line heading with a running balance and daily balances (dates without a year, the period printed), a statement
+  printed DD/MM/YYYY, one with descriptions wrapped over up to three lines on two pages, and a card statement with
+  Payments and Purchases sections. They come after the other 44 documents, whose ids and answers are unchanged (a test
+  pins them). The other three PDF statements of the corpus (70, 300 and 60 rows) are one line of flowed text per row,
+  with no columns: neither reader finds a table in them, so Record takes the model's rows there.
 
 ## Donating documents
 
@@ -221,7 +261,8 @@ ideally inside an encrypted 7-Zip whose password is shared separately.
   - The developer runs the suite in their own terminal.
   - Deny rules are not a sandbox. The strongest guarantee is keeping the volume locked during AI coding sessions.
 - **What may leave the corpus.** Only `summary.json`, built from an allowlisted schema: counts, error categories,
-  strata, model and configuration labels, and case ids. It excludes:
+  strata, model and configuration labels, case ids, and the two table readers' counts and shares
+  ([above](#the-two-table-readers)). It excludes:
   - documents, images and text;
   - amounts, dates, merchant or employer names;
   - file names, paths, account details and hashes;

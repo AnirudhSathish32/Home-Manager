@@ -124,6 +124,54 @@ and link here for what isn't. When an item is built, remove it from this list an
     outright, wasn't recognized as one. The refund amount and the item (furniture) were missed. The refund reasoning
     needs another pass.
 
+## PDF table engine
+
+The engine reads bank and card statements from their printed columns, in Record and in PDF import (phase 1,
+`specs/pdf-table-engine`; built: [documents](documents.md#statement-rows-from-the-printed-columns), [evals](evals.md#the-two-table-readers)).
+What is not built:
+- **Remove the old statement path** (spec D4). The old reader (`pdf_import.analyze_legacy`, `finance/statement_rows.py`
+  with its `Reading`, `heading_row`, `cut_at` and `rebuilt_pages`) stays only so the evals can compare it with the engine.
+  Remove it, with the engine-fault fallback to it (FR-24: Record's use of the model's rows with the `REBUILD_FAILED` note,
+  and PDF import's refusal), after you run `python -m evals.run` on your donated corpus in your own terminal and report
+  that the engine is at least as good as the old reader on exact rows and on reconciled statements (the `table_readers`
+  counts in `summary.json`). Until then nothing is removed. `scripts/statement_diagnose.py` still imports old
+  `pdf_import` internals (`PageView`, `assign`, `is_heading`, `native_spec`) and `statement_rows` (`Reading`, `selected`,
+  `rebuild`); move it to the engine first.
+- **Accuracy on real statements is unmeasured.** The engine is proved on synthetic statements (the layout generator's
+  200 seeded cases, the four `aligned` eval cases). `scripts/statement_diagnose.py` prints a statement's shapes and counts, never
+  its text, for you to run on your own PDFs.
+- **The next document kinds** (spec FR-40 – FR-44, each needs its own approved spec and test contract first, OD-5):
+  - **FR-40 pay stubs:** earnings, taxes and deductions tables from the engine, with Current and YTD decided by
+    earnings − taxes − deductions = net pay in each; hours and rates are never pay.
+  - **FR-41 bills:** charge lines from the engine; their sum is the amount due, and previous balance − payments + new
+    charges = balance where printed.
+  - **FR-42 text-PDF receipts:** item lines from the engine; quantity × unit price = line total, lines sum to the
+    subtotal, subtotal + tax (+ tip) = total.
+  - **FR-43 investment statements:** holdings from the engine; shares × price = value, and holdings sum to the account
+    total.
+  - **FR-44 the reader's own table finder:** `pdf_layout.table_grid`, which needs a heading, is replaced by the engine for
+    every consumer (layout context, native anchoring, the document page's cell highlights) once every kind has switched.
+- **Two accounts in one layout** (test contract G10). A combined checking-and-savings statement whose accounts print
+  the same columns is one table: its rows are recorded and the second account's first balance shows as a chain break
+  ("the balance … doesn't follow from the row above"), not as the "may hold more than one account" issue, which is for
+  tables with different columns. Splitting a statement into accounts stays a non-goal.
+- **Layouts the engine does not read yet** (found by the layout generator; it keeps clear of each):
+  - A column printed only on dateless rows (for example an end-of-day balance beside the last row of each day, with dates
+    printed once a day) is never found; its amounts end up in the description. Columns are built from dated lines.
+  - A section title directly above a headless table's first row doesn't label the rows below it, so that section's
+    direction (for example `Payments and Credits`) isn't used for them.
+  - A two-digit year is placed only within the period's years, so a payment schedule dated in the next year has no year at
+    all.
+  - A last page of two or three rows with a money in/out pair and no heading leaves one column with one row, which
+    isn't a column.
+  - A table that switches to another column set in the middle of a page, starting a run of two or more rows, isn't cut
+    (the plan's P6); no generated layout needs it, a real one might.
+- **Not in phase 1 by design:** decimal-comma amounts (`1.234,56`) are rejected as unreadable; scanned (vision) pages keep
+  the model's rows; per-institution templates.
+- **Index backfill time.** `pdf_import.backfill` now runs the engine on every saved reading (`ANALYZER_VERSION = 3`), so
+  the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
+  measured; the backfill resumes after a restart.
+
 ## Planning and investments
 
 - **Investment income modelled separately** in the forecast (`yield_bp`, `reinvest`, `investment_tax_percent`). The

@@ -10,14 +10,14 @@ Tests of how well Home Manager's local models do their jobs, for choosing betwee
 ## Try it on synthetic documents first
 
 ```powershell
-python -m evals.synthetic .runtime\synthetic-corpus            # 40 made-up documents with known answers
+python -m evals.synthetic .runtime\synthetic-corpus            # 48 made-up documents with known answers
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml --dry-run
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml
 ```
 
 Edit `evals\models.toml` to list your LM Studio model IDs. Each candidate pairs a vision model with a reasoning model.
 
-The synthetic corpus is the same every time (a fixed seed): 24 receipts, 6 bank statements, 5 card statements and 7 pay stubs. 36 are images read by the vision model, and 6 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
+The synthetic corpus is the same every time (a fixed seed): 24 receipts, 9 bank statements, 6 card statements, 7 pay stubs and 2 bills. 38 are images read by the vision model, and 10 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
 
 | Tag | What it tests |
 |---|---|
@@ -32,6 +32,7 @@ The synthetic corpus is the same every time (a fixed seed): 24 receipts, 6 bank 
 | `faded` | Grey, speckled, slightly tilted print |
 | `ytd` | Pay stubs with a year-to-date column |
 | `return` | A return and an exchange printed without minus signs: the answers are negative (money back) |
+| `aligned` | Text-PDF bank and card statements printed in aligned columns: a Wells Fargo-style two-line heading, DD/MM/YYYY dates, wrapped descriptions, a card statement with sections. They also measure the two table readers ([below](#the-two-table-readers)) |
 
 Generate it into an empty folder: `evals.synthetic` adds to a folder and never deletes.
 
@@ -82,6 +83,16 @@ Results go to `P:\EvalCorpus\results\<run_id>\`:
   - timing;
   - the cases that newly fail or pass compared with the previous run on the same split.
 - `summary.json`: the same counts, built from an allowlist. It has no values, names, text, paths or errors, and any cell with fewer than 3 cases is suppressed. This is the one file you may share, for example to get help reading failures.
+
+### The two table readers
+
+For every native-PDF bank or card statement with a confirmed-complete row list, a run also reads the saved reading with the old statement reader (`finance/statement_rows.py`, through `pdf_import.analyze_legacy`) and with the table engine (`finance/statement_tables.py`). No model is involved, so the counts are the same for every candidate. Each reader gets the statement's own currency and period, as Record gets them from the model's summary.
+
+- `results.jsonl` holds, per case and reader, `details.table_readers.legacy` and `.engine`: the printed rows, the rows recorded, the rows recorded with exactly the right date and signed amount, whether the recorded rows take the opening balance to the closing balance (null when either balance was not checked), what the reader counted as left out, its unplaced lines (the engine only) and whether it failed.
+- `summary.json` has `table_readers: {legacy, engine}` per candidate: `documents`, `rows`, `recorded`, `exact`, `exact_share`, `reconcilable`, `reconciled`, `reconciled_share`, `dropped`, `unplaced` and `failed`. Counts and shares only; fewer than 3 statements are suppressed. The old reader's `unplaced` is null because it names no unplaced lines.
+- `report.md` shows the two side by side in each candidate's section: printed rows recorded exactly, statements that reconcile, unplaced lines, and what each reader counted and left out. The engine should be at least the old reader on the first two; the old reader goes only after you report that on your own corpus ([open work](../docs/open-work.md)).
+
+The design and the limits are in [docs/evals.md](../docs/evals.md#the-two-table-readers).
 
 ## Grading
 
@@ -183,7 +194,7 @@ Calibration:
 ## Tests
 
 These cover the suites and the app's donation export, using synthetic data only:
-- `tests/test_evals.py`: the documents suite;
+- `tests/test_evals.py`: the documents suite, including the synthetic corpus (48 cases, the four `aligned` statements added after the others) and the old reader against the table engine (`-k table_engine`);
 - `tests/test_eval_tasks.py`: the task suite, the decision rule and the judge;
 - `tests/test_donations.py`: the donation export.
 
