@@ -106,12 +106,26 @@ slices:
       (same date, amount, text) and Y's row 7 reads the same both ways; SC-13's Extract-again test publishes Z in its own account. Needs a
       contract decision before SL-06 implements J1. Decided 2026-10-31: one account, Y with 19 rows (contract amended in 3755252).
   - id: SL-06
-    status: in_progress
+    status: done
     start_head: 90bf5b1
+    end_head: 1c5efaa
+    commit: 2067fc9
     provider: claude
     model: claude-sonnet-5-5
     attempts:
       - "r1: commits 1e726c2..ba227c0, handoff 31d6087; 2 unlisted pdf-import tests failing by design (FR-06), 7-a' period contradiction, P11 piece ids, unlisted value changes. Orchestrator rerun: 18 passed; 239 passed + 2 failed; 470 passed; ruff clean."
       - "user decisions 2026-10-31: approve all; contract and plan amended (P11 keeps old import names), approvals renewed (delegated). Engine repairs a-e accepted by the orchestrator as non-material. r2 dispatched to update the two tests."
       - "r2: session limit 4 s after start (resets 8:40pm ET 2026-10-31), no changes; tree clean at 3b46c5a. Retry as r3 with the same brief."
+      - "r3: commit 2067fc9, handoff 1c5efaa"
+    verification:
+      - ".venv/bin/python -m pytest tests/test_table_engine_record.py -k \"_import or journey_j1\" -q -> 18 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_statement_rebuild.py tests/test_pdf_imports.py tests/test_imports.py tests/test_layout_consumers.py -q -> 241 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_pdf_imports_browser.py -q -> 10 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals scripts -> all checks passed (orchestrator rerun)"
+      - "SL-05 regression set + tests/test_table_engine.py -k \"not generator_only\" -> 470 passed (orchestrator rerun on r1 code; r3 changed only tests/test_pdf_imports.py)"
+    notes: >-
+      Engine repairs a-e accepted (continuation from the table's own heading labels; stray amounts on at most half a page's rows don't
+      stop a continuation; zone bound at the heading-label midpoint; a dated line with a stray amount is unplaced; EngineTable.labels;
+      FR-13's reason only for a one-row statement). Carried to SL-07 docs/open-work.md: index backfill now runs the engine on every
+      reading (time per reading on a large library not measured); scripts/statement_diagnose.py still imports old pdf_import internals.
   - {id: SL-07, status: todo}
