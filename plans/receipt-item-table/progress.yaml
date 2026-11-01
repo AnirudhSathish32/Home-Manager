@@ -69,9 +69,16 @@ slices:
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
       - "full suite deferred to after the review loop"
   - id: SL-05
-    status: in_progress
-    start_head: ca8332f
+    status: done
     scope: "fix for code review round 2 (CR2-m1, docs only)"
+    start_head: 49729a8
+    end_head: 293a1ed
+    commit: 7255210
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "docs/money.md Paid bullet checked by the orchestrator against splits.tax_basis and ledger.item_table"
+      - ".venv/bin/ruff check src tests -> exit 0 (worker)"
 final_verification:
   head: 6589985
   command: ".venv/bin/python -m pytest -q"
@@ -122,5 +129,5 @@ code_review:
           The parenthetical "an untaxed item, when some items are taxed, ... carries none of the tax" contradicts the
           zero-sum fallback: taxed 100 and -100 with untaxed 200 spreads tax over all three.
         orchestrator_check: "reproduced: tax_basis gives [100, -100, 200]"
-        status: open
+        status: fixed in SL-05 (7255210)
     verified_by_reviewer: "10,000 generated quantity strings and 52 edge cases, no exception; Ledger.record reads leave the database unchanged"
