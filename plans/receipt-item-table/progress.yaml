@@ -131,3 +131,10 @@ code_review:
         orchestrator_check: "reproduced: tax_basis gives [100, -100, 200]"
         status: fixed in SL-05 (7255210)
     verified_by_reviewer: "10,000 generated quantity strings and 52 edge cases, no exception; Ledger.record reads leave the database unchanged"
+post_review_verification:
+  head: ca8332f code (SL-04); SL-05 changed docs only
+  command: ".venv/bin/python -m pytest -q"
+  result: "54 failed, 20 errors, 2172 passed, 107 skipped (orchestrator run, 22m28s)"
+  notes: >-
+    The failing and erroring tests are identical, test by test, to the final_verification run and the START_HEAD
+    baseline. Passed rose by 7: SL-04's regression tests.
