@@ -106,6 +106,13 @@ def test_any_other_quantity_without_a_unit_price_shows_a_dash(quantity):
     assert table(row(1, 429, quantity=quantity))["unit_price"] is None
 
 
+@pytest.mark.parametrize("quantity", ["1e1000000", "-1e1000000", "1E-1000000", "1.00000000000000000000000000001",
+                                      "0.99999999999999999999999999999", "-1.00000000000000000000000000001"])
+def test_a_quantity_only_near_one_or_beyond_decimal_range_shows_a_dash_and_never_raises(quantity):
+    result = table(row(1, 429, quantity=quantity))
+    assert result["unit_price"] is None and result["qty"] == quantity
+
+
 def test_qty_is_the_printed_quantity_collapsed_else_one_and_is_never_empty():
     assert table(row(1, 429, quantity="  10 "))["qty"] == "10"
     assert table(row(1, 429, quantity="2   x"))["qty"] == "2 x"
@@ -265,6 +272,15 @@ def test_na_through_record_is_a_whole_return_and_the_filter_is_with_tax(tmp_path
         [entry] = record["items"]
         assert (entry["line_total_minor"], entry["share_minor"]) == (-1299, -1400)
         assert entry["table"] == {"qty": "1", "unit_price": {"display": "-12.99 USD", "per": None}, "tax_included": True}
+
+
+def test_a_quantity_too_large_for_decimal_still_loads_through_record(tmp_path, local_model):
+    with read_receipt(tmp_path, local_model, R_LINES, ra_replies()) as (manager, _run, _record, row_):
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipt_items SET quantity='1e1000000', unit_price_minor=NULL WHERE receipt_id=? AND position=1", (row_["id"],))
+        record = manager.ledger.record("receipt", row_["id"])
+        assert record["items"][0]["table"]["unit_price"] is None
+        assert record["items"][0]["table"]["qty"] == "1e1000000"
 
 
 def test_a_bill_gets_no_table(tmp_path):

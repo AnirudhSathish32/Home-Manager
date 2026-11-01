@@ -279,8 +279,9 @@ def item_table(item, receipt, basis_by_id, currency):
             counted = Decimal(quantity) if quantity else None
         except InvalidOperation:
             counted = None
-        if quantity and (counted is None or not counted.is_finite() or abs(counted) != 1):
-            unit_price = None  # More than one, a fraction or text: the price of one isn't the line total.
+        # Compared, not abs()'d: abs rounds to the context's precision and overflows on a huge exponent.
+        if quantity and (counted is None or not counted.is_finite() or counted not in (Decimal(1), Decimal(-1))):
+            unit_price = None  # Not exactly one or minus one (a count, a fraction, text): the price of one isn't the line total.
         elif item.get("line_total_minor") is not None:
             unit_price = {"display": format_minor(item["line_total_minor"], currency), "per": None}
         else:

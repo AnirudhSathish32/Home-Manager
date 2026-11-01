@@ -548,13 +548,14 @@ the server. The page calculates nothing.
 - **Qty** is the weight when one was printed (2.31 lb), else the printed count (10), else 1. Showing 1 does not store a
   quantity.
 - **Unit price** is the printed price per weight, with its unit ($0.59/lb), for a weighed item. For any other item it
-  is the printed unit price. An item with no printed unit price whose quantity is 1 shows its line total, since that is
-  the price of one. Any other count with no unit price shows "—", as does a weighed item with no printed price per
-  weight. It is never calculated by dividing.
+  is the printed unit price. An item with no printed unit price whose quantity is exactly 1 or −1 (or has no quantity)
+  shows its line total, since that is the price of one. Any other count with no unit price shows "—", as does a weighed
+  item with no printed price per weight. It is never calculated by dividing.
 - **Line total** is the item's own printed amount, before tax. A returned item's is negative.
-- **Paid** is the item's allocated share of what was paid, as stored. It reads "with tax" when part of the receipt's
-  tax is in it, which is when the receipt has tax, the item has a share, and the item is one the tax is spread over (a
-  taxed item, or any item when none is marked taxed). It reads "—" when the item has no stored share, such as a
+- **Paid** is the item's allocated share of what was paid, as stored. The receipt's tax is spread over its taxed items,
+  or over every item when the taxed items' amounts add up to zero. Paid reads "with tax" when the receipt has tax, the
+  item has a share, and the item's weight in that spread is not zero (an untaxed item, when some items are taxed, or
+  an item whose amount is zero, carries none of the tax). It reads "—" when the item has no stored share, such as a
   receipt with no total. The column is hidden when no item has a share. A returned item's Paid is negative.
 
 Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
