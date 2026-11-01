@@ -3,8 +3,24 @@ feature: receipt-item-table
 plan_sha256: b93f6e1850514a132075a77b3c8f3f2ccfaea103114ca7da92221e2cf348d53b
 slices:
   - id: SL-01
-    status: todo
+    status: done
+    start_head: c81cd11
+    end_head: 13e4d1e
+    commit: ddf1443
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_receipt_item_table.py -q -> 53 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_spending_splits.py tests/test_receipt_kinds.py tests/test_reextraction.py tests/test_bills_ledger.py -q -> 68 passed, 1 skipped (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest -q -> 54 failed, 20 errors, 2165 passed (worker run only)"
+    notes: >-
+      allocate change reviewed: tax_basis recomputes item_amount, identical to allocate's base, so shares are unchanged.
+      Full suite not green: the worker reports the same 54 failures and 20 errors (agent harness and tax engine files) at
+      START_HEAD c81cd11, so they predate this feature. Not rerun by the orchestrator (about 22 minutes); to be compared
+      against this baseline in the final full run.
   - id: SL-02
-    status: todo
+    status: in_progress
+    start_head: PLACEHOLDER
   - id: SL-03
     status: todo
