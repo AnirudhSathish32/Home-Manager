@@ -68,6 +68,10 @@ slices:
       - ".venv/bin/python -m pytest tests/test_spending_splits.py tests/test_receipt_kinds.py -q -> 51 passed (orchestrator rerun)"
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
       - "full suite deferred to after the review loop"
+  - id: SL-05
+    status: in_progress
+    start_head: ca8332f
+    scope: "fix for code review round 2 (CR2-m1, docs only)"
 final_verification:
   head: 6589985
   command: ".venv/bin/python -m pytest -q"
@@ -104,3 +108,19 @@ code_review:
         status: fixed in SL-04 (c90a340)
     verified_by_reviewer: "allocate matches the baseline on 10,000 deterministic cases; footer spans correct for all Code/Paid combinations; source cell last; no browser money arithmetic; tests assert hand-worked values"
     not_covered: "browser assertions for Paid hidden when every share is absent, mixed missing-share rows, rejected items through the full record/UI path"
+  - round: 2
+    reviewer: "codex / gpt-6.1-sol (reasoningEffort high), via t3, 0 helper subagents"
+    independence: model-family
+    risk: HIGH
+    range: 24950d0..c90a340
+    verdict: "no BLOCKER/MAJOR; CR1-M1 fixed; CR1-m1 residual MINOR (CR2-m1); review loop exits"
+    findings:
+      - id: CR2-m1
+        severity: MINOR
+        where: "docs/money.md Item categories and splits, Paid bullet"
+        summary: >-
+          The parenthetical "an untaxed item, when some items are taxed, ... carries none of the tax" contradicts the
+          zero-sum fallback: taxed 100 and -100 with untaxed 200 spreads tax over all three.
+        orchestrator_check: "reproduced: tax_basis gives [100, -100, 200]"
+        status: open
+    verified_by_reviewer: "10,000 generated quantity strings and 52 edge cases, no exception; Ledger.record reads leave the database unchanged"
