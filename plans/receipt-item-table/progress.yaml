@@ -43,5 +43,24 @@ slices:
       test_document_forms_show_printed_details_and_change_the_kind pass. Screenshot /tmp/sl02-shots/after/documents_14-1440-light.png
       reviewed: footer amounts under Line total, source cell last.
   - id: SL-03
-    status: in_progress
-    start_head: PLACEHOLDER
+    status: done
+    start_head: 584c74b
+    end_head: 6589985
+    commit: 5a52fd1
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py tests/test_document_v2_browser.py -q -> 11 passed, 1 failed (pre-existing test_document_page_states_find_correct_and_decide) (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+      - "FR-30: docs/money.md \"Item categories and splits\" diff reviewed by the orchestrator; heading unchanged"
+    notes: >-
+      Fixture R has no tenders or savings, so Printed details is absent for it; sc17 accepts that, as the plan allows.
+final_verification:
+  head: 6589985
+  command: ".venv/bin/python -m pytest -q"
+  result: "54 failed, 20 errors, 2165 passed, 107 skipped (orchestrator run, 22m42s)"
+  notes: >-
+    Same counts and the same 11 files as SL-01's START_HEAD baseline (test_agent_instance, test_agent_findings,
+    test_agent_guards, test_cpa_pack, test_engine_worksheets, test_scenarios, test_tax_engines, test_tax_family,
+    test_tax_year, test_tax_zen, test_traces). No new failure. Skipped rose from 102 to 107: the five opt-in browser tests
+    in tests/test_receipt_items_browser.py.
