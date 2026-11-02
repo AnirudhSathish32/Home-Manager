@@ -62,6 +62,10 @@ def oracle(task, case):
         return {"answer": expected["label"], "probabilities": {expected["label"]: 1.0}, "coverage": 1.0}
     if task == "receipt_kinds":
         return {"kind": expected["kind"], "fields": {name: value for name, value in expected["fields"].items() if value is not None}}
+    if task == "receipt_tax_codes":
+        lines = [{"code": code, "amount": amount} for code, amount in expected.get("tax_lines", {}).items()]
+        return {"tax_lines": lines, "items": [{"product_code": product, "tax_code": "BF" if code == "B" else code,
+                                               "taxed": True if lines else None} for product, code in expected["items"]]}
     if task == "document_forms":
         columns = {"kept": len(expected["columns"]), "blanked": 0} if expected.get("columns") else {}
         return {"fields": {name: value for name, value in expected["fields"].items() if value is not None}, "counted": True, "wrong_column_counted": 0,
@@ -233,6 +237,53 @@ def test_the_receipt_kinds_task_reports_kind_accuracy_and_fields_per_kind(tmp_pa
     for row in ("| synthetic | fuel | 1 of 1 | 4 of 5 | 4 of 5 | 0 |", "| synthetic | dining | 1 of 1 | 2 of 2 | 2 of 2 | 0 |",
                 "| synthetic | grocery | 1 of 1 | 2 of 2 | 2 of 2 | 0 |", "| synthetic | general | 1 of 1 | 0 of 0 | 0 of 0 | 0 |"):
         assert row in report, report
+
+
+def test_the_receipt_tax_codes_task_grades_tax_lines_item_codes_and_untaxed_bf_items(tmp_path, local_model):
+    """FR-24: R read with its codes and tax lines, and the one-TAX-line receipt answered with the BF items left empty, pass; then R
+    read without the filter's code and the one-TAX-line receipt with the BF items answered taxed false fail on exactly those checks."""
+    from document_forms_fixtures import joined
+    from evals.tasks.receipt_tax_codes import R_ONE_TAX_LINE, R
+    from receipt_item_fixtures import R_LINES, one_tax_replies, r0_replies, r_one_tax_lines
+    assert (R, R_ONE_TAX_LINE) == (R_LINES, r_one_tax_lines())  # The task's first two cases print the fixtures' lines.
+    local_model["by_schema"] = joined(r0_replies(), one_tax_replies(taxed=(None, None, True)))
+    folder = run_tasks(config_for(local_model), ["receipt_tax_codes"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=2)
+    lines = task_lines(folder)
+    assert [(line["status"], line["grades"]["passed"]) for line in lines] == [("ok", True), ("ok", True)]
+    assert lines[0]["output"]["tax_lines"] == [{"code": "T", "amount": "1.01"}, {"code": "B", "amount": "1.73"}]
+    assert [item["tax_code"] for item in lines[0]["output"]["items"]] == ["BF", "BF", "T"]
+    assert [item["taxed"] for item in lines[1]["output"]["items"]] == [None, None, True]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "| synthetic | 1 | 2 of 2 | 3 of 3 | 1 | 0 of 2 |" in report, report
+    local_model["by_schema"] = joined(r0_replies(codes=("BF", "BF", "N")), one_tax_replies())
+    folder = run_tasks(config_for(local_model), ["receipt_tax_codes"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=2)
+    lines = task_lines(folder)
+    assert [(line["status"], line["grades"]["passed"]) for line in lines] == [("ok", False), ("ok", False)]
+    assert (lines[0]["grades"]["checks"]["all_lines"], lines[0]["grades"]["checks"]["all_codes"]) == (True, False)
+    assert (lines[1]["grades"]["checks"]["all_read"], lines[1]["grades"]["checks"]["bf_untaxed"]) == (True, 2)  # The reported bug: BF read as untaxed.
+    assert "| synthetic | 1 | 2 of 2 | 2 of 3 | 1 | 2 of 2 |" in (folder / "report.md").read_text(encoding="utf-8")
+
+
+def test_the_receipt_tax_codes_grader_allows_a_cent_and_needs_the_right_code():
+    case = TASKS["receipt_tax_codes"].cases()[0]
+    answer = oracle("receipt_tax_codes", case)
+    answer["tax_lines"] = [{"code": "T", "amount": "1.02"}, {"code": "B", "amount": "1.72"}]
+    assert TASKS["receipt_tax_codes"].grade(case, answer)["passed"]
+    answer["tax_lines"][1]["amount"] = "1.75"
+    assert not TASKS["receipt_tax_codes"].grade(case, answer)["passed"]
+    answer = oracle("receipt_tax_codes", case)
+    answer["tax_lines"][0]["code"] = None
+    assert not TASKS["receipt_tax_codes"].grade(case, answer)["checks"]["all_lines"]
+    answer = oracle("receipt_tax_codes", case)
+    answer["items"][0]["tax_code"] = "T"
+    assert TASKS["receipt_tax_codes"].grade(case, answer)["checks"]["codes_right"] == 2
+    one = TASKS["receipt_tax_codes"].cases()[1]
+    answer = oracle("receipt_tax_codes", one)
+    answer["items"][2]["taxed"] = False  # The filter is T, not BF: untaxed on its own is not the bug.
+    assert TASKS["receipt_tax_codes"].grade(one, answer)["passed"]
+    answer["items"][1]["taxed"] = False
+    graded = TASKS["receipt_tax_codes"].grade(one, answer)
+    assert not graded["passed"] and graded["checks"]["bf_untaxed"] == 1
 
 
 def document_forms_replies():

@@ -523,6 +523,42 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
   receipt is published with today's fields and rows only, and the note "Document details could not be read". The same
   holds for the new pay stub and statement fields.
 
+### Tax codes on receipts
+
+Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `TAXED_RULE`, `tax_codes`),
+`finance/ledger.py` (`publish_receipt`). Spec: `specs/receipt-tax-codes`. What is done with them is in
+[money](money.md#tax-codes-and-tax-lines).
+
+- **What is read.** Each receipt item also gets `tax_code`, the code printed beside its price exactly as printed (BF,
+  T, A, N), or none. Every receipt form (general and the fuel, dining and grocery kinds, not bills) also gets
+  `tax_lines`, each printed per-code line with its code, rate, taxable amount and amount ("T = GA TAX 7.75000 on $12.99
+  $1.01"), and `tax_legend`, each printed meaning of a code ("T = TAXABLE", "N = NON-TAXABLE"). All are optional, and
+  every one cites its line. The instructions say that a tax line is one that prints the tax for one code, never a single
+  TAX line, a total or a line with no code, and that a food-stamp, EBT or SNAP meaning is never a legend entry.
+- **The item's `taxed` answer** (`TAXED_RULE`, in the instructions and in the schema the model is given): true or
+  false only when the receipt says what the item's code means, a legend or a tax line printed for its code. A
+  food-stamp or EBT mark such as F or E never means untaxed on its own. Otherwise the answer is null.
+- **Checks** (`tax_codes`, in `normalize` after the items):
+  - an item's code is kept only when it is printed as its own mark in a line the item cites ("4.29B" is a B mark. The T
+    of "WATER FILTER" isn't a T mark), else the issue "Item n tax code was not printed where it was cited and was left
+    out.";
+  - a tax line needs a code printed in its citation, else "Tax line n code was not printed where it was cited, so the tax
+    lines were not used." and none are kept. Its rate, taxable amount and amount are each kept only when printed in a
+    citation, else "Tax line n amount was not printed where it was cited and was left out." (an amount left out leaves the
+    line with none);
+  - a legend entry needs its code printed in its citation, and is ignored when its quote names food stamps, EBT or SNAP.
+- **What the record gets.** `tax_source` (`tax_lines`, `legend` or `printed`) and, with tax lines, the `taxed` flag of
+  every item worked out from them, ignoring the model's. With a legend, the `taxed` flag follows the legend. The rules
+  are in [money](money.md#tax-codes-and-tax-lines).
+- **Stored** in `receipt_items.tax_code`, `receipt_tax_lines` and `receipts.tax_source` (migration 075), written with the
+  reading like the other read fields. A reading that fails before publishing changes none of them.
+- **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is
+  published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
+  `printed`, and the model's `taxed` answers.
+- **Run reuse.** The extraction version is `typed-extraction-v33-tax-codes`, so a receipt read by an earlier version is
+  read again when it is next extracted.
+- **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
+
 ### Bill kinds
 
 Code: `documents/extraction.py` (`bill_kind`, `BILL_KINDS`, `BILL_FORMS`, `RENT_ROWS`, `bill_dates`, `bill_lines`),
@@ -603,8 +639,8 @@ evidence (Extract again on an unchanged reading changes nothing).
   missed-row check; a text page with no table adds the note "Page N: no table was found in the printed columns, so its
   rows are the reading's; check them." A reading with no layout adds "Read this document again to take its rows from
   the printed columns." Readings made before this are read again on **Extract again**; a statement you confirmed or
-  rejected is not rewritten. `EXTRACTION_VERSION` is `typed-extraction-v32-table-engine`, so Extract again never reuses
-  an older run.
+  rejected is not rewritten. Extract again never reuses a run of an older
+  `EXTRACTION_VERSION` (`documents/extraction.py`).
 - **Columns are found by alignment, not headings.** Amounts that line up by right edge, left edge or centre on at least
   two dated rows (one, with a heading over them) are a column; the date column is the dates at the left, a second date
   column is the posted date, and the text between is the description. The tolerance is `ALIGN = 0.75` font sizes

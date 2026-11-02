@@ -553,14 +553,18 @@ the server. The page calculates nothing.
   item with no printed price per weight. It is never calculated by dividing.
 - **Line total** is the item's own printed amount, before tax. A returned item's is negative.
 - **Paid** is the item's allocated share of what was paid, as stored. The receipt's tax is spread over its taxed items,
-  or over every item when the taxed items' amounts add up to zero. Paid reads "with tax" when the receipt has tax, the
-  item has a share, and the item's weight in that spread is not zero (an item whose amount is zero never carries tax.
+  or over every item when the taxed items' amounts add up to zero. When the receipt printed a tax line for each tax
+  code, the tax is shared by those lines instead ([Tax codes and tax lines](#tax-codes-and-tax-lines)). Paid reads
+  "with tax" when the receipt has tax, the item has a share, and the item's weight in that spread is not zero (an item whose amount is zero never carries tax.
   An untaxed item carries none unless the taxed items' amounts add up to zero, when every item's amount is its
-  weight). It reads "—" when the item has no stored share, such as a receipt with no total. The column is hidden when
-  no item has a share. A returned item's Paid is negative.
+  weight). When tax lines set the shares it reads "with B tax", naming the code of the tax line the item's share holds.
+  It reads "—" when the item has no stored share, such as a receipt with no total. The column is hidden when no item
+  has a share. A returned item's Paid is negative. Hovering an item's row shows its printed tax code ("Tax code BF").
+  No column is added for it.
 
 Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
-**Not matched to an item**. A difference over one cent between subtotal + tax + tip and total is called out. Under
+**Not matched to an item**. When tax lines set the shares, each is listed under Tax with its code, rate and taxable
+amount ("B · 7.75% on $46.19") and its amount, with a Find button for its line. A difference over one cent between subtotal + tax + tip and total is called out. Under
 Printed details a receipt shows its payments and savings but no per-item lines, because the weight and count are in the
 table. This display does not change how the ledger allocates shares.
 
@@ -570,7 +574,8 @@ whole charge's category in its drawer asks before replacing the item split. Read
 
 **How items get a category**
 - While recording a receipt, the model gives a category for each item (`item_categories`), from the same fixed list.
-- It also reads each item's printed tax code, when there is one, into `receipt_items.taxed`.
+- It also reads each item's printed tax code, when there is one, into `receipt_items.tax_code`, and sets `taxed` from
+  what the receipt says that code means ([Tax codes and tax lines](#tax-codes-and-tax-lines)).
 - A category you chose for an item earlier takes precedence over the model's answer. Your choices are remembered per
   seller and item text in `item_category_memory`.
 - An item with no category takes the receipt's own category.
@@ -584,7 +589,8 @@ stored in `category_splits` and rebuilt whenever items, categories or receipt li
 2. An order-wide discount (when the printed subtotal differs from the sum of the items) is shared out in proportion
    to item amounts.
 3. Tax is shared out in proportion to amount across the items the receipt marks as taxed. If no item is marked, it is
-   shared across every item.
+   shared across every item. A receipt that prints a tax line for each tax code shares each line's amount across the
+   items with that code instead ([Tax codes and tax lines](#tax-codes-and-tax-lines)).
 4. A tip counts as dining.
 5. If the charge differs from the receipt (a tip added after signing, or an accepted near match), the difference counts
    as dining on a dining receipt. Otherwise it is shared out in proportion to amount.
@@ -630,6 +636,95 @@ the receipt total are the two figures that can be checked against each other. Ev
 **Receipts recorded before item categories existed** have items with no categories. The Items view offers **Categorise
 their items**, a one-time job (`finance/item_categories.py`) that asks the model about the stored item names; nothing is
 transcribed again. Tax codes can't be recovered this way, so tax on those receipts is shared across all items.
+
+### Tax codes and tax lines
+
+Code: `documents/extraction.py` (`tax_codes`), `finance/splits.py` (`tax_parts`, `by_tax_line`), `finance/ledger.py`
+(`split_inputs`, `tax_plan`, `record`). Spec: `specs/receipt-tax-codes`. How they are read is in
+[documents](documents.md#tax-codes-on-receipts).
+
+Many receipts print a tax code beside each price ("BF", "T") and a tax line for each code, "T = GA TAX 7.75000 on $12.99
+$1.01". Sharing all the tax over the items marked taxed goes wrong when the model calls an item untaxed because of the
+F in "BF" (a food-stamp mark), so the receipt's own tax lines are used when they can be trusted.
+
+**What is kept** (migration 075; `receipt_items.tax_code`, `receipts.tax_source`, `receipt_tax_lines`):
+- An item's tax code, as printed, upper case, when it is printed in a line the item cites.
+- A **tax line**: its code, printed rate, printed taxable amount and amount, each when printed in the line it cites.
+  The amount is kept as a magnitude, and the receipt's own tax gives it its sign, so a return's tax lines follow the
+  return. A line whose amount can't be read is kept without one. Tax lines are replaced as a set by each new reading.
+- A line with no code ("STATE TAX $1.20") is not a per-code tax line. If any line has no code, none are kept and the
+  receipt has one tax total, as does a receipt that prints a single TAX line.
+- `tax_source`, which says what set up the items' taxed flags:
+
+| `tax_source` | Meaning | Taxed flag | How tax is shared |
+|---|---|---|---|
+| `tax_lines` | per-code tax lines were kept | worked out from the lines; the model's answer is ignored | by code when the lines can be trusted, else the fallback |
+| `legend` | no per-code tax lines, and the receipt prints what a code that some item carries means ("T = TAXABLE") | the legend's meaning for the item's code, else empty | across the taxed items, as above |
+| `printed` | read with neither | the model's answer, which it gives only when the receipt says what the code means | across the taxed items; across every item when any answer is empty |
+| none | recorded before this change, a bill, or a record published without a reading | as stored | as above |
+
+**Which items belong to a tax line.** An item belongs to a tax line when its tax code contains the line's code and no
+other line's code. "BF" belongs to B. The other letters are kept but don't count. An item that belongs to none is
+untaxed, and so is one that belongs only to a line of 0.00. A tax line of an amount that couldn't be read still marks its
+items taxed, since the line was printed with their code.
+
+**Sharing by code.** When the tax lines can be trusted, each line's amount is shared across the items that belong to it,
+in proportion to their amounts, and nothing else. Two lines with the same code are added together for that code, and
+each stays listed on the page. Every other rule in [How the money is shared out](#item-categories-and-splits) is
+unchanged: discounts, tip, the charge difference, exact fractions and largest-remainder rounding. The lines are trusted
+when all of these hold, otherwise **the fallback** applies:
+- every line's amount could be read;
+- the lines add up exactly to the receipt's tax;
+- every tax line has at least one item that belongs to it (also a line of 0.00);
+- every line with an amount above zero has items whose amounts don't add up to zero.
+
+The fallback shares the tax across the items marked taxed, using the flags worked out from the tax lines, never the
+model's answers, and the receipt shows the reason as an issue, for example "The tax lines (2.74 USD) don't add up to
+the tax (2.84 USD), so tax was shared across the taxed items.", "The T tax line has no items carrying its code, …", "The
+B tax line's amount couldn't be read, …" or "The B tax line's items add up to nothing, …".
+
+**Items named in an issue.** An item whose code contains two tax lines' codes ("BT") gets no share of either: "RUFFLES
+carries more than one tax line's code (B, T), so it got no share of either." An item whose code matches no tax line
+("N") gets none: "… tax code N matches no tax line, so it got no tax line's share." An item with no printed code is
+untaxed on such a receipt and isn't named. If naming an item leaves a tax line with no items, the fallback applies.
+
+**Issues are worked out each time the receipt is read, never stored.** Correcting Tax so that the lines no longer add up
+to it makes the receipt fall back at once, and correcting it back clears the issue. Correcting Tax changes only the
+tax: the saved subtotal, total and tip stay as they were, and the splits are rebuilt against the unchanged total. These
+issues don't send a receipt to review. The tax lines themselves can't be corrected one by one; Extract again reads them
+again ([open work](open-work.md)).
+
+**The legend and the model's answer.** A legend sets each item's flag from the one code of the legend that its tax code
+contains; several codes that mean the same count, and an item with no code or contradicting meanings has no answer. A
+food-stamp, EBT or SNAP mark (F, E) is never a legend entry and never means untaxed on its own. Without tax lines or a
+legend, an item is untaxed only when the model says so, and it is told to answer only when the receipt says what the
+code means. When any item's answer is empty, the tax is shared across every item, whatever the other items' answers
+(a receipt with one TAX line, the filter answered taxed and the BF items empty).
+
+**Earlier receipts.** A receipt read before this change has no tax source, so its flags, tax and shares are exactly as
+before, including after the next reconciliation. Only reading it again applies the rule. Extract again replaces its
+codes and tax lines with the new reading's, and a category you chose stays. An item you worked on that the new reading
+no longer finds is kept with its earlier columns, including its old tax code and flag, and on a receipt with tax lines
+that old code still counts when items are matched to lines. A copy sent to a family member carries the codes, the tax
+source and the tax lines, so the member's shares follow the same rule.
+
+**Worked example** (a synthetic copy of a real grocery receipt, `SYNTH MART`). Three items, a tax line per code, and a
+total of $61.92:
+
+| Item | Printed code | Price | Tax line | Counts as |
+|---|---|---|---|---|
+| Ruffles | BF | $4.29 | B | Groceries $4.45 |
+| Little Veg (10 @ $4.19) | BF | $41.90 | B | Groceries $43.47 |
+| Water filter | T | $12.99 | T | Household supplies $14.00 |
+| **Total** (tax $2.74) | | $59.18 | | **$61.92** |
+
+The receipt prints "T = GA TAX 7.75000 on $12.99 $1.01" and "B = GA TAX 7.75000 on $46.19 $1.73". The two lines add up to
+the $2.74 tax and each has items, so B's $1.73 is shared across Ruffles and Little Veg in proportion to $4.29 and $41.90
+($0.16 and $1.57) and T's $1.01 goes to the filter. The shares come to $4.45, $43.47 and $14.00 (the cent left over from
+rounding down goes to Little Veg). Their Paid reads "with B tax", "with B tax" and "with T tax". Had the model answered
+that both BF items are untaxed, the old rule would have put all $2.74 on the filter ($4.29, $41.90 and $15.73). If the
+receipt's Tax were corrected to $2.84, the lines would no longer add up, and the tax would be shared across all three
+items, which the tax lines mark taxed, with the reason shown.
 
 ## Category rules and budgets
 

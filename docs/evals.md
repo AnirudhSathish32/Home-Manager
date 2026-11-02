@@ -46,6 +46,7 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 | — | Decision model (probabilities) | `models/decisions.py` | probabilities | coverage ≥ 0.5 | `decisions` (with calibration) |
 | 15 | Receipt kind and its form | `ExtractionService.extract` (classify, `receipt_kind`, `RECEIPT_FORMS`), `normalize` | kind, `Receipt<Kind>Summary` | kind cited and listed; details printed in their citation | `receipt_kinds` |
 | 16 | Pay stub, statement and rent bill fields | `ExtractionService.extract`, `normalize`, `review_reasons` | `PaystubSummary`, `PayLines`, statement summaries, `BillRentSummary`, `RentBillLines` | FR-22 guards, hours × rate, splits, summary checks, bill dates and lines | `document_forms` |
+| 17 | Item tax codes and per-code tax lines | `ExtractionService.extract` (the items and `tax_lines` / `tax_legend` of the receipt forms), `normalize` (`tax_codes`) | `Item.tax_code`, `Item.taxed`, `TaxLine`, `TaxCodeMeaning` | a code, rate and amount kept only when printed in the line cited; `taxed` and `tax_source` set from the tax lines or legend | `receipt_tax_codes` |
 
 `receipt_kinds` reports, per receipt kind, how often the kind was right and how many printed fields were present and
 right (and how many were invented). `document_forms` reports the same per document type and pay stub layout, and per pay
@@ -62,6 +63,22 @@ kind asked of the sorting step. A Bills table reports, field by field, how often
 line's type (`utility`) and amount due (1,488.42). Measure the rent form on your own bill by comparing the same fields.
 Both read the documents through the app's own extraction and checks. Run with
 `python -m evals.tasks --tasks receipt_kinds,document_forms --config evals/models.toml`.
+
+`receipt_tax_codes` reads made-up grocery receipts the way the app reads any receipt, in two shapes of 11 each
+(`specs/receipt-tax-codes`; built: [money](money.md#tax-codes-and-tax-lines)). The first two cases are the spec's R, a
+receipt whose items print BF, BF and T, and the same receipt with one TAX line (SC-16). The others change the shop, rate,
+items and codes (BF, FB, B, T).
+- **Tax lines.** The receipt prints a tax line per code ("T = GA TAX 7.75000 on $12.99 $1.01", "B = …"). A case passes
+  when each tax line is read with its code and an amount within 0.01 of what is printed, and each item's code holds its
+  tax line's code (B for the two grocery items, T for the other). Codes and lines are compared as the app stores them,
+  after its check that each is printed in the line cited.
+- **One TAX line.** The same items with a single TAX line and no legend. A case passes when every item is read and no BF
+  item is read as taxed false (`FR-24`): the F of BF is a food-stamp mark, not a statement that the item is untaxed.
+  The count of such items is expected to be 0. No threshold is enforced.
+
+The report adds a row per candidate: the tax lines and item codes right on the first shape, and the BF items read as
+untaxed on the second. Run with `python -m evals.tasks --tasks receipt_tax_codes --config evals/models.toml`, on a live
+model in your own terminal. The synthetic cases and a stub model are tested without one in `tests/test_eval_tasks.py`.
 
 For paystubs with validated reported tables, extraction asks the reasoning model to classify rows and code copies
 current/YTD money from the named cells. The synthetic and private document suites should compare wrong-column

@@ -112,6 +112,11 @@ and link here for what isn't. When an item is built, remove it from this list an
     sent to a member arrives with no kind, with the same lines, categories and amounts.
   - The rent form's live accuracy is measured only by the `document_forms` eval on synthetic RENT; run it on your own
     bill and compare ([evals](evals.md)).
+- **Tax lines can't be corrected one by one** ([money](money.md#tax-codes-and-tax-lines), `specs/receipt-tax-codes` OD-4).
+  The footer's Correct changes the receipt's total Tax, and Extract again reads the lines anew. A misread tax line's
+  code, rate, taxable amount or amount, and an item's tax code, have no Correct control of their own. When a line is
+  wrong, the lines no longer add up to the tax, the receipt falls back to sharing tax across the taxed items, and the
+  issue says why.
 - **Family corrections.** Records corrected in the family library after they were sent need **Send** again.
 - **Returns** ([money](money.md#returns)):
   - A credit smaller than its return receipt (a restocking fee kept) isn't matched automatically. The user links it by
