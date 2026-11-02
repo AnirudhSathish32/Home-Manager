@@ -621,6 +621,9 @@ def test_sc14_a_legend_printed_on_one_line_keeps_t_and_n_and_drops_only_a_food_s
     ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "T", False),
     ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "N", False),
     ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "F", True),
+    ("F: SNAP = YES", "F", True),
+    ("T = TAXABLE SNAP = FOOD STAMP ITEM", "T", False),
+    ("E = EXEMPT EBT = ELIGIBLE", "E", False),
 ])
 def test_food_stamp_meaning_sees_a_food_stamp_word_before_a_colon_as_part_of_the_meaning(quote, code, expected):
     assert food_stamp_meaning(code, [SimpleNamespace(quote=quote)]) is expected

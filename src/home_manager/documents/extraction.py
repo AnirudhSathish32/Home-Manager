@@ -1712,8 +1712,10 @@ def food_stamp_meaning(code, evidence):
         meanings = []
         for number, start in enumerate(starts):
             if start.group(1).upper() == code:
-                # A food-stamp word before ":" or "=" ("F = EBT: ELIGIBLE") is part of this meaning, not another code's definition.
-                end = next((later.start() for later in starts[number + 1:] if later.end(1) not in words), len(text))
+                # A food-stamp word that opens this meaning, before ":" or "=" ("F = EBT: ELIGIBLE"), is part of it, not another code's
+                # definition; after other meaning text ("T = TAXABLE SNAP = ...") it starts the next entry.
+                end = next((later.start() for later in starts[number + 1:]
+                            if later.end(1) not in words or text[start.end():later.start()].strip()), len(text))
                 meanings.append(re.split(r"[;|]", text[start.end():end])[0])
         if any(FOOD_STAMP.search(meaning) for meaning in meanings or [text]):
             return True
