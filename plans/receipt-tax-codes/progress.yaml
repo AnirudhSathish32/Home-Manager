@@ -84,3 +84,29 @@ slices:
     notes: >-
       Accepted eval tightening: the one-TAX-line case also requires every item to be read, so a reading that drops the
       BF items can't pass trivially. 22 cases (R and the SC-16 receipt, 10 variants each) to meet the suite's 20-case minimum.
+final_verification:
+  - head: c6c0fd7
+    command: ".venv/bin/python -m pytest -q -p no:randomly"
+    exit_code: 1
+    result: "55 failed, 20 errors, 2248 passed, 109 skipped, 1 deselected (orchestrator run, 23m45s)"
+    notes: >-
+      54 failures and 20 errors are in the baseline's 11 files (agent_instance, agent_findings, agent_guards, cpa_pack,
+      engine_worksheets, scenarios, tax_engines, tax_family, tax_year, tax_zen, traces). One new failure:
+      test_statement_accounts.py::test_sc07_the_upgrade_sorts_existing_accounts_and_running_it_again_changes_nothing.
+      Its fixture fakes v72 by dropping only accounts.origin, so reopening re-runs 075 and ADD COLUMN tax_code fails
+      (duplicate column). Test-fixture problem, not a migration bug; fix dispatched (receipt-tax-codes-SL-01-fix-r1).
+  - head: 3616b12
+    command: ".venv/bin/python -m pytest -q -p no:randomly"
+    exit_code: 1
+    result: "54 failed, 20 errors, 2249 passed, 109 skipped, 1 deselected (orchestrator run, 24m17s)"
+    notes: >-
+      After the test-only fix d607806 (tests/test_statement_accounts.py take_back also removes what 075 added; fix task
+      receipt-tax-codes-SL-01-fix-r1, 92 passed on rerun). Every failure and error is in the baseline's 11 files, with the
+      same counts as receipt-item-table's final run (54 failed, 20 errors). No new failure.
+  - head: 3616b12
+    command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py tests/test_planned_bugfixes_browser.py tests/test_document_v2_browser.py -q"
+    exit_code: 1
+    result: "15 passed, 2 failed: test_idle_badge_read_filter_and_record_selected, test_document_page_states_find_correct_and_decide (both pre-existing, see SL-04)"
+  - head: 3616b12
+    command: ".venv/bin/ruff check src tests"
+    exit_code: 0
