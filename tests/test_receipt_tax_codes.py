@@ -3,13 +3,14 @@ prints, and that receipts recorded without them keep their shares. Synthetic rec
 
 from contextlib import contextmanager
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
 from document_forms_fixtures import MISSING, amount_on, cite, receipt_replies
 from document_forms_fixtures import item as reply_item
-from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADER_MODELS, NEW_FIELDS, Item
+from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADER_MODELS, NEW_FIELDS, Item, food_stamp_meaning
 from home_manager.finance.ledger import Ledger, rate_display
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.storage import Store
@@ -608,6 +609,34 @@ def test_sc14_a_legend_printed_on_one_line_keeps_t_and_n_and_drops_only_a_food_s
     with reading(tmp_path / "again", local_model, lines, shop_replies(lines, ("F", "N"), (False, True), again)) as (manager, _again, receipt_id):
         _, items, source, _lines = stored(manager.store, receipt_id)
         assert (items, source) == ([("F", None), ("N", 0)], "legend")
+
+
+@pytest.mark.parametrize("quote, code, expected", [
+    ("F = EBT: ELIGIBLE", "F", True),
+    ("F = SNAP: ELIGIBLE", "F", True),
+    ("F = FOOD STAMP: ELIGIBLE", "F", True),
+    ("T = TAXABLE; N = NON-TAXABLE; F = EBT: ELIGIBLE", "F", True),
+    ("T = TAXABLE; N = NON-TAXABLE; F = EBT: ELIGIBLE", "T", False),
+    ("T = TAXABLE; N = NON-TAXABLE; F = EBT: ELIGIBLE", "N", False),
+    ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "T", False),
+    ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "N", False),
+    ("T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP", "F", True),
+])
+def test_food_stamp_meaning_sees_a_food_stamp_word_before_a_colon_as_part_of_the_meaning(quote, code, expected):
+    assert food_stamp_meaning(code, [SimpleNamespace(quote=quote)]) is expected
+
+
+@pytest.mark.parametrize("printed", ["F = EBT: ELIGIBLE", "F = SNAP: ELIGIBLE"])
+def test_sc14_a_food_stamp_word_with_a_colon_in_an_f_entry_does_not_hide_it(tmp_path, local_model, printed):
+    lines = [*SHOP[:5], "T = TAXABLE", "N = NON-TAXABLE", printed, *SHOP[7:]]
+    lines[2] = "MUG TF 8.00"
+    # The model reads F as untaxed anyway; the guard drops that entry, so TF takes T's meaning and the legend still sets the flags.
+    legend = [legend_entry(lines, "T = TAXABLE", "T", True), legend_entry(lines, "N = NON-TAXABLE", "N", False), legend_entry(lines, printed, "F", False)]
+    with reading(tmp_path, local_model, lines, shop_replies(lines, ("TF", "N"), (False, True), legend)) as (manager, _again, receipt_id):
+        amounts, items, source, _lines = stored(manager.store, receipt_id)
+        assert amounts == (1100, 62, 1162)
+        assert (items, source) == ([("TF", 1), ("N", 0)], "legend")
+        assert shares_of(manager.store, receipt_id) == ([862, 300], [862, 300])
 
 
 @pytest.mark.parametrize("rate, kept", [("7.75000", True), ("7.75", True), ("75", False), ("7.7", False)])

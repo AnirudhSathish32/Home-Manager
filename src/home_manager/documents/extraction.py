@@ -1703,12 +1703,18 @@ LEGEND_DEFINITION = re.compile(r"(?<![A-Za-z0-9])([A-Za-z0-9]{1,4})\s*[=:]")
 def food_stamp_meaning(code, evidence):
     """A legend entry's own printed meaning is a food-stamp one (FR-22). Only the text printed for the entry's code counts (after its
     "=" or ":", up to the next code's definition or a ";" or "|"), so one line "T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP" drops
-    only F. A citation that shows no definition for the code is judged as a whole."""
+    only F. A food-stamp word before a ":" or "=" ("F = EBT: ELIGIBLE") is part of the meaning, not another code's definition. A
+    citation that shows no definition for the code is judged as a whole."""
     for cite in evidence:
         text = " ".join(cite.quote.split())
         starts = list(LEGEND_DEFINITION.finditer(text))
-        meanings = [re.split(r"[;|]", text[start.end():starts[number + 1].start() if number + 1 < len(starts) else len(text)])[0]
-                    for number, start in enumerate(starts) if start.group(1).upper() == code]
+        words = {found.end() for found in FOOD_STAMP.finditer(text)}
+        meanings = []
+        for number, start in enumerate(starts):
+            if start.group(1).upper() == code:
+                # A food-stamp word before ":" or "=" ("F = EBT: ELIGIBLE") is part of this meaning, not another code's definition.
+                end = next((later.start() for later in starts[number + 1:] if later.end(1) not in words), len(text))
+                meanings.append(re.split(r"[;|]", text[start.end():end])[0])
         if any(FOOD_STAMP.search(meaning) for meaning in meanings or [text]):
             return True
     return False
