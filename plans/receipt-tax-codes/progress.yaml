@@ -123,7 +123,7 @@ slices:
     task: receipt-tax-codes-SL-08-r1
     verification:
       - "orchestrator: food_stamp_meaning on T/SNAP and E/EBT space-separated lines -> False; F = EBT: / F: SNAP = / combined ';' line F -> True, T -> False"
-      - "targeted pytest rerun with the final verification below"
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> 92 passed (orchestrator rerun)"
 final_verification:
   - head: c6c0fd7
     command: ".venv/bin/python -m pytest -q -p no:randomly"
@@ -216,3 +216,10 @@ review_round_3_route: >-
         severity: INFO
         summary: "A T entry citing another entry's line as a second citation is judged as a whole (pre-existing fallback)."
         disposition: "not a regression; unchanged"
+post_review_verification:
+  head: cbf4210
+  commands:
+    - ".venv/bin/python -m pytest -q -p no:randomly -> 54 failed, 20 errors, 2268 passed, 109 skipped, 1 deselected (25m05s); every failure and error in the baseline's 11 files, same counts; no new failure"
+    - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py tests/test_planned_bugfixes_browser.py tests/test_document_v2_browser.py -q -> 15 passed, 2 failed (the two pre-existing)"
+    - ".venv/bin/ruff check src tests evals -> all checks passed"
+  notes: "Review loop closed after round 3 (no BLOCKER/MAJOR). Final acceptance stays with the user."
