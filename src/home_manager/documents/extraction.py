@@ -1697,6 +1697,21 @@ def sign_return(record, marker, issues):
 
 
 FOOD_STAMP = re.compile(r"\b(food\s*stamps?|ebt|snap)\b", re.IGNORECASE)
+LEGEND_DEFINITION = re.compile(r"(?<![A-Za-z0-9])([A-Za-z0-9]{1,4})\s*[=:]")
+
+
+def food_stamp_meaning(code, evidence):
+    """A legend entry's own printed meaning is a food-stamp one (FR-22). Only the text printed for the entry's code counts (after its
+    "=" or ":", up to the next code's definition or a ";" or "|"), so one line "T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP" drops
+    only F. A citation that shows no definition for the code is judged as a whole."""
+    for cite in evidence:
+        text = " ".join(cite.quote.split())
+        starts = list(LEGEND_DEFINITION.finditer(text))
+        meanings = [re.split(r"[;|]", text[start.end():starts[number + 1].start() if number + 1 < len(starts) else len(text)])[0]
+                    for number, start in enumerate(starts) if start.group(1).upper() == code]
+        if any(FOOD_STAMP.search(meaning) for meaning in meanings or [text]):
+            return True
+    return False
 
 
 def code_printed(code, evidence, line_text):
@@ -1704,6 +1719,12 @@ def code_printed(code, evidence, line_text):
     citation is a real quote of its line."""
     mark = re.compile(r"(?<![A-Za-z])" + re.escape(code) + r"(?![A-Za-z])", re.IGNORECASE)
     return bool(code) and all(cited_in(cite, line_text) for cite in evidence) and any(mark.search(" ".join(cite.quote.split())) for cite in evidence)
+
+
+def rate_printed(rate, evidence):
+    """A tax line's rate equals one whole number printed in a cited line ("7.75" and "7.75000" match 7.75000; "75" and "7.7" do not)."""
+    wanted = Decimal(rate.replace(",", ""))
+    return any(Decimal(token.replace(",", "")) == wanted for cite in evidence for token in NUMBER.findall(cite.quote))
 
 
 def printed_amount(text, evidence, what, money, issues):
@@ -1742,7 +1763,7 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
             issues.append(f"Tax line {number} code was not printed where it was cited, so the tax lines were not used.")
             code = ""
         rate = next(iter(NUMBER.findall(entry.rate or "")), None)
-        if rate is not None and not printed_in(rate, entry.evidence):
+        if rate is not None and not rate_printed(rate, entry.evidence):
             issues.append(f"Tax line {number} rate was not printed where it was cited and was left out.")
             rate = None
         lines.append({"code": code, "rate_text": rate,
@@ -1764,7 +1785,7 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
     meanings = {}  # code -> taxed, None when the legend contradicts itself.
     for entry in header.tax_legend:
         code = printed_code(entry.code)
-        if code and code_printed(code, entry.evidence, line_text) and not any(FOOD_STAMP.search(cite.quote) for cite in entry.evidence):
+        if code and code_printed(code, entry.evidence, line_text) and not food_stamp_meaning(code, entry.evidence):
             meanings[code] = entry.taxed if meanings.get(code, entry.taxed) == entry.taxed else None
     codes = {printed_code(item["tax_code"]) for item in items}
     legend = {code: taxed for code, taxed in meanings.items() if taxed is not None and any(code in held for held in codes)}

@@ -594,6 +594,33 @@ def test_a_food_stamp_mark_is_not_in_the_legend_and_an_item_coded_tf_takes_ts_me
         assert stored(manager.store, receipt_id)[1] == [("TF", 1), ("N", 0)]
 
 
+def test_sc14_a_legend_printed_on_one_line_keeps_t_and_n_and_drops_only_a_food_stamp_meaning(tmp_path, local_model):
+    combined = "T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP"
+    lines = [*SHOP[:5], combined, *SHOP[7:]]
+    legend = [legend_entry(lines, combined, "T", True), legend_entry(lines, combined, "N", False)]
+    with reading(tmp_path, local_model, lines, shop_replies(lines, ("T", "N"), (False, True), legend)) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("T", 1), ("N", 0)], "legend")  # The model's contradicting flags are replaced.
+        assert shares_of(manager.store, receipt_id) == ([862, 300], [862, 300])
+    # An F entry on that line is not used: an item coded F takes no meaning from it, while N still sets the bread's.
+    again = [*legend, legend_entry(lines, combined, "F", False)]
+    lines[2] = "MUG F 8.00"
+    with reading(tmp_path / "again", local_model, lines, shop_replies(lines, ("F", "N"), (False, True), again)) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("F", None), ("N", 0)], "legend")
+
+
+@pytest.mark.parametrize("rate, kept", [("7.75000", True), ("7.75", True), ("75", False), ("7.7", False)])
+def test_a_tax_line_rate_is_kept_only_as_one_whole_printed_number(tmp_path, local_model, rate, kept):
+    tax_lines = r_tax_lines()
+    tax_lines[0]["rate"] = rate
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(tax_lines=tax_lines)) as (manager, _again, receipt_id):
+        _, _items, source, lines = stored(manager.store, receipt_id)
+        assert source == "tax_lines" and lines[0][1] == (rate if kept else None)
+        message = "Tax line 1 rate was not printed where it was cited and was left out."
+        assert (message in issues_of(manager, receipt_id)[0]) is (not kept)
+
+
 def test_sc15_two_lines_with_the_same_code_are_added(tmp_path, local_model):
     lines = [*R_PRINTED[:11], "B = GA STATE TAX 2.17000 on $46.19 $1.00", "B = LOCAL TAX 1.58000 on $46.19 $0.73", R_PRINTED[12]]
     tax_lines = [tax_line_reply(lines, "T = GA TAX", "T", "1.01", "12.99", "7.75000"),
