@@ -112,6 +112,18 @@ slices:
       - ".venv/bin/python -m pytest tests/test_receipt_kinds.py tests/test_extraction.py tests/test_reextraction.py -q -> 74 passed (orchestrator rerun)"
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
     notes: "Diff read: a definition start whose label ends where a FOOD_STAMP match ends no longer ends the current meaning."
+  - id: SL-08
+    status: done
+    scope: "fix for code review round 3 (CR3-m1)"
+    start_head: a3e84e7
+    end_head: 100cf9a
+    commit: 211f9e2
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-08-r1
+    verification:
+      - "orchestrator: food_stamp_meaning on T/SNAP and E/EBT space-separated lines -> False; F = EBT: / F: SNAP = / combined ';' line F -> True, T -> False"
+      - "targeted pytest rerun with the final verification below"
 final_verification:
   - head: c6c0fd7
     command: ".venv/bin/python -m pytest -q -p no:randomly"
@@ -185,3 +197,22 @@ code_review:
 review_round_3_route: >-
   route_task.py review-code HIGH exited 3 (CODEX_BUDGET_EXHAUSTED 2/2). The user chose a fresh Claude reviewer for round 3
   (2026-11-02), with context-only independence, scoped to SL-07's change and CR2-M1.
+  - round: 3
+    reviewer: "claude / claude-opus-5-5, native general-purpose subagent, 0 helpers (user's choice: Codex budget 2/2 spent)"
+    independence: context-only
+    risk: HIGH
+    range: 068cd52..bfc70e6
+    verdict: "no BLOCKER/MAJOR; CR2-M1 resolved (reproduction rerun: 862/300); CR1-M1 and CR1-m1 still resolved; review loop exits"
+    findings:
+      - id: CR3-m1
+        severity: MINOR
+        where: "src/home_manager/documents/extraction.py food_stamp_meaning (~1716)"
+        summary: >-
+          SL-07's skip ignores any later food-stamp-labelled definition, so "T = TAXABLE SNAP = FOOD STAMP ITEM" drops T
+          (was kept before SL-07).
+        orchestrator_check: "reproduced: food_stamp_meaning('T', 'T = TAXABLE SNAP = FOOD STAMP ITEM') is True; with ';' it is False"
+        status: fixed in SL-08 (211f9e2); no further review round (MINOR)
+      - id: CR3-i1
+        severity: INFO
+        summary: "A T entry citing another entry's line as a second citation is judged as a whole (pre-existing fallback)."
+        disposition: "not a regression; unchanged"
