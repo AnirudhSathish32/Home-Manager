@@ -399,6 +399,10 @@ function doc2RecordTitle(type, record) {
 }
 // Warnings, one bullet each, behind a Hide/Show button whose choice this browser remembers for every document.
 const WARNINGS_HIDDEN_KEY = "home-manager-doc-warnings-hidden";
+function doc2Issues(record) {
+  // The warnings the block lists: a receipt's tax issues show under its item table instead, so not here too.
+  return (record.issues || []).filter(issue => !record.tax_issues?.includes(issue));
+}
 function doc2Why(issues) {
   const row = element("div", "", "needs-row attention doc2-why-row"), text = element("div", "", "doc2-why-text");
   const heading = element("strong", `${issues.length} ${issues.length === 1 ? "warning" : "warnings"} to check`);
@@ -433,7 +437,8 @@ async function doc2Ledger(state, target, type, id, kept) {
   $("doc2-record-badge").replaceChildren(...saleBadges(record), statusBadge(automatic ? "checked" : record.review_status));
   // Warnings ask for a decision; once the user has decided (verify or reject), they are no longer shown.
   const decided = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
-  $("doc2-why").replaceChildren(...(record.issues?.length && !decided ? [doc2Why(record.issues)] : []));
+  const issues = doc2Issues(record);
+  $("doc2-why").replaceChildren(...(issues.length && !decided ? [doc2Why(issues)] : []));
   // An approved statement's Correct buttons, its fields' and its rows', show only while the record's Correct is open (doc2ShowRowEdits).
   const approved = type === "statement" && record.review_status === "verified" && record.review_source === "user";
   target.classList.toggle("doc2-hide-edits", approved);
@@ -821,7 +826,8 @@ async function doc2Other(state, target, publication) {
   state.recordStatus = record.review_status;
   $("doc2-record-title").textContent = record.name || record.account?.name || "Recorded information";
   $("doc2-record-badge").replaceChildren(statusBadge(record.review_status));
-  $("doc2-why").replaceChildren(...(record.issues?.length && ["proposed", "needs_review"].includes(record.review_status) ? [doc2Why(record.issues)] : []));
+  const issues = doc2Issues(record);
+  $("doc2-why").replaceChildren(...(issues.length && ["proposed", "needs_review"].includes(record.review_status) ? [doc2Why(issues)] : []));
   state.reload = () => doc2Other(state, target, publication);
   doc2Decision(state, {recordType: publication.record_type, recordId: publication.id, reviewStatus: record.review_status, reviewSource: null, correctable: [],
                        reviewPath: path, undoBody: {status: "proposed"}});

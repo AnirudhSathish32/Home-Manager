@@ -305,9 +305,26 @@ function receiptCell(key, row, record, categories, onSaved) {
   }
   if (key === "category") return [categories.length ? itemCategorySelect(record.id, row, categories, onSaved) : document.createTextNode(row.category ? categoryLabel(row.category) : "—")];
   if (key === "line_total") return [amount(row.display.line_total_minor || "—", {signed: false})];
-  // Paid: the item's stored share, shown as stored; "with tax" only when the share includes part of the receipt's tax.
+  // Paid: the item's stored share, shown as stored; a note only when the share includes part of the receipt's tax: "with B tax" when
+  // the receipt's tax lines set the shares (table.tax_note), else "with tax".
   if (row.share_minor == null) return [document.createTextNode("—")];
-  return [amount(row.display.share_minor, {signed: false}), ...(row.table?.tax_included ? [element("small", "with tax", "muted block")] : [])];
+  const note = row.table?.tax_note || (row.table?.tax_included ? "with tax" : "");
+  return [amount(row.display.share_minor, {signed: false}), ...(note ? [element("small", note, "muted block")] : [])];
+}
+function taxLineRow(line, before, after, find) {
+  // One printed tax line under Tax: "B · 7.75% on $46.19", its amount under Line total and Find for the line it was read from.
+  // The rate and the taxable amount are left out when the receipt didn't print them.
+  const tr = element("tr"), name = element("th", line.code); name.scope = "row"; name.colSpan = before;
+  if (line.rate_display || line.display.taxable_minor) name.append(document.createTextNode(" · "));
+  if (line.rate_display) name.append(document.createTextNode(line.rate_display));
+  if (line.display.taxable_minor) name.append(document.createTextNode(line.rate_display ? " on " : "on "), amount(line.display.taxable_minor, {signed: false}));
+  const value = element("td", "", "numeric"); value.dataset.col = "line_total"; value.append(amount(line.display.amount_minor || "—", {signed: false}));
+  const actions = element("td"); actions.colSpan = after;
+  if (line.line_ids?.length) {
+    const button = sourceButton(line.line_ids, find); button.setAttribute("aria-label", `Find ${line.code} tax line`); actions.append(button);
+  }
+  tr.append(name, value, actions);
+  return tr;
 }
 function ledgerRows(record, categories, onSaved, find, correctField = null) {
   if (record.document_kind === "bill" && record.items) return billLines(record, categories, onSaved, find, correctField);
@@ -343,6 +360,7 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
   for (const row of rows.slice(0, 200)) {
     const tr = document.createElement("tr");
     if (row.line_ids?.length) tr.dataset.lines = row.line_ids.join(" ");  // For reverse lookup from the image.
+    if (row.tax_code) tr.title = `Tax code ${row.tax_code}`;  // The code as printed (BF); the Paid note names the tax line's (B).
     if (record.items) {
       for (const [key, , numeric] of receiptColumns) {
         const td = tr.appendChild(element("td", "", numeric ? "numeric" : "")); td.dataset.col = key;
@@ -381,10 +399,17 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
         button.addEventListener("click", () => correctField(field)); actions.append(button);
       }
       tr.append(name, value, actions); foot.append(tr);
+      // When the tax lines set the shares, each is listed under Tax, by code and then printed position (the receipt's order is kept for ties).
+      if (field === "tax" && record.tax_lines_used) {
+        const lines = record.tax_lines.filter(line => line.code).sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : a.position - b.position));
+        for (const line of lines) foot.append(taxLineRow(line, before, after, find));
+      }
     }
   }
   wrap.appendChild(table);
   if (record.totals_mismatch) wrap.append(element("p", "Doesn't add up: subtotal + tax + tip differs from total by more than one cent.", "item-warning"));
+  // Why tax was shared as it was, or which items got no tax line's share (also in the record's issues, which the warnings block leaves out).
+  for (const issue of record.tax_issues || []) wrap.append(element("p", issue, "item-warning"));
   if (rows.length > 200) wrap.appendChild(element("p", `Showing 200 of ${rows.length} rows.`, "muted"));
   if (record.splits?.length) {
     // What this receipt counts as, by category, and whether a statement line confirms it.

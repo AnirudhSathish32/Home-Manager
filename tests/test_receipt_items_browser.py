@@ -1,10 +1,11 @@
 """The receipt item table on the document page (specs/receipt-item-table FR-01 – FR-07, FR-25; test contract SC-02, SC-11,
 SC-12, SC-17, SC-20): its columns, Qty and Unit price, Line total and Paid, the footer under Line total, and Printed details
-without the counts. Synthetic receipts (tests/receipt_item_fixtures.py) read and recorded through the real path. Each scenario
+without the counts. specs/receipt-tax-codes adds the tax-code note and the footer's tax lines (FR-19, FR-26; SC-19, SC-15 step 3).
+Synthetic receipts (tests/receipt_item_fixtures.py) read and recorded through the real path. Each scenario
 checks the stored receipt and its shares by SQL against the contract's hand-worked values before it looks at the page."""
 import pytest
 
-from document_forms_fixtures import record_document
+from document_forms_fixtures import amount_on, cite, record_document
 from receipt_item_fixtures import (
     D_AMOUNTS,
     D_LINES,
@@ -20,7 +21,9 @@ from receipt_item_fixtures import (
     d_replies,
     g_replies,
     na_replies,
+    r0_replies,
     ra_replies,
+    tax_line_reply,
 )
 from seed_documents import document_server
 from test_document_v2_browser import NO_OVERFLOW, open_document, watch_errors
@@ -36,6 +39,39 @@ def seed(manager, model):
     manager.configure_household(manager.household.model_copy(update={"home_currency": "USD", "auto_identify_items": False}))
     found = {}
     for key, lines, replies in (("r", R_LINES, ra_replies()), ("d", D_LINES, d_replies()), ("g", G_LINES, g_replies()), ("n", N_LINES, na_replies())):
+        doc, _, run = record_document(manager, model, f"{key}-items.png", lines, replies)
+        found[f"{key}_doc"], found[f"{key}_record"] = doc["id"], run["publication"]["id"]
+    return found
+
+
+# R0 and two variants, recorded by tax_seed: the user's receipt (SC-19), its tax and total off by a dime so the tax lines fall back (SC-04),
+# and its B tax split into two printed lines (SC-15).
+R0_SHARES = [445, 4347, 1400]
+R4_LINES = [*R_LINES[:12], "TAX $2.84", "TOTAL $62.02"]
+R4_SHARES = [450, 4391, 1361]
+R15_LINES = [*R_LINES[:11], "B = GA STATE TAX 2.17000 on $46.19 $1.00", "B = LOCAL TAX 1.58000 on $46.19 $0.73", R_LINES[12]]
+TAX_ISSUE = "The tax lines (2.74 USD) don't add up to the tax (2.84 USD), so tax was shared across the taxed items."
+
+
+def r4_replies():
+    """SC-04: R0's two tax lines against a printed tax of 2.84 (and a total of 62.02, so the receipt itself adds up)."""
+    return r0_replies(R4_LINES, tax=amount_on(R4_LINES, "TAX "))
+
+
+def r15_replies():
+    """SC-15: B printed as two lines, B 1.00 and B 0.73."""
+    lines = R15_LINES
+    tax_lines = [tax_line_reply(lines, "T = GA TAX", "T", "1.01", "12.99", "7.75000"),
+                 tax_line_reply(lines, "B = GA STATE", "B", "1.00", "46.19", "2.17000"), tax_line_reply(lines, "B = LOCAL", "B", "0.73", "46.19", "1.58000")]
+    tax = {"value": "2.74", "status": "proposed", "evidence": cite(lines, "T = GA TAX") + cite(lines, "B = GA STATE") + cite(lines, "B = LOCAL")}
+    return r0_replies(lines, tax_lines=tax_lines, tax=tax)
+
+
+def tax_seed(manager, model):
+    """R0 (SC-19), its tax-lines-do-not-add-up variant (SC-04) and its two-B-lines variant (SC-15), USD first like seed()."""
+    manager.configure_household(manager.household.model_copy(update={"home_currency": "USD", "auto_identify_items": False}))
+    found = {}
+    for key, lines, replies in (("r0", R_LINES, r0_replies()), ("r4", R4_LINES, r4_replies()), ("r15", R15_LINES, r15_replies())):
         doc, _, run = record_document(manager, model, f"{key}-items.png", lines, replies)
         found[f"{key}_doc"], found[f"{key}_record"] = doc["id"], run["publication"]["id"]
     return found
@@ -239,5 +275,108 @@ def test_sc20_no_codes_untaxed_item(tmp_path):
         assert page.locator(".ledger-rows tfoot tr", has=page.locator("th", has_text="Tax")).count() == 1
         expect(page.locator(".ledger-rows tfoot tr", has=page.locator("th", has_text="Tax")).locator("td[data-col=line_total]")).to_have_text("$40.12")
         assert_footer_under_line_total(page)
+        assert failures == []
+        browser.close()
+
+
+def footer(page):
+    """The footer's rows: (label, Line total cell, whether it has a Find button), as shown."""
+    return [(" ".join(row.locator("th").inner_text().split()), " ".join(row.locator("td[data-col=line_total]").inner_text().split()),
+             row.get_by_role("button", name="Find", exact=False).count() == 1) for row in page.locator(".ledger-rows tfoot tr").all()]
+
+
+@browser_test
+def test_sc19_tax_lines_and_codes(tmp_path):
+    """SC-19 (FR-19, FR-26): R0's Paid notes name the tax code, Ruffles' row says Tax code BF, the footer lists the B and T tax lines
+    with Find, and on SC-04's receipt (lines kept, not used) the page is as before."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=tax_seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        # P-checks: the stored receipt, its shares by code, and the tax lines kept.
+        amounts, shares, total, _ = stored(manager, ids["r0_record"])
+        assert amounts == R_AMOUNTS and shares == R0_SHARES and total == R_AMOUNTS[2]
+        with manager.store.connection() as db:
+            before = [tuple(row) for row in db.execute("SELECT code, taxable_minor, amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (ids["r0_record"],))]
+        assert before == [("T", 1299, 101), ("B", 4619, 173)]
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["r0_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
+        # 1. Paid, with the code of the tax line each share holds (FR-26).
+        assert [cells(table_row(page, name))["paid"] for name in ("RUFFLES", "LITLE VEGET", "WATER FILTER")] == [
+            "$4.45 with B tax", "$43.47 with B tax", "$14.00 with T tax"]
+        # 2. Ruffles' row says its printed code; no column is added (FR-26).
+        assert table_row(page, "RUFFLES").get_attribute("title") == "Tax code BF"
+        assert table_row(page, "WATER FILTER").get_attribute("title") == "Tax code T"
+        assert titles(page) == HEADER
+        # 3. The footer: Subtotal, Tax with its two lines (B before T), Total; the amounts sit under Line total.
+        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("B · 7.75% on $46.19", "$1.73", True),
+                                ("T · 7.75% on $12.99", "$1.01", True), ("Total", "$61.92", False)]
+        assert_footer_under_line_total(page)
+        # 4. Find on the B tax line lights the B line of the source.
+        page.locator(".ledger-rows tfoot").get_by_role("button", name="Find B tax line", exact=True).click()
+        expect(page.locator("#doc2-viewer .sv-line.selected")).to_contain_text("B = GA TAX")
+        # 5. Correct on Tax still opens the tax correction (the footer's buttons show once the record's Correct is open); Cancel closes it.
+        page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
+        page.locator(".ledger-rows tfoot").get_by_role("button", name="Correct tax", exact=True).click()
+        form = page.locator("#doc2-decision .cc-form")
+        expect(form.get_by_label("Tax", exact=True)).to_be_focused()
+        form.get_by_role("button", name="Cancel", exact=True).click()
+        expect(page.locator("#doc2-decision").get_by_label("Tax", exact=True)).to_be_hidden()
+        # 6. Reloading shows the same table, and the visit wrote nothing.
+        page.reload()
+        page.wait_for_selector(".ledger-rows tbody tr")
+        assert [cells(table_row(page, name))["paid"] for name in ("RUFFLES", "LITLE VEGET", "WATER FILTER")] == [
+            "$4.45 with B tax", "$43.47 with B tax", "$14.00 with T tax"]
+        assert [row[0] for row in footer(page)] == ["Subtotal", "Tax", "B · 7.75% on $46.19", "T · 7.75% on $12.99", "Total"]
+        assert stored(manager, ids["r0_record"])[:3] == (amounts, shares, total)
+        with manager.store.connection() as db:
+            assert [tuple(row) for row in db.execute("SELECT code, taxable_minor, amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (ids["r0_record"],))] == before
+        for width in (390, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(NO_OVERFLOW), width
+        # Variant (SC-04's receipt): the lines are kept but don't set the shares, so the footer has the one Tax line and Paid says "with tax".
+        amounts, shares, total, _ = stored(manager, ids["r4_record"])
+        assert (amounts, shares, total) == ((5918, 284, 6202), R4_SHARES, 6202)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        open_document(page, base, ids["r4_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
+        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.84", False), ("Total", "$62.02", False)]
+        assert [cells(table_row(page, name))["paid"] for name in ("RUFFLES", "LITLE VEGET", "WATER FILTER")] == [
+            "$4.50 with tax", "$43.91 with tax", "$13.61 with tax"]
+        # The reason shows once, under the table, and the warnings block doesn't hold it.
+        expect(page.locator(".item-warning", has_text=TAX_ISSUE)).to_have_count(1)
+        expect(page.locator("#doc2-why")).not_to_contain_text("don't add up")
+        for width in (390, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(NO_OVERFLOW), width
+        assert failures == []
+        browser.close()
+
+
+@browser_test
+def test_sc15_footer_three_tax_lines(tmp_path):
+    """SC-15 step 3 (FR-19, FR-23): B printed as two lines shows three tax lines in the footer, each with Find."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=tax_seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        amounts, shares, total, _ = stored(manager, ids["r15_record"])
+        assert (amounts, shares, total) == (R_AMOUNTS, R0_SHARES, R_AMOUNTS[2])
+        with manager.store.connection() as db:
+            assert [row[0] for row in db.execute("SELECT amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (ids["r15_record"],))] == [101, 100, 73]
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["r15_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
+        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("B · 2.17% on $46.19", "$1.00", True),
+                                ("B · 1.58% on $46.19", "$0.73", True), ("T · 7.75% on $12.99", "$1.01", True), ("Total", "$61.92", False)]
+        assert_footer_under_line_total(page)
+        page.locator(".ledger-rows tfoot").get_by_role("button", name="Find B tax line", exact=True).nth(1).click()
+        expect(page.locator("#doc2-viewer .sv-line.selected")).to_contain_text("LOCAL TAX")
+        for width in (390, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            assert page.evaluate(NO_OVERFLOW), width
         assert failures == []
         browser.close()
