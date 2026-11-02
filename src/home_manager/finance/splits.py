@@ -82,12 +82,12 @@ def tax_parts(items, tax, tax_lines, source, currency=None):
     tax_code. tax_lines: [(code, amount magnitude or None)] in printed order. source: the receipt's tax_source.
     Without per-code tax lines it is today's rule (tax_basis), except that a receipt read with neither tax lines nor a legend
     spreads tax over every item when any item's taxed answer is empty."""
-    if not tax:
-        return TaxPlan([], False, [], {})
     if source == "tax_lines" and tax_lines:
-        plan = by_tax_line(items, tax, tax_lines, currency)
+        plan = by_tax_line(items, tax or 0, tax_lines, currency)
         if plan is not None:
             return plan
+    if not tax:
+        return TaxPlan([], False, [], {})
     if source == "printed" and any(item.get("taxed") is None for item in items):
         return TaxPlan([(tax, [item_amount(item) for item in items], None)], False, [], {})
     return TaxPlan([(tax, tax_basis(items), None)], False, [], {})
@@ -95,7 +95,8 @@ def tax_parts(items, tax, tax_lines, source, currency=None):
 
 def by_tax_line(items, tax, tax_lines, currency):
     """tax_parts() for a receipt with per-code tax lines: one part per code when the lines add up to the tax and every code has
-    items to carry it, else tax_basis over the items' stored taxed flags and the reason. None when no line has a code."""
+    items to carry it, else tax_basis over the items' stored taxed flags and the reason. None when no line has a code. A tax of
+    zero has nothing to share, so it gets no parts, but lines that don't add up to it are still named."""
     amounts = {}  # code -> summed amount, or None when a line of that code couldn't be read.
     for code, amount in tax_lines:
         code = printed_code(code)
@@ -124,8 +125,8 @@ def by_tax_line(items, tax, tax_lines, currency):
     reasons += [f"The {code} tax line has no items carrying its code, so tax was shared across the taxed items." for code in amounts if not members[code]]
     reasons += [f"The {code} tax line's items add up to nothing, so tax was shared across the taxed items."
                 for code, amount in amounts.items() if amount and members[code] and sum(weights[code]) == 0]
-    if reasons:
-        return TaxPlan([(tax, tax_basis(items), None)], False, [*issues, *reasons], {})
+    if reasons or not tax:
+        return TaxPlan([(tax, tax_basis(items), None)] if tax else [], False, [*issues, *reasons], {})
     sign = -1 if tax < 0 else 1
     return TaxPlan([(sign * amount, weights[code], code) for code, amount in amounts.items()], True, issues, codes)
 

@@ -275,6 +275,28 @@ def test_sc07_correcting_the_tax_falls_back_and_back(app_client):
     assert_ledger_healthy(store)
 
 
+def test_correcting_the_tax_to_zero_falls_back_with_the_reason_and_back(app_client):
+    client, manager, docs = app_client
+    store, ledger = manager.store, manager.ledger
+    receipt_id = ledger.publish_receipt(r_derived_receipt(), source_of(docs["receipt.png"], "extraction:receipt"), "verified")["id"]
+    manager.correct_record("receipt", receipt_id, {"tax": "0.00"})
+    assert rows(store, "SELECT tax_minor,total_minor FROM receipts WHERE id=?", receipt_id) in ([(0, 6192)], [(None, 6192)])
+    # No tax to spread, so the 6192 - 5918 = 274 charge difference goes by amount: item x 274 / 5918 = 19.862, 193.995, 60.143 on
+    # 429, 4190, 1299 -> 448.862, 4383.995, 1359.143; rounded down 448 + 4383 + 1359 = 6190, and the 2 cents left go to the largest
+    # remainders (.995, .862): 449, 4384, 1359.
+    assert shares_of(store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])
+    record = ledger.record("receipt", receipt_id)
+    reason = "The tax lines (2.74 USD) don't add up to the tax (0.00 USD), so tax was shared across the taxed items."
+    assert (record["tax_lines_used"], record["tax_issues"]) == (False, [reason]) and reason in record["issues"]
+    assert len(record["tax_lines"]) == 2
+    back = client.patch(f"/api/finance/records/receipt/{receipt_id}", json={"changes": {"tax": "2.74"}})
+    assert back.status_code == 200, back.text
+    assert shares_of(store, receipt_id)[0] == R_SHARES
+    shown = client.get(f"/api/finance/records/receipt/{receipt_id}").json()
+    assert (shown["tax_lines_used"], shown["tax_issues"], shown["issues"]) == (True, [], [])
+    assert_ledger_healthy(store)
+
+
 def test_sc10_charges_shares_and_currencies_stay_exact(books):
     store, ledger, docs = books
     receipt_id = ledger.publish_receipt(r_derived_receipt(), source_of(docs["r.png"], "extraction:r"), "verified")["id"]

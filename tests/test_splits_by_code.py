@@ -74,6 +74,35 @@ def test_correcting_the_tax_falls_back_by_amount_sc07():
     assert (amounts, plan.issues) == ([445, 4347, 1400], [])
 
 
+@pytest.mark.parametrize("tax", [0, None])
+def test_a_tax_corrected_to_nothing_still_reports_lines_that_dont_add_up_to_it(tax):
+    # Nothing to share, so no parts: the whole 6192 - 5918 = 274 charge difference goes by amount, each item's amount x 6192 / 5918
+    # (the same shares as the tax 3.00 case above, 449 / 4384 / 1359).
+    amounts, plan = shared(r0(), LINES, tax=tax)
+    assert amounts == [449, 4384, 1359]
+    assert (plan.parts, plan.by_code, plan.codes) == ([], False, {})
+    assert plan.issues == ["The tax lines (2.74 USD) don't add up to the tax (0.00 USD), so tax was shared across the taxed items."]
+
+
+def test_a_zero_tax_still_names_an_item_with_two_codes():
+    plan = tax_parts(r0(ruffles="BT"), 0, LINES, "tax_lines", "USD")
+    assert (plan.parts, plan.by_code) == ([], False)
+    assert plan.issues[0] == "RUFFLES carries more than one tax line's code (B, T), so it got no share of either."
+    assert len(plan.issues) == 2 and plan.issues[1].startswith("The tax lines (2.74 USD) don't add up to the tax (0.00 USD)")
+
+
+def test_a_zero_tax_with_lines_that_add_up_to_zero_has_no_issue():
+    amounts, plan = shared(r0(), [("T", 0), ("B", 0)], tax=0, total=SUBTOTAL)
+    assert amounts == [429, 4190, 1299]
+    assert (plan.parts, plan.by_code, plan.issues, plan.codes) == ([], False, [], {})
+
+
+def test_a_zero_tax_without_tax_lines_is_as_before():
+    for source, lines in (("tax_lines", []), (None, LINES), ("legend", LINES), ("printed", LINES)):
+        plan = tax_parts(r0(), 0, lines, source, "USD")
+        assert (plan.parts, plan.by_code, plan.issues, plan.codes) == ([], False, [], {})
+
+
 def test_two_lines_with_the_same_code_are_added_for_that_code_sc15():
     amounts, plan = shared(r0(), [("T", 101), ("B", 100), ("B", 73)])
     assert amounts == [445, 4347, 1400]
@@ -122,13 +151,6 @@ def test_a_returns_tax_lines_carry_the_receipts_sign():
     amounts, plan = shared(items, LINES, tax=-TAX, total=-TOTAL, subtotal=-SUBTOTAL)
     assert amounts == [-445, -4347, -1400]
     assert plan.by_code is True and [part[0] for part in plan.parts] == [-101, -173]
-
-
-def test_no_tax_means_no_parts_and_no_issues():
-    for tax in (0, None):
-        plan = tax_parts(r0(ruffles="BT"), tax, LINES, "tax_lines", "USD")
-        assert (plan.parts, plan.by_code, plan.issues, plan.codes) == ([], False, [], {})
-    assert shared(r0(), LINES, tax=0, total=5918)[0] == [429, 4190, 1299]
 
 
 def test_one_tax_line_receipt_with_partly_answered_flags_shares_over_every_item_sc18():
