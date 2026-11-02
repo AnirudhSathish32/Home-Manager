@@ -1087,13 +1087,16 @@ class Ledger:
 
     @staticmethod
     def split_inputs(db, receipt_id):
-        """(receipt, items, [(transaction id or None, target, currency)], shared part) for dividing a receipt by item
-        category, or None when it has no total or no items."""
+        """(receipt as a dict with its tax_lines, items, [(transaction id or None, target, currency)], shared part) for dividing a
+        receipt by item category, or None when it has no total or no items."""
         receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
-        items = [dict(row) for row in db.execute("SELECT id,description,line_total_minor,discount_minor,taxed,category,member_id FROM receipt_items "
+        items = [dict(row) for row in db.execute("SELECT id,description,line_total_minor,discount_minor,taxed,tax_code,category,member_id FROM receipt_items "
                                                  "WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (receipt_id,))]
         if receipt is None or receipt["total_minor"] is None or not items:
             return None
+        # The per-code tax lines (magnitudes, in printed order) and which rule set them up travel with the receipt (finance/splits.py tax_parts).
+        receipt = {**receipt, "tax_lines": [(line["code"], line["amount_minor"]) for line in db.execute(
+            "SELECT code,amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (receipt_id,))]}
         charges = [(None, receipt["total_minor"], receipt["currency"])] + [(row["id"], -row["amount_minor"], row["currency"]) for row in db.execute(
             "SELECT t.id,t.amount_minor,t.currency FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
             "WHERE l.receipt_id=? AND l.review_status<>'rejected'", (receipt_id,))]
@@ -1101,19 +1104,25 @@ class Ledger:
         return receipt, items, charges, shared
 
     @staticmethod
+    def tax_plan(receipt, items):
+        """How this receipt's tax is shared (finance/splits.py tax_parts), from split_inputs' receipt and items."""
+        return splits.tax_parts(items, receipt["tax_minor"], receipt.get("tax_lines"), receipt.get("tax_source"), receipt["currency"])
+
+    @staticmethod
     def shares(receipt, items, target, currency, shared, recorder=NULL):
         """One charge's (or the receipt's own) division by item category, summing to target. A live recorder gets the
         last pass: the one whose rounding gives the stored shares (finance/traces.py split)."""
         args = (items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"])
+        parts = Ledger.tax_plan(receipt, items).parts
         last = lambda final: recorder if final else NULL
         printed = receipt["printed_total_minor"] if "printed_total_minor" in receipt.keys() else None
         if currency == receipt["currency"] and printed is not None:
             # Paid partly by gift card: divided as printed, then resized to the amount paid, each category keeping its proportion.
-            shares = splits.scale(splits.allocate(*args, printed, receipt["category"]), target, last(not shared), items, currency)
+            shares = splits.scale(splits.allocate(*args, printed, receipt["category"], tax_parts=parts), target, last(not shared), items, currency)
         elif currency == receipt["currency"]:
-            shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency)
+            shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency, parts)
         else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
-            shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"]), target, last(not shared), items, currency)
+            shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"], tax_parts=parts), target, last(not shared), items, currency)
         if shared and shared["member_id"]:  # Shared by line: this person's own lines and their part of the rest (docs/family.md).
             shares = splits.scale(splits.by_line(shares, items, shared["member_id"]), charge_share(target, shared["share_minor"], shared["total_minor"]),
                                   recorder, items, currency)
@@ -1822,11 +1831,18 @@ class Ledger:
                                          "AND receipt_item_id IS NOT NULL", (record_id,)).fetchall())
                 bill = row["document_kind"] == "bill"
                 found = None if bill else self.split_inputs(db, record_id)
-                basis = dict(zip((entry["id"] for entry in found[1]), splits.tax_basis(found[1]))) if found else {}
+                plan = self.tax_plan(found[0], found[1]) if found else None
+                # 1 for each item that holds part of the tax: item_table's tax_included asks only whether its weight is nothing.
+                basis = {entry["id"]: int(plan.included(index)) for index, entry in enumerate(found[1])} if found else {}
+                carried = {found[1][index]["id"]: code for index, code in plan.codes.items()} if found else {}
                 for item in value["items"]:
                     item["share_minor"] = shares.get(item["id"])
                     if not bill:
                         item["table"] = item_table(item, row, basis, row["currency"])
+                        # "with B tax" for an item whose share holds a tax line's amount. Left out otherwise: the page says "with tax"
+                        # when tax_included (specs/receipt-item-table FR-05), and the table of a receipt without tax lines is unchanged.
+                        if item["table"]["tax_included"] and item["id"] in carried:
+                            item["table"]["tax_note"] = f"with {carried[item['id']]} tax"
                     item["correctable"] = [{"field": "price", "label": "Price", "kind": "receipt_money",
                                             "value": money(abs(item["line_total_minor"]), row["currency"])["decimal"] if item["line_total_minor"] is not None else None}]
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
@@ -1869,6 +1885,11 @@ class Ledger:
                     for column in ("taxable_minor", "amount_minor"):
                         line[column] = None if line[column] is None else direction * line[column]
                     value["tax_lines"].append(line)
+                # Whether the tax lines set the shares, and what to tell the reader about them. Worked out on every read, never stored,
+                # so correcting Tax adds or clears them (docs/money.md "Item categories and splits").
+                value["tax_lines_used"] = bool(plan and plan.by_code)
+                value["tax_issues"] = list(plan.issues) if plan else []
+                value["issues"] = [*(value.get("issues") or []), *(issue for issue in value["tax_issues"] if issue not in (value.get("issues") or []))]
                 # Sale or return, as a correction sets it, and the tag the page shows (docs/money.md "Returns").
                 value["direction"] = self.effective_receipt_direction(db, row)
                 value["sale_label"] = sale_label(row["total_minor"], [item["line_total_minor"] for item in value["items"]])

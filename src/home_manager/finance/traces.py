@@ -205,10 +205,12 @@ def split(store, ref_text, params, charge):
             raise ValueError("This charge isn't matched to that receipt.")
         recorder = Recorder()
         shares = ledger.shares(receipt, items, target[0], target[1], shared, recorder)
+        by_code = ledger.tax_plan(receipt, items).by_code
     what = "The charge" if charge else "The receipt"
     return build(ref_text, f"{what} by item category", sum(amount for _, _, amount in shares), target[1],
-                 f"{what}'s amount shared out by item: each item's own amount, with the order-wide discount and the tax shared by amount, a tip "
-                 "as dining, and any difference from what was charged shared the same way" + (", then this person's part of a shared receipt" if shared else "")
+                 f"{what}'s amount shared out by item: each item's own amount, with the order-wide discount and the tax shared by amount"
+                 + (" within each tax code" if by_code else "") + ", a tip as dining, and any difference from what was charged shared the same way"
+                 + (", then this person's part of a shared receipt" if shared else "")
                  + ". Shares are exact until the end; the cents left by rounding go to the largest remainders.", recorder)
 
 

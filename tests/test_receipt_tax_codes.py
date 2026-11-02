@@ -9,6 +9,7 @@ from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
 from home_manager.finance.ledger import Ledger, rate_display
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.storage import Store
+from test_correction_preview import app_client  # noqa: F401
 from test_reconcile_tools import source_of
 
 
@@ -40,10 +41,15 @@ def r_receipt(**more):
     return receipt(r_items(), 274, 6192, 5918, tax_source="tax_lines", tax_lines=R_LINES, **more)
 
 
+def r_derived_receipt(**more):
+    """R0 as recording it stores it: the same codes and lines, with the taxed flags FR-11 derives from the tax lines (all three taxed)."""
+    return receipt([{**entry, "taxed": True} for entry in r_items()], 274, 6192, 5918, tax_source="tax_lines", tax_lines=R_LINES, **more)
+
+
 @pytest.fixture
 def books(tmp_path):
     store = Store(tmp_path / "managed")
-    inbox_scan(store, {"r.png": b"synthetic mart receipt", "d.png": b"synthetic costco receipt"})
+    inbox_scan(store, {"r.png": b"synthetic mart receipt", "d.png": b"synthetic costco receipt", "card.csv": b"date,amount\n", "euro.csv": b"date,amount\n"})
     try:
         yield store, Ledger(store), documents_by_name(store)
     finally:
@@ -187,3 +193,133 @@ def test_sc09_receipts_recorded_without_codes_keep_their_shares(books, tmp_path)
         assert_ledger_healthy(reopened)
     finally:
         reopened.close()
+
+
+# The sharing rule through the ledger (specs/receipt-tax-codes FR-14 – FR-18, FR-26 – FR-28; the rule itself is tests/test_splits_by_code.py) --
+
+R_SHARES = [445, 4347, 1400]  # The test contract's hand-worked shares for R0 (SC-01).
+
+
+def shares_of(store, receipt_id, charge=None):
+    """(shares per item in position order, every split row's amount) of the receipt itself, or of one matched charge."""
+    where = "s.transaction_id IS NULL" if charge is None else f"s.transaction_id={int(charge)}"
+    found = rows(store, f"SELECT i.position,s.amount_minor FROM category_splits s LEFT JOIN receipt_items i ON i.id=s.receipt_item_id "
+                        f"WHERE s.receipt_id=? AND {where} ORDER BY i.position", receipt_id)
+    return [amount for position, amount in found if position is not None], [amount for _, amount in found]
+
+
+def test_the_record_shares_by_code_and_says_which_items_hold_which_lines_tax(books):
+    store, ledger, docs = books
+    receipt_id = ledger.publish_receipt(r_derived_receipt(), source_of(docs["r.png"], "extraction:r"), "verified")["id"]
+    assert shares_of(store, receipt_id)[0] == R_SHARES
+    record = ledger.record("receipt", receipt_id)
+    assert [entry["share_minor"] for entry in record["items"]] == R_SHARES
+    assert (record["tax_lines_used"], record["tax_issues"], record["issues"]) == (True, [], [])
+    assert [entry["table"]["tax_included"] for entry in record["items"]] == [True, True, True]
+    assert [entry["table"].get("tax_note") for entry in record["items"]] == ["with B tax", "with B tax", "with T tax"]
+    assert_ledger_healthy(store)
+
+
+def test_a_record_that_falls_back_keeps_its_lines_and_reports_why_without_storing_it(books):
+    store, ledger, docs = books
+    # SC-04: the lines come to 2.74 but the receipt's tax is 2.84.
+    items = [{**entry, "taxed": True} for entry in r_items()]  # The flags FR-11 derives from the lines.
+    receipt_id = ledger.publish_receipt(receipt(items, 284, 6202, 5918, tax_source="tax_lines", tax_lines=R_LINES),
+                                        source_of(docs["r.png"], "extraction:r"), "verified")["id"]
+    assert shares_of(store, receipt_id)[0] == [450, 4391, 1361]
+    record = ledger.record("receipt", receipt_id)
+    reason = "The tax lines (2.74 USD) don't add up to the tax (2.84 USD), so tax was shared across the taxed items."
+    assert (record["tax_lines_used"], record["tax_issues"], record["issues"]) == (False, [reason], [reason])
+    assert len(record["tax_lines"]) == 2
+    assert [entry["table"]["tax_included"] for entry in record["items"]] == [True, True, True]
+    assert all("tax_note" not in entry["table"] for entry in record["items"])
+    assert rows(store, "SELECT validation_json FROM receipts WHERE id=?", receipt_id) == [("[]",)]  # Worked out on each read, never stored.
+    assert ledger.record("receipt", receipt_id)["issues"] == [reason]  # Not added again by a second read.
+    assert_ledger_healthy(store)
+
+
+def test_an_item_with_two_codes_is_named_and_gets_no_tax_line(books):
+    store, ledger, docs = books
+    items = r_items()
+    items[0]["tax_code"], items[0]["taxed"] = "BT", False  # BT belongs to no one line (FR-11).
+    receipt_id = ledger.publish_receipt(receipt(items, 274, 6192, 5918, tax_source="tax_lines", tax_lines=R_LINES),
+                                        source_of(docs["r.png"], "extraction:r"), "verified")["id"]
+    assert shares_of(store, receipt_id)[0] == [429, 4363, 1400]
+    record = ledger.record("receipt", receipt_id)
+    assert record["tax_issues"] == ["RUFFLES carries more than one tax line's code (B, T), so it got no share of either."]
+    assert record["tax_lines_used"] is True
+    assert [entry["table"].get("tax_note") for entry in record["items"]] == [None, "with B tax", "with T tax"]
+    assert record["items"][0]["table"]["tax_included"] is False
+
+
+def test_sc07_correcting_the_tax_falls_back_and_back(app_client):
+    client, manager, docs = app_client
+    store, ledger = manager.store, manager.ledger
+    receipt_id = ledger.publish_receipt(r_derived_receipt(), source_of(docs["receipt.png"], "extraction:receipt"), "verified")["id"]
+    assert shares_of(store, receipt_id) == (R_SHARES, [*R_SHARES])
+    money = lambda: rows(store, "SELECT subtotal_minor,tax_minor,tip_minor,total_minor FROM receipts WHERE id=?", receipt_id)
+    assert money() == [(5918, 274, None, 6192)]
+    manager.correct_record("receipt", receipt_id, {"tax": "3.00"})  # Also runs the reconciler, which rebuilds every receipt's splits.
+    assert money() == [(5918, 300, None, 6192)]  # FR-28: only the tax changed.
+    assert shares_of(store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])
+    record = ledger.record("receipt", receipt_id)
+    reason = "The tax lines (2.74 USD) don't add up to the tax (3.00 USD), so tax was shared across the taxed items."
+    assert (record["tax_lines_used"], record["tax_issues"]) == (False, [reason]) and reason in record["issues"]
+    assert len(record["tax_lines"]) == 2
+    back = client.patch(f"/api/finance/records/receipt/{receipt_id}", json={"changes": {"tax": "2.74"}})
+    assert back.status_code == 200, back.text
+    assert money() == [(5918, 274, None, 6192)]
+    assert shares_of(store, receipt_id)[0] == R_SHARES
+    shown = client.get(f"/api/finance/records/receipt/{receipt_id}").json()
+    assert (shown["tax_lines_used"], shown["tax_issues"], shown["issues"]) == (True, [], [])
+    assert_ledger_healthy(store)
+
+
+def test_sc10_charges_shares_and_currencies_stay_exact(books):
+    store, ledger, docs = books
+    receipt_id = ledger.publish_receipt(r_derived_receipt(), source_of(docs["r.png"], "extraction:r"), "verified")["id"]
+    # 1. A card charge of the full amount, matched by the reconciler: its split rows are the receipt's.
+    from test_spending_splits import statement
+    reconciler = Reconciler(store)
+    statement_id = statement(ledger, docs["card.csv"], [("2026-10-21", "SYNTH MART #12", -6192)])
+    reconciler.reconcile_statement(statement_id)
+    charge = rows(store, "SELECT t.id FROM transactions t JOIN transaction_receipt_links l ON l.transaction_id=t.id WHERE l.receipt_id=? "
+                         "AND l.review_status<>'rejected'", receipt_id)[0][0]
+    by_item, every = shares_of(store, receipt_id, charge)
+    assert by_item == R_SHARES and sum(every) == 6192 and all(isinstance(amount, int) for amount in every)
+    # 2. Shared 50/50: this person's part is 3096 and each category is within a cent of half its share.
+    with store.connection() as db:
+        db.execute("INSERT INTO record_shares VALUES('receipt',?,3096,6192,'[]','key','now',NULL)", (receipt_id,))
+        ledger.refresh_splits(db, receipt_id)
+    for scope in (None, charge):
+        by_item, every = shares_of(store, receipt_id, scope)
+        assert sum(every) == 3096 and all(abs(2 * mine - theirs) <= 2 for mine, theirs in zip(by_item, R_SHARES))
+    with store.connection() as db:
+        db.execute("DELETE FROM record_shares WHERE record_type='receipt' AND record_id=?", (receipt_id,))
+        ledger.refresh_splits(db, receipt_id)
+    assert shares_of(store, receipt_id, charge)[0] == R_SHARES
+    assert_ledger_healthy(store)
+    # 3. A charge of 57.00 EUR for the same receipt: resized to the charge, each share within a cent of share x 5700 / 6192.
+    account = ledger.create_account("Euro Bank", "checking", "EUR")
+    with store.connection() as db:
+        inserted, _ = ledger.insert_transactions(db, account, [{"posted_date": "2026-10-21", "description": "SYNTH MART PARIS", "amount_minor": -5700,
+                                                                "currency": "EUR", "locator": {"rows": [1]}}], "import",
+                                                 source_of(docs["euro.csv"], "import:euro"), review_status="verified")
+        euro = inserted[0]["id"] if isinstance(inserted[0], dict) else inserted[0]
+        db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,created_at,updated_at) "
+                   "VALUES(?,?,100,'test','verified','now','now')", (euro, receipt_id))
+        ledger.refresh_splits(db, receipt_id)
+    by_item, every = shares_of(store, receipt_id, euro)
+    assert sum(every) == 5700 and all(abs(amount - mine * 5700 / 6192) <= 1 for amount, mine in zip(by_item, R_SHARES))
+    assert shares_of(store, receipt_id, charge)[0] == R_SHARES  # The other charge is untouched.
+    # (The health check isn't run here: a USD receipt linked to a EUR charge is a link the user has to choose, as the contract does by hand.)
+
+
+def test_the_receipts_split_trace_names_the_tax_codes_only_when_they_set_the_shares(books):
+    from home_manager.finance.traces import build_for
+    store, ledger, docs = books
+    by_code = ledger.publish_receipt(r_derived_receipt(), source_of(docs["r.png"], "extraction:r"), "verified")["id"]
+    old = ledger.publish_receipt(receipt(r_items(coded=False), 274, 6192, 5918), source_of(docs["d.png"], "extraction:d"), "verified")["id"]
+    trace = build_for(store, f"split.receipt?receipt_id={by_code}")
+    assert "the tax shared by amount within each tax code" in trace["formula"]
+    assert "within each tax code" not in build_for(store, f"split.receipt?receipt_id={old}")["formula"]

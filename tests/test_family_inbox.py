@@ -201,8 +201,9 @@ def test_a_delivered_receipt_keeps_its_tax_codes_lines_and_source(tmp_path):
                         [tuple(r) for r in db.execute("SELECT i.position,s.category,s.amount_minor FROM category_splits s JOIN receipt_items i ON i.id=s.receipt_item_id "
                                                       "WHERE s.receipt_id=? AND s.transaction_id IS NULL ORDER BY i.position", (receipt_id,))])
         assert kept(person, copy) == kept(family, sent)
-        source, items, lines, _ = kept(person, copy)
+        source, items, lines, splits = kept(person, copy)
         assert source == [("tax_lines",)] and [code for _, _, code, _ in items] == ["BF", "BF", "T"]
+        assert [amount for _, _, amount in splits] == [445, 4347, 1400]  # Shared by tax code, as the family's record is.
         assert lines == [(1, "T", "7.75000", 1299, 101), (2, "B", "7.75000", 4619, 173)]
         with person.connection() as db:
             assert db.execute("SELECT count(*) FROM receipt_tax_lines").fetchone()[0] == 2

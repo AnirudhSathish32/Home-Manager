@@ -7,7 +7,8 @@ categories add up exactly to it:
 1. An item's own amount is its line total less any discount printed on it.
 2. An order-wide discount (the printed subtotal differing from the items) is shared by item amount.
 3. Tax is shared by amount across the items the receipt marks as taxed, or across every item
-   when none are marked.
+   when none are marked. A receipt that printed a tax line per tax code shares each line's amount across the
+   items carrying that code (tax_parts).
 4. A tip is dining.
 5. A difference between the receipt and what was charged (a tip added after signing) is dining for a
    dining receipt, otherwise shared by amount.
@@ -15,9 +16,12 @@ categories add up exactly to it:
 Shares are exact fractions until the end; largest-remainder rounding keeps the sum exact.
 """
 
+from decimal import Decimal
 from fractions import Fraction
 import math
+from typing import NamedTuple
 
+from ..core.money import format_minor
 from ..core.trace import NULL
 
 DINING = "dining"
@@ -55,6 +59,77 @@ def tax_basis(items):
     return taxed if sum(taxed) else base
 
 
+class TaxPlan(NamedTuple):
+    """How a receipt's tax is shared. parts: [(amount, weights, tax code or None)], each amount spread over its weights.
+    by_code: each part is one printed tax line's. issues: what to tell the reader. codes: {item index: the tax line code the item belongs to}."""
+    parts: list
+    by_code: bool
+    issues: list
+    codes: dict
+
+    def included(self, index):
+        """Whether item index holds part of the tax: some part with an amount gives it weight, within weights that add up to something."""
+        return any(amount and sum(weights) != 0 and weights[index] != 0 for amount, weights, _ in self.parts)
+
+
+def printed_code(text):
+    """A tax code as compared: no spaces, upper case ("" when none)."""
+    return "".join((text or "").split()).upper()
+
+
+def tax_parts(items, tax, tax_lines, source, currency=None):
+    """The TaxPlan for a receipt's tax (docs/money.md "Item categories and splits"). items: dicts as allocate() takes, with
+    tax_code. tax_lines: [(code, amount magnitude or None)] in printed order. source: the receipt's tax_source.
+    Without per-code tax lines it is today's rule (tax_basis), except that a receipt read with neither tax lines nor a legend
+    spreads tax over every item when any item's taxed answer is empty."""
+    if not tax:
+        return TaxPlan([], False, [], {})
+    if source == "tax_lines" and tax_lines:
+        plan = by_tax_line(items, tax, tax_lines, currency)
+        if plan is not None:
+            return plan
+    if source == "printed" and any(item.get("taxed") is None for item in items):
+        return TaxPlan([(tax, [item_amount(item) for item in items], None)], False, [], {})
+    return TaxPlan([(tax, tax_basis(items), None)], False, [], {})
+
+
+def by_tax_line(items, tax, tax_lines, currency):
+    """tax_parts() for a receipt with per-code tax lines: one part per code when the lines add up to the tax and every code has
+    items to carry it, else tax_basis over the items' stored taxed flags and the reason. None when no line has a code."""
+    amounts = {}  # code -> summed amount, or None when a line of that code couldn't be read.
+    for code, amount in tax_lines:
+        code = printed_code(code)
+        if code:
+            before = amounts.get(code, 0)
+            amounts[code] = None if before is None or amount is None else before + amount
+    if not amounts:
+        return None
+    members, codes, issues = {code: [] for code in amounts}, {}, []
+    for index, item in enumerate(items):
+        code = printed_code(item.get("tax_code"))
+        name = item.get("description") or f"Item {index + 1}"
+        found = sorted(line for line in amounts if line in code) if code else []
+        if len(found) == 1:
+            members[found[0]].append(index)
+            codes[index] = found[0]
+        elif found:
+            issues.append(f"{name} carries more than one tax line's code ({', '.join(found)}), so it got no share of either.")
+        elif code:
+            issues.append(f"{name}'s tax code {code} matches no tax line, so it got no tax line's share.")
+    weights = {code: [item_amount(item) if index in members[code] else 0 for index, item in enumerate(items)] for code in amounts}
+    text = lambda amount: format_minor(amount, currency) if currency else f"{Decimal(amount).scaleb(-2):,.2f}"
+    reasons = [f"The {code} tax line's amount couldn't be read, so tax was shared across the taxed items." for code, amount in amounts.items() if amount is None]
+    if not reasons and sum(amounts.values()) != abs(tax):
+        reasons.append(f"The tax lines ({text(sum(amounts.values()))}) don't add up to the tax ({text(abs(tax))}), so tax was shared across the taxed items.")
+    reasons += [f"The {code} tax line has no items carrying its code, so tax was shared across the taxed items." for code in amounts if not members[code]]
+    reasons += [f"The {code} tax line's items add up to nothing, so tax was shared across the taxed items."
+                for code, amount in amounts.items() if amount and members[code] and sum(weights[code]) == 0]
+    if reasons:
+        return TaxPlan([(tax, tax_basis(items), None)], False, [*issues, *reasons], {})
+    sign = -1 if tax < 0 else 1
+    return TaxPlan([(sign * amount, weights[code], code) for code, amount in amounts.items()], True, issues, codes)
+
+
 def record(recorder, values, target, labels, currency):
     """A live recorder (core/trace.py) gets each share rounded down, and the cents largest-remainder rounding handed out
     as the rounding row, so the steps add up to target."""
@@ -67,10 +142,11 @@ def record(recorder, values, target, labels, currency):
                    note="Each share is exact until the end, then rounded down; the cents left go one each to the largest remainders.")
 
 
-def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currency=None):
+def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currency=None, tax_parts=None):
     """[(item index or None, category, minor units)] summing to target.
     items: dicts with line_total_minor, discount_minor, taxed and category (None falls back to fallback), and a
-    description for a live recorder's step labels."""
+    description for a live recorder's step labels. tax_parts: a TaxPlan's parts, each spread over its own weights; None
+    spreads tax over tax_basis(items)."""
     fallback = fallback or "uncategorized"
     amounts = [Fraction(item_amount(item)) for item in items]
     extra = []  # (category, amount) that no item carries.
@@ -88,7 +164,10 @@ def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currenc
     base = [item_amount(item) for item in items]
     if subtotal is not None:
         spread(subtotal - sum(base), base)
-    if tax:
+    if tax_parts is not None:
+        for amount, weights, _ in tax_parts:
+            spread(amount, weights)
+    elif tax:
         spread(tax, tax_basis(items))
     if tip:
         extra.append((DINING, Fraction(tip)))
