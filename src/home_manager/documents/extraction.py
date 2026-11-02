@@ -29,6 +29,7 @@ from ..finance import document_checks, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
+from ..finance.splits import printed_code
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
 from ..library.storage import now
@@ -42,7 +43,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v32-table-engine"
+EXTRACTION_VERSION = "typed-extraction-v33-tax-codes"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -113,7 +114,11 @@ EMPLOYER_RULE = ("the employer is the company that employs the person, never a p
 LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits, such as VISA ****1234 or ACCT XXXX1234; "
                       "missing when it was paid in cash or no card number is printed; return_marker: the printed words showing money "
                       "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
-                      "missing for an ordinary sale, and never a return policy)",
+                      "missing for an ordinary sale, and never a return policy; "
+                      "tax_lines: only lines that print the tax for one tax code, such as T = GA TAX 7.75000 on $12.99 $1.01, each with its code, "
+                      "printed rate, taxable amount and tax amount, never a single TAX line, a tax total or a line with no code; "
+                      "tax_legend: only printed tax meanings such as T = TAXABLE or N = NON-TAXABLE, never a food-stamp, EBT or SNAP meaning "
+                      "such as F = FOOD STAMP)",
 "bank_statement": "bank statement (account_type: checking, savings, money_market or other, only from printed words such as "
                             "Everyday Checking, citing them; missing when no type is printed. deposits_total, withdrawals_total, "
                             "interest_earned and fees_total: the summary's printed totals; apy: the printed interest rate with its % sign)",
@@ -288,6 +293,11 @@ def clean_description(text, *title_parts):
     return text[:1].upper() + text[1:]
 
 
+# What the model may call an item untaxed (specs/receipt-tax-codes FR-24): only what the receipt itself says.
+TAXED_RULE = ("true or false only when the receipt says what the item's code means (a legend such as T = TAXABLE, or a tax line printed "
+              "for its code); a food-stamp or EBT mark such as F or E never means untaxed on its own; otherwise null.")
+
+
 class Item(StrictModel):
     description: str = Field(min_length=1, max_length=500)
     product_code: str | None = Field(max_length=100)
@@ -295,7 +305,9 @@ class Item(StrictModel):
     unit_price: str | None = Field(max_length=50)
     line_total: str | None = Field(max_length=50)
     discount: str | None = Field(max_length=50)
-    taxed: bool | None = Field(description="true or false from the tax code printed beside the item, null when none is printed.")
+    taxed: bool | None = Field(description=TAXED_RULE)
+    tax_code: str | None = Field(default=None, max_length=10, description="The tax code printed beside the item's price exactly as printed "
+                                                                          "(BF, T, A, N), or null.")
     returned: bool | None = Field(default=None, description="true for an item brought back for a refund (marked RETURN or REFUND, or "
                                                             "printed negative), otherwise false.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=10)
@@ -316,6 +328,22 @@ class Tender(StrictModel):
     tender_type: Literal[*TENDER_TYPES] = Field(description="gift_card, ebt (EBT or SNAP), card, cash or other, from the printed words.")
     amount: str | None = Field(max_length=50, description="The amount paid this way, exactly as printed, or null.")
     last_four: str | None = Field(max_length=30, description="The card's last four digits as printed, or null; never more.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
+
+
+class TaxLine(StrictModel):
+    """One printed per-code tax line of a receipt (T = GA TAX 7.75000 on $12.99 $1.01); a code is read only where one is printed."""
+    code: str | None = Field(max_length=10, description="The code the line is for (T in T = GA TAX ...), or null when none is printed.")
+    rate: str | None = Field(max_length=20, description="The printed rate exactly as printed (7.75000), or null.")
+    taxable_amount: str | None = Field(max_length=50, description="The printed amount the tax is on, exactly as printed, or null.")
+    amount: str | None = Field(max_length=50, description="The line's tax amount exactly as printed, or null.")
+    evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
+
+
+class TaxCodeMeaning(StrictModel):
+    """One printed legend entry (T = TAXABLE): what a tax code means."""
+    code: str = Field(min_length=1, max_length=10)
+    taxed: bool = Field(description="true when the legend says items with this code are taxed, false when it says they are not.")
     evidence: list[EvidenceQuote] = Field(min_length=1, max_length=5)
 
 
@@ -469,7 +497,9 @@ OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice
                    "invoice_subtotal", "invoice_tax", "payments_received", "balance_due", "payment_status"}
 # Printed details a summary form adds beyond its HEADERS (document forms, FR-20): name -> (type, default). Each is
 # optional, checked in code (normalize) and stored as the record's details, never as a counted amount.
-DETAIL_FIELDS = {"paystub": {"pto_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
+DETAIL_FIELDS = {"receipt": {"tax_lines": (list[TaxLine], Field(default_factory=list, max_length=20)),
+                             "tax_legend": (list[TaxCodeMeaning], Field(default_factory=list, max_length=20))},
+                 "paystub": {"pto_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
                              "sick_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
                              "deposit_splits": (list[Split], Field(default_factory=list, max_length=10))},
                  **{kind: {name: (Value, Value(value=None, status="missing", evidence=[])) for name in names} for kind, names in (
@@ -524,8 +554,9 @@ RENT_ROWS = (" One entry per charge on this bill: rent, parking, pet rent, each 
              "one date (a payment or a past charge) gives that date as both. usage: a utility line's printed usage with its unit. "
              f"category, from this list or null: {CATEGORY_GUIDE}.")
 # The fields document forms added to each schema, left out together when only they fail validation twice (FR-14).
-NEW_FIELDS = {**{form.__name__: set(KIND_FIELDS[kind]) for kind, form in RECEIPT_FORMS.items()},
-              "GroceryItems": {"weight", "weight_unit", "price_per_weight"},
+NEW_FIELDS = {**{form.__name__: {*KIND_FIELDS[kind], *DETAIL_FIELDS["receipt"]} for kind, form in RECEIPT_FORMS.items()},
+              "ReceiptSummary": set(DETAIL_FIELDS["receipt"]), "Items": {"tax_code"},
+              "GroceryItems": {"weight", "weight_unit", "price_per_weight", "tax_code"},
               "PaystubSummary": {*DETAIL_FIELDS["paystub"], "row_label", "column_heading"},
               "BankStatementSummary": set(DETAIL_FIELDS["bank_statement"]), "CreditCardStatementSummary": set(DETAIL_FIELDS["credit_card_statement"]),
               "PayLines": {"hours", "rate", "current_row_label", "current_column_heading", "ytd_row_label", "ytd_column_heading"},
@@ -551,7 +582,7 @@ ROWS = {"receipt": (Items, "items", "line_total", "purchased item row"),
         "investment_statement": (InvestmentLines, "entries", ("amount", "price", "cost_basis"), "holding or account activity row"),
         "investment_confirmation": (TradeLines, "trades", ("amount", "price", "principal", "face_value", "fees"), "trade or purchase"),
         "investment_tax_form": (TaxBoxes, "boxes", "amount", "filled-in tax form box")}
-SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Tender, GroceryItem, *RECEIPT_FORMS.values(), *BILL_FORMS.values(), Classification, Item, Transaction, BillLine, RentBillLine, RentBillLines, EvidenceQuote, Items, Transactions, BillLines,
+SCHEMA_FIELDS = set().union(*(model.model_fields for model in (Value, PayValue, PayLabel, Split, Tender, TaxLine, TaxCodeMeaning, GroceryItem, *RECEIPT_FORMS.values(), *BILL_FORMS.values(), Classification, Item, Transaction, BillLine, RentBillLine, RentBillLines, EvidenceQuote, Items, Transactions, BillLines,
                                                                        PaymentTerm, PaymentTerms, PayLine, PayLines, PayRowClass, PayRowClasses,
                                                                        Reward, Rewards, InvestmentLine, InvestmentLines,
                                                                        TradeLine, TradeLines, TaxBox, TaxBoxes,
@@ -1665,6 +1696,86 @@ def sign_return(record, marker, issues):
     issues.append("Sale or return: couldn't tell whether this exchange paid out or charged; check the total's sign.")
 
 
+FOOD_STAMP = re.compile(r"\b(food\s*stamps?|ebt|snap)\b", re.IGNORECASE)
+
+
+def code_printed(code, evidence, line_text):
+    """A tax code appears as its own mark in a cited line ("BF" in "RUFFLES BF $4.29", but not the T of "WATER FILTER"), and every
+    citation is a real quote of its line."""
+    mark = re.compile(r"(?<![A-Za-z])" + re.escape(code) + r"(?![A-Za-z])", re.IGNORECASE)
+    return bool(code) and all(cited_in(cite, line_text) for cite in evidence) and any(mark.search(" ".join(cite.quote.split())) for cite in evidence)
+
+
+def printed_amount(text, evidence, what, money, issues):
+    """A cited amount as a magnitude in minor units, kept only when printed in its citation (or the exact sum of the cited lines)."""
+    if not text or not text.strip():
+        return None
+    found = money(text.strip(), what, magnitude=True)
+    if found is not None and not amount_supported(text, evidence):
+        issues.append(f"{what} was not printed where it was cited and was left out.")
+        return None
+    return found
+
+
+def tax_codes(record, header, read_rows, line_text, issues, money, details):
+    """Each item's printed tax code, the receipt's per-code tax lines and code legend, and which rule set up the items' taxed flags
+    (specs/receipt-tax-codes FR-08 – FR-11, FR-21, FR-22, FR-24, FR-27). Every code, rate and amount is kept only when printed in
+    its citation. record["tax_source"] is tax_lines (per-code tax lines are kept, and the flags come from them: the model's own
+    answer is ignored), legend (a printed legend sets the flags), or printed (the model's flags stay; also when the new fields
+    couldn't be read, details False). Tax lines are magnitudes: the receipt's own tax carries the sign."""
+    items = record["items"]
+    record["tax_source"], record["tax_lines"] = "printed", []
+    for item in items:
+        item["tax_code"] = None
+    if not details:
+        return
+    for item, (index, row) in zip(items, read_rows):
+        code = " ".join((row.tax_code or "").split()).upper()
+        if code and code_printed(code, row.evidence, line_text):
+            item["tax_code"] = code
+        elif code:
+            issues.append(f"Item {index} tax code was not printed where it was cited and was left out.")
+    lines = []
+    for number, entry in enumerate(header.tax_lines, 1):
+        code = printed_code(entry.code)
+        if code and not code_printed(code, entry.evidence, line_text):
+            issues.append(f"Tax line {number} code was not printed where it was cited, so the tax lines were not used.")
+            code = ""
+        rate = next(iter(NUMBER.findall(entry.rate or "")), None)
+        if rate is not None and not printed_in(rate, entry.evidence):
+            issues.append(f"Tax line {number} rate was not printed where it was cited and was left out.")
+            rate = None
+        lines.append({"code": code, "rate_text": rate,
+                      "taxable_minor": printed_amount(entry.taxable_amount, entry.evidence, f"Tax line {number} taxable amount", money, issues),
+                      "amount_minor": printed_amount(entry.amount, entry.evidence, f"Tax line {number} amount", money, issues),
+                      "locator": locator(masked(entry.evidence))})
+    if lines and all(line["code"] for line in lines):  # A line with no code is not a per-code line, and the receipt has one tax total (FR-21).
+        record["tax_source"], record["tax_lines"] = "tax_lines", lines
+        totals = {}  # code -> summed amount, None when a line of that code couldn't be read.
+        for line in lines:
+            before = totals.get(line["code"], 0)
+            totals[line["code"]] = None if before is None or line["amount_minor"] is None else before + line["amount_minor"]
+        for item in items:
+            code = printed_code(item["tax_code"])
+            found = [line for line in totals if line in code] if code else []
+            # An unreadable amount still marks its items taxed: the line is printed with their code (plan P7).
+            item["taxed"] = len(found) == 1 and (totals[found[0]] is None or totals[found[0]] > 0)
+        return
+    meanings = {}  # code -> taxed, None when the legend contradicts itself.
+    for entry in header.tax_legend:
+        code = printed_code(entry.code)
+        if code and code_printed(code, entry.evidence, line_text) and not any(FOOD_STAMP.search(cite.quote) for cite in entry.evidence):
+            meanings[code] = entry.taxed if meanings.get(code, entry.taxed) == entry.taxed else None
+    codes = {printed_code(item["tax_code"]) for item in items}
+    legend = {code: taxed for code, taxed in meanings.items() if taxed is not None and any(code in held for held in codes)}
+    if legend:
+        record["tax_source"] = "legend"
+        for item in items:
+            held = printed_code(item["tax_code"])
+            found = {taxed for code, taxed in legend.items() if code in held} if held else set()
+            item["taxed"] = found.pop() if len(found) == 1 else None
+
+
 PAGE_ID = re.compile(r"page-(\d+)-")
 
 
@@ -1725,7 +1836,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         # The kind it was read with, and that kind's printed details (FR-01, FR-04); none when they couldn't be read (FR-14).
         record["receipt_kind"], record["details"] = receipt_kind, {}
         kind_fields = {name: getattr(header, name) for name in KIND_FIELDS.get(receipt_kind, {})} if details else {}
-        record["items"] = []
+        record["items"], read_rows = [], []
         for index, row in enumerate(rows, 1):
             if receipt_kind == "fuel" and pump_only(row, line_text):
                 issues.append(f"Item {index} is the pump number, not an item; it was left out.")
@@ -1737,8 +1848,10 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             record["items"].append({"description": " ".join(row.description.split()), "product_code": row.product_code, "quantity": row.quantity,
                                     "unit_price_minor": money(row.unit_price, f"Item {index} unit price"), "line_total_minor": line,
                                     "discount_minor": money(row.discount, f"Item {index} discount"), "taxed": row.taxed, "locator": locator(row.evidence)})
+            read_rows.append((index, row))
             if receipt_kind == "grocery" and details:
                 grocery_item(record, record["items"][-1], row, index, line_text, issues, currency)
+        tax_codes(record, header, read_rows, line_text, issues, money, details)
         sign_return(record, fields["return_marker"], issues)
         receipt_details(receipt_kind, record, kind_fields, money, issues, currency, line_text)
         gratuity = (record["details"].get("gratuity") or {}).get("minor")
@@ -2979,9 +3092,9 @@ class ExtractionService:
                          if key == "lines" else " Missing fields are null; never assume a quantity of one. Some receipts print one item "
                          "across two lines, such as a department or name line with the price and a line with a product code and name: combine "
                          "them into one row citing both lines, use the product name as description, the number beside it as product_code, "
-                         "and the price as line_total. Department headings alone (GROCERY, HEALTH AND BEAUTY) are not items. taxed: "
-                         "many receipts print a tax code beside each price (such as A or E, T or N, X, F): true when the code marks the item "
-                         "taxed, false when it marks it untaxed or tax-exempt, null when no code is printed or its meaning is unclear. "
+                         "and the price as line_total. Department headings alone (GROCERY, HEALTH AND BEAUTY) are not items. tax_code: "
+                         "many receipts print a tax code beside each price (such as BF, T, A, N); copy it exactly as printed, or null when none "
+                         f"is printed. taxed: {TAXED_RULE} "
                          "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "
                          "printed negative), false for an item bought. Copy its line_total as printed." + KIND_ROWS.get(chosen, ""))
             if kind == "bill":

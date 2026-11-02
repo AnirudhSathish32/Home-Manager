@@ -1,15 +1,34 @@
 """Receipt tax codes (specs/receipt-tax-codes): what a receipt keeps of the codes beside its prices and the per-code tax lines it
 prints, and that receipts recorded without them keep their shares. Synthetic receipts only, published through Ledger paths."""
 
+from contextlib import contextmanager
 import json
 
 import pytest
 
 from conftest import assert_ledger_healthy, documents_by_name, inbox_scan
+from document_forms_fixtures import MISSING, amount_on, cite, receipt_replies
+from document_forms_fixtures import item as reply_item
+from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADER_MODELS, NEW_FIELDS, Item
 from home_manager.finance.ledger import Ledger, rate_display
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.storage import Store
+from receipt_item_fixtures import (
+    D_LINES,
+    D_SHARES,
+    d_replies,
+    legend_entry,
+    one_tax_replies,
+    r0_replies,
+    r_one_tax_lines,
+    r_tax_lines,
+    tax_line_reply,
+)
+from receipt_item_fixtures import (
+    R_LINES as R_PRINTED,
+)
 from test_correction_preview import app_client  # noqa: F401
+from test_extraction import extract, transcribe
 from test_reconcile_tools import source_of
 
 
@@ -345,3 +364,364 @@ def test_the_receipts_split_trace_names_the_tax_codes_only_when_they_set_the_sha
     trace = build_for(store, f"split.receipt?receipt_id={by_code}")
     assert "the tax shared by amount within each tax code" in trace["formula"]
     assert "within each tax code" not in build_for(store, f"split.receipt?receipt_id={old}")["formula"]
+
+
+# Reading: the codes and tax lines a receipt prints, through the real extraction service (specs/receipt-tax-codes FR-08 – FR-12, FR-21 – FR-24, FR-29)
+
+@contextmanager
+def reading(tmp_path, local_model, lines, replies):
+    """Transcribe lines and record them with replies keyed by schema name; yields (manager, (document, parse run), receipt id)."""
+    manager, doc, parse_id = transcribe(tmp_path, local_model, lines)
+    try:
+        local_model["requests"].clear()
+        local_model["by_schema"] = replies
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        yield manager, (doc, parse_id), run["publication"]["id"]
+    finally:
+        manager.close()
+
+
+def read_again(manager, again, local_model, replies):
+    """Extract again from the same transcription with another stub; returns the run."""
+    local_model["by_schema"] = replies
+    return extract(manager, *again, force=True)
+
+
+def stored(store, receipt_id):
+    """The receipt's amounts (subtotal, tax, total), its items' (tax code, taxed flag) in position order, its tax source, and its tax lines."""
+    return (rows(store, "SELECT subtotal_minor,tax_minor,total_minor FROM receipts WHERE id=?", receipt_id)[0],
+            rows(store, "SELECT tax_code,taxed FROM receipt_items WHERE receipt_id=? ORDER BY position", receipt_id),
+            rows(store, "SELECT tax_source FROM receipts WHERE id=?", receipt_id)[0][0],
+            rows(store, "SELECT code,rate_text,taxable_minor,amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", receipt_id))
+
+
+def shown_lines(record):
+    """What the record shows of its tax lines, without row ids and timestamps."""
+    return [(line["position"], line["code"], line["rate_display"], line["taxable_minor"], line["amount_minor"], line["line_ids"], line["display"])
+            for line in record["tax_lines"]]
+
+
+def item_citations(store, receipt_id):
+    """The line ids each item's evidence link names, in position order (C-cited)."""
+    return [json.loads(locator)["line_ids"] for (locator,) in rows(
+        store, "SELECT l.locator_json FROM financial_evidence_links l JOIN receipt_items i ON i.id=l.record_id WHERE l.record_type='receipt_item' "
+               "AND i.receipt_id=? ORDER BY i.position", receipt_id)]
+
+
+def test_sc01_records_codes_lines_and_shares_by_code(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, again, receipt_id):
+        store = manager.store
+        amounts, items, source, lines = stored(store, receipt_id)
+        assert amounts == (5918, 274, 6192)  # P-check.
+        assert items == [("BF", 1), ("BF", 1), ("T", 1)]  # The model answered false for both BF items (FR-11).
+        assert (source, lines) == ("tax_lines", [("T", "7.75000", 1299, 101), ("B", "7.75000", 4619, 173)])
+        # C-cited: R's T and B lines are lines 11 and 12 of the transcription; each item's link names the line it was read on.
+        assert [json.loads(locator)["line_ids"] for (locator,) in rows(
+            store, "SELECT locator_json FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", receipt_id)] == [["line-11"], ["line-12"]]
+        assert item_citations(store, receipt_id) == [["line-4"], ["line-5", "line-6"], ["line-8"]]
+        record = manager.ledger.record("receipt", receipt_id)
+        assert [entry["tax_code"] for entry in record["items"]] == ["BF", "BF", "T"]
+        assert [line["line_ids"] for line in record["tax_lines"]] == [["line-11"], ["line-12"]]
+        assert shares_of(store, receipt_id) == (R_SHARES, [*R_SHARES]) and sum(R_SHARES) == 6192
+        assert (record["tax_lines_used"], record["tax_issues"], record["issues"]) == (True, [], [])
+        before = (items, source, lines, shares_of(store, receipt_id), shown_lines(record))
+        # A second Record of the same document: no duplicate tax lines or split rows.
+        run = read_again(manager, again, local_model, r0_replies())
+        assert run["status"] == "succeeded" and run["publication"]["id"] == receipt_id
+        assert rows(store, "SELECT count(*) FROM receipts") == [(1,)] and rows(store, "SELECT count(*) FROM receipt_tax_lines") == [(2,)]
+        _, items, source, lines = stored(store, receipt_id)
+        assert (items, source, lines, shares_of(store, receipt_id), shown_lines(manager.ledger.record("receipt", receipt_id))) == before
+        assert_ledger_healthy(store)
+    reopened = Store(tmp_path / "managed")  # Restart: the same library opened again.
+    try:
+        _, items, source, lines = stored(reopened, receipt_id)
+        assert (items, source, lines, shares_of(reopened, receipt_id), shown_lines(Ledger(reopened).record("receipt", receipt_id))) == before
+    finally:
+        reopened.close()
+
+
+def issues_of(manager, receipt_id):
+    record = manager.ledger.record("receipt", receipt_id)
+    return record["issues"], record["tax_issues"]
+
+
+def test_sc03_one_tax_line_shares_as_today(tmp_path, local_model):
+    with reading(tmp_path, local_model, D_LINES, d_replies()) as (manager, _again, receipt_id):
+        amounts, items, source, lines = stored(manager.store, receipt_id)
+        assert amounts == (58149, 4012, 62161)  # P-check.
+        assert (items, source, lines) == ([(None, 1), (None, 1), (None, 0)], "printed", [])  # The model's own flags.
+        assert shares_of(manager.store, receipt_id) == (D_SHARES, [*D_SHARES]) and sum(D_SHARES) == 62161
+        assert issues_of(manager, receipt_id) == ([], [])
+
+
+def test_sc04_tax_lines_that_do_not_add_up_fall_back(tmp_path, local_model):
+    lines = [*R_PRINTED[:12], "TAX $2.84", "TOTAL $62.02"]
+    with reading(tmp_path, local_model, lines, r0_replies(lines, tax=amount_on(lines, "TAX "))) as (manager, _again, receipt_id):
+        amounts, items, source, tax_lines = stored(manager.store, receipt_id)
+        assert amounts == (5918, 284, 6202)  # P-check.
+        assert (items, source, len(tax_lines)) == ([("BF", 1), ("BF", 1), ("T", 1)], "tax_lines", 2)  # FR-27: the flags are FR-11's.
+        # 284 over 5918: Ruffles 429 + 20.587, Little Veg 4190 + 201.075, Water filter 1299 + 62.338; rounded down 6201, the cent goes to Ruffles.
+        assert shares_of(manager.store, receipt_id) == ([450, 4391, 1361], [450, 4391, 1361])
+        issues, tax_issues = issues_of(manager, receipt_id)
+        reason = "The tax lines (2.74 USD) don't add up to the tax (2.84 USD), so tax was shared across the taxed items."
+        assert tax_issues == [reason] and reason in issues
+        assert manager.ledger.record("receipt", receipt_id)["tax_lines_used"] is False
+
+
+def test_sc05_a_tax_line_with_no_items_falls_back(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=("BF", "BF", None))) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("BF", 1), ("BF", 1), (None, 0)], "tax_lines")  # The filter belongs to no line (FR-11).
+        # 274 over 4619: Ruffles 429 + 25.448, Little Veg 4190 + 248.552, Water filter 1299; rounded down 6191, the cent goes to Little Veg.
+        assert shares_of(manager.store, receipt_id) == ([454, 4439, 1299], [454, 4439, 1299])
+        issues, tax_issues = issues_of(manager, receipt_id)
+        assert tax_issues == ["The T tax line has no items carrying its code, so tax was shared across the taxed items."] and tax_issues[0] in issues
+
+
+def test_sc06_an_item_carrying_two_tax_codes(tmp_path, local_model):
+    lines = [line.replace("RUFFLES BF", "RUFFLES BT") for line in R_PRINTED]  # A code is read only where it is printed.
+    with reading(tmp_path, local_model, lines, r0_replies(lines, codes=("BT", "BF", "T"))) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("BT", 0), ("BF", 1), ("T", 1)], "tax_lines")
+        assert shares_of(manager.store, receipt_id) == ([429, 4363, 1400], [429, 4363, 1400])  # B's only item is Little Veg: 4190 + 173.
+        issues, tax_issues = issues_of(manager, receipt_id)
+        assert tax_issues == ["RUFFLES carries more than one tax line's code (B, T), so it got no share of either."] and tax_issues[0] in issues
+        assert manager.ledger.record("receipt", receipt_id)["tax_lines_used"] is True
+
+
+def r1_lines():
+    """R as a second reading of the receipt sees it: the filter's code is printed N."""
+    return [line.replace("WATER FILTER T", "WATER FILTER N") for line in R_PRINTED]
+
+
+def r1_replies(lines):
+    """R1: R0 with the filter coded N and untaxed, Ruffles and Little Veg taxed, no tax lines, and one tax of 2.74."""
+    return r0_replies(lines, codes=("BF", "BF", "N"), taxed=(True, True, False), tax_lines=[])
+
+
+def read_other_text(manager, local_model, lines):
+    """A new transcription of the same document with other printed text; returns what to extract again from."""
+    doc = manager.store.documents()["items"][0]
+    local_model["output"] = {"full_text": "\n".join(lines)}
+    manager.start_receipt(doc["id"], force=True)
+    manager.future.result(timeout=30)
+    return doc, manager.receipts.history(doc["id"])[0]["id"]
+
+
+def test_sc08_extract_again_replaces_codes_and_lines_and_keeps_the_users_category(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, _again, receipt_id):
+        store = manager.store
+        filter_id = rows(store, "SELECT id FROM receipt_items WHERE receipt_id=? AND position=3", receipt_id)[0][0]
+        manager.ledger.set_item_category(receipt_id, filter_id, "household supplies")
+        lines = r1_lines()
+        second = read_other_text(manager, local_model, lines)
+        run = read_again(manager, second, local_model, r1_replies(lines))
+        assert run["status"] == "succeeded" and run["publication"]["id"] == receipt_id
+        amounts, items, source, tax_lines = stored(store, receipt_id)
+        assert (amounts, items, source, tax_lines) == ((5918, 274, 6192), [("BF", 1), ("BF", 1), ("N", 0)], "printed", [])
+        assert rows(store, "SELECT category,category_source FROM receipt_items WHERE id=?", filter_id) == [("household supplies", "user")]
+        assert shares_of(store, receipt_id) == ([454, 4439, 1299], [454, 4439, 1299])  # 274 over 4619, as SC-05.
+        assert manager.ledger.record("receipt", receipt_id)["tax_lines"] == []
+        assert_ledger_healthy(store)
+
+
+def test_sc08_b_a_reading_that_fails_leaves_the_codes_lines_and_shares(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, again, receipt_id):
+        store = manager.store
+        before = (stored(store, receipt_id), shares_of(store, receipt_id))
+        broken = r0_replies()
+        broken["GroceryItems"] = [{"items": [{**r0_replies()["GroceryItems"][0]["items"][0], "evidence": []}]}] * 2  # An item with no evidence, on both tries.
+        run = read_again(manager, again, local_model, broken)
+        assert run["status"] == "failed" and run["publication"] is None
+        assert (stored(store, receipt_id), shares_of(store, receipt_id)) == before
+        assert before[1] == (R_SHARES, R_SHARES)
+
+
+def test_sc08_c_extracting_again_with_the_same_reading_leaves_two_tax_lines(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, again, receipt_id):
+        for _ in range(2):
+            assert read_again(manager, again, local_model, r0_replies())["status"] == "succeeded"
+        assert rows(manager.store, "SELECT count(*) FROM receipt_tax_lines") == [(2,)]
+        assert rows(manager.store, "SELECT count(*) FROM receipts") == [(1,)]
+        assert shares_of(manager.store, receipt_id) == (R_SHARES, R_SHARES)
+
+
+def test_sc13_tax_lines_without_codes_are_one_tax_total(tmp_path, local_model):
+    lines = ["SYNTH SHOP", "2026-10-20", "LAMP 10.00", "CARDS 5.00", "SUBTOTAL 15.00", "STATE TAX 1.20", "LOCAL TAX 0.40", "TOTAL 16.60"]
+    tax = {"value": "1.60", "status": "proposed", "evidence": cite(lines, "STATE TAX") + cite(lines, "LOCAL TAX")}
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": tax, "total": amount_on(lines, "TOTAL "),
+               "tax_lines": [tax_line_reply(lines, "STATE TAX", None, "1.20"), tax_line_reply(lines, "LOCAL TAX", None, "0.40")]}
+    items = [reply_item(lines, "LAMP", "LAMP 10.00", "10.00", taxed=True), reply_item(lines, "CARDS", "CARDS 5.00", "5.00", taxed=False)]
+    replies = receipt_replies(lines, "general", "Synth Shop", "SYNTH SHOP", "2026-10-20", summary, items)
+    with reading(tmp_path, local_model, lines, replies) as (manager, _again, receipt_id):
+        amounts, stored_items, source, tax_lines = stored(manager.store, receipt_id)
+        assert amounts == (1500, 160, 1660) and tax_lines == []  # P-check; nothing is kept for sharing by code.
+        assert (stored_items, source) == ([(None, 1), (None, 0)], "printed")
+        assert shares_of(manager.store, receipt_id) == ([1160, 500], [1160, 500])
+        assert issues_of(manager, receipt_id) == ([], [])
+
+
+SHOP = ["SYNTH SHOP", "2026-10-20", "MUG T 8.00", "BREAD N 3.00", "SUBTOTAL 11.00", "T = TAXABLE", "N = NON-TAXABLE", "TAX 0.62", "TOTAL 11.62"]
+
+
+def shop_replies(lines, codes, taxed, legend):
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": amount_on(lines, "TAX "), "total": amount_on(lines, "TOTAL "), "tax_legend": legend}
+    items = [reply_item(lines, "MUG", lines[2], "8.00", taxed=taxed[0], tax_code=codes[0]), reply_item(lines, "BREAD", lines[3], "3.00", taxed=taxed[1], tax_code=codes[1])]
+    return receipt_replies(lines, "general", "Synth Shop", "SYNTH SHOP", "2026-10-20", summary, items)
+
+
+def test_sc14_a_code_legend_sets_the_taxed_flags(tmp_path, local_model):
+    legend = [legend_entry(SHOP, "T = TAXABLE", "T", True), legend_entry(SHOP, "N = NON-TAXABLE", "N", False)]
+    with reading(tmp_path, local_model, SHOP, shop_replies(SHOP, ("T", "N"), (False, True), legend)) as (manager, _again, receipt_id):
+        amounts, items, source, tax_lines = stored(manager.store, receipt_id)
+        assert amounts == (1100, 62, 1162)  # P-check.
+        assert (items, source, tax_lines) == ([("T", 1), ("N", 0)], "legend", [])  # Whatever the model answered.
+        assert shares_of(manager.store, receipt_id) == ([862, 300], [862, 300])
+
+
+def test_a_food_stamp_mark_is_not_in_the_legend_and_an_item_coded_tf_takes_ts_meaning(tmp_path, local_model):
+    lines = [*SHOP[:5], "T = TAXABLE", "N = NON-TAXABLE", "F = FOOD STAMP", *SHOP[7:]]
+    lines[2] = "MUG TF 8.00"
+    legend = [legend_entry(lines, "T = TAXABLE", "T", True), legend_entry(lines, "N = NON-TAXABLE", "N", False)]
+    with reading(tmp_path, local_model, lines, shop_replies(lines, ("TF", "N"), (False, True), legend)) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("TF", 1), ("N", 0)], "legend")
+        assert shares_of(manager.store, receipt_id) == ([862, 300], [862, 300])
+    # A food-stamp meaning that slips into the legend anyway is left out, so F never makes an item untaxed.
+    again = [*legend, legend_entry(lines, "F = FOOD STAMP", "F", False)]
+    with reading(tmp_path / "again", local_model, lines, shop_replies(lines, ("TF", "N"), (False, True), again)) as (manager, _again, receipt_id):
+        assert stored(manager.store, receipt_id)[1] == [("TF", 1), ("N", 0)]
+
+
+def test_sc15_two_lines_with_the_same_code_are_added(tmp_path, local_model):
+    lines = [*R_PRINTED[:11], "B = GA STATE TAX 2.17000 on $46.19 $1.00", "B = LOCAL TAX 1.58000 on $46.19 $0.73", R_PRINTED[12]]
+    tax_lines = [tax_line_reply(lines, "T = GA TAX", "T", "1.01", "12.99", "7.75000"),
+                 tax_line_reply(lines, "B = GA STATE", "B", "1.00", "46.19", "2.17000"), tax_line_reply(lines, "B = LOCAL", "B", "0.73", "46.19", "1.58000")]
+    tax = {"value": "2.74", "status": "proposed", "evidence": cite(lines, "T = GA TAX") + cite(lines, "B = GA STATE") + cite(lines, "B = LOCAL")}
+    with reading(tmp_path, local_model, lines, r0_replies(lines, tax_lines=tax_lines, tax=tax)) as (manager, _again, receipt_id):
+        _, items, source, stored_lines = stored(manager.store, receipt_id)
+        assert source == "tax_lines" and len(stored_lines) == 3
+        assert [(code, amount) for code, _rate, _taxable, amount in stored_lines] == [("T", 101), ("B", 100), ("B", 73)]
+        assert items == [("BF", 1), ("BF", 1), ("T", 1)]
+        assert shares_of(manager.store, receipt_id) == (R_SHARES, R_SHARES)
+        assert issues_of(manager, receipt_id) == ([], [])
+        record = manager.ledger.record("receipt", receipt_id)
+        assert [line["line_ids"] for line in record["tax_lines"]] == [["line-11"], ["line-12"], ["line-13"]] and record["tax_lines_used"] is True
+
+
+def test_sc16_food_stamp_marks_without_a_legend_leave_the_flags_empty(tmp_path, local_model):
+    lines = r_one_tax_lines()
+    with reading(tmp_path, local_model, lines, one_tax_replies(taxed=(None, None, None))) as (manager, _again, receipt_id):
+        request = next(request for request in local_model["requests"] if request["response_format"]["json_schema"]["name"] == "GroceryItems")
+        prompt = request["messages"][0]["content"]
+        assert ("taxed: true or false only when the receipt says what the item's code means (a legend such as T = TAXABLE, or a tax line "
+                "printed for its code); a food-stamp or EBT mark such as F or E never means untaxed on its own; otherwise null.") in prompt
+        assert "tax_code: many receipts print a tax code beside each price" in prompt and "mark it untaxed or tax-exempt" not in prompt
+        taxed = request["response_format"]["json_schema"]["schema"]["$defs"]["GroceryItem"]["properties"]["taxed"]["description"]
+        assert "never means untaxed on its own" in taxed  # FR-24: the schema the model is given says the same.
+        summary = next(request for request in local_model["requests"] if request["response_format"]["json_schema"]["name"] == "ReceiptGrocerySummary")
+        assert {"tax_lines", "tax_legend"} <= set(summary["response_format"]["json_schema"]["schema"]["properties"])
+        assert "never a single TAX line" in summary["messages"][0]["content"]
+        amounts, items, source, tax_lines = stored(manager.store, receipt_id)
+        assert amounts == (5918, 274, 6192)  # P-check.
+        assert (items, source, tax_lines) == ([("BF", None), ("BF", None), ("T", None)], "printed", [])
+        # 274 over 5918 (SC-07's arithmetic): 448.862, 4383.995, 1359.143; rounded down 6190, the two cents go to Little Veg and Ruffles.
+        assert shares_of(manager.store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])
+
+
+def test_sc18_partly_answered_flags_share_tax_across_every_item(tmp_path, local_model):
+    with reading(tmp_path, local_model, r_one_tax_lines(), one_tax_replies(taxed=(None, None, True))) as (manager, _again, receipt_id):
+        _, items, source, tax_lines = stored(manager.store, receipt_id)
+        assert (items, source, tax_lines) == ([("BF", None), ("BF", None), ("T", 1)], "printed", [])
+        assert shares_of(manager.store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])  # Not 429/4190/1573.
+
+
+def test_sc18_variant_every_flag_answered_is_todays_rule(tmp_path, local_model):
+    with reading(tmp_path, local_model, r_one_tax_lines(), one_tax_replies(taxed=(False, False, True))) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("BF", 0), ("BF", 0), ("T", 1)], "printed")
+        assert shares_of(manager.store, receipt_id) == ([429, 4190, 1573], [429, 4190, 1573])
+
+
+def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=("BF", "BF", "N"))) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        # The N is not on the filter's line, so no code is kept (FR-08); the T line then names no item and the receipt falls back.
+        assert items == [("BF", 1), ("BF", 1), (None, 0)] and source == "tax_lines"
+        issues, tax_issues = issues_of(manager, receipt_id)
+        assert "Item 3 tax code was not printed where it was cited and was left out." in issues
+        assert tax_issues == ["The T tax line has no items carrying its code, so tax was shared across the taxed items."]
+        assert shares_of(manager.store, receipt_id) == ([454, 4439, 1299], [454, 4439, 1299])
+
+
+def test_a_tax_line_amount_that_is_not_printed_is_kept_without_an_amount(tmp_path, local_model):
+    tax_lines = r_tax_lines()
+    tax_lines[1]["amount"] = "1.75"  # B prints 1.73.
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(tax_lines=tax_lines)) as (manager, _again, receipt_id):
+        _, items, source, lines = stored(manager.store, receipt_id)
+        assert (items, source, lines[1]) == ([("BF", 1), ("BF", 1), ("T", 1)], "tax_lines", ("B", "7.75000", 4619, None))  # P7: still taxed.
+        issues, tax_issues = issues_of(manager, receipt_id)
+        assert "Tax line 2 amount was not printed where it was cited and was left out." in issues
+        assert tax_issues == ["The B tax line's amount couldn't be read, so tax was shared across the taxed items."]
+        assert shares_of(manager.store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])
+
+
+def test_a_tax_line_without_a_printed_code_means_one_tax_total(tmp_path, local_model):
+    tax_lines = r_tax_lines()
+    tax_lines[1]["code"] = "X"  # Not printed on the B line.
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(tax_lines=tax_lines)) as (manager, _again, receipt_id):
+        _, items, source, lines = stored(manager.store, receipt_id)
+        assert (source, lines) == ("printed", []) and items == [("BF", 0), ("BF", 0), ("T", 1)]  # The model's own flags stay (FR-24).
+        assert "Tax line 2 code was not printed where it was cited, so the tax lines were not used." in issues_of(manager, receipt_id)[0]
+        assert shares_of(manager.store, receipt_id) == (R_SHARES_TODAY, R_SHARES_TODAY)
+
+
+R_SHARES_TODAY = [429, 4190, 1573]  # R as recorded before tax codes: all the tax on the filter.
+
+
+def test_new_fields_that_fail_leave_todays_reading_for_a_general_receipt(tmp_path, local_model):
+    replies = d_replies()
+    replies["ReceiptSummary"][0]["tax_lines"] = [{**tax_line_reply(D_LINES, "TAX ", "T", "40.12"), "evidence": []}]  # No evidence.
+    replies["ReceiptSummary"] *= 2
+    with reading(tmp_path, local_model, D_LINES, replies) as (manager, _again, receipt_id):
+        assert [asked["response_format"]["json_schema"]["name"] for asked in local_model["requests"]].count("ReceiptSummary") == 2
+        _, items, source, lines = stored(manager.store, receipt_id)
+        assert (items, source, lines) == ([(None, 1), (None, 1), (None, 0)], "printed", [])
+        assert DETAILS_FAILED in manager.ledger.record("receipt", receipt_id)["issues"]
+        assert shares_of(manager.store, receipt_id) == (D_SHARES, D_SHARES)
+
+
+def test_new_fields_that_fail_leave_todays_reading_for_a_grocery_receipt(tmp_path, local_model):
+    replies = r0_replies()
+    replies["ReceiptGrocerySummary"][0]["tax_lines"][0]["evidence"] = []
+    replies["ReceiptGrocerySummary"] *= 2
+    with reading(tmp_path, local_model, R_PRINTED, replies) as (manager, _again, receipt_id):
+        amounts, items, source, lines = stored(manager.store, receipt_id)
+        assert amounts == (5918, 274, 6192)
+        assert (items, source, lines) == ([(None, 0), (None, 0), (None, 1)], "printed", [])  # The codes go with the other new fields.
+        assert DETAILS_FAILED in manager.ledger.record("receipt", receipt_id)["issues"]
+        assert shares_of(manager.store, receipt_id) == (R_SHARES_TODAY, R_SHARES_TODAY)
+
+
+def test_every_receipt_form_and_row_schema_carries_the_new_fields_in_new_fields():
+    assert {"tax_lines", "tax_legend"} <= set(NEW_FIELDS["ReceiptSummary"])
+    assert all({"tax_lines", "tax_legend"} <= names for name, names in NEW_FIELDS.items() if name.startswith("Receipt") and name.endswith("Summary"))
+    assert "tax_code" in NEW_FIELDS["Items"] and "tax_code" in NEW_FIELDS["GroceryItems"]
+    old_answer = {"merchant": MISSING, "purchase_date": MISSING, "currency": MISSING, "subtotal": MISSING, "tax": MISSING, "tip": MISSING, "total": MISSING}
+    assert HEADER_MODELS["receipt"].model_validate(old_answer).tax_lines == []  # An earlier stub or answer, with none of the new fields, still validates.
+    assert Item.model_validate({"description": "X", "product_code": None, "quantity": None, "unit_price": None, "line_total": None, "discount": None,
+                                "taxed": None, "evidence": [{"line_id": "line-1", "quote": "X"}]}).tax_code is None
+
+
+def test_the_extraction_version_names_tax_codes_and_an_earlier_reading_is_read_again(tmp_path, local_model):
+    assert EXTRACTION_VERSION == "typed-extraction-v33-tax-codes" != "typed-extraction-v32-table-engine"
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, again, receipt_id):
+        doc, parse_id = again
+        with manager.store.connection() as db:
+            assert db.execute("SELECT prompt_version FROM extraction_runs").fetchone()[0] == EXTRACTION_VERSION
+            db.execute("UPDATE extraction_runs SET prompt_version='typed-extraction-v32-table-engine'")
+        local_model["by_schema"] = r0_replies()
+        started = manager.start_extraction(doc["id"], parse_id)
+        manager.future.result(timeout=30)
+        assert started["reused"] is False and manager.extractions.get(started["run_id"])["status"] == "succeeded"

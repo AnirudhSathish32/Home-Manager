@@ -2,7 +2,7 @@
 
 R (answered by RA), D, G and N (answered by NA) are exactly as the contract prints them; the hand-worked amounts are in
 the constants beside each. Replies are keyed by schema name for local_model["by_schema"] (tests/model_server.py), built
-from tests/document_forms_fixtures.py. specs/receipt-tax-codes extends this file later.
+from tests/document_forms_fixtures.py. specs/receipt-tax-codes extends it with R0 and its variants ("Tax codes" below).
 """
 
 from document_forms_fixtures import amount_on, cite, item, receipt_replies, value
@@ -82,3 +82,50 @@ def na_replies():
     return with_categories(receipt_replies(lines, "grocery", "Synth Mart", "SYNTH MART", "2026-10-20", summary, items,
                                            kind_evidence=cite(lines, "KITCHEN")), "household supplies")
 
+
+
+# Tax codes (specs/receipt-tax-codes/test-contract.md "Fixtures") ---------------------------------------------------------
+
+R_CODES, R_FLAGS = ("BF", "BF", "T"), (False, False, True)  # The tax codes R prints and the model's own (wrong for BF) taxed answers.
+R_ROWS = (("RUFFLES", "071057174 RUFFLES", "4.29", {"product_code": "071057174"}),
+          ("LITLE VEGET", "211180042 LITLE VEGET", "41.90", {"product_code": "211180042", "quantity": "10", "unit_price": "4.19",
+                                                           "also": ["10 @ $4.19 ea"]}),
+          ("WATER FILTER", "07200120 WATER FILTER", "12.99", {"product_code": "07200120"}))
+
+
+def tax_line_reply(lines, text, code, amount, taxable=None, rate=None):
+    """One printed per-code tax line as the model reports it, citing the line that starts with text."""
+    return {"code": code, "rate": rate, "taxable_amount": taxable, "amount": amount, "evidence": cite(lines, text)}
+
+
+def legend_entry(lines, text, code, taxed):
+    """One printed legend entry (T = TAXABLE) as the model reports it."""
+    return {"code": code, "taxed": taxed, "evidence": cite(lines, text)}
+
+
+def r_tax_lines(lines=R_LINES):
+    """R0's two tax lines: T 7.75000 on 12.99 1.01, and B 7.75000 on 46.19 1.73."""
+    return [tax_line_reply(lines, "T = GA TAX", "T", "1.01", "12.99", "7.75000"), tax_line_reply(lines, "B = GA TAX", "B", "1.73", "46.19", "7.75000")]
+
+
+def r0_replies(lines=R_LINES, codes=R_CODES, taxed=R_FLAGS, tax_lines="R0", legend=(), tax=None, total=None, rows=None):
+    """R0: RA's summary and items read as a grocery receipt, plus each item's tax code and the receipt's tax lines (R's T and B lines
+    when tax_lines is "R0"). tax and total replace those summary values; rows replaces the item rows."""
+    tax_value = tax or {"value": "2.74", "status": "proposed", "evidence": [entry for text in ("T = GA TAX", "B = GA TAX") for entry in cite(lines, text)]}
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": tax_value, "total": total or amount_on(lines, "TOTAL "),
+               "tax_lines": r_tax_lines(lines) if tax_lines == "R0" else list(tax_lines), "tax_legend": list(legend)}
+    items = rows or [item(lines, name, line, amount, taxed=flag, tax_code=code, **more)
+                     for (name, line, amount, more), code, flag in zip(R_ROWS, codes, taxed)]
+    return with_categories(receipt_replies(lines, "grocery", "Synth Mart", "SYNTH MART", "2026-10-20", summary, items,
+                                           kind_evidence=cite(lines, "GROCERY")), "groceries", "groceries", "household supplies")
+
+
+def r_one_tax_lines():
+    """SC-16's lines: R with its two tax lines replaced by a single TAX line."""
+    return [*R_LINES[:10], "TAX $2.74", R_LINES[12]]
+
+
+def one_tax_replies(**more):
+    """SC-16: the one TAX line is the whole tax, with no tax lines read. Items carry BF, BF and T and the model's own taxed answers."""
+    lines = r_one_tax_lines()
+    return r0_replies(lines, tax_lines=[], tax=amount_on(lines, "TAX "), **more)

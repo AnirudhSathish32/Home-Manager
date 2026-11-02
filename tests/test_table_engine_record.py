@@ -212,7 +212,7 @@ def shown(env_, record_):
 # --- SC-01: the Wells Fargo-style statement ---------------------------------------------------------------------------------------------
 
 def test_the_extraction_version_names_the_table_engine():
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v32-table-engine"
+    assert extraction.EXTRACTION_VERSION != "typed-extraction-v32-table-engine"  # Bumped since (receipt-tax-codes): a v32 reading is read again.
 
 
 def test_sc01_wf_records_every_row_from_the_printed_columns_and_shows_the_printed_balances(env, local_model):
