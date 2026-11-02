@@ -46,7 +46,7 @@ slices:
     model: claude-sonnet-5-5
     task: receipt-tax-codes-SL-03-r1
     verification:
-      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> passed (orchestrator rerun; first line of output)"
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> 73 passed (orchestrator rerun)"
       - "SL-03 regression files (receipt_kinds, table_engine_record, receipt_segments, extraction, reextraction, receipt_item_table, eval_tasks) -> 211 passed, exit 0 (orchestrator rerun)"
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
     notes: >-
@@ -56,9 +56,22 @@ slices:
       is read from a re-transcription printing the filter as N, SC-04 prints TAX $2.84 / TOTAL $62.02, SC-15 prints two B
       lines. Code matching in the citation is as a standalone mark (stricter than plain substring; answers plan review p2-i1).
   - id: SL-04
+    status: done
+    start_head: d47a195
+    end_head: 1e51bef
+    commit: 2d8344b
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-04-r1
+    verification:
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py -q -> 7 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_planned_bugfixes_browser.py tests/test_document_v2_browser.py -q -> 8 passed, 2 failed (orchestrator rerun); test_idle_badge_read_filter_and_record_selected and test_document_page_states_find_correct_and_decide fail the same way at START_HEAD (worker) and were already listed as pre-existing in receipt-item-table SL-02"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+      - "Screenshots /tmp/rtc-sl04-shots/{before,after}-r0-1440.png reviewed: Paid $4.45/$43.47/$14.00 with B/T tax notes; B and T tax lines under Tax with Find; layout oddities appear in the before capture too (full-page capture)"
+    notes: "No CSS or tokens changed. doc2Issues filters tax_issues before the length check at both doc2Why call sites."
+  - id: SL-05
     status: in_progress
     start_head: HEADPLACEHOLDER
     provider: claude
     model: claude-sonnet-5-5
-    task: receipt-tax-codes-SL-04-r1
-  - {id: SL-05, status: todo}
+    task: receipt-tax-codes-SL-05-r1
