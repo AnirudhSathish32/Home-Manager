@@ -321,6 +321,10 @@ class Old:
         db = sqlite3.connect(self.root / "inventory.sqlite3")
         try:
             db.execute("ALTER TABLE accounts DROP COLUMN origin")
+            # What 075 added (receipt tax codes), so opening the library runs that step again on a real 072 shape.
+            db.execute("DROP TABLE receipt_tax_lines")
+            db.execute("ALTER TABLE receipts DROP COLUMN tax_source")
+            db.execute("ALTER TABLE receipt_items DROP COLUMN tax_code")
             db.execute("PRAGMA user_version=72")
             db.commit()
         finally:
