@@ -84,6 +84,20 @@ slices:
     notes: >-
       Accepted eval tightening: the one-TAX-line case also requires every item to be read, so a reading that drops the
       BF items can't pass trivially. 22 cases (R and the SC-16 receipt, 10 variants each) to meet the suite's 20-case minimum.
+  - id: SL-06
+    status: done
+    scope: "fixes for code review round 1 (CR1-M1, CR1-m1)"
+    start_head: b3cc333
+    end_head: 9ba3447
+    commit: e0e1e0c
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-06-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> 78 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_receipt_kinds.py tests/test_extraction.py tests/test_reextraction.py -q -> 74 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+    notes: "Diff read: food_stamp_meaning judges only the entry's own meaning; rate_printed compares whole NUMBER tokens (core/money.py:18) as Decimals, so it can't raise. printed_in unchanged for other callers."
 final_verification:
   - head: c6c0fd7
     command: ".venv/bin/python -m pytest -q -p no:randomly"
@@ -110,3 +124,32 @@ final_verification:
   - head: 3616b12
     command: ".venv/bin/ruff check src tests"
     exit_code: 0
+code_review:
+  - round: 1
+    reviewer: "codex / gpt-6.1-sol (reasoningEffort high), via t3, 1 explorer helper"
+    independence: model-family
+    risk: "HIGH (approved_plan_high_risk, changed_files_over_limit, changed_lines_over_limit)"
+    range: 3f3225b..b3cc333
+    verdict: "REVISE: 1 MAJOR, 1 MINOR, 1 INFO, no BLOCKER"
+    findings:
+      - id: CR1-M1
+        severity: MAJOR
+        where: "src/home_manager/documents/extraction.py tax_codes legend loop (~1767), FOOD_STAMP (1699)"
+        summary: >-
+          A legend entry is dropped whenever any cited quote mentions food stamps, so one combined line
+          "T = TAXABLE; N = NON-TAXABLE; F = FOOD STAMP" loses every entry (FR-22); reviewer reproduced splits 800/362 vs 862/300.
+        orchestrator_check: "confirmed by reading the loop: the guard tests the whole quote, not the entry's own meaning"
+        status: fixed in SL-06 (e0e1e0c)
+      - id: CR1-m1
+        severity: MINOR
+        where: "extraction.py tax_codes rate check (~1745) via printed_in (2469)"
+        summary: "Digit-substring match accepts rate 75 against 7.75000 (FR-09); footer would show 75%."
+        orchestrator_check: "confirmed: printed_in strips non-digits and tests substring"
+        status: fixed in SL-06 (e0e1e0c)
+      - id: CR1-i1
+        severity: INFO
+        where: "finance/family_routing.py:263"
+        summary: "Family copies' tax lines carry locator {family: true}, so Find is absent on the recipient's footer."
+        disposition: "accepted per plan P6 (family copies carry no transcription for any record); listed as a known limitation"
+    verified_by_reviewer: "214 targeted tests; SC-19/SC-15 browser tests; 5,000 differential cases showing tax_source NULL equals the pre-feature allocator; gift card, EUR, return, shared and by-line Ledger.shares checks; migration 075 additive; CSP and server-made money"
+    not_covered: "populated tax-line backup/export/trash round trips; malformed item-code/legend fallback variants; re-reading with user-set people; the discount-plus-tip test checks only the sum"
