@@ -70,8 +70,17 @@ slices:
       - "Screenshots /tmp/rtc-sl04-shots/{before,after}-r0-1440.png reviewed: Paid $4.45/$43.47/$14.00 with B/T tax notes; B and T tax lines under Tax with Find; layout oddities appear in the before capture too (full-page capture)"
     notes: "No CSS or tokens changed. doc2Issues filters tax_issues before the length check at both doc2Why call sites."
   - id: SL-05
-    status: in_progress
-    start_head: HEADPLACEHOLDER
+    status: done
+    start_head: cc11dbf
+    end_head: 22d666b
+    commit: 60115db
     provider: claude
     model: claude-sonnet-5-5
-    task: receipt-tax-codes-SL-05-r1
+    task: [receipt-tax-codes-SL-05-r1 (rate limit, no changes), receipt-tax-codes-SL-05-r2]
+    verification:
+      - ".venv/bin/python -m pytest tests/test_eval_tasks.py -q -> 19 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals -> all checks passed (orchestrator rerun)"
+      - "FR-20: docs/money.md \"Tax codes and tax lines\" and docs/documents.md \"Tax codes on receipts\" read against the built code by the orchestrator; only new subheadings, no heading renamed; open-work has the OD-4 entry"
+    notes: >-
+      Accepted eval tightening: the one-TAX-line case also requires every item to be read, so a reading that drops the
+      BF items can't pass trivially. 22 cases (R and the SC-16 receipt, 10 variants each) to meet the suite's 20-case minimum.
