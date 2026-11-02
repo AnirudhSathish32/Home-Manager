@@ -129,7 +129,8 @@ receipt.js, taxes.js, finance.js, library.js, processing.js, home.js and search.
     This year, All, Custom…), Account and Category, and Type, Status, Receipt and Sort under "More filters" (Charges
     only). An In / Out / Net line (`#tx2-totals`) sits under the summary. Charges also lists the receipts, bills and pay
     stubs that count on their own (`tr[data-source]`, their Receipt / Bill / Pay stub tag in the Account column); their
-    name opens the document. Its URL keys (`q, start, end, account, category, types, status, receipt, sort, period, view,
+    name opens the document. On Items, a line whose receipt or pay stub is matched shows its account with a paperclip
+    (`.tx2-matched`) that opens that document. Its URL keys (`q, start, end, account, category, types, status, receipt, sort, period, view,
     direction`, and Today's `currency, metric, categories`) are the ones every deep link uses. Under 900px the Account column moves into the name's line; under
     700px each row stacks (date | name | amount, account · status, then the category select). A row opens the
     transaction drawer (`finance.js` `openTransaction(id, member, {onChange})`), which reloads the list after a change.

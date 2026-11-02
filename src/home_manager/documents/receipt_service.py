@@ -100,9 +100,12 @@ class ReceiptService:
         return result
 
     def history(self, document_id, digest=None):
+        """The version's readings, newest first. recorded_at: when the latest Record from that reading started, or None; the
+        document page opens the reading recorded last, so a later reading that isn't recorded never hides the record."""
         _, selected = self.store.document_version(document_id, digest)
         with self.store.connection() as db:
-            return [dict(row) for row in db.execute("SELECT id,blob_hash,parser_version,options_json,status,created_at,updated_at,error "
+            return [dict(row) for row in db.execute("SELECT id,blob_hash,parser_version,options_json,status,created_at,updated_at,error,"
+                                                  "(SELECT max(e.created_at) FROM extraction_runs e WHERE e.parse_run_id=parse_runs.id) AS recorded_at "
                                                   "FROM parse_runs WHERE blob_hash=? ORDER BY created_at DESC", (selected["hash"],))]
 
     def state(self, run_id, status, error=None):

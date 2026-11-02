@@ -236,8 +236,14 @@ function tx2ItemRow(row, categories) {
   const name = row.kind === "item" ? row.item : row.kind === "extra" ? (row.category === "dining" ? "Tip" : "Other charges") : row.merchant;
   const detail = [row.kind === "charge" ? (row.merchant !== row.description ? row.description : "") : row.merchant,
                   row.line_total && row.line_total.display !== row.amount.display ? `price ${row.line_total.display}` : ""].filter(Boolean).join(" · ");
-  tx2Name(tr, {...row, id: null}, name, detail);
-  tx2Cell(tr, "tx2-col-account").textContent = row.account || {bill: "Bill", paystub: "Pay stub"}[row.source] || "Receipt";
+  const described = tx2Name(tr, {...row, id: null}, name, detail);
+  const account = tx2Cell(tr, "tx2-col-account");
+  account.textContent = row.account || {bill: "Bill", paystub: "Pay stub"}[row.source] || "Receipt";
+  // A line with its receipt or pay stub matched keeps the account and adds a paperclip that opens the document.
+  if (row.source === "transaction" && row.receipt_document_id) {
+    account.append(" ", tx2Matched(row));
+    described.querySelector(".tx2-account-inline")?.append(" ", tx2Matched(row));
+  }
   const category = tx2Cell(tr, "tx2-category");
   if (row.kind === "income") {  // Money in has no spending category.
     category.append(element("span", "—", "muted"), element("small", "Money in", "muted block"));
@@ -252,6 +258,13 @@ function tx2ItemRow(row, categories) {
   tx2Cell(tr, "numeric tx2-amount").append(amount(row.amount, {signed: row.kind === "income"}));
   tx2Open(tr, row.transaction_id, row.member_id);
   return tr;
+}
+function tx2Matched(row) {
+  const label = `Matched ${row.kind === "income" ? "pay stub" : "receipt"}`;
+  if (familyMode) return originalButton(icon("paperclip"), row.member_id, row.receipt_document_id, label);
+  const link = element("a", "", "receipt-link tx2-matched"); link.href = `#/documents/${row.receipt_document_id}`;
+  link.append(icon("paperclip")); link.title = label; link.setAttribute("aria-label", label);
+  return link;
 }
 // A receipt, bill or pay stub no card or bank line has replaced yet: it counts on its own, so it is listed with the lines.
 function tx2DocumentRow(row) {

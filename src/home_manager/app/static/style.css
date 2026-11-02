@@ -1047,6 +1047,7 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .receipt-link { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); text-decoration: none; }
 .receipt-link:hover { text-decoration: underline; }
 .receipt-link .icon { width: 14px; height: 14px; }
+#tx2-table .tx2-matched { vertical-align: text-bottom; }
 
 /* ---- Settings ------------------------------------------------------------------ */
 .settings-layout { display: grid; grid-template-columns: 220px minmax(0, 760px); gap: var(--space-6); align-items: start; }

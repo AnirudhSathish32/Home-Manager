@@ -204,9 +204,12 @@ async function doc2Runs(state) {
   if (!runs.length) { selector.add(new Option("Not read yet", "")); return; }
   for (const run of runs) {
     const rotation = JSON.parse(run.options_json).clockwise_rotation;
-    selector.add(new Option(`${new Date(run.created_at).toLocaleString()} · ${statusLabel(run.status)} · ${rotation}°`, run.id));
+    selector.add(new Option(`${new Date(run.created_at).toLocaleString()} · ${statusLabel(run.status)} · ${rotation}°${run.recorded_at ? " · recorded" : ""}`, run.id));
   }
-  if (!state.runId) state.runId = runs[0].id;
+  // The reading recorded last, else the newest: a later reading nobody recorded (read again, or by a newer reader) never
+  // hides the record (docs/documents.md "Reading documents").
+  const recorded = runs.filter(run => run.recorded_at).sort((a, b) => b.recorded_at.localeCompare(a.recorded_at))[0];
+  if (!state.runId) state.runId = (recorded || runs[0]).id;
   selector.value = state.runId;
 }
 async function doc2ShowRun(runId, state) {

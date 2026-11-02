@@ -164,6 +164,10 @@ Don't delete the pre-upgrade copy until the library opens normally.
 documents** reads existing captures, and **Read selected** in Documents reads only the chosen ones. Identical bytes
 share one reading. Missing model settings don't stop capture, but reading needs a configured model.
 
+A version can have several readings (Read again, or a newer reader). The document page opens the reading that was
+recorded last, so a later reading nobody recorded never hides the record; with none recorded it opens the newest.
+Its Saved readings list (History tab) marks each recorded one, and choosing another reading shows that reading's record or Record it.
+
 Every reading, from any reader, keeps the same evidence:
 - the input hash, reader and model versions, and status;
 - line or cell references, so every later value can cite its source;

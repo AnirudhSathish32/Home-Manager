@@ -394,3 +394,50 @@ def test_document_page_fits_every_width_and_its_figures_match_their_traces_and_t
         assert (result["minor"], result["currency"]) == (abs(record["total_minor"]), record["currency"]), (result, record["total_minor"])
         assert failures == [], failures
         browser.close()
+
+
+def _newer_reading(manager, doc_id):
+    """A later reading of the document's version that nobody recorded (Read again, or a newer reader): a copy of its
+    newest reading, one minute later. Returns its id."""
+    import uuid
+    from datetime import datetime
+    with manager.store.connection() as db:
+        row = dict(db.execute("SELECT p.* FROM parse_runs p JOIN occurrences o ON o.current_hash=p.blob_hash WHERE o.id=? "
+                              "ORDER BY p.created_at DESC LIMIT 1", (doc_id,)).fetchone())
+        row.update(id=uuid.uuid4().hex, created_at=(datetime.fromisoformat(row["created_at"]) + timedelta(minutes=1)).isoformat())
+        db.execute(f"INSERT INTO parse_runs({','.join(row)}) VALUES({','.join('?' * len(row))})", tuple(row.values()))
+    return row["id"]
+
+
+def test_readings_say_which_was_recorded(tmp_path):
+    with document_server(tmp_path, TOKEN) as (_, ids, manager):
+        newer = _newer_reading(manager, ids["statement_doc"])
+        runs = manager.receipts.history(ids["statement_doc"])
+        assert runs[0]["id"] == newer and runs[0]["recorded_at"] is None  # Newest first, not recorded.
+        assert runs[1]["recorded_at"]
+
+
+@browser_test
+def test_document_page_opens_the_recorded_reading_when_a_later_one_is_not_recorded(tmp_path):
+    """A statement recorded, then read again (or by a newer reader) without Record: the page still shows its record, not
+    "Nothing is recorded", and the newer reading is one choice away."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN) as (base, ids, manager), playwright.sync_playwright() as driver:
+        newer = _newer_reading(manager, ids["statement_doc"])
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1366, "height": 768})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["statement_doc"])
+        expect(page.locator("#doc2-record-title")).to_contain_text("Statement from")
+        expect(page.locator("#doc2-runs option:checked")).to_contain_text("recorded")
+        page.locator("#doc2-tab-history").click()  # Saved readings are on History.
+        page.locator("#doc2-runs").select_option(newer)
+        page.locator("#doc2-tab-record").click()
+        expect(page.locator("#doc2-panel-record")).to_contain_text("Nothing is recorded from this document yet.")
+        expect(page.locator("#doc2-next").get_by_role("button", name="Record it")).to_be_visible()
+        assert failures == [], failures
+        browser.close()

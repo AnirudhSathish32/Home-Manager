@@ -620,7 +620,8 @@ the receipt total are the two figures that can be checked against each other. Ev
 
 **Where it shows**
 - **Transactions page.** Opens on **Items**: one row per item, with its share of what was paid, a category dropdown and
-  its status (`get_spending_items`). A matched charge's items appear once, under the charge. Money in has rows too
+  its status (`get_spending_items`). A matched charge's items appear once, under the charge. Their Account column shows the card or bank account with a paperclip to the matched
+  receipt. Money in has rows too
   (`kind` income): each deposit or other credit, **Reconciled** when its pay stub matched it, and each pay stub no deposit
   has replaced (**Pay stub only**). **Charges** lists each card or bank line, and with `include_documents` the receipts,
   bills and pay stubs that still count on their own, each with its source tag (Receipt, Bill or Pay stub) in the Account
