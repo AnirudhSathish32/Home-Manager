@@ -20,11 +20,28 @@ slices:
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
     notes: "Diff reviewed against the plan's Stored data section and P6. The family delivery test asserts equal shares; exact 445/4347/1400 waits for SL-02."
   - id: SL-02
-    status: in_progress
-    start_head: 3e1d0d0
+    status: done
+    start_head: 2197ef4
+    end_head: aad5c71
+    commit: [bb35893, 4359a37]
     provider: claude
     model: claude-sonnet-5-5
-    task: receipt-tax-codes-SL-02-r1
-  - {id: SL-03, status: todo}
+    task: [receipt-tax-codes-SL-02-r1, receipt-tax-codes-SL-02-r2]
+    verification:
+      - ".venv/bin/python -m pytest tests/test_splits_by_code.py tests/test_receipt_tax_codes.py -q -> 51 passed (orchestrator rerun after r2)"
+      - "SL-02 regression files without test_traces (spending_splits, receipt_item_table, family_routing, family_inbox, health, returns, bills_ledger) -> 121 passed, 1 skipped (orchestrator rerun after r2)"
+      - "tests/test_traces.py -> 3 failed, 7 passed after r1; the same 3 fail at 5c9f014 (tax engine subprocess: node: bad option --allow-fs-read); in the pre-feature baseline"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+    notes: >-
+      r1 gap found in orchestrator review: tax_parts returned before the tax lines when tax was 0/None, so correcting Tax to
+      0.00 showed no FR-16/FR-17 issue. Fixed in r2 (4359a37). Accepted deviation: item.table.tax_note is set only for the
+      per-code note ("with B tax"), so receipt-item-table's pinned table dicts stay unchanged; SL-04 shows "with tax" from
+      tax_included otherwise.
+  - id: SL-03
+    status: in_progress
+    start_head: HEADPLACEHOLDER
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-03-r1
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
