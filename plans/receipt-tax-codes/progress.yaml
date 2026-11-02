@@ -38,10 +38,27 @@ slices:
       per-code note ("with B tax"), so receipt-item-table's pinned table dicts stay unchanged; SL-04 shows "with tax" from
       tax_included otherwise.
   - id: SL-03
+    status: done
+    start_head: 29afc51
+    end_head: ce1bb24
+    commit: 2c8ba59
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-03-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> passed (orchestrator rerun; first line of output)"
+      - "SL-03 regression files (receipt_kinds, table_engine_record, receipt_segments, extraction, reextraction, receipt_item_table, eval_tasks) -> 211 passed, exit 0 (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+    notes: >-
+      Diff spot-checked: defaults on every new field, NEW_FIELDS includes ReceiptSummary, TAXED_RULE shared by prompt and
+      Item.taxed description, EXTRACTION_VERSION v33. Fixture adaptations accepted (stub values and expected shares as the
+      contract gives): codes must be printed in the cited line (FR-08), so SC-06's transcription prints RUFFLES BT, SC-08's R1
+      is read from a re-transcription printing the filter as N, SC-04 prints TAX $2.84 / TOTAL $62.02, SC-15 prints two B
+      lines. Code matching in the citation is as a standalone mark (stricter than plain substring; answers plan review p2-i1).
+  - id: SL-04
     status: in_progress
     start_head: HEADPLACEHOLDER
     provider: claude
     model: claude-sonnet-5-5
-    task: receipt-tax-codes-SL-03-r1
-  - {id: SL-04, status: todo}
+    task: receipt-tax-codes-SL-04-r1
   - {id: SL-05, status: todo}
