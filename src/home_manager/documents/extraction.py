@@ -1880,6 +1880,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             read_rows.append((index, row))
             if receipt_kind == "grocery" and details:
                 grocery_item(record, record["items"][-1], row, index, line_text, issues, currency)
+        record["cross_checks"] += count_lines(record["items"], line_text, currency)
         tax_codes(record, header, read_rows, line_text, issues, money, details)
         sign_return(record, fields["return_marker"], issues)
         receipt_details(receipt_kind, record, kind_fields, money, issues, currency, line_text)
@@ -2133,6 +2134,43 @@ def grocery_item(record, item, row, index, line_text, issues, currency):
         elif checked:
             issues.append(f"Item {index} ({item['description']}): {count.strip()} × {row.unit_price.strip()} = {format_minor(checked[0], currency)}, "
                           f"not the printed line total {format_minor(item['line_total_minor'], currency)}.")
+
+
+# A line holding only a count and a price each ("9 @ $4.19 ea", "2 @ 1.50", "3 x 0.99 EA"), printed under its item's line.
+COUNT_LINE = re.compile(r"\s*(\d+(?:\.\d+)?)\s*(?:@|x|×)\s*\$?\s*(\d[\d,]*\.\d+)\s*(?:ea\.?|each|/\s*ea\.?)?\s*", re.IGNORECASE)
+
+
+def count_lines(items, line_text, currency):
+    """Receipt items read without a count whose count is printed on a line of its own (docs/documents.md "Counts on their
+    own line"): the item cites that line, or it is the next printed line and no other item cites it. Its count and price
+    each are kept only when they make the item's printed line total, and the line is added to the item's citation.
+    Returns how many items it checked this way (cross checks)."""
+    order = {line_id: index for index, line_id in enumerate(line_text)}
+    ids = list(line_text)
+    cited = {line_id for item in items for line_id in item["locator"]["line_ids"]}
+    found = 0
+    for item in items:
+        own = [line_id for line_id in item["locator"]["line_ids"] if line_id in order]
+        if item["quantity"] or item["line_total_minor"] is None or not own or currency not in EXPONENTS:
+            continue
+        after = order[max(own, key=order.get)] + 1
+        candidates = own + ([ids[after]] if after < len(ids) and ids[after] not in cited else [])
+        for line_id in candidates:
+            match = COUNT_LINE.fullmatch(line_text[line_id] or "")
+            if not match:
+                continue
+            count, each = match.group(1), match.group(2).replace(",", "")
+            checked = document_checks.unit_line(count, each, abs(item["line_total_minor"]), currency)
+            if not checked or not checked[2]:
+                continue
+            item["quantity"], item["unit_price_minor"] = count, to_minor(each, currency)
+            if line_id not in item["locator"]["line_ids"]:
+                item["locator"]["line_ids"].append(line_id)
+                item["locator"]["quotes"].append(line_text[line_id])
+                cited.add(line_id)
+            found += 1
+            break
+    return found
 
 
 def receipt_details(receipt_kind, record, fields, money, issues, currency, line_text):
@@ -3121,7 +3159,9 @@ class ExtractionService:
                          if key == "lines" else " Missing fields are null; never assume a quantity of one. Some receipts print one item "
                          "across two lines, such as a department or name line with the price and a line with a product code and name: combine "
                          "them into one row citing both lines, use the product name as description, the number beside it as product_code, "
-                         "and the price as line_total. Department headings alone (GROCERY, HEALTH AND BEAUTY) are not items. tax_code: "
+                         "and the price as line_total. A count printed on its own line under an item (9 @ $4.19 ea, 2 @ 1.50) belongs to the item "
+                         "above it: quantity is the count, unit_price the price each, line_total the item's printed amount, citing both lines; "
+                         "it is never an item of its own. Department headings alone (GROCERY, HEALTH AND BEAUTY) are not items. tax_code: "
                          "many receipts print a tax code beside each price (such as BF, T, A, N); copy it exactly as printed, or null when none "
                          f"is printed. taxed: {TAXED_RULE} "
                          "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "

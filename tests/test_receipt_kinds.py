@@ -221,6 +221,23 @@ def test_sc04_c_no_printed_count_skips_the_multi_unit_check(tmp_path, local_mode
         assert run["result"]["normalized"]["cross_checks"] == 2 and record["review_status"] == "verified", record["issues"]
 
 
+def test_a_count_on_its_own_line_belongs_to_the_item_above(tmp_path, local_model):
+    # "LILIFE VEGET BF 37.71" over "9 @ $4.19 ea": the model read the item without its count; the count line is its own.
+    lines = [line for entry in GROCERY for line in ({"2x CHIPS @ 2.00 4.00": ["CHIPS 4.00", "2 @ $2.00 ea"]}.get(entry, [entry]))]
+    with read_receipt(tmp_path, local_model, lines, grocery_replies(lines)) as (_, run, record, _row):
+        chips = next(entry for entry in record["items"] if entry["description"] == "CHIPS")
+        assert (chips["quantity"], chips["unit_price_minor"], chips["line_total_minor"], chips["table"]["qty"]) == ("2", 200, 400, "2")
+        assert len(chips["line_ids"]) == 2  # Cites the count line too.
+        assert run["result"]["normalized"]["cross_checks"] == 3 and record["review_status"] == "verified", record["issues"]
+
+
+def test_a_count_line_that_does_not_make_the_line_total_is_left_alone(tmp_path, local_model):
+    lines = [line for entry in GROCERY for line in ({"2x CHIPS @ 2.00 4.00": ["CHIPS 4.00", "3 @ $2.00 ea"]}.get(entry, [entry]))]
+    with read_receipt(tmp_path, local_model, lines, grocery_replies(lines)) as (_, _run, record, _row):
+        chips = next(entry for entry in record["items"] if entry["description"] == "CHIPS")
+        assert (chips["quantity"], chips["unit_price_minor"]) == (None, None)
+
+
 def test_sc05_a_general_receipt_is_read_as_today(tmp_path, local_model):
     manager, doc, parse_id = transcribe(tmp_path, local_model, RECEIPT)
     try:

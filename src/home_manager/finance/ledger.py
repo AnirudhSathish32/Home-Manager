@@ -201,6 +201,10 @@ BILL_SHOWN = {"document_kind": "Record as", "merchant": "Provider", "issue_date"
 # A bill line's own corrections, kept by printed position like an item's price ("line_kind:3", "member:3"): field -> column.
 # A rent bill's line has a rent type ("line_type:3", specs/bill-kinds FR-45), which also sets its mapped line_kind.
 LINE_FIELDS = {"line_kind": "line_kind", "line_type": "line_type", "member": "member_id"}
+# A receipt item's printed details corrected in its row, kept by printed position like its price ("quantity:3"):
+# field -> (column, what its history calls it). The price is its line total (Ledger._correct_item).
+ITEM_FIELDS = {"description": ("description", "Name of"), "product_code": ("product_code", "Code of"), "quantity": ("quantity", "Quantity of"),
+               "unit_price": ("unit_price_minor", "Unit price of")}
 TRANSACTION_TYPES = ("purchase", "refund", "payment", "transfer", "deposit", "fee", "interest", "withdrawal", "other")
 # A transaction's fields a person may correct when the import or the reading got them wrong (docs/money.md "Corrections"):
 # field -> (column, kind). The amount is entered positive, and its direction is a field of its own.
@@ -1042,8 +1046,9 @@ class Ledger:
                                  (receipt_id, position, key)).fetchone()[0]
             db.execute("INSERT INTO deleted_receipt_items(receipt_id,position,description,description_key,ordinal,actor,created_at) "
                        "VALUES(?,?,?,?,?,?,?)", (receipt_id, position, item["description"], key, before, actor.current(), now()))
-            db.execute("DELETE FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field IN (?,?,?,?)",
-                       (receipt_id, f"price:{position}", f"line_kind:{position}", f"line_type:{position}", f"member:{position}"))
+            fields = [f"{name}:{position}" for name in ("price", *LINE_FIELDS, *ITEM_FIELDS)]
+            db.execute(f"DELETE FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field IN ({','.join('?' * len(fields))})",
+                       (receipt_id, *fields))
             db.execute("DELETE FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=?", (item["id"],))
             # Keep a product already added to the household, but detach it from this removed line.
             db.execute("UPDATE inventory_lots SET position=NULL,updated_at=? WHERE receipt_id=? AND position=?", (now(), receipt_id, position))
@@ -1845,6 +1850,14 @@ class Ledger:
                             item["table"]["tax_note"] = f"with {carried[item['id']]} tax"
                     item["correctable"] = [{"field": "price", "label": "Price", "kind": "receipt_money",
                                             "value": money(abs(item["line_total_minor"]), row["currency"])["decimal"] if item["line_total_minor"] is not None else None}]
+                    if not bill:  # A receipt's row in the table's order, its line total last (docs/money.md "Corrections").
+                        unit = item["unit_price_minor"]
+                        item["correctable"] = [{"field": "description", "label": "Item", "kind": "item_name", "value": item["description"]},
+                                               {"field": "product_code", "label": "Code", "kind": "text", "value": item["product_code"]},
+                                               {"field": "quantity", "label": "Qty", "kind": "text", "value": item["quantity"]},
+                                               {"field": "unit_price", "label": "Unit price", "kind": "receipt_money",
+                                                "value": money(abs(unit), row["currency"])["decimal"] if unit is not None else None},
+                                               {**item["correctable"][0], "label": "Line total"}]
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
                         # A rent bill's line takes a rent type (specs/bill-kinds FR-45), which sets its line kind.
                         kind = ({"field": "line_type", "label": "Type", "kind": "choice", "value": item["line_type"], "options": list(RENT_LINE_TYPES)}
@@ -2509,12 +2522,13 @@ class Ledger:
                 if kind == "receipt_item":
                     labels = {f"{field}:{item['position']}": f"{what} {item['description'] or 'item ' + str(item['position'])}"
                               for item in db.execute("SELECT position,description FROM receipt_items WHERE receipt_id=?", (target,))
-                              for field, what in (("price", "Price of"), ("line_kind", "Type of"), ("line_type", "Type of"), ("member", "Person for"))}
+                              for field, what in (("price", "Price of"), ("line_kind", "Type of"), ("line_type", "Type of"), ("member", "Person for"),
+                                                  *((name, label) for name, (_, label) in ITEM_FIELDS.items()))}
                 kinds = ({field: value_kind for field, (_, value_kind) in TRANSACTION_CORRECTABLE.items()} | {"category": "category"} if kind == "transaction"
                          else {field: value_kind for field, (_, value_kind, _) in CORRECTABLE.get(kind, {}).items()})
                 latest = dict(db.execute("SELECT field,max(id) FROM record_corrections WHERE record_type=? AND record_id=? GROUP BY field", (kind, target)).fetchall())
                 for item in db.execute("SELECT * FROM record_corrections WHERE record_type=? AND record_id=?", (kind, target)):
-                    value_kind = ("money" if item["field"].startswith("price:") else "text") if kind == "receipt_item" else (
+                    value_kind = ("money" if item["field"].startswith(("price:", "unit_price:")) else "text") if kind == "receipt_item" else (
                         "money" if kind == "income_record" and item["field"].startswith("income_line:") else
                         self.detail_kind(item["field"]) if item["field"].startswith("detail:") else kinds.get(item["field"], "text"))
                     shown = (lambda text: format_minor(to_minor(text, currency), currency) if text is not None else None) if value_kind in ("money", "amount", "receipt_money") else (lambda text: text)
@@ -2578,6 +2592,8 @@ class Ledger:
                                    "VALUES('receipt_item',?,?,?,?,?,?,?)", (record_id, row["field"], row["previous"], row["value"], UNDO_REASON,
                                                                            actor.current(), now()))
                         self._set_line(db, record_id, int(position), name, row["previous"])
+                    elif name in ITEM_FIELDS:
+                        self._correct_item_field(db, record_id, int(position), name, row["previous"], UNDO_REASON, stored=True)
                     else:
                         self._correct_item(db, record_id, int(position), row["previous"], UNDO_REASON, signed=True)
                     continue
@@ -2623,6 +2639,10 @@ class Ledger:
                     self._set_line(db, record_id, int(position), name, item["value"])
                     continue
                 currency = db.execute("SELECT currency FROM receipts WHERE id=?", (record_id,)).fetchone()[0]
+                if name in ITEM_FIELDS:  # An item's name, code, count or price each, as the person set it.
+                    value, _ = self.item_value(name, item["value"], currency, stored=True)
+                    db.execute(f"UPDATE receipt_items SET {ITEM_FIELDS[name][0]}=? WHERE receipt_id=? AND position=?", (value, record_id, int(position)))
+                    continue
                 price = to_minor(item["value"], currency) if item["value"] is not None else None
                 db.execute("UPDATE receipt_items SET line_total_minor=? WHERE receipt_id=? AND position=?", (price, record_id, int(position)))
         table = RECORD_TABLES[record_type]
@@ -2734,6 +2754,58 @@ class Ledger:
         with self.store.connection() as db:
             correction_id = self._correct_item(db, receipt_id, position, price, reason)
         return {"record": self.record("receipt", receipt_id), "correction_ids": [correction_id]}
+
+    def correct_item_fields(self, receipt_id, position, changes, reason=None):
+        """Correct a receipt item's row: its name, code, quantity, unit price and line total (price), each kept by printed
+        position across re-readings and undone on its own (docs/money.md "Corrections"). One write for all of them."""
+        if not changes or set(changes) - {"price", *ITEM_FIELDS}:
+            raise ValueError("Choose the item's name, code, quantity, unit price or line total.")
+        with self.store.connection() as db:
+            ids = [self._correct_item(db, receipt_id, position, text, reason) if field == "price"
+                   else self._correct_item_field(db, receipt_id, position, field, text, reason) for field, text in changes.items()]
+        return {"record": self.record("receipt", receipt_id), "correction_ids": ids}
+
+    @staticmethod
+    def item_value(field, text, currency, stored=False):
+        """An item field as entered: (column value, the text kept with the correction). stored re-applies or puts back a
+        value as it was kept or read, without the entry rules (a printed quantity may be "2x")."""
+        text = " ".join(str(text).split()) if text is not None else ""
+        if field == "unit_price":
+            if not text:
+                return None, None
+            minor = to_minor(text, currency)
+            if minor < 0 and not stored:
+                raise ValueError("Enter the unit price as a positive amount.")
+            return minor, money(minor, currency)["decimal"]
+        if stored:
+            return text or None, text or None
+        if field == "description":
+            if not text or len(text) > 200:
+                raise ValueError("Enter the item's name, up to 200 characters.")
+        elif field == "product_code" and len(text) > 60:
+            raise ValueError("Keep the code to 60 characters or fewer.")
+        elif field == "quantity" and text:
+            try:
+                count = Decimal(text.replace(",", ""))
+            except InvalidOperation:
+                count = None
+            if count is None or not count.is_finite() or count <= 0 or len(text) > 20:
+                raise ValueError("Enter the quantity as a number, such as 9 or 1.5.")
+        return text or None, text or None
+
+    def _correct_item_field(self, db, receipt_id, position, field, text, reason, stored=False):
+        row = db.execute("SELECT i.*,r.currency FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id WHERE i.receipt_id=? AND i.position=?",
+                         (receipt_id, position)).fetchone()
+        if row is None:
+            raise ValueError("Receipt item not found.")
+        column = ITEM_FIELDS[field][0]
+        value, shown = self.item_value(field, text, row["currency"], stored)
+        previous = money(row[column], row["currency"])["decimal"] if field == "unit_price" and row[column] is not None else row[column]
+        correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                                   "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"{field}:{position}", shown, previous,
+                                                                           clean_reason(reason), actor.current(), now())).lastrowid
+        db.execute(f"UPDATE receipt_items SET {column}=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
+        return correction_id
 
     def correct_line(self, receipt_id, position, field, value, reason=None, members=None):
         """A bill line's type (line_kind) or whose it is (member: a family member's id, or None for nobody), kept by printed

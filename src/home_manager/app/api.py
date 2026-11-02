@@ -226,9 +226,14 @@ class ReceiptBatchInput(BatchInput):
     record: bool = False
 
 
-class ItemPriceInput(BaseModel):
+class ItemInput(BaseModel):
+    """A receipt item's row as corrected: only the fields sent change (docs/money.md "Corrections")."""
     model_config = ConfigDict(extra="forbid", strict=True)
-    price: str | None
+    price: str | None = None
+    description: str | None = None
+    product_code: str | None = None
+    quantity: str | None = None
+    unit_price: str | None = None
     reason: str | None = None
 
 
@@ -1047,9 +1052,10 @@ def create_app(control: Path | None = None, token: str | None = None,
         return manager().ledger.set_item_category(receipt_id, position, value.category)
 
     @app.patch("/api/receipts/{receipt_id}/items/{position}")
-    def correct_item_price(receipt_id: int, position: int, value: ItemPriceInput):
+    def correct_item(receipt_id: int, position: int, value: ItemInput):
         store()
-        return manager().ledger.correct_item(receipt_id, position, value.price, value.reason)
+        changes = {name: getattr(value, name) for name in value.model_fields_set - {"reason"}}
+        return manager().ledger.correct_item_fields(receipt_id, position, changes, value.reason)
 
     @app.patch("/api/paystubs/{income_id}/lines/{position}")
     def correct_paystub_line(income_id: int, position: int, value: CorrectionInput):

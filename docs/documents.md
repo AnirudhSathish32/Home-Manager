@@ -527,6 +527,19 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
   receipt is published with today's fields and rows only, and the note "Document details could not be read". The same
   holds for the new pay stub and statement fields.
 
+### Counts on their own line
+
+Code: `documents/extraction.py` (`COUNT_LINE`, `count_lines`, called from `normalize` after the items).
+
+Many receipts print an item's count and price each on the line under it (`211180042 LILIFE VEGET BF $37.71`, then
+`9 @ $4.19 ea`). The instructions for every receipt form tell the model that such a line belongs to the item above,
+with its count as quantity and its price each as unit_price, citing both lines, and is never an item of its own.
+When the model still reads the item without a count, `count_lines` looks at the lines the item cites and, if no other
+item cites it, the next printed line. A line holding only a count and a price each (`9 @ $4.19 ea`, `2 @ 1.50`,
+`3 x 0.99 EA`) gives the item its quantity and unit price only when count × price, rounded half-up, makes its printed
+line total within a cent; the line is added to the item's citation and it counts as a cross check. Otherwise nothing
+changes, and the table shows Qty 1 as before. Bills are not read this way.
+
 ### Tax codes on receipts
 
 Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `TAXED_RULE`, `tax_codes`),

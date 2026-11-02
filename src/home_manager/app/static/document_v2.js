@@ -749,10 +749,11 @@ function doc2RowCorrect(state, rows, record, allowDelete = false) {
       for (const other of rows.querySelectorAll(".doc2-row-correct")) other.setAttribute("aria-expanded", "false");
       if (shown) return;
       const formRow = element("tr", "", "doc2-row-form"), cell = element("td"); cell.colSpan = tr.children.length;
-      // A bill line's type and person are chosen in the table itself; Correct here is its price.
+      // A bill line's type and person are chosen in the table itself; Correct here is its price. A receipt item's Correct
+      // is its whole row: name, code, quantity, unit price and line total (docs/money.md "Corrections").
       const cc = confirmCorrect({recordType: items ? "receipt" : "transaction", recordId: items ? record.id : row.id, decision: false,
-                                 correctable: items ? row.correctable.filter(item => item.field === "price") : row.correctable,
-                                 preview: !items, saveCorrection: items ? body => api(`/api/receipts/${record.id}/items/${row.position}`, {method: "PATCH", body: JSON.stringify({price: body.changes.price, reason: body.reason})}) : null,
+                                 correctable: items ? row.correctable.filter(item => !["line_kind", "line_type", "member_id"].includes(item.field)) : row.correctable,
+                                 preview: !items, saveCorrection: items ? body => api(`/api/receipts/${record.id}/items/${row.position}`, {method: "PATCH", body: JSON.stringify({...body.changes, reason: body.reason})}) : null,
                                  onChange: () => doc2Changed(state), onClose: () => { formRow.remove(); open.setAttribute("aria-expanded", "false"); open.focus(); }});
       cc.el.querySelector(".cc-actions").hidden = true;
       cell.append(cc.el); formRow.append(cell); tr.after(formRow);

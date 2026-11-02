@@ -604,7 +604,7 @@ function confirmCorrect({recordType, recordId, reviewStatus, reviewSource, corre
         input = document.createElement("input");
         input.type = item.kind === "date" ? "date" : "text";
         if (["money", "amount", "receipt_money"].includes(item.kind)) input.inputMode = "decimal";
-        input.maxLength = item.kind === "text" ? 60 : 120;
+        input.maxLength = item.kind === "text" ? 60 : item.kind === "item_name" ? 200 : 120;
       }
       input.value = item.value ?? ""; input.id = idOf(item.field); caption.htmlFor = input.id;
       box.append(caption, input); form.append(box); fields[item.field] = input;

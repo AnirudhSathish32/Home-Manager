@@ -334,9 +334,12 @@ reading the document again.
   current kind ([documents](documents.md#receipt-kinds)). A gift card correction works the amount paid out again
   ([Gift cards](#gift-cards)). A detail the reading no longer has (the kind changed since) can't be undone, and a
   later reading skips it. The receipt's kind itself changes with `PATCH /api/receipts/{id}/kind`, which reads it again.
-- **Receipt item prices:** `PATCH /api/receipts/{id}/items/{position}` with `price` and optional `reason`. Correct
-  opens beside the item. The price is kept by printed position across re-readings and refreshes category shares.
-  Receipt history includes these changes, with Undo through the receipt's corrections endpoint.
+- **Receipt items:** `PATCH /api/receipts/{id}/items/{position}` with any of `description`, `product_code`,
+  `quantity`, `unit_price` and `price` (the line total), and an optional `reason`; only the fields sent change
+  (`ledger.correct_item_fields`, `ITEM_FIELDS`). Correct beside a receipt item opens its whole row (Item, Code, Qty,
+  Unit price, Line total); a bill line's Correct is its price only. A name is required, a quantity is a number above
+  zero, and prices are entered positive. Each field is kept by printed position across re-readings, the price refreshes
+  category shares, and receipt history lists each change with its own Undo through the receipt's corrections endpoint.
 - **Transactions:** the same endpoint (`ledger.correct_transaction`): the date, the amount (entered positive), its
   direction (money out or in), the merchant and the type. A statement read again puts them back on its lines. A
   manual entry its statement line replaced can't be corrected; the line can. Setting a category by hand is kept as a

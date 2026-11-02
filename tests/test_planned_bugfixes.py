@@ -46,6 +46,34 @@ def test_return_amounts_and_item_price_survive_reread(app_client):
     assert client.patch(f'/api/receipts/{rid}/items/999', json={'price': '1'}).status_code == 400
 
 
+def test_an_items_row_is_corrected_survives_reread_and_undoes(app_client):
+    client, manager, docs = app_client
+    ledger = manager.ledger
+    rid = itemised_receipt(ledger, docs['receipt.png'])
+    row = ledger.record('receipt', rid)['items'][0]
+    assert [item['field'] for item in row['correctable']] == ['description', 'product_code', 'quantity', 'unit_price', 'price']
+    saved = client.patch(f'/api/receipts/{rid}/items/1', json={'description': 'Lilife Vegetables', 'product_code': '211180042',
+                                                               'quantity': '9', 'unit_price': '4.19', 'price': '37.71', 'reason': 'Printed count'})
+    assert saved.status_code == 200, saved.text
+    assert len(saved.json()['correction_ids']) == 5
+    itemised_receipt(ledger, docs['receipt.png'])
+    item = ledger.record('receipt', rid)['items'][0]
+    assert (item['description'], item['product_code'], item['quantity'], item['unit_price_minor'], item['line_total_minor']) == (
+        'Lilife Vegetables', '211180042', '9', 419, 3771)
+    assert item['table']['qty'] == '9' and item['table']['unit_price']['display'] == '4.19 USD'
+    entry = next(row for row in ledger.history('receipt', rid) if row['field'] == 'unit_price:1')
+    assert (entry['label'], entry['to'], entry['undoable']) == ('Unit price of Lilife Vegetables', '4.19 USD', True)
+    undone = ledger.undo_corrections('receipt', rid, saved.json()['correction_ids'])['items'][0]
+    assert (undone['description'], undone['product_code'], undone['quantity'], undone['unit_price_minor'], undone['line_total_minor']) == (
+        'EGGS', None, '1', 4000, 4000)
+    # Only the fields sent change; a name is required and a quantity is a number.
+    assert client.patch(f'/api/receipts/{rid}/items/1', json={'quantity': '2'}).json()['record']['items'][0]['line_total_minor'] == 4000
+    assert client.patch(f'/api/receipts/{rid}/items/1', json={'description': None}).status_code == 400
+    assert client.patch(f'/api/receipts/{rid}/items/1', json={'quantity': 'nine'}).status_code == 400
+    assert client.patch(f'/api/receipts/{rid}/items/1', json={'unit_price': '-1'}).status_code == 400
+    assert client.patch(f'/api/receipts/{rid}/items/1', json={}).status_code == 400
+
+
 def test_missing_total_remembers_return_direction_and_family_money_kind(app_client):
     _, manager, docs = app_client
     ledger = manager.ledger
