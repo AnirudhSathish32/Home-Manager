@@ -98,6 +98,20 @@ slices:
       - ".venv/bin/python -m pytest tests/test_receipt_kinds.py tests/test_extraction.py tests/test_reextraction.py -q -> 74 passed (orchestrator rerun)"
       - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
     notes: "Diff read: food_stamp_meaning judges only the entry's own meaning; rate_printed compares whole NUMBER tokens (core/money.py:18) as Decimals, so it can't raise. printed_in unchanged for other callers."
+  - id: SL-07
+    status: done
+    scope: "fix for code review round 2 (CR2-M1)"
+    start_head: 068cd52
+    end_head: a1a25f1
+    commit: bfc70e6
+    provider: claude
+    model: claude-sonnet-5-5
+    task: receipt-tax-codes-SL-07-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_receipt_tax_codes.py tests/test_splits_by_code.py -q -> 89 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_receipt_kinds.py tests/test_extraction.py tests/test_reextraction.py -q -> 74 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> all checks passed (orchestrator rerun)"
+    notes: "Diff read: a definition start whose label ends where a FOOD_STAMP match ends no longer ends the current meaning."
 final_verification:
   - head: c6c0fd7
     command: ".venv/bin/python -m pytest -q -p no:randomly"
@@ -153,3 +167,21 @@ code_review:
         disposition: "accepted per plan P6 (family copies carry no transcription for any record); listed as a known limitation"
     verified_by_reviewer: "214 targeted tests; SC-19/SC-15 browser tests; 5,000 differential cases showing tax_source NULL equals the pre-feature allocator; gift card, EUR, return, shared and by-line Ledger.shares checks; migration 075 additive; CSP and server-made money"
     not_covered: "populated tax-line backup/export/trash round trips; malformed item-code/legend fallback variants; re-reading with user-set people; the discount-plus-tip test checks only the sum"
+  - round: 2
+    reviewer: "codex / gpt-6.1-sol (reasoningEffort high), via t3, 0 helpers"
+    independence: model-family
+    risk: HIGH
+    range: b3cc333..e0e1e0c
+    verdict: "REVISE: 1 new MAJOR, no BLOCKER; CR1-M1 and CR1-m1 resolved; CR1-i1 accepted (P6)"
+    findings:
+      - id: CR2-M1
+        severity: MAJOR
+        where: "src/home_manager/documents/extraction.py LEGEND_DEFINITION (~1700), food_stamp_meaning (~1703)"
+        summary: >-
+          "F = EBT: ELIGIBLE" (or SNAP:) is parsed as two definitions, so F's meaning is empty and the food-stamp guard
+          misses it (FR-22/FR-24); reviewer reproduced shares 845/317 instead of 862/300.
+        orchestrator_check: "confirmed by reading the regex: any 1-4 character word before ':' or '=' starts a new definition"
+        status: fixed in SL-07 (bfc70e6)
+review_round_3_route: >-
+  route_task.py review-code HIGH exited 3 (CODEX_BUDGET_EXHAUSTED 2/2). The user chose a fresh Claude reviewer for round 3
+  (2026-11-02), with context-only independence, scoped to SL-07's change and CR2-M1.
