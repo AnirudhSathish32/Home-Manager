@@ -166,6 +166,8 @@ SUMMARY_CHUNK = 500  # Bound on bound parameters per query.
 CORRECTABLE = {
     "receipt": {"purchase_date": ("purchase_date", "date", "Purchase date"), "merchant": ("merchant_id", "name", "Merchant"),
                 **{field: (field + "_minor", "receipt_money", field.capitalize()) for field in ("subtotal", "tax", "tip", "total")},
+                # The order-wide discount and the order number (docs/money.md "Order discounts and order numbers").
+                "discount": ("discount_minor", "receipt_money", "Discounts"), "order_number": ("order_number", "text", "Order number"),
                 "location": ("location", "text", "Location"), "category": ("category", "category", "Category"),
                 # sale or return: the signs of the receipt's amounts (docs/money.md "Returns").
                 "direction": ("total_minor", "sale_type", "Sale or return"),
@@ -729,6 +731,7 @@ class Ledger:
                 "merchant_id": self.merchant(db, record["merchant"]) if record["merchant"] else None,
                 "purchase_date": record["purchase_date"], "subtotal_minor": record["subtotal_minor"], "tax_minor": record["tax_minor"],
                 "tip_minor": record["tip_minor"], "total_minor": record["total_minor"], "currency": record["currency"],
+                "discount_minor": record.get("discount_minor"), "order_number": record.get("order_number"),
                 "description": record.get("description"), "location": record.get("location"), "category": record.get("category"),
                 "recurrence": record.get("recurrence"), "payment_last_four": record.get("payment_last_four"),
                 "review_status": status, "validation_json": json.dumps(record["issues"]),
@@ -1114,10 +1117,21 @@ class Ledger:
         return splits.tax_parts(items, receipt["tax_minor"], receipt.get("tax_lines"), receipt.get("tax_source"), receipt["currency"])
 
     @staticmethod
+    def net_subtotal(receipt):
+        """The printed subtotal less an order-wide discount taken off it (finance/splits.py discount_off), which allocate()
+        then shares by item amount like any other order-wide discount."""
+        subtotal, discount = receipt["subtotal_minor"], receipt["discount_minor"] if "discount_minor" in receipt.keys() else None
+        if subtotal is None:
+            return None
+        return subtotal - splits.discount_off(subtotal, discount, receipt["tax_minor"], receipt["tip_minor"],
+                                              receipt["printed_total_minor"] if "printed_total_minor" in receipt.keys() and receipt["printed_total_minor"] is not None
+                                              else receipt["total_minor"])
+
+    @staticmethod
     def shares(receipt, items, target, currency, shared, recorder=NULL):
         """One charge's (or the receipt's own) division by item category, summing to target. A live recorder gets the
         last pass: the one whose rounding gives the stored shares (finance/traces.py split)."""
-        args = (items, receipt["subtotal_minor"], receipt["tax_minor"], receipt["tip_minor"])
+        args = (items, Ledger.net_subtotal(receipt), receipt["tax_minor"], receipt["tip_minor"])
         parts = Ledger.tax_plan(receipt, items).parts
         last = lambda final: recorder if final else NULL
         printed = receipt["printed_total_minor"] if "printed_total_minor" in receipt.keys() else None
@@ -1879,7 +1893,9 @@ class Ledger:
                                                       "AND receipt_item_id IS NULL", (record_id,)).fetchone()[0]
                 printed_total = row["printed_total_minor"] if row["printed_total_minor"] is not None else row["total_minor"]  # Before gift cards.
                 value["totals_mismatch"] = (row["subtotal_minor"] is not None and printed_total is not None
-                                             and abs(row["subtotal_minor"] + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - printed_total) > 1)
+                                             and abs(self.net_subtotal(row) + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - printed_total) > 1)
+                # The order-wide discount as the footer shows it, money off: −8.99 on a sale (docs/money.md "Order discounts and order numbers").
+                value["discount_shown_minor"] = -row["discount_minor"] if row["discount_minor"] else None
                 value["splits"] = [dict(split) for split in db.execute(
                     "SELECT category,sum(amount_minor) AS amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
                     "GROUP BY 1 ORDER BY 2 DESC,1", (record_id,))]
@@ -2855,7 +2871,7 @@ class Ledger:
                            (row["id"],)).fetchone()
         if saved and saved[0] in ("sale", "return"):
             return saved[0]
-        for field in ("total_minor", "subtotal_minor", "tax_minor", "tip_minor"):
+        for field in ("total_minor", "subtotal_minor", "tax_minor", "tip_minor", "discount_minor"):
             if row[field]:
                 return "return" if row[field] < 0 else "sale"
         return "sale"
@@ -2885,7 +2901,7 @@ class Ledger:
         (some bought, some returned) keep their signs; a receipt whose lines all agree flips them too."""
         sign = -1 if direction == "return" else 1
         db.execute("UPDATE receipts SET subtotal_minor=?*abs(subtotal_minor),tax_minor=?*abs(tax_minor),tip_minor=?*abs(tip_minor),"
-                   "total_minor=?*abs(total_minor),updated_at=? WHERE id=?", (sign, sign, sign, sign, now(), receipt_id))
+                   "total_minor=?*abs(total_minor),discount_minor=?*abs(discount_minor),updated_at=? WHERE id=?", (sign, sign, sign, sign, sign, now(), receipt_id))
         signs = {row[0] for row in db.execute("SELECT DISTINCT line_total_minor<0 FROM receipt_items WHERE receipt_id=? AND line_total_minor<>0",
                                               (receipt_id,))}
         if len(signs) <= 1:

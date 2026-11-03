@@ -458,6 +458,8 @@ Code: `documents/extraction.py`, `finance/ledger.py`.
     which way a citation failed: a line id that isn't in the lines, or a quote that isn't in its line;
   - every amount is printed in its cited line;
   - names appear in their citation;
+  - an item's code and quantity drop the transcription's `[unreadable]` marks (`readable_text`), so a mark copied as a
+    code is no code, never one that would match other items' products;
   - dates are unambiguous ISO dates;
   - the currency is explicit, or taken from a known account for statements;
   - document arithmetic reconciles: receipt totals, item sums, statement opening and closing balances, pay stubs, and
@@ -592,8 +594,8 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
 - **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is
   published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
   `printed`, and the model's `taxed` answers.
-- **Run reuse.** The extraction version is `typed-extraction-v33-tax-codes`, so a receipt read by an earlier version is
-  read again when it is next extracted.
+- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v34-order-discounts`), so a
+  receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds

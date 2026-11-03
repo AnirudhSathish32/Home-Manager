@@ -589,8 +589,9 @@ whole charge's category in its drawer asks before replacing the item split. Read
 **How the money is shared out.** The amount paid is divided so the categories add up exactly to it. The result is
 stored in `category_splits` and rebuilt whenever items, categories or receipt links change. The rules:
 1. An item's own amount is its line total less any discount printed on it.
-2. An order-wide discount (when the printed subtotal differs from the sum of the items) is shared out in proportion
-   to item amounts.
+2. An order-wide discount (when the printed subtotal differs from the sum of the items, or a printed Discounts line is
+   taken off the subtotal, [Order discounts and order numbers](#order-discounts-and-order-numbers)) is shared out in
+   proportion to item amounts.
 3. Tax is shared out in proportion to amount across the items the receipt marks as taxed. If no item is marked, it is
    shared across every item. A receipt that prints a tax line for each tax code shares each line's amount across the
    items with that code instead ([Tax codes and tax lines](#tax-codes-and-tax-lines)).
@@ -640,6 +641,28 @@ the receipt total are the two figures that can be checked against each other. Ev
 **Receipts recorded before item categories existed** have items with no categories. The Items view offers **Categorise
 their items**, a one-time job (`finance/item_categories.py`) that asks the model about the stored item names; nothing is
 transcribed again. Tax codes can't be recovered this way, so tax on those receipts is shared across all items.
+
+### Order discounts and order numbers
+
+Code: `documents/extraction.py` (`order_details`, `discount_parts`), `finance/splits.py` (`discount_off`),
+`finance/ledger.py` (`Ledger.net_subtotal`), `household/items.py` (`ItemLedger._line`); migration 076.
+
+Online orders often print an order-wide discount with the summary ("Subtotal $89.99 · Taxes $3.04 · Discounts $8.99 ·
+Total $84.04") and an order number ("Order #4401304").
+- **What is kept** (`receipts.discount_minor`, `receipts.order_number`). The reading's `order_discount` and
+  `order_number`, each only when printed in its citation: the discount as a magnitude with the receipt's sign (negative
+  on a return), the order number without its # sign. They are new reading fields, so a reading whose new fields fail
+  twice keeps neither ("Document details could not be read").
+- **The arithmetic.** The discount comes off the subtotal: subtotal − discount + tax + tip = total. A receipt whose
+  subtotal already has it taken off (subtotal + tax + tip = total) is checked as items − discount = subtotal instead.
+  The "Doesn't add up" warning and the reading's checks use the same rule.
+- **Shares.** A discount taken off the subtotal is shared across the items by amount, like any other order-wide
+  discount (rule 2). One already inside the subtotal is shared that way already.
+- **On the page.** The footer shows **Discounts** under Subtotal as money off (−$8.99) when the receipt has one.
+  Discounts and Order number are in Edit details, so either can be added or corrected.
+- **The order number as a code.** An item with no printed code shows the order number in its Code column. It never
+  identifies a product: matching an item to a household product, a barcode lookup or a lot treats a code equal to its
+  receipt's order number as no code.
 
 ### Tax codes and tax lines
 

@@ -102,11 +102,15 @@ class ItemLedger:
 
     @staticmethod
     def _line(db, item_id):
-        row = db.execute("SELECT i.*,r.merchant_id,r.purchase_date,r.currency,r.document_id,m.canonical_name AS merchant FROM receipt_items i "
+        row = db.execute("SELECT i.*,r.merchant_id,r.purchase_date,r.currency,r.document_id,r.order_number,m.canonical_name AS merchant FROM receipt_items i "
                          "JOIN receipts r ON r.id=i.receipt_id LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.id=?", (item_id,)).fetchone()
         if row is None:
             raise ValueError("Receipt line not found.")
-        return dict(row)
+        line = dict(row)
+        # An order number shown as the code of a line that prints none never identifies a product (docs/money.md "Order discounts and order numbers").
+        if line.pop("order_number") == line["product_code"] and line["product_code"]:
+            line["product_code"] = None
+        return line
 
     def line(self, item_id):
         with self.store.connection() as db:

@@ -264,6 +264,7 @@ def record_payload(store, record_type, record_id):
                          for line in db.execute("SELECT * FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (record_id,))]
             record = {**base, "merchant": name(row["merchant_id"]), "purchase_date": row["purchase_date"], "subtotal_minor": row["subtotal_minor"],
                       "tax_minor": row["tax_minor"], "tip_minor": row["tip_minor"], "total_minor": row["total_minor"], "items": items,
+                      "discount_minor": row["discount_minor"], "order_number": row["order_number"],
                       "tax_source": row["tax_source"], "tax_lines": tax_lines,
                       "description": row["description"], "location": row["location"], "category": row["category"], "recurrence": row["recurrence"],
                       "payment_last_four": row["payment_last_four"], "return_days_printed": row["return_days_printed"],

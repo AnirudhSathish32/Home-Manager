@@ -325,6 +325,9 @@ class Old:
             db.execute("DROP TABLE receipt_tax_lines")
             db.execute("ALTER TABLE receipts DROP COLUMN tax_source")
             db.execute("ALTER TABLE receipt_items DROP COLUMN tax_code")
+            # And what 076 added (order discounts and order numbers).
+            db.execute("ALTER TABLE receipts DROP COLUMN discount_minor")
+            db.execute("ALTER TABLE receipts DROP COLUMN order_number")
             db.execute("PRAGMA user_version=72")
             db.commit()
         finally:

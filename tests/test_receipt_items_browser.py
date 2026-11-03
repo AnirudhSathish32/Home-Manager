@@ -380,3 +380,29 @@ def test_sc15_footer_three_tax_lines(tmp_path):
             assert page.evaluate(NO_OVERFLOW), width
         assert failures == []
         browser.close()
+
+
+def order_seed(manager, model):
+    """O: an online order with an order-wide discount and an order number (tests/test_receipt_discounts.py)."""
+    from test_receipt_discounts import O_LINES, o_replies
+    manager.configure_household(manager.household.model_copy(update={"home_currency": "USD", "auto_identify_items": False}))
+    doc, _, run = record_document(manager, model, "o-items.png", O_LINES, o_replies())
+    return {"o_doc": doc["id"], "o_record": run["publication"]["id"]}
+
+
+@browser_test
+def test_an_order_discount_shows_under_subtotal_and_the_order_number_as_the_code(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=order_seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["o_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(1)
+        assert [row[:2] for row in footer(page)] == [("Subtotal", "$89.99"), ("Discounts", f"{MINUS}$8.99"), ("Tax", "$3.04"), ("Total", "$84.04")]
+        assert cells(page.locator(".ledger-rows tbody tr").first)["code"] == "4401304"
+        expect(page.locator(".item-warning", has_text="Doesn't add up")).to_have_count(0)
+        assert_footer_under_line_total(page)
+        assert not failures
+        browser.close()

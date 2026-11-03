@@ -62,7 +62,8 @@ def test_correctable_fields_per_record_type(app_client):
     client, manager, docs = app_client
     receipt_id = itemised_receipt(manager.ledger, docs["receipt.png"])
     correctable = {item["field"]: item for item in client.get(f"/api/finance/records/receipt/{receipt_id}").json()["correctable"]}
-    assert set(correctable) == {"document_kind", "purchase_date", "merchant", "location", "category", "direction", "subtotal", "tax", "tip", "total"}
+    assert set(correctable) == {"document_kind", "purchase_date", "merchant", "location", "category", "direction", "subtotal", "tax", "tip", "total",
+                                "discount", "order_number"}
     assert correctable["merchant"]["value"] == "Fresh Market" and correctable["purchase_date"]["value"] == "2026-09-28"
     assert "groceries" in correctable["category"]["options"] and correctable["direction"]["options"] == ["sale", "return"]
     bill = manager.ledger.publish_bill({"provider": "City Water", "issue_date": "2026-09-01", "due_date": "2026-09-20", "period_start": None, "period_end": None,

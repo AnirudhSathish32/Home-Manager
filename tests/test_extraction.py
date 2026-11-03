@@ -127,7 +127,7 @@ def receipt_items():
                       for number, name, price in [(9, "LATTE", "5.00"), (10, "LATTE", "5.00"), (11, "SANDWICH", "10.00")]]}
 
 
-def transcribe(tmp_path, local_model, lines, tables=None, file_name="document.png"):
+def transcribe(tmp_path, local_model, lines, tables=None, file_name="document.png", status="succeeded"):
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     manager.configure(str(tmp_path / "managed"))
     month = manager.store.library.inbox
@@ -141,7 +141,7 @@ def transcribe(tmp_path, local_model, lines, tables=None, file_name="document.pn
     manager.configure_household(HouseholdConfig(auto_identify_items=False))  # Item identification is tested in test_warranties.
     doc = manager.store.documents()["items"][0]
     parse_id = manager.receipts.history(doc["id"])[0]["id"]
-    assert manager.receipts.get(parse_id)["status"] == "succeeded"
+    assert manager.receipts.get(parse_id)["status"] == status  # partial: the text holds an [unreadable] mark.
     return manager, doc, parse_id
 
 

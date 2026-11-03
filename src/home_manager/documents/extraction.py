@@ -30,7 +30,7 @@ from ..finance import document_checks, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
-from ..finance.splits import printed_code
+from ..finance.splits import discount_off, printed_code
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
 from ..library.storage import now
@@ -44,7 +44,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v33-tax-codes"
+EXTRACTION_VERSION = "typed-extraction-v34-order-discounts"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -76,7 +76,7 @@ HEADERS = {
     "loan_document": ("institution", "account_name", "account_reference", "period_end", "principal_balance", "interest_rate", "monthly_payment", "currency"),
 }
 # interest_rate is a percentage, not money; it is listed so its value must be printed in its citation.
-AMOUNTS = {"subtotal", "tax", "tip", "total", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
+AMOUNTS = {"subtotal", "tax", "tip", "total", "order_discount", "opening_balance", "closing_balance", "previous_balance", "payments", "credits",
            "purchases", "fees", "interest", "statement_balance", "minimum_payment", "amount_due", "new_charges", "gross_pay", "net_pay", "taxes", "deductions",
            "gross_pay_ytd", "net_pay_ytd", "ending_value", "principal_balance", "monthly_payment", "interest_rate",
            "invoice_total", "invoice_subtotal", "invoice_tax", "payments_received", "balance_due",
@@ -119,7 +119,9 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                       "tax_lines: only lines that print the tax for one tax code, such as T = GA TAX 7.75000 on $12.99 $1.01, each with its code, "
                       "printed rate, taxable amount and tax amount, never a single TAX line, a tax total or a line with no code; "
                       "tax_legend: only printed tax meanings such as T = TAXABLE or N = NON-TAXABLE, never a food-stamp, EBT or SNAP meaning "
-                      "such as F = FOOD STAMP)",
+                      "such as F = FOOD STAMP; order_discount: the order-wide discount total printed with the summary, such as Discounts $8.99, "
+                      "Promo or Coupon savings, as printed; never an item's own discount or a member savings total; "
+                      "order_number: the order or transaction number an online order prints, such as Order #4401304, without the # sign)",
 "bank_statement": "bank statement (account_type: checking, savings, money_market or other, only from printed words such as "
                             "Everyday Checking, citing them; missing when no type is printed. deposits_total, withdrawals_total, "
                             "interest_earned and fees_total: the summary's printed totals; apy: the printed interest rate with its % sign)",
@@ -499,7 +501,11 @@ OPTIONAL_FIELDS = {"card_last_four", "return_marker", "invoice_marker", "invoice
 # Printed details a summary form adds beyond its HEADERS (document forms, FR-20): name -> (type, default). Each is
 # optional, checked in code (normalize) and stored as the record's details, never as a counted amount.
 DETAIL_FIELDS = {"receipt": {"tax_lines": (list[TaxLine], Field(default_factory=list, max_length=20)),
-                             "tax_legend": (list[TaxCodeMeaning], Field(default_factory=list, max_length=20))},
+                             "tax_legend": (list[TaxCodeMeaning], Field(default_factory=list, max_length=20)),
+                             # The order-wide discount and the order number (docs/money.md "Order discounts and order numbers").
+                             # Not "discount": plain() drops these names everywhere, and an item's discount is a field of its own.
+                             "order_discount": (Value, Value(value=None, status="missing", evidence=[])),
+                             "order_number": (Value, Value(value=None, status="missing", evidence=[]))},
                  "paystub": {"pto_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
                              "sick_balance": (PayValue, PayValue(value=None, status="missing", evidence=[])),
                              "deposit_splits": (list[Split], Field(default_factory=list, max_length=10))},
@@ -1524,7 +1530,7 @@ def problems_in(output, lines, amount_field=None):
         item = getattr(output, name)
         if isinstance(item, Value) and item.status == "proposed":
             check(name, item.evidence, item.value if name in AMOUNTS else None, item.value if name in NAMES else None)
-            if name in ("invoice_marker", "invoice_number", "bill_to", "payment_status") and not any(
+            if name in ("invoice_marker", "invoice_number", "bill_to", "payment_status", "order_number") and not any(
                     item.value.strip().casefold() in cite.quote.casefold() for cite in item.evidence):
                 problems.append((name, "the invoice value is not printed in its cited evidence"))
         elif isinstance(item, list) and item and not isinstance(item[0], EvidenceQuote):
@@ -1673,18 +1679,38 @@ def locator(*evidence_lists):
     return {"line_ids": list(dict.fromkeys(cite.line_id for cite in citations)), "quotes": [cite.quote for cite in citations][:40]}
 
 
-RECEIPT_AMOUNTS = ("subtotal_minor", "tax_minor", "tip_minor", "total_minor")
+# What the transcription writes for text it couldn't read (models/vision.py): never a value of its own.
+UNREAD_MARK = re.compile(r"\[\s*(unreadable|no visible text)\s*\]", re.IGNORECASE)
+
+
+def readable_text(text):
+    """An item's short text field (its code or quantity) as kept: without the transcription's [unreadable] marks, None when
+    nothing else is left (docs/documents.md "Typed extraction")."""
+    left = " ".join(UNREAD_MARK.sub(" ", text or "").split())
+    return left or None
+
+
+RECEIPT_AMOUNTS = ("subtotal_minor", "discount_minor", "tax_minor", "tip_minor", "total_minor")
+
+
+def discount_parts(amounts):
+    """(the order-wide discount taken off the subtotal, the part already inside it) for a receipt's amounts (splits.discount_off)."""
+    discount = amounts.get("discount_minor") or 0
+    off = discount_off(amounts["subtotal_minor"], discount, amounts["tax_minor"], amounts["tip_minor"], amounts["total_minor"])
+    return off, discount - off
 
 
 def receipt_checks(amounts, items):
-    """(passed, failed) arithmetic checks of a receipt: subtotal, tax and tip make the total; items make the subtotal."""
+    """(passed, failed) arithmetic checks of a receipt: subtotal less an order-wide discount, tax and tip make the total; items
+    make the subtotal (less a discount already inside it)."""
     passed = failed = 0
+    off, inside = discount_parts(amounts)
     if amounts["subtotal_minor"] is not None and amounts["tax_minor"] is not None and amounts["total_minor"] is not None:
-        ok = amounts["subtotal_minor"] + amounts["tax_minor"] + (amounts["tip_minor"] or 0) == amounts["total_minor"]
+        ok = amounts["subtotal_minor"] - off + amounts["tax_minor"] + (amounts["tip_minor"] or 0) == amounts["total_minor"]
         passed, failed = passed + ok, failed + (not ok)
     lines = [item["line_total_minor"] for item in items]
     if lines and None not in lines and amounts["subtotal_minor"] is not None and not any(item["discount_minor"] for item in items):
-        ok = sum(lines) == amounts["subtotal_minor"]
+        ok = sum(lines) - inside == amounts["subtotal_minor"]
         passed, failed = passed + ok, failed + (not ok)
     return passed, failed
 
@@ -1794,6 +1820,27 @@ def printed_amount(text, evidence, what, money, issues):
         issues.append(f"{what} was not printed where it was cited and was left out.")
         return None
     return found
+
+
+def order_details(record, header, line_text, money, issues, details):
+    """A receipt's printed order-wide discount (a magnitude: sign_return signs it) and order number, each kept only when printed
+    in its citation; an item with no printed code takes the order number as its code (docs/money.md "Order discounts and order
+    numbers"). Neither is kept when the new fields couldn't be read (details False)."""
+    record["discount_minor"], record["order_number"] = None, None
+    if not details:
+        return
+    found = header.order_discount
+    if found.status == "proposed":
+        record["discount_minor"] = printed_amount(found.value, found.evidence, "Discount", money, issues)
+    found = header.order_number
+    number = " ".join(found.value.strip().lstrip("#").split()) if found.status == "proposed" else ""
+    if number and any(cited_in(cite, line_text) and number.casefold() in cite.quote.casefold() for cite in found.evidence) and len(number) <= 60:
+        record["order_number"] = number
+    elif number:
+        issues.append("Order number was not printed where it was cited and was left out.")
+    for item in record["items"] if record["order_number"] else []:
+        if not item["product_code"]:
+            item["product_code"] = record["order_number"]
 
 
 def tax_codes(record, header, read_rows, line_text, issues, money, details):
@@ -1932,7 +1979,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             # A returned line is money back: negative whether or not its minus sign was printed (docs/money.md "Returns").
             if line is not None and row.returned and line > 0:
                 line = -line
-            record["items"].append({"description": " ".join(row.description.split()), "product_code": row.product_code, "quantity": row.quantity,
+            record["items"].append({"description": " ".join(row.description.split()), "product_code": readable_text(row.product_code), "quantity": readable_text(row.quantity),
                                     "unit_price_minor": money(row.unit_price, f"Item {index} unit price"), "line_total_minor": line,
                                     "discount_minor": money(row.discount, f"Item {index} discount"), "taxed": row.taxed, "locator": locator(row.evidence)})
             read_rows.append((index, row))
@@ -1940,19 +1987,23 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
                 grocery_item(record, record["items"][-1], row, index, line_text, issues, currency)
         record["cross_checks"] += count_lines(record["items"], line_text, currency)
         tax_codes(record, header, read_rows, line_text, issues, money, details)
+        order_details(record, header, line_text, money, issues, details)
         sign_return(record, fields["return_marker"], issues)
         receipt_details(receipt_kind, record, kind_fields, money, issues, currency, line_text)
         gratuity = (record["details"].get("gratuity") or {}).get("minor")
         checked = document_checks.dining(record["subtotal_minor"], record["tax_minor"], record["tip_minor"], gratuity, record["total_minor"], currency)             if receipt_kind == "dining" and currency else None
         charged = checked[0] if checked else total([record["subtotal_minor"], record["tax_minor"], record["tip_minor"] or 0])
+        off, inside = discount_parts(record)
+        charged = charged - off if charged is not None else None
         if charged is not None and record["total_minor"] is not None:
             if charged != record["total_minor"]:
-                what = "Subtotal, tax, tip and gratuity" if checked else "Subtotal, tax and tip"
+                what = ("Subtotal, tax, tip and gratuity" if checked else "Subtotal, tax and tip") + (" less discounts" if off else "")
                 issues.append(f"{what} ({format_minor(charged, currency)}) do not equal the total ({format_minor(record['total_minor'], currency)}).")
             else:
                 record["cross_checks"] += 1
         lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
         if lines is not None and record["subtotal_minor"] is not None and not any(item["discount_minor"] for item in record["items"]):
+            lines -= inside  # A discount the printed subtotal already has taken off.
             if lines != record["subtotal_minor"]:
                 issues.append(f"Item line totals ({format_minor(lines, currency)}) do not equal the subtotal ({format_minor(record['subtotal_minor'], currency)}).")
             else:

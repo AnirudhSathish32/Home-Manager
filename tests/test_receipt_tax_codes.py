@@ -783,7 +783,7 @@ def test_every_receipt_form_and_row_schema_carries_the_new_fields_in_new_fields(
 
 
 def test_the_extraction_version_names_tax_codes_and_an_earlier_reading_is_read_again(tmp_path, local_model):
-    assert EXTRACTION_VERSION == "typed-extraction-v33-tax-codes" != "typed-extraction-v32-table-engine"
+    assert EXTRACTION_VERSION != "typed-extraction-v32-table-engine"  # Bumped since (order discounts): a v32 reading is read again.
     with reading(tmp_path, local_model, R_PRINTED, r0_replies()) as (manager, again, receipt_id):
         doc, parse_id = again
         with manager.store.connection() as db:
@@ -864,3 +864,13 @@ def test_a_file_name_names_a_seller_by_its_site_or_a_known_merchant():
     assert file_seller("target_receipt.jpg", known) == "Target"
     assert file_seller("Screenshot 2026-10-20 at 3.15.07 PM.png", known) is None
     assert file_seller("order receipt.pdf", known) is None  # Order is never a seller, and Order Express isn't spelled out.
+
+
+def test_an_unreadable_mark_is_never_an_items_code(tmp_path, local_model):
+    # The transcription writes [unreadable] for text it couldn't read; a model may copy it as an item's code.
+    replies = r0_replies()
+    items = replies["GroceryItems"][0]["items"]
+    items[0] = {**items[0], "product_code": "[unreadable]"}
+    with reading(tmp_path, local_model, R_PRINTED, replies) as (manager, _again, receipt_id):
+        codes = rows(manager.store, "SELECT product_code FROM receipt_items WHERE receipt_id=? ORDER BY position", receipt_id)
+        assert [code for (code,) in codes] == [None, "211180042", "07200120"]

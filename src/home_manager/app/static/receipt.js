@@ -33,7 +33,8 @@ function runTelemetry(run) {
 }
 const RECORD_FIELDS = {
   receipt: [["Record as", "document_kind"], ["Merchant", "merchant"], ["Location", "location"], ["Purchase date", "purchase_date"], ["Categories", "category"], ["Billed", "recurrence"],
-            ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Tax", "tax_minor"], ["Tip", "tip_minor"], ["Total", "total_minor"]],
+            ["Order number", "order_number"], ["Sale or return", "direction"], ["Subtotal", "subtotal_minor"], ["Discounts", "discount_minor"], ["Tax", "tax_minor"],
+            ["Tip", "tip_minor"], ["Total", "total_minor"]],
   // Account type is a bank statement's printed detail; each statement type offers only its own fields (ledger OTHER_STATEMENT_FIELDS).
   statement: [["Period", "period_start", "period_end"], ["Account type", "account_type"], ["Opening balance", "opening_balance_minor"], ["Closing balance", "closing_balance_minor"],
               ["Statement balance", "statement_balance_minor"], ["Minimum payment", "minimum_payment_minor"], ["Due", "due_date"]],
@@ -386,12 +387,14 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
     const foot = table.appendChild(element("tfoot"));
     // The label spans every column before Line total, so the amount sits under it; the buttons span Paid and the source cell.
     const before = receiptColumns.findIndex(([key]) => key === "line_total"), after = receiptColumns.length - before;  // after: Paid (when shown) and the source cell
-    for (const [label, field] of [["Subtotal", "subtotal"], ["Tax", "tax"], ["Tip", "tip"], ["Not matched to an item", "unmatched"], ["Total", "total"]]) {
+    for (const [label, field] of [["Subtotal", "subtotal"], ["Discounts", "discount"], ["Tax", "tax"], ["Tip", "tip"], ["Not matched to an item", "unmatched"], ["Total", "total"]]) {
       if (field === "unmatched" && !record.unmatched_minor) continue;
+      if (field === "discount" && !record.discount_minor) continue;  // Shown only when the receipt prints an order-wide discount.
       if (field === "tip" && !showsTip(record)) continue;
       const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = before;
       // A receipt paid partly by gift card: its printed total here, what was paid in its Paid line (document_v2.js doc2Paid).
-      const shown = field === "total" && record.paid_summary ? record.printed_total?.display : record.display[`${field}_minor`];
+      const shown = field === "total" && record.paid_summary ? record.printed_total?.display
+        : field === "discount" ? record.display.discount_shown_minor : record.display[`${field}_minor`];
       const value = element("td", "", "numeric"); value.dataset.col = "line_total"; value.append(amount(shown || "—", {signed: false}));
       const actions = element("td"); actions.colSpan = after;
       if (correctField && field !== "unmatched") {
@@ -406,7 +409,7 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
     }
   }
   wrap.appendChild(table);
-  if (record.totals_mismatch) wrap.append(element("p", "Doesn't add up: subtotal + tax + tip differs from total by more than one cent.", "item-warning"));
+  if (record.totals_mismatch) wrap.append(element("p", `Doesn't add up: subtotal ${record.discount_minor ? "− discounts " : ""}+ tax + tip differs from total by more than one cent.`, "item-warning"));
   // Why tax was shared as it was, or which items got no tax line's share (also in the record's issues, which the warnings block leaves out).
   for (const issue of record.tax_issues || []) wrap.append(element("p", issue, "item-warning"));
   if (rows.length > 200) wrap.appendChild(element("p", `Showing 200 of ${rows.length} rows.`, "muted"));

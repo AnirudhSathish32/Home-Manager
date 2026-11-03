@@ -5,7 +5,8 @@ receipt. Each item carries its own category, and the amount actually paid is sha
 categories add up exactly to it:
 
 1. An item's own amount is its line total less any discount printed on it.
-2. An order-wide discount (the printed subtotal differing from the items) is shared by item amount.
+2. An order-wide discount (the printed subtotal differing from the items, or a printed Discounts line taken off the subtotal,
+   discount_off) is shared by item amount.
 3. Tax is shared by amount across the items the receipt marks as taxed, or across every item
    when none are marked. A receipt that printed a tax line per tax code shares each line's amount across the
    items carrying that code (tax_parts).
@@ -49,6 +50,17 @@ def item_amount(item):
     total = item.get("line_total_minor") or 0
     discount = abs(item.get("discount_minor") or 0)
     return total + discount if total < 0 else total - discount
+
+
+def discount_off(subtotal, discount, tax, tip, total):
+    """How much of a receipt's printed order-wide discount comes off its printed subtotal: all of it ("Subtotal 89.99,
+    Discounts 8.99, Total 84.04"), or none when the subtotal already has it taken off (subtotal, tax and tip make the total
+    without it). None stands for nothing printed."""
+    if not discount:
+        return 0
+    if subtotal is not None and total is not None and subtotal + (tax or 0) + (tip or 0) == total:
+        return 0
+    return discount
 
 
 def tax_basis(items):
