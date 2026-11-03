@@ -349,19 +349,21 @@ returns to the list with its filters, page and scroll position.
     document (`localStorage`);
   - the decision (`confirmCorrect`): **Confirm / Reject / Correct…**.
 
-  The Correct form opens in the header, and the header stops being sticky while the form is open, so Save stays
+  The Correct form opens in the header. On a receipt or bill (not an invoice) its first field is the **Receipt kind**
+  (or **Bill kind**) select with **Change kind…** (a preview, then one reading of the saved text); the kind isn't shown
+  anywhere else, and Save doesn't send it. The header stops being sticky while the form is open, so Save stays
   reachable. Re-run actions (Read again, Extract again, Copy text) live in the `⋯` menu.
 - **Tabs.** Under the header are three tabs:
   - **Record:** field rows, each with a "Changed by" mark when corrected, plus **Find** (the field's cited line) and
     **Correct** (opens the form at that field). Every category shows as a tag. "Counts as" and "Counts in" are traced
     figures. Receipt money fields include Correct even when missing; pay-period ranges offer both ends. Then items
     or transactions (each receipt item and statement row has its own Correct), matched records, rewards, the pay stub,
-    taxes and Checks.
+    taxes and Checks. On a receipt, and on a statement you approved, these row Correct buttons (fields, printed
+    details, items and money rows) show only while the record's **Correct…** form is open.
     Receipt items show printed Price and, when different, Paid with tax. Correctable Subtotal, Tax, Tip and Total
     rows follow, plus any amount not matched to an item and an arithmetic mismatch message.
     After the fields (`doc2Forms`, [documents](documents.md#receipt-kinds)): a reviewed receipt's waiting details with
-    **Apply details**; the **Receipt kind** row with a kind select and **Change kind…** (a preview, then one reading of
-    the saved text); "Total · Gift card · Paid" with Paid as a traced figure; **Printed details** (each with Find and,
+    **Apply details**; "Total · Gift card · Paid" with Paid as a traced figure; **Printed details** (each with Find and,
     for receipts, Correct; tenders, deposit splits, grocery weights and counts); and **Arithmetic checks**, each a figure that opens its
     trace. A receipt with a gift card shows its printed total as Total.
   - **Statements** (`type === "statement"`) add these to the Record tab:

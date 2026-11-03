@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -35,7 +36,7 @@ from document_forms_fixtures import (
     value,
 )
 from home_manager.app.api import create_app
-from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADERS
+from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION, HEADERS, printed_kind_of, receipt_kind
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance import traces
 from home_manager.finance.health import check_ledger
@@ -296,19 +297,61 @@ def general_fallback(tmp_path, local_model, classified):
         return [issue for issue in record["issues"] if issue.startswith("Receipt kind:")]
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_sc07_a_fuel_kind_with_a_bad_citation_is_read_as_general(tmp_path, local_model):
     issues = general_fallback(tmp_path, local_model, {"receipt_kind": "fuel", "receipt_kind_evidence": [{"line_id": "line-3", "quote": "PUMP 99"}]})
     assert issues == ["Receipt kind: fuel was not used: a citation is not an exact quote of an existing line. It was read as a general receipt."]
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_sc07_a_an_unlisted_kind_is_read_as_general(tmp_path, local_model):
     issues = general_fallback(tmp_path, local_model, {"receipt_kind": "pharmacy", "receipt_kind_evidence": cite(FUEL, "PUMP 17")})
     assert issues == ["Receipt kind: pharmacy was not used: it is not one of fuel, dining, grocery or general. It was read as a general receipt."]
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_sc07_b_an_uncited_kind_is_read_as_general(tmp_path, local_model):
     issues = general_fallback(tmp_path, local_model, {"receipt_kind": "fuel", "receipt_kind_evidence": []})
     assert issues == ["Receipt kind: fuel was not used: no line was cited for it. It was read as a general receipt."]
+
+
+def test_an_unusable_proposal_the_printed_lines_agree_with_is_used(tmp_path, local_model):
+    """docs/documents.md "Receipt kinds": an uncited fuel proposal on a receipt that prints pump, grade and gallons at a
+    price is read as fuel, with no note."""
+    lines = fuel()
+    replies = fuel_replies(lines)
+    replies["Classification"][0].update({"receipt_kind_evidence": []})
+    with read_receipt(tmp_path, local_model, lines, replies) as (_, _run, record, row):
+        assert row["receipt_kind"] == "fuel" and record["review_status"] == "verified", record["issues"]
+
+
+def test_an_unlisted_proposal_is_read_as_the_printed_kind_with_a_note(tmp_path, local_model):
+    lines = fuel()
+    replies = fuel_replies(lines)
+    replies["Classification"][0].update({"receipt_kind": "pharmacy"})
+    with read_receipt(tmp_path, local_model, lines, replies) as (_, _run, record, row):
+        assert row["receipt_kind"] == "fuel" and record["review_status"] == "needs_review"
+        assert "Receipt kind: pharmacy was not used: it is not one of fuel, dining, grocery or general. It was read as a fuel receipt." in record["issues"]
+
+
+def test_a_general_proposal_on_a_clearly_printed_kind_is_read_as_that_kind(tmp_path, local_model):
+    """A general proposal is no signal: two printed clues or more read the receipt with their kind's form, no note."""
+    lines = fuel()
+    replies = fuel_replies(lines)
+    replies["Classification"][0].update({"receipt_kind": "general", "receipt_kind_evidence": []})
+    with read_receipt(tmp_path, local_model, lines, replies) as (_, _run, record, row):
+        assert row["receipt_kind"] == "fuel" and record["review_status"] == "verified", record["issues"]
+        assert "ReceiptFuelSummary" in asked(local_model)
+
+
+def test_a_reviewed_merchants_kind_is_remembered(tmp_path, local_model):
+    """Ledger.remembered_kind: the kind of the merchant's receipts you confirmed, by its merchant key."""
+    lines = fuel()
+    with read_receipt(tmp_path, local_model, lines, fuel_replies(lines)) as (manager, _run, record, row):
+        assert manager.ledger.remembered_kind(record["merchant"]) is None  # Checked automatically: not settled by you.
+        manager.ledger.review("receipt", row["id"], "verified")
+        assert manager.ledger.remembered_kind(record["merchant"].upper()) == "fuel"
+        assert manager.ledger.remembered_kind("Another Station") is None
 
 
 def test_sc08_fuel_details_that_fail_twice_are_left_out(tmp_path, local_model):
@@ -671,6 +714,7 @@ def v22_replies(lines):
     return replies
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_kind_change_reading_again_and_review_protection(tmp_path, local_model):
     lines = fuel()
     with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
@@ -758,6 +802,7 @@ def test_journey_kind_change_reading_again_and_review_protection(tmp_path, local
         assert (record["review_status"], record["total_minor"]) == ("verified", 3800)
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_a_second_kind_change_replaces_the_proposal(tmp_path, local_model):
     """J-e: on a verified receipt, a second kind change before Apply leaves one proposal, for the newer kind."""
     lines = fuel()
@@ -772,6 +817,7 @@ def test_journey_a_second_kind_change_replaces_the_proposal(tmp_path, local_mode
         assert row["receipt_kind"] == "grocery" and json.loads(row["pending_details_json"])["kind"] == "grocery"
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_b_a_cancelled_kind_change_leaves_everything_as_it_was(tmp_path, local_model):
     lines = fuel()
     with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
@@ -796,6 +842,7 @@ def test_journey_b_a_cancelled_kind_change_leaves_everything_as_it_was(tmp_path,
         assert receipt_row(manager)["receipt_kind"] == "fuel"
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_c_a_restart_interrupts_a_kind_change(tmp_path, local_model):
     """J-c: a restart while the kind change is running marks it interrupted; nothing partial is kept, and it can be retried."""
     lines = fuel()
@@ -817,6 +864,7 @@ def test_journey_c_a_restart_interrupts_a_kind_change(tmp_path, local_model):
         assert receipt_row(manager)["receipt_kind"] == "fuel"
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_sc18_a_kind_change_waits_for_a_reading_of_the_same_document(tmp_path, local_model):
     """FR-18: refused (409) while a reading of the same file is running or queued, with nothing written or asked;
     accepted after."""
@@ -853,6 +901,7 @@ def test_sc18_a_kind_change_waits_for_a_reading_of_the_same_document(tmp_path, l
         assert asked(local_model).count("ReceiptDiningSummary") == 1 and receipt_row(manager)["receipt_kind"] == "dining"
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_sc18_a_another_documents_reading_doesnt_refuse_it(tmp_path, local_model):
     """18a: the kind change waits in the queue behind the other document's reading."""
     manager = library(tmp_path, local_model)
@@ -874,6 +923,7 @@ def test_sc18_a_another_documents_reading_doesnt_refuse_it(tmp_path, local_model
         manager.close()
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused(tmp_path, local_model):
     lines = fuel()
     with app_session(tmp_path, local_model, lines) as (client, manager, doc, parse_id):
@@ -884,3 +934,50 @@ def test_a_kind_change_on_a_bill_or_an_unknown_receipt_is_refused(tmp_path, loca
             db.execute("UPDATE receipts SET document_kind='bill' WHERE id=?", (receipt_id,))
         # A bill takes a bill's kinds only (specs/bill-kinds FR-42, J-a).
         assert client.patch(f"/api/receipts/{receipt_id}/kind", json={"kind": "fuel"}).json()["detail"] == "Choose one of a bill's kinds: rent or general."
+
+
+def printed_lines(texts):
+    return [SimpleNamespace(id=f"line-{number}", text=text) for number, text in enumerate(texts, 1)]
+
+
+def proposal(kind, lines=(), quote=None):
+    """A classification's receipt kind, citing the first line of lines (or quote on it)."""
+    evidence = [SimpleNamespace(line_id="line-1", quote=quote if quote is not None else lines[0].text)] if lines else []
+    return SimpleNamespace(receipt_kind=kind, receipt_kind_evidence=evidence)
+
+
+@pytest.mark.parametrize("texts, at_least, expected", [
+    (FUEL, 2, "fuel"), (DINING, 2, "dining"), (GROCERY, 2, "grocery"), (GIFT_RECEIPT, 2, None),
+    (["CAFE", "LATTE 5.00", "Tip 3.00", "Total 8.00"], 2, "dining"),  # One strong clue,
+    (["CAFE", "LATTE 5.00", "Tip 3.00", "Total 8.00"], 3, None),  # not two.
+    (["FURNITURE BARN", "COFFEE TABLE 2 149.00", "TOTAL 149.00"], 2, None),  # A table that's for sale.
+    (["SYNTH MARKET", "BANANAS 2.31 lb @ 0.59/lb 1.36", "PUMP 4", "TOTAL 1.36"], 2, "grocery"),  # The higher score wins,
+    (["SHOP", "TIP 1.00", "BEEF 1.2 kg @ 9.99", "TOTAL 13.00"], 2, None),  # a tie is no kind.
+])
+def test_the_kind_a_receipt_prints(texts, at_least, expected):
+    assert printed_kind_of(printed_lines(texts), at_least) == expected
+
+
+def test_the_kind_a_receipt_is_read_with():
+    fuel_lines, cafe = printed_lines(FUEL), printed_lines(["CAFE", "LATTE 5.00", "Tip 3.00", "Total 8.00"])
+    plain = printed_lines(["HARDWARE", "NAILS 4.00", "TOTAL 4.00"])
+    cases = [
+        # (classification, lines, remembered, requested) -> (kind, notes)
+        ((proposal("dining", fuel_lines), fuel_lines, None, "grocery"), ("grocery", 0)),  # A kind change is read as asked.
+        ((proposal("fuel", fuel_lines), fuel_lines, "dining", None), ("fuel", 0)),  # Printed agrees: memory isn't asked.
+        ((proposal(None), cafe, None, None), ("general", 0)),  # One clue doesn't override no proposal,
+        ((proposal(None), cafe, "dining", None), ("dining", 0)),  # but the merchant's remembered kind fills it in.
+        ((proposal("general"), fuel_lines, "dining", None), ("fuel", 0)),  # Two clues or more do.
+        ((proposal("dining", fuel_lines), fuel_lines, None, None), ("fuel", 1)),  # Printed beats a proposal it contradicts,
+        ((proposal("dining", fuel_lines), fuel_lines, "dining", None), ("dining", 1)),  # unless memory sides with it.
+        ((proposal("dining", plain), plain, "fuel", None), ("dining", 0)),  # A usable proposal beats memory alone.
+        ((proposal("fuel", plain, "PUMP 99"), plain, None, None), ("general", 1)),  # Mis-cited, nothing printed: general.
+        ((proposal("fuel", plain, "PUMP 99"), plain, "grocery", None), ("grocery", 1)),
+    ]
+    for (classification, lines, remembered, requested), (kind, noted) in cases:
+        notes = []
+        assert receipt_kind(classification, lines, notes, requested, remembered) == kind, (classification, remembered)
+        assert len(notes) == noted, notes
+    notes = []
+    receipt_kind(proposal("dining", fuel_lines), fuel_lines, notes)
+    assert notes == ["Receipt kind: the reading proposed dining, but its printed lines look like a fuel receipt. It was read as a fuel receipt."]

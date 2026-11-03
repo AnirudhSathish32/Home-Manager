@@ -205,6 +205,8 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             playwright.expect(page.locator('#doc2-steps li[data-state="done"]')).to_have_count(2)
             playwright.expect(record.locator(".ledger-rows tbody tr")).to_have_count(3)
             # A date the model misread (or the document never printed) is entered in place.
+            # A receipt's row Correct buttons show once the record's Correct is open.
+            page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
             record.locator(".doc2-fields").get_by_role("button", name="Correct purchase date").click()
             form = page.locator("#doc2-decision .cc-form")
             form.get_by_label("Purchase date").fill("2026-09-23")

@@ -1233,6 +1233,7 @@ def test_journey_changing_a_bills_kind(tmp_path, local_model):
         assert_ledger_healthy(manager.store)
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_a_a_kind_that_doesnt_fit_is_refused(tmp_path, local_model):
     """J-a: a receipt kind on a bill, rent on an invoice and rent on a receipt are each refused (400); nothing changes."""
     with bill_session(tmp_path, local_model) as (client, manager, _doc, _parse_id, receipt_id):
@@ -1308,6 +1309,7 @@ def test_journey_c_a_restart_interrupts_a_bills_kind_change(tmp_path, local_mode
         assert bill_row(manager, receipt_id)["bill_kind"] == "rent"
 
 
+@pytest.mark.usefixtures("unclued_kinds")
 def test_journey_d_another_documents_reading_doesnt_refuse_it(tmp_path, local_model):
     manager = library(tmp_path, local_model)
     try:

@@ -114,6 +114,14 @@ def no_tailnet(monkeypatch):
 
 
 @pytest.fixture
+def unclued_kinds(monkeypatch):
+    """Receipts are read with the kind the model proposes, never one their printed lines show: for tests that need a fuel
+    receipt read as general, to change its kind (docs/documents.md "Receipt kinds")."""
+    from home_manager.documents import extraction
+    monkeypatch.setattr(extraction, "printed_kind_of", lambda lines, at_least=2: None)
+
+
+@pytest.fixture
 def local_model():
     state, stop = start_model_server()
     try:

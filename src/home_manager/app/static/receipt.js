@@ -183,7 +183,7 @@ function billSummaryRows(foot, record, find, correctField) {
     const button = sourceButton(summary.amount_due.line_ids, find); button.setAttribute("aria-label", "Find the amount due in the source"); actions.append(button);
   }
   if (correctField) {
-    const button = element("button", "Correct", "link-button"); button.type = "button"; button.setAttribute("aria-label", "Correct amount due");
+    const button = element("button", "Correct", "link-button doc2-row-edit"); button.type = "button"; button.setAttribute("aria-label", "Correct amount due");
     button.addEventListener("click", () => correctField("amount_due")); actions.append(button);
   }
 }

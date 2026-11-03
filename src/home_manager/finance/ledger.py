@@ -796,6 +796,19 @@ class Ledger:
                              "AND c.field=? AND r.blob_hash=? AND r.segment=? ORDER BY c.id DESC LIMIT 1", (field, blob_hash, segment)).fetchone()
         return row[0] if row and row[0] else None
 
+    def remembered_kind(self, merchant):
+        """The receipt kind of this merchant's receipts you settled (reviewed and confirmed, or changed the kind of), or None
+        when there are none or they don't all agree (docs/documents.md "Receipt kinds")."""
+        key = normalize_name(merchant)
+        if not key:
+            return None
+        with self.store.connection() as db:
+            kinds = {row[0] for row in db.execute(
+                "SELECT r.receipt_kind FROM receipts r JOIN merchants m ON m.id=r.merchant_id WHERE m.normalized_name=? AND r.document_kind='receipt' "
+                "AND r.receipt_kind IS NOT NULL AND ((r.review_status='verified' AND r.review_source='user') OR EXISTS (SELECT 1 FROM record_corrections c "
+                "WHERE c.record_type='receipt' AND c.record_id=r.id AND c.field='receipt_kind')) ORDER BY r.id DESC LIMIT 20", (key,))}
+        return kinds.pop() if len(kinds) == 1 else None
+
     def apply_details(self, receipt_id):
         """Apply details (FR-12): the details read for a reviewed receipt's new kind become current, as a correction with
         Undo. Amounts and the review state don't change, even with a gift card (decision D-P4)."""

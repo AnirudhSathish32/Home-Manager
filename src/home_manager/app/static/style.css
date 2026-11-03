@@ -1222,7 +1222,9 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .doc2-paid-line, .doc2-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); margin: 0; font-size: var(--text-sm); }
 .doc2-check .icon { align-self: center; color: var(--positive); }
 .doc2-check[data-passes="false"] .icon { color: var(--warning); }
-.doc2-kind select { max-width: 12rem; }
+.cc-form > .doc2-kind { grid-column: 1 / -1; }
+.doc2-kind-row { display: flex; gap: var(--space-2); align-items: center; }
+.cc-form .doc2-kind select { max-width: 12rem; }
 .doc2-links li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
 #doc2-panel-record tr.cited { background: var(--warning-subtle); }
 .doc2-row-correct { margin-left: var(--space-2); font-size: var(--text-xs); }

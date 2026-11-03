@@ -442,12 +442,17 @@ async function doc2Ledger(state, target, type, id, kept) {
   const decided = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
   const issues = doc2Issues(record);
   $("doc2-why").replaceChildren(...(issues.length && !decided ? [doc2Why(issues)] : []));
-  // An approved statement's Correct buttons, its fields' and its rows', show only while the record's Correct is open (doc2ShowRowEdits).
+  // A receipt's Correct buttons (its fields', details' and rows'), and an approved statement's, show only while the record's
+  // Correct is open (doc2ShowRowEdits).
   const approved = type === "statement" && record.review_status === "verified" && record.review_source === "user";
-  target.classList.toggle("doc2-hide-edits", approved);
-  state.editsSection = approved ? target : null;
+  const hideEdits = approved || type === "receipt";
+  target.classList.toggle("doc2-hide-edits", hideEdits);
+  state.editsSection = hideEdits ? target : null;
   doc2Decision(state, {recordType: type, recordId: id, reviewStatus: record.review_status, reviewSource: record.review_source, correctable: record.correctable || [],
                        awaitingAccount: state.awaitingAccount, onOpen: () => doc2ShowRowEdits(state, true), onClose: () => doc2ShowRowEdits(state, false)});
+  // A receipt's kind, or a bill's (specs/bill-kinds FR-42), is chosen in the Correct form, first; an invoice is read as general only.
+  if (type === "receipt" && !(record.document_kind === "bill" && record.invoice) && state.cc.correctButton)
+    $("doc2-decision").querySelector(".cc-form").prepend(doc2Kind(state, record));
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
   if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
@@ -459,9 +464,7 @@ async function doc2Ledger(state, target, type, id, kept) {
   if (rows) {
     if (["statement", "receipt"].includes(type)) doc2RowCorrect(state, rows, record, type === "receipt" && record.review_status !== "rejected");
     if (type === "statement") doc2RowSources(state, rows, record);
-    // A receipt's row Correct and Delete show only while the record's Correct is open (doc2ShowRowEdits).
-    const section = element("section", "", type === "receipt" ? "doc2-section doc2-hide-edits" : "doc2-section");
-    if (type === "receipt") state.editsSection = section;
+    const section = element("section", "", "doc2-section");
     section.append(element("h3", type === "statement" ? `Transactions (${record.transactions.length})` : `Items (${record.items?.length || 0})`), rows);
     parts.push(section);
   }
@@ -556,8 +559,8 @@ function doc2Fields(state, type, record, find) {
   return list;
 }
 // Document forms (docs/documents.md "Receipt kinds", "Pay stub and statement fields"): what the document printed beyond
-// its counted amounts, each with its source line; the receipt's kind and how to change it; the details a reviewed
-// receipt's new kind waits to apply; and the arithmetic checks, each a figure whose breakdown is its trace.
+// its counted amounts, each with its source line; the details a reviewed receipt's new kind waits to apply; and the
+// arithmetic checks, each a figure whose breakdown is its trace. The kind isn't shown: it is changed from the Correct form.
 const RECEIPT_KINDS = {fuel: "Fuel", dining: "Dining", grocery: "Grocery", general: "General"};
 const DETAIL_LABELS = {volume: "Volume", price_per_unit: "Price per unit", fuel_grade: "Grade", pump_number: "Pump", fuel_amount: "Fuel amount",
                        gratuity_included: "Gratuity included", gratuity: "Gratuity", party_size: "Party size", server: "Server", table: "Table",
@@ -578,11 +581,8 @@ function doc2Forms(state, type, record, find) {
     list.append(...notes.map(note => element("li", note)));
     parts.push(list);
   }
-  // A receipt's kind, or a bill's (specs/bill-kinds FR-42); an invoice is read as general only, so it has no choice.
-  if (type === "receipt" && !(record.document_kind === "bill" && record.invoice)) {
-    if (record.pending_details) parts.push(doc2Pending(state, record));
-    parts.push(doc2Kind(state, record));
-  }
+  // A reviewed receipt's or bill's new kind's details, waiting; the kind itself is changed from the Correct form (doc2Kind).
+  if (type === "receipt" && record.pending_details) parts.push(doc2Pending(state, record));
   if (record.paid_summary) parts.push(doc2Paid(record.paid_summary));
   const details = doc2DetailList(state, record, find);
   if (details) parts.push(details);
@@ -660,19 +660,19 @@ function doc2Kinds(record) {
   const bill = record.document_kind === "bill";
   return {kinds: bill ? BILL_KINDS : RECEIPT_KINDS, current: bill ? record.bill_kind : record.receipt_kind, noun: bill ? "bill" : "receipt"};
 }
-// The receipt's or bill's kind, and reading it again as another kind: its details and rows, from the saved text only.
+// The Correct form's kind field: reading the receipt or bill again as another kind, its details and rows from the saved
+// text only. It isn't one of the form's fields: Change kind… starts the reading, and Save doesn't send it.
 function doc2Kind(state, record) {
   const {kinds, current, noun} = doc2Kinds(record);
-  const section = element("section", "", "doc2-section doc2-kind"), list = element("dl", "", "doc2-detail-fields");
-  const value = element("dd", "", "doc2-value");
-  value.append(document.createTextNode(current ? kinds[current] || current : "Not read with kinds"));
-  const select = document.createElement("select"); select.id = "doc2-kind-choice";
-  select.setAttribute("aria-label", noun === "bill" ? "Bill kind" : "Receipt kind");
+  const box = element("div", "", "field doc2-kind"), caption = element("label", noun === "bill" ? "Bill kind" : "Receipt kind");
+  const select = document.createElement("select"); select.id = "doc2-kind-choice"; caption.htmlFor = select.id;
+  if (!current) select.add(new Option("Not read with kinds", "", false, true));
   for (const [key, label] of Object.entries(kinds)) select.add(new Option(label, key, false, key === current));
+  select.dataset.current = current || "";
   const reviewed = ["verified", "rejected"].includes(record.review_status) && record.review_source === "user";
   const change = asyncButton("Change kind…", async () => {
     const kind = select.value, label = kinds[kind];
-    if (kind === current) { notice(`This ${noun} is already read as ${label.toLowerCase()}.`); return; }
+    if (!kind || kind === current) { notice(`This ${noun} is already read as ${label.toLowerCase()}.`); return; }
     const message = `Its details and rows are read again from the saved text with the ${label.toLowerCase()} form; the image isn't read again, `
       + "and your corrections stay. " + (reviewed ? `You reviewed this ${noun}, so its amounts and review stay as they are, and the new details wait for Apply details.`
         : `Its amounts and ${noun === "bill" ? "lines" : "items"} follow the new reading.`);
@@ -685,10 +685,9 @@ function doc2Kind(state, record) {
     notice(`Read as ${label.toLowerCase()}.`);
   }, "link-button");
   change.disabled = Boolean(busy.inference);
-  value.append(select, change);
-  list.append(element("dt", noun === "bill" ? "Bill kind" : "Receipt kind"), value);
-  section.append(list);
-  return section;
+  const row = element("div", "", "doc2-kind-row"); row.append(select, change);
+  box.append(caption, row, element("small", `Reads this ${noun} again with that kind's form.`, "muted"));
+  return box;
 }
 async function doc2WaitForRun(runId) {
   for (let tries = 0; tries < 240; tries += 1) {
@@ -711,6 +710,8 @@ function doc2Pending(state, record) {
                   }, "secondary")});
 }
 function doc2ShowRowEdits(state, shown) {
+  const kind = $("doc2-kind-choice");
+  if (kind && !shown) kind.value = kind.dataset.current;
   const section = state.editsSection;
   if (!section) return;
   section.classList.toggle("doc2-hide-edits", !shown);

@@ -69,9 +69,11 @@ def cases():
 
 
 def reader():
-    """The app's extraction service without a library: reading a receipt asks nothing of the store."""
+    """The app's extraction service without a library: reading a receipt asks nothing of the store, and no merchant's
+    kind is remembered (Ledger.remembered_kind), so each case is graded on its own lines."""
     service = ExtractionService.__new__(ExtractionService)
     service.store = SimpleNamespace(library=SimpleNamespace(employers=list))
+    service.ledger = SimpleNamespace(remembered_kind=lambda merchant: None)
     return service
 
 

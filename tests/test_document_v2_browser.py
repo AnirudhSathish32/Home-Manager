@@ -74,6 +74,8 @@ def test_invoice_bill_label_can_be_removed_without_losing_invoice_details(tmp_pa
         page = browser.new_page()
         page.goto(f"{base}/#token={TOKEN}")
         open_document(page, base, ids["receipt_doc"])
+        # A receipt's row Correct buttons show once the record's Correct is open.
+        page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
         page.locator(".doc2-fields").get_by_role("button", name="Correct record as").click()
         form = page.locator("#doc2-decision .cc-form")
         expect(form.get_by_label("Record as", exact=True)).to_have_value("bill")
@@ -114,6 +116,7 @@ def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
         # 1. Fuel: its kind and details; volume's Find lights line-4.
         open_document(page, base, ids["forms_fuel_doc"])
         expect(page.locator("#doc2-kind-choice")).to_have_value("fuel")
+        expect(page.locator("#doc2-kind-choice")).to_be_hidden()
         for text in ("10.312 gal", "3.459", "REG UNL", "17", "35.67"):
             expect(details).to_contain_text(text)
         details.get_by_role("button", name="Find volume in the source").click()
@@ -164,6 +167,9 @@ def test_document_forms_show_printed_details_and_change_the_kind(tmp_path):
             expect(details).to_contain_text(text)
         # 6. Change the fuel receipt to dining: preview, save, one reading, and it stays dining.
         open_document(page, base, ids["forms_fuel_doc"])
+        # The kind is changed from the Correct form; it isn't shown otherwise.
+        if page.locator("#doc2-decision .cc-form").is_hidden():
+            page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
         page.locator("#doc2-kind-choice").select_option("dining")
         page.get_by_role("button", name="Change kind…").click()
         dialog = page.get_by_role("dialog")
@@ -312,6 +318,8 @@ def test_document_page_states_find_correct_and_decide(tmp_path):
         # Checked automatically: Correct with a preview of what moves, Save, Undo, and the History tab lists it.
         open_document(page, base, ids["receipt_doc"])
         expect(page.locator("#doc2-record-badge")).to_contain_text("Checked automatically")
+        # A receipt's row Correct buttons show once the record's Correct is open.
+        page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
         page.locator(".doc2-fields").get_by_role("button", name="Correct purchase date").click()
         form = page.locator("#doc2-decision .cc-form")
         date_field = form.get_by_label("Purchase date")

@@ -506,10 +506,25 @@ rewriting a record.
 Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_details`), `finance/ledger.py`,
 `app/manager.py` `change_kind`. Spec: `specs/document-forms`.
 
-- **Four kinds.** The classifier also proposes a receipt's kind, citing the lines that show it: `fuel`, `dining`,
-  `grocery` or `general` (no extra model call). A proposal that is uncited, cites a line that doesn't print its quote,
-  or isn't one of the four is read as `general`, with the note "Receipt kind: … was not used" and the receipt in Review.
-  No proposal at all is `general` with no note. Each receipt of a file split into several gets its own kind.
+- **Four kinds.** `fuel`, `dining`, `grocery` or `general`. The kind isn't shown on the document page; it is decided
+  from three signals (`receipt_kind`), and each receipt of a file split into several gets its own kind:
+  - **The model's proposal.** The classifier proposes a kind, citing the lines that show it (no extra model call). It
+    is usable only when it is one of the four and every citation is an exact quote of its line. A null or `general`
+    proposal is no signal.
+  - **What the receipt prints** (`printed_kind_of`, `KIND_CLUES`). Weighted patterns: fuel has volume at a price
+    (`10.312 GAL @`, 2), a price per gallon or litre, a pump number and a grade (1 each); dining has a tip or gratuity
+    line (2), a server, a table number and guests (1 each); grocery has weight pricing (`lb @`, `/kg`, 2), a bag fee,
+    a bottle deposit or CRV, and EBT or SNAP (1 each). Each pattern counts once. The printed kind is the top score
+    when it is at least 2 and beats every other kind's.
+  - **This merchant's kind** (`Ledger.remembered_kind`). The kind of the merchant's receipts you settled, by
+    merchant key: confirmed by you, or kind changed by you. None when they don't all agree.
+
+  With no usable proposal, a printed kind on two clues or more (a score of 3) is used, else the merchant's kind,
+  else `general`, with no note. A usable proposal is used unless the printed kind contradicts it: then the printed
+  kind wins, or the proposal when the merchant's kind sides with it, with the note "Receipt kind: the reading
+  proposed …, but its printed lines look like …" and the receipt in Review. An unusable proposal the printed kind
+  agrees with is used with no note. Otherwise it is read as the printed kind, the merchant's kind or `general`, with
+  the note "Receipt kind: … was not used" and the receipt in Review.
 - **Each kind has its own form**: the receipt summary plus its printed fields, each optional and never filled in.
   - fuel: volume and its unit (gallon or litre), price per unit, grade, pump number, fuel amount. The fuel sale is one
     item, in `transportation`; a row that cites only the pump line is left out, with a note. Check: volume × price,
@@ -524,7 +539,7 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
 - **Stored** in `receipts.receipt_kind` and `details_json` (one entry per kind read, so an undo of a kind change brings
   the earlier kind's details back), and `receipt_items.details_json` (migration 070). Decimals that aren't money keep
   their printed text; amounts are integer minor units. Receipts read before migration 070 have no kind until read again.
-- **Changing the kind** (the document page, `PATCH /api/receipts/{id}/kind`) reads that receipt again from its saved
+- **Changing the kind** (the document page's **Correct…** form, `PATCH /api/receipts/{id}/kind`) reads that receipt again from its saved
   transcription with the new kind's form, never the image. The change is a correction with Undo, written with the
   reading, and later readings keep it. It is refused (409) while any reading of the same file is queued or running.
   On a receipt you reviewed, the amounts, items and review state stay; the new details wait as a proposal until

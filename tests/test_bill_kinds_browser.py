@@ -89,7 +89,7 @@ def test_sc48_a_rent_bills_page_its_lines_and_its_kind(tmp_path):
         expect(page.locator(".doc2-fields")).to_contain_text("Oct 1, 2026 to Oct 31, 2026")
         # 2. The Bill kind control shows Rent.
         expect(page.locator("#doc2-kind-choice")).to_have_value("rent")
-        expect(page.locator(".doc2-kind dd")).to_contain_text("Rent")
+        expect(page.locator("#doc2-kind-choice")).to_be_hidden()
         # 3. Water Usage: Utility, its period and usage; Find lights line 5.
         water = page.locator(".bill-lines tbody tr", has_text="Water Usage")
         expect(water.get_by_label("Type of Water Usage")).to_have_value("utility")
@@ -111,6 +111,8 @@ def test_sc48_a_rent_bills_page_its_lines_and_its_kind(tmp_path):
         last = page.locator(".bill-lines tfoot tr").last
         last.get_by_role("button", name="Find the amount due in the source").click()
         expect(selected(page)).to_contain_text(RENT[AMOUNT_LINE - 1][:12])
+        # A receipt's row Correct buttons show once the record's Correct is open.
+        page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
         last.get_by_role("button", name="Correct amount due").click()
         expect(page.locator("#doc2-decision .cc-form")).to_be_visible()
         page.keyboard.press("Escape")
@@ -123,6 +125,9 @@ def test_sc48_a_rent_bills_page_its_lines_and_its_kind(tmp_path):
         assert page.evaluate(NO_OVERFLOW)
         page.set_viewport_size({"width": 1440, "height": 900})
         # 7. Read it as General: one stubbed reading, and it stays General after a reload.
+        # The kind is changed from the Correct form; it isn't shown otherwise.
+        if page.locator("#doc2-decision .cc-form").is_hidden():
+            page.locator("#doc2-decision").get_by_role("button", name="Correct…", exact=True).click()
         page.locator("#doc2-kind-choice").select_option("general")
         page.get_by_role("button", name="Change kind…").click()
         dialog = page.get_by_role("dialog")
@@ -133,7 +138,6 @@ def test_sc48_a_rent_bills_page_its_lines_and_its_kind(tmp_path):
         page.reload()
         page.wait_for_load_state("networkidle")
         expect(page.locator("#doc2-kind-choice")).to_have_value("general")
-        expect(page.locator(".doc2-kind dd")).to_contain_text("General")
         # 8. Records: the bill's row shows its period.
         page.goto(f"{base}/#/documents")
         page.wait_for_load_state("networkidle")

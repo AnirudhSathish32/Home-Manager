@@ -711,15 +711,50 @@ CLASSIFY = ("Classify this household financial document from its lines. Use unkn
             "bill. bill_kind is null for anything that is not a bill. ")
 
 
-def receipt_kind(classification, lines, notes, requested=None):
-    """The kind a receipt is read with (FR-01, FR-02): the one the run asks for (a kind change), else the model's proposal
-    when it is in the list and every citation is an exact quote of its line, else general with a note saying why. A
-    null or general proposal is general with no note: that is today's form."""
+# What a receipt prints that shows its kind (docs/documents.md "Receipt kinds"): (kind, weight, pattern). A kind's score
+# is the sum of the weights of its patterns that match any line, each pattern counted once.
+KIND_CLUES = tuple((kind, weight, re.compile(pattern, re.IGNORECASE)) for kind, weight, pattern in (
+    ("fuel", 2, r"\b\d+(?:\.\d+)?\s*(?:gal|gallons?|l|ltr|litres?|liters?)\b\s*@"),
+    ("fuel", 1, r"(?:/|\bper\s+)(?:gal|gallon|ltr|litre|liter|l)\b"),
+    ("fuel", 1, r"\bpump\s*(?:#|no\.?)?\s*:?\s*\d+\b"),
+    ("fuel", 1, r"\b(?:unleaded|unl|diesel|e85|midgrade)\b"),
+    ("dining", 2, r"\b(?:tip|gratuity)\b"),
+    ("dining", 1, r"\b(?:server|served by|waiter|waitress)\s*[:#]"),
+    ("dining", 1, r"\b(?:table|tbl)\s*(?:#|no\.?)?\s*:?\s*\d{1,3}\b"),
+    ("dining", 1, r"\b(?:guests?|covers|party of)\s*:?\s*\d{1,2}\b"),
+    ("grocery", 2, r"\d\s*(?:lb|lbs|kg)\b\s*@|/\s*(?:lb|kg)\b"),
+    ("grocery", 1, r"\bbag\s+fee\b"),
+    ("grocery", 1, r"\b(?:bottle\s+deposit|crv)\b"),
+    ("grocery", 1, r"\b(?:ebt|snap)\b"),
+))
+
+
+def printed_kind_of(lines, at_least=2):
+    """The receipt kind its printed lines show, or None: the kind whose clues (KIND_CLUES) score at least at_least and
+    more than any other kind's."""
+    scores = {}
+    for kind, weight, pattern in KIND_CLUES:
+        if any(pattern.search(line.text or "") for line in lines):
+            scores[kind] = scores.get(kind, 0) + weight
+    ranked = sorted(scores.values(), reverse=True)
+    best = max(scores, key=scores.get, default=None)
+    return best if ranked and ranked[0] >= at_least and (len(ranked) == 1 or ranked[0] > ranked[1]) else None
+
+
+def receipt_kind(classification, lines, notes, requested=None, remembered=None):
+    """The kind a receipt is read with (FR-01, FR-02; docs/documents.md "Receipt kinds"): the one the run asks for (a kind
+    change), else from three signals: the model's proposal (used only when it is in the list and every citation is an
+    exact quote of its line), the kind its printed lines show (printed_kind_of) and remembered, the kind of this merchant's
+    receipts you reviewed (Ledger.remembered_kind). A null or general proposal is no signal, so a printed kind overrides
+    it only on two clues or more (a score of 3). The printed kind wins over a usable proposal it contradicts, unless
+    remembered sides with the proposal; either way a note sends the receipt to Review. An unusable proposal has a note
+    unless the printed kind agrees with it. With no proposal and no printed kind, remembered is used, else general."""
     if requested:
         return requested
     proposed = classification.receipt_kind
     if proposed is None or proposed == "general":
-        return "general"
+        return printed_kind_of(lines, 3) or remembered or "general"
+    printed = printed_kind_of(lines)
     shown = proposed if re.fullmatch(r"[a-z][a-z _-]{0,29}", proposed) else "an unlisted kind"
     text = {line.id: line.text for line in lines}
     why = ("it is not one of fuel, dining, grocery or general" if proposed not in RECEIPT_KINDS else
@@ -727,8 +762,16 @@ def receipt_kind(classification, lines, notes, requested=None):
            "a citation is not an exact quote of an existing line" if any(
                not cite.quote.strip() or cite.quote not in text.get(cite.line_id, "") for cite in classification.receipt_kind_evidence) else None)
     if why:
-        notes.append(f"Receipt kind: {shown} was not used: {why}. It was read as a general receipt.")
-        return "general"
+        if printed == proposed:
+            return printed
+        chosen = printed or remembered or "general"
+        notes.append(f"Receipt kind: {shown} was not used: {why}. It was read as a {chosen} receipt.")
+        return chosen
+    if printed and printed != proposed:
+        chosen = proposed if remembered == proposed else printed
+        notes.append(f"Receipt kind: the reading proposed {proposed}, but its printed lines look like a {printed} receipt. "
+                     f"It was read as a {chosen} receipt.")
+        return chosen
     return proposed
 
 
@@ -3229,7 +3272,8 @@ class ExtractionService:
         kind = classification.document_type
         if kind not in HEADERS:
             return classification, None, [], None, None
-        chosen = (receipt_kind(classification, lines, notes, requested_kind) if kind == "receipt" else
+        remembered = self.ledger.remembered_kind(classification.issuer.value) if kind == "receipt" and not requested_kind else None
+        chosen = (receipt_kind(classification, lines, notes, requested_kind, remembered) if kind == "receipt" else
                   bill_kind(classification, lines, notes, requested_kind if requested_kind in BILL_KINDS else None) if kind == "bill" else None)
         if chosen == "rent":
             before = len(notes)
