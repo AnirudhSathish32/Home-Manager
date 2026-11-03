@@ -399,10 +399,9 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
         button.addEventListener("click", () => correctField(field)); actions.append(button);
       }
       tr.append(name, value, actions); foot.append(tr);
-      // When the tax lines set the shares, each is listed under Tax, by code and then printed position (the receipt's order is kept for ties).
+      // When the tax lines set the shares, each is listed under Tax in the order the receipt prints them (the record's order).
       if (field === "tax" && record.tax_lines_used) {
-        const lines = record.tax_lines.filter(line => line.code).sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : a.position - b.position));
-        for (const line of lines) foot.append(taxLineRow(line, before, after, find));
+        for (const line of record.tax_lines.filter(line => line.code)) foot.append(taxLineRow(line, before, after, find));
       }
     }
   }

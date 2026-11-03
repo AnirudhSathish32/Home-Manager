@@ -566,7 +566,7 @@ the server. The page calculates nothing.
   No column is added for it.
 
 Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
-**Not matched to an item**. When tax lines set the shares, each is listed under Tax with its code, rate and taxable
+**Not matched to an item**. When tax lines set the shares, each is listed under Tax, in the order the receipt prints them, with its code, rate and taxable
 amount ("B · 7.75% on $46.19") and its amount, with a Find button for its line. A difference over one cent between subtotal + tax + tip and total is called out. Under
 Printed details a receipt shows its payments and savings but no per-item lines, because the weight and count are in the
 table. This display does not change how the ledger allocates shares.

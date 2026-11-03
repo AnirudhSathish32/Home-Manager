@@ -311,8 +311,8 @@ def test_sc19_tax_lines_and_codes(tmp_path):
         assert table_row(page, "WATER FILTER").get_attribute("title") == "Tax code T"
         assert titles(page) == HEADER
         # 3. The footer: Subtotal, Tax with its two lines (B before T), Total; the amounts sit under Line total.
-        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("B · 7.75% on $46.19", "$1.73", True),
-                                ("T · 7.75% on $12.99", "$1.01", True), ("Total", "$61.92", False)]
+        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("T · 7.75% on $12.99", "$1.01", True),
+                                ("B · 7.75% on $46.19", "$1.73", True), ("Total", "$61.92", False)]
         assert_footer_under_line_total(page)
         # 4. Find on the B tax line lights the B line of the source.
         page.locator(".ledger-rows tfoot").get_by_role("button", name="Find B tax line", exact=True).click()
@@ -329,7 +329,7 @@ def test_sc19_tax_lines_and_codes(tmp_path):
         page.wait_for_selector(".ledger-rows tbody tr")
         assert [cells(table_row(page, name))["paid"] for name in ("RUFFLES", "LITLE VEGET", "WATER FILTER")] == [
             "$4.45 with B tax", "$43.47 with B tax", "$14.00 with T tax"]
-        assert [row[0] for row in footer(page)] == ["Subtotal", "Tax", "B · 7.75% on $46.19", "T · 7.75% on $12.99", "Total"]
+        assert [row[0] for row in footer(page)] == ["Subtotal", "Tax", "T · 7.75% on $12.99", "B · 7.75% on $46.19", "Total"]
         assert stored(manager, ids["r0_record"])[:3] == (amounts, shares, total)
         with manager.store.connection() as db:
             assert [tuple(row) for row in db.execute("SELECT code, taxable_minor, amount_minor FROM receipt_tax_lines WHERE receipt_id=? ORDER BY position", (ids["r0_record"],))] == before
@@ -370,8 +370,8 @@ def test_sc15_footer_three_tax_lines(tmp_path):
         page.wait_for_load_state("networkidle")
         open_document(page, base, ids["r15_doc"])
         expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
-        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("B · 2.17% on $46.19", "$1.00", True),
-                                ("B · 1.58% on $46.19", "$0.73", True), ("T · 7.75% on $12.99", "$1.01", True), ("Total", "$61.92", False)]
+        assert footer(page) == [("Subtotal", "$59.18", False), ("Tax", "$2.74", False), ("T · 7.75% on $12.99", "$1.01", True),
+                                ("B · 2.17% on $46.19", "$1.00", True), ("B · 1.58% on $46.19", "$0.73", True), ("Total", "$61.92", False)]
         assert_footer_under_line_total(page)
         page.locator(".ledger-rows tfoot").get_by_role("button", name="Find B tax line", exact=True).nth(1).click()
         expect(page.locator("#doc2-viewer .sv-line.selected")).to_contain_text("LOCAL TAX")

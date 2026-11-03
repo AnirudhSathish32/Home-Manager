@@ -568,8 +568,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
     line with none);
   - a legend entry needs its code printed in its citation, and is ignored when its quote names food stamps, EBT or SNAP.
 - **What the record gets.** `tax_source` (`tax_lines`, `legend` or `printed`) and, with tax lines, the `taxed` flag of
-  every item worked out from them, ignoring the model's. With a legend, the `taxed` flag follows the legend. The rules
-  are in [money](money.md#tax-codes-and-tax-lines).
+  every item worked out from them, ignoring the model's. A receipt that prints its tax lines but no tax total (the
+  model's tax is missing) gets their sum as its tax, when every line's amount was read. With a legend, the `taxed` flag
+  follows the legend. The rules are in [money](money.md#tax-codes-and-tax-lines).
 - **Stored** in `receipt_items.tax_code`, `receipt_tax_lines` and `receipts.tax_source` (migration 075), written with the
   reading like the other read fields. A reading that fails before publishing changes none of them.
 - **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is

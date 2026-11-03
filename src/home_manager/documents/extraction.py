@@ -1811,6 +1811,9 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
         for line in lines:
             before = totals.get(line["code"], 0)
             totals[line["code"]] = None if before is None or line["amount_minor"] is None else before + line["amount_minor"]
+        # A receipt that prints only its per-code tax lines, and no tax total, has their sum as its tax (sign_return signs it).
+        if record["tax_minor"] is None and None not in totals.values():
+            record["tax_minor"] = sum(totals.values())
         for item in items:
             code = printed_code(item["tax_code"])
             found = [line for line in totals if line in code] if code else []

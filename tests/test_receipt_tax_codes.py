@@ -812,3 +812,14 @@ def test_a_unit_or_unknown_mark_beside_a_price_is_not_a_code():
     assert code_beside_price(cites("line-2"), lines, {"X"}) == "X"
     assert code_beside_price(cites("line-4"), lines, {"T"}) is None  # N is no printed tax line's code.
     assert code_beside_price(cites("line-3"), lines, {"A"}) is None
+
+
+def test_a_receipt_printing_only_its_tax_lines_has_their_sum_as_its_tax(tmp_path, local_model):
+    from document_forms_fixtures import MISSING
+    # R prints no TAX total, only its T and B lines: a model may leave the tax empty, and their sum is the receipt's tax.
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(tax=MISSING)) as (manager, _again, receipt_id):
+        amounts, items, source, lines = stored(manager.store, receipt_id)
+        assert amounts == (5918, 274, 6192) and source == "tax_lines"
+        assert [(code, amount) for code, _rate, _taxable, amount in lines] == [("T", 101), ("B", 173)]
+        assert shares_of(manager.store, receipt_id) == (R_SHARES, [*R_SHARES])
+        assert issues_of(manager, receipt_id) == ([], [])
