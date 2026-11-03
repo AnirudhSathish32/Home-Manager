@@ -1,0 +1,18 @@
+{
+  "feature": "pdf-table-engine-paystubs",
+  "spec": {
+    "sha256": "113fef825d0078e8ea873c34c35c7f713b18e46ffda828e8342ddc91afca8117",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-03T15:22:22-05:00",
+    "approved_via": "agent",
+    "permission": "approve the spec then run plan feature"
+  },
+  "plan": {
+    "sha256": "85d660990d5e70ebe532841dc41f7e027538bbea4c24b6def3c0ddbb07a10ffa",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-03T15:47:14-05:00",
+    "approved_via": "agent",
+    "permission": "Actually you can simply follow  duplicate handling in that case. Add that then approve the plan",
+    "spec_sha256": "113fef825d0078e8ea873c34c35c7f713b18e46ffda828e8342ddc91afca8117"
+  }
+}
