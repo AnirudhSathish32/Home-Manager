@@ -363,6 +363,26 @@ def test_a_table_row_cited_without_its_separators_or_by_a_cell_id_is_repaired_to
     assert unfixed.lines[1].evidence[0].quote == "12.00"  # Exact already: two places is fine when the quote is exact.
 
 
+def test_an_ocr_split_word_quoted_cleaned_up_or_on_the_wrong_line_is_repaired_to_its_exact_line():
+    """A scan that splits a word ("T OTAL", "V ISA TEND") is quoted by the model the way it should read: in another case,
+    with a $ sign, or with the neighbouring line's id. Each gets the line's exact text and line; a quote matching two
+    lines is left to fail, and the correction request shows the exact text of the line it failed to quote."""
+    from home_manager.documents.extraction import PayRowClasses, misquoted_lines, problems_in, repair_quotes
+    lines = {"l8": "SUBTOTAL          29.25", "l9": "T AX                                 31.95",
+             "l10": "T OTAL                               31.20", "l11": "V ISA TEND                           31.20"}
+
+    def answer(*cites):
+        return PayRowClasses.model_validate({"lines": [{"description": "Row", "group": "earnings", "category": "other",
+                                                        "evidence": [{"line_id": line_id, "quote": quote}]} for line_id, quote in cites]})
+    fixed = repair_quotes(answer(("l10", "Total 31.20"), ("l11", "VISA TEND $31.20"), ("l9", "TOTAL 31.20"), ("l10", "Tax 31.95")), lines)
+    assert [(row.evidence[0].line_id, row.evidence[0].quote) for row in fixed.lines] == [
+        ("l10", lines["l10"]), ("l11", lines["l11"]), ("l10", lines["l10"]), ("l9", lines["l9"])]
+    assert not problems_in(fixed, lines)
+    unfixed = repair_quotes(answer(("l8", "31.20 total"), ("l8", "TEND 31.20 USD")), lines)
+    assert [message for _, message in problems_in(unfixed, lines)] == ["a citation is not an exact quote of an existing line"] * 2
+    assert misquoted_lines(unfixed, lines) == {"l8": lines["l8"]}
+
+
 def test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separators(pdf_store, local_model):
     """The same payslip when the model quotes each table row with plain spaces: it records, every amount copied."""
     inbox, store = pdf_store

@@ -453,9 +453,12 @@ Code: `documents/extraction.py`, `finance/ledger.py`.
 - **Deterministic checks:**
   - every citation is an exact quote. How a citation is written is repaired first, never what it says
     (`repair_quotes`): one layer of wrapping quotation marks is dropped; a table cell's id cited as the line becomes
-    its row's line; and a quote that is in its line once spacing and the " | " cell separators are ignored (a table
-    row quoted with plain spaces) becomes the line's exact text there, when found in one place only. The error names
-    which way a citation failed: a line id that isn't in the lines, or a quote that isn't in its line;
+    its row's line; a quote that is in its line once spacing, the " | " cell separators, currency symbols and case
+    are ignored (a table row quoted with plain spaces, or "Total 31.20" for a scan's split "T OTAL 31.20") becomes the
+    line's exact text there, when found in one place only; and a quote found that way in no part of its cited line but
+    in exactly one other line cites that line (a miscounted line id). The error names which way a citation failed: a
+    line id that isn't in the lines, or a quote that isn't in its line. When a citation still fails, the one correction
+    request shows the model the exact text of each line it misquoted;
   - every amount is printed in its cited line;
   - names appear in their citation;
   - an item's code and quantity drop the transcription's `[unreadable]` marks (`readable_text`), so a mark copied as a
