@@ -97,7 +97,8 @@ library, not just the visible page.
 
 - **Row names.** Each row is named **Merchant - Location - Description**, for example "Target - Main St W -
   Snacks/Office".
-  - The merchant is the seller printed on the receipt, or inferred from a house brand and flagged for you to confirm.
+  - The merchant is the seller printed on the receipt, or inferred from a house brand or the file's name
+    ([Merchant from the file name](#merchant-from-the-file-name)) and flagged for you to confirm.
   - The location is the store's street name (no building number, city or postal code), or Online for delivery
     orders. It is left out when no street is printed.
   - The description is one or two words for what was bought.
@@ -539,6 +540,21 @@ item cites it, the next printed line. A line holding only a count and a price ea
 `3 x 0.99 EA`) gives the item its quantity and unit price only when count × price, rounded half-up, makes its printed
 line total within a cent; the line is added to the item's citation and it counts as a cross check. Otherwise nothing
 changes, and the table shows Qty 1 as before. Bills are not read this way.
+
+### Merchant from the file name
+
+Code: `documents/extraction.py` (`file_seller`, `ExtractionService.seller_from_file`, called from `publish`).
+
+A snippet of an online order often prints no seller at all, while the file is named for it (`walmart.com order.png`).
+When a receipt's text gives no merchant (not the summary, the classifier or the seller question), the name the file was
+dropped in with (`occurrences.relative_path`, which keeps it after the file is organized) is read:
+- a web address in it names its site: `walmart.com` is Walmart, `best-buy.com` is Best Buy, or the merchant already in
+  the ledger that spells it (`homedepot.com` is The Home Depot);
+- otherwise words of the name that spell a merchant already in the ledger (`Target_receipt.jpg` is Target).
+
+Words such as receipt, order, screenshot, scan and IMG never name a seller, and a name with neither gives none. The
+receipt goes to review with "Merchant Walmart was taken from the file name “walmart.com order.png”, not printed; confirm
+it with Edit details." A merchant found in the text always wins over the file name.
 
 ### Tax codes on receipts
 

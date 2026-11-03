@@ -127,11 +127,11 @@ def receipt_items():
                       for number, name, price in [(9, "LATTE", "5.00"), (10, "LATTE", "5.00"), (11, "SANDWICH", "10.00")]]}
 
 
-def transcribe(tmp_path, local_model, lines, tables=None):
+def transcribe(tmp_path, local_model, lines, tables=None, file_name="document.png"):
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     manager.configure(str(tmp_path / "managed"))
     month = manager.store.library.inbox
-    make_receipt(month / "document.png")
+    make_receipt(month / file_name)
     local_model["output"] = {"full_text": "\n".join(lines), **({"tables": tables} if tables is not None else {})}
     manager.configure_vision(local_model["config"])
     manager.start_inbox()

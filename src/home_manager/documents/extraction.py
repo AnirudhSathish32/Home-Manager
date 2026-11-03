@@ -13,6 +13,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from functools import partial
 import json
 import logging
+from pathlib import PurePath
 import re
 from types import SimpleNamespace
 from typing import Literal
@@ -616,6 +617,33 @@ IDENTIFY = ("Identify who sold this purchase and where. seller: the retailer, re
             "Use Online, citing the line that shows it, for an online or delivery order (an estimated delivery date, "
             "a shipping or delivery address, an order number). A delivery or shipping address is the customer's, never the store's location. "
             "Use missing when either is not shown. ")
+# A web address in a file name ("walmart.com order.png"), and the words a file name holds that never name a seller.
+FILE_DOMAIN = re.compile(r"(?<![\w-])(?:www\.)?([a-z0-9][a-z0-9-]{1,40})\.(?:com|net|org|shop|store|co|us|ca|co\.uk|com\.au)(?![a-z0-9])", re.IGNORECASE)
+FILE_NOISE = {"receipt", "receipts", "order", "orders", "invoice", "screenshot", "screen", "shot", "snip", "snippet", "image", "img", "scan",
+              "photo", "pdf", "copy", "details", "summary", "online", "purchase", "the"}
+
+
+def file_seller(name, known):
+    """The seller a receipt's file name names: a known merchant whose name its words spell out ("Home Depot receipt.png"), or the
+    site of a web address in it ("walmart.com order.png" is Walmart, or the known merchant that spells walmart). None otherwise."""
+    squash = lambda text: re.sub(r"[^a-z0-9]", "", text.lower())
+    by_key = {}
+    for merchant in known:
+        for key in (squash(merchant), squash(re.sub(r"^the\s+", "", merchant, flags=re.IGNORECASE))):
+            if len(key) >= 3 and key not in FILE_NOISE:
+                by_key.setdefault(key, merchant)
+    stem = PurePath(name).stem
+    site = FILE_DOMAIN.search(stem)
+    if site:
+        label = site.group(1)
+        if squash(label) not in FILE_NOISE and not label.isdigit():
+            return by_key.get(squash(label)) or " ".join(part.capitalize() for part in label.split("-"))
+    words = [word for word in re.split(r"[^A-Za-z0-9&']+", stem) if word]
+    found = [by_key[squash("".join(words[start:start + size]))] for size in (4, 3, 2, 1) for start in range(len(words) - size + 1)
+             if squash("".join(words[start:start + size])) in by_key]
+    return found[0] if found else None
+
+
 # An inferred seller is not confirmed by its citation, so it must at least look like a business name.
 SELLER_SHAPE = re.compile(r"[^\W_][\w &'.,-]{0,59}")
 # Evidence that a purchase was an online or delivery order.
@@ -2984,6 +3012,8 @@ def review_reasons(kind, record, decision=None, issues=()):
                 continue  # Already explained (for example: ambiguous in the document).
             reasons.append(f"{label} was not found in the document; add it with Edit details." if not field.endswith("_minor")
                            else f"{label} was not found in the document.")
+    if record.get("merchant_from_file") and record.get("merchant"):
+        reasons.append(f"Merchant {record['merchant']} was taken from the file name “{record['merchant_from_file']}”, not printed; confirm it with Edit details.")
     if record.get("merchant_inferred_from") and record.get("merchant"):
         reasons.append(f"Merchant {record['merchant']} was inferred from “{record['merchant_inferred_from']}”, not printed; confirm it with Edit details.")
     if kind in CROSS_CHECKED and not record.get("cross_checks"):
@@ -3262,6 +3292,15 @@ class ExtractionService:
                          f"{' and more' if len(still) > 3 else ''}. Check the statement's rows.")
         return rows, references
 
+    def seller_from_file(self, document_id):
+        """(the file's own name, the seller it names) for a receipt whose text names none, or (name, None)
+        (docs/documents.md "Merchant from the file name"). The name is the one the file was dropped in with."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT relative_path FROM occurrences WHERE id=?", (document_id,)).fetchone()
+            known = [name for (name,) in db.execute("SELECT canonical_name FROM merchants")]
+        name = PurePath((row[0] if row else "").replace("\\", "/")).name
+        return name, file_seller(name, known)
+
     @staticmethod
     def identify(config, work, lines):
         """Seller and location for a receipt, validated here. Never fails the extraction: an unusable answer is ignored."""
@@ -3459,6 +3498,10 @@ class ExtractionService:
                 item["category"] = "transportation"
         record["location"] = (identity or {}).get("location")
         record["merchant_inferred_from"] = (identity or {}).get("inferred_from")
+        if kind == "receipt" and not record.get("merchant"):  # No seller in the text: the name the file was dropped in with may give one.
+            file_name, seller = self.seller_from_file(run["document_id"])
+            if seller:
+                record["merchant"], record["merchant_from_file"] = seller, file_name
         if kind == "receipt":  # A return policy printed on the receipt; found in code, not by the model.
             record["return_days_printed"], record["return_policy_quote"] = printed_return_days(line.text for line in lines)
             record["rewards"] = rewards or []

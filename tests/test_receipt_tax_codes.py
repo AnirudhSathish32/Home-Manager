@@ -823,3 +823,44 @@ def test_a_receipt_printing_only_its_tax_lines_has_their_sum_as_its_tax(tmp_path
         assert [(code, amount) for code, _rate, _taxable, amount in lines] == [("T", 101), ("B", 173)]
         assert shares_of(manager.store, receipt_id) == (R_SHARES, [*R_SHARES])
         assert issues_of(manager, receipt_id) == ([], [])
+
+
+def no_seller_replies(lines):
+    """R0 answered as if its lines printed no seller: the merchant, the classifier's issuer and the identity question all missing."""
+    from document_forms_fixtures import MISSING
+    replies = r0_replies(lines)
+    for schema in ("ReceiptGrocerySummary", "ReceiptIdentity"):
+        replies[schema] = [{**reply, **({"merchant": MISSING} if "merchant" in reply else {}), **({"seller": MISSING} if "seller" in reply else {})}
+                           for reply in replies[schema]]
+    replies["Classification"] = [{**reply, "issuer": MISSING} for reply in replies["Classification"]]
+    return replies
+
+
+@pytest.mark.parametrize("file_name, merchant", [("walmart.com order.png", "Walmart"), ("IMG_1234.png", None)])
+def test_a_receipt_naming_no_seller_takes_it_from_its_file_name(tmp_path, local_model, file_name, merchant):
+    from test_extraction import transcribe
+    lines = R_PRINTED  # Read as a snippet of an online order would be: the model finds no seller in its text.
+    manager, doc, parse_id = transcribe(tmp_path, local_model, lines, file_name=file_name)
+    try:
+        local_model["requests"].clear()
+        local_model["by_schema"] = no_seller_replies(lines)
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        record = manager.ledger.record("receipt", run["publication"]["id"])
+        assert record.get("merchant") == merchant
+        reason = f"Merchant Walmart was taken from the file name “{file_name}”, not printed; confirm it with Edit details."
+        assert (reason in record["issues"]) == (merchant is not None)
+        assert record["review_status"] == "needs_review"
+    finally:
+        manager.close()
+
+
+def test_a_file_name_names_a_seller_by_its_site_or_a_known_merchant():
+    from home_manager.documents.extraction import file_seller
+    known = ["Target", "The Home Depot", "Order Express"]
+    assert file_seller("Screenshot 2026-10-20 walmart.com.png", known) == "Walmart"
+    assert file_seller("www.homedepot.com.pdf", known) == "The Home Depot"  # The known merchant's own spelling.
+    assert file_seller("best-buy.com.png", known) == "Best Buy"
+    assert file_seller("target_receipt.jpg", known) == "Target"
+    assert file_seller("Screenshot 2026-10-20 at 3.15.07 PM.png", known) is None
+    assert file_seller("order receipt.pdf", known) is None  # Order is never a seller, and Order Express isn't spelled out.
