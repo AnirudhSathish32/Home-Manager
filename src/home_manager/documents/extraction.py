@@ -1729,6 +1729,28 @@ def code_printed(code, evidence, line_text):
     return bool(code) and all(cited_in(cite, line_text) for cite in evidence) and any(mark.search(" ".join(cite.quote.split())) for cite in evidence)
 
 
+# A tax code printed as its own mark just before or after the price that ends an item's line ("RUFFLES BF $4.29", "MILK 3.49 X").
+CODE_BEFORE_PRICE = re.compile(r"(?:^|\s)([A-Z]{1,3})\s+-?\$?\s?-?\d[\d,]*\.\d{2}-?\s*$")
+CODE_AFTER_PRICE = re.compile(r"\d\.\d{2}-?\s+([A-Z]{1,3})\s*$")
+NOT_CODES = {"LB", "LBS", "KG", "OZ", "EA", "G", "L", "ML", "QTY", "PC", "PCS"}  # Units printed beside a price, never a tax code.
+
+
+def code_beside_price(evidence, line_text, known):
+    """The tax code an item's cited line prints beside its price, for an item the model gave no code for (or one it didn't
+    quote) (docs/money.md "Item categories and splits"). Kept only when it holds one of the receipt's printed tax line or
+    legend codes (known), and when the item's cited lines agree on one; a count line ("10 @ $4.19 ea") is never read."""
+    found = set()
+    for cite in evidence:
+        text = line_text.get(cite.line_id) or ""
+        if not cited_in(cite, line_text) or COUNT_LINE.fullmatch(text):
+            continue
+        for pattern in (CODE_BEFORE_PRICE, CODE_AFTER_PRICE):
+            match = pattern.search(text)
+            if match and match.group(1) not in NOT_CODES and any(code in match.group(1) for code in known):
+                found.add(match.group(1))
+    return found.pop() if len(found) == 1 else None
+
+
 def rate_printed(rate, evidence):
     """A tax line's rate equals one whole number printed in a cited line ("7.75" and "7.75000" match 7.75000; "75" and "7.7" do not)."""
     wanted = Decimal(rate.replace(",", ""))
@@ -1758,10 +1780,15 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
         item["tax_code"] = None
     if not details:
         return
+    # The codes the receipt's own tax lines and legend print, which a code missed by the model is looked for beside its item's price.
+    known = {printed_code(entry.code) for entry in [*header.tax_lines, *header.tax_legend]
+             if printed_code(entry.code) and code_printed(printed_code(entry.code), entry.evidence, line_text)}
     for item, (index, row) in zip(items, read_rows):
         code = " ".join((row.tax_code or "").split()).upper()
         if code and code_printed(code, row.evidence, line_text):
             item["tax_code"] = code
+        elif found := code_beside_price(row.evidence, line_text, known):
+            item["tax_code"] = found
         elif code:
             issues.append(f"Item {index} tax code was not printed where it was cited and was left out.")
     lines = []

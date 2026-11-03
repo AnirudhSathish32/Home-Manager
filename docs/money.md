@@ -652,7 +652,8 @@ $1.01". Sharing all the tax over the items marked taxed goes wrong when the mode
 F in "BF" (a food-stamp mark), so the receipt's own tax lines are used when they can be trusted.
 
 **What is kept** (migration 075; `receipt_items.tax_code`, `receipts.tax_source`, `receipt_tax_lines`):
-- An item's tax code, as printed, upper case, when it is printed in a line the item cites.
+- An item's tax code, as printed, upper case, when it is printed in a line the item cites. A code the model missed is
+  read from beside the item's price ([documents](documents.md#tax-codes-on-receipts)).
 - A **tax line**: its code, printed rate, printed taxable amount and amount, each when printed in the line it cites.
   The amount is kept as a magnitude, and the receipt's own tax gives it its sign, so a return's tax lines follow the
   return. A line whose amount can't be read is kept without one. Tax lines are replaced as a set by each new reading.

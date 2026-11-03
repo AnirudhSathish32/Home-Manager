@@ -244,7 +244,7 @@ def test_the_receipt_tax_codes_task_grades_tax_lines_item_codes_and_untaxed_bf_i
     read without the filter's code and the one-TAX-line receipt with the BF items answered taxed false fail on exactly those checks."""
     from document_forms_fixtures import joined
     from evals.tasks.receipt_tax_codes import R_ONE_TAX_LINE, R
-    from receipt_item_fixtures import R_LINES, one_tax_replies, r0_replies, r_one_tax_lines
+    from receipt_item_fixtures import R_LINES, one_tax_replies, r0_replies, r_one_tax_lines, r_tax_lines
     assert (R, R_ONE_TAX_LINE) == (R_LINES, r_one_tax_lines())  # The task's first two cases print the fixtures' lines.
     local_model["by_schema"] = joined(r0_replies(), one_tax_replies(taxed=(None, None, True)))
     folder = run_tasks(config_for(local_model), ["receipt_tax_codes"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=2)
@@ -255,13 +255,14 @@ def test_the_receipt_tax_codes_task_grades_tax_lines_item_codes_and_untaxed_bf_i
     assert [item["taxed"] for item in lines[1]["output"]["items"]] == [None, None, True]
     report = (folder / "report.md").read_text(encoding="utf-8")
     assert "| synthetic | 1 | 2 of 2 | 3 of 3 | 1 | 0 of 2 |" in report, report
-    local_model["by_schema"] = joined(r0_replies(codes=("BF", "BF", "N")), one_tax_replies())
+    # The filter misread N and its T line missed: with no T line, the T beside its price isn't read as its code either.
+    local_model["by_schema"] = joined(r0_replies(codes=("BF", "BF", "N"), tax_lines=r_tax_lines()[1:]), one_tax_replies())
     folder = run_tasks(config_for(local_model), ["receipt_tax_codes"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=2)
     lines = task_lines(folder)
     assert [(line["status"], line["grades"]["passed"]) for line in lines] == [("ok", False), ("ok", False)]
-    assert (lines[0]["grades"]["checks"]["all_lines"], lines[0]["grades"]["checks"]["all_codes"]) == (True, False)
+    assert (lines[0]["grades"]["checks"]["all_lines"], lines[0]["grades"]["checks"]["all_codes"]) == (False, False)
     assert (lines[1]["grades"]["checks"]["all_read"], lines[1]["grades"]["checks"]["bf_untaxed"]) == (True, 2)  # The reported bug: BF read as untaxed.
-    assert "| synthetic | 1 | 2 of 2 | 2 of 3 | 1 | 2 of 2 |" in (folder / "report.md").read_text(encoding="utf-8")
+    assert "| synthetic | 1 | 1 of 2 | 2 of 3 | 1 | 2 of 2 |" in (folder / "report.md").read_text(encoding="utf-8")
 
 
 def test_the_receipt_tax_codes_grader_allows_a_cent_and_needs_the_right_code():

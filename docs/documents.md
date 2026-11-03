@@ -557,8 +557,11 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   food-stamp or EBT mark such as F or E never means untaxed on its own. Otherwise the answer is null.
 - **Checks** (`tax_codes`, in `normalize` after the items):
   - an item's code is kept only when it is printed as its own mark in a line the item cites ("4.29B" is a B mark. The T
-    of "WATER FILTER" isn't a T mark), else the issue "Item n tax code was not printed where it was cited and was left
-    out.";
+    of "WATER FILTER" isn't a T mark). When the model gives no code, or one not printed there, the code printed as its own
+    mark just before or after the price ending a line the item cites is used instead ("BF" in "RUFFLES BF $4.29", "X" in
+    "MILK 3.49 X", `code_beside_price`). It must hold one of the codes the receipt's tax lines or legend print, the item's
+    lines must agree on it, and units (LB, EA, OZ…) and count lines ("10 @ $4.19 ea") are never read as codes. Otherwise
+    the issue is "Item n tax code was not printed where it was cited and was left out.";
   - a tax line needs a code printed in its citation, else "Tax line n code was not printed where it was cited, so the tax
     lines were not used." and none are kept. Its rate, taxable amount and amount are each kept only when printed in a
     citation, else "Tax line n amount was not printed where it was cited and was left out." (an amount left out leaves the

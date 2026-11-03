@@ -471,7 +471,8 @@ def test_sc04_tax_lines_that_do_not_add_up_fall_back(tmp_path, local_model):
 
 
 def test_sc05_a_tax_line_with_no_items_falls_back(tmp_path, local_model):
-    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=("BF", "BF", None))) as (manager, _again, receipt_id):
+    lines = [line.replace("WATER FILTER T", "WATER FILTER") for line in R_PRINTED]  # The filter's line prints no code.
+    with reading(tmp_path, local_model, lines, r0_replies(lines, codes=("BF", "BF", None))) as (manager, _again, receipt_id):
         _, items, source, _lines = stored(manager.store, receipt_id)
         assert (items, source) == ([("BF", 1), ("BF", 1), (None, 0)], "tax_lines")  # The filter belongs to no line (FR-11).
         # 274 over 4619: Ruffles 429 + 25.448, Little Veg 4190 + 248.552, Water filter 1299; rounded down 6191, the cent goes to Little Veg.
@@ -704,7 +705,8 @@ def test_sc18_variant_every_flag_answered_is_todays_rule(tmp_path, local_model):
 
 
 def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, local_model):
-    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=("BF", "BF", "N"))) as (manager, _again, receipt_id):
+    lines = [line.replace("WATER FILTER T", "WATER FILTER") for line in R_PRINTED]  # No code beside the filter's price to read instead.
+    with reading(tmp_path, local_model, lines, r0_replies(lines, codes=("BF", "BF", "N"))) as (manager, _again, receipt_id):
         _, items, source, _lines = stored(manager.store, receipt_id)
         # The N is not on the filter's line, so no code is kept (FR-08); the T line then names no item and the receipt falls back.
         assert items == [("BF", 1), ("BF", 1), (None, 0)] and source == "tax_lines"
@@ -712,6 +714,13 @@ def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, loca
         assert "Item 3 tax code was not printed where it was cited and was left out." in issues
         assert tax_issues == ["The T tax line has no items carrying its code, so tax was shared across the taxed items."]
         assert shares_of(manager.store, receipt_id) == ([454, 4439, 1299], [454, 4439, 1299])
+
+
+def test_a_code_the_model_got_wrong_is_read_beside_the_price(tmp_path, local_model):
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=("BF", "BF", "N"))) as (manager, _again, receipt_id):
+        assert stored(manager.store, receipt_id)[1] == [("BF", 1), ("BF", 1), ("T", 1)]  # The filter's line prints T, not N.
+        assert issues_of(manager, receipt_id) == ([], [])
+        assert shares_of(manager.store, receipt_id) == (R_SHARES, [*R_SHARES])
 
 
 def test_a_tax_line_amount_that_is_not_printed_is_kept_without_an_amount(tmp_path, local_model):
@@ -784,3 +793,22 @@ def test_the_extraction_version_names_tax_codes_and_an_earlier_reading_is_read_a
         started = manager.start_extraction(doc["id"], parse_id)
         manager.future.result(timeout=30)
         assert started["reused"] is False and manager.extractions.get(started["run_id"])["status"] == "succeeded"
+
+
+def test_a_code_the_model_missed_is_read_beside_the_price(tmp_path, local_model):
+    # A model may answer no tax_code for items whose codes are printed: each is read beside its price instead.
+    with reading(tmp_path, local_model, R_PRINTED, r0_replies(codes=(None, None, None))) as (manager, _again, receipt_id):
+        _, items, source, _lines = stored(manager.store, receipt_id)
+        assert (items, source) == ([("BF", 1), ("BF", 1), ("T", 1)], "tax_lines")
+        assert shares_of(manager.store, receipt_id) == (R_SHARES, [*R_SHARES])
+        assert issues_of(manager, receipt_id) == ([], [])
+
+
+def test_a_unit_or_unknown_mark_beside_a_price_is_not_a_code():
+    from home_manager.documents.extraction import code_beside_price
+    lines = {"line-1": "BANANAS 2.31 LB 1.36", "line-2": "MILK 3.49 X", "line-3": "10 @ $4.19 ea", "line-4": "SOAP N $2.00"}
+    cites = lambda *ids: [SimpleNamespace(line_id=line, quote=lines[line]) for line in ids]
+    assert code_beside_price(cites("line-1"), lines, {"B"}) is None  # LB is a unit.
+    assert code_beside_price(cites("line-2"), lines, {"X"}) == "X"
+    assert code_beside_price(cites("line-4"), lines, {"T"}) is None  # N is no printed tax line's code.
+    assert code_beside_price(cites("line-3"), lines, {"A"}) is None
