@@ -39,6 +39,7 @@ from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
 from .layout_context import evidence_lines, evidence_tables, native_page, project_page
+from .paystub_split import stub_parts
 from .pdf_reader import read_result
 from .reasoning import EvidenceQuote, ReasoningConfig, require_transcription
 from .receipt_schema import StrictModel
@@ -1694,6 +1695,12 @@ def whole(lines, notes=None):
 
 REBUILD_FAILED = "The rows couldn't be rebuilt from the printed columns, so the reading's rows were used; check them."
 SPLIT_NOTE = "This receipt was split from a file holding several; confirm the split on the document's page."
+# Several pay stubs in one file (docs/documents.md "Several pay stubs in one file"): these are record notes, never review reasons (FR-82, FR-85).
+PAY_SPLIT_NOTE = "Split from a file holding several pay stubs"
+PAY_SPLIT_FAILED = "Where each pay stub starts couldn't be read, so the file was read as one."
+PAY_SPLIT_CHANGED = "You changed where the pay stubs in this file start; the file was read with your split."
+VOID_LINE = re.compile(r"[\s*-]*void[\s*-]*", re.IGNORECASE)  # A line whose whole text is VOID: a word inside a sentence is not a void stub (G4).
+VOID_NOTE = "This pay stub is printed VOID, so it doesn't count."
 # A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.
 TOTAL_LINE = re.compile(r"(?<![\w-])(grand\s+)?total(?!\s*(tax|savings?|saved|discounts?|items?|number|qty|quantity|units|points))\b", re.IGNORECASE)
 # What every receipt prints somewhere: what was owed or how it was paid. A part without one is not a receipt of its own.
@@ -3946,6 +3953,19 @@ class ExtractionService:
                 issues.append("Sale or return: a total line says refund or return, so this may be a return; check the total's sign.")
         issues.extend(notes)  # Dropped identifying fields need a person to check them.
         issues.extend(review_reasons(kind, record, decision, issues))
+        source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
+                  "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment, "kind_change": kind_change}
+        void, twin = False, None
+        if kind == "paystub":  # A stub printed VOID, or repeating another, is recorded but doesn't count (FR-85, FR-84).
+            void = any(VOID_LINE.fullmatch(line.text.strip()) for line in lines)
+            twin = None if void else self.ledger.pay_stub_twin(record, source)
+            shown = f"{record['payer_or_employer']} on {record['pay_date']} ({format_minor(record['net_pay_minor'], record['currency'])})" if twin else ""
+            if void:
+                record_notes.append(VOID_NOTE)
+            elif twin and twin["original"]:
+                record_notes.append(f"This pay stub repeats the one paid by {shown}, so it doesn't count.")
+            elif twin and twin["same_date"]:
+                record_notes.append(f"Another pay stub from {record['payer_or_employer']} has the same pay date.")
         if record_notes:
             record["notes"] = record_notes
             if kind in ("bank_statement", "credit_card_statement", "paystub"):  # Kept with the record, which stores its details but not its notes (P19).
@@ -3954,8 +3974,6 @@ class ExtractionService:
             record.setdefault("details", {})["guesses"] = guesses
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
-        source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
-                  "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment, "kind_change": kind_change}
         if currency is None:
             return record, {"status": "blocked", "reason": "Currency could not be resolved, so nothing was published. Check the currency in the document text and your home currency in Settings, then extract again."}
         if kind in ("bank_statement", "credit_card_statement") and not record["institution"]:
@@ -3984,6 +4002,8 @@ class ExtractionService:
         published = publish(record, source, status)
         if kind == "paystub":  # Its 401(k) and HSA lines may now point to an investment account.
             Investments(self.ledger.store).refresh_payroll_links()
+            if void and self.ledger.mark_void(published["id"]) or twin and twin["original"] and self.ledger.mark_duplicate(published["id"], twin["original"]):
+                published = {**published, "review_status": "rejected"}
         return record, {**published, "review_status": published.get("review_status", status)}
 
     def run(self, run_id, work=None):
@@ -4016,26 +4036,33 @@ class ExtractionService:
                     except Exception as exc:
                         log_failure(log, "pay table read", exc, run=run_id)
                         pay = PAY_FAILED
-                # A file holding several receipts is read one receipt at a time; anything else stays one document.
-                parts, split_notes = [(0, len(lines))], []
+                # A file holding several receipts or pay stubs is read one at a time; anything else stays one document.
+                parts, split_notes, pay_notes, changed = [(0, len(lines))], [], [], False
                 if classification.document_type == "receipt":
                     parts = self.segments(config, work, run, parse, evidence, lines, split_notes)
-                # Every part is classified before any is read, so a file that is not all receipts costs no further questions.
-                kinds = []
+                elif classification.document_type == "paystub":
+                    parts, changed = self.pay_parts(run, parse, lines, split_notes, pay_notes)
+                # Every part is classified before any is read, so a file that is not all of one kind costs no further questions.
+                kinds, noun = [], "pay stub" if classification.document_type == "paystub" else "receipt"
                 for first, last in parts if len(parts) > 1 else []:
                     part_notes = []
                     kind = ask(config, work, Classification, CLASSIFY, whole(lines[first:last], part_notes), 1024, notes=part_notes)
-                    if kind.document_type != "receipt":
-                        split_notes.append("A part of this file is not a receipt, so the file was read as one document.")
-                        parts, kinds = [(0, len(lines))], []
+                    if kind.document_type != classification.document_type:
+                        split_notes.append(f"A part of this file is not a {noun}, so the file was read as one document.")
+                        parts, kinds, changed = [(0, len(lines))], [], False
                         break
                     kinds.append((kind, part_notes))
-                requested = self.requested_kinds(parse, lines, parts, kind_change, "receipt" if kinds else classification.document_type,
+                requested = self.requested_kinds(parse, lines, parts, kind_change, classification.document_type,
                                                  [part_notes for _, part_notes in kinds] or [notes])
-                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0])
+                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0], pay=pay)
                             for ordinal, ((first, last), (kind, part_notes)) in enumerate(zip(parts, kinds))]
                 if not readings:
                     readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0], pay=pay)]
+                for (first, _), reading in zip(parts, readings):
+                    if classification.document_type == "paystub":  # Notes about the split are record notes; a split the user changed is one guess (FR-74).
+                        reading["record_notes"] += [note for note in pay_notes if note not in reading["record_notes"]]
+                        if changed:
+                            reading["guesses"].append(asdict(paystub_tables.Guess("split_changed", line_page(lines[first].id) or 1, None, PAY_SPLIT_CHANGED)))
                 for reading, (_, asked) in zip(readings, requested):
                     reading["kind_change"] = asked  # Only the receipt this run was asked to read as a kind records the change (FR-11).
             work.check()  # Cancellation always wins: never publish after a cancel request.
@@ -4217,7 +4244,9 @@ class ExtractionService:
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
         classification, header, rows, identity = reading["classification"], reading["header"], reading["rows"], reading["identity"]
-        notes = reading["notes"] + ([SPLIT_NOTE] if split else [])
+        paystub = classification.document_type == "paystub"
+        notes = reading["notes"] + ([SPLIT_NOTE] if split and not paystub else [])  # A split pay stub carries its note as a record note (FR-82).
+        engine_notes = (reading.get("record_notes") or []) + ([PAY_SPLIT_NOTE] if split and paystub else [])
         result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
                   "rows": [row.model_dump() for row in rows], "description": reading["description"], "category": reading["category"],
                   "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
@@ -4244,7 +4273,7 @@ class ExtractionService:
                                                              reading.get("cell_references"), reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
                                                              reading.get("printed_columns", False), reading.get("evidence"),
-                                                             reading.get("record_notes"), reading.get("guesses"))
+                                                             engine_notes, reading.get("guesses"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
@@ -4274,6 +4303,23 @@ class ExtractionService:
         parts = merge_parts(list(zip(bounds, bounds[1:] + [len(lines)])), lines)
         return parts if len(parts) > 1 else everything
 
+    def pay_parts(self, run, parse, lines, split_notes, record_notes):
+        """([(first, last)], changed) for a pay stub file: the user's own split wins, even as one stub (changed: it replaced the rule's, so the
+        stubs get a split_changed guess, FR-74); otherwise the rule that reads the lines (paystub_split.stub_parts). A rule that fails reads the file as
+        one stub with a record note (P8)."""
+        saved = self.saved_segments(run, parse, source="user")
+        if saved:
+            ranges = user_ranges(saved, lines)
+            if ranges:
+                return ranges, any(row["extraction_run_id"] for row in saved)
+            split_notes.append("How you split this file no longer matches its text, so it was split again.")
+        try:
+            return stub_parts(lines), False
+        except Exception as exc:
+            log_failure(log, "pay stub split", exc, run=run["id"])
+            record_notes.append(PAY_SPLIT_FAILED)
+            return [(0, len(lines))], False
+
     def receipt_starts(self, config, work, lines, notes):
         """Indexes of lines where a new receipt begins, asked chunk by chunk; None when an answer is unusable."""
         index = {line.id: position for position, line in enumerate(lines)}
@@ -4291,16 +4337,26 @@ class ExtractionService:
         return starts
 
     def split(self, document_id):
-        """How the document's current version is split into receipts: each part's lines and its receipt. Empty for a
-        file read as one document."""
+        """How the document's current version is split into receipts or pay stubs: each part's lines and its record (kind "receipt" or "paystub";
+        the newer record when an earlier reading left the other kind). Empty for a file read as one document."""
         doc = self.store.document(document_id)
         with self.store.connection() as db:
             rows = [dict(row) for row in db.execute(
                 "SELECT s.ordinal,s.first_line_id,s.last_line_id,s.status,s.source,r.id AS receipt_id,r.review_status,r.total_minor,r.currency,"
-                "r.purchase_date,m.canonical_name AS merchant FROM document_segments s LEFT JOIN receipts r ON r.blob_hash=s.blob_hash AND r.segment=s.ordinal "
-                "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE s.document_id=? AND s.blob_hash=? ORDER BY s.ordinal", (document_id, doc["current_hash"]))]
+                "r.purchase_date,m.canonical_name AS merchant,i.id AS income_record_id,i.review_status AS income_status,i.net_pay_minor,"
+                "i.currency AS income_currency,i.pay_date,p.canonical_name AS employer,"
+                "coalesce(i.updated_at>coalesce(r.updated_at,''),0) AS is_paystub FROM document_segments s "
+                "LEFT JOIN receipts r ON r.blob_hash=s.blob_hash AND r.segment=s.ordinal "
+                "LEFT JOIN merchants m ON m.id=r.merchant_id LEFT JOIN income_records i ON i.blob_hash=s.blob_hash AND i.segment=s.ordinal "
+                "LEFT JOIN merchants p ON p.id=i.payer_merchant_id WHERE s.document_id=? AND s.blob_hash=? ORDER BY s.ordinal",
+                (document_id, doc["current_hash"]))]
         for row in rows:
-            row["display"] = {"total_minor": format_minor(row["total_minor"], row["currency"])} if row["total_minor"] is not None else {}
+            row["kind"] = "paystub" if row["income_record_id"] is not None and (row["receipt_id"] is None or row["is_paystub"]) else "receipt"
+            if row["kind"] == "paystub":
+                row["display"] = {"net_pay": format_minor(row["net_pay_minor"], row["income_currency"])} if row["net_pay_minor"] is not None else {}
+            else:
+                row["display"] = {"total_minor": format_minor(row["total_minor"], row["currency"])} if row["total_minor"] is not None else {}
+            del row["is_paystub"]
         return {"segments": rows, "confirmed": bool(rows) and all(row["status"] == "confirmed" for row in rows)}
 
     def confirm_split(self, document_id):
@@ -4309,7 +4365,7 @@ class ExtractionService:
         with self.store.connection() as db:
             if not db.execute("UPDATE document_segments SET status='confirmed',updated_at=? WHERE document_id=? AND blob_hash=?",
                               (now(), document_id, doc["current_hash"])).rowcount:
-                raise ValueError("This document is not split into several receipts.")
+                raise ValueError("This document is not split into several receipts or pay stubs.")
             for row in db.execute("SELECT id,review_status,review_source,validation_json FROM receipts WHERE blob_hash=? AND review_status<>'rejected'",
                                   (doc["current_hash"],)).fetchall():
                 issues = [issue for issue in json.loads(row["validation_json"]) if issue != SPLIT_NOTE]
@@ -4319,6 +4375,11 @@ class ExtractionService:
                     status = "needs_review" if issues else "verified"
                     db.execute("UPDATE receipts SET validation_json=?,review_status=?,review_source=?,updated_at=? WHERE id=?",
                                (json.dumps(issues), status, "automatic" if status == "verified" else None, now(), row["id"]))
+            for row in db.execute("SELECT id,details_json FROM income_records WHERE blob_hash=? AND details_json IS NOT NULL", (doc["current_hash"],)).fetchall():
+                details = json.loads(row["details_json"])
+                if PAY_SPLIT_NOTE in details.get("notes", []):  # Only the note goes: it was never a review reason, so no status changes.
+                    details["notes"] = [note for note in details["notes"] if note != PAY_SPLIT_NOTE]
+                    db.execute("UPDATE income_records SET details_json=?,updated_at=? WHERE id=?", (json.dumps(details), now(), row["id"]))
         return self.split(document_id)
 
     def set_split(self, document_id, starts):
@@ -4326,7 +4387,7 @@ class ExtractionService:
         Returns the reading to extract again; the new split is used and counts as confirmed."""
         doc = self.store.document(document_id)
         with self.store.connection() as db:
-            row = db.execute("SELECT e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
+            row = db.execute("SELECT e.id,e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
                              "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (document_id, doc["current_hash"])).fetchone()
         if row is None:
             raise ValueError("Record this document once before changing how it is split.")
@@ -4337,10 +4398,17 @@ class ExtractionService:
         bounds = sorted({0, *(index[start] for start in starts)})
         parts = list(zip(bounds, bounds[1:] + [len(lines)]))
         with self.store.connection() as db:
+            earlier = db.execute("SELECT first_line_id,last_line_id,extraction_run_id,source FROM document_segments WHERE document_id=? AND blob_hash=? ORDER BY ordinal",
+                                 (document_id, doc["current_hash"])).fetchall()
+            # A split that replaces the reading's own (or an earlier change of it) is remembered by the run it replaced, so the next reading can count
+            # the change as a guess (FR-74); a file the rule read as one stub that the user splits replaces the latest reading's.
+            replaced = next((segment["extraction_run_id"] for segment in earlier if segment["extraction_run_id"]), None)
+            same = [(segment["first_line_id"], segment["last_line_id"]) for segment in earlier] == [(lines[first].id, lines[last - 1].id) for first, last in parts]
+            changed = None if same and earlier and earlier[0]["source"] == "model" else replaced or (row["id"] if len(parts) > 1 else None)
             db.execute("DELETE FROM document_segments WHERE document_id=? AND blob_hash=?", (document_id, doc["current_hash"]))
-            db.executemany("INSERT INTO document_segments(document_id,blob_hash,ordinal,first_line_id,last_line_id,status,source,created_at,updated_at) "
-                           "VALUES(?,?,?,?,?,'confirmed','user',?,?)",
-                           [(document_id, doc["current_hash"], ordinal, lines[first].id, lines[last - 1].id, now(), now())
+            db.executemany("INSERT INTO document_segments(document_id,blob_hash,ordinal,first_line_id,last_line_id,status,source,extraction_run_id,created_at,updated_at) "
+                           "VALUES(?,?,?,?,?,'confirmed','user',?,?,?)",
+                           [(document_id, doc["current_hash"], ordinal, lines[first].id, lines[last - 1].id, changed, now(), now())
                             for ordinal, (first, last) in enumerate(parts)])
         return row["parse_run_id"]
 

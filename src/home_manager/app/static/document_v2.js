@@ -861,17 +861,20 @@ async function doc2Split(target, state, publication) {
   const split = await api(`/api/documents/${state.doc.id}/segments`);
   if (doc2 !== state) return;
   const segments = split.segments, chosen = Math.min(state.segment || 0, segments.length - 1);
+  // A file of pay stubs is worded for them, and nothing waits for the split (FR-82): the stubs count by their own checks.
+  const stubs = segments.length > 0 && segments.every(segment => segment.kind === "paystub"), noun = stubs ? "pay stub" : "receipt";
   const published = publication.segments.find(part => part.ordinal === segments[chosen]?.ordinal) || publication.segments[chosen];
   const panel = element("section", "", "split-panel");
-  panel.setAttribute("aria-label", "Receipts in this file");
-  panel.append(element("h3", `This file holds ${segments.length} receipts`));
-  if (!split.confirmed) panel.append(alertBox("Each receipt waits in To check until you confirm how the file was split.", {tone: "warning"}));
+  panel.setAttribute("aria-label", stubs ? "Pay stubs in this file" : "Receipts in this file");
+  panel.append(element("h3", `This file holds ${segments.length} ${noun}s`));
+  if (!split.confirmed && !stubs) panel.append(alertBox("Each receipt waits in To check until you confirm how the file was split.", {tone: "warning"}));
   const picker = element("div", "", "work-filters");
   segments.forEach((segment, index) => {
     const button = element("button", "", "filter-chip"); button.type = "button";
     button.setAttribute("aria-pressed", String(index === chosen));
-    button.append(element("span", segment.merchant || `Receipt ${index + 1}`),
-                  element("span", [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)].filter(Boolean).join(" · "), "chip-count"));
+    const facts = stubs ? [segment.pay_date && dateText(segment.pay_date), segment.display?.net_pay] : [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)];
+    button.append(element("span", (stubs ? segment.employer : segment.merchant) || `${stubs ? "Pay stub" : "Receipt"} ${index + 1}`),
+                  element("span", facts.filter(Boolean).join(" · "), "chip-count"));
     button.addEventListener("click", () => { state.segment = index; state.renderedKey = ""; doc2Extraction(state, state.runId); });
     picker.append(button);
   });
@@ -880,26 +883,26 @@ async function doc2Split(target, state, publication) {
   const actions = element("div", "", "button-row");
   if (!split.confirmed) actions.append(asyncButton("Confirm split", async () => {
     await api(`/api/documents/${state.doc.id}/segments/confirm`, {method: "POST", body: "{}"});
-    notice("Split confirmed. Each receipt now counts by its own checks."); state.renderedKey = ""; await doc2Extraction(state, state.runId);
+    notice(`Split confirmed. Each ${noun} now counts by its own checks.`); state.renderedKey = ""; await doc2Extraction(state, state.runId);
   }, "primary"));
   if (lines.length) actions.append(sourceButton(lines.map(line => line.id), ids => state.viewer.highlight(ids)));
   if (chosen < segments.length - 1) actions.append(asyncButton("Merge with next", () =>
-    doc2ChangeSplit(state, starts.filter((_, index) => index !== chosen + 1), "Merging the two receipts. The file is read again with your split.")));
+    doc2ChangeSplit(state, starts.filter((_, index) => index !== chosen + 1), `Merging the two ${noun}s. The file is read again with your split.`)));
   panel.append(actions);
   if (lines.length > 1) {
     // Split one receipt in two at a line the user picks from its own text.
-    const field = element("div", "", "field"), label = element("label", "Start a new receipt at"), select = document.createElement("select");
+    const field = element("div", "", "field"), label = element("label", `Start a new ${noun} at`), select = document.createElement("select");
     select.id = "doc2-split-at"; label.htmlFor = select.id;
     select.append(...lines.slice(1).map(line => new Option(line.text.slice(0, 80), line.id)));
     const row = element("div", "", "button-row");
     row.append(select, asyncButton("Split here", () => doc2ChangeSplit(state, [...starts.slice(0, chosen + 1), select.value, ...starts.slice(chosen + 1)],
-                                                                       "Splitting the receipt. The file is read again with your split.")));
+                                                                       `Splitting the ${noun}. The file is read again with your split.`)));
     field.append(label, row);
     panel.append(field);
   }
   const record = element("div");  // The chosen receipt's record; rendering it replaces only this.
   target.append(panel, record);
-  if (published?.status === "blocked") { record.append(alertBox(`Can't record this receipt: ${published.reason}`, {tone: "warning"})); return; }
+  if (published?.status === "blocked") { record.append(alertBox(`Can't record this ${noun}: ${published.reason}`, {tone: "warning"})); return; }
   if (published?.id) await doc2Ledger(state, record, published.record_type, published.id, published.status === "kept_reviewed");
 }
 

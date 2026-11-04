@@ -1467,14 +1467,51 @@ class Ledger:
             if written:
                 self.add_evidence(db, "income_record", income_id, source, record["locator"])
                 self.apply_corrections(db, "income_record", income_id)
+                # Read again, a line keeps its id by position, so Extract again of a file of several stubs rewrites identical rows (FR-69).
+                earlier = {row["position"]: row["id"] for row in db.execute("SELECT id,position FROM income_lines WHERE income_record_id=?", (income_id,))}
                 db.execute("DELETE FROM income_lines WHERE income_record_id=?", (income_id,))
-                db.executemany("INSERT INTO income_lines(income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json,"
-                               "details_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                               [(income_id, position, line["description"], line["line_group"], line["category"], line["current_minor"],
+                db.executemany("INSERT INTO income_lines(id,income_record_id,position,description,line_group,category,current_minor,ytd_minor,locator_json,"
+                               "details_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                               [(earlier.get(position), income_id, position, line["description"], line["line_group"], line["category"], line["current_minor"],
                                  line["ytd_minor"], json.dumps(line["locator"]), json.dumps(line["details"]) if line.get("details") else None, now(), now())
                                 for position, line in enumerate(record.get("lines", []), 1)])
                 self.apply_income_line_corrections(db, income_id)
         return self._published("income_record", income_id, written, lines=len(record.get("lines", [])))
+
+    def pay_stub_twin(self, record, source):
+        """The other pay stubs a stub about to be published looks like (FR-84, FR-85): {"original": id or None, "same_date": bool}, or None when
+        there are none. Only a non-rejected pay stub recorded before this one counts (a lower id; any, while this one is not recorded yet), so the
+        first recorded keeps counting and Extract again gives the same answer. original: the same employer, pay date, net pay and currency (the
+        stub's identity, docs/money.md "Money rules"); same_date: the same employer and pay date with another net pay (a reissue, which counts)."""
+        if not record.get("payer_or_employer") or not record.get("pay_date") or record.get("net_pay_minor") is None or not record.get("currency"):
+            return None
+        with self.store.connection() as db:
+            payer = db.execute("SELECT id FROM merchants WHERE normalized_name=?", (normalize_name(record["payer_or_employer"]),)).fetchone()
+            if payer is None:
+                return None
+            mine = db.execute("SELECT id FROM income_records WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            others = db.execute("SELECT id,net_pay_minor,currency FROM income_records WHERE payer_merchant_id=? AND pay_date=? AND review_status<>'rejected' "
+                                "AND id<? ORDER BY id", (payer["id"], record["pay_date"], mine["id"] if mine else 2 ** 62)).fetchall()
+        same = [row["id"] for row in others if row["net_pay_minor"] == record["net_pay_minor"] and row["currency"] == record["currency"]]
+        return {"original": same[0] if same else None, "same_date": bool(others)} if others else None
+
+    def reject_automatically(self, income_id, original_id=None):
+        """Stop counting a pay stub (rejected, automatic) unless the user decided it. original_id: the stub it repeats, which must still count."""
+        with self.store.connection() as db:
+            if original_id is not None and not db.execute("SELECT 1 FROM income_records WHERE id=? AND id<>? AND review_status<>'rejected'",
+                                                          (original_id, income_id)).fetchone():
+                return False
+            return bool(db.execute("UPDATE income_records SET review_status='rejected',review_source='automatic',updated_at=? WHERE id=? "
+                                   "AND review_source IS NOT 'user'", (now(), income_id)).rowcount)
+
+    def mark_void(self, income_id):
+        """A pay stub printed VOID is recorded but counts nowhere (FR-85). A stub the user decided is left alone; True when it was marked."""
+        return self.reject_automatically(income_id)
+
+    def mark_duplicate(self, income_id, original_id):
+        """A pay stub that repeats another counts nowhere (FR-84, FR-85). A stub the user decided is left alone, and so is one whose original no
+        longer counts; True when it was marked. Extract again of the stub lets it count when its original is rejected or deleted."""
+        return self.reject_automatically(income_id, original_id)
 
     # Deterministic CSV/XLSX import ---------------------------------------------
 

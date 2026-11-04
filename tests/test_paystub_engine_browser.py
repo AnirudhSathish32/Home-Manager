@@ -1,6 +1,6 @@
 """The browser steps of the pay stub table engine (specs/pdf-table-engine-paystubs/test-contract.md): SC-71 (the document page's Tables tab shows what the
 engine read, its guess beside its table, no outside resource), SC-54 step 4 (a wrapped label's source lights both lines' words) and SC-61 b1's guess
-note shown under the pay stub's fields. Opt-in (RUN_BROWSER_TESTS=1), synthetic data only, following tests/test_table_engine_browser.py: each stub is
+note shown under the pay stub's fields, and SC-74 step 2 (the split panel of a file of several stubs). Opt-in (RUN_BROWSER_TESTS=1), synthetic data only, following tests/test_table_engine_browser.py: each stub is
 captured, read and extracted in the served library through the real services with the local model stub (`STUB-PS-SWAPPED`).
 """
 import os
@@ -10,6 +10,7 @@ import pytest
 from home_manager.documents.receipt_service import ReceiptService
 import paystub_engine_fixtures as pf
 from test_paystub_engine_record import B1_SUMMARY, PS_CLASSES, Run
+from test_paystub_split import THREE, Stubs, mini_file
 from test_pdf import make_pdf
 from test_statement_accounts_browser import open_page
 from test_taxes_v2_browser import served
@@ -127,4 +128,45 @@ def test_sc54_step_4_a_wrapped_labels_source_lights_both_lines(tmp_path, local_m
         expect(viewer.locator(".sv-overlay polygon.selected")).to_have_count(1, timeout=15000)
         assert viewer.locator(".sv-overlay polygon.selected title").all_text_contents() == ["295.63"]
         assert not failures, failures
+        browser.close()
+
+
+@browser_test
+def test_sc74_step_2_the_split_panel_names_the_pay_stubs_and_warns_of_no_review(tmp_path, local_model):
+    """The document page of a three-stub file (SC-72 a): "This file holds 3 pay stubs", a chip per stub with employer, pay date and net pay, Confirm
+    split, Merge with next and Split here, and no warning that the stubs wait in To check (FR-82)."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "paystub-split-sc74"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        name = "three.pdf"
+        make_pdf(manager.store.library.inbox / name, mini_file(*THREE))
+        manager.start_inbox()
+        manager.future.result(timeout=30)
+        [doc] = [item for item in manager.store.documents()["items"] if item["relative_path"].endswith(name)]
+        with manager.store.connection() as db:
+            parse_id = db.execute("SELECT id FROM parse_runs WHERE blob_hash=? AND status IN ('succeeded','partial') ORDER BY created_at DESC LIMIT 1",
+                                  (doc["current_hash"],)).fetchone()[0]
+        run = Stubs(manager.store, ReceiptService(manager.store), local_model, parse_id, doc)
+        run.answer(THREE)
+        run.extract()
+        browser, page, _ = open_page(driver, base, token, f"documents/{doc['id']}")
+        failures = watch(page, base)
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        panel = page.locator("#doc2-panel-record .split-panel")
+        expect(panel.get_by_role("heading", name="This file holds 3 pay stubs")).to_be_visible(timeout=15000)
+        chips = panel.locator(".filter-chip")
+        expect(chips).to_have_count(3)
+        for chip, (date, _) in zip(chips.all(), THREE):
+            expect(chip).to_contain_text("SYNTH PAYROLL CO")
+            expect(chip).to_contain_text("1,800.00 USD")
+            assert date[:4] in chip.inner_text()
+        for label in ("Confirm split", "Merge with next"):
+            expect(panel.get_by_role("button", name=label)).to_be_visible()
+        expect(panel.get_by_role("button", name="Split here")).to_be_visible()
+        expect(panel).not_to_contain_text("To check")
+        expect(panel).not_to_contain_text("receipt")
+        assert failures == [], failures
         browser.close()
