@@ -254,9 +254,12 @@ async function loadReading(documentId, digest = null) {
 // text read from it as a list of lines. highlight(ids) lights the cited lines; a region click or Enter on a line tells
 // onRegionClick's callbacks which lines it is. Document text is always set as text, links included.
 let sourceViewerCount = 0;
+// What the pay engine read of a pay stub's columns (the extraction run's pay_tables): each column's role, shown over its heading.
+const PAY_ROLES = {current: "This period", ytd: "Year to date", hours: "Hours", rate: "Rate", other: "Other",
+                   gross: "Gross", taxes: "Taxes", deductions: "Deductions", net: "Net"};
 function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   const n = ++sourceViewerCount, idOf = name => `sv${n}-${name}`;
-  const state = {doc, reading, runId, digest: digest || doc.current_hash, url: null, generation: 0, callbacks: []};
+  const state = {doc, reading, runId, digest: digest || doc.current_hash, url: null, generation: 0, callbacks: [], engineTables: []};
   const el = element("section", "", "source-viewer"); el.setAttribute("aria-label", "Source document");
   const toolbar = element("div", "", "sv-toolbar"), tabs = element("div", "", "tabs sv-tabs");
   tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Source view");
@@ -361,9 +364,13 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     copy.disabled = !result;
     const sources = result?.pages || (result ? [result] : []);
     const nativeTables = result?.layout_context?.tables || [];
-    const tables = [...nativeTables.map(table => ({table, source: {number: table.page}, native: true})),
-      ...sources.filter(source => !nativeTables.some(table => table.page === source.number))
-        .flatMap(source => (source.vision_tables?.tables || []).map(table => ({table, source})))];
+    // A page the pay engine read shows the engine's tables in place of the printed ones (docs/ui.md "Source viewer").
+    const engineTables = state.engineTables, enginePages = new Set(engineTables.map(table => table.page));
+    const tables = [...nativeTables.filter(table => !enginePages.has(table.page)).map(table => ({table, source: {number: table.page}, native: true})),
+      ...engineTables.map(table => ({table, source: {number: table.page}, engine: true})),
+      ...sources.filter(source => !nativeTables.some(table => table.page === source.number) && !enginePages.has(source.number))
+        .flatMap(source => (source.vision_tables?.tables || []).map(table => ({table, source})))]
+      .sort((a, b) => (a.source.number || 0) - (b.source.number || 0));
     viewTables.hidden = !tables.length;
     if (!tables.length) {
       const rejected = (result?.issues || []).some(issue => ["vision_table_invalid", "pdf_table_ambiguous"].includes(issue.code));
@@ -373,21 +380,29 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
           ? "This older PDF reading has no saved text positions. Use Read again to recover its layout from the preserved PDF."
           : "No reliable table structure was found. The extracted text is available in Text; check the original columns.", "muted sv-empty"));
     }
-    for (const [tableIndex, {table, source, native}] of tables.entries()) {
+    for (const [tableIndex, {table, source, native, engine}] of tables.entries()) {
       const wrap = element("div", "", "sv-table-scroll"), grid = element("table", "", "sv-table");
       grid.dataset.tableId = table.id;
       grid.append(element("caption", `${source.number ? `Page ${source.number} · ` : ""}Table ${tableIndex + 1} · ${
-        native ? "From PDF text positions" : source.vision_tables.origin === "text_separators" || source.method === "embedded_text" ? "From text separators" : "Reported by vision"}`));
+        engine ? "Read from the printed columns" : native ? "From PDF text positions" : source.vision_tables.origin === "text_separators" || source.method === "embedded_text" ? "From text separators" : "Reported by vision"}`));
       for (const [tag, rows] of [["thead", table.header_rows], ["tbody", table.rows]]) {
         const section = element(tag);
         for (const row of rows) {
-          const tr = element("tr"); tr.dataset.lineId = row.line_id;
-          for (const cell of row.cells) {
+          const tr = element("tr", "", row.total ? "muted" : ""); tr.dataset.lineId = row.line_id;
+          if (row.total) tr.dataset.total = "true";
+          for (const [position, cell] of row.cells.entries()) {
             const td = element(tag === "thead" ? "th" : "td", cell.quote);
             td.dataset.cellId = cell.id; td.title = `${cell.id} · ${cell.line_id}`;
             if (tag === "thead") td.scope = "col";
             if (!cell.quote) td.setAttribute("aria-label", "Blank source cell");
-            if (native) {
+            if (engine) {
+              if (cell.word_ids.length) {
+                const findCell = element("button", cell.quote, "link-button"); findCell.type = "button";
+                findCell.setAttribute("aria-label", `Show ${cell.quote} on PDF page ${table.page}`);
+                findCell.addEventListener("click", () => { highlight(cell.word_ids); tell(null, [cell.line_id]); });
+                td.replaceChildren(findCell);
+              }
+            } else if (native) {
               td.rowSpan = cell.row_span; td.colSpan = cell.column_span;
               if (cell.word_ids.length) {
                 const findCell = element("button", cell.quote, "link-button"); findCell.type = "button";
@@ -395,6 +410,9 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
                 findCell.addEventListener("click", () => { highlight([cell.id]); tell(null, [cell.line_id]); });
                 td.replaceChildren(findCell);
               }
+            }
+            if (engine && tag === "thead" && PAY_ROLES[table.roles?.[position]]) {
+              td.dataset.role = table.roles[position]; td.append(element("span", PAY_ROLES[table.roles[position]], "muted small sv-role"));
             }
             tr.append(td);
           }
@@ -406,6 +424,11 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
         grid.append(section);
       }
       wrap.append(grid); tablePanel.append(wrap);
+      if (engine && table.guesses?.length) {
+        const guessed = element("ul", "", "muted small sv-guesses"); guessed.setAttribute("aria-label", `What was guessed about table ${tableIndex + 1}`);
+        guessed.append(...table.guesses.map(text => element("li", text)));
+        tablePanel.append(guessed);
+      }
     }
     if (result?.pages) {
       pageSelect.append(...result.pages.map(page => new Option(`${page.number} of ${result.pages.length} · ${page.method}`, String(page.number))));
@@ -472,7 +495,8 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     const wanted = new Set(ids);
     const nativePage = result.pages?.find(page => page.method === "embedded_text" && page.layout && ids.some(id =>
       page.layout.lines.some(line => line.id === id) || page.layout.blocks.some(block => block.id === id)
-      || page.layout.tables.some(table => table.cells.some(cell => cell.id === id || `${table.id}-row-${cell.row}` === id))));
+      || page.layout.tables.some(table => table.cells.some(cell => cell.id === id || `${table.id}-row-${cell.row}` === id))
+      || page.layout.words.some(word => word.id === id)));
     const useRaw = !nativePage && ids.some(id => result.lines.some(line => line.id === id));
     if (rawOrder.checked !== useRaw) { rawOrder.checked = useRaw; renderLines(); }
     for (const row of tablePanel.querySelectorAll("tr[data-line-id]")) row.classList.toggle("selected", wanted.has(row.dataset.lineId));
@@ -515,6 +539,7 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
   return {
     el, highlight,
     onRegionClick(callback) { state.callbacks.push(callback); },
+    setEngineTables(tables) { state.engineTables = tables || []; return render(); },
     update(reading, nextRunId = state.runId) { state.reading = reading; state.runId = nextRunId; return render(); },
     showDocument(id) { select("image"); return showImage(`/api/documents/${id}/preview`); },
     destroy() { state.generation++; state.callbacks = []; if (state.url) URL.revokeObjectURL(state.url); state.url = null; },

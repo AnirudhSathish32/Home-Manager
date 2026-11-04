@@ -63,7 +63,7 @@ async function openDocumentV2(id, params) {
   renameDocumentV2(doc);
   const latest = element("a", "View the latest version"); latest.href = `#/documents/${doc.id}`;
   $("doc2-version-banner").replaceChildren(...(state.digest !== doc.current_hash ? [alertBox("You're viewing an earlier preserved version of this document. Decisions apply to the latest version.", {tone: "warning", action: latest})] : []));
-  state.viewer = sourceViewer(doc, null, {digest: state.digest});
+  state.viewer = sourceViewer(doc, null, {digest: state.digest}); state.engineKey = "[]";
   state.viewer.onRegionClick(({lineIds}) => doc2Cite(lineIds));
   $("doc2-viewer").replaceChildren(state.viewer.el);
   doc2Head(state); doc2Details(state); doc2Steps(state);
@@ -341,6 +341,14 @@ function doc2ClearRecord() {
   $("doc2-record-title").textContent = "Recorded information"; $("doc2-panel-record").classList.remove("doc2-hide-edits");
   if (doc2) { doc2.record = null; doc2.type = null; doc2.cc = null; doc2.recordStatus = null; doc2.reload = null; doc2.awaitingAccount = false; }
 }
+// The pay engine's tables of the extraction shown (its run result's pay_tables) replace the printed ones in the source viewer's Tables tab
+// (docs/ui.md "Source viewer"); the tab is drawn again only when they change.
+async function doc2EngineTables(state, tables) {
+  const key = JSON.stringify(tables);
+  if (state.engineKey === key) return;
+  state.engineKey = key;
+  await state.viewer.setEngineTables(tables);
+}
 async function doc2Extraction(state, parseId) {
   const runs = await api(`/api/receipt-runs/${parseId}/extraction-runs`);
   if (doc2 !== state || state.runId !== parseId) return;
@@ -349,11 +357,14 @@ async function doc2Extraction(state, parseId) {
   // document never flashes "Record it" while it loads.
   if (!runs.length) {
     if (state.renderedKey !== "") { doc2ClearRecord(); $("doc2-panel-record").append(emptyState("Nothing is recorded from this document yet.")); }
-    state.extraction = null; state.renderedKey = ""; state.extractionChecked = true; doc2Steps(state); return;
+    state.extraction = null; state.renderedKey = ""; state.extractionChecked = true; doc2Steps(state);
+    await doc2EngineTables(state, []); return;
   }
   const run = await api(`/api/extraction-runs/${runs[0].id}`);
   if (doc2 !== state || state.runId !== parseId) return;
   state.extraction = {status: run.status, error: run.error, publication: run.publication, documentType: run.document_type, pending: PENDING_RUN.includes(run.status)};
+  await doc2EngineTables(state, run.result?.pay_tables || []);
+  if (doc2 !== state || state.runId !== parseId) return;
   const key = `${run.id}:${run.status}`;
   if (state.renderedKey === key) { state.extractionChecked = true; doc2Steps(state); return; }
   state.renderedKey = key;
@@ -573,8 +584,9 @@ const TENDER_LABELS = {gift_card: "Gift card", ebt: "EBT", card: "Card", cash: "
 function doc2Forms(state, type, record, find) {
   const parts = [];
   // A bill's notes, under its fields: what its reading left out or worked out, with no review needed (plan P9).
-  // A statement's are the same kind of note (rows the columns didn't have, a reading's rows that were replaced; FR-20).
-  const notes = record.document_kind === "bill" || type === "statement" ? record.details?.notes : null;
+  // A statement's are the same kind of note (rows the columns didn't have, a reading's rows that were replaced; FR-20),
+  // and a pay stub's are what the engine guessed or couldn't read (specs/pdf-table-engine-paystubs FR-56 to FR-65).
+  const notes = record.document_kind === "bill" || type === "statement" || type === "income_record" ? record.details?.notes : null;
   if (Array.isArray(notes) && notes.length) {
     const list = element("ul", "", "doc2-notes muted small");
     list.setAttribute("aria-label", "Notes from the reading");

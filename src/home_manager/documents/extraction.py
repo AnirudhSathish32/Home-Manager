@@ -1301,6 +1301,61 @@ def pay_tables_of(tables, pay, part, line_ids):
     return sorted([*kept, *part.adapted], key=lambda table: table_page(table) or 0)
 
 
+def viewer_cell(cell):
+    return {"id": cell.id, "quote": cell.quote, "word_ids": list(cell.word_ids), "line_id": cell.line_id}
+
+
+def viewer_row(row, total=None):
+    return {"id": row.id, "line_id": row.line_id, "total": row.total if total is None else total, "cells": [viewer_cell(cell) for cell in row.cells]}
+
+
+BOX_HEADINGS = {"gross": "Gross", "taxes": "Taxes", "deductions": "Deductions", "net": "Net"}
+
+
+def viewer_box(box, cells):
+    """One summary box in the shape of a table (FR-75, FR-76): a header row of its named columns (the printed heading words, else the name), then
+    its this-period and year-to-date rows. `roles` maps a cell index to gross, taxes, deductions or net."""
+    names = [name for name in BOX_HEADINGS if name in cells["current"] or name in cells["ytd"]]
+    head = [{"id": f"{box.id}-head-0", "quote": "", "word_ids": [], "line_id": ""}]
+    head += [{"id": f"{box.id}-head-{number}", "quote": " ".join(box.heads[name].labels) if name in box.heads and box.heads[name].labels else BOX_HEADINGS[name],
+              "word_ids": [], "line_id": ""} for number, name in enumerate(names, 1)]
+    rows = []
+    for period, fallback in (("current", "This period"), ("ytd", "Year to date")):
+        found = [cells[period][name] for name in names if name in cells[period]]
+        line_id = found[0].line_id if found else ""
+        label = {"id": f"{box.id}-{period}-label", "quote": box.rows[period].label or fallback, "word_ids": [], "line_id": line_id}
+        rows.append({"id": f"{box.id}-{period}", "line_id": line_id, "total": False,
+                     "cells": [label, *[viewer_cell(cells[period][name]) if name in cells[period] else
+                                        {"id": f"{box.id}-{period}-{name}", "quote": "", "word_ids": [], "line_id": line_id} for name in names]]})
+    head[0]["line_id"] = rows[0]["line_id"]
+    return {"id": box.id, "page": box.page, "roles": {number: name for number, name in enumerate(names, 1)},
+            "header_rows": [{"id": f"{box.id}-head", "line_id": rows[0]["line_id"], "cells": head}], "rows": rows}
+
+
+def pay_tables_for_viewer(pay, readings):
+    """The file-wide `pay_tables` of an extraction run's result (plan P7.10, P11), which the document page's Tables tab shows instead of the printed
+    tables of the pages the pay engine read (FR-76): per adapted table (one entry for each page a table covers, holding that page's rows) its id,
+    page, `roles` by cell index, header rows, rows (id, line_id, total and cells with id, quote, word_ids and line_id) and `guesses`, the texts of
+    the guesses made about it, by the engine (FR-58, FR-59, FR-75) or by Record (FR-62); then the summary box in the same shape. Empty when the
+    engine didn't run or failed."""
+    if pay is None or pay is PAY_FAILED:
+        return []
+    found = {}
+    for guess in (*(asdict(guess) for guess in pay.guesses), *(guess for reading in readings for guess in reading.get("guesses") or [])):
+        if guess["text"] not in found.setdefault(guess["table_id"], []):
+            found[guess["table_id"]].append(guess["text"])
+    shown = []
+    for table in pay.adapted:
+        for number, page in enumerate(table.pages):
+            rows = [row for row in table.rows if row.page == page]
+            shown.append({"id": table.id, "page": page, "roles": dict(table.roles), "header_rows": [viewer_row(row, False) for row in table.header_rows],
+                          "rows": [viewer_row(row) for row in rows], "guesses": found.get(table.id, []) if not number else []})
+    for box in pay.boxes:
+        if box.id in pay.box_cells:
+            shown.append({**viewer_box(box, pay.box_cells[box.id]), "guesses": found.get(box.id, [])})
+    return shown
+
+
 def pay_layout_notes(evidence, pay, lines):
     """The pdf_layout_review messages (each starts "Page N") a pay stub part takes (P7.1a): only for pages holding its lines, and not for a page
     the pay engine read a table on when the layout's only issue is unresolved_columns (the rule finance/pdf_import.py already uses: table_grid
@@ -3995,6 +4050,8 @@ class ExtractionService:
                                "split_confirmed": confirmed}
             elif split_notes:
                 result["split_notes"] = split_notes
+            if pay is not None:
+                result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
             self.save_segments(run, parse, lines, parts, confirmed)
             self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
             with self.store.connection() as db:

@@ -765,3 +765,46 @@ def test_determinism_of_the_new_notes_and_guesses(pdf_store, local_model):
     run.stub(classes)
     run.extract(force=True)
     assert snapshot(run) == first and run.notes == notes and guesses_of(run.record) == guesses
+
+
+# --- FR-76: the run result's pay_tables (what the document page's Tables tab shows) ---------------------------------------------
+
+def test_pay_tables_of_the_run_result_hold_the_engines_cells_and_roles(pdf_store, local_model):
+    """SL-05 (plan P7.10): PS's run result carries one file-wide pay table: its roles by cell index, a header row, ten rows (totals flagged) whose
+    cells hold the printed text and word ids, no guess; cell values are the contract's PS table, written out here."""
+    run = swapped_stub_run(pdf_store, local_model, pf.ps_pages())
+    [table] = run.run["result"]["pay_tables"]
+    words = {word.id: word.text for word in run.evidence.pages[0].layout.words}
+    assert table["page"] == 1 and re.fullmatch(r"page-1-pay-\d+", table["id"])
+    assert table["roles"] == {"1": "hours", "2": "rate", "3": "current", "4": "ytd"}
+    [heading] = table["header_rows"]
+    assert [cell["quote"] for cell in heading["cells"]] == ["", "Hours", "Rate", "Current", "YTD"]
+    assert [row["total"] for row in table["rows"]] == [kind != "row" for *_, kind in pf.PS_ROWS]
+    for row, (label, hours, rate, current, ytd, _) in zip(table["rows"], pf.PS_ROWS):
+        assert [cell["quote"] for cell in row["cells"]] == [label, hours, rate, current, ytd]
+        assert row["line_id"] == row["cells"][0]["line_id"] and row["id"].startswith(table["id"])
+        for cell in row["cells"]:
+            assert {key for key in cell} == {"id", "quote", "word_ids", "line_id"}
+            assert [words[word_id] for word_id in cell["word_ids"]] == (cell["quote"].split() if cell["quote"] else [])  # Blank cells hold no words.
+    assert table["guesses"] == []
+    assert [entry["id"] for entry in run.run["result"]["pay_tables"]] == [table["id"]]  # No summary box on PS.
+    json.dumps(run.run["result"]["pay_tables"])
+
+
+def test_pay_tables_list_the_guess_beside_the_table_it_concerns(pdf_store, local_model):
+    """B1's columns guess (SC-61 b1) is the one guess text of its table, the same words as the record's note."""
+    classes = [("Regular", "earnings", "regular_pay", "Regular"), ("Relocation Bonus", "earnings", "bonus", "Relocation Bonus")]
+    run = swapped_stub_run(pdf_store, local_model, pf.b1_pages(), classes, B1_SUMMARY)
+    [table] = run.run["result"]["pay_tables"]
+    [guess] = guesses_of(run.record, "columns_guessed")
+    assert table["guesses"] == [guess["text"]] and "left column" in table["guesses"][0]
+
+
+def test_pay_tables_hold_the_summary_box_in_the_same_shape(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.sb_pages(), summary=BOX_SUMMARY)
+    tables = run.run["result"]["pay_tables"]
+    [box] = [table for table in tables if len(table["rows"]) == 2]  # The pay table has the six rows; the box its two.
+    assert [cell["quote"] for cell in box["header_rows"][0]["cells"]][1:] == ["Gross Pay", "Taxes", "Deductions", "Net Pay"]
+    assert [cell["quote"] for cell in box["rows"][0]["cells"]][1:] == ["2,687.50", "501.23", "134.38", "2,051.89"]
+    assert [cell["quote"] for cell in box["rows"][1]["cells"]][1:] == ["33,625.00", "6,271.06", "1,681.25", "25,672.69"]
+    assert set(box["roles"].values()) == {"gross", "taxes", "deductions", "net"}

@@ -1142,6 +1142,8 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .sv-table { width: 100%; font-size: var(--text-sm); border-collapse: collapse; }
 .sv-table caption { text-align: left; padding: var(--space-2); color: var(--text-muted); }
 .sv-table th, .sv-table td { padding: var(--space-2); border: 1px solid var(--border); white-space: pre-wrap; min-width: 5em; }
+.sv-role { display: block; font-weight: 400; }
+.sv-guesses { margin: var(--space-2) 0; padding-left: var(--space-5); }
 .sv-table tr.selected { background: var(--warning-subtle); }
 .sv-extras { font-size: var(--text-sm); }
 .sv-extras h3 { margin: var(--space-3) 0 var(--space-2); }
