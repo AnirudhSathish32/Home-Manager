@@ -698,8 +698,8 @@ class Ledger:
 
     def _upsert(self, db, table, source, columns):
         """Write an extraction's record unless the user has decided it; automatic acceptance can be redone.
-        A file holding several receipts keeps one per segment (source["segment"], 0 for the first)."""
-        segment = source.get("segment", 0) if table == "receipts" else None
+        A file holding several receipts or pay stubs keeps one per segment (source["segment"], 0 for the first)."""
+        segment = source.get("segment", 0) if table in ("receipts", "income_records") else None
         existing = db.execute(f"SELECT id,review_status,review_source FROM {table} WHERE blob_hash=?" + (" AND segment=?" if segment is not None else ""),
                               (source["blob_hash"],) + ((segment,) if segment is not None else ())).fetchone()
         if existing and existing["review_status"] in ("verified", "rejected") and existing["review_source"] == "user":
@@ -956,23 +956,26 @@ class Ledger:
         db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(everything), now(), receipt_id))
         return previous
 
-    def retire_segments(self, blob_hash, keep, note="The latest reading of this file no longer finds this receipt; check how the file was split."):
-        """Receipts of a file's segments that its latest reading no longer finds (keep: the segments it found; none when
-        the file became a later page of a combined document). One the user never decided stops counting (rejected
+    def retire_segments(self, blob_hash, keep, note=None):
+        """Receipts and pay stubs of a file's segments that its latest reading no longer finds (keep: the segments it found;
+        none when the file became a later page of a combined document). One the user never decided stops counting (rejected
         automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note."""
         retired = 0
         with self.store.connection() as db:
             marks = ",".join("?" * len(keep))
-            for row in db.execute("SELECT id,review_source,validation_json FROM receipts WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
-                                  (blob_hash, *keep)).fetchall():
-                issues = [issue for issue in json.loads(row["validation_json"]) if issue != note] + [note]
-                if row["review_source"] == "user":
-                    db.execute("UPDATE receipts SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
-                else:
-                    db.execute("UPDATE receipts SET review_status='rejected',review_source='automatic',validation_json=?,updated_at=? WHERE id=?",
-                               (json.dumps(issues), now(), row["id"]))
-                    self.refresh_splits(db, row["id"])
-                retired += 1
+            for table, noun in (("receipts", "receipt"), ("income_records", "pay stub")):
+                text = note or f"The latest reading of this file no longer finds this {noun}; check how the file was split."
+                for row in db.execute(f"SELECT id,review_source,validation_json FROM {table} WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
+                                      (blob_hash, *keep)).fetchall():
+                    issues = [issue for issue in json.loads(row["validation_json"]) if issue != text] + [text]
+                    if row["review_source"] == "user":
+                        db.execute(f"UPDATE {table} SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
+                    else:
+                        db.execute(f"UPDATE {table} SET review_status='rejected',review_source='automatic',validation_json=?,updated_at=? WHERE id=?",
+                                   (json.dumps(issues), now(), row["id"]))
+                        if table == "receipts":
+                            self.refresh_splits(db, row["id"])
+                    retired += 1
         return retired
 
     @staticmethod

@@ -504,7 +504,7 @@ class ManagedLibrary:
         with self.store.connection() as db:
             rows = [dict(row) for row in db.execute(
                 f"SELECT m.*,(SELECT mm.canonical_name FROM income_records i JOIN merchants mm ON mm.id=i.payer_merchant_id "
-                f"WHERE i.blob_hash=m.blob_hash AND i.review_status<>'rejected') AS payer FROM managed_files m JOIN occurrences o ON o.id=m.document_id "
+                f"WHERE i.blob_hash=m.blob_hash AND i.review_status<>'rejected' ORDER BY i.segment LIMIT 1) AS payer FROM managed_files m JOIN occurrences o ON o.id=m.document_id "
                 f"WHERE m.folder IN ({marks}) AND o.deleted_at IS NULL "
                 "AND NOT EXISTS(SELECT 1 FROM managed_organization_intents i WHERE i.document_id=m.document_id AND i.blob_hash=m.blob_hash "
                 "AND i.status IN ('pending','blocked'))", list(RETIRED_FOLDERS))]

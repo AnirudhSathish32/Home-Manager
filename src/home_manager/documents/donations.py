@@ -54,7 +54,7 @@ class Donations:
                                       f"c.status AS check_status FROM {table} r JOIN occurrences o ON o.id=r.document_id "
                                       "LEFT JOIN donation_checks c ON c.record_type=? AND c.record_id=r.id AND c.blob_hash=r.blob_hash "
                                       "WHERE r.extraction_run_id IS NOT NULL AND o.deleted_at IS NULL"
-                                      + (" AND r.segment=0" if record_type == "receipt" else "") + " ORDER BY r.id DESC LIMIT ?",
+                                      + (" AND r.segment=0" if record_type in ("receipt", "income_record") else "") + " ORDER BY r.id DESC LIMIT ?",
                                       (record_type, limit)):
                     if extension(row["relative_path"]) in ORIGINAL_EXTENSIONS:
                         rows.append({**dict(row), "record_type": record_type, "name": row["relative_path"].rsplit("/", 1)[-1]})
