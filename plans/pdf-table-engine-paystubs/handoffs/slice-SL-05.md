@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 5b94f11
-end_head: <filled by the commit below>
-commit: <code commit>
+end_head: 35e40b7   # the code commit; the handoff fix is committed right after it
+commit: 35e40b7
 checks:
   - command: ".venv/bin/python -m pytest tests/test_paystub_engine_record.py -k pay_tables -q"
     exit_code: 0   # 3 passed
