@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 44f40b0
-end_head: ddc314c
-commit: ddc314c
+end_head: a2468c8   # the code commit; one later commit only corrects this file's hashes
+commit: a2468c8
 checks:
   - command: ".venv/bin/python -m pytest tests/test_paystub_engine.py -k \"pcheck or rows or blocks or sections or totals or other_tables or unplaced or continuation\" -q"
     exit_code: 0   # 156 passed (the whole module is these 156 tests)
