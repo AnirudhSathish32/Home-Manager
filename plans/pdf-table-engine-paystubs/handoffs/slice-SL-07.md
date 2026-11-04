@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 0d4e455   # round 1; round r2 started at 2521859
-end_head: 8246356   # fix round r2: the code commit; the handoff file is committed with it
-commit: 8246356
+end_head: b662576   # fix round r2: the code commit; this handoff is committed right after it
+commit: b662576
 checks:
   - command: ".venv/bin/python -m pytest tests/test_paystub_split.py -q"
     exit_code: 0   # 35 passed (5 SL-06 tests + 30 new)
