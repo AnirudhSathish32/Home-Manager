@@ -192,6 +192,11 @@ def starts_stub(line):
     return text_only(line) and bool(STUB_START.search(line_text(line))) and any(token.kind == "date" for token in line.all_tokens())
 
 
+def stub_dates(line):
+    """The dates a stub start line prints."""
+    return {token.text for token in line.all_tokens() if token.kind == "date"}
+
+
 def words_of(lines):
     return {token.text.lower() for line in lines for token in line.all_tokens()}
 
@@ -281,6 +286,10 @@ class Group:
     align: str
     edge: float
     extent: tuple[float, float]
+    boxes: list = field(default_factory=list)  # The boxes of its tokens, so its edge can be read at another alignment.
+
+    def edge_at(self, align):
+        return self.edge if align == self.align else median(edge_of(box, align) for box in self.boxes)
 
 
 @dataclass
@@ -301,7 +310,7 @@ class Builder:
     pages: list = field(default_factory=list)
     section: str | None = None
     partner: str | None = None
-    frame: dict = field(default_factory=dict)  # column key -> (alignment, edge) in the first page's frame, while the table is open.
+    frame: dict = field(default_factory=dict)  # column key -> {alignment: edge} in the first page's frame, while the table is open.
 
 
 def finish_columns(builder, ids):
@@ -354,13 +363,28 @@ def finish_box(builder, ids_line, view):
     return SummaryBox(builder.entries[0]["page"], ids_line, columns, rows, builder.id)
 
 
-def heading_runs(view, lines):
-    return [(run_text(run), union(view.box[word.id] for word in run), [word.id for word in run]) for line in lines for run in line.runs]
+def heading_runs(view, lines, zones=()):
+    """The heading lines' runs as (text, box, word ids). A run is split where its words are further apart than a space and lie in the zones of
+    different columns (two headings printed close enough to read as one phrase: `This Period` `Year to Date`)."""
+    made = []
+    for line in lines:
+        for run in line.runs:
+            pieces, last = [], None
+            for word in run:
+                box = view.box[word.id]
+                zone = next((number for number, found in enumerate(zones) if in_zone(box, found)), None)
+                if pieces and not (zone is not None and last is not None and zone != last[0] and box[0] - last[1] > view.size / 2):
+                    pieces[-1].append(word)
+                else:
+                    pieces.append([word])
+                last = (zone, box[2])
+            made += [(run_text(piece), union(view.box[word.id] for word in piece), [word.id for word in piece]) for piece in pieces]
+    return made
 
 
-def find_boxes(number, view, bl, tolerance, found_boxes):
-    """Summary boxes of a block (FR-75): the lines they use, including a heading printed directly above, are returned as consumed."""
-    consumed = set()
+def find_boxes(number, view, bl, tolerance, found_boxes, taken=frozenset()):
+    """Summary boxes of a block (FR-75): the lines they use, including a heading printed directly above, are returned as consumed (with `taken`)."""
+    consumed = set(taken)
     index = 0
     while index + 1 < len(bl):
         first, second = bl[index], bl[index + 1]
@@ -459,26 +483,30 @@ def column_sets(slots):
 
 
 def offset_of(builder, groups, first, size):
-    """(offset, group id to column key) when the page's first row fits the open table's columns at a page offset, else None."""
+    """(offset, group id to column key) when the page's first row fits the open table's columns at a page offset, else None. A group is compared
+    with a column at every alignment: the same column can be right-aligned on one page and, where its amounts happen to be of equal width, left- or
+    centre-aligned on another."""
     best = None
     tolerance = size * ALIGN
+
+    def apart(info, edges, offset):
+        return min(abs(info.edge_at(align) - (edge + offset)) for align, edge in edges.items())
+
     for gid in first:
-        for _, (align, edge) in builder.frame.items():
-            if groups[gid].align != align:
-                continue
-            offset = groups[gid].edge - edge
-            if abs(offset) > size * MAX_OFFSET:
-                continue
-            mapping = {}
-            for other, info in groups.items():
-                near = [(abs(info.edge - (edge2 + offset)), key2) for key2, (align2, edge2) in builder.frame.items()
-                        if align2 == info.align and abs(info.edge - (edge2 + offset)) <= tolerance]
-                if near:
-                    mapping[other] = min(near)[1]
-            if all(g in mapping for g in first):
-                rank = (-abs(offset), len(mapping))
-                if best is None or rank > best[0]:
-                    best = (rank, offset, mapping)
+        for edges in builder.frame.values():
+            for align, edge in edges.items():
+                offset = groups[gid].edge_at(align) - edge
+                if abs(offset) > size * MAX_OFFSET:
+                    continue
+                mapping = {}
+                for other, info in groups.items():
+                    near = [(apart(info, edges2, offset), key2) for key2, edges2 in builder.frame.items() if apart(info, edges2, offset) <= tolerance]
+                    if near:
+                        mapping[other] = min(near)[1]
+                if all(g in mapping for g in first):
+                    rank = (-abs(offset), len(mapping))
+                    if best is None or rank > best[0]:
+                        best = (rank, offset, mapping)
     return (best[1], best[2]) if best else None
 
 
@@ -487,10 +515,16 @@ def key_of(gid, mapping, number):
     return mapping.get(gid, (number, gid)) if mapping else (number, gid)
 
 
-def read_block(number, view, bl, name, previous, made, boxes, serial):
-    """One block of a page: its summary boxes, then its tables and unplaced lines. Returns (tables still open, unplaced lines)."""
+def read_block(number, view, bl, name, previous, made, boxes, serial, taken=frozenset(), stub=None, starts=None, whole=None):
+    """One block of a page: its summary boxes, then its tables and unplaced lines. `taken` is the lines of a summary box found across the whole page
+    (before the page was split into blocks); `stub` is the dates printed on the start lines of the stub being read, kept across pages: a start line
+    that prints only dates already in it repeats the stub's heading (a later page), so it doesn't end the open table. `starts`: the page's stub start
+    lines (line index to its dates), found on the whole line, so that a block the start line leaves empty ends its table too. Returns (tables still
+    open, unplaced lines)."""
+    stub = set() if stub is None else stub
+    starts, whole = starts or {}, whole or {}
     tolerance = view.size * ALIGN
-    consumed = find_boxes(number, view, bl, tolerance, boxes)
+    consumed = find_boxes(number, view, bl, tolerance, boxes, taken)
     pay = [line for line in bl if line.index not in consumed and is_pay(line)]
     pay_index = {line.index for line in pay}
     attached = {index for line in pay for index in heads_above(bl, consumed, line.index)}
@@ -503,7 +537,8 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
 
     found = choose_alignments(entries, tolerance, supported)
     groups = {gid: Group(alignment, median(edge_of(entries[position][0].box, alignment) for position in positions),
-                         span([entries[position][0] for position in positions])) for gid, (alignment, positions) in enumerate(found)}
+                         span([entries[position][0] for position in positions]), [entries[position][0].box for position in positions])
+              for gid, (alignment, positions) in enumerate(found)}
     slots = {}
     place(slots, [(line.index, amounts_of(line)) for line in pay], found)
     sets = column_sets(slots)
@@ -513,6 +548,14 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
         centres = [sum(extent) / 2 for extent in extents]
         gaps = [right - left for left, right in zip(centres, centres[1:])]
         zones = zones_between(extents, median(gaps) / 2 if gaps else view.size * LONE_REACH)
+
+    def repeats(line, builder):
+        """Whether a heading line only repeats the open table's own: its words are the table's, and the row after it prints in the table's columns
+        (a second table with the same wording over other columns has a heading of its own)."""
+        if not words_of([line]) <= builder.heading_words:
+            return False
+        after = next((item.index for item in bl if item.index > line.index and item.index in pay_index), None)
+        return after is None or not slots[after][0] or bool({sets[gid] for gid in slots[after][0]} & builder.comps)
 
     before = len(made)
     cur, mapping, offset = None, None, 0.0
@@ -538,15 +581,21 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
 
     for line in bl:
         index = line.index
+        if index in starts and index not in consumed:
+            dates = starts[index]
+            if cur is not None and dates <= stub:
+                continue  # The stub's heading repeated on a later page (FR-55, FR-80).
+            if cur is not None:
+                stub.clear()
+            close()
+            pending = []
+            stub |= dates
+            continue
         if index in consumed or not line.runs:
             last = title = None
             continue
-        if starts_stub(line):
-            close()
-            pending = []
-            continue
         if index in attached and any(in_zone(union(view.box[word.id] for word in run), zone) for run in line.runs for zone in zones):
-            if cur is not None and words_of([line]) <= cur.heading_words:
+            if cur is not None and repeats(line, cur):
                 last = title = None  # The table's own heading, repeated: ignored (FR-55).
                 continue
             close()
@@ -567,7 +616,7 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
                 heads = [bl[item] for item in pending]
                 above = bl[pending[0] - 1] if pending and pending[0] > 0 and pending[0] - 1 not in consumed else None
                 serial[0] += 1
-                cur = Builder(f"page-{number}-pay-{serial[0]}", name, view.size, heading_runs(view, heads), [line_text(item) for item in heads],
+                cur = Builder(f"page-{number}-pay-{serial[0]}", name, view.size, heading_runs(view, heads, zones), [line_text(item) for item in heads],
                               words_of(heads), line_text(above) if above is not None and is_title_like(above) else None)
                 made.append(cur)
                 pending, mapping, offset, section = [], None, 0.0, None
@@ -586,18 +635,20 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
             label = label_of(line)
             kind = total_kind(label)
             entry = {"page": number, "kind": kind, "word_ids": [word.id for word in line.words], "label": label, "keys": keys,
-                     "section": section, "stray": stray}
+                     "section": section, "stray": stray, "line": index}
             cur.entries.append(entry)
             cur.label_lefts.append(view.box[line.runs[0][0].id][0] - offset)
             last = (entry, index) if kind is None else None
             if kind == "net":
                 close()  # A table ends after its net pay (P3.6).
+                stub.clear()
             continue
         if not text_only(line):
             last = title = None
             continue
         left = view.box[line.runs[0][0].id][0]
-        if last is not None and index == last[1] + 1 and cur is not None and left - (median(cur.label_lefts) + offset) > tolerance:
+        if (last is not None and index == last[1] + 1 and cur is not None and whole.get(index, len(line.runs)) == 1
+                and left - (median(cur.label_lefts) + offset) > tolerance):
             entry = last[0]  # Indented under a row: the rest of its label (FR-54).
             entry["word_ids"] += [word.id for word in line.words]
             entry["label"] = f"{entry['label']} {line_text(line)}"
@@ -612,14 +663,14 @@ def read_block(number, view, bl, name, previous, made, boxes, serial):
     opened = [cur] if cur is not None else []
     if cur is not None:
         cur.section = section
-        cur.frame = {key: (cur.aligns[key], median(edge_of(token.box, cur.aligns[key]) - shift for token, shift in members))
+        cur.frame = {key: {align: median(edge_of(token.box, align) - shift for token, shift in members) for align in ALIGNMENTS}
                      for key, members in cur.members.items()}
     return opened, unplaced
 
 
 def read(result):
     """Read a saved reading (`PDFResult`) into its pay tables. Only `embedded_text` pages with a saved layout are read."""
-    views, made, boxes, unplaced, without, previous = {}, [], [], [], [], []
+    views, made, boxes, unplaced, without, previous, stub = {}, [], [], [], [], [], {}
     for page in result.pages:
         if page.method != "embedded_text" or page.layout is None:
             previous = []
@@ -627,17 +678,27 @@ def read(result):
         number = page.number
         view = views[number] = PageView(page.layout)
         lines = [split_tails(line) for line in tokenize_page(view)]
+        taken = find_boxes(number, view, lines, view.size * ALIGN, boxes)  # A summary box above side-by-side blocks spans both (FR-53, FR-75).
         blocks = blocks_of(view, lines, view.size * ALIGN)
         names = ("left", "right") if len(blocks) == 2 else (None,)
+        starts = {line.index: stub_dates(line) for line in lines if starts_stub(line)}
+        whole = {line.index: len(line.runs) for line in lines}  # How many runs each line has across the whole page (blocks cut it).
         serial, still, extra = [0], [], []
         before = len(made)
         for name, bl in zip(names, blocks):
-            kept, lost = read_block(number, view, bl, name, previous, made, boxes, serial)
+            kept, lost = read_block(number, view, bl, name, previous, made, boxes, serial, taken, stub.setdefault(name, set()), starts, whole)
             still += kept
             extra += lost
         created = made[before:]
         if len(created) == 2 and created[0].block == "left" and created[1].block == "right":
             created[0].partner, created[1].partner = created[1].id, created[0].id
+        else:  # More tables on the page (a deposit or leave table under the left block): a right table sits beside the left one it shares lines with.
+            lefts = [builder for builder in created if builder.block == "left"]
+            for right in (builder for builder in created if builder.block == "right"):
+                shared = {entry["line"] for entry in right.entries if entry["page"] == number}
+                best = max(lefts, key=lambda left: len(shared & {entry["line"] for entry in left.entries if entry["page"] == number}), default=None)
+                if best is not None and best.partner is None and shared & {entry["line"] for entry in best.entries if entry["page"] == number}:
+                    best.partner, right.partner = right.id, best.id
         if any(number in builder.pages for builder in made):
             unplaced += extra
         else:

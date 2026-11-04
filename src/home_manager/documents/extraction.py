@@ -2340,7 +2340,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         if name == "interest_rate":
             record["interest_rate_text"] = text
         elif name in AMOUNTS:
-            record[name + "_minor"] = money(text, name.replace("_", " ").capitalize())
+            # A pay stub's taxes and deductions are magnitudes however they are printed (in parentheses, with a minus sign), as its lines are.
+            record[name + "_minor"] = money(text, name.replace("_", " ").capitalize(), magnitude=kind == "paystub" and name in ("taxes", "deductions"))
         elif name in DATES:
             record[name] = iso_date(text)
             if text and record[name] is None:
