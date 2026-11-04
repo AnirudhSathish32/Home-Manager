@@ -57,6 +57,7 @@ class PayColumn:
     extent: tuple[float, float]
     zone: tuple[float, float]
     labels: list[str] = field(default_factory=list)  # Heading words over it, top to bottom.
+    label_words: list[list[str]] = field(default_factory=list)  # The word ids of each label, so Record can cite the heading.
 
 
 @dataclass
@@ -197,6 +198,26 @@ def words_of(lines):
 
 # --- Blocks (FR-53) ------------------------------------------------------------------------------------------------------
 
+def split_tails(line):
+    """A second label printed less than 1.5 font sizes after the first group's last amount joins that amount's run ("52,000.00 Federal Income Tax"
+    in a tightly padded payslip). When amounts follow it, the label starts a run of its own, so the line reads as two label-and-amounts groups."""
+    runs, tokens = [], []
+    for run, found in zip(line.runs, line.tokens):
+        cut = next((i for i in range(1, len(found)) if found[i - 1].kind == "amount" and found[i].kind in ("text", "integer")), None)
+        first_word = found[cut].word_ids[0] if cut is not None else None
+        position = next((i for i, word in enumerate(run) if word.id == first_word), None)
+        if position is None:
+            runs.append(run)
+            tokens.append(found)
+        else:
+            runs += [run[:position], run[position:]]
+            tokens += [found[:cut], found[cut:]]
+    led = [group[0].kind in ("text", "integer") for group in tokens]
+    split = Line(line.index, line.words, runs, tokens, led)
+    return split if any(led[i] and any(j > i and not led[j] and any(t.kind == "amount" for t in tokens[j]) for j in range(len(runs))) and i > 0
+                        and tokens[i - 1][-1].kind == "amount" for i in range(1, len(runs))) else line
+
+
 def group_starts(line):
     """Runs that start a second label-and-amounts group: text after an amount run, with an amount run after it."""
     if not line.runs or not line.led_by_text[0]:
@@ -268,7 +289,7 @@ class Builder:
     id: str
     block: str | None
     size: float
-    head_runs: list  # (text, box) of the heading lines' runs, top to bottom.
+    head_runs: list  # (text, box, word ids) of the heading lines' runs, top to bottom.
     headings: list[str]
     heading_words: set
     lead: str | None
@@ -294,8 +315,8 @@ def finish_columns(builder, ids):
     for key, extent, zone in zip(keys, extents, zones):
         align = builder.aligns[key]
         edge = median(edge_of(token.box, align) - offset for token, offset in builder.members[key])
-        label = [text for text, box in builder.head_runs if in_zone(box, zone)]
-        columns.append(PayColumn(f"{builder.id}-column-{len(columns) + 1}", align, edge, extent, zone, label))
+        named = [(text, words) for text, box, words in builder.head_runs if in_zone(box, zone)]
+        columns.append(PayColumn(f"{builder.id}-column-{len(columns) + 1}", align, edge, extent, zone, [text for text, _ in named], [words for _, words in named]))
         ids[key] = columns[-1].id
     return columns
 
@@ -334,7 +355,7 @@ def finish_box(builder, ids_line, view):
 
 
 def heading_runs(view, lines):
-    return [(run_text(run), union(view.box[word.id] for word in run)) for line in lines for run in line.runs]
+    return [(run_text(run), union(view.box[word.id] for word in run), [word.id for word in run]) for line in lines for run in line.runs]
 
 
 def find_boxes(number, view, bl, tolerance, found_boxes):
@@ -392,6 +413,11 @@ def place(slots, entries, found):
     for gid, (_, positions) in enumerate(found):
         for position in positions:
             gid_of[position] = gid
+    extents = {}
+    for position, token in enumerate(token for _, tokens in entries for token in tokens):
+        if position in gid_of:
+            left, right = extents.get(gid_of[position], (token.box[0], token.box[2]))
+            extents[gid_of[position]] = (min(left, token.box[0]), max(right, token.box[2]))
     position = 0
     for index, tokens in entries:
         placed, stray = {}, []
@@ -399,10 +425,20 @@ def place(slots, entries, found):
             gid = gid_of.get(position)
             position += 1
             if gid is None or gid in placed:
+                gid = under(token, extents) if gid is None else None
+            if gid is None or gid in placed:
                 stray.append(token)
             else:
                 placed[gid] = token
         slots[index] = (placed, stray)
+
+
+def under(token, extents):
+    """The one column a token printed mostly inside is under, though its edge did not line up with that column's (a right-aligned column whose
+    first amount chose another alignment); None when it lies under no column or under several."""
+    width = max(token.box[2] - token.box[0], 1e-9)
+    inside = [gid for gid, (left, right) in extents.items() if (min(token.box[2], right) - max(token.box[0], left)) / width >= 0.5]
+    return inside[0] if len(inside) == 1 else None
 
 
 def column_sets(slots):
@@ -590,7 +626,7 @@ def read(result):
             continue
         number = page.number
         view = views[number] = PageView(page.layout)
-        lines = tokenize_page(view)
+        lines = [split_tails(line) for line in tokenize_page(view)]
         blocks = blocks_of(view, lines, view.size * ALIGN)
         names = ("left", "right") if len(blocks) == 2 else (None,)
         serial, still, extra = [0], [], []

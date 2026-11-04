@@ -11,16 +11,21 @@ column with no heading is this period. The numbers win over contradicting headin
 apart are guessed (FR-59, a guess record). The summary box (FR-75) is told from its sums. Every guess is a `Guess` with the note shown with the
 record (D6: a note, never a review reason); `PaystubTables.notes` lists their texts.
 
-Not here (SL-03 and later): the adapter that hands Record its tables (`adapt`, `for_lines`, plan P4); `tables` holds the engine's pay tables.
+The adapter (plan P4) hands Record the pay tables in the shape `anchor_paystub` already reads: `adapt` turns each engine table into rows and
+cells whose line ids are the evidence lines the model is shown (`layout_context.project_page`), and `for_lines` keeps what lies in one part of a
+file. Both are as pure as the rest. Not here (SL-04 and later): the summary box in Record, unclassified rows, section-total mismatch notes,
+unplaced notes, the viewer data and splitting.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import combinations
 import re
+from types import SimpleNamespace
 
 from ..core.money import EXPONENTS
 from ..documents import pay_tables
+from ..documents.layout_context import native_page, project_page
 from ..documents.table_engine import value_of
 from .document_checks import product
 
@@ -79,6 +84,11 @@ class PaystubTables:
     pages: set[int]  # Pages holding an engine pay table or summary box.
     pages_without_tables: list[int]
     viewer: list[dict] = field(default_factory=list)  # Filled with the tables tab's data by a later slice.
+    adapted: list = field(default_factory=list)  # `tables` in Record's shape (P4), on the pages Record can read; roles by cell index.
+    engine_pages: set[int] = field(default_factory=set)  # Pages holding an adapted pay table: Record takes its cells there.
+    lines_of: dict[str, str] = field(default_factory=dict)  # A layout line id to the evidence line id that holds its words.
+    line_pages: set[int] = field(default_factory=set)  # Pages that have evidence lines.
+    fallback_pages: set[int] = field(default_factory=set)  # Pages with a pay table whose columns all ended other: Record doesn't trust the engine there.
 
 
 # --- Headings and numbers ------------------------------------------------------------------------------------------------
@@ -364,6 +374,180 @@ def read_box(box):
                    {name: later.amounts[column] for name, column in names.items()}, "guess" if guesses else "numbers"), guesses
 
 
+# --- The adapter (plan P4) -----------------------------------------------------------------------------------------------
+
+PAGE_ID = re.compile(r"page-(\d+)-")
+
+
+def page_number(line_id):
+    found = PAGE_ID.match(line_id or "")
+    return int(found.group(1)) if found else None
+
+
+class PageMap:
+    """Where a native page's words are in the evidence the model is shown: a word is in a projected table's row (and cell), else in a layout line."""
+
+    def __init__(self, page):
+        lines, tables = project_page(page)
+        self.text = {line.id: line.text for line in lines}
+        self.order = [line.id for line in lines]
+        self.line_of, self.cell_of, self.layout_of, self.native_rows = {}, {}, {}, set()
+        for table in tables:
+            for row in [*table.header_rows, *table.rows]:
+                self.native_rows.add(row.line_id)
+                for cell in row.cells:
+                    for word_id in cell.word_ids:
+                        self.line_of[word_id], self.cell_of[word_id] = row.line_id, cell
+        for line in page.layout.lines:
+            for word_id in line.word_ids:
+                self.layout_of[word_id] = line.id
+                if line.id in self.text:
+                    self.line_of.setdefault(word_id, line.id)
+        self.words = {word.id: word.text for word in page.layout.words}
+
+    def lines(self, word_ids):
+        return list(dict.fromkeys(self.line_of[word_id] for word_id in word_ids if word_id in self.line_of))
+
+    def layout_lines(self, word_ids):
+        return list(dict.fromkeys(self.layout_of[word_id] for word_id in word_ids if word_id in self.layout_of))
+
+    def cites(self, word_ids):
+        """(evidence line id, the words of word_ids printed in it) per line, in order: what a label or heading of several lines cites."""
+        found = {}
+        for word_id in word_ids:
+            if word_id in self.line_of:
+                found.setdefault(self.line_of[word_id], []).append(self.words.get(word_id, ""))
+        return [(line, " ".join(words)) for line, words in found.items()]
+
+    def native_cell(self, word_ids, line_ids):
+        """The projected cell id when the words are all one cell of the one projected table row the printed row is (FR-66), else None."""
+        cells = {self.cell_of[word_id].id for word_id in word_ids if word_id in self.cell_of}
+        mapped = all(word_id in self.cell_of for word_id in word_ids)
+        return next(iter(cells)) if word_ids and mapped and len(cells) == 1 and len(line_ids) == 1 and line_ids[0] in self.native_rows else None
+
+
+def cell_of(identity, line_id, quote, word_ids, mapping, line_ids=(), cites=None, native=False):
+    return SimpleNamespace(id=(mapping.native_cell(word_ids, list(line_ids)) if native else None) or identity, line_id=line_id, quote=quote,
+                           word_ids=list(word_ids), source_line_ids=mapping.layout_lines(word_ids), cites=cites)
+
+
+def adapt_row(table, row, kind, columns, mapping):
+    """One engine row or total as Record's row: cell 0 is the label, then one cell per amount column in column order (P4)."""
+    identity = f"{table.id}-row-{row.row}"
+    printed = row.values if kind else row.amounts
+    amounts = {word_id for token in printed.values() for word_id in token.word_ids}
+    stray = {word_id for token in getattr(row, "stray", []) for word_id in token.word_ids}
+    label_words = [word_id for word_id in row.word_ids if word_id not in amounts | stray]
+    ordered = [*label_words, *[word_id for word_id in row.word_ids if word_id not in label_words]]
+    line_ids = mapping.lines(ordered) or list(getattr(row, "line_ids", None) or [row.line_id])
+    line_id = line_ids[0] if line_ids else ""
+    shown = mapping.cites(label_words)
+    label = cell_of(f"{identity}-cell-0", mapping.line_of.get(label_words[0], line_id) if label_words else line_id, row.label, label_words, mapping,
+                    mapping.lines(label_words), shown if len(shown) > 1 else None, native=True)
+    cells = [label]
+    for number, column in enumerate(columns, 1):
+        token = printed.get(column.id)
+        words = token.word_ids if token else []
+        cells.append(cell_of(f"{identity}-cell-{number}", mapping.line_of.get(words[0], line_id) if words else line_id, token.text if token else "", words,
+                             mapping, mapping.lines(words), native=True))
+    return SimpleNamespace(id=identity, line_id=line_id, line_ids=line_ids, cells=cells, total=kind is not None, kind=kind, label=row.label,
+                           section=getattr(row, "section", None), page=row.page)
+
+
+def adapt_header(table, columns, mapping, first):
+    identity = f"{table.id}-row-0"
+    label = cell_of(f"{identity}-cell-0", first, "", [], mapping)
+    cells = [label]
+    for number, column in enumerate(columns, 1):
+        words = [word_id for group in column.label_words for word_id in group]
+        shown = [(mapping.line_of.get(group[0]), text) for group, text in zip(column.label_words, column.labels) if group]
+        shown = [(line, text) for line, text in shown if line]
+        cells.append(cell_of(f"{identity}-cell-{number}", shown[0][0] if shown else first, " ".join(column.labels), words, mapping, cites=shown or None))
+    return SimpleNamespace(id=identity, line_id=first, cells=cells)
+
+
+def adapt(pay, evidence):
+    """The pay tables in Record's table shape (plan P4): `SimpleNamespace(id, page, source="pay_engine", header_rows, rows, roles)`. Each row is
+    `(id "<table>-row-<r>", line_id, line_ids, cells, total)`, cells `(id, line_id, quote, word_ids, source_line_ids)`: cell 0 is the label, then one per
+    amount column (a blank quote when empty). Totals are rows too, flagged `total` with their `kind`. A row's line ids are the evidence lines (what the
+    model is shown) that hold its words; `roles` maps a cell index to its role. Only rows on pages Record reads as native text are kept."""
+    maps = {page.number: PageMap(page) for page in evidence.pages if page.method == "embedded_text" and page.layout is not None and native_page(page)}
+    distrusted = untrusted_pages(pay)
+    for number in distrusted:
+        maps.pop(number, None)
+    made = []
+    for table, roles in zip(pay.tables, pay.roles):
+        entries = sorted([*((row, None) for row in table.rows), *((total, total.kind) for total in table.totals)], key=lambda entry: entry[0].row)
+        rows = [adapt_row(table, row, kind, table.columns, maps[row.page]) for row, kind in entries if row.page in maps]
+        if not rows:
+            continue
+        first = next((row.line_id for row in rows if row.line_id), "")
+        mapping = maps[table.pages[0]] if table.pages[0] in maps else maps[rows[0].page]
+        made.append(SimpleNamespace(id=table.id, page=rows[0].page, pages=sorted({row.page for row in rows}), source="pay_engine",
+                                    header_rows=[adapt_header(table, table.columns, mapping, first)], rows=rows, spans=spans_of(rows, maps),
+                                    roles={number: roles.roles[column.id] for number, column in enumerate(table.columns, 1)}))
+    return made
+
+
+def untrusted_pages(pay):
+    """Pages with a pay table none of whose columns is this period, year to date, hours or rate (a side-by-side partner whose headings and totals
+    decided nothing): the engine's rows there would carry no money, so Record keeps the printed table's cells on such a page and says so (FR-64)."""
+    return {page for table, roles in zip(pay.tables, pay.roles) if set(roles.roles.values()) <= {"other"} for page in table.pages}
+
+
+def spans_of(rows, maps):
+    """The evidence lines from a table's first row to its last on each page: its section titles and blank lines are inside it, as a printed table's
+    rows are, so the model is asked about them together (extraction.paystub_chunks)."""
+    spans = set()
+    for page in sorted({row.page for row in rows}):
+        order = maps[page].order
+        positions = [order.index(line_id) for row in rows if row.page == page for line_id in row.line_ids if line_id in order]
+        spans |= set(order[min(positions):max(positions) + 1]) if positions else set()
+    return spans
+
+
+def evidence_index(evidence):
+    """(layout line id to its evidence line id, the pages that have evidence lines) for the native pages of a reading."""
+    lines_of, pages = {}, set()
+    for page in evidence.pages:
+        if page.method == "embedded_text" and page.layout is not None and native_page(page):
+            mapping = PageMap(page)
+            pages |= {page.number for line_id in mapping.text}
+            for line in page.layout.lines:
+                found = mapping.line_of.get(line.word_ids[0])
+                if found:
+                    lines_of[line.id] = found
+        else:
+            pages |= {number for number in (page_number(line.id) for line in page.lines) if number is not None}
+    return lines_of, pages
+
+
+def for_lines(pay, line_ids):
+    """What lies in one part of a file (plan P7.1): the rows and totals whose evidence line is in `line_ids`, the boxes, unplaced lines, other tables
+    and guesses (and the notes they carry) of those lines, and the pages without a table among the part's pages."""
+    ids = set(line_ids)
+    mine = lambda *layout: any(pay.lines_of.get(line, line) in ids for line in layout)  # noqa: E731
+    adapted = [replace_rows(table, [row for row in table.rows if row.line_id in ids]) for table in pay.adapted]
+    adapted = [table for table in adapted if table.rows]
+    kept = {table.id for table in adapted}
+    pairs = [(table, roles) for table, roles in zip(pay.tables, pay.roles) if table.id in kept]
+    boxes = [box for box in pay.boxes if mine(*(line for row in box.rows.values() for line in row.line_ids))]
+    unplaced = [line for line in pay.unplaced if mine(line.line_id)]
+    pages = {page for page in (page_number(line_id) for line_id in ids) if page is not None}
+    owners = kept | {box.id for box in boxes}
+    guesses = [guess for guess in pay.guesses if guess.table_id is None or guess.table_id in owners]
+    others = [table for table in pay.other_tables if any(mine(*row.line_ids) for row in table.rows)]
+    engine_pages = {row.page for table in adapted for row in table.rows}
+    return replace(pay, tables=[table for table, _ in pairs], roles=[roles for _, roles in pairs], other_tables=others, boxes=boxes,
+                   box=({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), notes=[guess.text for guess in guesses], guesses=guesses,
+                   unplaced=unplaced, pages=engine_pages | {box.page for box in boxes}, pages_without_tables=[page for page in sorted({*pay.pages_without_tables, *pay.fallback_pages}) if page in pages],
+                   adapted=adapted, engine_pages=engine_pages)
+
+
+def replace_rows(table, rows):
+    return SimpleNamespace(**{**vars(table), "rows": rows})
+
+
 # --- Entry point ------------------------------------------------------------------------------------------------------
 
 def read(evidence):
@@ -384,5 +568,10 @@ def read(evidence):
             guesses += made
     pages = {page for table in tables for page in table.pages} | {box.page for box in boxes}
     without = sorted(set(reading.pages_without_tables) | ({page for table in others for page in table.pages} - pages))
-    return PaystubTables(tables, others, roles, ({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), boxes,
-                         [guess.text for guess in guesses], guesses, [line for line in reading.unplaced if line.page in pages], pages, without)
+    found = PaystubTables(tables, others, roles, ({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), boxes,
+                          [guess.text for guess in guesses], guesses, [line for line in reading.unplaced if line.page in pages], pages, without)
+    found.fallback_pages = untrusted_pages(found)
+    found.adapted = adapt(found, evidence)
+    found.engine_pages = {row.page for table in found.adapted for row in table.rows}
+    found.lines_of, found.line_pages = evidence_index(evidence)
+    return found

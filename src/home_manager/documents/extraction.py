@@ -8,6 +8,7 @@ arithmetic checks and a check that every amount is printed in its cited line.
 Stage D (finance.Ledger) publishes only validated values, never after cancellation.
 """
 
+from dataclasses import asdict
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from functools import partial
@@ -26,7 +27,7 @@ from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
 from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
-from ..finance import document_checks, statement_tables
+from ..finance import document_checks, paystub_tables, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
@@ -44,7 +45,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v34-order-discounts"
+EXTRACTION_VERSION = "typed-extraction-v35-paystub-engine"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -971,7 +972,12 @@ def reported_tables(evidence):
 
 
 def paystub_columns(table):
-    """Resolve printed period roles independently; hours and rates are never pay."""
+    """Resolve printed period roles independently; hours and rates are never pay. A table the pay engine read already has its roles, decided from
+    its printed numbers (specs/pdf-table-engine-paystubs FR-57)."""
+    roles = getattr(table, "roles", None)
+    if roles is not None:
+        current, ytd = ([index for index, role in roles.items() if role == name] for name in ("current", "ytd"))
+        return (current[0] if current else None, ytd[0] if ytd else None) if current or ytd else None
     width = len(table.header_rows[0].cells)
     if any(len(row.cells) != width or any(getattr(cell, "column_span", 1) != 1 or getattr(cell, "row_span", 1) != 1
                                         for cell in row.cells) for row in [*table.header_rows, *table.rows]):
@@ -1061,12 +1067,15 @@ def printed_header(line_texts):
     return shared, True
 
 
-def column_checks(rows, fields, record, lines, line_text, issues):
+def column_checks(rows, fields, record, lines, line_text, issues, scope=None):
     """FR-33 and FR-35 on a stub read like flat text (docs/money.md "Money in and paystubs"): a value printed beside
     another must sit in its own column's position, and a pay line printing one amount keeps it only as year to date.
     Notes are added now, each starting with its value's correction label; the returned clears null the values later,
-    after FR-22 has judged the model's values. A value that can't be located in exactly one cited line is skipped."""
-    columns, both_named = printed_header(line_text.values())
+    after FR-22 has judged the model's values. A value that can't be located in exactly one cited line is skipped.
+    scope: the line ids of the pages the pay engine read no table on (specs/pdf-table-engine-paystubs FR-64); only pay
+    lines and summary fields citing one of them are judged, so a value copied from an engine cell never is."""
+    # The header is the one the judged lines' own pages print: on a file with an engine page, that page's header says nothing about the others.
+    columns, both_named = printed_header(text for line_id, text in line_text.items() if scope is None or line_id in scope)
     currency, clears = record["currency"], []
 
     def located(text, evidence):
@@ -1093,6 +1102,8 @@ def column_checks(rows, fields, record, lines, line_text, issues):
                 "it was left out. Enter this paycheck's amount with Edit details.")
 
     for index, (row, line) in enumerate(zip(rows, lines), 1):
+        if scope is not None and not scope.intersection(line["locator"]["line_ids"]):
+            continue
         values = {"current": line["current_minor"], "ytd": line["ytd_minor"]}
         spots = {"current": located(row.current, row.evidence) if values["current"] is not None else None,
                  "ytd": located(row.ytd, row.evidence) if values["ytd"] is not None else None}
@@ -1119,7 +1130,7 @@ def column_checks(rows, fields, record, lines, line_text, issues):
     # FR-33 on summary amounts: a pair fails together; taxes and deductions are this period's only.
     for names in (("gross_pay", "gross_pay_ytd"), ("net_pay", "net_pay_ytd"), ("taxes",), ("deductions",)):
         proposed = {name: fields[name] for name in names if fields.get(name) is not None and fields[name].status == "proposed"
-                    and record.get(name + "_minor") is not None}
+                    and record.get(name + "_minor") is not None and (scope is None or scope.intersection(cite.line_id for cite in fields[name].evidence))}
         spots = {name: located(field.value, field.evidence) for name, field in proposed.items()}
         wrong = {name: misplaced(spot, "ytd" if name.endswith("_ytd") else "current") for name, spot in spots.items()}
         if not any(wrong.values()):
@@ -1167,7 +1178,8 @@ def paystub_table_context(tables, part):
     for table in tables:
         rows = [row for row in table.rows if row.line_id in ids]
         if rows:
-            context.append({"table_id": table.id, "source": getattr(table, "source", "transcription"),
+            # The pay engine's cells are the printed page's own: the model is told so, as for a printed table's.
+            context.append({"table_id": table.id, "source": {"pay_engine": "pdf_text"}.get(getattr(table, "source", None), getattr(table, "source", "transcription")),
                             "header_rows": [{"row_id": row.id, "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]}
                                             for row in table.header_rows],
                             "rows": [{"row_id": row.id, "line_id": row.line_id,
@@ -1179,6 +1191,7 @@ def paystub_chunks(lines, tables, split_covered=False):
     """Bound the repeated table header and cell payload alongside each source-line chunk."""
     current = []
     covered = {row.line_id for table in tables for row in table.rows}
+    covered.update(line_id for table in tables for line_id in getattr(table, "spans", ()))  # A pay engine table's titles and blank lines.
     for line in lines:
         candidate = [*current, line]
         context = paystub_table_context(tables, candidate)
@@ -1248,9 +1261,58 @@ def cell_labels(table, source, column):
     """(row label, column heading) of a validated table cell: its row's first cell and its column's heading, each cited
     from its own line (FR-20). The model's own labels are not used where a cell was copied."""
     def label(cell):
-        return PayLabel(text=cell.quote.strip(), evidence=[EvidenceQuote(line_id=cell.line_id, quote=cell.quote)]) if cell.quote.strip() else None
+        # A label or heading the pay engine read from several lines cites each line's part of it (FR-66).
+        cites = getattr(cell, "cites", None) or [(cell.line_id, cell.quote)]
+        if not cell.quote.strip() or not all(line_id for line_id, _ in cites):
+            return None
+        return PayLabel(text=cell.quote.strip(), evidence=[EvidenceQuote(line_id=line_id, quote=quote) for line_id, quote in cites][:5])
     heading = next((label(row.cells[column]) for row in table.header_rows if column is not None and row.cells[column].quote.strip()), None)
     return (label(source.cells[0]) if column != 0 else None), heading
+
+
+# Pay stubs read from their printed columns (specs/pdf-table-engine-paystubs; plan P7) ------------------------------------
+
+PAY_FAILED = object()  # What `run` passes `read` when the pay engine raised: the stub takes today's path with PAY_FAILED_NOTE (FR-65).
+PAY_FAILED_NOTE = "The pay table couldn't be read from the printed columns, so the reading's amounts were used; check them."
+NO_PAY_TABLE = "Page {page}: no pay table was found in the printed columns, so its amounts are the reading's; check them."
+
+
+def table_page(table):
+    """The page a table is on: its own, else the page of its first row's line."""
+    page = getattr(table, "page", None)
+    return page if page is not None else line_page(table.rows[0].line_id) if table.rows else None
+
+
+def with_rows(table, rows):
+    return table.model_copy(update={"rows": rows}) if hasattr(table, "model_copy") else SimpleNamespace(**{**vars(table), "rows": rows})
+
+
+def pay_tables_of(tables, pay, part, line_ids):
+    """The tables of one part of a pay stub file: the pay engine's cells replace the printed tables of the pages it read (a whole file, so another
+    stub's rows never stay), and the printed tables of other pages keep only the rows of the part's lines (plan P7.1, P7.2)."""
+    kept = []
+    for table in tables:
+        if table_page(table) in pay.engine_pages:
+            continue
+        rows = [row for row in table.rows if row.line_id in line_ids]
+        if rows:
+            kept.append(table if len(rows) == len(table.rows) else with_rows(table, rows))
+    return sorted([*kept, *part.adapted], key=lambda table: table_page(table) or 0)
+
+
+def pay_layout_notes(evidence, pay, lines):
+    """The pdf_layout_review messages (each starts "Page N") a pay stub part takes (P7.1a): only for pages holding its lines, and not for a page
+    the pay engine read a table on when the layout's only issue is unresolved_columns (the rule finance/pdf_import.py already uses: table_grid
+    raises it exactly when it can't build a headerless table). Any other layout issue stays a review note."""
+    pages = {line_page(line.id) for line in lines}
+    waived = {page.number for page in evidence.pages if page.number in pay.engine_pages and page.layout is not None and page.layout.issues == ["unresolved_columns"]}
+    found = []
+    for issue in evidence.issues:
+        number = re.match(r"Page (\d+)", issue.message)
+        number = int(number.group(1)) if number else None
+        if issue.code == "pdf_layout_review" and number not in waived and (number not in pay.line_pages or number in pages):
+            found.append(issue.message)
+    return found
 
 
 # A pay stub's printed totals row, which may be lettered: "Total Earnings (A)", "Net Payment (A-B)".
@@ -1264,26 +1326,41 @@ PAY_ROLES = {"hours": re.compile(r"\bhours?\b|\bhrs\b", re.IGNORECASE), "rate": 
 
 
 def role_column(table, pattern):
-    """The one column whose heading matches pattern (Hours, Rate), or None."""
+    """The one column whose heading matches pattern (Hours, Rate), or None. A table the pay engine read says its hours and rate columns itself."""
+    roles = getattr(table, "roles", None)
+    if roles is not None:
+        found = [index for index, role in roles.items() if role == next(name for name, found in PAY_ROLES.items() if found is pattern)]
+        return found[0] if len(found) == 1 else None
     found = [index for index in range(len(table.header_rows[0].cells)) if pattern.search(" ".join(row.cells[index].quote for row in table.header_rows))]
     return found[0] if len(found) == 1 else None
 
 
-def anchor_paystub(header, rows, tables, notes, source_lines=None):
+def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
     """Copy paystub money, hours and rates from validated cells after the model classifies cited rows. Gross and net
     pay come from the stub's own totals row when it prints exactly one, whichever row the model cited: a total equal
-    to its first earning this period would otherwise take that earning's year to date."""
+    to its first earning this period would otherwise take that earning's year to date. flat: the line ids of pages read
+    like flat text beside pages with tables (the pay engine's FR-64); a value citing one of them is judged by
+    column_checks, not left out here for printing several amounts."""
     by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
+    for table in tables:  # A row the pay engine read from several lines (a wrapped label) is found by any of them.
+        for row in table.rows:
+            for line_id in getattr(row, "line_ids", ()):
+                by_line.setdefault(line_id, (table, row))
     line_text = {line.id: line.text for line in source_lines or []}
     references = []
 
     def cited_row(evidence):
-        matches = {cite.line_id for cite in evidence if cite.line_id in by_line}
-        return by_line[next(iter(matches))] if len(matches) == 1 else None
+        matches = {id(by_line[cite.line_id][1]): by_line[cite.line_id] for cite in evidence if cite.line_id in by_line}
+        return next(iter(matches.values())) if len(matches) == 1 else None
 
     def totals_row(name):
-        pattern = TOTAL_ROWS.get(name.removesuffix("_ytd"))
+        """The one totals row of the kind printed. Pay engine tables also know taxes and deductions totals (FR-61)."""
+        kind = name.removesuffix("_ytd")
+        pattern = TOTAL_ROWS.get(kind)
         found = [(table, row) for table in tables for row in table.rows if pattern and row.cells and pattern.fullmatch(row.cells[0].quote.strip())]
+        if not found and kind in ("taxes", "deductions"):
+            found = [(table, row) for table in tables if getattr(table, "source", None) == "pay_engine" for row in table.rows
+                     if row.total and row.kind == kind]
         return found[0] if len(found) == 1 else None
 
     # One printed row is one pay line. Each part of the text is asked for its pay lines, and a table's heading invites
@@ -1325,7 +1402,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                 amount = cell_amount(cell) if cell else None
                 if amount is not None:
                     reference[name] = {"cell_id": cell.id, "line_id": cell.line_id, "quote": cell.quote}
-                    if getattr(table, "source", None) == "pdf_text":
+                    if getattr(table, "source", None) in ("pdf_text", "pay_engine"):
                         from .native_values import reference as native_reference
                         reference[name] = native_reference(cell)
                 row_label, heading = cell_labels(table, source, column) if amount is not None else (None, None)
@@ -1339,8 +1416,13 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                     number = numbers[0] if len(numbers) == 1 else None
                     cites = [EvidenceQuote(line_id=cell.line_id, quote=cell.quote)] if number else []
                     item = item.model_copy(update={name: number, "evidence": [*item.evidence, *cites]})
+            if getattr(table, "source", None) == "pay_engine":  # A wrapped label's other lines are cited too (FR-66).
+                cited = {cite.line_id for cite in item.evidence}
+                item = item.model_copy(update={"evidence": [*item.evidence, *(EvidenceQuote(line_id=line_id, quote=line_text[line_id])
+                                                                              for line_id in source.line_ids if line_id not in cited and line_text.get(line_id))]})
             rows[index - 1] = item
         elif (any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in item.evidence)
+              and not any(cite.line_id in flat for cite in item.evidence)
               and not same_both_columns(item.current, item.ytd, item.evidence, line_text)):
             rows[index - 1] = item.model_copy(update={"current": None, "ytd": None})
             notes.append(f"Pay line {index} has multiple amounts without a validated source row; check its columns.")
@@ -1365,7 +1447,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None):
                                     if amount is not None else field.evidence, "row_label": row_label, "column_heading": heading})})
             if amount is None:
                 notes.append(f"{name.replace('_', ' ').capitalize()} has no unambiguous {column_name} source cell.")
-        elif any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence):
+        elif any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence) and not any(cite.line_id in flat for cite in field.evidence):
             pair = getattr(header, PAY_PAIRS[name]) if name in PAY_PAIRS else None
             if pair is not None and pair.status == "proposed" and same_both_columns(field.value, pair.value, [*field.evidence, *pair.evidence], line_text):
                 continue
@@ -2862,7 +2944,7 @@ def cited_label(label, what, line_text, issues):
     if label is None:
         return None
     text = " ".join(label.text.split())
-    if not text or not any(text in " ".join(cite.quote.split()) for cite in label.evidence) or not all(
+    if not text or text not in " ".join(" ".join(cite.quote.split()) for cite in label.evidence) or not all(
             cited_in(cite, line_text) for cite in label.evidence):
         issues.append(f"{what} was not printed where it was cited.")
         return None
@@ -3031,7 +3113,8 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
     to gross pay, and gross pay less pre-tax deductions, taxes and post-tax deductions is net pay (employer-paid
     amounts are shown but never deducted). The same checks run on the year-to-date column when every line has one.
     Before them, this period's amounts are guarded against year-to-date and annual figures (this_period_guards), and
-    on a stub read like flat text (printed_columns) against the printed columns (column_checks)."""
+    on a stub read like flat text (printed_columns: True, or the line ids of the pages with no table) against the printed
+    columns (column_checks)."""
     record["pay_frequency"] = pay_frequency(record.pop("pay_frequency", None), record.get("period_start"), record.get("period_end"))
     state = (record.pop("work_state", None) or "").strip().upper()
     record["work_state"] = state if state in US_STATES else None
@@ -3091,7 +3174,7 @@ def paystub_lines(record, rows, money, issues, currency, total, fields=None, lin
                       "clear": lambda line=line: line.update(current_minor=None), "line": line})
     by_key = {slot["key"]: slot for slot in slots}
     # Decided on the model's values before FR-22 judges them, applied after (FR-33 and FR-35).
-    clears = column_checks(rows, fields, record, lines, line_text, issues) if printed_columns else []
+    clears = column_checks(rows, fields, record, lines, line_text, issues, printed_columns if isinstance(printed_columns, set) else None) if printed_columns else []
     guards = this_period_guards(record, slots, issues)
     for key, result in guards.items():
         if "line" in by_key[key]:
@@ -3571,7 +3654,7 @@ class ExtractionService:
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
-                receipt_kind=None, kind_change=False, printed_columns=False, evidence=None):
+                receipt_kind=None, kind_change=False, printed_columns=False, evidence=None, engine_notes=None, guesses=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -3607,6 +3690,7 @@ class ExtractionService:
                                    receipt_kind=receipt_kind if kind == "receipt" else None, printed_columns=printed_columns,
                                    bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild)
         record_notes += record.pop("notes", [])
+        record_notes += [note for note in engine_notes or [] if note not in record_notes]  # The pay engine's guesses and page notes (pay stubs only).
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
@@ -3645,8 +3729,10 @@ class ExtractionService:
         issues.extend(review_reasons(kind, record, decision, issues))
         if record_notes:
             record["notes"] = record_notes
-            if kind in ("bank_statement", "credit_card_statement"):  # Kept with the statement, which stores its details but not its notes (P19).
+            if kind in ("bank_statement", "credit_card_statement", "paystub"):  # Kept with the record, which stores its details but not its notes (P19).
                 record.setdefault("details", {})["notes"] = record_notes
+        if guesses and kind == "paystub":  # FR-74: every guess the engine made, by kind.
+            record.setdefault("details", {})["guesses"] = guesses
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
         source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
@@ -3704,6 +3790,13 @@ class ExtractionService:
                 tables = reported_tables(evidence)
                 summary, context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
                 classification = ask(config, work, Classification, CLASSIFY, summary, 1024, notes=notes, table_context=context)
+                pay = None
+                if classification.document_type == "paystub" and hasattr(evidence, "pages"):
+                    try:  # The pay engine reads the whole file once; any failure sends the stub down today's path with a note (FR-65).
+                        pay = paystub_tables.read(evidence)
+                    except Exception as exc:
+                        log_failure(log, "pay table read", exc, run=run_id)
+                        pay = PAY_FAILED
                 # A file holding several receipts is read one receipt at a time; anything else stays one document.
                 parts, split_notes = [(0, len(lines))], []
                 if classification.document_type == "receipt":
@@ -3723,7 +3816,7 @@ class ExtractionService:
                 readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0])
                             for ordinal, ((first, last), (kind, part_notes)) in enumerate(zip(parts, kinds))]
                 if not readings:
-                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0])]
+                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0], pay=pay)]
                 for reading, (_, asked) in zip(readings, requested):
                     reading["kind_change"] = asked  # Only the receipt this run was asked to read as a kind records the change (FR-11).
             work.check()  # Cancellation always wins: never publish after a cancel request.
@@ -3772,13 +3865,21 @@ class ExtractionService:
                                          f"{(document_type or 'document').replace('_', ' ')}.")
         return found
 
-    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None):
+    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None, *, pay=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here.
-        requested_kind: the receipt kind this reading must use (a kind change)."""
+        requested_kind: the receipt kind this reading must use (a kind change). pay: for a pay stub, what the pay engine read from the whole file
+        (paystub_tables.read), or PAY_FAILED; this reading takes the part of it that lies in `lines`. None for any other document."""
         # Incomplete or ambiguous native source coverage requires review even when
         # the typed extractor can resolve individual cells.
-        notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
+        engine = pay if pay is not None and pay is not PAY_FAILED else None
+        record_notes, guesses = ([PAY_FAILED_NOTE] if pay is PAY_FAILED else []), []
+        layout_notes = pay_layout_notes(evidence, engine, lines) if engine else [issue.message for issue in evidence.issues if issue.code == "pdf_layout_review"]
+        notes.extend(message for message in layout_notes if message not in notes)
         tables = reported_tables(evidence)
+        part = None
+        if engine:
+            part = paystub_tables.for_lines(engine, {line.id for line in lines})
+            tables = pay_tables_of(tables, engine, part, {line.id for line in lines})
         classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
         # A bank or card statement PDF has its rows rebuilt from the printed columns (FR-16). The pages that get rows are not asked
         # about again (missed_rows) or anchored; any other page keeps the model's reading (FR-23).
@@ -3795,16 +3896,23 @@ class ExtractionService:
         # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
         # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
         printed_columns = classification.document_type == "paystub" and not tables
+        if part is not None:  # Only the pages with neither an engine pay table nor a printed table (FR-64); an empty set runs no check.
+            covered = {table_page(table) for table in tables} - {None}
+            printed_columns = {line.id for line in lines if line_page(line.id) not in covered}
         if classification.document_type == "paystub" and tables:
-            header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines)
+            header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines, printed_columns if isinstance(printed_columns, set) else ())
             by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
+            for table in tables:
+                for row in table.rows:
+                    for line_id in getattr(row, "line_ids", ()):
+                        by_line.setdefault(line_id, (table, row))
             for name in ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions"):
                 field = getattr(header, name)
                 if field.status != "proposed":
                     continue
                 for cite in field.evidence:
                     found = by_line.get(cite.line_id)
-                    if found and getattr(found[0], "source", None) == "pdf_text":
+                    if found and getattr(found[0], "source", None) in ("pdf_text", "pay_engine"):
                         columns = paystub_columns(found[0])
                         column = columns[1 if name.endswith("_ytd") else 0] if columns else None
                         if column is not None:
@@ -3870,7 +3978,12 @@ class ExtractionService:
             except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
                 checks = {"advisory": True, "model": decision.summary(), "error": str(exc)[:300]}
             work.check()
+        if part is not None:  # Record notes, shown with the record and never a review reason (D6): the engine's guesses, and pages with no pay table.
+            record_notes += [note for note in part.notes if note not in record_notes]
+            record_notes += [NO_PAY_TABLE.format(page=page) for page in part.pages_without_tables if page not in part.pages]
+            guesses = [asdict(guess) for guess in part.guesses]
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
+                "record_notes": record_notes, "guesses": guesses,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
                 "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns,
@@ -3905,7 +4018,8 @@ class ExtractionService:
                                                              reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
                                                              reading.get("cell_references"), reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
-                                                             reading.get("printed_columns", False), reading.get("evidence"))
+                                                             reading.get("printed_columns", False), reading.get("evidence"),
+                                                             reading.get("record_notes"), reading.get("guesses"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
