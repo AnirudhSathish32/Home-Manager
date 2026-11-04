@@ -18,7 +18,7 @@ from .corpus import CASE_ID, TAGS, write_json
 from .decision import decide
 from .decision import markdown as decision_markdown
 from .decision import rules as decision_rules
-from .graders import FAILURE_KINDS, FIELD_ERRORS, score
+from .graders import FAILURE_KINDS, FIELD_ERRORS, GUESS_KINDS, score
 
 SUMMARY_FORMAT = "home-manager-eval-summary/1"
 MIN_CELL = 3
@@ -29,7 +29,10 @@ PAGE_BUCKETS = ("1", "2-3", "4+")
 ROW_COUNTS = ("scored", "expected", "predicted", "matched", "missing", "extra", "duplicate", "description_errors")
 READERS = ("legacy", "engine")  # The old statement reader and the table engine (docs/evals.md "The two table readers").
 READER_NAMES = {"legacy": "Old reader", "engine": "Table engine"}
+READER_NAMES_PAY = {"legacy": "Today's reader", "engine": "Pay engine"}
 READER_COUNTS = ("documents", "rows", "recorded", "exact", "reconcilable", "reconciled", "dropped", "unplaced", "failed")
+PAY_COUNTS = ("documents", "stubs", "values", "exact", "left_out", "checkable", "checks_held", "to_review", "split_right", "unplaced", "failed")
+GUESS_COUNTS = ("made", "right")
 LABEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,80}")
 PATHLIKE = re.compile(r"^(?:[A-Za-z]:|/|\\)|\\|\.\.")
 
@@ -72,7 +75,8 @@ def aggregate(lines):
            "fields": defaultdict(lambda: defaultdict(lambda: {"checked": 0, "wrong": 0, "errors": Counter(), "by_state": defaultdict(lambda: [0, 0])})),
            "rows": Counter(), "documents": Counter(), "strata": defaultdict(lambda: defaultdict(lambda: {"checked": 0, "wrong": 0, "cases": 0, "passed": 0})),
            "wall": [], "model_ms": [], "tokens": Counter(), "failures": Counter(), "first_try": Counter(), "arithmetic": Counter(),
-           "attempts": Counter(), "readers": {reader: Counter() for reader in READERS}}
+           "attempts": Counter(), "readers": {reader: Counter() for reader in READERS}, "pay_readers": {reader: Counter() for reader in READERS},
+           "guesses": defaultdict(Counter)}
     for line in lines:
         kind, grades = line["document_type"], line["grades"] or {"fields": {}, "rows": {"scored": False}, "document": {"fully_checked": False, "perfect": None}}
         line_checked = line_wrong = 0
@@ -122,6 +126,17 @@ def aggregate(lines):
             counts["unplaced"] += grades_of["unplaced"] or 0
             counts["reconcilable"] += grades_of["reconciled"] is not None
             counts["reconciled"] += bool(grades_of["reconciled"])
+        for reader, counted in (details.get("pay_readers") or {}).items():
+            counts = out["pay_readers"][reader]
+            counts["documents"] += 1
+            for key in ("stubs", "values", "exact", "left_out", "checkable", "checks_held", "split_right", "failed"):
+                counts[key] += counted[key]
+            counts["unplaced"] += counted["unplaced"] or 0
+            # Today's reader makes no record to send to review; a stub with a value it left out stands in for one (docs/evals.md).
+            counts["to_review"] += counted["left_out_stubs"] if reader == "legacy" else counted.get("to_review") or 0
+        for kind, counted in (details.get("guesses") or {}).items():
+            for key in GUESS_COUNTS:
+                out["guesses"][kind][key] += counted[key]
         for stage in (details.get("attempts") or {}).values():
             for key in ("calls", "follow_ups", "truncated"):
                 out["attempts"][key] += stage.get(key, 0)
@@ -194,6 +209,32 @@ def reader_summary(stats):
                      "reconciled_share": share(counts[reader]["reconciled"], counts[reader]["reconcilable"])} for reader in READERS}
 
 
+def pay_reader_summary(stats):
+    """The text-PDF pay stubs each reader read (docs/evals.md "The two table readers"), counts and shares only. Suppressed below MIN_CELL pay stub
+    files, like any other cell. The old reader names no unplaced lines, so its count is null."""
+    counts = stats["pay_readers"]
+    documents = counts["engine"]["documents"]
+    if not documents:
+        return None
+    if documents < MIN_CELL:
+        return {"suppressed": True}
+    return {reader: {**{key: counts[reader][key] for key in PAY_COUNTS if key != "unplaced" or reader == "engine"},
+                     **({"unplaced": None} if reader == "legacy" else {}),
+                     "exact_share": share(counts[reader]["exact"], counts[reader]["values"]),
+                     "checks_share": share(counts[reader]["checks_held"], counts[reader]["checkable"])} for reader in READERS}
+
+
+def guess_summary(stats):
+    """How many guesses the pay engine made of each kind, and how many were right (the values it chose equal the answers; FR-74). Suppressed with
+    the pay stub comparison when it is, since both rest on the same few files."""
+    documents = stats["pay_readers"]["engine"]["documents"]
+    if not documents and not stats["guesses"]:
+        return None
+    if documents < MIN_CELL:
+        return {"suppressed": True}
+    return {kind: {key: stats["guesses"][kind][key] for key in GUESS_COUNTS} for kind in GUESS_KINDS}
+
+
 def summary(manifest, results, regressions):
     """The shareable summary: built only from allowlisted keys, enums and counts."""
     candidates = {}
@@ -242,6 +283,10 @@ def summary(manifest, results, regressions):
         }
         if reader_summary(stats):
             candidates[name]["table_readers"] = reader_summary(stats)
+        if pay_reader_summary(stats):
+            candidates[name]["pay_readers"] = pay_reader_summary(stats)
+        if guess_summary(stats) is not None:
+            candidates[name]["guesses"] = guess_summary(stats)
     data = {"format": SUMMARY_FORMAT, "run_id": manifest["run_id"], "split": manifest["split"], "repeat": manifest["repeat"],
             "git": manifest["git"], "extraction_version": manifest["extraction_version"], "vision_version": manifest["vision_version"],
             "started_at": manifest["started_at"], "finished_at": manifest["finished_at"], "candidates": candidates}
@@ -265,9 +310,10 @@ def allowed_keys():
             "wall_seconds_p50", "wall_seconds_p95", "model_seconds_p50", "model_seconds_p95", "model_calls", "prompt_tokens", "completion_tokens",
             "sampling", "temperature", "seed", "schema_enforced", "mean_score", "score_spread", "failures", "first_try", "valid", "arithmetic",
             "consistent", "attempts", "calls", "follow_ups", "truncated", "tag", "table_readers", "legacy", "engine", "recorded", "exact",
-            "reconcilable", "reconciled", "dropped", "unplaced", "failed", "exact_share", "reconciled_share"}
+            "reconcilable", "reconciled", "dropped", "unplaced", "failed", "exact_share", "reconciled_share", "pay_readers", "stubs", "values",
+            "left_out", "checkable", "checks_held", "to_review", "split_right", "checks_share", "guesses", "made", "right"}
     keys |= set(STATUSES) | set(SOURCE_KINDS) | set(PAGE_BUCKETS) | set(ROW_COUNTS) | set(DOCUMENT_TYPES) | set(FIELD_ERRORS) | CASE_LISTS
-    keys |= set(FAILURE_KINDS) | set(TAGS)
+    keys |= set(FAILURE_KINDS) | set(TAGS) | set(GUESS_KINDS)
     keys |= {field for fields in CRITICAL.values() for field in fields}
     return keys
 
@@ -427,6 +473,36 @@ def reader_comparison(stats):
                   "comparable between the two."]
 
 
+def pay_comparison(stats):
+    """docs/evals.md "The two table readers": today's pay stub reader and the pay engine side by side, on the text-PDF pay stubs of this run, and the
+    engine's guesses by kind."""
+    counts = stats["pay_readers"]
+    if not counts["engine"]["documents"]:
+        return []
+    out = ["", f"Text-PDF pay stubs read by today's reader and by the pay engine, side by side ({counts['engine']['documents']} files, "
+           f"{counts['engine']['stubs']} stubs, read from the saved reading with no model; more exact values, more stubs whose checks hold and fewer "
+           "sent to review are better):", "",
+           "| Reader | Pay values recorded exactly | Left out | Stubs whose checks hold | Stubs sent to review | Files split right | Unplaced lines | Reader failed |",
+           "|---|---|---|---|---|---|---|---|"]
+    for reader in READERS:
+        each = counts[reader]
+        unplaced = each["unplaced"] if reader == "engine" else "n/a"
+        out.append(f"| {READER_NAMES_PAY[reader]} | {each['exact']} of {each['values']} ({percent(each['exact'], each['values'])}) | {each['left_out']} | "
+                   f"{each['checks_held']} of {each['checkable']} | {each['to_review']}{' (stand-in)' if reader == 'legacy' else ''} of {each['stubs']} | "
+                   f"{each['split_right']} of {each['documents']} | {unplaced} | {each['failed']} |")
+    out += ["", "Exact means the value in the this-period or year-to-date column equals the answer, matched to the answer's line by its label. Left out is "
+            "an answer value the reader placed nowhere. Checks hold means every this-period value was placed and they add up to the answers' gross and "
+            "net pay. Stubs sent to review: for the engine, the stubs its records put in To check; today's reader makes no record in this comparison, so "
+            "a stub with a value left out stands in for one. Split right means the reader made as many parts as the file has stubs, each holding its "
+            "stub's net pay; today's reader always makes one part. Unplaced lines are printed lines the engine found no column for and listed; today's "
+            "reader names none."]
+    guesses = stats["guesses"]
+    made = {kind: guesses[kind] for kind in GUESS_KINDS if guesses[kind]["made"]}
+    out += ["", "Guesses the engine made: " + (", ".join(f"{kind} {each['right']} right of {each['made']}" for kind, each in made.items()) if made else "none")
+            + ". A guess is right when the values it chose equal the answers."]
+    return out
+
+
 def markdown(manifest, results, regressions, previous):
     out = [f"# Eval run {manifest['run_id']}", "",
            f"Split **{manifest['split']}**, {manifest['cases']} cases, repeated {manifest['repeat']}×. Code {manifest['git']}, "
@@ -485,6 +561,7 @@ def markdown(manifest, results, regressions, previous):
                     f"{precision} listed rows were real; {rows['missing']} missing, {rows['extra']} extra, {rows['duplicate']} duplicated, "
                     f"{rows['description_errors']} with a wrong description."]
         out += reader_comparison(stats)
+        out += pay_comparison(stats)
         out += ["", "| Stratum | Value | Cases passed | Fields wrong of checked |", "|---|---|---|---|"]
         for dimension in ("document_type", "source_kind", "pages", "tag"):
             for value, stratum in sorted(stats["strata"].get(dimension, {}).items()):

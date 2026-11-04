@@ -7,10 +7,15 @@ Every mismatch gets one error category from a fixed list, so reports carry no va
 
 from collections import Counter
 from datetime import date
+from decimal import Decimal
 import re
 
 from home_manager.core.answers import CRITICAL, ROWS, kind_of
+from home_manager.finance import paystub_tables
 
+# The kinds of guess the pay engine and Record record on a pay stub (FR-74), the only names the summary may hold for them.
+GUESS_KINDS = (paystub_tables.HEADINGS_OVERRULED, paystub_tables.COLUMNS_GUESSED, paystub_tables.GROUP_GUESSED, paystub_tables.BOX_COLUMNS_GUESSED,
+               paystub_tables.SPLIT_CHANGED)
 FIELD_ERRORS = ("missing", "invented", "sign", "scale", "digit", "date_swap", "year", "wrong_value")
 ROW_ERRORS = ("missing_row", "extra_row", "duplicate_row")
 # Why a document was not read or extracted: the model's JSON did not parse, broke the schema, or failed the app's
@@ -195,6 +200,128 @@ def table_reader(answers, rebuild, unplaced=None, failed=False):
         reconciled = not failed and (opening - moved if card else opening + moved) == closing
     return {"rows": len(answers.rows), "recorded": len(recorded), "exact": exact, "reconciled": reconciled,
             "dropped": 0 if failed else rebuild.dropped, "unplaced": unplaced, "failed": failed}
+
+
+def label_key(text):
+    return " ".join((text or "").casefold().split())
+
+
+def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
+    """How one reader did on a text-PDF pay stub file (specs/pdf-table-engine-paystubs FR-71). `stubs` is the answers of each pay stub in file
+    order (Case.stubs); `rows` is what the reader placed, in the order printed: (label, this period, year to date) in minor units, a value None
+    where the reader had no cell for it; `split_right` is whether the reader's parts are the file's stubs (`split_is_right`). Counts only, no values.
+
+    Each answer line (in file order) takes the first unused reader row with the same label, ignoring case and spacing; taxes and deductions are
+    compared by magnitude, as the answers keep them.
+
+    stubs      pay stubs the file holds (the answers)
+    values     the answers' this-period and year-to-date values (a blank cell is no value)
+    exact      values the reader placed exactly right
+    left_out   values the reader placed nowhere: no row with the label, or no value in its cell
+    checkable  stubs whose answers include gross and net pay, so their lines can be added up
+    checks_held checkable stubs whose every this-period value was placed and add up to the answers' gross and net pay
+    left_out_stubs stubs with a value left out: what the old reader, which makes no record of its own to judge, stands in with for "sent to review"
+    unplaced   printed lines the engine found no column for and listed (None for the old reader, which names none)
+    split_right 1 when the reader made as many parts as the file has stubs, each holding its stub's net pay amount; else 0
+    failed     the reader raised, so it placed nothing
+    """
+    unused = [] if failed else list(rows)
+    out = {"stubs": len(stubs), "values": 0, "exact": 0, "left_out": 0, "checkable": 0, "checks_held": 0, "left_out_stubs": 0, "unplaced": unplaced,
+           "split_right": int(bool(split_right) and not failed), "failed": failed}
+    for answers in stubs:
+        sums, complete, stub_left = {"gross": Decimal(0), "taken": Decimal(0)}, True, 0
+        for line in answers.rows or []:
+            found = next((row for row in unused if label_key(row[0]) == label_key(line["description"])), None)
+            if found is not None:
+                unused.remove(found)
+            group = line["line_group"]
+            for column, value in (("current", line["current_minor"]), ("ytd", line["ytd_minor"])):
+                if value is None:
+                    continue
+                got = None if found is None else found[1 if column == "current" else 2]
+                got = got if got is None or group == "earnings" else abs(got)
+                out["values"] += 1
+                if got is None:
+                    out["left_out"] += 1
+                    stub_left += 1
+                    if column == "current":
+                        complete = False
+                else:
+                    out["exact"] += got == value
+                    if column == "current":
+                        if group == "earnings":
+                            sums["gross"] += got
+                        elif group != "employer_paid":
+                            sums["taken"] += got
+        gross, net = (answers.fields[name].value if answers.fields[name].state != "unchecked" else None for name in ("gross_pay_minor", "net_pay_minor"))
+        if isinstance(gross, int) and isinstance(net, int):
+            out["checkable"] += 1
+            out["checks_held"] += complete and sums["gross"] == gross and sums["gross"] - sums["taken"] == net
+        out["left_out_stubs"] += stub_left > 0
+    return out
+
+
+def split_is_right(stubs, parts):
+    """Whether a reader's parts are the file's stubs: as many parts as stubs, and part k's printed amounts include stub k's net pay. `parts` is
+    the list of each part's amounts as minor units (sets)."""
+    nets = [stub.fields["net_pay_minor"].value if stub.fields["net_pay_minor"].state != "unchecked" else None for stub in stubs]
+    return len(parts) == len(stubs) and all(net is None or net in amounts for net, amounts in zip(nets, parts))
+
+
+def values_right(grades):
+    """Whether every money value of a stub came out right: its pay lines found once each with the right group, this period and year to date,
+    and every checked money field. None when its rows were not confirmed complete, so nothing can be said (the guess goes unjudged)."""
+    if grades is None or not grades["rows"]["scored"]:
+        return None
+    rows = grades["rows"]
+    return (rows["matched"] == rows["expected"] == rows["predicted"]
+            and all(field["correct"] for name, field in grades["fields"].items() if field["checked"] and name.endswith("_minor")))
+
+
+def merge_grades(parts):
+    """One grades dict for a file of several pay stubs: a field is right when it is right in every stub that checked it, rows and counts add up,
+    and the file is perfect only when every stub is."""
+    fields = {}
+    for name in parts[0]["fields"]:
+        checked = [part["fields"][name] for part in parts if part["fields"][name]["checked"]]
+        fields[name] = ({"checked": False, "correct": None, "error": None} if not checked else
+                        {"checked": True, "correct": all(field["correct"] for field in checked),
+                         "error": next((field["error"] for field in checked if field["error"]), None),
+                         "state": "fixed" if any(field["state"] == "fixed" for field in checked) else "correct"})
+    scored = all(part["rows"]["scored"] for part in parts)
+    rows = ({"scored": True, **{key: sum(part["rows"][key] for part in parts) for key in ("expected", "predicted", "matched", "missing", "extra", "duplicate",
+                                                                                              "description_errors")}} if scored else {"scored": False})
+    fully = all(part["document"]["fully_checked"] for part in parts)
+    perfect = all(part["document"]["perfect"] for part in parts) if fully else None
+    checks = [part["arithmetic"] for part in parts if part["arithmetic"] is not None]
+    return {"fields": fields, "rows": rows, "document": {"checked_fields": sum(1 for field in fields.values() if field["checked"]),
+                                                          "fully_checked": fully, "perfect": perfect}, "arithmetic": all(checks) if checks else None}
+
+
+def grade_stubs(stubs, records):
+    """(grades, per-stub grades) of a pay stub file's records against its stubs' answers, in order. A different number of records than stubs is a
+    split miss (the file was split wrong): the case is graded as if nothing was read, and no stub is judged on its own (per-stub is None)."""
+    if len(records) != len(stubs):
+        return grade(stubs[0], None), None
+    each = [grade(answers, record) for answers, record in zip(stubs, records)]
+    return (each[0] if len(each) == 1 else merge_grades(each)), each
+
+
+def guess_counts(records, each):
+    """{kind: {"made": n, "right": n}} of the guesses recorded on a pay stub file's records (details.guesses, FR-74). A guess is right when the
+    values it chose equal the answers: the stub's money values are all right (`values_right`). Guesses on a stub that cannot be judged (no
+    per-stub grades, or its rows not confirmed complete) are not counted. Kinds are the engine's fixed list, so nothing else is recorded."""
+    counts = {}
+    for record, grades in zip(records, each or []):
+        right = values_right(grades)
+        if right is None:
+            continue
+        for guess in ((record or {}).get("details") or {}).get("guesses") or []:
+            if guess.get("kind") in GUESS_KINDS:
+                entry = counts.setdefault(guess["kind"], {"made": 0, "right": 0})
+                entry["made"] += 1
+                entry["right"] += right
+    return counts
 
 
 def score(grades):

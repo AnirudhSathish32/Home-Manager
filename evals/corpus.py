@@ -5,6 +5,9 @@
   donors/<donor>/cases/<case_id>/   original.<png|jpg|pdf>, answers.json, proposal.json, case.json
   results/<run_id>/                 run.json, results.jsonl, report.md, summary.json; outputs.jsonl with --keep-outputs
 
+A file of several pay stubs also has stubs.json, one answer file per stub in file order (Case.stubs); it is written by the collector or the
+synthetic corpus, never by intake.
+
 case.json holds what intake decided: status (pending until the collector has checked the answers a second time,
 admitted, or dropped), split (dev cases may be used to tune prompts; test cases are frozen) and used_for_tuning.
 """
@@ -66,6 +69,14 @@ class Case:
 
     def answers(self):
         return Answers.model_validate_json((self.folder / "answers.json").read_bytes())
+
+    def stubs(self):
+        """The answers of each pay stub of the file, in file order. A file of several stubs keeps them in stubs.json beside answers.json (the
+        first being answers.json's own); every other case, one-stub pay stubs included, is its own single stub."""
+        path = self.folder / "stubs.json"
+        if not path.is_file():
+            return [self.answers()]
+        return [Answers.model_validate(stub) for stub in json.loads(path.read_text(encoding="utf-8"))]
 
     def save(self):
         write_json(self.folder / "case.json", self.info.model_dump())

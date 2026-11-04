@@ -25,10 +25,13 @@ import tomllib
 
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
-from home_manager.documents.extraction import EXTRACTION_VERSION
+from home_manager.core.money import MoneyError, to_minor
+from home_manager.documents.extraction import EXTRACTION_VERSION, cell_amount, line_amounts, paystub_columns, reported_tables
+from home_manager.documents.layout_context import evidence_lines
+from home_manager.documents.paystub_split import stub_parts
 from home_manager.documents.pdf_reader import PDFResult, read_result
 from home_manager.documents.reasoning import ReasoningConfig
-from home_manager.finance import statement_rows, statement_tables
+from home_manager.finance import paystub_tables, statement_rows, statement_tables
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.model_client import DEFAULT_TEMPERATURE, check_connection, model_identity, recording
@@ -37,7 +40,7 @@ from home_manager.models.vision import VISION_VERSION, Sampling, VisionConfig
 
 from .corpus import Corpus, write_json
 from .decision import rules as decision_rules
-from .graders import failure_kind, grade, table_reader
+from .graders import failure_kind, grade, grade_stubs, guess_counts, pay_reader, split_is_right, table_reader
 from .guard import GuardError, check_server, install_network_guard
 
 RUN_FORMAT = "home-manager-eval-run/1"
@@ -184,6 +187,89 @@ def table_readers(case, answers, evidence):
     return out
 
 
+def minor(text, currency):
+    """A printed amount as minor units, signed as printed; None when it is not an amount."""
+    try:
+        return to_minor(str(text), currency)
+    except (MoneyError, ArithmeticError, ValueError):
+        return None
+
+
+def cell_minor(row, column, currency):
+    """The amount in a row's cell at `column`, in minor units; None when there is no such cell or no single amount in it."""
+    if column is None or column >= len(row.cells):
+        return None
+    printed = cell_amount(row.cells[column])
+    return minor(printed, currency) if printed else None
+
+
+def pay_rows(tables, currency):
+    """What a reader placed of a pay stub file: (label, this period, year to date) in minor units for each row of its tables, in the order printed. A
+    table whose this-period and year-to-date columns can't be told (paystub_columns is None) places no value; a total is no pay line."""
+    found = []
+    for table in tables:
+        columns = paystub_columns(table) or (None, None)
+        for row in table.rows:
+            if getattr(row, "total", False) or not row.cells:
+                continue
+            found.append((row.cells[0].quote, *(cell_minor(row, column, currency) for column in columns)))
+    return found
+
+
+def pay_readers(case, stubs, evidence):
+    """docs/evals.md "The two table readers": for a native-PDF pay stub whose pay lines the donor confirmed complete, today's reader (the printed
+    tables of `table_grid`, whose this-period and year-to-date columns `paystub_columns` finds from their headings) and the pay engine
+    (`paystub_tables.read`, whose columns are decided from the printed numbers) each read the saved reading, with no model. The engine's file split
+    (`paystub_split.stub_parts`) is the rule Record uses; today's reader makes one part of the file. None when the case is not such a pay stub."""
+    if (case.info.document_type != "paystub" or case.info.source_kind != "native_pdf" or not isinstance(evidence, PDFResult)
+            or any(not answers.rows_complete or answers.rows is None for answers in stubs)):
+        return None
+    first = stubs[0].fields["currency"]
+    currency = (first.value if first.state != "unchecked" else None) or case.info.home_currency or "USD"
+    lines = [line for line in evidence_lines(evidence) if line.text.strip()]
+    def printed(first, last):
+        return {minor(amount, currency) for line in lines[first:last] for amount in line_amounts(line.text)}
+    out = {}
+    for reader in ("legacy", "engine"):
+        unplaced = None
+        try:
+            if reader == "legacy":
+                rows, right = pay_rows(reported_tables(evidence), currency), split_is_right(stubs, [printed(0, len(lines))])
+            else:
+                pay = paystub_tables.read(evidence)
+                rows, unplaced = pay_rows(pay.adapted, currency), len(pay.unplaced)
+                try:
+                    right = split_is_right(stubs, [printed(first, last) for first, last in stub_parts(lines)])
+                except Exception:  # A split that raises is a split missed, not a stop.
+                    right = False
+            out[reader] = pay_reader(stubs, rows, right, unplaced)
+        except Exception:  # A reader that raises placed nothing; that is a result, not a stop.
+            out[reader] = pay_reader(stubs, [], False, failed=True)
+    return out
+
+
+def review_count(publication):
+    """How many pay stubs of an extraction run were sent to review: published and not counted automatically (a stub rejected as a duplicate or
+    VOID is not). None when the run published nothing."""
+    if not isinstance(publication, dict):
+        return None
+    statuses = [segment.get("review_status") for segment in publication["segments"]] if publication.get("segments") else [publication.get("review_status")]
+    return sum(status not in ("verified", "rejected") for status in statuses)
+
+
+def grade_case(case, answers, record, details):
+    """The case's grades. A pay stub file's records (a list, one per stub) are graded one stub at a time against `Case.stubs` and merged; a different
+    count than the file has stubs is a split miss. Its guesses are counted by kind in `details`."""
+    if not isinstance(record, list):
+        return grade(answers, record)
+    grades, each = grade_stubs(case.stubs(), record)
+    details["split_miss"] = each is None
+    guesses = guess_counts(record, each)
+    if guesses:
+        details["guesses"] = guesses
+    return grades
+
+
 def pipeline(case, candidate, base_url, timeout, sampling, attempts):
     """Capture, reading and extraction for one case. Returns (status, record, details)."""
     def failed(status, stage, run, details):
@@ -221,9 +307,13 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
             details = {"wall_seconds": wall, "reading": telemetry(reading["model_runs"])}
             if reading["status"] not in ("succeeded", "partial"):
                 return failed("read_failed", "transcription", reading, details)
-            readers = table_readers(case, case.answers(), read_result(reading["result"]) if reading["result"] else None)
+            evidence = read_result(reading["result"]) if reading["result"] else None
+            readers = table_readers(case, case.answers(), evidence)
             if readers:
                 details["table_readers"] = readers
+            pay = pay_readers(case, case.stubs(), evidence) if case.info.document_type == "paystub" else None
+            if pay:
+                details["pay_readers"] = pay
             with manager.store.connection() as db:
                 row = db.execute("SELECT id FROM extraction_runs WHERE document_id=? ORDER BY created_at DESC LIMIT 1", (document["id"],)).fetchone()
             if row is None:
@@ -234,11 +324,15 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
                 return failed("extract_failed", "extraction", extraction, details)
             result = extraction["result"] or {}
             details["predicted_type"] = (result.get("classification") or {}).get("document_type")
-            if result.get("segments"):
-                return "split", (result["segments"][0] or {}).get("normalized"), details
+            paystub = case.info.document_type == "paystub"
+            if paystub and pay:
+                pay["engine"]["to_review"] = review_count(extraction.get("publication"))  # Today's reader makes no record: its stand-in is left_out_stubs.
+            if result.get("segments"):  # A pay stub file is graded stub by stub (grade_case); any other split document by its first part.
+                records = [(segment or {}).get("normalized") for segment in result["segments"]]
+                return "split", records if paystub else records[0], details
             if not result.get("normalized"):
                 return "no_record", None, details
-            return "ok", result["normalized"], details
+            return "ok", [result["normalized"]] if paystub else result["normalized"], details
         finally:
             manager.close()
 
@@ -335,12 +429,13 @@ def run(corpus, config, split="test", repeat=1, case_ids=None, network_guard=Tru
                             except Exception as exc:  # One broken case never stops the run; its category is reported.
                                 status, record, details = "error", None, {"error": type(exc).__name__}
                         answers = case.answers()
+                        grades = grade_case(case, answers, record, details) if status in ("ok", "split") else None
                         line = {"run_id": run_id, "candidate": candidate["name"], "run_index": index, "case_id": case.id, "donor": case.info.donor,
                                 "split": case.info.split, "document_type": case.info.document_type, "source_kind": case.info.source_kind,
                                 "pages": case.info.pages, "tags": list(case.info.tags), "status": status,
                                 "type_correct": details.get("predicted_type") == case.info.document_type if "predicted_type" in details else None,
                                 # A document that was not read or extracted is a processing failure, counted by status, never as wrong fields.
-                                "grades": grade(answers, record) if status in ("ok", "split") else None, "details": details}
+                                "grades": grades, "details": details}
                         results.write(json.dumps(line) + "\n")
                         results.flush()
                         if outputs_file and outputs:

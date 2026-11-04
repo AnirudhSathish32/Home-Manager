@@ -13,16 +13,34 @@ import pytest
 
 from evals import intake
 from evals.corpus import TAGS, Corpus
-from evals.graders import FAILURE_KINDS, arithmetic, compare, failure_kind, grade, match_rows, same_name, score, table_reader
+from evals.graders import (
+    FAILURE_KINDS,
+    GUESS_KINDS,
+    arithmetic,
+    compare,
+    failure_kind,
+    grade,
+    grade_stubs,
+    guess_counts,
+    match_rows,
+    pay_reader,
+    same_name,
+    score,
+    split_is_right,
+    table_reader,
+)
 from evals.guard import GuardError, _hook, check_server
-from evals.report import check_summary
+from evals.report import case_pass, check_summary, rebuild
 from evals.run import load_config, run
+from evals.synthetic import PAYSTUB_FILES, PAYSTUB_SEED, aligned_paystub, documents, money, write_case
 from evals.synthetic import create as create_synthetic
-from evals.synthetic import documents, money
 from home_manager.core.answers import CRITICAL as CRITICAL_FIELDS
-from home_manager.core.answers import ROWS, Answers, empty_answers
+from home_manager.core.answers import ROWS, Answers, FieldAnswer, empty_answers
 from home_manager.core.money import EXPONENTS
+from home_manager.documents.layout_context import evidence_lines
+from home_manager.documents.pdf_reader import complete_pdf, read_result, worker
 from home_manager.finance.statement_dates import Rebuild
+from home_manager.library.storage import digest_file
 from test_donations import DESCRIBE, extracted  # noqa: F401
 from test_extraction import MISSING, RECEIPT, classification, identity, receipt, receipt_items, receipt_summary  # noqa: F401
 
@@ -300,11 +318,11 @@ def test_a_dry_run_checks_everything_and_writes_nothing(tmp_path, local_model):
     create_synthetic(corpus.root)
     said = []
     assert run(corpus, config_for(local_model), repeat=3, network_guard=False, echo=said.append, dry_run=True) is None
-    assert said[0].startswith("Dry run: 48 test cases x 1 candidates x 3 repeats = 144 documents.")
+    assert said[0].startswith("Dry run: 53 test cases x 1 candidates x 3 repeats = 159 documents.")
     assert local_model["requests"] == [] and not (corpus.root / "results").exists()
     said.clear()
     run(corpus, config_for(local_model), network_guard=False, echo=said.append, dry_run=True, compare_schema=True)
-    assert said[0].startswith("Dry run: 48 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
+    assert said[0].startswith("Dry run: 53 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
 
 
 def test_a_model_that_cannot_load_is_one_load_failure_per_case(tmp_path, local_model, monkeypatch):
@@ -344,9 +362,9 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
     created = create_synthetic(tmp_path / "synthetic")
     corpus = Corpus(tmp_path / "synthetic")
     cases = corpus.cases(split="test")
-    assert len(created) == len(set(created)) == len(cases) == 48
+    assert len(created) == len(set(created)) == len(cases) == 53
     assert {kind: sum(case.info.document_type == kind for case in cases) for kind in ROWS} == {
-        "receipt": 24, "bank_statement": 9, "credit_card_statement": 6, "paystub": 7, "bill": 2}
+        "receipt": 24, "bank_statement": 9, "credit_card_statement": 6, "paystub": 12, "bill": 2}
     assert {tag for case in cases for tag in case.info.tags} == set(TAGS)  # Every edge is tested at least once.
     assert all(case.answers().rows_complete for case in cases)
     assert {case.original.suffix for case in cases} == {".png", ".pdf"} and max(case.info.pages for case in cases) >= 6
@@ -363,6 +381,7 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
 
 
 EXISTING_DOCUMENTS = "fbabda291e8cc424a7658a29b1a010aa3af93050fd9b75ef53e8af1d84a94609"  # sha256 of the 44 documents of the corpus before the aligned statements.
+BEFORE_PAY_STUBS = "4435fba7588668761baac7447daef1614598343b62f24bb158b905e8f69bf8aa"  # sha256 of the 48 documents before the aligned pay stubs.
 
 
 def test_table_engine_aligned_statements_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
@@ -370,7 +389,7 @@ def test_table_engine_aligned_statements_are_added_after_the_existing_documents_
     everything = documents()
     keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
     assert hashlib.sha256(json.dumps([{key: document[key] for key in keys} for document in everything[:44]], sort_keys=True).encode()).hexdigest() == EXISTING_DOCUMENTS
-    added = everything[44:]
+    added = everything[44:48]
     assert [document["document_type"] for document in added] == ["bank_statement"] * 3 + ["credit_card_statement"]
     assert all(document["tags"] == ["aligned"] and document["source"] == "pdf" and document["layout"] for document in added)
     # What the four print: the Wells Fargo-style two-line heading and daily balances, day-first dates, wrapped descriptions over two pages, sections.
@@ -380,11 +399,39 @@ def test_table_engine_aligned_statements_are_added_after_the_existing_documents_
     assert len(added[2]["layout"]) == 2 and max(len(row["description"].split()) for row in added[2]["rows"]) >= 5
     assert any(title in texts[3] for title in ("Payments and Credits", "Payments", "Credits and Refunds")) and any(title in texts[3] for title in ("Purchases", "Charges and Interest"))
     created = create_synthetic(tmp_path / "synthetic")
-    assert len(created) == 48 and all(len(identifier) == 16 for identifier in created)
+    assert len(created) == 53 and all(len(identifier) == 16 for identifier in created)
     corpus = Corpus(tmp_path / "synthetic")
-    aligned = [case for case in corpus.cases() if "aligned" in case.info.tags]
+    aligned = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type != "paystub"]
     assert len(aligned) == 4 and all(case.info.source_kind == "native_pdf" and case.original.read_bytes().startswith(b"%PDF") for case in aligned)
     assert all(case.answers().rows_complete and case.answers().document_type in ("bank_statement", "credit_card_statement") for case in aligned)
+
+
+def test_pay_stub_aligned_files_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
+    """FR-71 / SC-68: the existing 48 cases keep their ids and answers; five text-PDF pay stub files in aligned columns follow them, from the layout
+    generator's inputs, and the three-stub file carries one answer file per stub."""
+    everything = documents()
+    keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
+    assert hashlib.sha256(json.dumps([{key: document[key] for key in keys} for document in everything[:48]], sort_keys=True).encode()).hexdigest() == BEFORE_PAY_STUBS
+    added = everything[48:]
+    assert len(everything) == 53 and [document["document_type"] for document in added] == ["paystub"] * 5
+    assert all(document["tags"] == ["aligned"] and document["source"] == "pdf" and document["layout"] for document in added)
+    texts = ["\n".join(document["lines"]) for document in added]
+    assert all(word in texts[0] for word in ("Hours", "Rate")) and re.search(r"YTD|Year to", texts[0]) and re.search(r"YTD|Year to", texts[3])
+    assert "\nThis\nYear to\n" in texts[3] and "\nPeriod\nDate\n" in texts[3]  # Headings over two lines.
+    assert not any("Current" in line or "This Period" in line for line in added[1]["lines"])  # Stacked sections with no headings.
+    assert any(line in ("Gross Pay", "Taxes", "Deductions", "Net Pay") for line in added[2]["lines"])  # The summary box.
+    assert any(row["current_minor"] is None and row["ytd_minor"] for row in added[3]["rows"])  # A year-to-date-only row.
+    assert [len(document["stubs"] or []) for document in added] == [0, 0, 0, 0, 3] and len({stub["fields"]["pay_date"] for stub in added[4]["stubs"]}) == 3
+    assert added[4]["stubs"][0]["fields"] == added[4]["fields"] and added[4]["stubs"][0]["rows"] == added[4]["rows"]
+    created = create_synthetic(tmp_path / "synthetic")
+    corpus = Corpus(tmp_path / "synthetic")
+    stubs = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type == "paystub"]
+    assert len(created) == 53 and len(stubs) == 5 and all(case.info.source_kind == "native_pdf" and case.answers().rows_complete for case in stubs)
+    assert sorted(len(case.stubs()) for case in stubs) == [1, 1, 1, 1, 3]
+    assert all(len(case.stubs()) == 1 for case in corpus.cases() if case not in stubs)  # Every other case, one-stub pay stubs included, is its own stub.
+    three = next(case for case in stubs if len(case.stubs()) == 3)
+    assert three.stubs()[0] == three.answers() and (three.folder / "stubs.json").is_file()
+    assert [(folder / "stubs.json").exists() for folder in (case.folder for case in corpus.cases())].count(True) == 1
 
 
 def test_every_synthetic_answer_is_printed_and_adds_up():
@@ -465,7 +512,7 @@ def test_table_engine_comparison_leaves_out_what_is_not_a_text_pdf_statement_and
         raise RuntimeError("injected engine fault")
 
     monkeypatch.setattr("evals.run.statement_tables.read", broken)
-    aligned = [case.id for case in cases if "aligned" in case.info.tags][:3]
+    aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type != "paystub"][:3]
     folder = run(corpus, config_for(local_model), case_ids=aligned, network_guard=False, echo=lambda _: None)
     readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"]
     assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["reconciled"] == 0 and readers["legacy"]["failed"] == 0
@@ -475,9 +522,194 @@ def test_table_engine_comparison_leaves_out_what_is_not_a_text_pdf_statement_and
 def test_table_engine_comparison_is_suppressed_in_the_summary_for_few_statements(tmp_path, local_model):
     corpus = Corpus(tmp_path / "synthetic")
     create_synthetic(corpus.root)
-    chosen = [case.id for case in corpus.cases() if "aligned" in case.info.tags][:2]
+    chosen = [case.id for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type != "paystub"][:2]
     folder = run(corpus, config_for(local_model), case_ids=chosen, network_guard=False, echo=lambda _: None)
     assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"] == {"suppressed": True}
+
+
+# The two pay stub readers ------------------------------------------------------------------------------------------------
+
+def stub_answers(rows, gross=None, net=None):
+    fields = {name: FieldAnswer(value=None, state="unchecked") for name in CRITICAL_FIELDS["paystub"]}
+    fields.update(gross_pay_minor=FieldAnswer(value=gross, state="correct" if gross is not None else "unchecked"),
+                  net_pay_minor=FieldAnswer(value=net, state="correct" if net is not None else "unchecked"))
+    return Answers(document_type="paystub", fields=fields, rows=[{"description": label, "line_group": group, "current_minor": current, "ytd_minor": ytd}
+                                                                 for label, group, current, ytd in rows], rows_state="correct", rows_complete=True)
+
+
+def test_pay_reader_counts_values_left_out_and_checks_and_never_text():
+    stub = stub_answers([("Regular", "earnings", 100000, 1200000), ("Federal Tax", "tax", 20000, 240000), ("401K", "pre_tax", 5000, None)], gross=100000, net=75000)
+    exact = [("regular", 100000, 1200000), ("FEDERAL  TAX", -20000, 240000), ("401k", 5000, None), ("Total Taxes", 20000, 240000)]
+    assert pay_reader([stub], exact, True, unplaced=0) == {"stubs": 1, "values": 5, "exact": 5, "left_out": 0, "checkable": 1, "checks_held": 1,
+                                                          "left_out_stubs": 0, "unplaced": 0, "split_right": 1, "failed": False}
+    # A value the reader put in the wrong column is wrong, not left out; a row it has no cell for is left out and the stub's checks cannot hold.
+    wrong = pay_reader([stub], [("Regular", 1200000, 100000), ("Federal Tax", None, None), ("401K", 5000, None)], False)
+    assert (wrong["values"], wrong["exact"], wrong["left_out"], wrong["checks_held"], wrong["left_out_stubs"], wrong["split_right"], wrong["unplaced"]) == (
+        5, 1, 2, 0, 1, 0, None)
+    assert pay_reader([stub], [], False, failed=True) == {"stubs": 1, "values": 5, "exact": 0, "left_out": 5, "checkable": 1, "checks_held": 0,
+                                                          "left_out_stubs": 1, "unplaced": None, "split_right": 0, "failed": True}
+    # Two stubs print the same labels: each answer line takes the next unused row, in order.
+    second = stub_answers([("Regular", "earnings", 200000, None)], gross=200000, net=200000)
+    both = pay_reader([stub, second], [("Regular", 100000, 1200000), ("Federal Tax", 20000, 240000), ("401K", 5000, None), ("Regular", 200000, None)], True)
+    assert (both["values"], both["exact"], both["checkable"], both["checks_held"]) == (6, 6, 2, 2)
+    unchecked = stub_answers([("Regular", "earnings", 100000, None)])
+    assert pay_reader([unchecked], [("Regular", 100000, None)], True)["checkable"] == 0  # Without gross and net there is nothing to add up.
+    parts = [{1, 75000, 2}, {200000}]
+    assert split_is_right([stub, second], parts) and not split_is_right([stub, second], parts[:1]) and not split_is_right([stub, second], [parts[1], parts[0]])
+    assert split_is_right([unchecked], [{5}])  # A stub with no net pay answer only needs the right count of parts.
+
+
+def test_a_pay_stub_file_is_graded_stub_by_stub_and_a_wrong_count_is_a_split_miss():
+    first = stub_answers([("Regular", "earnings", 100000, None)], gross=100000, net=100000)
+    second = stub_answers([("Regular", "earnings", 200000, None)], gross=200000, net=200000)
+
+    def record(amount, guesses=()):
+        return {"gross_pay_minor": amount, "net_pay_minor": amount, "lines": [{"description": "Regular", "line_group": "earnings", "current_minor": amount,
+                                                                                "ytd_minor": None}], "details": {"guesses": list(guesses)}}
+    good = [record(100000, [{"kind": "columns_guessed", "text": "x"}]), record(200000, [{"kind": "columns_guessed"}, {"kind": "group_guessed"}])]
+    grades, each = grade_stubs([first, second], good)
+    assert len(each) == 2 and grades["fields"]["gross_pay_minor"]["correct"] and grades["rows"]["matched"] == grades["rows"]["expected"] == 2
+    assert guess_counts(good, each) == {"columns_guessed": {"made": 2, "right": 2}, "group_guessed": {"made": 1, "right": 1}}
+    # One stub's money wrong: its guesses are wrong, the other stub's right, and the file's grades show the wrong field.
+    bad = [good[0], record(250000, [{"kind": "columns_guessed"}])]
+    grades, each = grade_stubs([first, second], bad)
+    assert not grades["fields"]["gross_pay_minor"]["correct"] and guess_counts(bad, each) == {"columns_guessed": {"made": 2, "right": 1}}
+    # Fewer records than stubs: a split miss, graded as if nothing was read, and no guess is judged.
+    grades, each = grade_stubs([first, second], good[:1])
+    assert each is None and not grades["fields"]["gross_pay_minor"]["correct"] and guess_counts(good[:1], each) == {}
+    assert guess_counts([record(1, [{"kind": "something else"}])], grade_stubs([first], [record(1)])[1]) == {}  # Only the engine's kinds are counted.
+    assert set(GUESS_KINDS) == {"headings_overruled", "columns_guessed", "group_guessed", "box_columns_guessed", "split_changed"}
+
+
+def read_original(path, folder):
+    """A pay stub PDF read like the app reads it, with no model: its saved reading."""
+    folder.mkdir()
+    worker(str(path), folder)
+    complete_pdf(folder, config=None, digest=digest_file(path))
+    return read_result(json.loads((folder / "result.json").read_text(encoding="utf-8")))
+
+
+def scripted_pay_stubs(corpus, local_model, tmp_path, files=PAYSTUB_FILES):
+    """The model double for pay stub files (the five aligned ones unless `files`, a list of (index, choices), says otherwise) in the order a run reads
+    them (case id order): what test_paystub_engine_generator answers for each file from the generator's inputs, one reply per schema and stub."""
+    from evals import paystub_layouts
+    from test_paystub_engine_generator import Generated
+    made = {}
+    for index, choices in files:
+        lines = aligned_paystub(index, **choices)["lines"]
+        made[hashlib.sha256(("synthetic:pdf:" + "|".join(lines)).encode()).hexdigest()[:16]] = (index, choices)
+    replies = {}
+    for case_id in sorted(made):
+        index, choices = made[case_id]
+        reader = object.__new__(Generated)
+        reader.evidence = read_original(corpus.case(case_id).original, tmp_path / ("read-" + case_id))
+        reader.lines = evidence_lines(reader.evidence)
+        reader.local_model = {"requests": []}
+        reader.answer(paystub_layouts.make(PAYSTUB_SEED, index, **choices))
+        for schema, found in reader.local_model["by_schema"].items():
+            replies.setdefault(schema, []).extend(found)
+    local_model["by_schema"] = replies
+    return sorted(made)
+
+
+def test_pay_stub_readers_are_compared_and_the_engine_reads_every_aligned_file_exactly(tmp_path, local_model):
+    """SC-68: `evals.run.run` over the five aligned pay stub files (the model double answers from the generator's inputs) shows today's reader and the
+    pay engine side by side; the engine records every pay value exactly, splits the three-stub file into three, sends nothing to review and guesses
+    nothing wrong; summary.json holds counts only."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    chosen = scripted_pay_stubs(corpus, local_model, tmp_path)
+    folder = run(corpus, config_for(local_model), case_ids=chosen, network_guard=False, echo=lambda _: None)
+    lines = [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sorted(line["case_id"] for line in lines) == chosen
+    for line in lines:
+        stubs = len(corpus.case(line["case_id"]).stubs())
+        assert line["status"] == ("split" if stubs == 3 else "ok") and line["details"]["split_miss"] is False, line["details"]
+        assert line["grades"]["document"]["perfect"] is True and case_pass(line), line["case_id"]
+        engine = line["details"]["pay_readers"]["engine"]
+        assert (engine["stubs"], engine["exact"], engine["left_out"], engine["checks_held"], engine["checkable"], engine["split_right"], engine["unplaced"],
+                engine["to_review"], engine["failed"]) == (stubs, engine["values"], 0, stubs, stubs, 1, 0, 0, False), line["case_id"]
+        legacy = line["details"]["pay_readers"]["legacy"]
+        assert legacy["values"] == engine["values"] and legacy["exact"] <= engine["exact"] and legacy["checks_held"] <= engine["checks_held"]
+        assert legacy["split_right"] <= engine["split_right"] and legacy["unplaced"] is None
+    legacy_all, engine_all = (sum(line["details"]["pay_readers"][reader]["split_right"] for line in lines) for reader in ("legacy", "engine"))
+    assert engine_all == 5 and legacy_all == 4  # Today's reader makes one part of the three-stub file.
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    old, engine = summary["pay_readers"]["legacy"], summary["pay_readers"]["engine"]
+    assert old["documents"] == engine["documents"] == 5 and old["stubs"] == engine["stubs"] == 7 and old["values"] == engine["values"]
+    assert engine["exact"] == engine["values"] and engine["left_out"] == 0 and engine["checks_held"] == engine["checkable"] == 7
+    assert engine["exact_share"] == engine["checks_share"] == 1.0 and engine["to_review"] == 0 and engine["split_right"] == 5 and engine["unplaced"] == 0
+    assert old["unplaced"] is None and old["to_review"] == sum(line["details"]["pay_readers"]["legacy"]["left_out_stubs"] for line in lines)
+    for metric in ("exact", "checks_held", "split_right"):  # The engine is at least as good as today's reader on each metric.
+        assert engine[metric] >= old[metric], metric
+    assert engine["to_review"] <= old["to_review"] and engine["left_out"] <= old["left_out"]
+    # Every guess is counted by kind and, on this corpus, right.
+    assert set(summary["guesses"]) == set(GUESS_KINDS)
+    assert all(each["made"] == each["right"] for each in summary["guesses"].values())
+    assert summary["guesses"]["split_changed"] == {"made": 0, "right": 0}
+    # summary.json passes the allowlist and holds no description, amount, date or employer of any stub; report.md shows both readers.
+    text = (folder / "summary.json").read_text(encoding="utf-8")
+    check_summary(json.loads(text))
+    for case_id in chosen:
+        for stub in corpus.case(case_id).stubs():
+            assert stub.fields["payer_or_employer"].value not in text and stub.fields["pay_date"].value not in text
+            assert all(row["description"] not in text for row in stub.rows)
+            assert not [value for value in (stub.fields["net_pay_minor"].value, stub.fields["gross_pay_minor"].value) if money(value) in text]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "side by side (5 files, 7 stubs" in report
+    table = [line for line in report.splitlines() if line.startswith(("| Reader | Pay values", "| Today's reader |", "| Pay engine |"))]
+    assert len(table) == 3 and "Stubs sent to review" in table[0]
+    assert f"| Today's reader | {old['exact']} of {old['values']} (" in table[1] and "(stand-in) of 7" in table[1] and " | n/a | " in table[1]
+    assert f"| Pay engine | {engine['exact']} of {engine['values']} (" in table[2] and "| 0 of 7 | 5 of 5 | 0 | 0 |" in table[2]
+    assert "Guesses the engine made:" in report
+
+
+def test_guesses_are_counted_by_kind_and_are_right_when_the_values_they_chose_equal_the_answers(tmp_path, local_model):
+    """FR-74: a summary box with no column headings makes the engine guess which column is taxes; the guess is counted, and right only when the stub's
+    money values come out as the answers say."""
+    boxed = [(index, {**dict(PAYSTUB_FILES[0][1]), "box": True, "box_heads": "none", "box_shuffled": False, "heading": "known1", "stubs": 1})
+             for index in (5, 6, 7, 8)]
+    corpus = Corpus.create(tmp_path / "boxed")
+    rng = random.Random(1)
+    written = [write_case(corpus, aligned_paystub(index, **choices), rng) for index, choices in boxed]
+    assert len(set(written)) == 4
+    wrong = corpus.case(sorted(written)[0])  # Its answers claim another net pay: whatever the engine chose is wrong.
+    answers = wrong.answers()
+    answers.fields["net_pay_minor"].value += 1
+    (wrong.folder / "answers.json").write_text(answers.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    scripted_pay_stubs(corpus, local_model, tmp_path, boxed)
+    folder = run(corpus, config_for(local_model), case_ids=sorted(written), network_guard=False, echo=lambda _: None)
+    lines = [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert all(line["details"]["guesses"] == {"box_columns_guessed": {"made": 1, "right": 1 - (line["case_id"] == wrong.id)}} for line in lines)
+    guesses = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["guesses"]
+    assert guesses["box_columns_guessed"] == {"made": 4, "right": 3} and guesses["columns_guessed"] == {"made": 0, "right": 0}
+    assert "box_columns_guessed 3 right of 4" in (folder / "report.md").read_text(encoding="utf-8")
+
+
+def test_pay_stub_comparison_leaves_out_other_documents_counts_a_failing_reader_and_suppresses_few_files(tmp_path, local_model, monkeypatch):
+    """A receipt has no pay readers; a reader that raises placed nothing and is counted; fewer than three files are suppressed in the summary."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    cases = corpus.cases()
+    others = [case.id for case in cases if case.info.document_type == "receipt"][:1] + [case.id for case in cases if case.info.document_type == "paystub"
+                                                                                           and case.info.source_kind == "scan"][:1]
+    folder = run(corpus, config_for(local_model), case_ids=others, network_guard=False, echo=lambda _: None)
+    assert all("pay_readers" not in json.loads(text)["details"] for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines())
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert "pay_readers" not in summary and "side by side" not in (folder / "report.md").read_text(encoding="utf-8")
+    aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type == "paystub"]
+    folder = run(corpus, config_for(local_model), case_ids=aligned[:2], network_guard=False, echo=lambda _: None)
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert summary["pay_readers"] == {"suppressed": True} and summary["guesses"] == {"suppressed": True}
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("injected engine fault")
+
+    monkeypatch.setattr("evals.run.paystub_tables.read", broken)
+    folder = run(corpus, config_for(local_model), case_ids=aligned[:3], network_guard=False, echo=lambda _: None)
+    readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["pay_readers"]
+    assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["checks_held"] == 0 and readers["legacy"]["failed"] == 0
+    assert readers["engine"]["values"] == readers["legacy"]["values"] > 0
 
 
 # The shareable summary -----------------------------------------------------------------------------------------------
@@ -508,7 +740,6 @@ def test_the_summary_never_holds_private_values(tmp_path):
     lines.append({**lines[0], "status": "read_failed", "type_correct": None, "grades": None, "run_index": 1,
                   "details": {"failure": "schema_fail", "error": "SECRETMERCHANT 4111111111111111", "first_try_valid": False}})
     (folder / "results.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-    from evals.report import rebuild
     rebuild(corpus, folder)
     text = (folder / "summary.json").read_text(encoding="utf-8")
     assert not [secret for secret in secrets if secret in text]
