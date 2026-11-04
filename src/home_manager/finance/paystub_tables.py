@@ -13,8 +13,9 @@ record (D6: a note, never a review reason); `PaystubTables.notes` lists their te
 
 The adapter (plan P4) hands Record the pay tables in the shape `anchor_paystub` already reads: `adapt` turns each engine table into rows and
 cells whose line ids are the evidence lines the model is shown (`layout_context.project_page`), and `for_lines` keeps what lies in one part of a
-file. Both are as pure as the rest. Not here (SL-04 and later): the summary box in Record, unclassified rows, section-total mismatch notes,
-unplaced notes, the viewer data and splitting.
+file. Both are as pure as the rest. SL-04 adds what Record needs to say about a stub beyond its cells: the summary box's values as cells
+(`box_cells`), a section title's group (`section_group`), the notes for a printed section total its rows don't add up to (`mismatches`) and for
+unplaced lines (`unplaced_notes`). Not here (later slices): the viewer data and splitting.
 """
 
 from dataclasses import dataclass, field, replace
@@ -69,6 +70,7 @@ class BoxRead:
     current: dict[str, pay_tables.Token]  # gross, taxes, deductions, net: the tokens printed on the this-period row.
     ytd: dict[str, pay_tables.Token]
     decided_by: str  # numbers or guess.
+    heads: dict = field(default_factory=dict)  # gross, taxes, deductions or net to the PayColumn printed for it (its heading words, if any).
 
 
 @dataclass
@@ -89,6 +91,7 @@ class PaystubTables:
     lines_of: dict[str, str] = field(default_factory=dict)  # A layout line id to the evidence line id that holds its words.
     line_pages: set[int] = field(default_factory=set)  # Pages that have evidence lines.
     fallback_pages: set[int] = field(default_factory=set)  # Pages with a pay table whose columns all ended other: Record doesn't trust the engine there.
+    box_cells: dict = field(default_factory=dict)  # Box id to {current|ytd: {gross|taxes|deductions|net: cell}}, Record's cells for the summary box (FR-75).
 
 
 # --- Headings and numbers ------------------------------------------------------------------------------------------------
@@ -163,6 +166,16 @@ def products(table, head):
     return None
 
 
+def covered_rows(entries, position):
+    """The rows a total at `position` of the table's rows and totals covers: those since the previous total or the start of its section."""
+    covered = []
+    for earlier in reversed(entries[:position]):
+        if isinstance(earlier, pay_tables.PayTotal) or (covered and earlier.section != covered[-1].section):
+            break
+        covered.append(earlier)
+    return covered
+
+
 def pay_columns(table):
     """(b): the columns with at least one section total, each of which equals the sum of the rows it covers (since the previous total or the
     start of the section)."""
@@ -171,11 +184,7 @@ def pay_columns(table):
     for position, entry in enumerate(entries):
         if not isinstance(entry, pay_tables.PayTotal) or entry.kind not in SECTION_TOTALS:
             continue
-        covered = []
-        for earlier in reversed(entries[:position]):
-            if isinstance(earlier, pay_tables.PayTotal) or (covered and earlier.section != covered[-1].section):
-                break
-            covered.append(earlier)
+        covered = covered_rows(entries, position)
         for column, token in entry.values.items():
             total = sum((value_of(row.amounts[column]) for row in covered if column in row.amounts), Decimal(0))
             verdicts.setdefault(column, []).append(total == value_of(token))
@@ -371,7 +380,8 @@ def read_box(box):
                              "from what its amounts add up to, so the columns were taken from the amounts."))
     names = {name: column for column, name in columns.items() if name != "other"}
     return BoxRead(box.id, box.page, columns, {"current": now, "ytd": later}, {name: now.amounts[column] for name, column in names.items()},
-                   {name: later.amounts[column] for name, column in names.items()}, "guess" if guesses else "numbers"), guesses
+                   {name: later.amounts[column] for name, column in names.items()}, "guess" if guesses else "numbers",
+                   {name: next(found for found in box.columns if found.id == column) for name, column in names.items()}), guesses
 
 
 # --- The adapter (plan P4) -----------------------------------------------------------------------------------------------
@@ -470,7 +480,8 @@ def adapt(pay, evidence):
     """The pay tables in Record's table shape (plan P4): `SimpleNamespace(id, page, source="pay_engine", header_rows, rows, roles)`. Each row is
     `(id "<table>-row-<r>", line_id, line_ids, cells, total)`, cells `(id, line_id, quote, word_ids, source_line_ids)`: cell 0 is the label, then one per
     amount column (a blank quote when empty). Totals are rows too, flagged `total` with their `kind`. A row's line ids are the evidence lines (what the
-    model is shown) that hold its words; `roles` maps a cell index to its role. Only rows on pages Record reads as native text are kept."""
+    model is shown) that hold its words; `roles` maps a cell index to its role, and `overruled` holds the cells whose printed heading names the other
+    period than the numbers decided (FR-58: that heading is not cited for the column). Only rows on pages Record reads as native text are kept."""
     maps = {page.number: PageMap(page) for page in evidence.pages if page.method == "embedded_text" and page.layout is not None and native_page(page)}
     distrusted = untrusted_pages(pay)
     for number in distrusted:
@@ -485,7 +496,9 @@ def adapt(pay, evidence):
         mapping = maps[table.pages[0]] if table.pages[0] in maps else maps[rows[0].page]
         made.append(SimpleNamespace(id=table.id, page=rows[0].page, pages=sorted({row.page for row in rows}), source="pay_engine",
                                     header_rows=[adapt_header(table, table.columns, mapping, first)], rows=rows, spans=spans_of(rows, maps),
-                                    roles={number: roles.roles[column.id] for number, column in enumerate(table.columns, 1)}))
+                                    roles={number: roles.roles[column.id] for number, column in enumerate(table.columns, 1)},
+                                    overruled={number for number, column in enumerate(table.columns, 1)
+                                               if heading_role(" ".join(column.labels)) in ("current", "ytd") and heading_role(" ".join(column.labels)) != roles.roles[column.id]}))
     return made
 
 
@@ -541,11 +554,84 @@ def for_lines(pay, line_ids):
     return replace(pay, tables=[table for table, _ in pairs], roles=[roles for _, roles in pairs], other_tables=others, boxes=boxes,
                    box=({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), notes=[guess.text for guess in guesses], guesses=guesses,
                    unplaced=unplaced, pages=engine_pages | {box.page for box in boxes}, pages_without_tables=[page for page in sorted({*pay.pages_without_tables, *pay.fallback_pages}) if page in pages],
-                   adapted=adapted, engine_pages=engine_pages)
+                   adapted=adapted, engine_pages=engine_pages, box_cells={box.id: pay.box_cells[box.id] for box in boxes if box.id in pay.box_cells})
 
 
 def replace_rows(table, rows):
     return SimpleNamespace(**{**vars(table), "rows": rows})
+
+
+# --- What Record says beyond the cells (plan P6, P7.3 - P7.6) ---------------------------------------------------------------
+
+GROUP_WORDS = (("employer_paid", re.compile(r"\bemployer\b", re.IGNORECASE)),
+               ("pre_tax", re.compile(r"\bpre[\s-]?tax\b|\bbefore[\s-]+tax\b", re.IGNORECASE)),
+               ("post_tax", re.compile(r"\bpost[\s-]?tax\b|\bafter[\s-]+tax\b", re.IGNORECASE)),
+               ("earnings", re.compile(r"\bearn", re.IGNORECASE)),
+               ("tax", re.compile(r"\btax|\bstatutory\b|\bwithholding", re.IGNORECASE)),
+               ("post_tax", re.compile(r"\bdeduction|\bvoluntary\b", re.IGNORECASE)))
+
+
+def section_group(title):
+    """The pay line group a section title's words name (FR-62): earnings; taxes or statutory; pre-tax or before tax; post-tax, deductions or
+    voluntary; employer. None when it names none."""
+    return next((group for group, pattern in GROUP_WORDS if title and pattern.search(title)), None)
+
+
+def box_cell(identity, token, row, column, mapping, row_words, line_ids):
+    """One box amount as Record's cell, with the row label and column heading it was printed under (FR-20), each cited from its own line."""
+    cell = cell_of(identity, mapping.line_of.get(token.word_ids[0], line_ids[0]), token.text, token.word_ids, mapping, mapping.lines(token.word_ids), native=True)
+    cell.row_label = (row.label, mapping.cites(row_words)) if row.label and row_words else None
+    shown = [(mapping.line_of.get(group[0]), text) for group, text in zip(column.label_words, column.labels) if group]
+    cell.heading = (" ".join(text for _, text in shown), [(line, text) for line, text in shown if line]) if shown and all(line for line, _ in shown) else None
+    return cell
+
+
+def adapt_boxes(pay, evidence):
+    """Each box read as Record's cells: {box id: {"current"|"ytd": {gross, taxes, deductions, net: cell}}} (FR-75)."""
+    maps = {page.number: PageMap(page) for page in evidence.pages if page.method == "embedded_text" and page.layout is not None and native_page(page)}
+    found = {}
+    for box in pay.boxes:
+        if box.page not in maps:
+            continue
+        mapping, cells = maps[box.page], {}
+        for period in ("current", "ytd"):
+            row = box.rows[period]
+            amounts = {word_id for token in row.amounts.values() for word_id in token.word_ids}
+            row_words = [word_id for word_id in row.word_ids if word_id not in amounts]
+            line_ids = mapping.lines(row.word_ids) or list(row.line_ids)
+            tokens = box.current if period == "current" else box.ytd
+            cells[period] = {name: box_cell(f"{box.id}-{period}-{name}", token, row, box.heads[name], mapping, row_words, line_ids) for name, token in tokens.items()}
+        found[box.id] = cells
+    return found
+
+
+def places_of(value):
+    return max(2, -value.as_tuple().exponent)
+
+
+def mismatches(pay):
+    """The notes for printed section totals (gross, earnings, taxes, deductions) that their rows don't add up to, in a this-period or year-to-date
+    column (FR-63; a note, never a review reason). A total that covers no row is not judged."""
+    notes = []
+    for table, roles in zip(pay.tables, pay.roles):
+        shown = {column: "this period" if role == "current" else "year to date" for column, role in roles.roles.items() if role in ("current", "ytd")}
+        entries = sorted([*table.rows, *table.totals], key=lambda entry: entry.row)
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, pay_tables.PayTotal) or entry.kind not in SECTION_TOTALS:
+                continue
+            covered = covered_rows(entries, position)
+            for column, token in entry.values.items():
+                rows = [row for row in covered if column in row.amounts]
+                total = sum((value_of(row.amounts[column]) for row in rows), Decimal(0))
+                if column in shown and rows and total != value_of(token):
+                    notes.append(f'Page {entry.page}: the printed total "{entry.label}" {token.text} ({shown[column]}) doesn\'t match the lines above it, '
+                                 f"which add up to {total:,.{places_of(value_of(token))}f}.")
+    return notes
+
+
+def unplaced_notes(pay):
+    """The notes for printed lines that were not placed in any column, so were not recorded (FR-56)."""
+    return [f'Page {line.page}: a printed line wasn\'t placed in any column, so it wasn\'t recorded: "{line.text}"' for line in pay.unplaced]
 
 
 # --- Entry point ------------------------------------------------------------------------------------------------------
@@ -572,6 +658,7 @@ def read(evidence):
                           [guess.text for guess in guesses], guesses, [line for line in reading.unplaced if line.page in pages], pages, without)
     found.fallback_pages = untrusted_pages(found)
     found.adapted = adapt(found, evidence)
+    found.box_cells = adapt_boxes(found, evidence)
     found.engine_pages = {row.page for table in found.adapted for row in table.rows}
     found.lines_of, found.line_pages = evidence_index(evidence)
     return found

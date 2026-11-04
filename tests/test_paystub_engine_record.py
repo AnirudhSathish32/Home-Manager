@@ -1,6 +1,8 @@
 """Record uses the pay engine (specs/pdf-table-engine-paystubs/test-contract.md), slice SL-03: SC-50 to SC-55, SC-57 to SC-59, SC-63, SC-65, SC-66
 (single stubs) and SC-69, plus the two extra tests the plan's SL-03 row names (PS-NH's reading carries `unresolved_columns` and its record has no
-layout-review issue; a table-less page's swapped flat line is still nulled by `column_checks`).
+layout-review issue; a table-less page's swapped flat line is still nulled by `column_checks`). Slice SL-04 adds SC-56, SC-60, SC-61, SC-62 and SC-70
+at Record level (the notes and guesses on the record, unclassified rows, the summary box), and a few tests of the rules the plan gives beyond the
+contract's fixtures (a group guessed from the stub's totals or the line above, a totals line and the summary box disagreeing).
 
 Every file goes through the real services as test_layout_consumers.py does: `make_pdf` into the Inbox, `capture`, `ReceiptService`, then
 `ExtractionService` with the contract's doubles (`local_model` by schema). Expected values are the contract's literals in
@@ -10,8 +12,7 @@ tests/paystub_engine_fixtures.py, never what the code produced. The model stubs 
 The double answers each question with the entries whose cited line is in that question's lines (a question is one run of lines the engine covers
 with rows, or one run it doesn't), so a fixture's chunking needs no hand-written order.
 
-Not here (SL-04 and later): unclassified rows (SC-60), the guesses' records (SC-61), section-total mismatch (SC-62), the summary box (SC-70), the viewer
-data (SC-71) and files of several stubs (SC-72 to SC-76).
+Not here (later slices): the viewer data (SC-71) and files of several stubs (SC-72 to SC-76).
 """
 
 from collections import Counter
@@ -119,12 +120,13 @@ class Run:
             runs[-1][1].append(line.id)
         return runs
 
-    def stub(self, classes=PS_CLASSES, summary=None, extra_lines=(), employer="SYNTH PAYROLL CO"):
+    def stub(self, classes=PS_CLASSES, summary=None, extra_lines=(), employer="SYNTH PAYROLL CO", details=None):
         """The contract's `local_model` by schema: the classification citing the employer line, the summary with the given swapped amounts, the
         classes of each covered run, and the model's own pay lines (extra_lines, full PayLines entries) of each other run."""
         fields = {name: MISSING for name in HEADERS["paystub"]}
         fields.update(payer_or_employer=self.value(employer, employer), pay_date=self.value("2026-07-03", "Pay date"), currency=self.value("USD", "Currency"))
-        fields.update({name: self.value(text, label) for name, (label, text) in (summary or swapped(pf.PS_ROWS)).items()})
+        fields.update({name: self.value(text, label) for name, (label, text) in (summary if summary is not None else swapped(pf.PS_ROWS)).items()})
+        fields.update(details or {})
         rows = [{"description": description, "group": group, "category": category, "evidence": self.cite(label)} for description, group, category, label in classes]
         runs = self.runs()
         in_run = lambda entries, ids: [entry for entry in entries if entry["evidence"][0]["line_id"] in ids]  # noqa: E731
@@ -546,3 +548,220 @@ def test_a_table_whose_columns_all_end_other_is_not_trusted_on_its_page(tmp_path
     assert found.fallback_pages == {1}  # Page 1's right block decided no column: its printed tables stay.
     assert found.engine_pages == {2} and [table.id for table in found.adapted] == ["page-2-pay-1"]
     assert found.pages_without_tables == [] and paystub_tables.for_lines(found, set(found.lines_of.values())).pages_without_tables == [1]
+
+
+# === SL-04: notes and guesses on the record, unclassified rows, the summary box =============================================
+
+def guesses_of(record, kind=None):
+    found = (record["details"] or {}).get("guesses", [])
+    return [guess for guess in found if kind is None or guess["kind"] == kind]
+
+
+def note_among(run, *words, absent=()):
+    """C-note: one record note holds every word, and it is not among the record's issues."""
+    found = [note for note in run.notes if all(word in note for word in words) and not any(word in note for word in absent)]
+    assert found, (words, run.notes)
+    assert not [issue for issue in run.record["issues"] if issue in found]
+    return found[0]
+
+
+def cited_cells(run, field):
+    """The quotes of the cells a summary field's provenance cites (FR-66)."""
+    with run.store.connection() as db:
+        return [cell["quote"] for cell in provenance_for(db, "income_record", run.record["id"], field)["provenance"]["document"]["cells"]]
+
+
+def bad_rows(**totals):
+    """PS's rows with a total's printed amounts replaced: {label: (current, ytd)}."""
+    return [(label, hours, rate, *totals.get(label, (current, ytd)), kind) for label, hours, rate, current, ytd, kind in pf.PS_ROWS]
+
+
+# --- SC-56: deposit and leave tables are set aside ---------------------------------------------------------------------------
+
+def test_sc56_deposit_and_leave_tables_give_no_pay_lines_and_no_notes(pdf_store, local_model):
+    run = started(pdf_store, local_model, pf.ps_other_pages())
+    found = paystub_tables.read(run.evidence)  # Engine level: two other tables (deposit, leave), no unplaced line.
+    assert len(found.other_tables) == 2 and found.unplaced == []
+    other_rows = {row.label for table in found.other_tables for row in table.rows}
+    assert other_rows == {"Checking 1234", "Savings 5678", "Vacation", "Sick"}
+    assert not other_rows & {row.label for table in found.tables for row in table.rows}
+    splits = [{"last_four": four, "amount": amount, "evidence": run.cite(label)} for four, amount, label in (("1234", "1,551.89", "Checking 1234"),
+                                                                                                           ("5678", "500.00", "Savings 5678"))]
+    run.stub(details={"deposit_splits": splits})
+    run.extract()
+    record = run.record
+    expect(record)  # Six lines, none from those tables.
+    auto(record)
+    assert [(split["last_four"], split["minor"]) for split in record["details"]["deposit_splits"]] == [("1234", 155189), ("5678", 50000)]
+    assert not [note for note in run.notes if "placed" in note or "classified" in note or "native table" in note]
+    assert not [issue for issue in record["issues"] if "native table" in issue]
+    assert guesses_of(record) == []
+
+
+# --- SC-60: an unplaced line and an unclassified row ---------------------------------------------------------------------------
+
+def test_sc60_an_unplaced_line_and_an_unclassified_row_are_notes_and_the_row_is_recorded_in_its_sections_group(pdf_store, local_model):
+    run = started(pdf_store, local_model, pf.ps_sec_pages(memo=True))
+    found = paystub_tables.read(run.evidence)
+    assert [(line.page, "Bonus advance memo" in line.text) for line in found.unplaced] == [(1, True)]  # Step 1.
+    run.stub([entry for entry in PS_CLASSES if entry[0] != "Medicare"])
+    run.extract()
+    record = run.record
+    expect(record)  # Medicare is recorded as (Medicare, tax, 3897, 48756), its group guessed from the Taxes title.
+    auto(record)
+    assert len(record["lines"]) == 6
+    medicare = note_among(run, "Medicare", "Page 1")
+    assert "Taxes" in medicare  # Its group came from the section title.
+    note_among(run, "Page 1", "Bonus advance memo")
+    assert not [issue for issue in record["issues"] if "Medicare" in issue or "Bonus advance memo" in issue]
+    assert not [text for text in [*run.notes, *record["issues"]] if "native table row" in text]  # The count note is gone.
+    assert [(guess["kind"], guess["page"]) for guess in guesses_of(record)] == [("group_guessed", 1)]
+    assert "Medicare" in guesses_of(record)[0]["text"] and guesses_of(record)[0]["text"] in run.notes
+    assert record["lines"][4]["cell_evidence"]["current"]["source"] == "pdf_text"  # The guessed line's amounts are its printed cells' too.
+
+
+def test_sc60_a_row_without_a_section_title_takes_the_group_under_which_the_totals_hold(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.ps_pages(), [entry for entry in PS_CLASSES if entry[0] != "Medicare"])
+    record = run.record
+    expect(record)  # Tax is tried before pre-tax and post-tax, and earnings first: only tax and the two deduction groups hold the net check.
+    auto(record)
+    note = note_among(run, "Medicare", "Page 1")
+    assert "totals add up" in note and "a tax" in note
+    assert [guess["kind"] for guess in guesses_of(record)] == ["group_guessed"]
+
+
+def test_sc60_a_row_the_totals_cant_place_takes_the_group_of_the_line_above(pdf_store, local_model):
+    """A stub with no totals and no summary: nothing the totals can settle, so the unclassified Overtime row takes Regular's group."""
+    rows = [row for row in pf.PS_ROWS if row[0] in ("Regular", "Overtime")]
+    run = started(pdf_store, local_model, [pf.ps_page(rows)])
+    run.stub(PS_CLASSES[:1], {})
+    run.extract()
+    assert lines_of(run.record) == [line[:4] for line in pf.EXP_PS_LINES[:2]]
+    assert "next to it" in note_among(run, "Overtime", "Page 1")
+    assert [guess["kind"] for guess in guesses_of(run.record)] == ["group_guessed"]
+
+
+# --- SC-61: guesses about the columns --------------------------------------------------------------------------------------
+
+def test_sc61a_headings_that_contradict_the_numbers_lose_and_say_so(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.ps_swaphead_pages())
+    record = run.record
+    expect(record)  # The numbers win.
+    auto(record)
+    note_among(run, "Page 1", "YTD", "Current")
+    assert [guess["kind"] for guess in guesses_of(record)] == ["headings_overruled"]
+    assert guesses_of(record)[0]["text"] in run.notes
+
+
+B1_SUMMARY = {"gross_pay": ("Gross Pay", "5,000.00"), "gross_pay_ytd": ("Gross Pay", "2,500.00"),
+              "net_pay": ("Net Pay", "5,000.00"), "net_pay_ytd": ("Net Pay", "2,500.00")}
+B2_SUMMARY = {"gross_pay": ("Gross Pay", "2,550.00"), "gross_pay_ytd": ("Gross Pay", "1,350.00"),
+              "net_pay": ("Net Pay", "2,550.00"), "net_pay_ytd": ("Net Pay", "1,350.00")}
+
+
+def test_sc61b1_columns_no_row_tells_apart_are_guessed_left_is_this_period(pdf_store, local_model):
+    classes = [("Regular", "earnings", "regular_pay", "Regular"), ("Relocation Bonus", "earnings", "bonus", "Relocation Bonus")]
+    run = swapped_stub_run(pdf_store, local_model, pf.b1_pages(), classes, B1_SUMMARY)
+    record = run.record
+    expect(record, pf.EXP_B1_LINES, {"gross_pay_minor": 250000, "gross_pay_ytd_minor": 500000, "net_pay_minor": 250000, "net_pay_ytd_minor": 500000})
+    note_among(run, "Page 1", "left column")
+    no_feature_review(record)
+    assert [guess["kind"] for guess in guesses_of(record)] == ["columns_guessed"]
+    assert guesses_of(record)[0]["text"] in run.notes
+
+
+def test_sc61b2_rows_that_disagree_are_guessed_and_only_the_larger_this_period_row_needs_review(pdf_store, local_model):
+    classes = [("Regular", "earnings", "regular_pay", "Regular"), ("Shift Premium", "earnings", "other_earnings", "Shift Premium"),
+               ("Bonus", "earnings", "bonus", "Bonus")]
+    run = swapped_stub_run(pdf_store, local_model, pf.b2_pages(), classes, B2_SUMMARY)
+    record = run.record
+    # B2 expected lists Shift Premium as (30000, 15000) and also says FR-22 (b) fires for it, which "is null and ambiguous" (today's check, unchanged):
+    # the engine copies 30000 and the check then nulls it, so the record holds None (specs/.../test-contract.md SC-61, B2; the handoff escalates the wording).
+    copied = [(*line[:2], None, line[3]) if line[0] == "Shift Premium" else line for line in pf.EXP_B2_LINES]
+    expect(record, copied, {"gross_pay_minor": 135000, "gross_pay_ytd_minor": 255000, "net_pay_minor": 135000, "net_pay_ytd_minor": 255000})
+    note_among(run, "Page 1", "left column")
+    assert [guess["kind"] for guess in guesses_of(record)] == ["columns_guessed"]
+    assert record["review_status"] == "needs_review"
+    reasons = [issue for issue in record["issues"] if "PDF layout needs review" not in issue]  # The reader's own message is not this feature's.
+    assert reasons and all("Shift Premium" in issue for issue in reasons), reasons  # FR-22 (b) for that line only, and no issue about the columns.
+    assert not [issue for issue in reasons if "column" in issue.lower() and "Shift Premium" not in issue]
+    assert record["lines"][1]["current_minor"] is None and record["lines"][1]["details"]["current_status"] == "ambiguous"
+
+
+# --- SC-62: misprinted totals ---------------------------------------------------------------------------------------------
+
+def test_sc62a_a_misprinted_taxes_total_is_a_note_not_a_review_reason(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.ps_badtotal_pages(), summary=swapped(bad_rows(**{"Total Taxes": ("510.23", "6,271.06")})))
+    record = run.record
+    expect(record, totals={**pf.EXP_PS, "taxes_minor": 51023})  # The printed total (FR-61), the lines as printed.
+    auto(record)
+    note = note_among(run, "Page 1", "510.23")
+    assert "Total Taxes" in note and "501.23" in note  # It names the total and what the lines above it add up to.
+    assert [note for note in run.notes if "doesn't match the lines above it" in note] == [note]
+
+
+def test_sc62b_a_net_pay_the_lines_dont_give_is_todays_review_reason(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.ps_badnet_pages(), summary=swapped(bad_rows(**{"Net Pay": ("2,061.89", "25,672.69")})))
+    record = run.record
+    expect(record, totals={**pf.EXP_PS, "net_pay_minor": 206189})
+    assert record["review_status"] == "needs_review"
+    net = [issue for issue in record["issues"] if issue.startswith("Gross pay less deductions and taxes") and "is not net pay" in issue]
+    assert len(net) == 1
+    assert not [note for note in run.notes if "doesn't match the lines above it" in note]  # Net pay is no section total (FR-57 b).
+
+
+# --- SC-70: the summary box ----------------------------------------------------------------------------------------------
+
+BOX_SUMMARY = {"gross_pay": ("YTD", "33,625.00"), "gross_pay_ytd": ("Current", "2,687.50"), "net_pay": ("YTD", "25,672.69"),
+               "net_pay_ytd": ("Current", "2,051.89"), "taxes": ("YTD", "6,271.06"), "deductions": ("YTD", "1,681.25")}
+
+
+@pytest.mark.parametrize("pages", [pf.sb_pages, pf.sb_shuf_pages], ids=["sb", "sb-shuf"])
+def test_sc70_summary_box_gives_gross_net_taxes_and_deductions_with_no_note(pdf_store, local_model, pages):
+    run = swapped_stub_run(pdf_store, local_model, pages(), summary=BOX_SUMMARY)
+    record = run.record
+    expect(record)  # SB expected: EXP-PS lines and totals (YTD taxes and deductions are not record fields).
+    auto(record)
+    assert run.notes == [] and guesses_of(record) == []
+    assert [cited_cells(run, name) for name in ("gross_pay", "gross_pay_ytd", "net_pay", "net_pay_ytd", "taxes", "deductions")] == [
+        ["2,687.50"], ["33,625.00"], ["2,051.89"], ["25,672.69"], ["501.23"], ["134.38"]]  # Each cites its box cell's words.
+
+
+def test_sc70_a_box_with_no_heading_takes_the_left_column_as_taxes_and_says_so(pdf_store, local_model):
+    run = swapped_stub_run(pdf_store, local_model, pf.sb_nohead_pages(), summary=BOX_SUMMARY)
+    record = run.record
+    expect(record)
+    auto(record)
+    note_among(run, "left", "taxes")
+    assert [guess["kind"] for guess in guesses_of(record)] == ["box_columns_guessed"]
+    assert guesses_of(record)[0]["text"] in run.notes
+
+
+def test_a_totals_line_and_the_summary_box_that_disagree_keep_the_one_the_lines_add_up_to(pdf_store, local_model):
+    """FR-61: the box prints taxes 501.23 and the totals line 510.23; the tax lines add up to 501.23, so the box is kept, with a note. FR-63's note
+    for the misprinted total is there too."""
+    items = [*pf.row_items(712, [(edge, pf.BOX_HEADING[column], True) for column, edge in enumerate(pf.BOX_EDGES)])]
+    for y, label, values in ((696, "Current", pf.BOX_CURRENT), (680, "YTD", pf.BOX_YTD)):
+        items += pf.row_items(y, [(40, label), *[(edge, text, True) for edge, text in zip(pf.BOX_EDGES, values)]])
+    rows = bad_rows(**{"Total Taxes": ("510.23", "6,271.06")})
+    pages = [pf.page_of([*items, *pf.head(650, pf.PS_HEADING, pf.PS_EDGES), *pf.lay(630, pf.ps_specs(rows), pf.PS_EDGES)])]
+    run = swapped_stub_run(pdf_store, local_model, pages, summary=BOX_SUMMARY)  # The box heading starts with "Gross Pay", so the stub cites the box rows.
+    record = run.record
+    expect(record)  # taxes_minor 50123, the box's.
+    disagree = note_among(run, "Page 1", "summary box")
+    assert "510.23" in disagree and "501.23" in disagree and "box was used" in disagree
+    note_among(run, "Page 1", "510.23", "add up", absent=("summary box",))
+    assert cited_cells(run, "taxes") == ["501.23"]
+    assert not [issue for issue in record["issues"] if "summary box" in issue or "doesn't match" in issue]
+
+
+def test_determinism_of_the_new_notes_and_guesses(pdf_store, local_model):
+    """FR-69: Extract again on an unchanged reading gives the same notes and guesses."""
+    run = started(pdf_store, local_model, pf.ps_sec_pages(memo=True))
+    classes = [entry for entry in PS_CLASSES if entry[0] != "Medicare"]
+    run.stub(classes)
+    run.extract()
+    first, notes, guesses = snapshot(run), run.notes, guesses_of(run.record)
+    run.stub(classes)
+    run.extract(force=True)
+    assert snapshot(run) == first and run.notes == notes and guesses_of(run.record) == guesses

@@ -1266,7 +1266,8 @@ def cell_labels(table, source, column):
         if not cell.quote.strip() or not all(line_id for line_id, _ in cites):
             return None
         return PayLabel(text=cell.quote.strip(), evidence=[EvidenceQuote(line_id=line_id, quote=quote) for line_id, quote in cites][:5])
-    heading = next((label(row.cells[column]) for row in table.header_rows if column is not None and row.cells[column].quote.strip()), None)
+    heading = next((label(row.cells[column]) for row in table.header_rows
+                    if column is not None and column not in getattr(table, "overruled", ()) and row.cells[column].quote.strip()), None)
     return (label(source.cells[0]) if column != 0 else None), heading
 
 
@@ -1335,12 +1336,162 @@ def role_column(table, pattern):
     return found[0] if len(found) == 1 else None
 
 
-def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
+# What the pay engine adds beside the cells (plan P7.3, P7.4): unclassified rows, the summary box and the notes and guesses that come with them.
+GROUP_NAMES = {"earnings": "earnings", "tax": "a tax", "pre_tax": "a pre-tax deduction", "post_tax": "a post-tax deduction", "employer_paid": "paid by the employer"}
+BOX_FIELDS = {"gross_pay": ("current", "gross"), "gross_pay_ytd": ("ytd", "gross"), "net_pay": ("current", "net"), "net_pay_ytd": ("ytd", "net"),
+              "taxes": ("current", "taxes"), "deductions": ("current", "deductions")}
+
+
+def pay_extras(box=None):
+    """What anchor_paystub fills for a stub the pay engine read: box is the summary box's cells ({current|ytd: {gross|taxes|deductions|net: cell}}) or None."""
+    return SimpleNamespace(box=box, notes=[], guesses=[], references={})
+
+
+def unclassified_rows(tables, cited):
+    """The pay engine's rows with an amount in the this-period or year-to-date column that no model line took (FR-62), in printed order. A totals row
+    is not one, nor is a row whose label is a totals label (it is excluded as a pay line)."""
+    found = []
+    for table in tables:
+        if getattr(table, "source", None) != "pay_engine":
+            continue
+        columns = [column for column in (paystub_columns(table) or ()) if column is not None]
+        for row in table.rows:
+            label = row.cells[0].quote.strip()
+            if not row.total and row.id not in cited and label and not TOTAL_LABEL.fullmatch(label) and any(cell_amount(row.cells[column]) for column in columns):
+                found.append((table, row))
+    return found
+
+
+def with_unclassified(rows, tables, cited, cited_row):
+    """(rows, {index: (table, row)}): the model's pay lines with a line for each unclassified row added in printed order, its group a placeholder until
+    guess_groups. The amounts are copied from the cells with the others."""
+    pending = unclassified_rows(tables, cited)
+    if not pending:
+        return rows, {}
+    order = {row.id: position for position, row in enumerate(row for table in tables for row in table.rows)}
+    merged, made = [], {}
+
+    def add(table, row):
+        cell = row.cells[0]
+        cites = [(line_id, quote) for line_id, quote in getattr(cell, "cites", None) or [(cell.line_id, cell.quote)] if line_id and quote.strip()]
+        made[len(merged)] = (table, row)
+        merged.append(PayLine(description=" ".join(cell.quote.split())[:200], group="earnings", category="other", current=None, ytd=None,
+                              evidence=[EvidenceQuote(line_id=line_id, quote=quote) for line_id, quote in cites or [(row.line_id, cell.quote)]]))
+    for item in rows:
+        found = cited_row(item.evidence)
+        while pending and found and order[pending[0][1].id] < order[found[1].id]:
+            add(*pending.pop(0))
+        merged.append(item)
+    for entry in pending:
+        add(*entry)
+    return merged, made
+
+
+def group_amount(rows, column, group):
+    """The sum of a group's lines in a column as paystub_lines counts it (deductions and taxes by magnitude), 0 with no line, None when a line lacks it."""
+    values = [printed_decimal(getattr(item, column)) for item in rows if item.group == group]
+    return None if None in values else sum((value if group == "earnings" else abs(value) for value in values), Decimal(0))
+
+
+def checks_hold(rows, header):
+    """The paystub_lines checks that can be judged on these lines (earnings = gross, gross less deductions and taxes = net, per column): True when
+    at least one can and every one holds."""
+    verdicts = []
+    for column, gross_name, net_name in (("current", "gross_pay", "net_pay"), ("ytd", "gross_pay_ytd", "net_pay_ytd")):
+        gross, net = (printed_decimal(getattr(header, name).value) if getattr(header, name).status == "proposed" else None for name in (gross_name, net_name))
+        if column == "ytd" and (gross is None or net is None or any(printed_decimal(getattr(item, column)) is None for item in rows if item.group != "employer_paid")):
+            continue
+        earnings = group_amount(rows, column, "earnings")
+        if gross is not None and earnings is not None and any(item.group == "earnings" for item in rows):
+            verdicts.append(earnings == gross)
+        taken = [group_amount(rows, column, group) for group in ("pre_tax", "tax", "post_tax")]
+        if gross is not None and net is not None and None not in taken:
+            verdicts.append(gross - sum(taken) == net)
+    return bool(verdicts) and all(verdicts)
+
+
+def guess_groups(rows, unclassified, header, extras):
+    """Give each unclassified row its group (FR-62): the words of its section title; else the first of earnings, tax, pre_tax, post_tax under which
+    the stub's checks hold; else the group of the nearest line above (below, for the first). Each is a guess record and a record note."""
+    undecided = set(unclassified)
+    for index, (table, row) in unclassified.items():
+        group, why = paystub_tables.section_group(row.section), None
+        if group:
+            why = f'guessed from the "{row.section}" heading above it'
+        else:
+            group = next((trial for trial in ("earnings", "tax", "pre_tax", "post_tax")
+                          if checks_hold([item.model_copy(update={"group": trial}) if position == index else item
+                                          for position, item in enumerate(rows) if position == index or position not in undecided], header)), None)
+            why = "guessed because the stub's totals add up that way"
+        if not group:
+            near = [rows[position].group for position in (*range(index - 1, -1, -1), *range(index + 1, len(rows))) if position not in undecided]
+            group, why = near[0] if near else "earnings", "guessed from the pay line next to it"
+        undecided.discard(index)
+        rows[index] = rows[index].model_copy(update={"group": group})
+        text = f'Page {row.page}: the printed pay line "{rows[index].description}" wasn\'t classified, so it was recorded as {GROUP_NAMES[group]} ({why}).'
+        extras.notes.append(text)
+        extras.guesses.append(paystub_tables.Guess(paystub_tables.GROUP_GUESSED, row.page, table.id, text))
+
+
+def box_cell(box, name):
+    """The summary box's cell for a summary field (FR-75), or None."""
+    period, key = BOX_FIELDS[name]
+    cell = box[period].get(key) if box else None
+    return cell if cell is not None and cell_amount(cell) is not None else None
+
+
+def box_label(held):
+    return PayLabel(text=held[0], evidence=[EvidenceQuote(line_id=line_id, quote=quote) for line_id, quote in held[1]][:5]) if held and held[1] else None
+
+
+def box_field(field, cell):
+    """A summary field taken from the box's cell, cited at the cell with the row label and column heading it was printed under (FR-20)."""
+    return field.model_copy(update={"value": cell_amount(cell), "status": "proposed", "evidence": [EvidenceQuote(line_id=cell.line_id, quote=cell.quote)],
+                                    "row_label": box_label(cell.row_label), "column_heading": box_label(cell.heading)})
+
+
+def box_reference(cell):
+    from .native_values import reference
+    return reference(cell)
+
+
+def line_sums(rows, name):
+    """What the pay lines add up to for a summary field (the amounts it may equal), per its column."""
+    column = "ytd" if name.endswith("_ytd") else "current"
+    earnings, tax, pre, post = (group_amount(rows, column, group) for group in ("earnings", "tax", "pre_tax", "post_tax"))
+    kind = name.removesuffix("_ytd")
+    found = {"gross_pay": [earnings], "taxes": [tax], "deductions": [pre, None if None in (pre, post) else pre + post],
+             "net_pay": [None if None in (earnings, tax, pre, post) else earnings - tax - pre - post]}[kind]
+    return [amount for amount in found if amount is not None]
+
+
+def settle_box(header, rows, name, cell, extras):
+    """FR-61: a totals line and the summary box printed different amounts for a summary field: the one the pay lines add up to is kept, with a record note."""
+    field = getattr(header, name)
+    sums = line_sums(rows, name)
+    printed, boxed = printed_decimal(field.value), printed_decimal(cell.quote)
+    what = CORRECTION_LABELS[name].lower()
+    page = line_page(cell.line_id)
+    if boxed in sums and printed not in sums:
+        extras.notes.append(f"Page {page}: the printed {what} {field.value} and the summary box's {cell.quote} disagree; the summary box was used, "
+                            "because the pay lines add up to it.")
+        extras.references[name] = box_reference(cell)
+        return header.model_copy(update={name: box_field(field, cell)})
+    if printed in sums and boxed not in sums:
+        extras.notes.append(f"Page {page}: the printed {what} {field.value} and the summary box's {cell.quote} disagree; the printed one was used, "
+                            "because the pay lines add up to it.")
+    return header
+
+
+def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=(), extras=None):
     """Copy paystub money, hours and rates from validated cells after the model classifies cited rows. Gross and net
     pay come from the stub's own totals row when it prints exactly one, whichever row the model cited: a total equal
     to its first earning this period would otherwise take that earning's year to date. flat: the line ids of pages read
     like flat text beside pages with tables (the pay engine's FR-64); a value citing one of them is judged by
-    column_checks, not left out here for printing several amounts."""
+    column_checks, not left out here for printing several amounts. extras: what a stub read by the pay engine adds beside its fields (plan P7.3, P7.4;
+    pay_extras): `box`, the summary box's cells, and the lists `notes`, `guesses` and `references` this fills with the record notes, the guess records
+    and the summary box's value references. Nothing is added to `notes`: those are review reasons."""
+    extras = extras or pay_extras()
     by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
     for table in tables:  # A row the pay engine read from several lines (a wrapped label) is found by any of them.
         for row in table.rows:
@@ -1369,6 +1520,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
     def named(item):
         return " ".join(item.description.lower().split())
     with_rows = {named(item) for item in rows if cited_row(item.evidence)}
+    cited = {found[1].id for found in (cited_row(item.evidence) for item in rows) if found}  # Every row a model line took, even one left out below.
     kept, used = [], set()
     for item in rows:
         found = cited_row(item.evidence)
@@ -1387,6 +1539,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
             used.update([found[1].id] if found else [])
             kept.append(item)
     rows = kept
+    rows, unclassified = with_unclassified(rows, tables, cited, cited_row)
 
     for index, item in enumerate(rows, 1):
         found = cited_row(item.evidence)
@@ -1428,14 +1581,20 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
             notes.append(f"Pay line {index} has multiple amounts without a validated source row; check its columns.")
         references.append(reference)
 
+    conflicts = {}
     for name, column_name in (("gross_pay", "current"), ("gross_pay_ytd", "ytd"),
                               ("net_pay", "current"), ("net_pay_ytd", "ytd"),
                               ("taxes", "current"), ("deductions", "current")):
         field = getattr(header, name)
-        if field.status != "proposed":
+        printed = totals_row(name)
+        boxed = box_cell(extras.box, name)
+        if field.status != "proposed" and (printed or not boxed):
             continue
-        found = totals_row(name) or cited_row(field.evidence)
-        if found:
+        found = printed or (None if boxed else cited_row(field.evidence))
+        if boxed and not printed:  # FR-61: after the totals row, before the model.
+            header = header.model_copy(update={name: box_field(field, boxed)})
+            extras.references[name] = box_reference(boxed)
+        elif found:
             table, source = found
             columns = paystub_columns(table)
             column = columns[0 if column_name == "current" else 1] if columns else None
@@ -1447,6 +1606,8 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
                                     if amount is not None else field.evidence, "row_label": row_label, "column_heading": heading})})
             if amount is None:
                 notes.append(f"{name.replace('_', ' ').capitalize()} has no unambiguous {column_name} source cell.")
+            elif boxed and printed_decimal(amount) != printed_decimal(boxed.quote):
+                conflicts[name] = boxed
         elif any(len(line_amounts(line_text.get(cite.line_id, cite.quote))) > 1 for cite in field.evidence) and not any(cite.line_id in flat for cite in field.evidence):
             pair = getattr(header, PAY_PAIRS[name]) if name in PAY_PAIRS else None
             if pair is not None and pair.status == "proposed" and same_both_columns(field.value, pair.value, [*field.evidence, *pair.evidence], line_text):
@@ -1455,6 +1616,9 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=()):
                 continue  # The table's own cells add up to it: which column it was read from doesn't matter.
             header = header.model_copy(update={name: field.model_copy(update={"value": None, "status": "ambiguous"})})
             notes.append(f"{name.replace('_', ' ').capitalize()} has multiple amounts without a validated source cell.")
+    guess_groups(rows, unclassified, header, extras)
+    for name, boxed in conflicts.items():  # FR-61: the totals line and the summary box disagree; the one the pay lines add up to is kept.
+        header = settle_box(header, rows, name, boxed, extras)
     return header, rows, references
 
 
@@ -3899,8 +4063,9 @@ class ExtractionService:
         if part is not None:  # Only the pages with neither an engine pay table nor a printed table (FR-64); an empty set runs no check.
             covered = {table_page(table) for table in tables} - {None}
             printed_columns = {line.id for line in lines if line_page(line.id) not in covered}
+        extras = pay_extras(next(iter(part.box_cells.values()), None) if part is not None else None)
         if classification.document_type == "paystub" and tables:
-            header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines, printed_columns if isinstance(printed_columns, set) else ())
+            header, rows, cell_references = anchor_paystub(header, rows, tables, notes, lines, printed_columns if isinstance(printed_columns, set) else (), extras)
             by_line = {row.line_id: (table, row) for table in tables for row in table.rows}
             for table in tables:
                 for row in table.rows:
@@ -3918,6 +4083,7 @@ class ExtractionService:
                         if column is not None:
                             from .native_values import reference
                             summary_references[name] = reference(found[1].cells[column])
+            summary_references.update(extras.references)  # A summary field taken from the summary box cites its cell (FR-75).
         elif tables and header is not None:
             from .native_values import anchor_rows, anchor_summary
             header, summary_references = anchor_summary(header, tables, notes)
@@ -3978,10 +4144,12 @@ class ExtractionService:
             except (ValueError, OSError, RuntimeError) as exc:  # Advisory: never fails the extraction.
                 checks = {"advisory": True, "model": decision.summary(), "error": str(exc)[:300]}
             work.check()
-        if part is not None:  # Record notes, shown with the record and never a review reason (D6): the engine's guesses, and pages with no pay table.
-            record_notes += [note for note in part.notes if note not in record_notes]
+        if part is not None:  # Record notes, shown with the record and never a review reason (D6): the engine's guesses and what Record guessed, printed
+            # totals their rows don't add up to, lines placed in no column, and pages with no pay table.
+            record_notes += [note for note in (*part.notes, *extras.notes, *paystub_tables.mismatches(part), *paystub_tables.unplaced_notes(part))
+                             if note not in record_notes]
             record_notes += [NO_PAY_TABLE.format(page=page) for page in part.pages_without_tables if page not in part.pages]
-            guesses = [asdict(guess) for guess in part.guesses]
+            guesses = [asdict(guess) for guess in (*part.guesses, *extras.guesses)]
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "record_notes": record_notes, "guesses": guesses,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,

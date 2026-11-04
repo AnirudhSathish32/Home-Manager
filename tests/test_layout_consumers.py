@@ -23,6 +23,7 @@ from home_manager.documents.native_values import anchor_rows, anchor_summary
 from home_manager.documents.pdf_reader import complete_pdf, read_result
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
+from home_manager.finance import paystub_tables
 from home_manager.finance.ledger import Ledger
 from home_manager.library.storage import digest_file
 from home_manager.library.text_index import document_lines, index_run, search
@@ -488,9 +489,15 @@ def test_missing_native_rows_are_reviewed_and_blank_current_is_not_ytd(tmp_path)
     header = HEADER_MODELS["paystub"](**{name: MISSING for name in HEADERS["paystub"]})
     classification = SimpleNamespace(document_type="paystub")
     fake = SimpleNamespace(extract=lambda *args: (classification, header, [row], None, None))
-    reading = ExtractionService.read(fake, None, Work.detached(), "run", result, evidence_lines(result), None, [])
-    assert reading["rows"][0].current is None and reading["rows"][0].ytd == "500.00"
-    assert any("2 native table row(s)" in note for note in reading["notes"])
+    reading = ExtractionService.read(fake, None, Work.detached(), "run", result, evidence_lines(result), None, [], pay=paystub_tables.read(result))
+    assert next(line for line in reading["rows"] if line.description == "Bonus").current is None  # The blank current is not year to date.
+    assert next(line for line in reading["rows"] if line.description == "Bonus").ytd == "500.00"
+    # The pay engine reads this table (FR-62): the two rows no model line took are recorded with a guessed group, each named in a record note, and
+    # the count note is gone.
+    assert [(line.description, line.group) for line in reading["rows"]] == [("Regular pay", "earnings"), ("Bonus", "earnings"), ("Adjustment", "earnings")]
+    assert not any("native table row(s)" in note for note in reading["notes"])
+    assert [text for text in reading["record_notes"] if "Regular pay" in text] and [text for text in reading["record_notes"] if "Adjustment" in text]
+    assert [guess["kind"] for guess in reading["guesses"]] == ["group_guessed", "group_guessed"]
 
 
 def test_invoice_summary_and_holdings_keep_distinct_native_columns(tmp_path):
