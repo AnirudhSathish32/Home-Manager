@@ -1,7 +1,8 @@
 """The pay table engine, engine level (specs/pdf-table-engine-paystubs/test-contract.md), slice SL-01: P-checks, then rows and labels, columns,
 headings, side-by-side blocks, section titles and wrapped labels, totals lines, table extent (net pay, a new heading, a stub start line,
-continuation across pages), tables set aside from the pay table (deposit, leave), the summary box and unplaced lines. Roles, guesses and which
-table is a pay table are SL-02's.
+continuation across pages), tables set aside from the pay table (deposit, leave), the summary box and unplaced lines; then, slice SL-02, which
+table is a pay table (FR-56), the column roles (FR-57), the guesses about them (FR-58, FR-59, FR-74) and the summary box's columns and rows
+(FR-75): the engine-level steps of SC-50, SC-55, SC-56, SC-57, SC-61 and SC-70.
 
 `pcheck_*` say each synthetic fixture has the shape the contract intends when the real reader reads it; the others compare the engine's tables
 with the facts written out by hand in tests/paystub_engine_fixtures.py. A failed P-check is a fixture or reader problem, never a reason to change an
@@ -20,6 +21,7 @@ import pytest
 
 from home_manager.documents import pay_tables
 from home_manager.documents.table_engine import PageView
+from home_manager.finance import paystub_tables
 import paystub_engine_fixtures as pf
 import pdf_import_fixtures as fx
 
@@ -537,3 +539,251 @@ def test_continuation_without_the_stub_start_rule_the_two_stubs_would_share_a_ta
     monkeypatch.setattr(pay_tables, "starts_stub", lambda line: False)
     reading = engine_of(tmp_path, "STUBCUT")
     assert len(reading.tables) == 1 and len(reading.tables[0].rows) == 4
+
+
+# === Roles, guesses and the summary box (SL-02: FR-56 - FR-59, FR-74, FR-75) ================================================
+
+def roles_of(tmp_path, name):
+    """(saved reading, PaystubTables) of a fixture."""
+    result = reading_of(tmp_path, name)
+    return result, paystub_tables.read(result)
+
+
+def role_at(result, found, edge, index=0):
+    """The role of the amount column printed with right edge `edge` (points) in the index-th pay table."""
+    table = found.tables[index]
+    scale = fx.scale(fx.layout(result, table.pages[0]))
+    [column] = [column for column in table.columns if abs(column.edge / scale - edge) <= 1.5]
+    return found.roles[index].roles[column.id]
+
+
+def role_list(result, found, edges, index=0):
+    return [role_at(result, found, edge, index) for edge in edges]
+
+
+def test_roles_sc50_ps_columns_are_hours_rate_this_period_and_year_to_date_from_the_numbers(tmp_path):
+    """SC-50 step 2: one pay table; Hours r 260, Rate r 330, Current r 430 this period, YTD r 520 year to date; no unplaced line; no note."""
+    result, found = roles_of(tmp_path, "PS")
+    assert [table.id for table in found.tables] == ["page-1-pay-1"] and found.other_tables == []
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]
+    assert found.roles[0].decided_by == "numbers" and found.roles[0].table_id == "page-1-pay-1"
+    assert printed(found.tables[0]) == pf.PS_ENGINE
+    assert found.unplaced == [] and found.notes == [] and found.guesses == [] and found.box is None and found.boxes == []
+    assert found.pages == {1} and found.pages_without_tables == []
+
+
+@pytest.mark.parametrize("name", ["PS-2L", "PS-WRAP", "PS-SEC", "PS-DIGITS", "PS-BADTOTAL", "PS-BADNET", "PS-CONT", "PS-CONT-NH"])
+def test_roles_variants_of_ps_have_ps_roles_and_no_note(tmp_path, name):
+    result, found = roles_of(tmp_path, name)
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]
+    assert found.notes == [] and found.guesses == [] and found.roles[0].decided_by == "numbers"
+
+
+def test_roles_sc55_no_headings_and_reversed_columns_the_column_at_520_is_this_period(tmp_path):
+    """SC-55: hours × rate and the ordering both say so; no note."""
+    result, found = roles_of(tmp_path, "PS-NH")
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "ytd", "current"]
+    assert found.notes == [] and found.guesses == [] and found.roles[0].decided_by == "numbers"
+
+
+def test_roles_sc55_the_ordering_alone_says_the_same_without_hours_and_rate(tmp_path, monkeypatch):
+    """FR-57 (b) and (c): the totals make Current and YTD pay columns and the smaller one is this period, with (a) switched off."""
+    monkeypatch.setattr(paystub_tables, "products", lambda table, head: None)
+    result, found = roles_of(tmp_path, "PS-NH")
+    assert role_list(result, found, pf.PS_EDGES)[2:] == ["ytd", "current"]
+    assert role_list(result, found, pf.PS_EDGES)[:2] == ["other", "other"]  # No heading names Hours or Rate, so they are never money.
+    assert found.notes == []
+
+
+def test_roles_the_product_rule_is_hours_rate_and_a_rate_keeps_its_decimals(tmp_path):
+    """FR-57 (a): 4.00 × 46.8750 = 187.50 is the second row's Current (document-forms FR-21's rounding); the rate is the column printing more decimals."""
+    result, found = roles_of(tmp_path, "PS")
+    assert paystub_tables.multiplies(*[found.tables[0].rows[1].amounts[column.id] for column in found.tables[0].columns[:3]])
+    assert not paystub_tables.multiplies(*[found.tables[0].rows[1].amounts[column.id] for column in found.tables[0].columns[1:4]])
+    assert found.tables[0].rows[1].amounts[found.tables[0].columns[2].id].value[0] == Decimal("187.50")
+
+
+def test_roles_sc56_deposit_and_leave_tables_are_other_tables_with_no_pay_rows(tmp_path):
+    """SC-56 engine step: two other tables, none of their rows in a pay table, no unplaced line."""
+    result, found = roles_of(tmp_path, "PS-OTHER")
+    assert [table.id for table in found.tables] == ["page-1-pay-1"]
+    assert [printed(table) for table in found.other_tables] == [pf.DEPOSIT_ENGINE, pf.LEAVE_ENGINE]
+    assert printed(found.tables[0]) == pf.PS_ENGINE and role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]
+    assert {row.label for row in found.tables[0].rows}.isdisjoint({"Checking 1234", "Savings 5678", "Vacation", "Sick"})
+    assert found.unplaced == [] and found.notes == [] and len(found.roles) == 1 and found.pages == {1}
+
+
+def test_roles_fr56_every_label_and_amount_line_is_a_row_a_total_an_other_table_row_or_unplaced(tmp_path):
+    """The contract's count, by hand: PS-OTHER prints 10 pay lines + 2 deposit + 2 leave lines; PS-SEC-MEMO 10 pay lines + the memo."""
+    _, found = roles_of(tmp_path, "PS-OTHER")
+    pay = sum(len(table.rows) + len(table.totals) for table in found.tables)
+    other = sum(len(table.rows) + len(table.totals) for table in found.other_tables)
+    assert (pay, other, len(found.unplaced)) == (10, 4, 0)
+    _, found = roles_of(tmp_path, "PS-SEC-MEMO")
+    assert sum(len(table.rows) + len(table.totals) for table in found.tables) + len(found.unplaced) == 11
+    assert [line.text for line in found.unplaced] == ["Bonus advance memo 75.00"] and found.other_tables == []
+
+
+def test_roles_sc57_a_ytd_hours_column_is_other_when_two_pairs_share_the_rate(tmp_path):
+    """SC-57 (a): Hours r 220, Rate r 290, Current r 370, YTD Hours r 450 (other), YTD r 530; 1,040.00 × 31.25 = 32,500.00 makes YTD a pay column."""
+    result, found = roles_of(tmp_path, "PS-YTDH")
+    assert role_list(result, found, pf.YTDH_EDGES) == ["hours", "rate", "current", "other", "ytd"]
+    assert found.roles[0].decided_by == "numbers" and found.notes == [] and found.guesses == []
+
+
+def test_roles_sc57_b_an_employer_column_with_no_total_is_other(tmp_path):
+    result, found = roles_of(tmp_path, "PS-EMP")
+    assert role_list(result, found, pf.EMP_EDGES) == ["hours", "rate", "current", "ytd", "other"]
+    assert found.notes == [] and found.guesses == []
+
+
+def test_roles_a_bonus_printed_only_under_ytd_leaves_both_columns_in_their_roles(tmp_path):
+    """SC-69 engine step: the blank Current cell does not move the roles."""
+    result, found = roles_of(tmp_path, "PS-BONUS")
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]
+    assert found.notes == []
+
+
+def test_roles_side_by_side_blocks_each_have_this_period_and_year_to_date(tmp_path):
+    result, found = roles_of(tmp_path, "SBS")
+    assert [table.id for table in found.tables] == ["page-1-pay-1", "page-1-pay-2"] and found.other_tables == []
+    assert role_list(result, found, (200, 270), 0) == ["current", "ytd"] and role_list(result, found, (460, 530), 1) == ["current", "ytd"]
+    assert found.notes == [] and [roles.table_id for roles in found.roles] == ["page-1-pay-1", "page-1-pay-2"]
+
+
+def test_roles_stacked_tables_are_each_decided_on_their_own_columns(tmp_path):
+    """STK: the first table has PS's four columns, the second (no heading) is decided by its totals: Total Taxes, Total Pre-Tax Deductions."""
+    result, found = roles_of(tmp_path, "STK")
+    assert role_list(result, found, pf.PS_EDGES, 0) == ["hours", "rate", "current", "ytd"]
+    assert role_list(result, found, (400, 500), 1) == ["current", "ytd"] and found.notes == []
+
+
+def test_roles_sc61_a_headings_that_contradict_the_numbers_lose_and_are_noted(tmp_path):
+    """SC-61 (a): PS-SWAPHEAD prints YTD over the smaller column. The numbers win; one headings_overruled guess names the page and both headings."""
+    result, found = roles_of(tmp_path, "PS-SWAPHEAD")
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]
+    [guess] = found.guesses
+    assert (guess.kind, guess.page, guess.table_id) == ("headings_overruled", 1, "page-1-pay-1")
+    assert guess.text == ('Page 1: the column headed "YTD" was taken as this period and the one headed "Current" as year to date, '
+                          'because the printed amounts say so.')
+    assert found.notes == [guess.text] and found.roles[0].decided_by == "numbers"
+
+
+@pytest.mark.parametrize("name, wording", [
+    ("B1", "Page 1: the left column was taken as this period; the printed amounts didn't tell the two columns apart."),
+    ("B2", "the left column was taken as this period")])
+def test_roles_sc61_b_columns_the_numbers_do_not_settle_are_guessed_and_noted(tmp_path, name, wording):
+    """SC-61 (b1): no voting row, a 0-0 tie, the left column is this period. (b2): rows 1 and 3 vote left, row 2 votes right, the left wins 2-1."""
+    result, found = roles_of(tmp_path, name)
+    assert role_list(result, found, (430, 520)) == ["current", "ytd"]
+    [guess] = found.guesses
+    assert (guess.kind, guess.page, guess.table_id) == ("columns_guessed", 1, "page-1-pay-1")
+    assert guess.text.startswith("Page 1: ") and wording in guess.text and found.notes == [guess.text]
+    assert found.roles[0].decided_by == "guess"
+
+
+def test_roles_sc61_b_both_columns_are_pay_columns_because_their_totals_add_up(tmp_path):
+    for name in ("B1", "B2"):
+        sub = tmp_path / name
+        sub.mkdir()
+        [table] = engine_of(sub, name).tables
+        assert paystub_tables.pay_columns(table) == {column.id for column in table.columns}
+
+
+def test_roles_the_rows_vote_in_b2_two_to_one_for_the_left_column(tmp_path):
+    [table] = engine_of(tmp_path, "B2").tables
+    left, right = (column.id for column in table.columns)
+    assert paystub_tables.smaller_on(table, left, right) == (2, 1, 3)
+
+
+def write_pages(tmp_path, name, items):
+    sub = tmp_path / name
+    sub.mkdir()
+    return fx.read_pdf(sub, [pf.page_of(items)])
+
+
+def test_roles_headings_decide_when_the_numbers_have_no_voting_row_and_no_guess_is_made(tmp_path):
+    """FR-57 (d), FR-59: B1's rows with headings Current and YTD. The headings settle it: no guess, no note. Swapped, they settle it the other way."""
+    rows = [("row", label, (current, ytd)) for label, current, ytd in pf.B1_ROWS]
+    for name, words, expected in (("plain", ("Description", "Current", "YTD"), ["current", "ytd"]),
+                                  ("swapped", ("Description", "YTD", "Current"), ["ytd", "current"])):
+        result = write_pages(tmp_path, name, [*pf.head(700, words, (pf.CURRENT, pf.YTD)), *pf.lay(680, rows, (pf.CURRENT, pf.YTD))])
+        found = paystub_tables.read(result)
+        assert role_list(result, found, (430, 520)) == expected
+        assert found.guesses == [] and found.notes == [] and found.roles[0].decided_by == "headings"
+
+
+def test_roles_equal_columns_on_every_voting_row_take_the_left_as_this_period_without_a_guess(tmp_path):
+    """FR-57 (c): a first paycheck, this period equal to year to date everywhere. Either column gives the same values."""
+    rows = [("row", label, (amount, amount)) for label, amount in (("Regular", "2,000.00"), ("Gross Pay", "2,000.00"), ("Federal Income Tax", "200.00"),
+                                                                  ("Total Taxes", "200.00"), ("Net Pay", "1,800.00"))]
+    result = write_pages(tmp_path, "first", pf.lay(680, rows, (pf.CURRENT, pf.YTD)))
+    found = paystub_tables.read(result)
+    assert role_list(result, found, (430, 520)) == ["current", "ytd"]
+    assert found.guesses == [] and found.notes == [] and found.roles[0].decided_by == "numbers"
+
+
+def test_roles_a_row_with_a_negative_amount_does_not_vote(tmp_path):
+    """FR-57 (c): the Reversal row prints -100.00 and -300.00, which would vote for the right column; it doesn't vote, so Regular decides.
+    Gross Pay 1,000.00 - 100.00 = 900.00 and 5,000.00 - 300.00 = 4,700.00 add up."""
+    rows = [("row", "Regular", ("1,000.00", "5,000.00")), ("row", "Reversal", ("-100.00", "-300.00")), ("row", "Gross Pay", ("900.00", "4,700.00")),
+            ("row", "Net Pay", ("900.00", "4,700.00"))]
+    result = write_pages(tmp_path, "negative", pf.lay(680, rows, (pf.CURRENT, pf.YTD)))
+    found = paystub_tables.read(result)
+    assert role_list(result, found, (430, 520)) == ["current", "ytd"]
+    assert found.guesses == [] and found.roles[0].decided_by == "numbers"
+
+
+BOX_NAMES = ("gross", "taxes", "deductions", "net")
+
+
+@pytest.mark.parametrize("name, order, notes", [("SB", (0, 1, 2, 3), 0), ("SB-SHUF", (3, 1, 0, 2), 0), ("SB-NOHEAD", (0, 1, 2, 3), 1)])
+def test_box_sc70_the_summary_box_gives_gross_taxes_deductions_and_net_for_this_period_and_year_to_date(tmp_path, name, order, notes):
+    """SC-70 engine steps: the box columns by their sums (shuffled headings read the same), rows this period then year to date; a headless box
+    guesses taxes left of deductions and says so."""
+    result, found = roles_of(tmp_path, name)
+    [box] = found.boxes
+    assert (box.id, box.page) == ("page-1-box-1", 1)
+    assert list(box.columns.values()) == [BOX_NAMES[column] for column in order]
+    assert [box.rows["current"].label, box.rows["ytd"].label] == ["Current", "YTD"]
+    assert {key: token.text for key, token in box.current.items()} == dict(zip(BOX_NAMES, pf.BOX_CURRENT))
+    assert {key: token.text for key, token in box.ytd.items()} == dict(zip(BOX_NAMES, pf.BOX_YTD))
+    assert found.box == {"current": box.current, "ytd": box.ytd}
+    assert len(found.guesses) == notes and found.notes == [guess.text for guess in found.guesses]
+    assert role_list(result, found, pf.PS_EDGES) == ["hours", "rate", "current", "ytd"]  # The table under the box is read as ever.
+
+
+def test_box_values_are_exact_decimals_and_the_headless_guess_names_the_page_and_the_columns(tmp_path):
+    _, found = roles_of(tmp_path, "SB-NOHEAD")
+    assert found.box["current"]["net"].value[0] == Decimal("2051.89") and found.box["ytd"]["gross"].value[0] == Decimal("33625.00")
+    [guess] = found.guesses
+    assert (guess.kind, guess.page, guess.table_id) == ("box_columns_guessed", 1, "page-1-box-1")
+    assert guess.text.startswith("Page 1: ") and "left of the two columns" in guess.text and "taxes" in guess.text
+    assert found.boxes[0].decided_by == "guess"
+    (tmp_path / "headed").mkdir()
+    assert roles_of(tmp_path / "headed", "SB")[1].boxes[0].decided_by == "numbers"
+
+
+def test_box_a_page_with_no_box_has_none(tmp_path):
+    for name in ("PS", "SBS", "B1"):
+        sub = tmp_path / name
+        sub.mkdir()
+        assert roles_of(sub, name)[1].box is None
+
+
+def test_roles_a_page_with_no_table_is_still_without_one_and_its_prose_is_not_unplaced(tmp_path):
+    """SC-59 engine step through the role pass."""
+    _, found = roles_of(tmp_path, "PS-PROSE")
+    assert found.pages == {1} and found.pages_without_tables == [2] and found.unplaced == []
+
+
+@pytest.mark.parametrize("name", list(pf.FIXTURES))
+def test_roles_reading_twice_gives_equal_results(tmp_path, name):
+    result = reading_of(tmp_path, name)
+    assert serialized(paystub_tables.read(result)) == serialized(paystub_tables.read(result))
+
+
+def test_roles_the_module_uses_no_float_to_decide_a_role():
+    tree = ast.parse(Path(paystub_tables.__file__).read_text(encoding="utf-8"))
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, float)]
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "float"]
