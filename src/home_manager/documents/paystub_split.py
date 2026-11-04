@@ -2,7 +2,8 @@
 lines' ids and text, so it works on text PDFs, scans and photos, and asks no model.
 
 A stub starts at a line holding a pay date label (pay date, check date, payment date, pay period, period ending) and a date. A start opens a
-new stub only after the open stub has printed its net pay line: a stub prints both a pay date and a pay period, and a later page repeats its
+new stub only after the open stub has printed its net pay line (a label and an amount, or the label alone on a line where the reader
+printed a column of labels beside a column of amounts): a stub prints both a pay date and a pay period, and a later page repeats its
 heading, so those are continuations. A part left without a net pay line joins the part before it (the first joins the next). Then each
 stub's first line moves up over its employer heading lines, but only on the same page and never past the previous stub's last net pay line."""
 
@@ -26,10 +27,12 @@ def starts_stub(line):
 
 
 def prints_net_pay(line):
-    """A net pay label followed by an amount."""
+    """A net pay label followed by an amount, or a line of the net pay label alone."""
     tokens = tokens_of(line)
     amount = next((index for index, token in enumerate(tokens) if token.kind == "amount"), None)
-    return amount is not None and bool(NET_PAY.fullmatch(" ".join(token.text for token in tokens[:amount]).strip()))
+    if amount is None:  # The reader can print a row's label and its amounts as separate lines (a column of labels beside a column of amounts).
+        return bool(NET_PAY.fullmatch(" ".join(token.text for token in tokens).strip()))
+    return bool(NET_PAY.fullmatch(" ".join(token.text for token in tokens[:amount]).strip()))
 
 
 def page_of(line):

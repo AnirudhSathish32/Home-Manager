@@ -16,9 +16,7 @@ import re
 
 import pytest
 
-from conftest import documents_by_name  # noqa: F401  (the Inbox helpers the Record tests share)
 from evals import paystub_layouts as layouts
-from home_manager.core.jobs import Work  # noqa: F401
 from home_manager.documents.extraction import HEADERS, PAY_SPLIT_NOTE
 from home_manager.finance import paystub_tables
 from home_manager.finance.ledger import Ledger
@@ -137,8 +135,10 @@ class Generated(Run):
                 found = next((line for line in part if needle in collapse(line.text)), None)
                 return found or next(line for line in part if fallback and fallback in collapse(line.text))
 
-            def cite(needle, quote=None, fallback=None, find=find):
+            def cite(needle, quote=None, fallback=None, find=find, part=part):
                 line = find(needle, fallback)
+                if quote and quote not in line.text:  # The reader printed the row in pieces: the value is cited where it is printed.
+                    line = next(other for other in part if quote in other.text)
                 return [{"line_id": line.id, "quote": quote or line.text}]
 
             def value(text, needle, cite=cite):

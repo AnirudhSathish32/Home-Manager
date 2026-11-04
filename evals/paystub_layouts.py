@@ -192,10 +192,11 @@ class Case:
 
     def hourly(self, label, category, first):
         rng, c = self.rng, self.c
-        hundredths = rng.choice((800, 1250, 1600, 2400, 3200, 4000, 1000, 2050))
+        # Hours that equal the year-to-date multiple would make hours × current the year to date, a product the numbers can't tell from hours × rate.
+        hundredths = rng.choice([hours for hours in (800, 1250, 1600, 2400, 3200, 4000, 1000, 2050) if hours != self.multiple * 100])
         four = c["rate4"] and first
         rate = rng.randrange(1500, 9500) * 100 + (rng.choice((25, 50, 75)) if four else 0)
-        multiple = rng.randint(2, 24)
+        multiple = self.multiple
         row = self.row(label, "earnings", category, times(hundredths, rate), times(hundredths * multiple, rate))
         row.update(hours=hours_text(hundredths), rate=rate_text(rate, four), yhours=hours_text(hundredths * multiple))
         return row
@@ -203,6 +204,7 @@ class Case:
     def stub_rows(self):
         """The pay lines of one stub (earnings, taxes, pre-tax deductions) with their this-period and year-to-date minor units."""
         rng, c = self.rng, self.c
+        self.multiple = rng.randint(2, 24)  # How many pay periods the year to date holds: every line's year to date is about this many times its amount.
         earnings = []
         if c["hours"]:
             earnings.append(self.hourly("Regular", "regular_pay", True))
@@ -224,12 +226,12 @@ class Case:
             earnings.append(self.row("Relocation Bonus", "earnings", "bonus", None, rng.randint(100000, 800000)))
         for item in earnings:
             if item["ytd"] is None:
-                item["ytd"] = item["current"] * rng.randint(2, 24)
+                item["ytd"] = item["current"] * self.multiple
         gross = sum(item["current"] or 0 for item in earnings)
         taxes = []
         for label, category, _ in [FEDERAL, *rng.sample(TAXES, rng.randint(1, 3))]:
             current = max(500, gross * SHARES[category] // 100 + rng.randint(0, 99))
-            taxes.append(self.row(label, "tax", category, current, current * rng.randint(2, 24)))
+            taxes.append(self.row(label, "tax", category, current, current * self.multiple))
         if c["wrap"]:
             taxes[0].update(wrap="Tax Withholding", label="Federal Income", description="Federal Income Tax Withholding")
         pre = []
@@ -239,7 +241,7 @@ class Case:
             names = rng.sample(PRE_TAX_PLAIN, rng.randint(1, 3))
         for label, category in names:
             current = max(500, gross * rng.randint(2, 5) // 100 + rng.randint(0, 99))
-            pre.append(self.row(label, "pre_tax", category, current, current * rng.randint(2, 24)))
+            pre.append(self.row(label, "pre_tax", category, current, current * self.multiple))
         if c["employer_col"]:
             pre[0]["employer"] = max(100, pre[0]["current"] * rng.randint(30, 80) // 100)
         return earnings, taxes, pre
