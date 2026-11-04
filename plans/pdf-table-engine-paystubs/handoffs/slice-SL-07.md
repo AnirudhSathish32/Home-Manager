@@ -5,9 +5,9 @@ provider: claude
 model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
-start_head: 0d4e455
-end_head: 420f889   # the code commit; the handoff file is committed right after it
-commit: 420f889
+start_head: 0d4e455   # round 1; round r2 started at 2521859
+end_head: 8246356   # fix round r2: the code commit; the handoff file is committed with it
+commit: 8246356
 checks:
   - command: ".venv/bin/python -m pytest tests/test_paystub_split.py -q"
     exit_code: 0   # 35 passed (5 SL-06 tests + 30 new)
@@ -21,7 +21,13 @@ checks:
     exit_code: 0   # extra regression run: 133 passed, 1 skipped (opt-in browser test)
   - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_document_v2_browser.py -q"
     exit_code: 0   # extra, the page's JS changed: 9 passed
-escalations: []   # none blocking; D1 – D3 below are decisions to review
+  - command: "r2: .venv/bin/python -m pytest tests/test_paystub_split.py -q"
+    exit_code: 0   # 37 passed (35 + 2 new tax_tables tests); the new two-year test fails (only 2025 asked) with the manager.py change stashed
+  - command: "r2: .venv/bin/python -m pytest tests/test_tax_engines.py tests/test_paycheck.py -q"
+    exit_code: 1   # 8 failed, 32 passed; the same 8 fail at START_HEAD 2521859 with my changes stashed (tests/test_tax_engines.py, engine output keys such as taxable_income/agi missing; not touched here)
+  - command: "r2: .venv/bin/ruff check src tests"
+    exit_code: 1   # only the 2 errors present at START_HEAD (tests/test_document_v2_browser.py:410, tests/test_receipt_kinds.py:977); my files are clean
+escalations: []   # none blocking; D1 – D3 below are decisions to review (D3 is resolved in round r2)
 ```
 
 # SL-07 handoff: several pay stubs in one file
@@ -50,4 +56,13 @@ SC-72 a–d (d: PNG via the vision stub, flat path); SC-73 (26 MINI-C stubs, 26 
 - The merged segment's values (G3) are not asserted; the run succeeds and the unclassified rows of the second stub get guessed groups.
 - `PaystubTables.viewer` is still unused, and a multi-page table is still one entry per page with the same id; neither broke a split file's Tables tab (not changed).
 - Docs (`docs/documents.md` "Several pay stubs in one file") are SL-09.
+- `progress.yaml` untouched and uncommitted.
+
+# Fix round r2: tax tables for every stub of a split file
+
+Defect (found by the orchestrator): `Manager.extract_and_file` called `look_up_tax_tables` only for the top-level publication, which for a split file is segment 0's, so a file spanning two tax years never looked up the second year's tables. This resolves D3.
+
+- **`app/manager.py` `extract_and_file`.** The income-record branch now loops over `publication.get("segments") or [publication]` (as the receipt loop above it) and calls `look_up_tax_tables(published["id"], work)` for each published income record. The one-stub path is the same call as before. `look_up_tax_tables` is unchanged: it still skips years whose tables exist (`tax_tables.tables.needed`) and never fails the extraction.
+- **`tests/test_paystub_split.py`.** Two tests with `tax_tables` in the name, running the real `Manager.extract_and_file` and `Manager.look_up_tax_tables` on a stand-in manager (real extraction service and ledger, `tax_tables.enqueue` recorded and raising its own "no key/model" `ValueError`, so no model or network call): a two-stub MINI-C file paid 2025-12-19 and 2026-01-02 asks for both years in order; a one-stub file asks once. With the `manager.py` change stashed the two-year test fails (only 2025 asked).
+- `tests/test_tax_engines.py` has 8 failures that already exist at START_HEAD 2521859 (verified with my changes stashed); not related to this change and not touched.
 - `progress.yaml` untouched and uncommitted.

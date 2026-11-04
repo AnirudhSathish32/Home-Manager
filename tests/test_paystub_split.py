@@ -17,6 +17,7 @@ import pytest
 
 from conftest import documents_by_name, inbox_scan
 from home_manager.app.api import create_app
+from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.documents import extraction
 from home_manager.documents.extraction import HEADERS, PAY_SPLIT_NOTE, VOID_NOTE, ExtractionService
@@ -918,3 +919,38 @@ def test_marking_a_stub_never_overrides_the_users_decision(two_stub_file):
         db.execute("UPDATE income_records SET review_status='rejected' WHERE id=?", (original,))
     assert ledger.mark_duplicate(original + 100, original) is False  # Its original no longer counts.
     assert ledger.pay_stub_twin(EARLIER, segment_source(docs["stubs.pdf"], 1)) is None
+
+
+# === the tax tables of every year a split file's stubs were paid in =========================================================
+
+def asked_for_tax_tables(run):
+    """Manager.extract_and_file on the run's file with the real look_up_tax_tables, no table known yet and tax_tables.enqueue recorded: the
+    (jurisdiction, year) it was asked for, in order. enqueue raises ValueError ("no web search key or model"), so no model or network call happens."""
+    asked = []
+
+    def enqueue(jurisdiction, year, filing_status, config):
+        asked.append((jurisdiction, year))
+        raise ValueError("no web search key")
+
+    manager = SimpleNamespace(
+        extractions=run.extraction, reconciler=SimpleNamespace(run=lambda *_: None), file_extraction=lambda *_: None, identify_items=lambda *_: None,
+        scan_payees=lambda *_: None, ledger=Ledger(run.store), household=SimpleNamespace(filing_status="single"), reasoning_config=None,
+        tax_tables=SimpleNamespace(tables=SimpleNamespace(needed=lambda year, state, filing_status: [f"federal-{year}"]), enqueue=enqueue))
+    manager.look_up_tax_tables = lambda income_id, work: Manager.look_up_tax_tables(manager, income_id, work)
+    run_id, _ = run.extraction.enqueue(run.doc["id"], run.parse_id, ReasoningConfig(base_url=run.local_model["config"].base_url, model="synthetic-reasoning"))
+    Manager.extract_and_file(manager, run.doc["id"], run_id, Work.detached())
+    assert run.extraction.get(run_id)["status"] == "succeeded"
+    return asked
+
+
+def test_a_file_of_stubs_paid_in_two_years_looks_up_the_tax_tables_of_both_years(pdf_store, local_model):
+    stubs = (("2025-12-19", 1), ("2026-01-02", 2))
+    run = started_stubs(pdf_store, local_model, mini_file(*stubs, ytd=False))
+    run.answer(stubs, ytd=False)
+    assert asked_for_tax_tables(run) == [("federal-2025", 2025), ("federal-2026", 2026)]
+
+
+def test_a_one_stub_file_looks_up_its_tax_tables_once(pdf_store, local_model):
+    run = started_stubs(pdf_store, local_model, mini_file(("2026-01-02", 1), ytd=False))
+    run.answer((("2026-01-02", 1),), ytd=False)
+    assert asked_for_tax_tables(run) == [("federal-2026", 2026)]

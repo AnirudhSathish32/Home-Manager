@@ -1611,8 +1611,10 @@ class Manager:
                 self.identify_items(published["id"], work)
         if publication.get("record_type") == "statement" and publication.get("status") == "published":
             self.scan_payees(work)
-        if publication.get("record_type") == "income_record" and publication.get("status") == "published":
-            self.look_up_tax_tables(publication["id"], work)
+        # A file holding several pay stubs published one per segment, perhaps in different tax years; years whose tables exist cost nothing.
+        for published in publication.get("segments") or [publication]:
+            if published.get("record_type") == "income_record" and published.get("status") == "published":
+                self.look_up_tax_tables(published["id"], work)
 
     def look_up_tax_tables(self, income_id, work):
         """After a pay stub is recorded: look up the federal and state tables for its tax year when there are none yet.
