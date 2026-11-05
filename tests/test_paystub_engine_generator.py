@@ -12,7 +12,10 @@ the file splits. A miss prints the seed, the case index and the layout choices.
 
 from collections import Counter
 from decimal import Decimal
+from pathlib import Path
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -223,6 +226,38 @@ def test_case_is_recorded_exactly_through_the_real_services(index, pdf_store, lo
     case = gen.layout(index)
     run, spans = recorded(pdf_store, local_model, case, index)
     assert_records_exactly(case, context(case, index), run, spans)
+
+
+# --- OD-6: the redacted probe on a generated pay stub ----------------------------------------------------------------------------------------
+
+PROBE = Path(__file__).resolve().parents[1] / "scripts" / "statement_diagnose.py"
+MONEY = re.compile(r"\d[\d,]*\.\d{2}\b")
+DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
+
+
+@pytest.mark.parametrize("index", [3, 4, 5, 11])  # A summary box and side-by-side blocks; a split file; four stubs; a box among totals-free stubs.
+def test_generator_only_probe_prints_no_document_text_amounts_or_dates(index, tmp_path):
+    """R-A / OD-6: the pay stub section of the redacted probe (scripts/statement_diagnose.py ... paystub) runs on a generated PDF and its output holds
+    no word, amount or date the document prints, only shapes and counts: column counts, roles, rows, totals, boxes, blocks and the stubs found. The
+    only capitalised word it prints by design is `Page`."""
+    case = gen.layout(index)
+    pdf = gen.build(tmp_path / "stub.pdf", case)
+    done = subprocess.run([sys.executable, "-I", str(PROBE), str(pdf), "paystub"], capture_output=True, text=True, timeout=120, check=False)
+    where = context(case, index)
+    assert done.returncode == 0, f"{where}: {done.stderr[-300:]}"
+    output = done.stdout
+    printed = [text for page in case.pages for _, _, text, *_ in page["items"]]
+    words = {word for text in printed for word in re.findall(r"[A-Z][A-Za-z]{2,}", text)} - {"Page"}
+    leaked = sorted(word for word in words if re.search(rf"(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", output))
+    assert not leaked, f"{where}: the probe printed document words {leaked}"
+    assert not MONEY.search(output) and not DATE.search(output), f"{where}: the probe printed an amount or a date"
+    amounts = {money for text in printed for money in MONEY.findall(text)}
+    assert not any(amount in output or amount.replace(",", "").replace(".", "") in output for amount in amounts), where
+    assert not any(stub["pay_date"] in output or stub["employer"] in output for stub in case.answers), where
+    # What it reports instead: the shapes and counts of what the engine found, and as many stubs as the file holds.
+    assert f"pay stubs found: {len(case.answers)}" in output, f"{where}: {output[-300:]}"
+    assert "pay tables:" in output and "roles decided by" in output and "summary boxes:" in output and "guesses by kind:" in output, output[-400:]
+    assert ("summary box," in output) == bool(case.choices["box"]) and ("block: left" in output) == (case.choices["layout"] == "side"), where
 
 
 # --- generator_only: the other seeds, the generator's own rules and its coverage -----------------------------------------------------------------

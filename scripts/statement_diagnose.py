@@ -1,6 +1,7 @@
 """What the reader, the Tables tab and Record's rebuild make of one statement PDF, without printing its text.
 
 Usage:  python scripts/statement_diagnose.py "<path to a statement PDF>" [year] [card]
+        python scripts/statement_diagnose.py "<path to a pay stub PDF>" paystub
 
 The rebuild places year-less dates in the statement's period; the script uses the whole of `year` (default this year).
 `card` runs the table engine as a credit-card statement (positive amounts are charges); the default is a bank statement.
@@ -15,6 +16,12 @@ column's edges and zone as a percentage of the page width, its kind and role, an
 anchors, totals, other-table rows and unplaced lines; whether a period was printed, the decided date order and how it was decided,
 how each table's roles were decided (chain, summary, headings or the type default), and the first chain-break row number. It prints
 no heading word, description, date or amount.
+
+With `paystub` the file is read as a pay stub and only the pay engine's section is printed (documents/pay_tables.py and finance/paystub_tables.py,
+specs/pdf-table-engine-paystubs plan R-A and OD-6): per page, the pay tables found (columns, their edges and zones as a percentage of the page width
+and the role decided for each, how the roles were decided, rows, totals, heading lines, the block and whether a partner table sits beside it), the
+summary boxes (their columns' roles and how they were decided), other tables set aside, lines placed in no column, the guesses by kind, and how
+many pay stubs the file splits into with the number of lines of each. Shapes and counts only: no heading word, label, amount, date or employer.
 """
 from datetime import date
 import json
@@ -26,9 +33,10 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from home_manager.documents.layout_context import native_page, viewer_context  # noqa: E402
+from home_manager.documents.layout_context import evidence_lines, native_page, viewer_context  # noqa: E402
+from home_manager.documents.paystub_split import stub_parts  # noqa: E402
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker  # noqa: E402
-from home_manager.finance import statement_rows, statement_tables  # noqa: E402
+from home_manager.finance import paystub_tables, statement_rows, statement_tables  # noqa: E402
 from home_manager.finance.pdf_import import PageView, assign, is_heading, native_spec  # noqa: E402
 from home_manager.library.storage import digest_file  # noqa: E402
 
@@ -53,6 +61,67 @@ def masked(message):
     return AMOUNT.sub("…", DATE.sub("…", message))
 
 
+def pay_section(result):
+    """The pay engine's reading of a pay stub PDF (plan R-A, OD-6): counts, roles, shapes and positions only, never a word of the stub."""
+    print(f"pages: {len(result.pages)}")
+    try:
+        pay = paystub_tables.read(result)
+    except Exception as exc:  # The type only: an exception's text may quote the document.
+        print(f"the pay engine raised {type(exc).__name__}")
+        return
+    roles = {entry.table_id: entry for entry in pay.roles}
+    boxes_by_page = {}
+    for box in pay.boxes:
+        boxes_by_page.setdefault(box.page, []).append(box)
+    guesses = {}
+    for guess in pay.guesses:
+        guesses[guess.kind] = guesses.get(guess.kind, 0) + 1
+    print(f"pay tables: {len(pay.tables)}   other tables: {len(pay.other_tables)}   summary boxes: {len(pay.boxes)}   unplaced lines: {len(pay.unplaced)}"
+          f"   pages without a pay table: {pay.pages_without_tables}   pages the engine does not trust: {sorted(pay.fallback_pages)}")
+    print(f"guesses by kind: {guesses or 'none'}")
+    for page in result.pages:
+        layout = page.layout
+        print(f"\n=== Page {page.number} === method: {page.method}")
+        if layout is None:
+            print("no layout saved")
+            continue
+        width = layout.preview_width
+
+        def span(pair, width=width):
+            return "edge" if any(math.isinf(value) for value in pair) else f"{100 * pair[0] / width:.1f}–{100 * pair[1] / width:.1f}"
+        tables = [table for table in pay.tables if page.number in table.pages]
+        others = [table for table in pay.other_tables if page.number in table.pages]
+        unplaced = sum(1 for line in pay.unplaced if line.page == page.number)
+        print(f"pay tables: {len(tables)}   other tables: {len(others)}   summary boxes: {len(boxes_by_page.get(page.number, []))}   unplaced lines: {unplaced}")
+        for table in tables:
+            decided = roles[table.id]
+            rows = [row for row in table.rows if row.page == page.number]
+            totals = [total for total in table.totals if total.page == page.number]
+            kinds = {}
+            for total in totals:
+                kinds[total.kind] = kinds.get(total.kind, 0) + 1
+            print(f"  {table.id}: {len(table.columns)} columns, roles decided by: {decided.decided_by}   rows here: {len(rows)}   totals here: {kinds or 'none'}"
+                  f"   heading lines: {len(table.headings)}   block: {table.block or 'none'}   partner: {'yes' if table.partner else 'no'}"
+                  f"   pages: {table.pages}")
+            for column in table.columns:
+                print(f"    {column.align:<6} edge {100 * column.edge / width:.1f}%  extent {span(column.extent)}%  zone {span(column.zone)}%"
+                      f"  role {decided.roles.get(column.id, 'other')}  heading words: {len(column.labels)}")
+        for table in others:
+            print(f"  {table.id}: other table, {len(table.columns)} columns, {len([row for row in table.rows if row.page == page.number])} rows here")
+        for box in boxes_by_page.get(page.number, []):
+            print(f"  {box.id}: summary box, {len(box.columns)} columns, roles {[box.columns.get(column, 'other') for column in box.columns]},"
+                  f" decided by: {box.decided_by}, rows: {sorted(box.rows)}")
+        if not tables and not boxes_by_page.get(page.number):
+            print("  no pay table on this page")
+    lines = [line for line in evidence_lines(result) if line.text.strip()]
+    try:
+        parts = stub_parts(lines)
+    except Exception as exc:
+        print(f"\nthe split rule raised {type(exc).__name__}")
+        return
+    print(f"\npay stubs found: {len(parts)}   lines of each: {[last - first for first, last in parts]}   lines in all: {len(lines)}")
+
+
 ARGUMENTS = sys.argv[1:]
 source = Path(ARGUMENTS[0]).resolve()
 with tempfile.TemporaryDirectory() as folder:
@@ -60,6 +129,10 @@ with tempfile.TemporaryDirectory() as folder:
     worker(str(source), folder)
     complete_pdf(folder, config=None, digest=digest_file(source))
     result = read_result(json.loads((folder / "result.json").read_text(encoding="utf-8")))
+
+if "paystub" in ARGUMENTS[1:]:
+    pay_section(result)
+    raise SystemExit(0)
 
 print("pages:", len(result.pages))
 for page in result.pages:
