@@ -1,0 +1,171 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: pdf-table-engine-paystubs
+plan_sha256: 85d660990d5e70ebe532841dc41f7e027538bbea4c24b6def3c0ddbb07a10ffa
+session_plan_hash: 85d660990d5e70ebe532841dc41f7e027538bbea4c24b6def3c0ddbb07a10ffa
+slices:
+  - id: SL-01
+    status: done
+    start_head: 44f40b0
+    end_head: 13837cd
+    commit: a2468c8
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py -k \"pcheck or rows or blocks or sections or totals or other_tables or unplaced or continuation\" -q -> 156 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -q -> 280 passed (orchestrator rerun; table_engine.py has no diff)"
+      - ".venv/bin/ruff check src tests -> 2 errors, both pre-existing at 44f40b0 (tests/test_document_v2_browser.py, tests/test_receipt_kinds.py); slice files clean"
+    notes: >-
+      r1 stopped on a Claude rate limit with uncommitted partial work; r2 resumed it. P-check tolerances: amount right edges
+      0.5 pt as contracted; label left edges 1.5 pt (glyph side bearing). Section titles count only inside or after a table
+      in the block. Carried to SL-04: unplaced text includes the amount ("Bonus advance memo 75.00"). Carried to SL-03:
+      side-by-side rows map to their own layout lines.
+  - id: SL-02
+    status: done
+    start_head: 13837cd
+    end_head: 87ddb70
+    commit: c3e3a91
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py -q -> 218 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_table_engine.py -q -> 280 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+    notes: >-
+      Accepted as within spec: FR-59 note names the left/right side when the more-rows rule picks; deciding headings
+      precede a guess (FR-59 "no deciding heading"); a side-by-side partner of a pay table stays a pay table even with
+      all columns other (no fixture; harmless: no values copied from it). read() returns engine tables; adapt/for_lines
+      are SL-03.
+  - id: SL-03
+    status: done
+    start_head: 87ddb70
+    end_head: 688916f
+    commit: f941f76
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_record.py -k \"sc50 or ... or sc69\" -q -> 17 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_forms.py tests/test_layout_consumers.py tests/test_paycheck.py tests/test_vision_tables.py tests/test_extraction.py tests/test_provenance.py -q -> 141 passed, none of these files changed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py tests/test_table_engine.py -q -> 498 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+    notes: >-
+      Accepted (handoff D1-D6): pay_tables additions (split_tails, under, label_words) pinned by two tests; D2's trust gate
+      is FR-56's own rule (a table with no current/YTD/hours/rate column isn't a pay table, so FR-64 applies); engine
+      tables reported to the model as pdf_text; section-title lines count as covered when chunking; flat column checks read
+      the header from table-less lines only; a label spread over several cites is accepted. For open-work (SL-09):
+      whole-number hours ("80") are label text to the engine (FR-51), so such stubs keep today's path for hours.
+  - id: SL-04
+    status: done
+    start_head: 688916f
+    end_head: 5b94f11
+    commit: 0394f13
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_record.py -q -> 33 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_layout_consumers.py tests/test_paystub_forms.py tests/test_table_engine_record.py tests/test_statement_forms.py -q -> 154 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py tests/test_extraction.py tests/test_provenance.py tests/test_paycheck.py -q -> 276 passed (orchestrator extra regression)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+    notes: >-
+      r1 stopped on a Claude rate limit with uncommitted work; r2 verified and committed it unchanged. SC-64's test changed
+      only as the contract allows (it now passes pay=paystub_tables.read(result); read without pay keeps today's path).
+      Handoff E1: SC-61 b2 lists Shift Premium's copied current 30000, which FR-22 (b) then nulls; the test asserts both
+      steps (copied, then nulled, needs_review naming Shift Premium only) — consistent with the contract's text.
+  - id: SL-05
+    status: done
+    start_head: 5b94f11
+    end_head: 244dee0
+    commit: 35e40b7
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_record.py -k pay_tables -q -> 3 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_document_v2_browser.py tests/test_table_engine_browser.py -q -> 12 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+    notes: >-
+      Accepted deviation: setEngineTables is called from doc2Extraction (pay_tables live in the extraction run), not
+      doc2ShowRun. No inline styles or external assets (diff checked). For SL-07: PaystubTables.viewer is unused; a
+      multi-page table is emitted once per page with the same id.
+  - id: SL-06
+    status: done
+    start_head: 244dee0
+    end_head: 0d4e455
+    commit: 12dbb13
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_split.py -k \"sc75 or library\" -q -> 5 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_migrations.py tests/test_library.py tests/test_managed_library.py tests/test_paycheck.py tests/test_reconcile_tools.py tests/test_donations.py tests/test_receipt_segments.py -q -> 74 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+      - "077's column list checked against 050 + 018/031/070 ALTERs: complete"
+    notes: >-
+      SC-75 step 2 (three-stub file extracted twice) moves to SL-07. Accepted per plan P9 "non-rejected": a file whose
+      only pay stub is rejected (VOID, duplicate, user-rejected) shows no library amount or date, as receipts already do.
+      Reconciliation ranks a no-deposit stub like an unmatched receipt. retire_segments now also retires pay stubs of a
+      page absorbed into a combined document (same rules). For SL-07: library title still uses the receipt count.
+  - id: SL-07
+    status: done
+    start_head: 0d4e455
+    end_head: 7d3813b
+    commit: 420f889 (r1), b662576 (r2)
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_split.py -q -> 35 passed after r1; with r2: tests/test_paystub_split.py tests/test_paycheck.py -> 53 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_receipt_segments.py tests/test_extraction.py tests/test_paycheck.py tests/test_paystub_engine_record.py tests/test_layout_consumers.py tests/test_library.py -q -> 105 passed (orchestrator rerun)"
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_document_v2_browser.py -q -> 12 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only"
+    notes: >-
+      r2 (orchestrator-found defect): tax table lookups now run for every published stub of a split file
+      (manager.py), with two tax_tables tests. tests/test_tax_engines.py has 8 failures that also fail at the
+      pre-feature baseline 44f40b0 (checked in a separate worktree with that commit's src on the path): pre-existing,
+      not this feature. Accepted: pay stub lines keep their ids on Extract again (SC-66 "ids included"); the library
+      title is unchanged (a pay stub file is already titled by its earliest pay date); SC-74 API steps tested through
+      the service methods the endpoints call.
+  - id: SL-08
+    status: done
+    start_head: 7d3813b
+    end_head: 203b7c8
+    commit: 02026cf, 3b7735a
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_generator.py -q -> 363 passed, 0 misses over 120 generated files (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_split.py tests/test_table_engine.py tests/test_table_engine_generator.py tests/test_paystub_forms.py tests/test_layout_consumers.py tests/test_paycheck.py tests/test_extraction.py tests/test_receipt_segments.py -q -> 1035 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals -> the 2 pre-existing errors only"
+    notes: >-
+      r1 stopped on a Claude rate limit before writing anything; r2 did the slice. Accepted as defects fixed within scope:
+      eight pay_tables.py repairs the generator found; paystub_split counts a net pay label alone on its line; normalize
+      stores a pay stub's summary taxes and deductions as magnitudes (all pay stubs, not only engine ones: a negative
+      total broke gross - taxes - deductions = net). Engine repairs 1-8 have no dedicated unit tests (covered by the
+      generated cases). Combinations the generator avoids (handoff E2) go to docs/open-work.md in SL-09.
+  - id: SL-09
+    status: done
+    start_head: 203b7c8
+    end_head: 12951d4
+    commit: 936a649, 800ec68, d58fce2
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_evals.py -q -> 27 passed (orchestrator rerun)"
+      - ".venv/bin/python -m evals.synthetic <tmp> -> \"Synthetic corpus with 53 cases\" (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_generator.py -k probe -q -> 4 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals scripts -> the 2 pre-existing errors only"
+    notes: >-
+      r1 stopped on a Claude rate limit after committing the evals; r2 verified them, finished the probe and wrote the
+      docs (open-work leftovers recorded).
+final_verification:
+  head: 12951d4
+  commands:
+    - command: ".venv/bin/python -m pytest -q"
+      exit_code: 1
+      result: "2963 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (32m53s)"
+    - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_table_engine_browser.py tests/test_document_v2_browser.py tests/test_statement_accounts_browser.py -q"
+      exit_code: 0
+      result: "23 passed"
+  baseline_check: >-
+    All 74 failing ids (54 failed, 20 errors) are in 11 files: test_agent_instance, test_agent_findings, test_agent_guards
+    (Windows-only socket.SO_EXCLUSIVEADDRUSE on this Linux machine), test_engine_worksheets, test_tax_engines,
+    test_traces, test_tax_year, test_tax_zen, test_tax_family, test_scenarios, test_cpa_pack. Running exactly those files
+    at the pre-feature commit 44f40b0 (separate worktree, its own src on PYTHONPATH) gives the identical 74 failing ids
+    (54 failed, 20 errors): no failure is introduced by this feature.
+  verdict: "pass (no new failures; pre-existing failures recorded)"
