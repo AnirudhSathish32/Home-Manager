@@ -773,6 +773,115 @@ evidence (Extract again on an unchanged reading changes nothing).
   `document: {id, page, lines, cells}`: the document, the row's page, its line ids, and the words or table cells to
   highlight. A trace's **Open source** link for such a row adds them to `?lines=`, and the document page lights them.
 
+### Pay stub rows from the printed columns
+
+Code: `documents/pay_tables.py` (tables, rows, totals, blocks, the summary box, unplaced lines), `finance/paystub_tables.py` (which
+tables are pay tables, what each column is, the guesses, and the cells Record reads), `documents/extraction.py` (`anchor_paystub`,
+`guess_groups`, `pay_tables_for_viewer`), `documents/layout_context.py`. Like the statement engine it reads the saved reading's
+words and their positions, with no model and no network; the same input gives the same tables, roles, guesses and evidence.
+
+- **Which pages.** Every `embedded_text` page of a pay stub PDF that holds a pay table takes its amounts from the engine. A
+  page with no pay table, a reading saved without layout, a scanned or photographed stub and a page whose tables the engine
+  does not trust (a page with a pay table none of whose columns is this period, year to date, hours or rate) keep today's path
+  (the reader's printed tables if any, else flat text with the column checks in [money](money.md#money-in-and-paystubs)). A
+  text page without a pay table adds the note "Page N: no pay table was found in the printed columns, so its amounts are the
+  reading's; check them." If the engine raises, the whole stub takes today's path with the note "The pay table couldn't be read
+  from the printed columns, so the reading's amounts were used; check them." (logged by class, never with document text).
+  Readings made before extraction version `typed-extraction-v35-paystub-engine` are read again on **Extract again**; a stub you
+  confirmed or rejected is not rewritten.
+- **Rows.** A row is a label followed by amounts, found by alignment alone; no date or heading is needed. A bare integer
+  (`SECTION 125`, and so whole-number hours such as `80`) and a number joined to letters (`401K`, `403(b)`) are label text, never amounts.
+  Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines), only label
+  them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
+  a row joins that row's label (a wrapped label). A different column set starts a table of its own (stacked Earnings / Taxes /
+  Deductions tables), and a table continues over later pages at the page's offset, with or without a repeated heading. A page
+  holding two tables next to each other (earnings left, taxes and deductions right) is read as two blocks, each row holding
+  only its own block's words. Totals lines (Gross Pay, Total Earnings, Total Taxes, Total Deductions, Net Pay, also lettered)
+  are totals with a value per column, not pay lines; a table ends after its net pay.
+- **Pay tables and others.** A table is a pay table when a column of it is a pay column (below), its headings name this
+  period or year to date, or it sits beside a pay table. Direct-deposit and leave-balance tables are other tables: their rows
+  are no pay lines.
+- **What each column is** (from the printed numbers; the model decides nothing). In order: hours × rate equals a third column
+  (that column is this period, the hours column hours, the rate column rate); a column whose printed section totals each equal
+  the rows they cover is a pay column; of two pay columns, this period is the one never larger in magnitude (rows with a
+  negative amount and totals don't vote); headings break any tie and are the only guide when nothing else decides; one pay
+  column with no heading is this period. Any other column (year-to-date hours, an employer-cost column that fails the totals)
+  is `other` and never money. When the numbers decide against the headings, the numbers win. When they cannot decide (two
+  pay columns, no voting row, no heading), the column smaller on more rows is this period, and on a tie the left one.
+- **The summary box.** A small table printed across the stub, two rows (this period, year to date) and at least four amount
+  columns, where the largest amount on each row is the sum of three others, is a summary box and not a table. Its columns are
+  gross, taxes, deductions and net by their heading words where printed (they must agree with the sums), else by the sums
+  (net is the largest of the other three on the this-period row), and taxes before deductions when nothing else says.
+- **Where the totals come from.** Gross, net, taxes and deductions are the pay table's totals line in the matching column
+  when exactly one is printed; else the summary box; else the model's value with today's checks. When a totals line and the
+  box print different amounts, the one the pay lines add up to is kept, with a note. A single combined deductions total still
+  never fills pre-tax deductions.
+- **What the model does.** It classifies each pay line (group, category) and cites its row; every this-period, year-to-date,
+  hours and rate value is copied from that row's cell in its column. A blank cell stays blank. An engine row that no model
+  line cites is still recorded, in the group of its section title, else the group under which the stub's totals hold, else the
+  group of the line next to it.
+- **Guesses are notes.** Wherever the engine or Record has to choose it picks its best choice, writes it down and says so; a
+  guess is never a review reason. The kinds (`details.guesses` on the record, each with the page, the table and the note text):
+  `headings_overruled` (the numbers decided against the headings), `columns_guessed` (the numbers could not tell the two
+  columns apart), `group_guessed` (an unclassified row's group), `box_columns_guessed` (the summary box's taxes and
+  deductions told by order) and `split_changed` ([below](#several-pay-stubs-in-one-file)). The note texts are also in
+  `details.notes`, shown under the stub's fields. The evals count every guess and how often it was right
+  ([evals](evals.md#the-two-table-readers)).
+- **Review.** Today's checks run on the copied values, unchanged: earnings against gross, gross less deductions and taxes
+  against net, per column; hours × rate; the guards of [money](money.md#money-in-and-paystubs). A stub goes to review from
+  this feature only when its printed numbers still do not add up after the best guesses. Notes, not review reasons: a printed
+  section total its rows do not add up to ("Page P: the printed total "…" … doesn't match the lines above it, which add up to
+  …"), and an **unplaced line** (a label and an amount that is no row, total, heading, summary box line or other-table row:
+  "Page P: a printed line wasn't placed in any column, so it wasn't recorded: "…"").
+- **Evidence.** Every copied value cites its printed words (or its native cell when the row is one native row), and a pay
+  line's row label and column heading cite the label's and the heading's words (a wrapped label cites every line). The
+  document page lights them. The Tables tab of a stub the engine read shows the engine's tables and summary box with each
+  column's role and the guesses beside the table ([ui](ui.md#observability-components)).
+- **Checking it on a real stub.** `python scripts/statement_diagnose.py "<pay stub PDF>" paystub` prints the engine's shapes
+  and counts only (columns and their roles, how roles were decided, rows, totals, blocks, summary boxes, unplaced lines, guesses
+  by kind, how many stubs the file splits into), never a heading word, label, amount, date or employer, so its output can be
+  pasted anywhere.
+
+### Several pay stubs in one file
+
+Code: `documents/paystub_split.py` (`stub_parts`), `documents/extraction.py` (`ExtractionService.segments`, `split`,
+`set_split`, `confirm_split`), `finance/ledger.py` (`publish_income`, `retire_segments`), migration 077.
+A file such as a year of stubs in one PDF is recorded as one pay stub each.
+
+- **Finding the stubs (no model).** The rule reads the transcribed lines only, so it works on text PDFs, scans and photos.
+  A stub starts at a line with a pay date label (pay date, check date, payment date, pay period, period ending) and a date. A
+  start opens a new stub only after the open stub has printed its net pay (a net pay label and an amount, or the label alone
+  on its line): a stub prints both a pay date and a pay period, and a later page repeats its heading, so those continue the
+  stub. Each stub's first line then moves up over its employer heading lines (at most four, on the same page, never past
+  the previous stub's net pay). A part left without a net pay line joins the stub before it (the first joins the next). If the
+  rule raises, the file is read as one stub with the note "Where each pay stub starts couldn't be read, so the file was read as
+  one." A part the model classifies as something other than a pay stub makes the file read as one document, as for receipts.
+- **Each stub is a record of its own** (`income_records.segment`, unique with the file, migration 077: every earlier record
+  became segment 0, unchanged). Each part is read on its own lines (the engine on text pages), checked, matched to its own
+  deposit, counted as money in on its own pay date, and has its own review status. Extract again on an unchanged reading
+  gives the same records, line ids and notes.
+- **No review for the split.** Unlike receipts, a split pay stub does not wait in Review: it carries the record note "Split from
+  a file holding several pay stubs", which is not a review reason. The document page offers **Confirm split** (drops the note),
+  **Merge with next** and **Split here** as for receipts; your own split wins on later readings and the file is recorded
+  again. The split panel names the stubs (employer · pay date · net pay). When you change where the stubs start, the
+  next reading adds a `split_changed` guess note to each stub ("You changed where the pay stubs in this file start; the file
+  was read with your split.").
+- **A stub a later reading no longer finds** stops counting (it is restored if found again), with the note "… no longer finds
+  this pay stub; check how the file was split." A stub you decided keeps your decision and gets the same note.
+- **VOID stubs.** A stub with a line whose whole text is VOID (case-insensitive, `*` and `-` around it allowed; a VOID inside a
+  sentence does not count) is recorded with the note "This pay stub is printed VOID, so it doesn't count." and is rejected
+  automatically, so it counts nowhere; a stub you decided is left alone.
+- **Duplicates.** A stub with the same employer, pay date, net pay and currency as another stub that counts (in this file or
+  another) is recorded with its lines, noted "This pay stub repeats the one paid by …, so it doesn't count." and rejected
+  automatically; the first recorded stub counts. If the first is rejected, the duplicate counts on its next Extract again.
+  Only exact duplicates stop counting: the same employer and pay date with another net pay (a reissued stub) counts, and the
+  later one carries the note "Another pay stub from … has the same pay date."
+- **In the library** the file has no single amount, its date is the earliest non-rejected stub's pay date, and it is filed
+  under the first stub's employer and pay date (a file with one non-rejected stub shows that stub's amount). The file's
+  shown reconciliation status is the worst of its stubs'; a stub with no deposit has none. A file whose only pay stub is
+  rejected shows no library amount, as receipts. Tax tables are looked up for the tax year of every stub.
+  Donating a file with several pay stubs is not supported.
+
 ### Model runs, queues and cancellation
 
 - **Telemetry** (`model_runs`, migration 010). Every model request records:

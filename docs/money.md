@@ -170,6 +170,18 @@ invoice charge, never a smaller remaining balance; matching deposits plus multip
 
 ## Money in and paystubs
 
+**A text-PDF pay stub takes its amounts from the printed columns, not from the model** (`documents/pay_tables.py`,
+`finance/paystub_tables.py`; [documents](documents.md#pay-stub-rows-from-the-printed-columns)). The model classifies each
+pay line and cites its row; every this-period, year-to-date, hours and rate value is copied from that row's cell in the
+column the printed numbers say it is, and gross, net, taxes and deductions come from the stub's totals line, else its summary
+box, else the model with the checks below. Where the engine has to choose (which column is this period, which group an
+unclassified line is in, which summary value to trust) it guesses, writes the choice down and adds a note to the record; a
+guess is never a review reason. A stub needs review from the engine only when its printed numbers still don't add up after the
+best guess. A pay stub's summary taxes and deductions are stored as magnitudes however printed (`(501.23)` or `-501.23`), as its
+lines are. A VOID stub and an exact duplicate of another stub (same employer, pay date, net pay and currency) are recorded
+with a note but don't count; a stub with the same employer and pay date and another net pay does
+([documents](documents.md#several-pay-stubs-in-one-file)). Pages with no pay table, scans and photos keep the path below.
+
 For new readings, a pay stub's reported table cells carry source line and cell IDs. The reasoning model classifies
 earning and deduction rows; code maps the copied Current/This period and YTD/Year to date headings, then copies each
 amount from its named cell. A blank current cell stays blank even when YTD has a value. Conflicting headings, or a

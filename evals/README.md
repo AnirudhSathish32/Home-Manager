@@ -10,7 +10,7 @@ Tests of how well Home Manager's local models do their jobs, for choosing betwee
 ## Try it on synthetic documents first
 
 ```powershell
-python -m evals.synthetic .runtime\synthetic-corpus            # 48 made-up documents with known answers
+python -m evals.synthetic .runtime\synthetic-corpus            # 53 made-up documents with known answers
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml --dry-run
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml
 ```
@@ -194,7 +194,7 @@ Calibration:
 ## Tests
 
 These cover the suites and the app's donation export, using synthetic data only:
-- `tests/test_evals.py`: the documents suite, including the synthetic corpus (48 cases, the four `aligned` statements added after the others) and the old reader against the table engine (`-k table_engine`);
+- `tests/test_evals.py`: the documents suite, including the synthetic corpus (53 cases, the four `aligned` statements and then the five `aligned` pay stub files added after the others) and the old reader against the table engine (`-k table_engine`);
 - `tests/test_eval_tasks.py`: the task suite, the decision rule and the judge;
 - `tests/test_donations.py`: the donation export.
 

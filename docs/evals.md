@@ -109,7 +109,7 @@ in `tests/test_layout_consumers.py`. No configured-model or private-corpus accur
   retries, so first-try validity is measured.
 - **Two suites** (`evals/`, flat layout):
   - **Documents suite** (`python -m evals.run`): whole documents end to end through the real pipeline. It runs on the
-    48-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
+    53-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
     exchange printed without minus signs) have negative answers, so they measure `return_marker`, `returned` and the
     sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out. Its two bills (a
     family phone plan read per line with a past-due balance, and rent with water and trash) measure the provider, dates,
@@ -208,6 +208,38 @@ removed once the engine is shown to do at least as well on the donated corpus ([
   Payments and Purchases sections. They come after the other 44 documents, whose ids and answers are unchanged (a test
   pins them). The other three PDF statements of the corpus (70, 300 and 60 rows) are one line of flowed text per row,
   with no columns: neither reader finds a table in them, so Record takes the model's rows there.
+
+**Pay stubs.** The same comparison runs on text-PDF pay stubs (`evals/run.py`, `evals/graders.py pay_reader`; no model, no network),
+with the **legacy** reader (the reader's `table_grid` tables with the paystub-columns checks) against the **engine**
+(`finance/paystub_tables.read`, [documents](documents.md#pay-stub-rows-from-the-printed-columns)).
+- **What is compared.** Every native-PDF pay stub file. Each answer line is matched by its label (case and spacing
+  ignored) and its this-period and year-to-date values are looked up in what each reader placed.
+- **Per reader**, in `results.jsonl` and `summary.json` as `pay_readers: {legacy, engine}`: `documents` (pay stub files), `stubs`,
+  `values` (the answers' this-period and year-to-date values; a blank cell is no value), `exact` (placed with the right value),
+  `left_out` (answer values the reader placed nowhere), `checkable` and `checks_held` (stubs with a printed gross and net whose
+  placed this-period values all exist and add up to them), `to_review` (stubs sent to review), `split_right` (files whose parts
+  are the answer's stubs, each holding its stub's net pay; the legacy reader always makes one part), `unplaced` (printed lines
+  the engine found no column for; null for the legacy reader, which names none) and `failed` (the reader raised), with
+  `exact_share` and `checks_share`. The engine's `to_review` is the pipeline's own records' review status. The legacy reader has
+  no run of its own, so its stand-in is `left_out > 0`: a stub that lost a value would have been sent to review. It is a proxy, not
+  a measurement; the report marks it "(stand-in)". Fewer than 3 pay stub files are suppressed like any other cell.
+- **Split files.** A pay stub file holding several stubs is graded per stub, in order, against the case's `stubs`; a count that differs
+  from the answer's is a split miss.
+- **Guess counts.** `summary.json` also holds `guesses: {kind: {made, right}}` from the engine's records, counts only, for the kinds in
+  [documents](documents.md#pay-stub-rows-from-the-printed-columns). A guess is right when the values it chose equal the answers'. On the
+  synthetic corpus every guess is right. Run on the donated corpus, the counts say which kind of guess to improve next.
+- **The gate for today's pay stub path.** The engine should be at least the legacy reader on `exact`, `checks_held` and `split_right`
+  (and not worse on `to_review`) before today's path is removed ([open work](open-work.md#pdf-table-engine)); you run that on your corpus in your own terminal.
+- **The aligned pay stubs.** The synthetic corpus has five text-PDF pay stub files, tag `aligned`, drawn by the pay stub layout generator
+  (`evals/paystub_layouts.py`) from fixed choices (`random.Random(SEED + 2)`), so their answers come from the generator's inputs: one
+  table with Hours / Rate / Current / YTD; stacked sections with no headings; side-by-side blocks with a summary box; two-line
+  headings with a year-to-date-only row; and a file of three stubs. They come after the other 48 documents, whose ids and answers
+  are unchanged (a test pins them).
+- **The generator.** `evals/paystub_layouts.py make(seed, index)` draws one pay stub file's pages and per-stub answers from its inputs
+  alone, varying the layouts the spec lists (tables, blocks, summary box, hours and rate, column order, headings, YTD, retro and negative
+  lines, label digits, deductions' signs, totals, employer-cost column, wrapped labels, pages, deposit and leave tables, one to four
+  stubs a file). `tests/test_paystub_engine_generator.py` records 120 files of the fixed seed through the real services (`local_model`
+  stubs) and reads 120 more with the engine alone for seeds 1 to 3; it takes about 3.5 minutes.
 
 ## Donating documents
 

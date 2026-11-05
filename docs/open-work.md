@@ -132,7 +132,10 @@ and link here for what isn't. When an item is built, remove it from this list an
 ## PDF table engine
 
 The engine reads bank and card statements from their printed columns, in Record and in PDF import (phase 1,
-`specs/pdf-table-engine`; built: [documents](documents.md#statement-rows-from-the-printed-columns), [evals](evals.md#the-two-table-readers)).
+`specs/pdf-table-engine`; built: [documents](documents.md#statement-rows-from-the-printed-columns), [evals](evals.md#the-two-table-readers)),
+and text-PDF pay stubs, with several stubs in one file split into their own records (phase 2, `specs/pdf-table-engine-paystubs`;
+built: [documents](documents.md#pay-stub-rows-from-the-printed-columns), [documents](documents.md#several-pay-stubs-in-one-file),
+[money](money.md#money-in-and-paystubs), [evals](evals.md#the-two-table-readers)).
 What is not built:
 - **Remove the old statement path** (spec D4). The old reader (`pdf_import.analyze_legacy`, `finance/statement_rows.py`
   with its `Reading`, `heading_row`, `cut_at` and `rebuilt_pages`) stays only so the evals can compare it with the engine.
@@ -145,9 +148,7 @@ What is not built:
 - **Accuracy on real statements is unmeasured.** The engine is proved on synthetic statements (the layout generator's
   200 seeded cases, the four `aligned` eval cases). `scripts/statement_diagnose.py` prints a statement's shapes and counts, never
   its text, for you to run on your own PDFs.
-- **The next document kinds** (spec FR-40 – FR-44, each needs its own approved spec and test contract first, OD-5):
-  - **FR-40 pay stubs:** earnings, taxes and deductions tables from the engine, with Current and YTD decided by
-    earnings − taxes − deductions = net pay in each; hours and rates are never pay.
+- **The next document kinds** (phase 1 spec FR-41 – FR-44; FR-40, pay stubs, is built as phase 2; each needs its own approved spec and test contract first, OD-5):
   - **FR-41 bills:** charge lines from the engine; their sum is the amount due, and previous balance − payments + new
     charges = balance where printed.
   - **FR-42 text-PDF receipts:** item lines from the engine; quantity × unit price = line total, lines sum to the
@@ -156,6 +157,33 @@ What is not built:
     total.
   - **FR-44 the reader's own table finder:** `pdf_layout.table_grid`, which needs a heading, is replaced by the engine for
     every consumer (layout context, native anchoring, the document page's cell highlights) once every kind has switched.
+- **Pay stubs (phase 2, `specs/pdf-table-engine-paystubs`): what is left.**
+  - **Remove today's text-PDF pay stub path** (spec D5): the printed-table cells plus the paystub-columns checks, kept for the
+    evals' comparison and as the fallback for pages with no pay table, pages the engine does not trust, and an engine fault
+    (the notes "no pay table was found…" and "couldn't be read from the printed columns…"). Remove it after you run
+    `python -m evals.run` on your donated corpus in your own terminal and report that the engine is at least as good as the
+    legacy reader in `pay_readers` (`exact`, `checks_held`, `split_right`; the legacy reader's `to_review` is a stand-in) and
+    that its `guesses` counts are acceptable. `scripts/statement_diagnose.py <pdf> paystub` prints a stub's shapes and counts
+    for a stub that reads badly. Accuracy on real stubs is unmeasured; it is proved on the generator's seeded files and the
+    five `aligned` eval files.
+  - **Whole-number hours.** A bare integer (`80`) is label text (FR-51), so the engine cannot see hours printed without
+    decimals, and such stubs keep today's path for hours (the sectioned payslip fixture, whose page the engine does not trust, is one).
+  - **Layouts the generator avoids** (SL-08 handoff E2), each a real ambiguity a stub could hit, ending in a guess or a wrong
+    column and never an invented number: a table of rows all printed negative with year to date left of this period and no
+    heading; a page break placed at the top of a stacked layout's second table (a table starting a page within 80 pt of the open
+    table's columns is read as its continuation); a headless stub with hours on one row only; a one-column table with a
+    two-line heading; hours equal to the stub's year-to-date multiple; leave-table columns lined up with an amount column
+    (alignment groups merge columns of different tables).
+  - **Engine repairs without a unit test of their own.** The generator found eight in `documents/pay_tables.py` (a summary box
+    above side-by-side blocks, a repeated stub heading on a later page, a start line ending an empty block's table, a second
+    table with the same heading words, a partner table beside several tables, two heading phrases printed close together, a
+    text-only line of several runs, a continuation's column at another alignment). Each is pinned only by the generated cases
+    in `tests/test_paystub_engine_generator.py`, not individually by reverting.
+  - **Pay stub split edge cases.** A file whose only pay stub is rejected (VOID, or a duplicate) shows no library amount, as
+    receipts do. A reissued stub with a different net pay counts (only exact duplicates stop counting). A merged part holding
+    two stubs' lines (a merge of two stubs by the user) reads them as one record; its values are not asserted.
+  - **`tests/test_tax_engines.py` has 8 failures** that also fail at the commit before this feature (44f40b0); they are not this
+    feature's.
 - **Two accounts in one layout** (test contract G10). A combined checking-and-savings statement whose accounts print
   the same columns is one table: its rows are recorded and the second account's first balance shows as a chain break
   ("the balance … doesn't follow from the row above"), not as the "may hold more than one account" issue, which is for
