@@ -16,8 +16,20 @@ slices:
     notes: >-
       Eight tests, each revert-and-fail recorded in the handoff; revert 8 emulates the pre-02026cf offset_of/frame code.
   - id: SL-02
-    status: in_progress
-    start_head: 2f34ece
+    status: blocked
+    start_head: 40423ef
+    end_head: 86534c5
+    commit: 83d7dfe
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py -q -> 913 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_layout_consumers.py -q -> 2 failed, 15 passed (orchestrator rerun)"
+    blocked_on: >-
+      E-1: test_layout_consumers.py::test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separators and
+      ::test_a_pay_row_listed_again_is_one_pay_line fail (engine now reads page 1, rows the model stub does not classify are
+      recorded as unclassified rows, phase 2 FR-62). SC-94 requires the file to pass unchanged; needs a test-contract change
+      approved by the user.
   - id: SL-03
     status: todo
   - id: SL-04
