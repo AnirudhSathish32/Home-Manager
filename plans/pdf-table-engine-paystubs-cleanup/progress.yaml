@@ -51,8 +51,23 @@ slices:
       ~0.75 font sizes starts a new table. (f) failing case was generator case 52; rule cuts a block per table (after a totals
       line followed by a heading, and at a stub start after pay rows) before clustering, applied to every layout.
   - id: SL-04
-    status: in_progress
-    start_head: 38d55d9
+    status: done
+    start_head: 3e1f752
+    end_head: 14a4697
+    commit: 74feadf
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_paystub_engine_record.py tests/test_paystub_split.py tests/test_layout_consumers.py tests/test_paystub_forms.py tests/test_vision_tables.py tests/test_extraction.py -q -> 198 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine_generator.py -k probe -q -> 4 passed (orchestrator rerun)"
+      - ".venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only"
+      - "grep fallback_pages in src scripts evals tests docs -> none"
+    notes: >-
+      Existing tests edited: SC-63 test (per SC-93) and one assertion of SL-02's rewritten record test (fallback_pages ->
+      untrusted_pages). For review: PAY_FAILED printed_columns applies only while the part is still classified paystub; an
+      untrusted page holding a summary box stays in `pages` and so gets no FR-64 missing-table note (no fixture);
+      test_sc65 docstring still says "today's path" (not on SC-94's edit list).
   - id: SL-05
-    status: todo
+    status: in_progress
+    start_head: 14a4697
 final_verification: null
