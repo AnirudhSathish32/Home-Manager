@@ -1,7 +1,8 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: pdf-table-engine-paystubs-cleanup
-plan_sha256: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14
-session_plan_hash: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14
+plan_sha256: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
+previous_plan_sha256: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14  # re-approved 2026-11-07 after SC-94 amendment (SL-02 E-1)
+session_plan_hash: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
 slices:
   - id: SL-01
     status: done
@@ -16,7 +17,7 @@ slices:
     notes: >-
       Eight tests, each revert-and-fail recorded in the handoff; revert 8 emulates the pre-02026cf offset_of/frame code.
   - id: SL-02
-    status: blocked
+    status: in_progress
     start_head: 40423ef
     end_head: 86534c5
     commit: 83d7dfe
