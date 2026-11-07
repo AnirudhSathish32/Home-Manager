@@ -180,7 +180,9 @@ guess is never a review reason. A stub needs review from the engine only when it
 best guess. A pay stub's summary taxes and deductions are stored as magnitudes however printed (`(501.23)` or `-501.23`), as its
 lines are. A VOID stub and an exact duplicate of another stub (same employer, pay date, net pay and currency) are recorded
 with a note but don't count; a stub with the same employer and pay date and another net pay does
-([documents](documents.md#several-pay-stubs-in-one-file)). Pages with no pay table, scans and photos keep the path below.
+([documents](documents.md#several-pay-stubs-in-one-file)). A text-PDF stub has this one path: a page with no pay table, a page the
+engine does not trust and a stub the engine could not read (the engine raised) are read like flat text, by the path below, with the
+reader's printed tables no longer used. Scans and photos keep the vision tables and the path below.
 
 For new readings, a pay stub's reported table cells carry source line and cell IDs. The reasoning model classifies
 earning and deduction rows; code maps the copied Current/This period and YTD/Year to date headings, then copies each
@@ -192,7 +194,8 @@ gives the right value). The vision model's placement is still
 unverified against image pixels, so this contract is being evaluated before relying on it as a default accuracy guarantee.
 
 **A stub with no validated table is read like flat text** (`documents/extraction.py` `read`, `column_checks`). That
-covers photos and scans whose vision reading found no table, and text PDFs where no table could be rebuilt. Stubs
+covers photos and scans whose vision reading found no table, and a page of a text PDF that has no pay table, whose pay tables the
+engine does not trust, or all pages when the engine raised (the notes are in [documents](documents.md#pay-stub-rows-from-the-printed-columns)). Stubs
 transcribed with `|` separators rebuild a table and keep the cell path above. On these stubs:
 - **Values are kept as the model read them** when each is printed in its cited line, including a line that prints this
   period beside year to date. The guards below then judge them.

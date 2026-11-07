@@ -26,7 +26,7 @@ import tomllib
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.core.money import MoneyError, to_minor
-from home_manager.documents.extraction import EXTRACTION_VERSION, cell_amount, line_amounts, paystub_columns, reported_tables
+from home_manager.documents.extraction import EXTRACTION_VERSION, cell_amount, line_amounts, paystub_columns
 from home_manager.documents.layout_context import evidence_lines
 from home_manager.documents.paystub_split import stub_parts
 from home_manager.documents.pdf_reader import PDFResult, read_result
@@ -217,10 +217,9 @@ def pay_rows(tables, currency):
 
 
 def pay_readers(case, stubs, evidence):
-    """docs/evals.md "The two table readers": for a native-PDF pay stub whose pay lines the donor confirmed complete, today's reader (the printed
-    tables of `table_grid`, whose this-period and year-to-date columns `paystub_columns` finds from their headings) and the pay engine
-    (`paystub_tables.read`, whose columns are decided from the printed numbers) each read the saved reading, with no model. The engine's file split
-    (`paystub_split.stub_parts`) is the rule Record uses; today's reader makes one part of the file. None when the case is not such a pay stub."""
+    """docs/evals.md "The two table readers": for a native-PDF pay stub whose pay lines the donor confirmed complete, the pay engine
+    (`paystub_tables.read`, whose columns are decided from the printed numbers) reads the saved reading, with no model. Its file split
+    (`paystub_split.stub_parts`) is the rule Record uses. None when the case is not such a pay stub."""
     if (case.info.document_type != "paystub" or case.info.source_kind != "native_pdf" or not isinstance(evidence, PDFResult)
             or any(not answers.rows_complete or answers.rows is None for answers in stubs)):
         return None
@@ -229,23 +228,16 @@ def pay_readers(case, stubs, evidence):
     lines = [line for line in evidence_lines(evidence) if line.text.strip()]
     def printed(first, last):
         return {minor(amount, currency) for line in lines[first:last] for amount in line_amounts(line.text)}
-    out = {}
-    for reader in ("legacy", "engine"):
-        unplaced = None
+    try:
+        pay = paystub_tables.read(evidence)
+        rows, unplaced = pay_rows(pay.adapted, currency), len(pay.unplaced)
         try:
-            if reader == "legacy":
-                rows, right = pay_rows(reported_tables(evidence), currency), split_is_right(stubs, [printed(0, len(lines))])
-            else:
-                pay = paystub_tables.read(evidence)
-                rows, unplaced = pay_rows(pay.adapted, currency), len(pay.unplaced)
-                try:
-                    right = split_is_right(stubs, [printed(first, last) for first, last in stub_parts(lines)])
-                except Exception:  # A split that raises is a split missed, not a stop.
-                    right = False
-            out[reader] = pay_reader(stubs, rows, right, unplaced)
-        except Exception:  # A reader that raises placed nothing; that is a result, not a stop.
-            out[reader] = pay_reader(stubs, [], False, failed=True)
-    return out
+            right = split_is_right(stubs, [printed(first, last) for first, last in stub_parts(lines)])
+        except Exception:  # A split that raises is a split missed, not a stop.
+            right = False
+        return {"engine": pay_reader(stubs, rows, right, unplaced)}
+    except Exception:  # An engine that raises placed nothing; that is a result, not a stop.
+        return {"engine": pay_reader(stubs, [], False, failed=True)}
 
 
 def review_count(publication):
@@ -326,7 +318,7 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
             details["predicted_type"] = (result.get("classification") or {}).get("document_type")
             paystub = case.info.document_type == "paystub"
             if paystub and pay:
-                pay["engine"]["to_review"] = review_count(extraction.get("publication"))  # Today's reader makes no record: its stand-in is left_out_stubs.
+                pay["engine"]["to_review"] = review_count(extraction.get("publication"))  
             if result.get("segments"):  # A pay stub file is graded stub by stub (grade_case); any other split document by its first part.
                 records = [(segment or {}).get("normalized") for segment in result["segments"]]
                 return "split", records if paystub else records[0], details

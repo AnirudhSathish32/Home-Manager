@@ -207,29 +207,28 @@ def label_key(text):
 
 
 def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
-    """How one reader did on a text-PDF pay stub file (specs/pdf-table-engine-paystubs FR-71). `stubs` is the answers of each pay stub in file
-    order (Case.stubs); `rows` is what the reader placed, in the order printed: (label, this period, year to date) in minor units, a value None
-    where the reader had no cell for it; `split_right` is whether the reader's parts are the file's stubs (`split_is_right`). Counts only, no values.
+    """How the pay engine did on a text-PDF pay stub file (specs/pdf-table-engine-paystubs FR-71). `stubs` is the answers of each pay stub in file
+    order (Case.stubs); `rows` is what the engine placed, in the order printed: (label, this period, year to date) in minor units, a value None
+    where it had no cell for it; `split_right` is whether its parts are the file's stubs (`split_is_right`). Counts only, no values.
 
-    Each answer line (in file order) takes the first unused reader row with the same label, ignoring case and spacing; taxes and deductions are
+    Each answer line (in file order) takes the first unused row with the same label, ignoring case and spacing; taxes and deductions are
     compared by magnitude, as the answers keep them.
 
     stubs      pay stubs the file holds (the answers)
     values     the answers' this-period and year-to-date values (a blank cell is no value)
-    exact      values the reader placed exactly right
-    left_out   values the reader placed nowhere: no row with the label, or no value in its cell
+    exact      values the engine placed exactly right
+    left_out   values the engine placed nowhere: no row with the label, or no value in its cell
     checkable  stubs whose answers include gross and net pay, so their lines can be added up
     checks_held checkable stubs whose every this-period value was placed and add up to the answers' gross and net pay
-    left_out_stubs stubs with a value left out: what the old reader, which makes no record of its own to judge, stands in with for "sent to review"
-    unplaced   printed lines the engine found no column for and listed (None for the old reader, which names none)
-    split_right 1 when the reader made as many parts as the file has stubs, each holding its stub's net pay amount; else 0
-    failed     the reader raised, so it placed nothing
+    unplaced   printed lines the engine found no column for and listed
+    split_right 1 when the engine made as many parts as the file has stubs, each holding its stub's net pay amount; else 0
+    failed     the engine raised, so it placed nothing
     """
     unused = [] if failed else list(rows)
-    out = {"stubs": len(stubs), "values": 0, "exact": 0, "left_out": 0, "checkable": 0, "checks_held": 0, "left_out_stubs": 0, "unplaced": unplaced,
+    out = {"stubs": len(stubs), "values": 0, "exact": 0, "left_out": 0, "checkable": 0, "checks_held": 0, "unplaced": unplaced,
            "split_right": int(bool(split_right) and not failed), "failed": failed}
     for answers in stubs:
-        sums, complete, stub_left = {"gross": Decimal(0), "taken": Decimal(0)}, True, 0
+        sums, complete = {"gross": Decimal(0), "taken": Decimal(0)}, True
         for line in answers.rows or []:
             found = next((row for row in unused if label_key(row[0]) == label_key(line["description"])), None)
             if found is not None:
@@ -243,7 +242,6 @@ def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
                 out["values"] += 1
                 if got is None:
                     out["left_out"] += 1
-                    stub_left += 1
                     if column == "current":
                         complete = False
                 else:
@@ -257,7 +255,6 @@ def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
         if isinstance(gross, int) and isinstance(net, int):
             out["checkable"] += 1
             out["checks_held"] += complete and sums["gross"] == gross and sums["gross"] - sums["taken"] == net
-        out["left_out_stubs"] += stub_left > 0
     return out
 
 

@@ -157,28 +157,16 @@ What is not built:
     total.
   - **FR-44 the reader's own table finder:** `pdf_layout.table_grid`, which needs a heading, is replaced by the engine for
     every consumer (layout context, native anchoring, the document page's cell highlights) once every kind has switched.
-- **Pay stubs (phase 2, `specs/pdf-table-engine-paystubs`): what is left.**
-  - **Remove today's text-PDF pay stub path** (spec D5): the printed-table cells plus the paystub-columns checks, kept for the
-    evals' comparison and as the fallback for pages with no pay table, pages the engine does not trust, and an engine fault
-    (the notes "no pay table was found…" and "couldn't be read from the printed columns…"). Remove it after you run
-    `python -m evals.run` on your donated corpus in your own terminal and report that the engine is at least as good as the
-    legacy reader in `pay_readers` (`exact`, `checks_held`, `split_right`; the legacy reader's `to_review` is a stand-in) and
-    that its `guesses` counts are acceptable. `scripts/statement_diagnose.py <pdf> paystub` prints a stub's shapes and counts
-    for a stub that reads badly. Accuracy on real stubs is unmeasured; it is proved on the generator's seeded files and the
-    five `aligned` eval files.
-  - **Whole-number hours.** A bare integer (`80`) is label text (FR-51), so the engine cannot see hours printed without
-    decimals, and such stubs keep today's path for hours (the sectioned payslip fixture, whose page the engine does not trust, is one).
-  - **Layouts the generator avoids** (SL-08 handoff E2), each a real ambiguity a stub could hit, ending in a guess or a wrong
-    column and never an invented number: a table of rows all printed negative with year to date left of this period and no
-    heading; a page break placed at the top of a stacked layout's second table (a table starting a page within 80 pt of the open
-    table's columns is read as its continuation); a headless stub with hours on one row only; a one-column table with a
-    two-line heading; hours equal to the stub's year-to-date multiple; leave-table columns lined up with an amount column
-    (alignment groups merge columns of different tables).
-  - **Engine repairs without a unit test of their own.** The generator found eight in `documents/pay_tables.py` (a summary box
-    above side-by-side blocks, a repeated stub heading on a later page, a start line ending an empty block's table, a second
-    table with the same heading words, a partner table beside several tables, two heading phrases printed close together, a
-    text-only line of several runs, a continuation's column at another alignment). Each is pinned only by the generated cases
-    in `tests/test_paystub_engine_generator.py`, not individually by reverting.
+- **Pay stubs (phases 2 and 3, `specs/pdf-table-engine-paystubs`, `specs/pdf-table-engine-paystubs-cleanup`): what is left.** The
+  text-PDF path is the engine alone; the old path, the eval comparison with it, the grid fallback and the avoided layouts a, b, d, e
+  and f are gone ([documents](documents.md#pay-stub-rows-from-the-printed-columns), [evals](evals.md#the-two-table-readers)).
+  - **Accuracy on real stubs is unmeasured.** It is proved on the generator's seeded files, the hand-built pages of the
+    unit tests and the five `aligned` eval files. Run `python -m evals.run` on your donated corpus in your own terminal and
+    read the `pay_readers` and `guesses` counts. `scripts/statement_diagnose.py <pdf> paystub` prints a stub's shapes and
+    counts (and the pages the engine does not trust) for a stub that reads badly. A real stub that used to read right only
+    through the reader's printed tables, in a layout no fixture covers, now reads like flat text and may go to review.
+  - **Layout (c), a headless stub whose hours or rate print on one row only.** One unheaded row forms no column; the generator
+    keeps clear of it.
   - **Pay stub split edge cases.** A file whose only pay stub is rejected (VOID, or a duplicate) shows no library amount, as
     receipts do. A reissued stub with a different net pay counts (only exact duplicates stop counting). A merged part holding
     two stubs' lines (a merge of two stubs by the user) reads them as one record; its values are not asserted.

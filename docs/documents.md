@@ -780,21 +780,28 @@ tables are pay tables, what each column is, the guesses, and the cells Record re
 `guess_groups`, `pay_tables_for_viewer`), `documents/layout_context.py`. Like the statement engine it reads the saved reading's
 words and their positions, with no model and no network; the same input gives the same tables, roles, guesses and evidence.
 
-- **Which pages.** Every `embedded_text` page of a pay stub PDF that holds a pay table takes its amounts from the engine. A
-  page with no pay table, a reading saved without layout, a scanned or photographed stub and a page whose tables the engine
-  does not trust (a page with a pay table none of whose columns is this period, year to date, hours or rate) keep today's path
-  (the reader's printed tables if any, else flat text with the column checks in [money](money.md#money-in-and-paystubs)). A
-  text page without a pay table adds the note "Page N: no pay table was found in the printed columns, so its amounts are the
-  reading's; check them." If the engine raises, the whole stub takes today's path with the note "The pay table couldn't be read
-  from the printed columns, so the reading's amounts were used; check them." (logged by class, never with document text).
-  Readings made before extraction version `typed-extraction-v35-paystub-engine` are read again on **Extract again**; a stub you
-  confirmed or rejected is not rewritten.
-- **Rows.** A row is a label followed by amounts, found by alignment alone; no date or heading is needed. A bare integer
-  (`SECTION 125`, and so whole-number hours such as `80`) and a number joined to letters (`401K`, `403(b)`) are label text, never amounts.
-  Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines), only label
-  them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
+- **Which pages (one path).** Every `embedded_text` page of a pay stub PDF that holds a pay table takes its amounts from the
+  engine. Every other page of a text PDF stub is read like flat text, with the column checks in
+  [money](money.md#money-in-and-paystubs): a page with no pay table, a reading saved without layout, and a page whose tables the
+  engine does not trust (a page with a pay table none of whose columns is this period, year to date, hours or rate). The
+  reader's own printed tables (`table_grid`) are no longer used for a text-PDF pay stub: once the stub is classified, the
+  model is shown the engine's cells only, never those tables (the classification request, made before the kind is known,
+  still sees them). A scanned or photographed stub keeps the model's vision tables, on its own pages too when it is mixed
+  into a text PDF. A text page without a pay table adds the note "Page N: no pay table was found in the printed columns, so its
+  amounts are the reading's; check them." If the engine raises, every page of the stub is read like flat text with the note "The
+  pay table couldn't be read from the printed columns, so the reading's amounts were used; check them." (logged by class, never
+  with document text). Readings made before extraction version `typed-extraction-v36-paystub-one-path` are read again on
+  **Extract again**; a stub you confirmed or rejected is not rewritten.
+- **Rows.** A row is a label followed by amounts, found by alignment alone; no date or heading is needed. A number joined to
+  letters (`401K`, `403(b)`) is label text, never an amount. A whole number (`80` hours) is an amount only in a column: a line of
+  one integer starts no row, and a column of integers that no decimal column lies within 0.75 font sizes of counts when a
+  heading sits over it or two rows line up in it; one printed alone under no heading (`SECTION 125`, one row of `40`) stays
+  label text. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
+  one line of words that fall over two or more columns, such as "This Period Year To Date"), only label them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
   a row joins that row's label (a wrapped label). A different column set starts a table of its own (stacked Earnings / Taxes /
-  Deductions tables), and a table continues over later pages at the page's offset, with or without a repeated heading. A page
+  Deductions tables), and a table continues over later pages, with or without a repeated heading, only when the page's first
+  rows line up with the open table's columns at a page offset within the alignment tolerance (0.75 font sizes); a page whose
+  columns sit further off starts a table of its own. A page
   holding two tables next to each other (earnings left, taxes and deductions right) is read as two blocks, each row holding
   only its own block's words. Totals lines (Gross Pay, Total Earnings, Total Taxes, Total Deductions, Net Pay, also lettered)
   are totals with a value per column, not pay lines; a table ends after its net pay.
@@ -802,9 +809,12 @@ words and their positions, with no model and no network; the same input gives th
   period or year to date, or it sits beside a pay table. Direct-deposit and leave-balance tables are other tables: their rows
   are no pay lines.
 - **What each column is** (from the printed numbers; the model decides nothing). In order: hours × rate equals a third column
-  (that column is this period, the hours column hours, the rate column rate); a column whose printed section totals each equal
-  the rows they cover is a pay column; of two pay columns, this period is the one never larger in magnitude (rows with a
-  negative amount and totals don't vote); headings break any tie and are the only guide when nothing else decides; one pay
+  (that column is this period, the hours column hours, the rate column rate; when two such products share the hours column,
+  because the hours equal the stub's year-to-date multiple, the first triple's product is this period and the other's year to
+  date, a guess unless a heading names them); a column whose printed section totals each equal the rows they cover (the rows
+  since the previous total, or since the previous total or section title, whichever adds up) is a pay column; of two pay
+  columns, this period is the one with the smaller magnitude on more rows (a row votes when its two amounts share a sign,
+  both negative included; mixed-sign rows and totals don't vote); headings break any tie and are the only guide when nothing else decides; one pay
   column with no heading is this period. Any other column (year-to-date hours, an employer-cost column that fails the totals)
   is `other` and never money. When the numbers decide against the headings, the numbers win. When they cannot decide (two
   pay columns, no voting row, no heading), the column smaller on more rows is this period, and on a tie the left one.
@@ -839,8 +849,21 @@ words and their positions, with no model and no network; the same input gives th
   column's role and the guesses beside the table ([ui](ui.md#observability-components)).
 - **Checking it on a real stub.** `python scripts/statement_diagnose.py "<pay stub PDF>" paystub` prints the engine's shapes
   and counts only (columns and their roles, how roles were decided, rows, totals, blocks, summary boxes, unplaced lines, guesses
-  by kind, how many stubs the file splits into), never a heading word, label, amount, date or employer, so its output can be
-  pasted anywhere.
+  by kind, how many stubs the file splits into, and the pages the engine does not trust), never a heading word, label,
+  amount, date or employer, so its output can be pasted anywhere.
+- **Known limits.** Each ends in a guess or a note, never an invented number.
+  - A table continues the open table of the previous page only at a page offset within the alignment tolerance (0.75 font
+    sizes). A later page whose columns sit further off starts a table of its own, even when it is the same table printed
+    shifted; a page that starts another table within that offset is read as a continuation.
+  - A whole number printed within 1.5 font sizes after an amount in the same run (`25.00 40` in tight columns) stays inside the
+    amount's run and is not seen as a column.
+  - A headless stub whose hours or rate print on one row only has no column to form from one unheaded row.
+  - A page the engine does not trust is read like flat text: its amounts come from the model with the column checks, and a
+    summary box on such a page does not add the "no pay table" note. A stub that read right only through the reader's
+    printed tables, in a layout no fixture covers, now reads flat and may go to review. Accuracy on real stubs is unmeasured
+    ([open work](open-work.md#pdf-table-engine)).
+  - With the engine down, the column checks on the flat lines run only while the part's classification is still pay stub; a
+    part re-classified to another kind keeps the flat behaviour it had before.
 
 ### Several pay stubs in one file
 

@@ -209,27 +209,28 @@ removed once the engine is shown to do at least as well on the donated corpus ([
   pins them). The other three PDF statements of the corpus (70, 300 and 60 rows) are one line of flowed text per row,
   with no columns: neither reader finds a table in them, so Record takes the model's rows there.
 
-**Pay stubs.** The same comparison runs on text-PDF pay stubs (`evals/run.py`, `evals/graders.py pay_reader`; no model, no network),
-with the **legacy** reader (the reader's `table_grid` tables with the paystub-columns checks) against the **engine**
-(`finance/paystub_tables.read`, [documents](documents.md#pay-stub-rows-from-the-printed-columns)).
-- **What is compared.** Every native-PDF pay stub file. Each answer line is matched by its label (case and spacing
-  ignored) and its this-period and year-to-date values are looked up in what each reader placed.
-- **Per reader**, in `results.jsonl` and `summary.json` as `pay_readers: {legacy, engine}`: `documents` (pay stub files), `stubs`,
+**Pay stubs.** Text-PDF pay stubs have one reader, the pay **engine** (`finance/paystub_tables.read`,
+[documents](documents.md#pay-stub-rows-from-the-printed-columns)), so the pay stub counts (`evals/run.py`, `evals/graders.py pay_reader`;
+no model, no network) measure it alone. The legacy pay reader (the reader's `table_grid` tables with the paystub-columns checks) was
+removed with the path it stood for; only the statement comparison above still has an old reader.
+- **What is counted.** Every native-PDF pay stub file. Each answer line is matched by its label (case and spacing
+  ignored) and its this-period and year-to-date values are looked up in what the engine placed.
+- **Counts**, in `results.jsonl` and `summary.json` as `pay_readers: {engine}` (the only key): `documents` (pay stub files), `stubs`,
   `values` (the answers' this-period and year-to-date values; a blank cell is no value), `exact` (placed with the right value),
-  `left_out` (answer values the reader placed nowhere), `checkable` and `checks_held` (stubs with a printed gross and net whose
+  `left_out` (answer values the engine placed nowhere), `checkable` and `checks_held` (stubs with a printed gross and net whose
   placed this-period values all exist and add up to them), `to_review` (stubs sent to review), `split_right` (files whose parts
-  are the answer's stubs, each holding its stub's net pay; the legacy reader always makes one part), `unplaced` (printed lines
-  the engine found no column for; null for the legacy reader, which names none) and `failed` (the reader raised), with
-  `exact_share` and `checks_share`. The engine's `to_review` is the pipeline's own records' review status. The legacy reader has
-  no run of its own, so its stand-in is `left_out > 0`: a stub that lost a value would have been sent to review. It is a proxy, not
-  a measurement; the report marks it "(stand-in)". Fewer than 3 pay stub files are suppressed like any other cell.
+  are the answer's stubs, each holding its stub's net pay), `unplaced` (printed lines the engine found no column for) and `failed`
+  (the engine raised), with `exact_share` and `checks_share`. `to_review` is the pipeline's own records' review status.
+  Fewer than 3 pay stub files are suppressed like any other cell. **report.md** shows the engine's row in a table of its own.
+  An older run's `results.jsonl` that still holds a `legacy` pay entry is read with that entry ignored.
 - **Split files.** A pay stub file holding several stubs is graded per stub, in order, against the case's `stubs`; a count that differs
   from the answer's is a split miss.
 - **Guess counts.** `summary.json` also holds `guesses: {kind: {made, right}}` from the engine's records, counts only, for the kinds in
   [documents](documents.md#pay-stub-rows-from-the-printed-columns). A guess is right when the values it chose equal the answers'. On the
   synthetic corpus every guess is right. Run on the donated corpus, the counts say which kind of guess to improve next.
-- **The gate for today's pay stub path.** The engine should be at least the legacy reader on `exact`, `checks_held` and `split_right`
-  (and not worse on `to_review`) before today's path is removed ([open work](open-work.md#pdf-table-engine)); you run that on your corpus in your own terminal.
+- **Reading the counts on your corpus.** There is no legacy pay reader to beat. Run `python -m evals.run` on the donated corpus in your own
+  terminal and read `exact_share`, `checks_share`, `split_right`, `to_review` and the `guesses` counts to see which stubs read badly
+  ([open work](open-work.md#pdf-table-engine)).
 - **The aligned pay stubs.** The synthetic corpus has five text-PDF pay stub files, tag `aligned`, drawn by the pay stub layout generator
   (`evals/paystub_layouts.py`) from fixed choices (`random.Random(SEED + 2)`), so their answers come from the generator's inputs: one
   table with Hours / Rate / Current / YTD; stacked sections with no headings; side-by-side blocks with a summary box; two-line

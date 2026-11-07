@@ -527,7 +527,7 @@ def test_table_engine_comparison_is_suppressed_in_the_summary_for_few_statements
     assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"] == {"suppressed": True}
 
 
-# The two pay stub readers ------------------------------------------------------------------------------------------------
+# The pay engine's counts ------------------------------------------------------------------------------------------------
 
 def stub_answers(rows, gross=None, net=None):
     fields = {name: FieldAnswer(value=None, state="unchecked") for name in CRITICAL_FIELDS["paystub"]}
@@ -541,13 +541,13 @@ def test_pay_reader_counts_values_left_out_and_checks_and_never_text():
     stub = stub_answers([("Regular", "earnings", 100000, 1200000), ("Federal Tax", "tax", 20000, 240000), ("401K", "pre_tax", 5000, None)], gross=100000, net=75000)
     exact = [("regular", 100000, 1200000), ("FEDERAL  TAX", -20000, 240000), ("401k", 5000, None), ("Total Taxes", 20000, 240000)]
     assert pay_reader([stub], exact, True, unplaced=0) == {"stubs": 1, "values": 5, "exact": 5, "left_out": 0, "checkable": 1, "checks_held": 1,
-                                                          "left_out_stubs": 0, "unplaced": 0, "split_right": 1, "failed": False}
+                                                          "unplaced": 0, "split_right": 1, "failed": False}
     # A value the reader put in the wrong column is wrong, not left out; a row it has no cell for is left out and the stub's checks cannot hold.
     wrong = pay_reader([stub], [("Regular", 1200000, 100000), ("Federal Tax", None, None), ("401K", 5000, None)], False)
-    assert (wrong["values"], wrong["exact"], wrong["left_out"], wrong["checks_held"], wrong["left_out_stubs"], wrong["split_right"], wrong["unplaced"]) == (
-        5, 1, 2, 0, 1, 0, None)
+    assert (wrong["values"], wrong["exact"], wrong["left_out"], wrong["checks_held"], wrong["split_right"], wrong["unplaced"]) == (
+        5, 1, 2, 0, 0, None)
     assert pay_reader([stub], [], False, failed=True) == {"stubs": 1, "values": 5, "exact": 0, "left_out": 5, "checkable": 1, "checks_held": 0,
-                                                          "left_out_stubs": 1, "unplaced": None, "split_right": 0, "failed": True}
+                                                          "unplaced": None, "split_right": 0, "failed": True}
     # Two stubs print the same labels: each answer line takes the next unused row, in order.
     second = stub_answers([("Regular", "earnings", 200000, None)], gross=200000, net=200000)
     both = pay_reader([stub, second], [("Regular", 100000, 1200000), ("Federal Tax", 20000, 240000), ("401K", 5000, None), ("Regular", 200000, None)], True)
@@ -613,8 +613,8 @@ def scripted_pay_stubs(corpus, local_model, tmp_path, files=PAYSTUB_FILES):
 
 
 def test_pay_stub_readers_are_compared_and_the_engine_reads_every_aligned_file_exactly(tmp_path, local_model):
-    """SC-68: `evals.run.run` over the five aligned pay stub files (the model double answers from the generator's inputs) shows today's reader and the
-    pay engine side by side; the engine records every pay value exactly, splits the three-stub file into three, sends nothing to review and guesses
+    """SC-68: `evals.run.run` over the five aligned pay stub files (the model double answers from the generator's inputs) shows the pay engine alone
+    (FR-96: no legacy reader); the engine records every pay value exactly, splits the three-stub file into three, sends nothing to review and guesses
     nothing wrong; summary.json holds counts only."""
     corpus = Corpus(tmp_path / "synthetic")
     create_synthetic(corpus.root)
@@ -629,25 +629,19 @@ def test_pay_stub_readers_are_compared_and_the_engine_reads_every_aligned_file_e
         engine = line["details"]["pay_readers"]["engine"]
         assert (engine["stubs"], engine["exact"], engine["left_out"], engine["checks_held"], engine["checkable"], engine["split_right"], engine["unplaced"],
                 engine["to_review"], engine["failed"]) == (stubs, engine["values"], 0, stubs, stubs, 1, 0, 0, False), line["case_id"]
-        legacy = line["details"]["pay_readers"]["legacy"]
-        assert legacy["values"] == engine["values"] and legacy["exact"] <= engine["exact"] and legacy["checks_held"] <= engine["checks_held"]
-        assert legacy["split_right"] <= engine["split_right"] and legacy["unplaced"] is None
-    legacy_all, engine_all = (sum(line["details"]["pay_readers"][reader]["split_right"] for line in lines) for reader in ("legacy", "engine"))
-    assert engine_all == 5 and legacy_all == 4  # Today's reader makes one part of the three-stub file.
+        assert set(line["details"]["pay_readers"]) == {"engine"}
+    assert sum(line["details"]["pay_readers"]["engine"]["split_right"] for line in lines) == 5
     summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
-    old, engine = summary["pay_readers"]["legacy"], summary["pay_readers"]["engine"]
-    assert old["documents"] == engine["documents"] == 5 and old["stubs"] == engine["stubs"] == 7 and old["values"] == engine["values"]
+    assert set(summary["pay_readers"]) == {"engine"}
+    engine = summary["pay_readers"]["engine"]
+    assert engine["documents"] == 5 and engine["stubs"] == 7 and engine["values"] > 0
     assert engine["exact"] == engine["values"] and engine["left_out"] == 0 and engine["checks_held"] == engine["checkable"] == 7
     assert engine["exact_share"] == engine["checks_share"] == 1.0 and engine["to_review"] == 0 and engine["split_right"] == 5 and engine["unplaced"] == 0
-    assert old["unplaced"] is None and old["to_review"] == sum(line["details"]["pay_readers"]["legacy"]["left_out_stubs"] for line in lines)
-    for metric in ("exact", "checks_held", "split_right"):  # The engine is at least as good as today's reader on each metric.
-        assert engine[metric] >= old[metric], metric
-    assert engine["to_review"] <= old["to_review"] and engine["left_out"] <= old["left_out"]
     # Every guess is counted by kind and, on this corpus, right.
     assert set(summary["guesses"]) == set(GUESS_KINDS)
     assert all(each["made"] == each["right"] for each in summary["guesses"].values())
     assert summary["guesses"]["split_changed"] == {"made": 0, "right": 0}
-    # summary.json passes the allowlist and holds no description, amount, date or employer of any stub; report.md shows both readers.
+    # summary.json passes the allowlist and holds no description, amount, date or employer of any stub; report.md shows the engine's counts and no legacy column.
     text = (folder / "summary.json").read_text(encoding="utf-8")
     check_summary(json.loads(text))
     for case_id in chosen:
@@ -656,11 +650,10 @@ def test_pay_stub_readers_are_compared_and_the_engine_reads_every_aligned_file_e
             assert all(row["description"] not in text for row in stub.rows)
             assert not [value for value in (stub.fields["net_pay_minor"].value, stub.fields["gross_pay_minor"].value) if money(value) in text]
     report = (folder / "report.md").read_text(encoding="utf-8")
-    assert "side by side (5 files, 7 stubs" in report
-    table = [line for line in report.splitlines() if line.startswith(("| Reader | Pay values", "| Today's reader |", "| Pay engine |"))]
-    assert len(table) == 3 and "Stubs sent to review" in table[0]
-    assert f"| Today's reader | {old['exact']} of {old['values']} (" in table[1] and "(stand-in) of 7" in table[1] and " | n/a | " in table[1]
-    assert f"| Pay engine | {engine['exact']} of {engine['values']} (" in table[2] and "| 0 of 7 | 5 of 5 | 0 | 0 |" in table[2]
+    assert "read by the pay engine (5 files, 7 stubs" in report and "Today's reader" not in report and "stand-in" not in report
+    table = [line for line in report.splitlines() if line.startswith(("| Reader | Pay values", "| Pay engine |"))]
+    assert len(table) == 2 and "Stubs sent to review" in table[0]
+    assert f"| Pay engine | {engine['exact']} of {engine['values']} (" in table[1] and "| 0 of 7 | 5 of 5 | 0 | 0 |" in table[1]
     assert "Guesses the engine made:" in report
 
 
@@ -696,7 +689,7 @@ def test_pay_stub_comparison_leaves_out_other_documents_counts_a_failing_reader_
     folder = run(corpus, config_for(local_model), case_ids=others, network_guard=False, echo=lambda _: None)
     assert all("pay_readers" not in json.loads(text)["details"] for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines())
     summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
-    assert "pay_readers" not in summary and "side by side" not in (folder / "report.md").read_text(encoding="utf-8")
+    assert "pay_readers" not in summary and "read by the pay engine" not in (folder / "report.md").read_text(encoding="utf-8")
     aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type == "paystub"]
     folder = run(corpus, config_for(local_model), case_ids=aligned[:2], network_guard=False, echo=lambda _: None)
     summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
@@ -708,8 +701,8 @@ def test_pay_stub_comparison_leaves_out_other_documents_counts_a_failing_reader_
     monkeypatch.setattr("evals.run.paystub_tables.read", broken)
     folder = run(corpus, config_for(local_model), case_ids=aligned[:3], network_guard=False, echo=lambda _: None)
     readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["pay_readers"]
-    assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["checks_held"] == 0 and readers["legacy"]["failed"] == 0
-    assert readers["engine"]["values"] == readers["legacy"]["values"] > 0
+    assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["checks_held"] == 0 and "legacy" not in readers
+    assert readers["engine"]["values"] > 0
 
 
 # The shareable summary -----------------------------------------------------------------------------------------------
