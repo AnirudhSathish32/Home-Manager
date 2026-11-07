@@ -17,22 +17,25 @@ slices:
     notes: >-
       Eight tests, each revert-and-fail recorded in the handoff; revert 8 emulates the pre-02026cf offset_of/frame code.
   - id: SL-02
-    status: in_progress
+    status: done
     start_head: 40423ef
-    end_head: 86534c5
-    commit: 83d7dfe
+    end_head: 763d7ec
+    commit: [83d7dfe, 98d8b70]
     provider: claude
     model: claude-sonnet-5-5
     verification:
-      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py -q -> 913 passed (orchestrator rerun)"
-      - ".venv/bin/python -m pytest tests/test_layout_consumers.py -q -> 2 failed, 15 passed (orchestrator rerun)"
-    blocked_on: >-
-      E-1: test_layout_consumers.py::test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separators and
-      ::test_a_pay_row_listed_again_is_one_pay_line fail (engine now reads page 1, rows the model stub does not classify are
-      recorded as unclassified rows, phase 2 FR-62). SC-94 requires the file to pass unchanged; needs a test-contract change
-      approved by the user.
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py -q -> 913 passed (orchestrator rerun at 86534c5; no source change since)"
+      - ".venv/bin/python -m pytest tests/test_layout_consumers.py tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine_record.py -q -> 65 passed (orchestrator rerun at 763d7ec)"
+      - ".venv/bin/ruff check src tests -> the 2 pre-existing errors only (test_document_v2_browser.py I001, test_receipt_kinds.py F402)"
+    notes: >-
+      r1 escalated E-1 (two layout-consumer tests with partial model stubs now see every printed row via phase 2 FR-62).
+      User chose to amend SC-94 (61d03df), re-approved spec and plan (cf04bc5); r2 made both stubs classify all 11 rows.
+      Rewritten record test renamed to test_the_sectioned_payslip_page_is_trusted_and_read_in_full_by_the_engine; the
+      untrusted case is left to SC-92 in SL-04. Known limit: a whole number within 1.5 font sizes after an amount in the
+      same run is not seen as a column.
   - id: SL-03
-    status: todo
+    status: in_progress
+    start_head: 763d7ec
   - id: SL-04
     status: todo
   - id: SL-05
