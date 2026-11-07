@@ -385,7 +385,8 @@ def test_an_ocr_split_word_quoted_cleaned_up_or_on_the_wrong_line_is_repaired_to
 
 
 def test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separators(pdf_store, local_model):
-    """The same payslip when the model quotes each table row with plain spaces: it records, every amount copied."""
+    """The same payslip when the model quotes each table row with plain spaces: it records, every amount copied. The model
+    classifies all eleven pay rows, so the engine's record is the eleven printed rows."""
     inbox, store = pdf_store
     make_pdf(inbox / "sectioned.pdf", [{"items": [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()]}])
     doc = capture(inbox, store)
@@ -403,8 +404,11 @@ def test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separato
     summary = {name: MISSING for name in HEADERS["paystub"]}
     summary.update(payer_or_employer=value("SYNTH CONSULTING LTD", "SYNTH"), pay_date=value("10/09/2026", "Pay Date"), currency=value("USD", "Currency"),
                    gross_pay=value("4,000.00", "Total Earnings"), gross_pay_ytd=value("88,000.00", "Total Earnings"))
-    tables = ([("Regular Salary", "earnings", "regular_pay"), ("Relocation Bonus", "earnings", "bonus")],
-              [("Federal Tax", "tax", "federal_income_tax"), ("Medical HDP", "pre_tax", "health")])
+    rows = [("Regular Salary", "earnings", "regular_pay"), ("Relocation Bonus", "earnings", "bonus"), ("Federal Tax", "tax", "federal_income_tax"),
+            ("Social Security Tax", "tax", "social_security"), ("Medicare Tax", "tax", "medicare"), ("GA State Tax", "tax", "state_income_tax"),
+            ("Medical HDP", "pre_tax", "health"), ("Vision Insurance", "pre_tax", "vision"), ("Dental PPO", "pre_tax", "dental"),
+            ("HSA Additional", "pre_tax", "hsa"), ("401K Plan", "pre_tax", "retirement_pretax")]
+    tables = (rows[:2], rows[2:])
     local_model["by_schema"] = {"Classification": [{"document_type": "paystub", "evidence": cite("Earnings"), "issuer": summary["payer_or_employer"],
                                                     "document_date": summary["pay_date"]}],
                                 "PaystubSummary": [summary],
@@ -418,12 +422,15 @@ def test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separato
     assert run["status"] == "succeeded", run["error"]
     record = Ledger(store).record("income_record", run["publication"]["id"])
     assert [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]] == [
-        ("Regular Salary", 400000, 8400000), ("Relocation Bonus", None, 400000), ("Federal Tax", 50000, 1050000), ("Medical HDP", 9000, 189000)]
+        ("Regular Salary", 400000, 8400000), ("Relocation Bonus", None, 400000), ("Federal Tax", 50000, 1050000), ("Social Security Tax", 24800, 520800),
+        ("Medicare Tax", 5800, 121800), ("GA State Tax", 19000, 399000), ("Medical HDP", 9000, 189000), ("Vision Insurance", 600, 600),
+        ("Dental PPO", 1200, 25200), ("HSA Additional", 5000, 105000), ("401K Plan", 20000, 420000)]
 
 
 def test_a_pay_row_listed_again_is_one_pay_line(pdf_store, local_model):
     """The model lists Regular Salary twice for its own row, and again (with Relocation Bonus) in the part of the text
-    holding the table's heading row, citing the heading: each printed row is one pay line, with no note."""
+    holding the table's heading row, citing the heading: each printed row is one pay line, with no note. The model
+    classifies the other nine pay rows too, so the record is all eleven printed rows."""
     inbox, store = pdf_store
     make_pdf(inbox / "sectioned.pdf", [{"items": [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()]}])
     doc = capture(inbox, store)
@@ -446,11 +453,16 @@ def test_a_pay_row_listed_again_is_one_pay_line(pdf_store, local_model):
                    gross_pay=value("4,000.00", "Total Earnings"), gross_pay_ytd=value("88,000.00", "Total Earnings"))
     heading = cite("Earnings", "Earnings")
     relisted = {"lines": [row("Regular Salary", "earnings", "regular_pay", heading), row("Relocation Bonus", "earnings", "bonus", heading)]}
+    rows = [("Regular Salary", "earnings", "regular_pay"), ("Relocation Bonus", "earnings", "bonus"), ("Federal Tax", "tax", "federal_income_tax"),
+            ("Social Security Tax", "tax", "social_security"), ("Medicare Tax", "tax", "medicare"), ("GA State Tax", "tax", "state_income_tax"),
+            ("Medical HDP", "pre_tax", "health"), ("Vision Insurance", "pre_tax", "vision"), ("Dental PPO", "pre_tax", "dental"),
+            ("HSA Additional", "pre_tax", "hsa"), ("401K Plan", "pre_tax", "retirement_pretax")]
     classes = [{key: value for key, value in item.items() if key not in ("current", "ytd")} for item in (
         row("Regular Salary", "earnings", "regular_pay"), row("Regular Salary", "earnings", "regular_pay"), row("Relocation Bonus", "earnings", "bonus"))]
+    deductions = [{key: value for key, value in item.items() if key not in ("current", "ytd")} for item in (row(*entry) for entry in rows[2:])]
     local_model["by_schema"] = {"Classification": [{"document_type": "paystub", "evidence": cite("Earnings"), "issuer": summary["payer_or_employer"],
                                                     "document_date": summary["pay_date"]}],
-                                "PaystubSummary": [summary], "PayRowClasses": [{"lines": classes}, {"lines": []}],
+                                "PaystubSummary": [summary], "PayRowClasses": [{"lines": classes}, {"lines": deductions}],
                                 "PayLines": [relisted, {"lines": []}]}
     extraction = ExtractionService(store, service)
     run_id, _ = extraction.enqueue(doc["id"], parse_id, ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
@@ -459,7 +471,9 @@ def test_a_pay_row_listed_again_is_one_pay_line(pdf_store, local_model):
     assert run["status"] == "succeeded", run["error"]
     record = Ledger(store).record("income_record", run["publication"]["id"])
     assert [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]] == [
-        ("Regular Salary", 400000, 8400000), ("Relocation Bonus", None, 400000)]
+        ("Regular Salary", 400000, 8400000), ("Relocation Bonus", None, 400000), ("Federal Tax", 50000, 1050000), ("Social Security Tax", 24800, 520800),
+        ("Medicare Tax", 5800, 121800), ("GA State Tax", 19000, 399000), ("Medical HDP", 9000, 189000), ("Vision Insurance", 600, 600),
+        ("Dental PPO", 1200, 25200), ("HSA Additional", 5000, 105000), ("401K Plan", 20000, 420000)]
     assert not any("printed row" in issue or "same native table row" in issue for issue in record["issues"])
 
 
