@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v35-paystub-engine"
+EXTRACTION_VERSION = "typed-extraction-v36-paystub-one-path"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1274,7 +1274,7 @@ def cell_labels(table, source, column):
 
 # Pay stubs read from their printed columns (specs/pdf-table-engine-paystubs; plan P7) ------------------------------------
 
-PAY_FAILED = object()  # What `run` passes `read` when the pay engine raised: the stub takes today's path with PAY_FAILED_NOTE (FR-65).
+PAY_FAILED = object()  # What `run` passes `read` when the pay engine raised: the stub is read like flat text with PAY_FAILED_NOTE (FR-65, FR-94).
 PAY_FAILED_NOTE = "The pay table couldn't be read from the printed columns, so the reading's amounts were used; check them."
 NO_PAY_TABLE = "Page {page}: no pay table was found in the printed columns, so its amounts are the reading's; check them."
 
@@ -1290,16 +1290,20 @@ def with_rows(table, rows):
 
 
 def pay_tables_of(tables, pay, part, line_ids):
-    """The tables of one part of a pay stub file: the pay engine's cells replace the printed tables of the pages it read (a whole file, so another
-    stub's rows never stay), and the printed tables of other pages keep only the rows of the part's lines (plan P7.1, P7.2)."""
+    """The tables of one part of a pay stub PDF: every printed table of the reader (`source == "pdf_text"`) is dropped on every page, the pay engine's
+    cells stand in for them, and the vision tables of scanned pages keep only the rows of the part's lines (docs/documents.md "Pay stub rows from
+    the printed columns"; specs/pdf-table-engine-paystubs-cleanup FR-93)."""
     kept = []
-    for table in tables:
-        if table_page(table) in pay.engine_pages:
-            continue
+    for table in without_printed_tables(tables):
         rows = [row for row in table.rows if row.line_id in line_ids]
         if rows:
             kept.append(table if len(rows) == len(table.rows) else with_rows(table, rows))
     return sorted([*kept, *part.adapted], key=lambda table: table_page(table) or 0)
+
+
+def without_printed_tables(tables):
+    """`tables` less the reader's printed tables of a text PDF (`pdf_text`): a pay stub's amounts never come from those (FR-93)."""
+    return [table for table in tables if getattr(table, "source", None) != "pdf_text"]
 
 
 def viewer_cell(cell):
@@ -4032,7 +4036,7 @@ class ExtractionService:
                 classification = ask(config, work, Classification, CLASSIFY, summary, 1024, notes=notes, table_context=context)
                 pay = None
                 if classification.document_type == "paystub" and hasattr(evidence, "pages"):
-                    try:  # The pay engine reads the whole file once; any failure sends the stub down today's path with a note (FR-65).
+                    try:  # The pay engine reads the whole file once; any failure reads the stub like flat text with a note (FR-65, FR-94).
                         pay = paystub_tables.read(evidence)
                     except Exception as exc:
                         log_failure(log, "pay table read", exc, run=run_id)
@@ -4129,6 +4133,8 @@ class ExtractionService:
         if engine:
             part = paystub_tables.for_lines(engine, {line.id for line in lines})
             tables = pay_tables_of(tables, engine, part, {line.id for line in lines})
+        elif pay is PAY_FAILED:
+            tables = without_printed_tables(tables)
         classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
         # A bank or card statement PDF has its rows rebuilt from the printed columns (FR-16). The pages that get rows are not asked
         # about again (missed_rows) or anchored; any other page keeps the model's reading (FR-23).
@@ -4145,7 +4151,8 @@ class ExtractionService:
         # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
         # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
         printed_columns = classification.document_type == "paystub" and not tables
-        if part is not None:  # Only the pages with neither an engine pay table nor a printed table (FR-64); an empty set runs no check.
+        if part is not None or (pay is PAY_FAILED and classification.document_type == "paystub"):
+            # Only the pages with neither an engine pay table nor a vision table (FR-64, FR-94); an empty set runs no check.
             covered = {table_page(table) for table in tables} - {None}
             printed_columns = {line.id for line in lines if line_page(line.id) not in covered}
         extras = pay_extras(next(iter(part.box_cells.values()), None) if part is not None else None)

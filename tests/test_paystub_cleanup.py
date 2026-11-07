@@ -1,5 +1,7 @@
 """The pay stub follow-up that makes one path for text PDFs (specs/pdf-table-engine-paystubs-cleanup).
 
+SL-04: SC-90 at Record level, SC-92, SC-93 and SC-97 (one path for text PDFs, FR-93 – FR-95, FR-99), and the mixed text-and-scan file (review pass 1, M3).
+
 SL-03: SC-91, the layouts the generator avoided (FR-92 a, b, d, e, f), hand-built: the literals are written in each test, and the expected values follow from
 them by the spec's rules, not from what the code produced.
 
@@ -9,12 +11,22 @@ and the fixture's printed numbers, not what the code produced. No store and no m
 """
 
 from decimal import Decimal
+import json
+import logging
 
-from home_manager.documents import pay_tables
+from home_manager.core.jobs import Work
+from home_manager.documents import extraction, pay_tables
+from home_manager.documents.layout_context import evidence_tables
+from home_manager.documents.pdf_reader import read_result
+from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance import paystub_tables
+from home_manager.finance.ledger import Ledger
 import paystub_engine_fixtures as pf
 import pdf_import_fixtures as fx
 from table_engine_fixtures import row_items
+from test_paystub_engine_record import PS_CLASSES, Run, auto, expect, no_network, printed, started, swapped  # noqa: F401
+from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
 from test_pdf_layout import sectioned_payslip_items
 
 BENEFITS = {"items": [(60, 700, "Other Benefit And Information"), (250, 700, "This Period"), (320, 700, "Year to Date"),
@@ -255,3 +267,198 @@ def test_sc91_f_a_leave_table_lined_up_with_the_pay_column_is_a_table_of_its_own
     assert [[row.amounts[table.columns[0].id].text for row in table.rows] for table in found.tables] == [["2,662.41", "225.58"], ["2,527.84", "210.70"]]
     assert [[total.label for total in table.totals] for table in found.tables] == [["Total Earnings", "Net Pay"]] * 2
     assert [[row.label for row in table.rows] for table in found.other_tables] == [["Vacation", "Sick"]] * 2
+
+
+# --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94) ----------------------------------------------------
+
+def printed_grid_ids(run):
+    """The ids of the reader's printed tables (`table_grid`, source `pdf_text`) of the run's file."""
+    return {table.id for table in evidence_tables(run.evidence) if getattr(table, "source", None) == "pdf_text"}
+
+
+def check_no_grid(run):
+    """C-no-grid (test contract): (1) every cell the record cites is a cell of the run result's `pay_tables`, else the value is a flat line's (no cell
+    reference); (2) no request after the classification carries a printed table. An engine cell may reuse a printed cell's id (phase 2 FR-66)."""
+    result = run.run["result"]
+    engine_cells = {cell["id"] for table in result["pay_tables"] for row in [*table["header_rows"], *table["rows"]] for cell in row["cells"]}
+    cited = [reference for row in result["rows"] for reference in (row.get("cell_evidence") or {}).values() if isinstance(reference, dict)]
+    cited += list((result.get("summary_cell_evidence") or {}).values())
+    assert {reference["cell_id"] for reference in cited} <= engine_cells
+    grid = printed_grid_ids(run)
+    assert grid  # The fixture has printed tables to ignore.
+    asked = [json.loads(request["messages"][1]["content"]).get("reported_tables", []) for request in run.local_model["requests"][run.before:]
+             if request["response_format"]["json_schema"]["name"] != "Classification"]
+    assert not [table for tables in asked for table in tables if table["table_id"] in grid]
+
+
+def sectioned_run(pdf_store, local_model):
+    """The record test's sectioned payslip file (page 1 and the benefits page) with the model stubs of test_layout_consumers: every row classified and
+    the summary cited from the lines, so the values must come from the engine's cells."""
+    run = started(pdf_store, local_model, [{"items": [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()]}, BENEFITS],
+                  name="sectioned.pdf")
+    rows = [("Regular Salary", "earnings", "regular_pay"), ("Relocation Bonus", "earnings", "bonus"), ("Federal Tax", "tax", "federal_income_tax"),
+            ("Social Security Tax", "tax", "social_security"), ("Medicare Tax", "tax", "medicare"), ("GA State Tax", "tax", "state_income_tax"),
+            ("Medical HDP", "pre_tax", "health"), ("Vision Insurance", "pre_tax", "vision"), ("Dental PPO", "pre_tax", "dental"),
+            ("HSA Additional", "pre_tax", "hsa"), ("401K Plan", "pre_tax", "retirement_pretax"), ("Co Match 401K", "employer_paid", "other")]
+    summary = {"gross_pay": ("Regular Salary", "4,000.00"), "gross_pay_ytd": ("Regular Salary", "84,000.00"), "net_pay": ("Net Payment", "2,646.00"),
+               "net_pay_ytd": ("Net Payment", "59,566.00"), "deductions": ("Total Deductions", "1,354.00")}
+    cite = run.cite
+    run.cite = lambda text, quote=None: cite("Pay Date" if text == "Pay date" else text, quote)  # This payslip prints its date as "Pay Date".
+    run.stub(classes=[(label, group, category, label) for label, group, category in rows], summary=summary, employer="SYNTH CONSULTING LTD",
+             details={"pay_date": run.value("10/09/2026", "Pay Date")})
+    run.extract()
+    return run
+
+
+def test_sc90_the_sectioned_payslip_record_has_the_same_values_from_engine_cells_and_one_total_note(pdf_store, local_model):
+    run = sectioned_run(pdf_store, local_model)
+    record = run.record
+    assert (record["gross_pay_minor"], record["gross_pay_ytd_minor"], record["net_pay_minor"], record["net_pay_ytd_minor"], record["deductions_minor"]) == (
+        400000, 8800000, 264600, 5956600, None)
+    assert (record["display"]["deductions_minor"], record["display"]["total_deductions_minor"]) == ("358.00 USD", "1,354.00 USD")
+    assert [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]] == [
+        ("Regular Salary", 400000, 8400000), ("Relocation Bonus", None, 400000), ("Federal Tax", 50000, 1050000), ("Social Security Tax", 24800, 520800),
+        ("Medicare Tax", 5800, 121800), ("GA State Tax", 19000, 399000), ("Medical HDP", 9000, 189000), ("Vision Insurance", 600, 600),
+        ("Dental PPO", 1200, 25200), ("HSA Additional", 5000, 105000), ("401K Plan", 20000, 420000), ("Co Match 401K", 16000, 336000)]
+    assert (record["lines"][0]["details"]["hours"]["text"], record["lines"][0]["details"]["rate"]["text"]) == ("80", "50.00")
+    assert not any(words in issue for issue in record["issues"]
+                   for words in ("column headings", "source cell", "multiple amounts", "not accounted for", "left out", "add up"))
+    check_no_grid(run)
+    assert not [note for note in run.notes if note.startswith("Page 1: no pay table")]
+    [doesnt_match] = [note for note in run.notes if "doesn't match" in note]
+    assert "28,434.00" in doesnt_match and "28,314.00" in doesnt_match and "1,354.00" not in doesnt_match
+
+
+MINI_13 = pf.mini_pages(("2026-07-03", 13))[0]["items"]
+MINI_CLASSES = [("Regular", "earnings", "regular_pay", "Regular"), ("Federal Income Tax", "tax", "federal_income_tax", "Federal Income Tax")]
+MINI_SUMMARY = {"gross_pay": ("Gross Pay", "2,000.00"), "gross_pay_ytd": ("Gross Pay", "26,000.00"), "net_pay": ("Net Pay", "1,800.00"),
+                "net_pay_ytd": ("Net Pay", "23,400.00"), "taxes": ("Total Taxes", "200.00")}
+OTHER_TABLE = [*pf.head(700, ("Item", "Code A", "Code B"), (430, 520)),
+               *pf.lay(680, [("row", "Adjustment", ("50.00", "50.00")), ("row", "Other", ("10.00", "10.00"))], (430, 520)), fx.footer(pf.FOOTER, 60)]
+NO_TABLE_NOTE = "Page 2: no pay table was found in the printed columns, so its amounts are the reading's; check them."
+
+
+def test_sc92_a_page_whose_table_the_engine_does_not_trust_is_read_like_flat_text(pdf_store, local_model):
+    run = started(pdf_store, local_model, [{"items": MINI_13}, {"items": OTHER_TABLE}])
+    assert paystub_tables.read(run.evidence).pages_without_tables == [2]  # An other table: no pay table on page 2.
+    assert printed_grid_ids(run)  # Page 2's printed table is there for the reader to be tempted by.
+    adjustment = {"description": "Adjustment", "group": "earnings", "category": "other", "current": "50.00", "ytd": None, "evidence": run.cite("Adjustment")}
+    run.stub(classes=MINI_CLASSES, summary=MINI_SUMMARY, extra_lines=[adjustment])
+    run.extract()
+    record = run.record
+    assert [(line["description"], line["line_group"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]] == [
+        ("Regular", "earnings", 200000, 2600000), ("Federal Income Tax", "tax", 20000, 260000), ("Adjustment", "earnings", 5000, None)]
+    assert record["lines"][2]["cell_evidence"] in (None, {})  # The model's value, judged by the flat rules: no cell cited.
+    assert NO_TABLE_NOTE in run.notes and NO_TABLE_NOTE not in record["issues"]
+    assert (record["gross_pay_minor"], record["gross_pay_ytd_minor"], record["net_pay_minor"], record["net_pay_ytd_minor"]) == (200000, 2600000, 180000, 2340000)
+    check_no_grid(run)
+
+
+def test_sc92_m4_a_pay_table_whose_roles_all_end_other_puts_its_page_in_pages_without_tables_and_in_no_adapted_table(tmp_path, monkeypatch):
+    """The untrusted case: page 2's table is found to be a pay table (a side-by-side partner, say) but none of its columns is this period, year to date,
+    hours or rate. Its page is a page without a pay table and in no adapted table, so Record reads it flat."""
+    real = paystub_tables.decide
+
+    def decide(table):
+        roles, guesses, found = real(table)
+        if table.pages[0] != 2:
+            return roles, guesses, found
+        return paystub_tables.Roles(table.id, dict.fromkeys(roles.roles, "other"), "numbers"), [], True
+    monkeypatch.setattr(paystub_tables, "decide", decide)
+    found = paystub_tables.read(fx.read_pdf(tmp_path, [{"items": MINI_13}, {"items": OTHER_TABLE}]))
+    assert paystub_tables.untrusted_pages(found) == {2} and [table.pages for table in found.tables] == [[1], [2]]
+    assert found.pages_without_tables == [2] and found.pages == {1} and found.engine_pages == {1}
+    assert {row.page for table in found.adapted for row in table.rows} == {1}
+    part = paystub_tables.for_lines(found, set(found.lines_of.values()))
+    assert part.pages_without_tables == [2] and {row.page for table in part.adapted for row in table.rows} == {1}
+
+
+def test_sc93_with_the_engine_down_a_wrongly_swapped_amount_is_nulled_by_the_flat_rules_on_every_page(pdf_store, local_model, monkeypatch, caplog):
+    """FR-94: the stub is read like flat text on every page, so the paystub-columns checks judge every line (printed_columns is every line of the part)
+    and a swapped pair is left out, as on a photo; no printed table's cell is cited and none is shown to the model."""
+    run = started(pdf_store, local_model, pf.ps_pages())
+    monkeypatch.setattr(paystub_tables, "read", lambda evidence: (_ for _ in ()).throw(RuntimeError("injected engine fault")))
+    by_label = {label: (hours, rate, current, ytd) for label, hours, rate, current, ytd, kind in pf.PS_ROWS if kind == "row"}
+    lines = [{"description": description, "group": group, "category": category, "evidence": run.cite(label),
+              "current": by_label[label][3] if label == "Overtime" else by_label[label][2],  # Overtime's two amounts are given swapped.
+              "ytd": by_label[label][2] if label == "Overtime" else by_label[label][3],
+              "hours": by_label[label][0], "rate": by_label[label][1]} for description, group, category, label in PS_CLASSES]
+    run.stub(summary=printed(pf.PS_ROWS))
+    run.runs = lambda: [[False, [line.id for line in run.lines]]]
+    run.local_model["by_schema"].update(PayLines=[{"lines": lines}], PayRowClasses=[])
+    with caplog.at_level(logging.ERROR):
+        run.extract()
+    record = run.record
+    assert extraction.PAY_FAILED_NOTE in run.notes
+    by_name = {line["description"]: line for line in record["lines"]}
+    assert (by_name["Overtime"]["current_minor"], by_name["Overtime"]["ytd_minor"]) == (None, None)
+    assert any("Overtime" in issue and "doesn't match the printed columns" in issue for issue in record["issues"])
+    assert [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"] if line["description"] != "Overtime"] == [
+        (line[0], line[2], line[3]) for line in pf.EXP_PS_LINES if line[0] != "Overtime"]
+    assert not [1 for line in record["lines"] if line["cell_evidence"]]
+    assert not [1 for request in run.local_model["requests"][run.before:] if request["response_format"]["json_schema"]["name"] != "Classification"
+                and json.loads(request["messages"][1]["content"]).get("reported_tables")]
+
+
+# --- SC-97: the version ------------------------------------------------------------------------------------------------------------------
+
+def test_sc97_the_version_changed_and_extract_again_rereads_the_undecided_stub_and_keeps_the_reviewed_one(pdf_store, local_model, monkeypatch):
+    previous = "typed-extraction-v35-paystub-engine"
+    assert extraction.EXTRACTION_VERSION != previous
+    with monkeypatch.context() as past:
+        past.setattr(extraction, "EXTRACTION_VERSION", previous)
+        undecided = started(pdf_store, local_model, pf.ps_pages(), name="undecided.pdf")
+        undecided.stub()
+        undecided.extract()
+        reviewed = started(pdf_store, local_model, pf.ps_2l_pages(), name="reviewed.pdf")
+        reviewed.stub()
+        reviewed.extract()
+        assert undecided.run["prompt_version"] == reviewed.run["prompt_version"] == previous
+        Ledger(reviewed.store).review("income_record", reviewed.run["publication"]["id"], "verified")
+
+    def rows():
+        with reviewed.store.connection() as db:
+            return ([tuple(row) for row in db.execute("SELECT * FROM income_records WHERE id=?", (reviewed.run["publication"]["id"],))],
+                    [tuple(row) for row in db.execute("SELECT * FROM income_lines WHERE income_record_id=? ORDER BY id", (reviewed.run["publication"]["id"],))])
+    frozen = rows()
+    config = ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning")
+    for run in (undecided, reviewed):
+        run.stub()
+        run_id, created = run.extraction.enqueue(run.doc["id"], run.parse_id, config)
+        assert created  # Not reused: the version is part of the reuse key (`reused: False`).
+        run.extraction.run(run_id, Work.detached())
+        run.run = run.extraction.get(run_id)
+        assert run.run["status"] == "succeeded" and run.run["prompt_version"] == extraction.EXTRACTION_VERSION
+    expect(undecided.record)
+    assert rows() == frozen  # The reviewed record's income_records and income_lines rows are unchanged.
+    assert reviewed.record["review_status"] == "verified"
+
+
+# --- A file mixing a text page and a scanned page (review pass 1, M3) --------------------------------------------------------------------------
+
+def test_a_scanned_page_of_a_text_pdf_stub_keeps_its_vision_tables_beside_the_engine_page(pdf_store, local_model):
+    """Page 1 is the text stub (engine cells); page 2 is a scan whose transcription has a table. The printed tables of page 1 are dropped, the vision
+    table of page 2 is shown to the model and anchors its stub's values."""
+    inbox, store = pdf_store
+    make_pdf(inbox / "mixed.pdf", [{"items": MINI_13}, None])
+    doc = capture(inbox, store)
+    local_model["output"] = {"full_text": "Other earnings\nDescription | Current | YTD\nBonus | 100.00 | 500.00"}
+    service = ReceiptService(store)
+    parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
+    service.run(parse_id, Work.detached())
+    assert service.get(parse_id)["status"] == "succeeded", service.get(parse_id)["error"]
+    evidence = read_result(service.get(parse_id)["result"])
+    assert [page.method for page in evidence.pages] == ["embedded_text", "vision_model"]
+    vision = [table for table in evidence_tables(evidence) if getattr(table, "source", None) != "pdf_text"]
+    assert len(vision) == 1 and len(vision[0].rows) == 1  # The scanned page's table.
+    run = Run(store, service, local_model, parse_id, doc)
+    run.stub(classes=MINI_CLASSES, summary=MINI_SUMMARY)
+    run.local_model["by_schema"]["PayRowClasses"].append({"lines": [{"description": "Bonus", "group": "earnings", "category": "bonus", "evidence": run.cite("Bonus")}]})
+    run.extract()
+    shown = [table for request in run.local_model["requests"][run.before:] if request["response_format"]["json_schema"]["name"] != "Classification"
+             for table in json.loads(request["messages"][1]["content"]).get("reported_tables", [])]
+    assert vision[0].id in {table["table_id"] for table in shown}  # The scanned page keeps its vision table for its stub.
+    assert not {table["table_id"] for table in shown} & printed_grid_ids(run)
+    record = run.record
+    assert ("Bonus", 10000, 50000) in [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]]
+    assert [line["current_minor"] for line in record["lines"][:2]] == [200000, 20000]

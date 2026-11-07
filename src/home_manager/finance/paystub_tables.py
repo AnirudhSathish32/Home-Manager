@@ -90,7 +90,6 @@ class PaystubTables:
     engine_pages: set[int] = field(default_factory=set)  # Pages holding an adapted pay table: Record takes its cells there.
     lines_of: dict[str, str] = field(default_factory=dict)  # A layout line id to the evidence line id that holds its words.
     line_pages: set[int] = field(default_factory=set)  # Pages that have evidence lines.
-    fallback_pages: set[int] = field(default_factory=set)  # Pages with a pay table whose columns all ended other: Record doesn't trust the engine there.
     box_cells: dict = field(default_factory=dict)  # Box id to {current|ytd: {gross|taxes|deductions|net: cell}}, Record's cells for the summary box (FR-75).
 
 
@@ -519,8 +518,13 @@ def adapt(pay, evidence):
 
 def untrusted_pages(pay):
     """Pages with a pay table none of whose columns is this period, year to date, hours or rate (a side-by-side partner whose headings and totals
-    decided nothing): the engine's rows there would carry no money, so Record keeps the printed table's cells on such a page and says so (FR-64)."""
-    return {page for table, roles in zip(pay.tables, pay.roles) if set(roles.roles.values()) <= {"other"} for page in table.pages}
+    decided nothing): the engine's rows there would carry no money, so `read` lists such a page in `pages_without_tables` and Record reads it
+    like flat text, with FR-64's note (docs/documents.md "Pay stub rows from the printed columns")."""
+    return distrusted_pages(pay.tables, pay.roles)
+
+
+def distrusted_pages(tables, roles):
+    return {page for table, found in zip(tables, roles) if set(found.roles.values()) <= {"other"} for page in table.pages}
 
 
 def spans_of(rows, maps):
@@ -568,7 +572,7 @@ def for_lines(pay, line_ids):
     engine_pages = {row.page for table in adapted for row in table.rows}
     return replace(pay, tables=[table for table, _ in pairs], roles=[roles for _, roles in pairs], other_tables=others, boxes=boxes,
                    box=({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), notes=[guess.text for guess in guesses], guesses=guesses,
-                   unplaced=unplaced, pages=engine_pages | {box.page for box in boxes}, pages_without_tables=[page for page in sorted({*pay.pages_without_tables, *pay.fallback_pages}) if page in pages],
+                   unplaced=unplaced, pages=engine_pages | {box.page for box in boxes}, pages_without_tables=[page for page in sorted(pay.pages_without_tables) if page in pages],
                    adapted=adapted, engine_pages=engine_pages, box_cells={box.id: pay.box_cells[box.id] for box in boxes if box.id in pay.box_cells})
 
 
@@ -667,11 +671,11 @@ def read(evidence):
         if box is not None:
             boxes.append(box)
             guesses += made
-    pages = {page for table in tables for page in table.pages} | {box.page for box in boxes}
-    without = sorted(set(reading.pages_without_tables) | ({page for table in others for page in table.pages} - pages))
+    distrusted = distrusted_pages(tables, roles)
+    pages = ({page for table in tables for page in table.pages} - distrusted) | {box.page for box in boxes}
+    without = sorted(set(reading.pages_without_tables) | distrusted - pages | ({page for table in others for page in table.pages} - pages))
     found = PaystubTables(tables, others, roles, ({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), boxes,
                           [guess.text for guess in guesses], guesses, [line for line in reading.unplaced if line.page in pages], pages, without)
-    found.fallback_pages = untrusted_pages(found)
     found.adapted = adapt(found, evidence)
     found.box_cells = adapt_boxes(found, evidence)
     found.engine_pages = {row.page for table in found.adapted for row in table.rows}

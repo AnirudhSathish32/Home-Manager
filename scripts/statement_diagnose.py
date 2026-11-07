@@ -77,7 +77,7 @@ def pay_section(result):
     for guess in pay.guesses:
         guesses[guess.kind] = guesses.get(guess.kind, 0) + 1
     print(f"pay tables: {len(pay.tables)}   other tables: {len(pay.other_tables)}   summary boxes: {len(pay.boxes)}   unplaced lines: {len(pay.unplaced)}"
-          f"   pages without a pay table: {pay.pages_without_tables}   pages the engine does not trust: {sorted(pay.fallback_pages)}")
+          f"   pages without a pay table: {pay.pages_without_tables}   pages the engine does not trust: {sorted(paystub_tables.untrusted_pages(pay))}")
     print(f"guesses by kind: {guesses or 'none'}")
     for page in result.pages:
         layout = page.layout

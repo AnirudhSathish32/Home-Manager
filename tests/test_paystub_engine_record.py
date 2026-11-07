@@ -416,18 +416,41 @@ def test_sc59_a_table_less_pages_swapped_flat_line_is_still_nulled_by_the_column
 
 # === SC-63: engine failure =================================================================================================
 
-def test_sc63_an_engine_fault_takes_todays_path_with_the_note_and_logs_only_the_class(pdf_store, local_model, monkeypatch, caplog):
+def printed(rows):
+    """The summary a model that read every total right gives (SC-93): this period's and year to date's values as printed, taxes and deductions this period's."""
+    found = {kind: (label, current, ytd) for label, _, _, current, ytd, kind in rows if kind != "row"}
+    gross, net, taxes, deductions = found["gross"], found["net"], found["taxes"], found["deductions"]
+    return {"gross_pay": (gross[0], gross[1]), "gross_pay_ytd": (gross[0], gross[2]), "net_pay": (net[0], net[1]), "net_pay_ytd": (net[0], net[2]),
+            "taxes": (taxes[0], taxes[1]), "deductions": (deductions[0], deductions[1])}
+
+
+def test_sc63_an_engine_fault_reads_like_flat_text_with_the_note_and_logs_only_the_class(pdf_store, local_model, monkeypatch, caplog):
+    """SC-93 (specs/pdf-table-engine-paystubs-cleanup FR-94): with the engine raising, the stub is read like flat text on every page with FR-65's note:
+    the model's lines are asked as PayLines, judged by the paystub-columns checks, and none cites a printed table's cell."""
     def boom(evidence):
         raise RuntimeError("injected engine fault")
-    monkeypatch.setattr(paystub_tables, "read", boom)
     run = started(pdf_store, local_model, pf.ps_pages())
-    run.stub()
+    monkeypatch.setattr(paystub_tables, "read", boom)
+    by_label = {label: (hours, rate, current, ytd) for label, hours, rate, current, ytd, kind in pf.PS_ROWS if kind == "row"}
+    lines = [{"description": description, "group": group, "category": category, "current": by_label[label][2], "ytd": by_label[label][3],
+              "hours": by_label[label][0] or None, "rate": by_label[label][1] or None, "evidence": run.cite(label)}
+             for description, group, category, label in PS_CLASSES]
+    run.stub(summary=printed(pf.PS_ROWS))
+    run.runs = lambda: [[False, [line.id for line in run.lines]]]  # The engine is down: one flat question for the whole page.
+    run.local_model["by_schema"]["PayLines"] = [{"lines": lines}]
+    run.local_model["by_schema"]["PayRowClasses"] = []
+    run.questions = 3
     with caplog.at_level(logging.ERROR):
         run.extract()
     record = run.record
     note = "The pay table couldn't be read from the printed columns, so the reading's amounts were used; check them."
     assert note in run.notes and note not in record["issues"]
-    assert record["lines"][0]["cell_evidence"]["current"]["source"] == "pdf_text"  # Today's path: the printed table's native cells.
+    expect(record)  # C-lines(EXP-PS): the correct amounts pass the paystub-columns checks, positions judged by PS's Current and YTD headings.
+    assert "PayRowClasses" not in run.asked() and run.asked().count("PayLines") == 1
+    assert not [1 for line in record["lines"] for cited in (line["cell_evidence"] or {}).values() if cited["source"] == "pdf_text"]  # C-no-grid.
+    shown = [json.loads(request["messages"][1]["content"]).get("reported_tables", []) for request in run.local_model["requests"][run.before:]
+             if request["response_format"]["json_schema"]["name"] != "Classification"]  # That one is asked before the kind is known.
+    assert shown and not [table for tables in shown for table in tables if "layout-table" in table["table_id"]]
     failures = [entry for entry in caplog.records if "pay table read failed" in entry.getMessage()]
     assert len(failures) == 1 and "RuntimeError" in failures[0].getMessage()
     assert not [entry for entry in caplog.records if any(word in entry.getMessage() for word in FIXTURE_WORDS)]
@@ -547,7 +570,7 @@ def test_the_sectioned_payslip_page_is_trusted_and_read_in_full_by_the_engine(tm
     benefits = {"items": [(60, 700, "Other Benefit And Information"), (250, 700, "This Period"), (320, 700, "Year to Date"),
                           (60, 685, "Co Match 401K"), (265, 685, "160.00"), (330, 685, "3,360.00")]}
     found = engine_of(tmp_path, [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()], [benefits])
-    assert found.fallback_pages == set()  # Page 1 is trusted: no table's columns all ended other.
+    assert paystub_tables.untrusted_pages(found) == set()  # Page 1 is trusted: no table's columns all ended other.
     assert found.engine_pages == {1, 2} and [table.id for table in found.adapted] == ["page-1-pay-1", "page-1-pay-2", "page-2-pay-1"]
     assert [list(roles.roles.values()) for roles in found.roles] == [["rate", "hours", "current", "ytd"], ["current", "ytd"], ["current", "ytd"]]
     assert found.pages_without_tables == [] and found.other_tables == []
