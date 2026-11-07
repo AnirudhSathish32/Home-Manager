@@ -34,10 +34,25 @@ slices:
       untrusted case is left to SC-92 in SL-04. Known limit: a whole number within 1.5 font sizes after an amount in the
       same run is not seen as a column.
   - id: SL-03
-    status: in_progress
-    start_head: 763d7ec
+    status: done
+    start_head: 98b0b65
+    end_head: 38d55d9
+    commit: 4ff0956
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py -q -> 919 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_layout_consumers.py -q -> 17 passed, unchanged (orchestrator rerun)"
+      - ".venv/bin/ruff check src tests evals -> the 2 pre-existing errors only"
+    notes: >-
+      Worker scanned 240 generated files: 49 failed at 98b0b65 (all carrying a re-enabled layout), 0 with the fix; each sc91_*
+      test fails at 98b0b65. (b) implemented as MAX_OFFSET = ALIGN (0.75 font sizes, was 8): matches spec FR-92 (b) "at a
+      single page offset within the alignment tolerance"; consequence for review: a continuation page shifted more than
+      ~0.75 font sizes starts a new table. (f) failing case was generator case 52; rule cuts a block per table (after a totals
+      line followed by a heading, and at a stub start after pay rows) before clustering, applied to every layout.
   - id: SL-04
-    status: todo
+    status: in_progress
+    start_head: 38d55d9
   - id: SL-05
     status: todo
 final_verification: null
