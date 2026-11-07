@@ -45,7 +45,7 @@ TOTAL_LABEL = re.compile(r"(?:gross pay|net pay(?:ment)?|total (?:earnings|gross
                          r"(?:deductions|contributions)))" + LETTERED, re.IGNORECASE)
 STUB_START = re.compile(r"\b(?:pay date|check date|payment date|pay period|period ending)\b", re.IGNORECASE)
 BOX_ROWS = 4  # A summary box row prints at least this many amounts (FR-75).
-MAX_OFFSET = 8  # A later page's table sits at most this many font sizes from where the first page's did.
+MAX_OFFSET = ALIGN  # A later page's table sits at most this many font sizes from where the first page's did (FR-92 b).
 
 
 # --- Contracts (plan P2) -------------------------------------------------------------------------------------------------
@@ -252,6 +252,30 @@ def block_split(view, lines, tolerance):
     return median(value for value, _ in best)
 
 
+def tables_cut(bl, starts):
+    """A block's lines as one (lines, indexes) pair per table (FR-92 f): the lines from the first line after a totals line, when a heading line follows
+    before the next pay line, and those from a stub start line that follows pay lines, start a new table's list, so each table's amounts are clustered
+    on their own and a leave or deposit table whose columns line up with a pay table's doesn't merge with it. Each list is the block's length with
+    the lines outside its indexes emptied, so line indexes stay the page's."""
+    cuts, total, start, seen = [], False, None, False
+    for position, line in enumerate(bl):
+        if line.index in starts and seen:
+            cuts.append(position)
+            total, start, seen = False, None, False
+        if not line.runs:
+            continue
+        if is_pay(line):
+            total, start, seen = total_kind(label_of(line)) is not None, None, True
+        elif total:
+            start = position if start is None else start
+            if is_heading_like(line):
+                cuts.append(start)
+                total, start = False, None
+    edges = [0, *cuts, len(bl)]
+    return [([line if low <= position < high else subline(line, []) for position, line in enumerate(bl)], range(low, high))
+            for low, high in zip(edges, edges[1:])]
+
+
 def subline(line, picks):
     return Line(line.index, [word for index in picks for word in line.runs[index]], [line.runs[index] for index in picks],
                 [line.tokens[index] for index in picks], [line.led_by_text[index] for index in picks])
@@ -428,11 +452,11 @@ def find_boxes(number, view, bl, tolerance, found_boxes, taken=frozenset()):
     return consumed
 
 
-def splits_by_column(line, view, zones, edge):
-    """Whether an all-text line of one run prints words over two or more columns, so it is a heading line though it is one run (FR-89)."""
+def splits_by_column(line, view, zones, edge, least=2):
+    """Whether an all-text line of one run prints words over `least` or more columns, so it is a heading line though it is one run (FR-89)."""
     if not zones or not is_title_like(line):
         return False
-    return sum(any(in_zone(box, zone) for zone in zones) for _, box, _ in heading_runs(view, [line], zones, edge)) >= 2
+    return sum(any(in_zone(box, zone) for zone in zones) for _, box, _ in heading_runs(view, [line], zones, edge)) >= least
 
 
 def heads_above(bl, consumed, index, wide=None):
@@ -441,7 +465,8 @@ def heads_above(bl, consumed, index, wide=None):
     found, skipped, above = [], False, index - 1
     while above >= 0 and len(found) < 2 and above not in consumed:
         line = bl[above]
-        if is_heading_like(line) or (wide is not None and splits_by_column(line, *wide)):
+        # Above a heading line, a line of one run over a column is its first line, though only one column lies under it (FR-92 d).
+        if is_heading_like(line) or (wide is not None and splits_by_column(line, *wide, least=1 if found else 2)):
             found.append(above)
         elif not found and not skipped and is_title_like(line):
             skipped = True
@@ -763,10 +788,14 @@ def read(result):
         whole = {line.index: len(line.runs) for line in lines}  # How many runs each line has across the whole page (blocks cut it).
         serial, still, extra = [0], [], []
         before = len(made)
-        for name, bl, edge in zip(names, blocks, edges):
-            kept, lost = read_block(number, view, bl, name, previous, made, boxes, serial, taken, stub.setdefault(name, set()), starts, whole, edge)
-            still += kept
-            extra += lost
+        for name, block, edge in zip(names, blocks, edges):
+            tables = tables_cut(block, starts)
+            for position, (bl, indexes) in enumerate(tables):
+                kept, lost = read_block(number, view, bl, name, previous if position == 0 else [], made, boxes, serial, taken, stub.setdefault(name, set()),
+                                        {index: dates for index, dates in starts.items() if index in indexes}, whole, edge)
+                if position == len(tables) - 1:
+                    still += kept
+                extra += lost
         created = made[before:]
         if len(created) == 2 and created[0].block == "left" and created[1].block == "right":
             created[0].partner, created[1].partner = created[1].id, created[0].id

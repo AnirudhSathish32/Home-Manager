@@ -152,17 +152,24 @@ def hours_and_rate(table, triple, head):
 
 
 def products(table, head):
-    """(a) as (products, hours of each product, rate), or None when the pairs don't settle it: one pair, or two that share the rate column."""
+    """(a) as (products, hours of each product, rate, year to date, guessed), or None when the pairs don't settle it: one pair, two that share the rate
+    column, or two that share the hours column, where the first's product is a factor of the second's (hours × rate = this period and hours × this
+    period = year to date, FR-92 e). The last takes the first pair; `guessed` is True when no heading names the columns."""
     triples = product_columns(table)
     if len(triples) == 1:
         hours, rate = hours_and_rate(table, triples[0], head)
-        return [triples[0][2]], {triples[0][2]: hours}, rate
+        return [triples[0][2]], {triples[0][2]: hours}, rate, None, False
     if len(triples) == 2 and triples[0][2] != triples[1][2]:
+        for first, second in (triples, triples[::-1]):
+            if first[2] in second[:2]:  # The first's product is the second's factor: it is this period, the second's product the year to date.
+                hours, rate = hours_and_rate(table, first, head)
+                contradicted = head[first[2]] == "ytd" or head[second[2]] == "current"
+                return [first[2]], {first[2]: hours}, rate, second[2], by_heading(first[2], second[2], head) is None and not contradicted
         shared = set(triples[0][:2]) & set(triples[1][:2])
         if len(shared) == 1:
             [rate] = shared
             by_product = {third: next(column for column in (first, second) if column != rate) for first, second, third in triples}
-            return sorted(by_product, key=[column.id for column in table.columns].index), by_product, rate
+            return sorted(by_product, key=[column.id for column in table.columns].index), by_product, rate, None, False
     return None
 
 
@@ -198,17 +205,18 @@ def pay_columns(table):
 
 
 def smaller_on(table, first, second):
-    """(votes for first, votes for second, voting rows): rows printing both, neither negative; the smaller column of a row gets its vote."""
+    """(votes for first, votes for second, voting rows): rows printing both with the same sign (both negative included, FR-92 a); the column of the
+    smaller magnitude on a row gets its vote. A row of mixed sign doesn't vote."""
     votes, voters = [0, 0], 0
     for row in table.rows:
         if first in row.amounts and second in row.amounts:
             one, two = value_of(row.amounts[first]), value_of(row.amounts[second])
-            if one < 0 or two < 0:
+            if (one < 0) != (two < 0):
                 continue
             voters += 1
-            if one < two:
+            if abs(one) < abs(two):
                 votes[0] += 1
-            elif two < one:
+            elif abs(two) < abs(one):
                 votes[1] += 1
     return votes[0], votes[1], voters
 
@@ -292,11 +300,12 @@ def decide(table):
     current = ytd = None
     decided_by, basis = "numbers", None
     if found_products:
-        made, hours, rate = found_products
+        made, hours, rate, product_ytd, guessed = found_products
         if len(made) == 1:
             current = made[0]
             others = [column for column in payable if column != current]
-            ytd = others[0] if len(others) == 1 else later_year(table, current, others) if others else None
+            ytd = product_ytd or (others[0] if len(others) == 1 else later_year(table, current, others) if others else None)
+            basis = "left" if guessed else None
         else:
             current, ytd, decided_by, basis = order(table, made[0], made[1], head)
         roles[rate], roles[hours[current]] = "rate", "hours"

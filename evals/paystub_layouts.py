@@ -109,18 +109,18 @@ def settle(choices):
         c["ytd_hours"] = c["employer_col"] = False
     if c["totals"] == "none" and not c["box"]:
         c["totals"] = "gross_net"  # Without a gross total or a summary box a stub can't be cross-checked.
-    if not c["ytd"] and c["heading"] == "known2":
-        c["heading"] = "known1"  # A table of one amount column has no heading line of one word to stand over its label line.
     if c["totals"] != "all" and c["heading"] in ("unknown1", "unknown2", "none"):
         c["heading"] = "known1" if c["heading"] != "unknown2" else "known2"  # Without section totals the headings are what name the pay columns.
     if c["layout"] == "stacked" and (c["totals"] != "all" or c["heading"] == "none"):
         c["stack_heads"] = c["totals"] != "all"  # A table with no section total needs a heading of its own.
     if c["layout"] != "stacked":
         c["stack_heads"] = False
-    if c["sign"] != "plain" and ((c["layout"] == "stacked" and not c["stack_heads"]) or (c["layout"] == "side" and c["heading"] not in ("known1", "known2"))
-                                 or (c["layout"] == "stacked" and c["heading"] not in ("known1", "known2"))):
-        # Rows printed negative don't vote on this period (FR-57 c): a table of taxes alone with year to date on the left and no heading is a guess.
-        c["order"] = {"hr_yc": "hr_cy", "yc_hr": "cy_hr"}.get(c["order"], c["order"])
+    if not (c["hours"] and c["ytd"]):
+        c["hours_multiple"] = False
+    if c["hours_multiple"]:
+        c["ytd_hours"] = False  # A year-to-date hours column would make a third product (hours × rate); the rule needs two.
+    if c["layout"] != "stacked" or c["pages"] != 2:
+        c["break_table"] = 3
     if c["heading"] == "none":
         c["box_shuffled"] = c["box_shuffled"] and c["box_heads"] != "none"
     if c["box_heads"] == "none":
@@ -151,6 +151,8 @@ def draw(seed, index):
         "dates": pick(seed, "dates", index, ("date", "date", "both_date", "both_period")),
         "box_heads": pick(seed, "boxheads", index, ("known", "known", "none")), "box_shuffled": pick(seed, "boxshuffle", index, (False, True)),
         "stack_heads": pick(seed, "stackheads", index, (False, True)), "net_row": pick(seed, "netrow", index, (True, True, False)),
+        "hours_multiple": pick(seed, "hoursmultiple", index, (False, False, True)), "break_table": pick(seed, "breaktable", index, (3, 2)),
+        "lined_up": pick(seed, "linedup", index, (False, True)),
     })
 
 
@@ -192,8 +194,10 @@ class Case:
 
     def hourly(self, label, category, first):
         rng, c = self.rng, self.c
-        # Hours that equal the year-to-date multiple would make hours × current the year to date, a product the numbers can't tell from hours × rate.
+        # Hours that equal the year-to-date multiple make hours × current the year to date as well as hours × rate the current (`hours_multiple`, FR-92 e).
         hundredths = rng.choice([hours for hours in (800, 1250, 1600, 2400, 3200, 4000, 1000, 2050) if hours != self.multiple * 100])
+        if c["hours_multiple"]:
+            hundredths = self.multiple * 100  # After the draw, so the rest of the stub's numbers are the ones the draw gave.
         four = c["rate4"] and first
         rate = rng.randrange(1500, 9500) * 100 + (rng.choice((25, 50, 75)) if four else 0)
         multiple = self.multiple
@@ -440,8 +444,8 @@ class Case:
         order = self.elements(earnings, taxes, pre, totals, stacked)
         flat_break = None
         if c["pages"] == 2:
-            if stacked:  # Before the third table: a table that starts a page in the open one's columns would be read as its continuation.
-                flat_break = next(index for index, item in enumerate(order) if item == ("table", 3))
+            if stacked:
+                flat_break = next(index for index, item in enumerate(order) if item == ("table", c["break_table"]))
             else:
                 spot = max(index for index, item in enumerate(order) if item[0] == "row" and item[1]["group"] == "earnings")
                 flat_break = spot + 1 + (1 if c["totals"] != "none" else 0)
@@ -453,7 +457,9 @@ class Case:
                 state["items"] = []
                 self.page_header(state, state["lines"])
                 row_y = state["base"] - 24
-                if (not stacked or c["stack_heads"]) and c["heading"] != "none":
+                if stacked and c["break_table"] == 2:
+                    pass  # The second table's own heading or title opens the page (FR-92 b).
+                elif (not stacked or c["stack_heads"]) and c["heading"] != "none":
                     row_y = self.heading(state, row_y, cols, "Description" if c["heading"].startswith("known") else "Item", employer=c["employer_col"] and not stacked)
                 else:
                     row_y = state["base"] - 44
@@ -537,17 +543,19 @@ class Case:
         state["side_edge"] = left_columns[0][1]
         return row_y
 
-    def leave_edges(self, state):
+    def leave_edges(self, state, lined=False):
         """The right edges of the leave table's three columns: the contract's (which line up with the pay columns of a plain stub) unless one of its
         amounts would line up by its left, centre or right edge, within the engine's tolerance, with an amount already printed; then the first set
-        that doesn't. None when there is none."""
+        that doesn't. With `lined` (FR-92 f), the first set (the contract's, then the same scan) that does line up, by its left or centre edge, with
+        an amount already printed. None when there is none."""
         amounts = [(x, x + width(text)) for x, _, text in state["items"] if AMOUNT.fullmatch(text)]
-        aligned = lambda one, two: any(abs(a - b) <= 20 for a, b in ((one[0], two[0]), (one[1], two[1]), (sum(one) / 2, sum(two) / 2)))  # noqa: E731
+        pairs = lambda one, two: ((one[0], two[0]), (sum(one) / 2, sum(two) / 2)) if lined else ((one[0], two[0]), (one[1], two[1]), (sum(one) / 2, sum(two) / 2))  # noqa: E731
+        aligned = lambda one, two: any(abs(a - b) <= 20 for a, b in pairs(one, two))  # noqa: E731
         for first in (None, *range(60, 400, 10)):
             option = LEAVE_EDGES if first is None else (first + 90, first + 160, first + 230)
             leave = [(edge - width(text), edge) for edge, texts in zip(option, (("40.00", "24.00", "8.00"), ("8.00", "0.00", "24.00"), ("32.00", "24.00", "0.00")))
                      for text in texts]
-            if not any(aligned(one, two) for one in leave for two in amounts):
+            if any(aligned(one, two) for one in leave for two in amounts) == lined:
                 return option
         return None
 
@@ -571,7 +579,7 @@ class Case:
                     self.emit(state, edge, y - ROW * (2 + number), money(minor), right=True)
                 y -= ROW * 4
         if c["leave"]:
-            leave = self.leave_edges(state)
+            leave = self.leave_edges(state, c["lined_up"])
             if y - 24 - ROW * 3 < FLOOR or leave is None:
                 self.drawn["leave"] = False
             else:
@@ -649,6 +657,7 @@ REQUIRED = (
     "retro", "negative", "label_digits", "deductions:parens", "deductions:minus", "totals:all", "totals:some", "totals:none", "employer_column",
     "wrapped_label", "pages:2", "deposit_table", "leave_table", "stubs:1", "stubs:2", "stubs:3", "stubs:4", "employer:above", "employer:below",
     "date_and_period", "two_on_a_page", "summary_box:no_headings", "summary_box:shuffled",
+    "negative_rows:ytd_first_unheaded", "stacked:second_table_starts_page", "one_column:two_line_heading", "hours:ytd_multiple", "leave:lined_up",
 )
 
 
@@ -685,4 +694,16 @@ def variations(layout) -> set[str]:
         found.add("summary_box:no_headings")
     if c["box"] and c["box_shuffled"]:
         found.add("summary_box:shuffled")
+    if (c["sign"] != "plain" and c["ytd"] and c["order"] in ("hr_yc", "yc_hr")
+            and ((c["layout"] == "stacked" and not c["stack_heads"]) or (c["layout"] == "side" and c["heading"] not in ("known1", "known2"))
+                 or (c["layout"] == "stacked" and c["heading"] not in ("known1", "known2")))):
+        found.add("negative_rows:ytd_first_unheaded")  # Taxes and deductions printed negative, year to date on the left, nothing naming the columns.
+    if c["layout"] == "stacked" and c["pages"] > 1 and c["break_table"] == 2:
+        found.add("stacked:second_table_starts_page")
+    if not c["ytd"] and c["heading"] == "known2":
+        found.add("one_column:two_line_heading")
+    if c["hours_multiple"]:
+        found.add("hours:ytd_multiple")
+    if c["leave"] and c["lined_up"]:
+        found.add("leave:lined_up")
     return found
