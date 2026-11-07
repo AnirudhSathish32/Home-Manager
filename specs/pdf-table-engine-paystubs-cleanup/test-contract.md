@@ -84,7 +84,7 @@ Evidence: `pytest tests/test_paystub_engine_record.py -k sc63` and `pytest tests
 
 ## SC-94 — parity of the existing pay stub tests
 Requirement IDs: FR-95
-Each passes **unchanged**: `tests/test_layout_consumers.py` (all), `tests/test_paystub_forms.py` (all; its photo tests are
+Each passes **unchanged**: `tests/test_layout_consumers.py` (all but the two listed below), `tests/test_paystub_forms.py` (all; its photo tests are
 the photo path), `tests/test_paystub_split.py` (all), `tests/test_paystub_engine.py` (all; SC-58's `SECTION 125` still one
 amount), `tests/test_paystub_engine_generator.py` (all, with SC-91's variations added), `tests/test_vision_tables.py`,
 `tests/test_extraction.py`, `tests/test_table_engine*.py`.
@@ -93,7 +93,13 @@ Also: a file mixing a text page and a scanned page keeps the scanned page's visi
 `tests/test_paystub_engine_record.py::test_a_table_whose_columns_all_end_other_is_not_trusted_on_its_page` (its page 1
 is the sectioned payslip, now trusted: rewritten as SC-90 step 1's engine assertions, FR-89 – FR-91); the probe test in
 `tests/test_paystub_engine_generator.py` and `scripts/statement_diagnose.py` where they read `fallback_pages` (they report
-untrusted pages from `untrusted_pages` instead); `tests/test_evals.py` tests of the legacy pay reader (FR-96); unit tests
+untrusted pages from `untrusted_pages` instead);
+`tests/test_layout_consumers.py::test_a_sectioned_payslip_records_when_the_model_quotes_rows_without_separators` and
+`::test_a_pay_row_listed_again_is_one_pay_line` (their model stubs classified only 4 and 2 of the sectioned payslip's 11 pay
+rows, and the grid fallback recorded only those; with page 1 now read by the engine, phase 2 FR-62 records every printed
+row, so each stub classifies all 11 rows and each test asserts the 11 lines with their amounts, keeping what it checks:
+rows quoted without separators record; a row listed again is one pay line with no note; SL-02 escalation E-1);
+`tests/test_evals.py` tests of the legacy pay reader (FR-96); unit tests
 of removed code, each named in the handoff with the requirement that removes it.
 Evidence: the commands above.
 
