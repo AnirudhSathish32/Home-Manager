@@ -1,0 +1,27 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: pdf-table-engine-paystubs-cleanup
+plan_sha256: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14
+session_plan_hash: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14
+slices:
+  - id: SL-01
+    status: done
+    start_head: 7a10aaf
+    end_head: 2f34ece
+    commit: 9c5ddb5
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_pay_tables_repairs.py tests/test_paystub_engine.py -q -> 226 passed (orchestrator rerun)"
+      - "git diff 7a10aaf 2f34ece -- src -> empty (no source change)"
+    notes: >-
+      Eight tests, each revert-and-fail recorded in the handoff; revert 8 emulates the pre-02026cf offset_of/frame code.
+  - id: SL-02
+    status: in_progress
+    start_head: 2f34ece
+  - id: SL-03
+    status: todo
+  - id: SL-04
+    status: todo
+  - id: SL-05
+    status: todo
+final_verification: null
