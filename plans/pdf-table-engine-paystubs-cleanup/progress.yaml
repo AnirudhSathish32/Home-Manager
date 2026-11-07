@@ -68,6 +68,19 @@ slices:
       untrusted page holding a summary box stays in `pages` and so gets no FR-64 missing-table note (no fixture);
       test_sc65 docstring still says "today's path" (not on SC-94's edit list).
   - id: SL-05
-    status: in_progress
-    start_head: 14a4697
+    status: done
+    start_head: 6fb0570
+    end_head: 4fef0ee
+    commit: e7370f1
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_evals.py -q -> 27 passed (orchestrator rerun)"
+      - ".venv/bin/python -m evals.synthetic <tmp> -> 53 cases (orchestrator rerun)"
+      - ".venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only"
+    notes: >-
+      Stand-in left_out_stubs removed from evals/graders.py. Beyond contract (harmless): report.aggregate skips a `legacy`
+      entry under pay_readers so older results.jsonl re-report without KeyError. docs/documents.md gains a "Known limits"
+      list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
+      heading (line-wrapped or older); none touched by this feature.
 final_verification: null
