@@ -540,14 +540,18 @@ def test_a_tightly_padded_side_by_side_payslip_is_two_tables_with_every_amount_p
     assert [roles.roles for roles in found.roles] == [{column.id: role for column, role in zip(table.columns, ("current", "ytd"))} for table in found.tables]
 
 
-def test_a_table_whose_columns_all_end_other_is_not_trusted_on_its_page(tmp_path):
+def test_the_sectioned_payslip_page_is_trusted_and_read_in_full_by_the_engine(tmp_path):
+    """SC-94, rewritten for specs/pdf-table-engine-paystubs-cleanup: page 1's right block used to end with every column `other` (its one-run heading named
+    nothing), so the page was untrusted. FR-89 – FR-91 give both blocks their headings, roles and totals (SC-90 step 1 has the cell-level checks)."""
     from test_pdf_layout import sectioned_payslip_items
     benefits = {"items": [(60, 700, "Other Benefit And Information"), (250, 700, "This Period"), (320, 700, "Year to Date"),
                           (60, 685, "Co Match 401K"), (265, 685, "160.00"), (330, 685, "3,360.00")]}
     found = engine_of(tmp_path, [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()], [benefits])
-    assert found.fallback_pages == {1}  # Page 1's right block decided no column: its printed tables stay.
-    assert found.engine_pages == {2} and [table.id for table in found.adapted] == ["page-2-pay-1"]
-    assert found.pages_without_tables == [] and paystub_tables.for_lines(found, set(found.lines_of.values())).pages_without_tables == [1]
+    assert found.fallback_pages == set()  # Page 1 is trusted: no table's columns all ended other.
+    assert found.engine_pages == {1, 2} and [table.id for table in found.adapted] == ["page-1-pay-1", "page-1-pay-2", "page-2-pay-1"]
+    assert [list(roles.roles.values()) for roles in found.roles] == [["rate", "hours", "current", "ytd"], ["current", "ytd"], ["current", "ytd"]]
+    assert found.pages_without_tables == [] and found.other_tables == []
+    assert paystub_tables.for_lines(found, set(found.lines_of.values())).pages_without_tables == []
 
 
 # === SL-04: notes and guesses on the record, unclassified rows, the summary box =============================================

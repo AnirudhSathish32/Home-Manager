@@ -167,18 +167,25 @@ def products(table, head):
 
 
 def covered_rows(entries, position):
-    """The rows a total at `position` of the table's rows and totals covers: those since the previous total or the start of its section."""
-    covered = []
+    """The two row sets a total at `position` of the table's rows and totals may cover (FR-91): those since the previous total, and those since the
+    previous total or the title of the section it ends (one set when the table has no sections after the previous total)."""
+    wide, narrow = [], None
     for earlier in reversed(entries[:position]):
-        if isinstance(earlier, pay_tables.PayTotal) or (covered and earlier.section != covered[-1].section):
+        if isinstance(earlier, pay_tables.PayTotal):
             break
-        covered.append(earlier)
-    return covered
+        if narrow is None and wide and earlier.section != wide[-1].section:
+            narrow = list(wide)
+        wide.append(earlier)
+    return wide, wide if narrow is None else narrow
+
+
+def sum_of(rows, column):
+    return sum((value_of(row.amounts[column]) for row in rows if column in row.amounts), Decimal(0))
 
 
 def pay_columns(table):
-    """(b): the columns with at least one section total, each of which equals the sum of the rows it covers (since the previous total or the
-    start of the section)."""
+    """(b): the columns with at least one section total, each of which equals the sum of the rows it covers (since the previous total or since
+    the section title: FR-91)."""
     entries = sorted([*table.rows, *table.totals], key=lambda entry: entry.row)
     verdicts = {}
     for position, entry in enumerate(entries):
@@ -186,8 +193,7 @@ def pay_columns(table):
             continue
         covered = covered_rows(entries, position)
         for column, token in entry.values.items():
-            total = sum((value_of(row.amounts[column]) for row in covered if column in row.amounts), Decimal(0))
-            verdicts.setdefault(column, []).append(total == value_of(token))
+            verdicts.setdefault(column, []).append(any(sum_of(rows, column) == value_of(token) for rows in covered))
     return {column for column, verdict in verdicts.items() if all(verdict)}
 
 
@@ -619,11 +625,11 @@ def mismatches(pay):
         for position, entry in enumerate(entries):
             if not isinstance(entry, pay_tables.PayTotal) or entry.kind not in SECTION_TOTALS:
                 continue
-            covered = covered_rows(entries, position)
+            wide, narrow = covered_rows(entries, position)
             for column, token in entry.values.items():
-                rows = [row for row in covered if column in row.amounts]
-                total = sum((value_of(row.amounts[column]) for row in rows), Decimal(0))
-                if column in shown and rows and total != value_of(token):
+                rows = [row for row in wide if column in row.amounts]
+                total = sum_of(wide, column)
+                if column in shown and rows and not any(sum_of(covered, column) == value_of(token) for covered in (wide, narrow)):
                     notes.append(f'Page {entry.page}: the printed total "{entry.label}" {token.text} ({shown[column]}) doesn\'t match the lines above it, '
                                  f"which add up to {total:,.{places_of(value_of(token))}f}.")
     return notes

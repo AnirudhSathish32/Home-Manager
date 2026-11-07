@@ -5,8 +5,8 @@ randomness, and it never opens the PDF. It reuses the engine's primitives (token
 from `finance/`. `table_engine.read`, `build_layout`, `scan`, `cuts` and `continuation` are not changed, so statements can't move (FR-67).
 
 What it finds. A pay row starts at a visual line whose first run is text (the label) and that holds an amount in a run not led by text; no date
-or heading is needed (FR-50). Integers and numbers joined to letters stay label text (FR-51). A page whose lines carry a second label-and-amounts
-group is split into two blocks, each read on its own (FR-53). Columns come from alignment alone, headings only label them (FR-52). Section titles
+or heading is needed (FR-50). Numbers joined to letters stay label text (FR-51), and so do integers, except whole numbers that line up in a column
+of their own (`80` hours: FR-90). A page whose lines carry a second label-and-amounts group is split into two blocks, each read on its own (FR-53). Columns come from alignment alone, headings only label them (FR-52). Section titles
 at the label column's left edge, indented wrapped labels, and totals lines are told from rows (FR-54, FR-55). A table ends after its net pay
 total, at a heading line of other words, at a stub start line (a pay date or pay period line), and where a row's amounts share no column with it;
 a later page whose rows fit the columns at a page offset continues it. Two rows of four or more amounts whose largest is the sum of three others
@@ -28,6 +28,7 @@ from .table_engine import (
     Line,
     PageView,
     Token,
+    amount_of,
     choose_alignments,
     cluster,
     edge_of,
@@ -157,6 +158,11 @@ def is_title_like(line):
     return len(line.runs) == 1 and text_only(line)
 
 
+def lone_integer(tokens):
+    """Whether a run is one integer and nothing else (`80` under a Hours heading): never the start of a second label (FR-90)."""
+    return len(tokens) == 1 and tokens[0].kind == "integer"
+
+
 def run_text(run):
     return " ".join(word.text for word in run)
 
@@ -208,7 +214,9 @@ def split_tails(line):
     in a tightly padded payslip). When amounts follow it, the label starts a run of its own, so the line reads as two label-and-amounts groups."""
     runs, tokens = [], []
     for run, found in zip(line.runs, line.tokens):
-        cut = next((i for i in range(1, len(found)) if found[i - 1].kind == "amount" and found[i].kind in ("text", "integer")), None)
+        # A lone integer after an amount (`80` in an hours column) is no second label (FR-90).
+        cut = next((i for i in range(1, len(found)) if found[i - 1].kind == "amount" and (found[i].kind == "text" or found[i].kind == "integer" and i < len(found) - 1)),
+                   None)
         first_word = found[cut].word_ids[0] if cut is not None else None
         position = next((i for i, word in enumerate(run) if word.id == first_word), None)
         if position is None:
@@ -228,7 +236,8 @@ def group_starts(line):
     if not line.runs or not line.led_by_text[0]:
         return []
     amounts = amount_runs(line)
-    return [index for index in range(1, len(line.runs)) if line.led_by_text[index] and any(j < index for j in amounts) and any(j > index for j in amounts)]
+    return [index for index in range(1, len(line.runs)) if line.led_by_text[index] and not lone_integer(line.tokens[index])
+            and any(j < index for j in amounts) and any(j > index for j in amounts)]
 
 
 def block_split(view, lines, tolerance):
@@ -363,14 +372,17 @@ def finish_box(builder, ids_line, view):
     return SummaryBox(builder.entries[0]["page"], ids_line, columns, rows, builder.id)
 
 
-def heading_runs(view, lines, zones=()):
+def heading_runs(view, lines, zones=(), edge=None):
     """The heading lines' runs as (text, box, word ids). A run is split where its words are further apart than a space and lie in the zones of
-    different columns (two headings printed close enough to read as one phrase: `This Period` `Year to Date`)."""
+    different columns (two headings printed close enough to read as one phrase: `This Period` `Year to Date`: FR-89). Words that start at or past
+    `edge` belong to the next block and are cut off (the right block's label printed in the left block's run)."""
     made = []
     for line in lines:
         for run in line.runs:
             pieces, last = [], None
             for word in run:
+                if edge is not None and view.box[word.id][0] >= edge:
+                    break
                 box = view.box[word.id]
                 zone = next((number for number, found in enumerate(zones) if in_zone(box, found)), None)
                 if pieces and not (zone is not None and last is not None and zone != last[0] and box[0] - last[1] > view.size / 2):
@@ -416,12 +428,20 @@ def find_boxes(number, view, bl, tolerance, found_boxes, taken=frozenset()):
     return consumed
 
 
-def heads_above(bl, consumed, index):
-    """The heading lines directly above a line, top to bottom: up to two, with at most one title line between them and the row."""
+def splits_by_column(line, view, zones, edge):
+    """Whether an all-text line of one run prints words over two or more columns, so it is a heading line though it is one run (FR-89)."""
+    if not zones or not is_title_like(line):
+        return False
+    return sum(any(in_zone(box, zone) for zone in zones) for _, box, _ in heading_runs(view, [line], zones, edge)) >= 2
+
+
+def heads_above(bl, consumed, index, wide=None):
+    """The heading lines directly above a line, top to bottom: up to two, with at most one title line between them and the row. `wide` is
+    (view, zones, edge) when a one-run line printed over two columns counts as a heading line too."""
     found, skipped, above = [], False, index - 1
     while above >= 0 and len(found) < 2 and above not in consumed:
         line = bl[above]
-        if is_heading_like(line):
+        if is_heading_like(line) or (wide is not None and splits_by_column(line, *wide)):
             found.append(above)
         elif not found and not skipped and is_title_like(line):
             skipped = True
@@ -515,18 +535,55 @@ def key_of(gid, mapping, number):
     return mapping.get(gid, (number, gid)) if mapping else (number, gid)
 
 
-def read_block(number, view, bl, name, previous, made, boxes, serial, taken=frozenset(), stub=None, starts=None, whole=None):
+def group_of(entries, positions, alignment):
+    return Group(alignment, median(edge_of(entries[position][0].box, alignment) for position in positions),
+                 span([entries[position][0] for position in positions]), [entries[position][0].box for position in positions])
+
+
+def zones_of(groups, size):
+    """The zones of a block's columns, left to right: each runs to the midpoint with its neighbour, the outer ones past their extent."""
+    extents = sorted((group.extent for group in groups), key=sum)
+    if not extents:
+        return []
+    centres = [sum(extent) / 2 for extent in extents]
+    gaps = [right - left for left, right in zip(centres, centres[1:])]
+    return zones_between(extents, median(gaps) / 2 if gaps else size * LONE_REACH)
+
+
+def whole_columns(pay, groups, tolerance):
+    """Tentative columns of whole numbers (FR-90, plan P1 step 2): the pay lines' runs (not the label's) holding one integer whose edge, at every
+    alignment, is further than `tolerance` from every decimal column's, grouped by alignment like amounts. Each is (alignment, [(token, line index)]).
+    A column of one row is allowed here: a heading over it decides whether it stays."""
+    entries = [(token, line.index) for line in pay for tokens, led in zip(line.tokens[1:], line.led_by_text[1:]) if led and lone_integer(tokens)
+               for token in tokens if all(abs(edge_of(token.box, align) - group.edge_at(align)) > tolerance for group in groups for align in ALIGNMENTS)]
+    return [(alignment, [entries[position] for position in positions]) for alignment, positions in choose_alignments(entries, tolerance, lambda *_: 1)]
+
+
+def with_whole_numbers(bl, kept):
+    """(`bl` with the integers of the kept columns made amounts, old token id to new token). An amount token as phase 1's `read_line` makes one, and the
+    run is no longer led by text, so the rest of the reader sees it (`table_engine` is not changed: FR-67)."""
+    swap = {id(token): Token("amount", token.word_ids, token.box, token.text, amount_of(token.text)) for _, column in kept for token, _ in column}
+    lines = []
+    for line in bl:
+        if any(id(token) in swap for run in line.tokens for token in run):
+            tokens = [[swap.get(id(token), token) for token in run] for run in line.tokens]
+            led = [flag and not any(id(token) in swap for token in run) for flag, run in zip(line.led_by_text, line.tokens)]
+            line = Line(line.index, line.words, line.runs, tokens, led)
+        lines.append(line)
+    return lines, swap
+
+
+def read_block(number, view, bl, name, previous, made, boxes, serial, taken=frozenset(), stub=None, starts=None, whole=None, edge=None):
     """One block of a page: its summary boxes, then its tables and unplaced lines. `taken` is the lines of a summary box found across the whole page
     (before the page was split into blocks); `stub` is the dates printed on the start lines of the stub being read, kept across pages: a start line
     that prints only dates already in it repeats the stub's heading (a later page), so it doesn't end the open table. `starts`: the page's stub start
-    lines (line index to its dates), found on the whole line, so that a block the start line leaves empty ends its table too. Returns (tables still
-    open, unplaced lines)."""
+    lines (line index to its dates), found on the whole line, so that a block the start line leaves empty ends its table too. `edge`: for the left block
+    of a page, where the right block starts (heading words from there on are not this block's). Returns (tables still open, unplaced lines)."""
     stub = set() if stub is None else stub
     starts, whole = starts or {}, whole or {}
     tolerance = view.size * ALIGN
     consumed = find_boxes(number, view, bl, tolerance, boxes, taken)
     pay = [line for line in bl if line.index not in consumed and is_pay(line)]
-    pay_index = {line.index for line in pay}
     attached = {index for line in pay for index in heads_above(bl, consumed, line.index)}
     entries = [(token, line.index) for line in pay for token in amounts_of(line)]
 
@@ -536,18 +593,36 @@ def read_block(number, view, bl, name, previous, made, boxes, serial, taken=froz
                                               for run in bl[index].runs) for index in attached) else 0
 
     found = choose_alignments(entries, tolerance, supported)
-    groups = {gid: Group(alignment, median(edge_of(entries[position][0].box, alignment) for position in positions),
-                         span([entries[position][0] for position in positions]), [entries[position][0].box for position in positions])
-              for gid, (alignment, positions) in enumerate(found)}
+    groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
+    tentative = whole_columns(pay, groups.values(), tolerance)
+    if tentative:
+        # Whole-number columns (FR-90): zones are drawn with the tentative columns, the heading lines are cut into pieces over those zones, and a
+        # column stays when a piece sits over it or two rows line up in it; the other columns' integers stay text.
+        extra = [Group(alignment, median(edge_of(token.box, alignment) for token, _ in column), span([token for token, _ in column]),
+                       [token.box for token, _ in column]) for alignment, column in tentative]
+        every = [*groups.values(), *extra]
+        zones = zones_of(every, view.size)
+        zone_of = {id(group): zone for group, zone in zip(sorted(every, key=lambda group: sum(group.extent)), zones)}
+        heads = {index for line in pay for index in heads_above(bl, consumed, line.index, (view, zones, edge))}
+        pieces = [box for index in heads for _, box, _ in heading_runs(view, [bl[index]], zones, edge)]
+        kept = [column for column, group in zip(tentative, extra)
+                if len({index for _, index in column[1]}) >= 2 or any(in_zone(box, zone_of[id(group)]) for box in pieces)]
+        if kept:
+            old = [token for token, _ in entries]
+            bl, swap = with_whole_numbers(bl, kept)
+            pay = [line for line in bl if line.index not in consumed and is_pay(line)]
+            entries = [(token, line.index) for line in pay for token in amounts_of(line)]
+            at = {id(token): position for position, (token, _) in enumerate(entries)}
+            decimal = [(alignment, [at[id(swap.get(id(old[position]), old[position]))] for position in positions]) for alignment, positions in found]
+            whole_found = [(alignment, [at[id(swap[id(token)])] for token, _ in column]) for alignment, column in kept]
+            found = sorted([*decimal, *whole_found], key=lambda item: min(item[1]))
+            groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
+    zones = zones_of(groups.values(), view.size)
+    pay_index = {line.index for line in pay}
+    attached = {index for line in pay for index in heads_above(bl, consumed, line.index, (view, zones, edge))}
     slots = {}
     place(slots, [(line.index, amounts_of(line)) for line in pay], found)
     sets = column_sets(slots)
-    zones = []
-    if groups:
-        extents = sorted((group.extent for group in groups.values()), key=sum)
-        centres = [sum(extent) / 2 for extent in extents]
-        gaps = [right - left for left, right in zip(centres, centres[1:])]
-        zones = zones_between(extents, median(gaps) / 2 if gaps else view.size * LONE_REACH)
 
     def repeats(line, builder):
         """Whether a heading line only repeats the open table's own: its words are the table's, and the row after it prints in the table's columns
@@ -594,7 +669,8 @@ def read_block(number, view, bl, name, previous, made, boxes, serial, taken=froz
         if index in consumed or not line.runs:
             last = title = None
             continue
-        if index in attached and any(in_zone(union(view.box[word.id] for word in run), zone) for run in line.runs for zone in zones):
+        if index in attached and any(in_zone(box, zone) for box in (*(union(view.box[word.id] for word in run) for run in line.runs),
+                                                                     *(box for _, box, _ in heading_runs(view, [line], zones, edge))) for zone in zones):
             if cur is not None and repeats(line, cur):
                 last = title = None  # The table's own heading, repeated: ignored (FR-55).
                 continue
@@ -616,7 +692,7 @@ def read_block(number, view, bl, name, previous, made, boxes, serial, taken=froz
                 heads = [bl[item] for item in pending]
                 above = bl[pending[0] - 1] if pending and pending[0] > 0 and pending[0] - 1 not in consumed else None
                 serial[0] += 1
-                cur = Builder(f"page-{number}-pay-{serial[0]}", name, view.size, heading_runs(view, heads, zones), [line_text(item) for item in heads],
+                cur = Builder(f"page-{number}-pay-{serial[0]}", name, view.size, heading_runs(view, heads, zones, edge), [line_text(item) for item in heads],
                               words_of(heads), line_text(above) if above is not None and is_title_like(above) else None)
                 made.append(cur)
                 pending, mapping, offset, section = [], None, 0.0, None
@@ -681,12 +757,14 @@ def read(result):
         taken = find_boxes(number, view, lines, view.size * ALIGN, boxes)  # A summary box above side-by-side blocks spans both (FR-53, FR-75).
         blocks = blocks_of(view, lines, view.size * ALIGN)
         names = ("left", "right") if len(blocks) == 2 else (None,)
+        split = block_split(view, lines, view.size * ALIGN)
+        edges = (split - view.size * ALIGN, None) if len(blocks) == 2 else (None,)
         starts = {line.index: stub_dates(line) for line in lines if starts_stub(line)}
         whole = {line.index: len(line.runs) for line in lines}  # How many runs each line has across the whole page (blocks cut it).
         serial, still, extra = [0], [], []
         before = len(made)
-        for name, bl in zip(names, blocks):
-            kept, lost = read_block(number, view, bl, name, previous, made, boxes, serial, taken, stub.setdefault(name, set()), starts, whole)
+        for name, bl, edge in zip(names, blocks, edges):
+            kept, lost = read_block(number, view, bl, name, previous, made, boxes, serial, taken, stub.setdefault(name, set()), starts, whole, edge)
             still += kept
             extra += lost
         created = made[before:]
