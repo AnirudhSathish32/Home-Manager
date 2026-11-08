@@ -567,6 +567,93 @@ def test_sc91_f_r3_a_a_one_piece_leave_heading_over_a_one_column_leave_row_is_a_
     assert [[row.label for row in other.rows] for other in found.other_tables] == [["Vacation", "Sick"]] and found.unplaced == []
 
 
+# --- A one-row table whose two headings print so close that they read as one run (user report, SL-11) -------------------------------------------
+
+def right_of(edge, y, text):
+    return (round(edge - width(text), 3), y, text)
+
+
+def co_match(x, y, current, ytd, shift=0):
+    """`Other Benefit And Information` / `This Period` / `Year to Date` over the one row `Co Match 401K 133.05 266.10`: the amounts end at `current` and `ytd`,
+    `Year to Date` ends at `ytd` and `This Period` is centred over the first amount, moved `shift` points."""
+    centre = current - width("133.05") / 2
+    return [(x, y, "Other Benefit And Information"), (round(centre - width("This Period") / 2 + shift, 3), y, "This Period"), right_of(ytd, y, "Year to Date"),
+            (x, y - 15, "Co Match 401K"), right_of(current, y - 15, "133.05"), right_of(ytd, y - 15, "266.10")]
+
+
+def read_with_runs(monkeypatch, folder, pages):
+    """The engine's reading of the pages, and the text of the runs of each line holding `This Period` as read_block saw them."""
+    seen, read_block = [], pay_tables.read_block
+
+    def spy(number, view, bl, *args, **kwargs):
+        seen.extend([" ".join(word.text for word in run) for run in line.runs] for line in bl if any(word.text == "Period" for word in line.words))
+        return read_block(number, view, bl, *args, **kwargs)
+    monkeypatch.setattr(pay_tables, "read_block", spy)
+    return paystub_tables.read(fx.read_pdf(folder, pages)), seen
+
+
+def pay_cells(found):
+    return [([found.roles[number].roles[column.id] for column in table.columns],
+             [(row.label, [row.amounts[column.id].text for column in table.columns if column.id in row.amounts]) for row in table.rows])
+            for number, table in enumerate(found.tables)]
+
+
+def test_sc89_sl11_a_one_row_table_under_two_headings_read_as_one_run_has_both_columns(tmp_path, monkeypatch):
+    """FR-89 for one row (SL-11): the page holds only the heading line and `Co Match 401K 133.05 266.10`. `This Period` is centred over 133.05 (ending at
+    290) and `Year to Date` ends at 266.10 (365); moved 3 points either way or not at all, the two print less than a font size apart, so the reader
+    joins them as ONE run `This Period Year to Date` (asserted). The run's right edge is 266.10's only, so the one-row `This Period` column
+    needs the edge of its own piece: one pay table, columns current and ytd, 133.05 and 266.10, labelled `This Period` and `Year to Date`."""
+    for shift in (-3, 0, 3):
+        folder = tmp_path / str(shift)
+        folder.mkdir()
+        found, runs = read_with_runs(monkeypatch, folder, [{"items": co_match(40, 700, 290, 365, shift)}])
+        assert [len(line) for line in runs] == [2] and runs[0][0] == "Other Benefit And Information" and runs[0][1].startswith("This Period"), (shift, runs)
+
+        [table] = found.tables
+        assert pay_cells(found) == [(["current", "ytd"], [("Co Match 401K", ["133.05", "266.10"])])], shift
+        assert [column.labels for column in table.columns] == [["This Period"], ["Year to Date"]], shift
+        assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == [], shift
+
+
+def test_sc89_sl11_b_the_same_one_row_table_under_net_payment_with_the_earnings_edges_has_both_columns(tmp_path, monkeypatch):
+    """The sectioned payslip's page 1 with the one-row table below Net Payment at the left, its amounts ending at the earnings columns' edges (268 and 334,
+    `This Period` / `Year to Date` right-aligned there, so they read as one run: asserted). Co Match 401K is current 133.05 and ytd 266.10 in a
+    pay table of its own; the payslip's own tables are as in SC-90."""
+    items = [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items(),
+             (30, 85, "Other Benefit And Information"), right_of(268, 85, "This Period"), right_of(334, 85, "Year to Date"),
+             (30, 70, "Co Match 401K"), right_of(268, 70, "133.05"), right_of(334, 70, "266.10")]
+    found, runs = read_with_runs(monkeypatch, tmp_path, [{"items": items}])
+    assert ["Other Benefit And Information", "This Period Year to Date"] in runs
+
+    [table] = [table for table in found.tables if any(row.label == "Co Match 401K" for row in table.rows)]
+    assert [row.label for row in table.rows] == ["Co Match 401K"]
+    assert (cell(table, "Co Match 401K", table.columns[0]).text, cell(table, "Co Match 401K", table.columns[1]).text) == ("133.05", "266.10")
+    assert roles_of(found, table) == ["current", "ytd"] and [column.labels for column in table.columns] == [["This Period"], ["Year to Date"]]
+    assert found.unplaced == []
+
+
+def test_sc89_sl11_c_the_tight_benefits_page_gives_the_record_line_both_amounts(pdf_store, local_model):
+    """End to end (SL-11): the sectioned payslip with a page-two benefits table in the tight layout of test (a) (label at 60, `This Period` centred over 133.05
+    ending at 290, `Year to Date` ending at 266.10's 365): the Co Match 401K line of the record is copied from the engine's cells, current 13305 and ytd 26610."""
+    run = sectioned_run(pdf_store, local_model, benefits={"items": co_match(60, 700, 290, 365)})
+    [line] = [line for line in run.record["lines"] if line["description"] == "Co Match 401K"]
+    assert (line["current_minor"], line["ytd_minor"]) == (13305, 26610)
+
+
+def test_sc89_sl11_guard_a_one_row_amount_under_pieces_that_do_not_line_up_with_it_gets_no_column(tmp_path, monkeypatch):
+    """The piece rule does not widen the two-support rule (FR-67, `choose_alignments`): `This Period` ends at 268 and `Year to Date` at 334 (one run, asserted)
+    over `Co Match 401K` with 133.05 ending at 280 and 266.10 at 334. 280 is 12 points from the piece's right edge (268; the tolerance is 7.5) and no left
+    edge or centre of the run or its pieces is within 7.5 of the amount's either, so the lone amount has no heading support: only the Year to Date
+    column forms, with 266.10, and 133.05 stays a stray of its row."""
+    items = [(30, 700, "Other Benefit And Information"), right_of(268, 700, "This Period"), right_of(334, 700, "Year to Date"),
+             (30, 685, "Co Match 401K"), right_of(280, 685, "133.05"), right_of(334, 685, "266.10")]
+    found, runs = read_with_runs(monkeypatch, tmp_path, [{"items": items}])
+    assert runs == [["Other Benefit And Information", "This Period Year to Date"]]
+
+    assert pay_cells(found) == [(["ytd"], [("Co Match 401K", ["266.10"])])]
+    assert [stray.text for stray in found.tables[0].rows[0].stray] == ["133.05"]
+
+
 # --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94)----------------------------------------------------
 
 def printed_grid_ids(run):
@@ -589,10 +676,10 @@ def check_no_grid(run):
     assert not [table for tables in asked for table in tables if table["table_id"] in grid]
 
 
-def sectioned_run(pdf_store, local_model):
+def sectioned_run(pdf_store, local_model, benefits=BENEFITS):
     """The record test's sectioned payslip file (page 1 and the benefits page) with the model stubs of test_layout_consumers: every row classified and
     the summary cited from the lines, so the values must come from the engine's cells."""
-    run = started(pdf_store, local_model, [{"items": [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()]}, BENEFITS],
+    run = started(pdf_store, local_model, [{"items": [(30, 760, "SYNTH CONSULTING LTD"), (30, 745, "Currency USD"), *sectioned_payslip_items()]}, benefits],
                   name="sectioned.pdf")
     rows = [("Regular Salary", "earnings", "regular_pay"), ("Relocation Bonus", "earnings", "bonus"), ("Federal Tax", "tax", "federal_income_tax"),
             ("Social Security Tax", "tax", "social_security"), ("Medicare Tax", "tax", "medicare"), ("GA State Tax", "tax", "state_income_tax"),

@@ -801,7 +801,8 @@ words and their positions, with no model and no network; the same input gives th
   such rows is kept only with a heading over it and two rows lined up in it; and the row is a pay row only when every one of its
   numbers is read as an amount. A details-box line (`Federal Allowances 2`) above the first heading, or a number under no
   heading, stays text. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
-  one line of words that fall over two or more columns, such as "This Period Year To Date"), only label them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
+  one line of words that fall over two or more columns, such as "This Period Year To Date"), only label them. A column of one row has the second point of support (`choose_alignments`) from a heading run only when its edge
+  lines up with the amount's; where two close headings read as one run (`This Period Year to Date`), the edge of a piece of the run (`This Period`) counts too. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
   a row joins that row's label (a wrapped label). A different column set starts a table of its own (stacked Earnings / Taxes /
   Deductions tables); so does a heading after a totals line, so a leave table whose columns line up with a pay column doesn't merge with it: two or more
   runs of words, or one run that holds a leave or deposit heading word (accrued, accrual(s), balance(s), used, available, remaining, carryover, deposit(s), account,

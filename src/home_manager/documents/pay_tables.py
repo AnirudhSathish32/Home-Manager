@@ -720,8 +720,9 @@ def read_block(number, view, bl, name, previous, made, boxes, serial, taken=froz
 
     def supported(rows, alignment, centre):
         first = min(rows)
-        return 1 if any(index < first and any(abs(edge_of(union(view.box[word.id] for word in run), alignment) - centre) <= tolerance
-                                              for run in bl[index].runs) for index in attached) else 0
+        # A run joining two close headings (`This Period Year to Date`) supports a one-row column by a piece's edge too: docs/documents.md "Pay stub rows from the printed columns".
+        return 1 if any(index < first and any(abs(edge_of(union(view.box[word.id] for word in piece), alignment) - centre) <= tolerance
+                                              for run in bl[index].runs for piece in [run, *run_pieces(view, run, edge=edge)]) for index in attached) else 0
 
     found = choose_alignments(entries, tolerance, supported)
     groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
