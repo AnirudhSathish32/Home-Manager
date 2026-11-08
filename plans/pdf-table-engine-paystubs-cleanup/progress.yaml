@@ -1,8 +1,8 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: pdf-table-engine-paystubs-cleanup
-plan_sha256: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
+plan_sha256: 884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815
 previous_plan_sha256: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14  # re-approved 2026-11-07 after SC-94 amendment (SL-02 E-1)
-session_plan_hash: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
+session_plan_hash: 884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815  # re-approved 2026-11-07 after P1 step 7 amendment (R1-1); before: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
 slices:
   - id: SL-01
     status: done
@@ -84,7 +84,7 @@ slices:
       list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
       heading (line-wrapped or older); none touched by this feature.
   - id: SL-06
-    status: blocked
+    status: in_progress
     title: "fixes for code review round 1"
     start_head: c1cbcf3
     end_head: f3512ce
@@ -126,6 +126,9 @@ code_review:
         disposition: "fix in SL-06 (cheap, money-relevant note)"
     unresolved_risks:
       - "Continuation bound 0.75 font sizes (approved): an 8 pt shift moves page 2 rows to an other table and the page reads flat with the note."
+  - id: SL-07
+    status: todo
+    title: "FR-90 rows printed in whole numbers only (R1-1, plan P1 step 7)"
 final_verification:
   head: 90983bc
   commands:
