@@ -180,6 +180,20 @@ code_review:
         disposition: "user chose: fix in SL-08 with a column-geometry rule, then Codex round 3 (budget +1 by the user)"
     unresolved_risks:
       - "Integers printed under a recognised Current heading (metadata) can become pay amounts (accepted P1 risk R-B)."
+  - round: 3
+    reviewer: codex/gpt-6.1-sol (reasoningEffort high), 0 helpers
+    independence: model-family
+    risk: HIGH
+    reviewed_head: 69dbbe1 (diff 1e5a909..91b5829, SL-08 only)
+    verdict: request changes (1 MAJOR)
+    prior_findings: "R2-2 resolved (Used Balance keeps Retro Pay 225.58; one-word, gap, 3/4-amount variants pass). R2-1 not fully resolved (R3-1)."
+    findings:
+      - id: R3-1
+        severity: MAJOR
+        what: "wide_heading (pay_tables.py:287) checks units only against the next pay line's amounts, so after a totals line a sparse next row (Travel 6.00, YTD blank) lets a one-word centred title (Reimbursements, Deductions) or a 3-word centred title (Health Insurance Premiums) cut: the row goes to unplaced with the 'wasn't recorded' note. fe54dae and 1e5a909 kept it. docs/documents.md Known limits ('4 or more words, aligned with every amount') does not describe this."
+        orchestrator_check: "reproduced: /tmp/codex-r3/sparse_title_regression.py fails at HEAD (pay rows Regular, Overtime; unplaced 'Travel 6.00'); /tmp/codex-r3/title_repro.py shows the same for 'Vision 6.00'."
+        disposition: "PENDING: review rounds exhausted (3/3) with a MAJOR open; escalated to the user."
+    checks_passed: "targeted 6 files 676 passed; test_table_engine 280 passed (FR-67 diff empty since ef7cff3); PS-CONT, PS-OTHER, STK, 8 repairs, FR-92 (f), SC-90 pass."
 final_verification:
   head: 821251a
   commands:
@@ -195,4 +209,4 @@ final_verification:
     tax_zen, tax_family, scenarios, cpa_pack): no failure introduced by this feature. Supersedes the run at 90983bc (before
     the review fixes SL-06 - SL-08).
   verdict: "pass (no new failures; pre-existing failures recorded)"
-  pending: "code review round 3 (Codex) on SL-08: PENDING REVIEW, Codex budget 2/2 spent; user to raise codex_budget_per_feature to 3"
+  pending: "code review round 3 done (request changes, R3-1 MAJOR open); decision with the user"
