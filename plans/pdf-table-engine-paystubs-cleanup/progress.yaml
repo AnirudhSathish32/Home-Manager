@@ -83,6 +83,35 @@ slices:
       entry under pay_readers so older results.jsonl re-report without KeyError. docs/documents.md gains a "Known limits"
       list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
       heading (line-wrapped or older); none touched by this feature.
+  - id: SL-06
+    status: in_progress
+    title: "fixes for code review round 1"
+    start_head: fe54dae
+code_review:
+  - round: 1
+    reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
+    independence: model-family
+    risk: HIGH
+    reviewed_head: fe54dae
+    verdict: request changes (2 MAJOR, 1 MINOR)
+    findings:
+      - id: R1-1
+        severity: MAJOR
+        what: "FR-90: a headed table whose amounts are all bare integers (Current 100 / YTD 1300) is not read: integer promotion only runs on lines that are already pay lines (plan P1)."
+        orchestrator_check: "reproduced (tables=[], pages_without_tables=[1]); identical at 7a10aaf, so not a regression; page reads flat with the FR-64 note."
+        disposition: "escalated to user: plan P1 deliberately limits promotion to pay lines (R-B risk); extending it changes the approved plan."
+      - id: R1-2
+        severity: MAJOR
+        what: "FR-92 (f): tables_cut only cuts at is_heading_like (two or more runs); a leave table under a separate title and a one-run heading merges with the pay columns, Retro Pay leaves the pay table."
+        orchestrator_check: "reproduced with the reviewer's probe (one_run: pay table keeps Base Pay only; two_runs: both rows)."
+        disposition: "fix in SL-06"
+      - id: R1-3
+        severity: MINOR
+        what: "FR-93/FR-64: an untrusted page holding a summary box stays in `pages`, so `without` and the NO_PAY_TABLE filter (extraction.py `page not in part.pages`) drop its note while its amounts come from the model."
+        orchestrator_check: "reproduced (untrusted_pages={1}, engine_pages=[], pages_without_tables=[], no page note)."
+        disposition: "fix in SL-06 (cheap, money-relevant note)"
+    unresolved_risks:
+      - "Continuation bound 0.75 font sizes (approved): an 8 pt shift moves page 2 rows to an other table and the page reads flat with the note."
 final_verification:
   head: 90983bc
   commands:
