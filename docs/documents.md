@@ -858,8 +858,8 @@ words and their positions, with no model and no network; the same input gives th
   - A whole number printed within 1.5 font sizes after an amount in the same run (`25.00 40` in tight columns) stays inside the
     amount's run and is not seen as a column.
   - A headless stub whose hours or rate print on one row only has no column to form from one unheaded row.
-  - A page the engine does not trust is read like flat text: its amounts come from the model with the column checks, and a
-    summary box on such a page does not add the "no pay table" note. A stub that read right only through the reader's
+  - A page the engine does not trust is read like flat text: its amounts come from the model with the column checks, with the
+    "no pay table" note (a summary box on the page still gives its own cells). A stub that read right only through the reader's
     printed tables, in a layout no fixture covers, now reads flat and may go to review. Accuracy on real stubs is unmeasured
     ([open work](open-work.md#pdf-table-engine)).
   - With the engine down, the column checks on the flat lines run only while the part's classification is still pay stub; a

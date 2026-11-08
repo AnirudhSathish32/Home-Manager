@@ -84,13 +84,14 @@ class PaystubTables:
     guesses: list[Guess]
     unplaced: list[pay_tables.Unplaced]
     pages: set[int]  # Pages holding an engine pay table or summary box.
-    pages_without_tables: list[int]
+    pages_without_tables: list[int]  # Pages Record reads like flat text; an untrusted page is one even when a summary box holds it in `pages`.
     viewer: list[dict] = field(default_factory=list)  # Filled with the tables tab's data by a later slice.
     adapted: list = field(default_factory=list)  # `tables` in Record's shape (P4), on the pages Record can read; roles by cell index.
     engine_pages: set[int] = field(default_factory=set)  # Pages holding an adapted pay table: Record takes its cells there.
     lines_of: dict[str, str] = field(default_factory=dict)  # A layout line id to the evidence line id that holds its words.
     line_pages: set[int] = field(default_factory=set)  # Pages that have evidence lines.
     box_cells: dict = field(default_factory=dict)  # Box id to {current|ytd: {gross|taxes|deductions|net: cell}}, Record's cells for the summary box (FR-75).
+    untrusted: set[int] = field(default_factory=set)  # Pages with a pay table the engine doesn't trust (`untrusted_pages`): they always get FR-64's note.
 
 
 # --- Headings and numbers ------------------------------------------------------------------------------------------------
@@ -573,7 +574,7 @@ def for_lines(pay, line_ids):
     return replace(pay, tables=[table for table, _ in pairs], roles=[roles for _, roles in pairs], other_tables=others, boxes=boxes,
                    box=({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), notes=[guess.text for guess in guesses], guesses=guesses,
                    unplaced=unplaced, pages=engine_pages | {box.page for box in boxes}, pages_without_tables=[page for page in sorted(pay.pages_without_tables) if page in pages],
-                   adapted=adapted, engine_pages=engine_pages, box_cells={box.id: pay.box_cells[box.id] for box in boxes if box.id in pay.box_cells})
+                   adapted=adapted, engine_pages=engine_pages, untrusted=pay.untrusted & pages, box_cells={box.id: pay.box_cells[box.id] for box in boxes if box.id in pay.box_cells})
 
 
 def replace_rows(table, rows):
@@ -673,9 +674,10 @@ def read(evidence):
             guesses += made
     distrusted = distrusted_pages(tables, roles)
     pages = ({page for table in tables for page in table.pages} - distrusted) | {box.page for box in boxes}
-    without = sorted(set(reading.pages_without_tables) | distrusted - pages | ({page for table in others for page in table.pages} - pages))
+    without = sorted(set(reading.pages_without_tables) | distrusted | ({page for table in others for page in table.pages} - pages))
     found = PaystubTables(tables, others, roles, ({"current": boxes[0].current, "ytd": boxes[0].ytd} if boxes else None), boxes,
                           [guess.text for guess in guesses], guesses, [line for line in reading.unplaced if line.page in pages], pages, without)
+    found.untrusted = distrusted
     found.adapted = adapt(found, evidence)
     found.box_cells = adapt_boxes(found, evidence)
     found.engine_pages = {row.page for table in found.adapted for row in table.rows}

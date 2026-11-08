@@ -394,6 +394,41 @@ def test_sc92_m4_a_pay_table_whose_roles_all_end_other_puts_its_page_in_pages_wi
     assert part.pages_without_tables == [2] and {row.page for table in part.adapted for row in table.rows} == {1}
 
 
+def summary_box_over_untrusted_pair():
+    """A summary box above a page whose left table reads (This Period, YTD) and whose right table's columns (Code A, Code B) decide nothing, so its roles end
+    all `other` and the page is untrusted by itself, with no monkeypatch."""
+    box = row_items(740, [(150, "Gross", True), (250, "Taxes", True), (350, "Deductions", True), (450, "Net", True)])
+    box += row_items(724, [(40, "Current"), (150, "1,000.00", True), (250, "200.00", True), (350, "100.00", True), (450, "700.00", True)])
+    box += row_items(708, [(40, "YTD"), (150, "5,000.00", True), (250, "1,000.00", True), (350, "500.00", True), (450, "3,500.00", True)])
+    heading = row_items(670, [(40, "Earnings"), (200, "Current", True), (270, "YTD", True), (300, "Deductions"), (460, "Code A", True), (530, "Code B", True)])
+    data = [("Regular", "900.00", "4,500.00", "Dental", "30.00", "30.00"), ("Bonus", "100.00", "500.00", "Vision", "10.00", "10.00")]
+    rows = [item for n, (label, current, ytd, right, one, two) in enumerate(data)
+            for item in row_items(650 - n * 16, [(40, label), (200, current, True), (270, ytd, True), (300, right), (460, one, True), (530, two, True)])]
+    return pf.page_of([*box, *heading, *rows])
+
+
+def test_sc92_r1_3_an_untrusted_page_holding_a_summary_box_is_still_a_page_without_a_pay_table(tmp_path):
+    """FR-93 / phase 2 FR-64 (review round 1, R1-3): the summary box keeps its page in `pages` and its cells, but the untrusted page is also listed in
+    `pages_without_tables` and `untrusted`, and `for_lines` keeps both for the part holding its lines."""
+    found = paystub_tables.read(fx.read_pdf(tmp_path, [summary_box_over_untrusted_pair()]))
+    assert paystub_tables.untrusted_pages(found) == {1} and len(found.boxes) == 1 and found.pages == {1}
+    assert found.pages_without_tables == [1] and found.untrusted == {1} and found.engine_pages == set()
+    part = paystub_tables.for_lines(found, set(found.lines_of.values()))
+    assert part.pages_without_tables == [1] and part.untrusted == {1} and part.pages == {1}
+
+
+def test_sc92_r1_3_an_untrusted_page_holding_a_summary_box_gets_the_no_pay_table_note(pdf_store, local_model):
+    """The same page through Extract: the amounts are the model's (read like flat text), so the record carries FR-64's note for page 1."""
+    run = started(pdf_store, local_model, [summary_box_over_untrusted_pair()])
+    summary = {"gross_pay": ("Current", "1,000.00"), "gross_pay_ytd": ("YTD", "5,000.00"), "net_pay": ("Current", "700.00"), "net_pay_ytd": ("YTD", "3,500.00")}
+    extra = [{"description": label, "group": group, "category": "other", "current": current, "ytd": ytd, "evidence": run.cite(label)}
+             for label, group, current, ytd in [("Regular", "earnings", "900.00", "4,500.00"), ("Bonus", "earnings", "100.00", "500.00"),
+                                                ("Dental", "post_tax", "30.00", "30.00"), ("Vision", "post_tax", "10.00", "10.00")]]
+    run.stub(classes=[], summary=summary, extra_lines=extra)
+    run.extract()
+    assert "Page 1: no pay table was found in the printed columns, so its amounts are the reading's; check them." in run.notes
+
+
 def test_sc93_with_the_engine_down_a_wrongly_swapped_amount_is_nulled_by_the_flat_rules_on_every_page(pdf_store, local_model, monkeypatch, caplog):
     """FR-94: the stub is read like flat text on every page, so the paystub-columns checks judge every line (printed_columns is every line of the part)
     and a swapped pair is left out, as on a photo; no printed table's cell is cited and none is shown to the model."""

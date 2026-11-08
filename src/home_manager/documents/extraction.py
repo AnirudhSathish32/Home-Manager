@@ -4240,7 +4240,7 @@ class ExtractionService:
             # totals their rows don't add up to, lines placed in no column, and pages with no pay table.
             record_notes += [note for note in (*part.notes, *extras.notes, *paystub_tables.mismatches(part), *paystub_tables.unplaced_notes(part))
                              if note not in record_notes]
-            record_notes += [NO_PAY_TABLE.format(page=page) for page in part.pages_without_tables if page not in part.pages]
+            record_notes += [NO_PAY_TABLE.format(page=page) for page in part.pages_without_tables if page not in part.pages or page in part.untrusted]
             guesses = [asdict(guess) for guess in (*part.guesses, *extras.guesses)]
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "record_notes": record_notes, "guesses": guesses,
