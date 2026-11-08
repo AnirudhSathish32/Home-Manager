@@ -118,9 +118,23 @@ slices:
       pay_tables.py change and new tests, reverted r1's broken edit of an existing test. 7 new tests, 5 fail at 6102d16 (the
       other 2 guard behaviour already right). EXTRACTION_VERSION stays v36 (introduced by this unreleased feature).
   - id: SL-08
-    status: in_progress
+    status: done
     title: "fixes for code review round 2 (R2-1, R2-2)"
-    start_head: c745bb1
+    start_head: 1e5a909
+    end_head: 91b5829
+    commit: 4c8d3cb
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 982 passed (orchestrator rerun)"
+      - "/tmp/claude-fv/review_r2_assertions.py -> 2 passed; review_r2_long_title.py, review_paystub_tables_cut.py, probe_title.py, test_review_paystub_summary_note.py -> all as intended (orchestrator rerun)"
+      - ".venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only; test diff additions only (plus `width` in one import)"
+    notes: >-
+      wide_heading now: the line must start more than ALIGN font sizes right of the next pay line's label, and every amount of
+      that line needs its own unit: a piece (gap > size/2, shared run_pieces with heading_runs) over it, or a word aligned by one
+      common edge within ALIGN. The aligned-word unit was needed because R1-2's heading is printed at one pitch (one piece).
+      Known limit (documented in docs/documents.md "Known limits"): a 4+ word title starting right of the label column whose
+      words line up by one edge with every amount still cuts; the row below then forms its own table or is unplaced with the note.
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
