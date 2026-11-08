@@ -168,7 +168,7 @@ slices:
       Three tests' docstrings reworded (SL-09 a, SL-09 b, SL-07 centred title); no assertion changed. Remaining limit (docs/documents.md
       "Known limits"): a section title holding a listed word and lining up with the amounts still cuts; a leave heading with no listed word merges.
   - id: SL-11
-    status: in_progress
+    status: done
     title: "bug fix (user report): a one-row column under a tight two-phrase heading run is dropped (Co Match 401K This Period)"
     start_head: 1b7dc98
     notes: >-
@@ -177,6 +177,18 @@ slices:
       Root cause (synthetic, /tmp/claude-fv/comatch/probe6.py, probe7.py): read_block `supported` checks only whole heading runs' edges; a
       tight "This Period Year to Date" is one run, so a one-row This Period column gets no support and its amount is stray. Fix restores
       FR-89 for one-row tables (no spec change); user chose "Fix it", no Codex review.
+    end_head: c774128
+    commits: [0d804bd, 6b75648, c774128]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "14 files (paystub_cleanup, pay_tables_repairs, paystub_engine*, table_engine, layout_consumers, extraction, pdf_layout, paystub_forms, paystub_split, vision_tables, evals, receipt_kinds) -> 1218 passed (orchestrator, after the version bump)"
+      - "the 3 new tests fail at 4dbe899 (handoff: AssertionError -3; IndexError; (None, 26610) != (13305, 26610)); the guard passes before and after"
+      - "ruff -> the 2 pre-existing errors only; table_engine.py unchanged (FR-67)"
+    notes_orchestrator: >-
+      EXTRACTION_VERSION bumped by the orchestrator to typed-extraction-v37-paystub-one-row-headings (c774128; docs/documents.md
+      updated): extraction.py:3540 reuses a succeeded run of the same version, and the user's library holds v36 readings, so
+      without the bump Extract again would keep the stub's missing This Period.
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
@@ -237,18 +249,17 @@ code_review:
         disposition: "user chose: fix in SL-09 (a heading cuts only with a unit over every amount column of the table above), no Codex round 4; orchestrator verifies."
     checks_passed: "targeted 6 files 676 passed; test_table_engine 280 passed (FR-67 diff empty since ef7cff3); PS-CONT, PS-OTHER, STK, 8 repairs, FR-92 (f), SC-90 pass."
 final_verification:
-  head: 22b6fc9
+  head: c774128
   commands:
     - command: ".venv/bin/python -m pytest -q"
       exit_code: 1
-      result: "3006 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (28m57s)"
+      result: "3010 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (32m36s)"
     - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_table_engine_browser.py tests/test_document_v2_browser.py tests/test_statement_accounts_browser.py -q"
       exit_code: 0
       result: "23 passed"
   baseline_check: >-
-    The 74 failing ids (54 failed, 20 errors) are identical (empty diff) to those of the pre-feature commit 7a10aaf
-    (agent_instance/findings/guards, engine_worksheets, tax_engines, traces, tax_year, tax_zen, tax_family, scenarios, cpa_pack):
-    no failure introduced by this feature. Supersedes the run at 821251a (before SL-09 and SL-10).
+    The 74 failing ids (54 failed, 20 errors) are identical (empty diff) to those of the pre-feature commit 7a10aaf: no failure
+    introduced by this feature. Supersedes the run at 22b6fc9 (before SL-11).
   verdict: "pass (no new failures; pre-existing failures recorded)"
-  review: "3 Codex rounds done (budget 3/3); R3-1 fixed by SL-09 + SL-10 under the user's choice of no round 4, verified by the orchestrator."
-  pending: "final acceptance by the user; nothing pushed"
+  review: "3 Codex rounds done (budget 3/3); SL-09/SL-10 (R3-1) and SL-11 (user report) verified by the orchestrator, no further Codex round by the user's choice."
+  pending: "final acceptance by the user; SL-11 not pushed"
