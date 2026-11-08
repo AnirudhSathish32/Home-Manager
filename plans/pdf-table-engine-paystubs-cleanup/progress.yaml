@@ -102,9 +102,46 @@ slices:
       (38351b0) requires a word of the one-run heading to overlap the next pay line's amounts. Remaining heuristic limit: a
       2-word one-run heading over amounts, or a centred 3+ word title reaching into the amount columns.
   - id: SL-07
-    status: in_progress
-    start_head: 5e2dfba  # code base; progress commit on top
+    status: done
     title: "FR-90 rows printed in whole numbers only (R1-1, plan P1 step 7)"
+    start_head: 6102d16
+    end_head: 7472aaf
+    commit: bcc038f
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 979 passed (orchestrator rerun)"
+      - "reviewer probe integers_only / integer_row_in_decimal_table -> one table, current/ytd, every row (orchestrator rerun); probe_title.py still one table"
+      - "git diff 6102d16 HEAD -- tests/ -> additions only; .venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only"
+    notes: >-
+      r1 stopped on a Claude rate limit with uncommitted work (backup /tmp/claude-fv/SL-07-r1-partial.patch); r2 kept the
+      pay_tables.py change and new tests, reverted r1's broken edit of an existing test. 7 new tests, 5 fail at 6102d16 (the
+      other 2 guard behaviour already right). EXTRACTION_VERSION stays v36 (introduced by this unreleased feature).
+code_review:
+  - round: 1
+    reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
+    independence: model-family
+    risk: HIGH
+    reviewed_head: fe54dae
+    verdict: request changes (2 MAJOR, 1 MINOR)
+    findings:
+      - id: R1-1
+        severity: MAJOR
+        what: "FR-90: a headed table whose amounts are all bare integers (Current 100 / YTD 1300) is not read: integer promotion only runs on lines that are already pay lines (plan P1)."
+        orchestrator_check: "reproduced (tables=[], pages_without_tables=[1]); identical at 7a10aaf, so not a regression; page reads flat with the FR-64 note."
+        disposition: "escalated to user, who chose to extend FR-90: plan P1 step 7 added (858910b), plan re-approved (b2d1842), fixed in SL-07."
+      - id: R1-2
+        severity: MAJOR
+        what: "FR-92 (f): tables_cut only cuts at is_heading_like (two or more runs); a leave table under a separate title and a one-run heading merges with the pay columns, Retro Pay leaves the pay table."
+        orchestrator_check: "reproduced with the reviewer's probe (one_run: pay table keeps Base Pay only; two_runs: both rows)."
+        disposition: "fixed in SL-06 (e990f8a; its regression fixed in round 2, 38351b0)"
+      - id: R1-3
+        severity: MINOR
+        what: "FR-93/FR-64: an untrusted page holding a summary box stays in `pages`, so `without` and the NO_PAY_TABLE filter (extraction.py `page not in part.pages`) drop its note while its amounts come from the model."
+        orchestrator_check: "reproduced (untrusted_pages={1}, engine_pages=[], pages_without_tables=[], no page note)."
+        disposition: "fixed in SL-06 (114ae6e)"
+    unresolved_risks:
+      - "Continuation bound 0.75 font sizes (approved): an 8 pt shift moves page 2 rows to an other table and the page reads flat with the note."
 final_verification:
   head: 90983bc
   commands:
