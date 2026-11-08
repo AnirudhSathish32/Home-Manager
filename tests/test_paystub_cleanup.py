@@ -436,8 +436,7 @@ def test_sc91_f_r3_a_long_section_title_in_the_label_column_does_not_cut_the_blo
 
 def test_sc91_f_r3_a_centred_section_title_over_both_columns_does_not_cut_the_block(tmp_path):
     """(f), review round 2 R2-1: a shorter title centred over the two amount columns starts right of the label column, but it is one piece and no word of
-    it lines up with each amount by one edge, so it is no heading either. A four-word title placed so its words do line up that way (shifted 15 from the
-    centre) is the cut's known limit (docs/documents.md "Known limits"), not tested here."""
+    it holds none of the leave and deposit heading words, so it is no heading however it is placed (the word list, not the geometry, decides)."""
     for number, (title, shift) in enumerate((("Pre Tax Deductions", 0), ("Pre Tax Deductions", -30), ("Before Tax Deductions Withheld", -40))):
         folder = tmp_path / str(number)
         folder.mkdir()
@@ -469,9 +468,8 @@ def test_sc91_f_r3_a_leave_table_under_a_two_word_one_run_heading_is_a_table_of_
 
 def test_sc91_f_r3_a_one_word_section_title_over_a_sparse_row_does_not_cut_the_block(tmp_path):
     """(f), review round 3 R3-1: after Regular, Overtime and Total Earnings (Current 430, YTD 520) a one-word section title, centred over the two amount
-    columns or shifted left, then "Travel 6.00" with the YTD blank. The one amount of the row is under the title's only piece, but the YTD column of the
-    table above has no unit of the title (no word lies over it, none lines up with it), so the title is no heading: Travel stays a pay row under Current
-    with 6.00, and nothing is unplaced."""
+    columns or shifted left, then "Travel 6.00" with the YTD blank. The title holds none of the leave and deposit heading words, so it is a section
+    title and no heading, wherever it is placed: Travel stays a pay row under Current with 6.00, and nothing is unplaced."""
     for number, (title, shift) in enumerate((("Reimbursements", 0), ("Deductions", 0), ("Deductions", -45))):
         folder = tmp_path / str(number)
         folder.mkdir()
@@ -489,9 +487,8 @@ def test_sc91_f_r3_a_one_word_section_title_over_a_sparse_row_does_not_cut_the_b
 
 def test_sc91_f_r3_a_three_word_title_with_words_off_the_amounts_does_not_cut_a_sparse_row(tmp_path):
     """(f), review round 3 R3-1: the three-word "Health Insurance Premiums" and "Employee Benefit Contributions", shifted 15 or 30 off the centre of
-    the columns, have no word lined up with each amount column of the table above by one edge, and "Vision 6.00" (YTD blank) is under them. They are no
-    heading: Vision stays in the pay table. Titles whose words do line up with both columns (Health Insurance Premiums exactly centred) are the cut's
-    known limit (docs/documents.md "Known limits"), not tested here."""
+    the columns, hold none of the leave and deposit heading words, and "Vision 6.00" (YTD blank) is under them. They are no heading: Vision stays in the
+    pay table (the exactly centred "Health Insurance Premiums" is the next test)."""
     for number, (title, shift) in enumerate((("Health Insurance Premiums", -15), ("Health Insurance Premiums", 30), ("Employee Benefit Contributions", 15),
                                                ("Employee Benefit Contributions", -30))):
         folder = tmp_path / str(number)
@@ -527,6 +524,42 @@ def test_sc91_f_r3_a_sparse_leave_row_under_a_heading_over_every_pay_column_is_a
     top = next(y for x, y, text in stacked_stub_with_title("Used", []) if text == "Used")
     items += [(430 - width("Used"), top, "Used"), (520 - width("Balance"), top, "Balance")]
     found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+    [table] = found.tables
+    assert [(row.label, [row.amounts[column.id].text for column in table.columns]) for row in table.rows] == \
+        [("Regular", ["2,000.00", "24,000.00"]), ("Overtime", ["150.00", "900.00"])]
+    assert [[row.label for row in other.rows] for other in found.other_tables] == [["Vacation", "Sick"]] and found.unplaced == []
+
+
+def test_sc91_f_r3_a_a_title_without_a_leave_heading_word_never_cuts_wherever_it_is_placed(tmp_path):
+    """(f), review rounds 2 and 3 (R2-1, R3-1): after Total Earnings of a Current 430 / YTD 520 table, "Health Insurance Premiums" centred exactly over the
+    two columns (each of its words lines up with a column by one edge, as "Accrued Vacation Used Leave Balance" does) holds none of the leave and deposit
+    heading words, so it is a section title and no heading. Vision 6.00 6.00 is a pay line of that table with both literals, and nothing is unplaced.
+    The centred one-word "Reimbursements" over "Travel 6.00" (YTD blank) stays too."""
+    for number, (title, rows, wanted) in enumerate((("Health Insurance Premiums", [("Vision", "6.00", "6.00")], [("Vision", ["6.00", "6.00"])]),
+                                                    ("Reimbursements", [("Travel", "6.00", "")], [("Travel", ["6.00"])]))):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        centre = (430 - width("6.00") + 520) / 2
+        items = [(round(centre - width(text) / 2, 3) if text == title else x, y, text) for x, y, text in stacked_stub_with_title(title, rows)]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+        [table] = found.tables
+        assert [found.roles[0].roles[column.id] for column in table.columns] == ["current", "ytd"], title
+        assert [(row.label, [row.amounts[column.id].text for column in table.columns if column.id in row.amounts]) for row in table.rows] == \
+            [("Regular", ["2,000.00", "24,000.00"]), ("Overtime", ["150.00", "900.00"]), *wanted], title
+        assert [total.label for total in table.totals] == ["Total Earnings"], title
+        assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == [], title
+
+
+def test_sc91_f_r3_a_a_one_piece_leave_heading_over_a_one_column_leave_row_is_a_table_of_its_own(tmp_path):
+    """(f), review round 3 (SL-10 drops SL-09's table-above rule): the pay table is Current 430 / YTD 520 and the one-run heading "Leave Balance" (a word of
+    the list, one piece) ends at 430, over the one amount of "Vacation 8.00" and "Sick 0.00" (the second column blank), so rule 3 holds for the pay line
+    after it. It cuts: Regular and Overtime keep both literals, Vacation and Sick are the other table, nothing is unplaced."""
+    items = [item for item in stacked_stub_with_title("Leave Balance", [("Vacation", "8.00", ""), ("Sick", "0.00", "")]) if item[2] != "Leave Balance"]
+    top = next(y for x, y, text in stacked_stub_with_title("Leave Balance", []) if text == "Leave Balance")
+    items += [(round(430 - width("Leave Balance"), 3), top, "Leave Balance")]
+    found = paystub_tables.read(fx.read_pdf(tmp_path, [pf.page_of(items)]))
 
     [table] = found.tables
     assert [(row.label, [row.amounts[column.id].text for column in table.columns]) for row in table.rows] == \
