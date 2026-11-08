@@ -55,6 +55,7 @@ Requirement IDs: FR-92
    hours 12.00, rate 25.00, this period 30000, YTD 360000, and a `columns_guessed` note only in the no-heading variant;
    phase 2 PS-YTDH (two triples sharing the rate) keeps its SC-57 values;
    (f) the leave table's lined-up columns are a table of their own and give no pay line.
+   (f) one-run headings (review rounds 2 and 3): after a Current / YTD table's `Total Earnings`, the one-run title `Health Insurance Premiums` exactly centred over the two columns, then `Vision 6.00 6.00`: Vision is a pay line of that table, nothing unplaced; the same with the centred one-word `Reimbursements` and `Travel 6.00` (YTD blank); the one-run leave heading `Accrued Vacation Used Leave Balance` and the two-piece `Used Balance` over the pay columns still start a leave table (Retro Pay 225.58 stays in the pay table; the leave rows give no pay line); a one-piece `Leave Balance` over a one-column leave row under a two-column pay table starts a leave table too.
 3. (c) is not drawn; `docs/open-work.md` keeps it.
 Evidence: `pytest tests/test_paystub_engine_generator.py tests/test_paystub_cleanup.py -k sc91`.
 

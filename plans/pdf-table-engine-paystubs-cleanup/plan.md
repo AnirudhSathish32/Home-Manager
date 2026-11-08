@@ -1,6 +1,6 @@
 # Pay stubs, phase 2 follow-up: one path for text PDFs — implementation plan
 Spec: specs/pdf-table-engine-paystubs-cleanup/spec.md (with its test-contract.md)
-Spec sha256: dc29671638800aa91bc9e61d0b08645f712b6c5210c6d2ba387c1ec65d40580d
+Spec sha256: c30fcdf17b227b06474dd33a2275d65e4c3bb7b2c51fc11e5726ee23b587c1e7
 Review-Risk: HIGH
 Review-Risk-Rationale: It removes the fallback that decided some text-PDF pay stubs' amounts (money in, tax figures) and
 changes which printed numbers the engine accepts as amounts, so a defect would put wrong pay into the ledger.
@@ -113,6 +113,13 @@ each hand-built `sc91_*` test must fail at `ef7cff3` (SL-02 doesn't touch these 
 - (f) the failing generator layout found in the first step decides the fix. Expected direction: before alignment clustering,
   the block's lines are cut at heading lines that start a new table (a heading after a totals line, P3.6 of phase 2), so
   each table's amounts are clustered on their own; the handoff states the failing case and the rule built.
+  One-run headings after a totals line (code review rounds 2 and 3; SL-10, replacing SL-09's table-above rule): `wide_heading`
+  cuts when the line (1) holds a word of `LEAVE_HEADING_WORDS` = accrued, accrual, accruals, balance, balances, used, available,
+  remaining, carryover, deposit, deposits, account, routing (lower-cased whole words, punctuation stripped), (2) starts more than
+  `ALIGN` font sizes right of the next pay line's label, and (3) has its own unit over each amount of that next pay line (SL-08:
+  a `run_pieces` piece over it, or a word aligned by one common edge within `ALIGN`). SL-09's requirement of a unit over every
+  column of the table above is removed, so a one-piece leave heading over a narrower leave table cuts again. Lines of two or
+  more runs (`is_heading_like`) cut as before, without the word list.
 (c) stays avoided.
 
 ### P4 One path (FR-93, FR-94)
@@ -149,6 +156,7 @@ No model or network call added; no schema change; `EXTRACTION_VERSION` bump only
 | SL-05 | FR-96, FR-97; SC-95 | SL-04 | `evals/run.py`, `evals/report.py`, `evals/graders.py` (if the stand-in lives there), `tests/test_evals.py` (legacy pay reader tests → engine only), `docs/documents.md`, `docs/money.md`, `docs/evals.md`, `docs/open-work.md` | `.venv/bin/python -m pytest tests/test_evals.py -q`; `.venv/bin/python -m evals.synthetic <tmp>` writes 53 cases |
 | SL-06 | FR-92 (f), FR-93; SC-91, SC-92 (code review round 1: R1-2, R1-3) | SL-05 | `documents/pay_tables.py` (`tables_cut` recognises one-run headings), `finance/paystub_tables.py` and `documents/extraction.py` (an untrusted page keeps FR-64's note with a summary box), `tests/test_paystub_cleanup.py` (regression tests), `docs/documents.md` | `.venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q` |
 | SL-07 | FR-90; SC-90 (code review round 1: R1-1; P1 step 7) | SL-06 | `documents/pay_tables.py` (P1 step 7), `tests/test_paystub_cleanup.py` (the four literal cases of step 7, each failing before the change), `docs/documents.md` ("Known limits" and the whole-number rule), `docs/open-work.md` if it lists the case | same command as SL-06 |
+| SL-10 | FR-92 (f); SC-91 (f) one-run headings (code review rounds 2 and 3: R2-1, R3-1) | SL-07 | `documents/pay_tables.py` (`wide_heading`, `tables_cut`: the word list of P3 (f), SL-09's table-above columns removed), `tests/test_paystub_cleanup.py` (SC-91 (f)'s one-run cases; the exactly centred `Health Insurance Premiums` and `Reimbursements` cases fail before the change), `docs/documents.md` (the heading rule and "Known limits") | same command as SL-06 |
 
 ## Final verification
 ```
@@ -162,7 +170,7 @@ The 74 failing ids recorded in `plans/pdf-table-engine-paystubs/progress.yaml` `
 | Requirement | Slice | Scenarios |
 |---|---|---|
 | FR-89, FR-90, FR-91 | SL-02, SL-04, SL-07 (FR-90) | SC-90 |
-| FR-92 | SL-03, SL-06 | SC-91 |
+| FR-92 | SL-03, SL-06, SL-10 | SC-91 |
 | FR-93 | SL-04, SL-06 | SC-90, SC-92 |
 | FR-94 | SL-04 | SC-93 |
 | FR-95 | SL-02, SL-04, final | SC-94 |
