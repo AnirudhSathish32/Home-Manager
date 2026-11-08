@@ -24,7 +24,7 @@ from home_manager.finance import paystub_tables
 from home_manager.finance.ledger import Ledger
 import paystub_engine_fixtures as pf
 import pdf_import_fixtures as fx
-from table_engine_fixtures import row_items
+from table_engine_fixtures import row_items, width
 from test_paystub_engine_record import PS_CLASSES, Run, auto, expect, no_network, printed, started, swapped  # noqa: F401
 from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
 from test_pdf_layout import sectioned_payslip_items
@@ -414,6 +414,57 @@ def test_sc91_f_r2_a_section_title_in_the_label_column_never_cuts_the_block(tmp_
             assert [row.label for row in table.rows] == wanted, (title, kind)
             assert [[total.label for total in table.totals]] == [["Total Earnings"] if kind == "one" else ["Total Earnings", "Total Deductions"]], (title, kind)
             assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == []
+
+
+def section_title_is_no_cut(found, label_rows):
+    """One pay table of Current / YTD holds every row, the lone row under the section title included; nothing is unplaced."""
+    [table] = found.tables
+    assert [found.roles[0].roles[column.id] for column in table.columns] == ["current", "ytd"]
+    assert [(row.label, [row.amounts[column.id].text for column in table.columns]) for row in table.rows] == label_rows
+    assert [total.label for total in table.totals] == ["Total Earnings"]
+    assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == []
+
+
+def test_sc91_f_r3_a_long_section_title_in_the_label_column_does_not_cut_the_block(tmp_path):
+    """(f), review round 2 R2-1: a section title of eleven words starts at the label column and runs over both amount columns (the amounts are at 430 and
+    520). It is one piece and starts at the label's left edge, so it is no heading: Regular, Overtime and Vision stay in one table with their literals."""
+    title = "Before Tax Deductions For Medical Insurance, Dental, Vision And Retirement Contributions"
+    found = paystub_tables.read(fx.read_pdf(tmp_path, [pf.page_of(stacked_stub_with_title(title, [("Vision", "6.00", "6.00")]))]))
+
+    section_title_is_no_cut(found, [(label, texts) for label, texts in LITERALS if label in ("Regular", "Overtime", "Vision")])
+
+
+def test_sc91_f_r3_a_centred_section_title_over_both_columns_does_not_cut_the_block(tmp_path):
+    """(f), review round 2 R2-1: a shorter title centred over the two amount columns starts right of the label column, but it is one piece and no word of
+    it lines up with each amount by one edge, so it is no heading either. A four-word title placed so its words do line up that way (shifted 15 from the
+    centre) is the cut's known limit (docs/documents.md "Known limits"), not tested here."""
+    for number, (title, shift) in enumerate((("Pre Tax Deductions", 0), ("Pre Tax Deductions", -30), ("Before Tax Deductions Withheld", -40))):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        centre = (430 - width("6.00") + 520) / 2 + shift
+        items = [(round(centre - width(text) / 2, 3) if text == title else x, y, text) for x, y, text in stacked_stub_with_title(title, [("Vision", "6.00", "6.00")])]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+        section_title_is_no_cut(found, [(label, texts) for label, texts in LITERALS if label in ("Regular", "Overtime", "Vision")])
+
+
+def test_sc91_f_r3_a_leave_table_under_a_two_word_one_run_heading_is_a_table_of_its_own(tmp_path):
+    """(f), review round 2 R2-2: the Leave heading is the two words "Used Balance" in one run (a heading over two leave amounts, right of the label column),
+    with or without a title line "Leave" above it. The cut recognises it from its geometry, not its word count: Base Pay 2,662.41 and Retro Pay 225.58 keep
+    the pay column and the leave rows are no pay rows."""
+    data = [(40, 568, "Vacation"), (200.54, 568, "8.00"), (264.98, 568, "32.00"), (40, 552, "Sick"), (200.54, 552, "0.00"), (264.98, 552, "24.00")]
+    for title in (False, True):
+        folder = tmp_path / f"title-{title}"
+        folder.mkdir()
+        items = [*stub_left(780, "2,662.41", "225.58", "2,888.00", "2,250.00"), *([(40, 600, "Leave")] if title else []),
+                 (196.66, 584, "Used"), (230, 584, "Balance"), *data]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items, above=())]))
+
+        [table] = found.tables
+        assert [(row.label, row.amounts[table.columns[0].id].text) for row in table.rows] == [("Base Pay", "2,662.41"), ("Retro Pay", "225.58")], title
+        assert [total.label for total in table.totals] == ["Total Earnings", "Net Pay"], title
+        assert [[row.label for row in other.rows] for other in found.other_tables] == [["Vacation", "Sick"]], title
+        assert found.unplaced == [], title
 
 
 # --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94)----------------------------------------------------

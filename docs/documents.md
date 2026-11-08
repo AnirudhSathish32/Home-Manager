@@ -803,7 +803,9 @@ words and their positions, with no model and no network; the same input gives th
   heading, stays text. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
   one line of words that fall over two or more columns, such as "This Period Year To Date"), only label them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
   a row joins that row's label (a wrapped label). A different column set starts a table of its own (stacked Earnings / Taxes /
-  Deductions tables), and a table continues over later pages, with or without a repeated heading, only when the page's first
+  Deductions tables); so does a heading after a totals line, so a leave table whose columns line up with a pay column doesn't merge with it: two or more
+  runs of words, or one run that does not start at the label column and prints a piece or an aligned word over each amount of the pay line after it (`Used Balance`, a
+  phrase at one pitch), never a section title, however long. A table continues over later pages, with or without a repeated heading, only when the page's first
   rows line up with the open table's columns at a page offset within the alignment tolerance (0.75 font sizes); a page whose
   columns sit further off starts a table of its own. A page
   holding two tables next to each other (earnings left, taxes and deductions right) is read as two blocks, each row holding
@@ -861,6 +863,8 @@ words and their positions, with no model and no network; the same input gives th
     shifted; a page that starts another table within that offset is read as a continuation.
   - A whole number printed within 1.5 font sizes after an amount in the same run (`25.00 40` in tight columns) stays inside the
     amount's run and is not seen as a column.
+  - A section title that starts right of the label column and has a word lined up by one edge with each amount of the row below it (a four-word title
+    centred over two columns) is cut as a heading: the row below it goes to its own table or is unplaced, with the note. A title at the label column never is.
   - A headless stub whose hours or rate print on one row only has no column to form from one unheaded row.
   - A page the engine does not trust is read like flat text: its amounts come from the model with the column checks, with the
     "no pay table" note (a summary box on the page still gives its own cells). A stub that read right only through the reader's

@@ -259,23 +259,40 @@ def block_split(view, lines, tolerance):
     return median(value for value, _ in best)
 
 
-def wide_heading(bl, position):
-    """Whether a one-run all-text line is a heading printed over the columns of the pay rows that follow (FR-89), judged before zones exist: it has
-    three or more words, at least one for each amount the next pay line prints, that pay line comes next, and some word lies over that line's
-    amounts (spans their horizontal extent). A section title ("Statutory Deductions", "Pre Tax Deductions") stays in the label column, so it
-    never cuts, whatever its length."""
+def wide_heading(view, bl, position):
+    """Whether a one-run all-text line is a heading printed over the columns of the pay rows that follow (FR-89), judged before zones exist: the
+    pay line comes next, the line does not start in its label column, and each amount of that line has a unit of the heading of its own: a piece
+    over it (the line splits where its words lie further apart than a space, as `heading_runs` does) or a word aligned with it by an edge within
+    `ALIGN` font sizes (a heading phrase printed at one pitch, "Accrued Vacation Used Leave Balance"; the same edge for every word); no word
+    serves two amounts. A section title is one piece, so in the label column it never cuts, and out of it a title cuts only if words of it line
+    up by one edge with the amounts."""
     line = bl[position]
     if not is_title_like(line):
         return False
     following = next((other for other in bl[position + 1:] if other.runs), None)
-    if following is None or not is_pay(following) or len(line.words) < max(3, len(amounts_of(following))):
+    if following is None or not is_pay(following):
         return False
-    amounts = amounts_of(following)
-    left, right = min(token.box[0] for token in amounts), max(token.box[2] for token in amounts)
-    return any(token.box[0] <= right and token.box[2] >= left for token in line.all_tokens())
+    tolerance = view.size * ALIGN
+    if view.box[line.words[0].id][0] <= view.box[following.runs[0][0].id][0] + tolerance:
+        return False
+    # Units: a piece over an amount (it takes all its words) or one word aligned with it, all words by the same edge. No word serves two amounts.
+    units = [(box, {word.id for word in piece}, True) for piece in run_pieces(view, line.runs[0]) for box in [union(view.box[word.id] for word in piece)]]
+    units += [(view.box[word.id], {word.id}, False) for word in line.runs[0]]
+
+    def seat(amounts, used, alignment):
+        if not amounts:
+            return True
+        amount, rest = amounts[0], amounts[1:]
+        for box, ids, piece in units:
+            fits = (box[0] <= amount.box[2] and box[2] >= amount.box[0]) if piece else abs(edge_of(box, alignment) - edge_of(amount.box, alignment)) <= tolerance
+            if fits and not ids & used and seat(rest, used | ids, alignment):
+                return True
+        return False
+
+    return any(seat(amounts_of(following), set(), alignment) for alignment in ALIGNMENTS)
 
 
-def tables_cut(bl, starts):
+def tables_cut(view, bl, starts):
     """A block's lines as one (lines, indexes) pair per table (FR-92 f): the lines from the first line after a totals line, when a heading line follows
     before the next pay line (two or more runs, or one run over the columns of the pay rows below it), and those from a stub start line that follows
     pay lines, start a new table's list, so each table's amounts are clustered on their own and a leave or deposit table whose columns line up with
@@ -291,7 +308,7 @@ def tables_cut(bl, starts):
             total, start, seen = total_kind(label_of(line)) is not None, None, True
         elif total:
             start = position if start is None else start
-            if is_heading_like(line) or wide_heading(bl, position):
+            if is_heading_like(line) or wide_heading(view, bl, position):
                 cuts.append(start)
                 total, start = False, None
     edges = [0, *cuts, len(bl)]
@@ -419,26 +436,31 @@ def finish_box(builder, ids_line, view):
     return SummaryBox(builder.entries[0]["page"], ids_line, columns, rows, builder.id)
 
 
+def run_pieces(view, run, zones=None, edge=None):
+    """A run's words as pieces, each a list of words. A run is split where its words are further apart than a space and, when `zones` is given,
+    lie in the zones of different columns; without `zones` it splits on the gap alone. Words that start at or past `edge` belong to the next
+    block and are cut off."""
+    pieces, last = [], None
+    for word in run:
+        if edge is not None and view.box[word.id][0] >= edge:
+            break
+        box = view.box[word.id]
+        zone = None if zones is None else next((number for number, found in enumerate(zones) if in_zone(box, found)), None)
+        far = box[0] - last[1] > view.size / 2 if last is not None else False
+        if pieces and not (far and (zones is None or zone is not None and zone != last[0])):
+            pieces[-1].append(word)
+        else:
+            pieces.append([word])
+        last = (zone, box[2])
+    return pieces
+
+
 def heading_runs(view, lines, zones=(), edge=None):
     """The heading lines' runs as (text, box, word ids). A run is split where its words are further apart than a space and lie in the zones of
     different columns (two headings printed close enough to read as one phrase: `This Period` `Year to Date`: FR-89). Words that start at or past
     `edge` belong to the next block and are cut off (the right block's label printed in the left block's run)."""
-    made = []
-    for line in lines:
-        for run in line.runs:
-            pieces, last = [], None
-            for word in run:
-                if edge is not None and view.box[word.id][0] >= edge:
-                    break
-                box = view.box[word.id]
-                zone = next((number for number, found in enumerate(zones) if in_zone(box, found)), None)
-                if pieces and not (zone is not None and last is not None and zone != last[0] and box[0] - last[1] > view.size / 2):
-                    pieces[-1].append(word)
-                else:
-                    pieces.append([word])
-                last = (zone, box[2])
-            made += [(run_text(piece), union(view.box[word.id] for word in piece), [word.id for word in piece]) for piece in pieces]
-    return made
+    return [(run_text(piece), union(view.box[word.id] for word in piece), [word.id for word in piece])
+            for line in lines for run in line.runs for piece in run_pieces(view, run, zones, edge)]
 
 
 def find_boxes(number, view, bl, tolerance, found_boxes, taken=frozenset()):
@@ -860,7 +882,7 @@ def read(result):
         serial, still, extra = [0], [], []
         before = len(made)
         for name, block, edge in zip(names, blocks, edges):
-            tables = tables_cut(block, starts)
+            tables = tables_cut(view, block, starts)
             for position, (bl, indexes) in enumerate(tables):
                 kept, lost = read_block(number, view, bl, name, previous if position == 0 else [], made, boxes, serial, taken, stub.setdefault(name, set()),
                                         {index: dates for index, dates in starts.items() if index in indexes}, whole, edge)
