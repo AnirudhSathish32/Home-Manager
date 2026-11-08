@@ -117,6 +117,10 @@ slices:
       r1 stopped on a Claude rate limit with uncommitted work (backup /tmp/claude-fv/SL-07-r1-partial.patch); r2 kept the
       pay_tables.py change and new tests, reverted r1's broken edit of an existing test. 7 new tests, 5 fail at 6102d16 (the
       other 2 guard behaviour already right). EXTRACTION_VERSION stays v36 (introduced by this unreleased feature).
+  - id: SL-08
+    status: in_progress
+    title: "fixes for code review round 2 (R2-1, R2-2)"
+    start_head: c745bb1
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
@@ -154,12 +158,12 @@ code_review:
         severity: MAJOR
         what: "wide_heading: a long section title starting in the label column (or a centred shorter one) overlaps the amounts' extent, so tables_cut cuts and a following lone row (Vision 6.00/6.00) goes to unplaced (with the unplaced note; not silent). fe54dae kept it in the table."
         orchestrator_check: "reproduced: /tmp/claude-fv/review_r2_long_title.py, review_r2_assertions.py::test_r2_long_section_title_does_not_remove_vision fails at 33c5fe0."
-        disposition: "pending user decision (Codex review budget 2/2 spent)"
+        disposition: "user chose: fix in SL-08 with a column-geometry rule, then Codex round 3 (budget +1 by the user)"
       - id: R2-2
         severity: MAJOR
         what: "wide_heading's three-word floor rejects a two-word one-run leave heading (Used Balance); the leave amounts cluster with the pay column and Retro Pay 225.58 moves to other_tables (R1-2 mechanism)."
         orchestrator_check: "reproduced: /tmp/claude-fv/review_r2_short_heading.py, review_r2_assertions.py::test_r2_two_word_leave_heading_preserves_retro_pay fails at 33c5fe0."
-        disposition: "pending user decision (Codex review budget 2/2 spent)"
+        disposition: "user chose: fix in SL-08 with a column-geometry rule, then Codex round 3 (budget +1 by the user)"
     unresolved_risks:
       - "Integers printed under a recognised Current heading (metadata) can become pay amounts (accepted P1 risk R-B)."
 final_verification:
