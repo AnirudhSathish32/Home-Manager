@@ -152,9 +152,21 @@ slices:
       heading; and a one-run leave heading with fewer pieces than the pay table's columns no longer cuts. User chose a text cue:
       FR-92 (f) / SC-91 (f) / plan P3 (f) amended (01292ee), re-approved; SL-10 replaces SL-09's table-above rule.
   - id: SL-10
-    status: in_progress
+    status: done
     title: "one-run headings need a leave or deposit word (FR-92 f amendment; R2-1, R3-1)"
-    start_head: 01292ee
+    start_head: 45cc6a6
+    end_head: 22b6fc9
+    commit: d995239
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "8-file targeted command -> 987 passed (orchestrator rerun); the 2 new SC-91 (f) tests fail at 45cc6a6 (handoff)"
+      - "/tmp/claude-fv/r3 sparse_title_regression.py + review_r2_assertions.py -> 3 passed; title_repro HEAD == fe54dae in 7/7 cases; 8 of 9 probe scripts exit 0 (orchestrator rerun)"
+      - "geometry_probes.py exits 1 on one assert: a one-run 'Rate Hours Current YTD' with no listed word cutting on geometry alone; expected under approved FR-92 (f) (no listed word -> no cut). Accepted: a differing column set still starts its own table; a same-column table merges with the same roles."
+      - "ruff -> the 2 pre-existing errors only; table_engine.py unchanged since ef7cff3 (FR-67); EXTRACTION_VERSION unchanged"
+    notes: >-
+      Three tests' docstrings reworded (SL-09 a, SL-09 b, SL-07 centred title); no assertion changed. Remaining limit (docs/documents.md
+      "Known limits"): a section title holding a listed word and lining up with the amounts still cuts; a leave heading with no listed word merges.
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
@@ -215,18 +227,18 @@ code_review:
         disposition: "user chose: fix in SL-09 (a heading cuts only with a unit over every amount column of the table above), no Codex round 4; orchestrator verifies."
     checks_passed: "targeted 6 files 676 passed; test_table_engine 280 passed (FR-67 diff empty since ef7cff3); PS-CONT, PS-OTHER, STK, 8 repairs, FR-92 (f), SC-90 pass."
 final_verification:
-  head: 821251a
+  head: 22b6fc9
   commands:
     - command: ".venv/bin/python -m pytest -q"
       exit_code: 1
-      result: "3001 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (29m30s)"
+      result: "3006 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (28m57s)"
     - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_table_engine_browser.py tests/test_document_v2_browser.py tests/test_statement_accounts_browser.py -q"
       exit_code: 0
       result: "23 passed"
   baseline_check: >-
-    The 74 failing ids (54 failed, 20 errors) are identical (empty diff) to those of the same 11 files run at the pre-feature
-    commit 7a10aaf in a separate worktree (agent_instance/findings/guards, engine_worksheets, tax_engines, traces, tax_year,
-    tax_zen, tax_family, scenarios, cpa_pack): no failure introduced by this feature. Supersedes the run at 90983bc (before
-    the review fixes SL-06 - SL-08).
+    The 74 failing ids (54 failed, 20 errors) are identical (empty diff) to those of the pre-feature commit 7a10aaf
+    (agent_instance/findings/guards, engine_worksheets, tax_engines, traces, tax_year, tax_zen, tax_family, scenarios, cpa_pack):
+    no failure introduced by this feature. Supersedes the run at 821251a (before SL-09 and SL-10).
   verdict: "pass (no new failures; pre-existing failures recorded)"
-  pending: "code review round 3 done (request changes, R3-1 MAJOR open); decision with the user"
+  review: "3 Codex rounds done (budget 3/3); R3-1 fixed by SL-09 + SL-10 under the user's choice of no round 4, verified by the orchestrator."
+  pending: "final acceptance by the user; nothing pushed"
