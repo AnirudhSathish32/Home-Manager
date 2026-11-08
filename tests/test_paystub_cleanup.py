@@ -290,6 +290,44 @@ def test_sc91_f_a_leave_table_under_a_one_run_heading_is_a_table_of_its_own(tmp_
         assert [[row.label for row in table.rows] for table in found.other_tables] == [["Vacation", "Sick"]]
 
 
+LITERALS = [("Regular", ["2,000.00", "24,000.00"]), ("Overtime", ["150.00", "900.00"]), ("Vision", ["6.00", "6.00"]), ("Medical", ["40.00", "480.00"]),
+            ("Dental", ["8.00", "96.00"])]
+
+
+def stacked_stub_with_title(title, rows):
+    """A stacked stub (Description / Current / YTD, amount edges 430 and 520): Regular, Overtime and Total Earnings, then a section `title` line of
+    three or more words in the label column, then `rows` ((label, current, ytd) tuples)."""
+    items = pf.head(700, ("Description", "Current", "YTD"), (430, 520))
+    y = 680
+    for row in (("Regular", "2,000.00", "24,000.00"), ("Overtime", "150.00", "900.00"), ("Total Earnings", "2,150.00", "24,900.00"), title, *rows):
+        cells = [(40, row)] if isinstance(row, str) else [(40, row[0]), *[(edge, text, True) for edge, text in zip((430, 520), row[1:])]]
+        items += row_items(y, cells)
+        y -= 16
+    return items
+
+
+def test_sc91_f_r2_a_section_title_in_the_label_column_never_cuts_the_block(tmp_path):
+    """(f), review round 2 (the R1-2 fix's regression): a title of three or more words in the label column ("Pre Tax Deductions") is no heading, because no
+    word of it lies over the amounts of the row below. The block is not cut there, so one pay table holds the rows below the title, as it does with a
+    one-word title; no row is unplaced."""
+    for number, title in enumerate(("Deductions", "Pre Tax Deductions", "Before Tax Deductions Withheld")):
+        for kind, rows, wanted in (("one", [("Vision", "6.00", "6.00")], ["Regular", "Overtime", "Vision"]),
+                                   ("two", [("Medical", "40.00", "480.00"), ("Dental", "8.00", "96.00"), ("Total Deductions", "48.00", "576.00")],
+                                    ["Regular", "Overtime", "Medical", "Dental"])):
+            folder = tmp_path / f"{number}-{kind}"
+            folder.mkdir()
+            found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(stacked_stub_with_title(title, rows))]))
+
+            [table] = found.tables
+            roles = [found.roles[0].roles[column.id] for column in table.columns]
+            assert roles == ["current", "ytd"], (title, kind)
+            assert [(row.label, [row.amounts[column.id].text for column in table.columns]) for row in table.rows] == \
+                [(label, texts) for label, texts in LITERALS if label in wanted], (title, kind)
+            assert [row.label for row in table.rows] == wanted, (title, kind)
+            assert [[total.label for total in table.totals]] == [["Total Earnings"] if kind == "one" else ["Total Earnings", "Total Deductions"]], (title, kind)
+            assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == []
+
+
 # --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94)----------------------------------------------------
 
 def printed_grid_ids(run):

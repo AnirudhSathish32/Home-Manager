@@ -254,13 +254,18 @@ def block_split(view, lines, tolerance):
 
 def wide_heading(bl, position):
     """Whether a one-run all-text line is a heading printed over the columns of the pay rows that follow (FR-89), judged before zones exist: it has
-    three or more words, at least one for each amount the next pay line prints, and that pay line comes next. A section title ("Statutory Deductions")
-    has fewer words than that."""
+    three or more words, at least one for each amount the next pay line prints, that pay line comes next, and some word lies over that line's
+    amounts (spans their horizontal extent). A section title ("Statutory Deductions", "Pre Tax Deductions") stays in the label column, so it
+    never cuts, whatever its length."""
     line = bl[position]
     if not is_title_like(line):
         return False
     following = next((other for other in bl[position + 1:] if other.runs), None)
-    return following is not None and is_pay(following) and len(line.words) >= max(3, len(amounts_of(following)))
+    if following is None or not is_pay(following) or len(line.words) < max(3, len(amounts_of(following))):
+        return False
+    amounts = amounts_of(following)
+    left, right = min(token.box[0] for token in amounts), max(token.box[2] for token in amounts)
+    return any(token.box[0] <= right and token.box[2] >= left for token in line.all_tokens())
 
 
 def tables_cut(bl, starts):
