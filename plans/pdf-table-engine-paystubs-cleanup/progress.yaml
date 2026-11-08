@@ -83,4 +83,18 @@ slices:
       entry under pay_readers so older results.jsonl re-report without KeyError. docs/documents.md gains a "Known limits"
       list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
       heading (line-wrapped or older); none touched by this feature.
-final_verification: null
+final_verification:
+  head: 90983bc
+  commands:
+    - command: ".venv/bin/python -m pytest -q"
+      exit_code: 1
+      result: "2987 passed, 54 failed, 20 errors, 114 skipped, 1 deselected (31m42s)"
+    - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_paystub_engine_browser.py tests/test_table_engine_browser.py tests/test_document_v2_browser.py tests/test_statement_accounts_browser.py -q"
+      exit_code: 0
+      result: "23 passed"
+  baseline_check: >-
+    The 74 failing ids (54 failed, 20 errors) are in the same 11 files as plans/pdf-table-engine-paystubs final_verification
+    (agent_instance/findings/guards, engine_worksheets, tax_engines, traces, tax_year, tax_zen, tax_family, scenarios,
+    cpa_pack). Running exactly those files at the pre-feature commit 7a10aaf (separate worktree, its src on PYTHONPATH)
+    gives the identical 74 ids (diff empty): no failure introduced by this feature.
+  verdict: "pass (no new failures; pre-existing failures recorded)"
