@@ -252,11 +252,22 @@ def block_split(view, lines, tolerance):
     return median(value for value, _ in best)
 
 
+def wide_heading(bl, position):
+    """Whether a one-run all-text line is a heading printed over the columns of the pay rows that follow (FR-89), judged before zones exist: it has
+    three or more words, at least one for each amount the next pay line prints, and that pay line comes next. A section title ("Statutory Deductions")
+    has fewer words than that."""
+    line = bl[position]
+    if not is_title_like(line):
+        return False
+    following = next((other for other in bl[position + 1:] if other.runs), None)
+    return following is not None and is_pay(following) and len(line.words) >= max(3, len(amounts_of(following)))
+
+
 def tables_cut(bl, starts):
     """A block's lines as one (lines, indexes) pair per table (FR-92 f): the lines from the first line after a totals line, when a heading line follows
-    before the next pay line, and those from a stub start line that follows pay lines, start a new table's list, so each table's amounts are clustered
-    on their own and a leave or deposit table whose columns line up with a pay table's doesn't merge with it. Each list is the block's length with
-    the lines outside its indexes emptied, so line indexes stay the page's."""
+    before the next pay line (two or more runs, or one run over the columns of the pay rows below it), and those from a stub start line that follows
+    pay lines, start a new table's list, so each table's amounts are clustered on their own and a leave or deposit table whose columns line up with
+    a pay table's doesn't merge with it. Each list is the block's length with the lines outside its indexes emptied, so line indexes stay the page's."""
     cuts, total, start, seen = [], False, None, False
     for position, line in enumerate(bl):
         if line.index in starts and seen:
@@ -268,7 +279,7 @@ def tables_cut(bl, starts):
             total, start, seen = total_kind(label_of(line)) is not None, None, True
         elif total:
             start = position if start is None else start
-            if is_heading_like(line):
+            if is_heading_like(line) or wide_heading(bl, position):
                 cuts.append(start)
                 total, start = False, None
     edges = [0, *cuts, len(bl)]

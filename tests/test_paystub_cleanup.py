@@ -269,7 +269,28 @@ def test_sc91_f_a_leave_table_lined_up_with_the_pay_column_is_a_table_of_its_own
     assert [[row.label for row in table.rows] for table in found.other_tables] == [["Vacation", "Sick"]] * 2
 
 
-# --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94) ----------------------------------------------------
+def leave_rows_one_run_heading(top, title):
+    """The Leave table of `leave_rows` with its heading printed as one run ("Accrued Vacation Used Leave Balance"), under a title line of its own when `title`."""
+    return [*([(40, top + 16, "Leave")] if title else []), (113.32, top, "Accrued Vacation Used Leave Balance"), *leave_rows(top)[4:]]
+
+
+def test_sc91_f_a_leave_table_under_a_one_run_heading_is_a_table_of_its_own(tmp_path):
+    """(f), review round 1 R1-2: the Leave heading is one run of five words, with or without a title line of its own above it, and the leave amounts line up
+    with the pay column. The cut before clustering recognises it as a heading (FR-89), so Base Pay and Retro Pay keep the pay column and the leave rows are no
+    pay rows."""
+    for title in (False, True):
+        folder = tmp_path / f"title-{title}"
+        folder.mkdir()
+        items = [*stub_left(780, "2,662.41", "225.58", "2,888.00", "2,250.00"), *leave_rows_one_run_heading(584, title)]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items, above=())]))
+
+        assert [[row.label for row in table.rows] for table in found.tables] == [["Base Pay", "Retro Pay"]]
+        assert [[row.amounts[found.tables[0].columns[0].id].text for row in table.rows] for table in found.tables] == [["2,662.41", "225.58"]]
+        assert [[total.label for total in table.totals] for table in found.tables] == [["Total Earnings", "Net Pay"]]
+        assert [[row.label for row in table.rows] for table in found.other_tables] == [["Vacation", "Sick"]]
+
+
+# --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94)----------------------------------------------------
 
 def printed_grid_ids(run):
     """The ids of the reader's printed tables (`table_grid`, source `pdf_text`) of the run's file."""
