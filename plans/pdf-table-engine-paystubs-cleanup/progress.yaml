@@ -142,6 +142,26 @@ code_review:
         disposition: "fixed in SL-06 (114ae6e)"
     unresolved_risks:
       - "Continuation bound 0.75 font sizes (approved): an 8 pt shift moves page 2 rows to an other table and the page reads flat with the note."
+  - round: 2
+    reviewer: codex/gpt-6.1-sol (reasoningEffort high), 0 helpers
+    independence: model-family
+    risk: HIGH
+    reviewed_head: 33c5fe0 (diff fe54dae..33c5fe0)
+    verdict: request changes (2 MAJOR)
+    prior_findings: "R1-1 resolved (amended P1 step 7); R1-3 resolved; R1-2 not fully resolved (R2-2) and its fix regressed (R2-1)."
+    findings:
+      - id: R2-1
+        severity: MAJOR
+        what: "wide_heading: a long section title starting in the label column (or a centred shorter one) overlaps the amounts' extent, so tables_cut cuts and a following lone row (Vision 6.00/6.00) goes to unplaced (with the unplaced note; not silent). fe54dae kept it in the table."
+        orchestrator_check: "reproduced: /tmp/claude-fv/review_r2_long_title.py, review_r2_assertions.py::test_r2_long_section_title_does_not_remove_vision fails at 33c5fe0."
+        disposition: "pending user decision (Codex review budget 2/2 spent)"
+      - id: R2-2
+        severity: MAJOR
+        what: "wide_heading's three-word floor rejects a two-word one-run leave heading (Used Balance); the leave amounts cluster with the pay column and Retro Pay 225.58 moves to other_tables (R1-2 mechanism)."
+        orchestrator_check: "reproduced: /tmp/claude-fv/review_r2_short_heading.py, review_r2_assertions.py::test_r2_two_word_leave_heading_preserves_retro_pay fails at 33c5fe0."
+        disposition: "pending user decision (Codex review budget 2/2 spent)"
+    unresolved_risks:
+      - "Integers printed under a recognised Current heading (metadata) can become pay amounts (accepted P1 risk R-B)."
 final_verification:
   head: 90983bc
   commands:
