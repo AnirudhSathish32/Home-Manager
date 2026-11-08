@@ -84,50 +84,26 @@ slices:
       list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
       heading (line-wrapped or older); none touched by this feature.
   - id: SL-06
-    status: in_progress
+    status: done
     title: "fixes for code review round 1"
     start_head: c1cbcf3
-    end_head: f3512ce
-    commit: [e990f8a, 114ae6e]
+    end_head: 5e2dfba
+    commit: [e990f8a, 114ae6e, 38351b0]
     provider: claude
     model: claude-sonnet-5-5
     verification:
-      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 971 passed (orchestrator rerun)"
-      - "reviewer probes for R1-2 (original/one_run/two_runs) and R1-3 (engine and end-to-end) -> fixed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 972 passed (orchestrator rerun at 5e2dfba)"
+      - "reviewer probes R1-2 (original/one_run/two_runs) and R1-3 (end-to-end) -> fixed; orchestrator probe_title.py -> one table with Vision for every title (orchestrator rerun)"
       - ".venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only"
-    blocked_on: >-
-      Orchestrator probe /tmp/claude-fv/probe_title.py: stacked stub, heading Description/Current/YTD, earnings rows, Total
-      Earnings, then a section title of 3+ words ("Pre Tax Deductions") and a single deduction row Vision 6.00 / 6.00 with no
-      total: `wide_heading` cuts at the title and the Vision row vanishes (in no table, not other, not unplaced, no note). With
-      the title "Deductions", and with every title at c1cbcf3, Vision is read (current 6.00, ytd 6.00). Regression from
-      e990f8a; needs a round 2 (heading must lie over the amount columns, and a cut must never drop a row silently).
-code_review:
-  - round: 1
-    reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
-    independence: model-family
-    risk: HIGH
-    reviewed_head: fe54dae
-    verdict: request changes (2 MAJOR, 1 MINOR)
-    findings:
-      - id: R1-1
-        severity: MAJOR
-        what: "FR-90: a headed table whose amounts are all bare integers (Current 100 / YTD 1300) is not read: integer promotion only runs on lines that are already pay lines (plan P1)."
-        orchestrator_check: "reproduced (tables=[], pages_without_tables=[1]); identical at 7a10aaf, so not a regression; page reads flat with the FR-64 note."
-        disposition: "escalated to user: plan P1 deliberately limits promotion to pay lines (R-B risk); extending it changes the approved plan."
-      - id: R1-2
-        severity: MAJOR
-        what: "FR-92 (f): tables_cut only cuts at is_heading_like (two or more runs); a leave table under a separate title and a one-run heading merges with the pay columns, Retro Pay leaves the pay table."
-        orchestrator_check: "reproduced with the reviewer's probe (one_run: pay table keeps Base Pay only; two_runs: both rows)."
-        disposition: "fix in SL-06"
-      - id: R1-3
-        severity: MINOR
-        what: "FR-93/FR-64: an untrusted page holding a summary box stays in `pages`, so `without` and the NO_PAY_TABLE filter (extraction.py `page not in part.pages`) drop its note while its amounts come from the model."
-        orchestrator_check: "reproduced (untrusted_pages={1}, engine_pages=[], pages_without_tables=[], no page note)."
-        disposition: "fix in SL-06 (cheap, money-relevant note)"
-    unresolved_risks:
-      - "Continuation bound 0.75 font sizes (approved): an 8 pt shift moves page 2 rows to an other table and the page reads flat with the note."
+    notes: >-
+      Round 1 (e990f8a, 114ae6e) fixed R1-2 and R1-3. The orchestrator then found that `wide_heading` cut at a 3+ word section
+      title in the label column, splitting the table (correction: the lone Vision row was not silently lost; it went to
+      `unplaced` with the "wasn't placed in any column" note; the orchestrator's probe didn't print `unplaced`). Round 2
+      (38351b0) requires a word of the one-run heading to overlap the next pay line's amounts. Remaining heuristic limit: a
+      2-word one-run heading over amounts, or a centred 3+ word title reaching into the amount columns.
   - id: SL-07
-    status: todo
+    status: in_progress
+    start_head: 5e2dfba  # code base; progress commit on top
     title: "FR-90 rows printed in whole numbers only (R1-1, plan P1 step 7)"
 final_verification:
   head: 90983bc
