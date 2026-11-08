@@ -163,6 +163,13 @@ def lone_integer(tokens):
     return len(tokens) == 1 and tokens[0].kind == "integer"
 
 
+def integer_only(line):
+    """A line of a text label and then only runs of one whole number each, no decimal amount: a row printed in whole numbers (FR-90, plan P1
+    step 7). It is no pay line until its numbers are read as amounts."""
+    return (len(line.runs) >= 2 and line.led_by_text[0] and any(token.kind == "text" for token in line.tokens[0])
+            and not any(readable(token) for token in line.tokens[0]) and all(lone_integer(tokens) for tokens in line.tokens[1:]))
+
+
 def run_text(run):
     return " ".join(word.text for word in run)
 
@@ -614,6 +621,64 @@ def with_whole_numbers(bl, kept):
     return lines, swap
 
 
+def nearest_column(token, groups, tolerance):
+    """The id of the decimal column whose edge, at some alignment, lies within `tolerance` of the token's (step 2's test reversed), the closest one; else None."""
+    best = min(((abs(edge_of(token.box, align) - group.edge_at(align)), gid) for gid, group in groups.items() for align in ALIGNMENTS), default=None)
+    return best[1] if best is not None and best[0] <= tolerance else None
+
+
+def whole_numbers(view, bl, consumed, pay, extras, groups, edge):
+    """The whole numbers of a block that are amounts (FR-90, plan P1 steps 2, 5 and 7): (kept columns, {decimal column id: tokens}). Kept columns are
+    (alignment, [(token, line index)]) of whole numbers; the other is the integers of integer-only lines (`extras`) that print in a decimal column. An
+    integer-only line counts only with a heading line above it (walking up over rows and section titles), so a details box above the first heading
+    stays text, and only when every integer of it is read as an amount. A column of integer-only lines alone needs a heading piece over it and two
+    rows; a column that pay lines share follows step 5 (a heading piece or two rows)."""
+    tolerance = view.size * ALIGN
+    pay_index = {line.index for line in pay}
+    while True:
+        lines = sorted([*pay, *extras], key=lambda line: line.index)
+        tentative = whole_columns(lines, groups.values(), tolerance)
+        if not tentative and not extras:
+            return [], {}
+        extra = [Group(alignment, median(edge_of(token.box, alignment) for token, _ in column), span([token for token, _ in column]),
+                       [token.box for token, _ in column]) for alignment, column in tentative]
+        every = [*groups.values(), *extra]
+        zones = zones_of(every, view.size)
+        zone_of = {id(group): zone for group, zone in zip(sorted(every, key=lambda group: sum(group.extent)), zones)}
+        heads = {index for line in lines for index in heads_above(bl, consumed, line.index, (view, zones, edge))}
+        if extras:
+            walkable = heads | pay_index | {line.index for line in extras} | {line.index for line in bl if is_title_like(line)}
+            headed = []
+            for line in extras:
+                above = line.index - 1
+                while above >= 0 and above not in consumed and above not in heads and above in walkable:
+                    above -= 1
+                if above >= 0 and above in heads:
+                    headed.append(line)
+            if len(headed) < len(extras):
+                extras = headed
+                continue
+        pieces = [box for index in heads for _, box, _ in heading_runs(view, [bl[index]], zones, edge)]
+        alone = {line.index for line in extras}
+        kept = []
+        for column, group in zip(tentative, extra):
+            rows = {index for _, index in column[1]}
+            over = any(in_zone(box, zone_of[id(group)]) for box in pieces)
+            if (over and len(rows) >= 2) if rows <= alone else (over or len(rows) >= 2):
+                kept.append(column)
+        near = {}
+        for line in extras:
+            for tokens in line.tokens[1:]:
+                gid = nearest_column(tokens[0], groups, tolerance)
+                if gid is not None:
+                    near.setdefault(gid, []).append(tokens[0])
+        read = {id(token) for _, column in kept for token, _ in column} | {id(token) for tokens in near.values() for token in tokens}
+        bad = {line.index for line in extras if any(id(tokens[0]) not in read for tokens in line.tokens[1:])}
+        if not bad:
+            return kept, near
+        extras = [line for line in extras if line.index not in bad]
+
+
 def read_block(number, view, bl, name, previous, made, boxes, serial, taken=frozenset(), stub=None, starts=None, whole=None, edge=None):
     """One block of a page: its summary boxes, then its tables and unplaced lines. `taken` is the lines of a summary box found across the whole page
     (before the page was split into blocks); `stub` is the dates printed on the start lines of the stub being read, kept across pages: a start line
@@ -635,29 +700,19 @@ def read_block(number, view, bl, name, previous, made, boxes, serial, taken=froz
 
     found = choose_alignments(entries, tolerance, supported)
     groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
-    tentative = whole_columns(pay, groups.values(), tolerance)
-    if tentative:
-        # Whole-number columns (FR-90): zones are drawn with the tentative columns, the heading lines are cut into pieces over those zones, and a
-        # column stays when a piece sits over it or two rows line up in it; the other columns' integers stay text.
-        extra = [Group(alignment, median(edge_of(token.box, alignment) for token, _ in column), span([token for token, _ in column]),
-                       [token.box for token, _ in column]) for alignment, column in tentative]
-        every = [*groups.values(), *extra]
-        zones = zones_of(every, view.size)
-        zone_of = {id(group): zone for group, zone in zip(sorted(every, key=lambda group: sum(group.extent)), zones)}
-        heads = {index for line in pay for index in heads_above(bl, consumed, line.index, (view, zones, edge))}
-        pieces = [box for index in heads for _, box, _ in heading_runs(view, [bl[index]], zones, edge)]
-        kept = [column for column, group in zip(tentative, extra)
-                if len({index for _, index in column[1]}) >= 2 or any(in_zone(box, zone_of[id(group)]) for box in pieces)]
-        if kept:
-            old = [token for token, _ in entries]
-            bl, swap = with_whole_numbers(bl, kept)
-            pay = [line for line in bl if line.index not in consumed and is_pay(line)]
-            entries = [(token, line.index) for line in pay for token in amounts_of(line)]
-            at = {id(token): position for position, (token, _) in enumerate(entries)}
-            decimal = [(alignment, [at[id(swap.get(id(old[position]), old[position]))] for position in positions]) for alignment, positions in found]
-            whole_found = [(alignment, [at[id(swap[id(token)])] for token, _ in column]) for alignment, column in kept]
-            found = sorted([*decimal, *whole_found], key=lambda item: min(item[1]))
-            groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
+    # Whole-number amounts (FR-90): columns of integers under a heading or on two rows, and the integers of rows printed in whole numbers only.
+    kept, near = whole_numbers(view, bl, consumed, pay, [line for line in bl if line.index not in consumed and integer_only(line)], groups, edge)
+    if kept or near:
+        old = [token for token, _ in entries]
+        bl, swap = with_whole_numbers(bl, [*kept, (None, [(token, None) for tokens in near.values() for token in tokens])])
+        pay = [line for line in bl if line.index not in consumed and is_pay(line)]
+        entries = [(token, line.index) for line in pay for token in amounts_of(line)]
+        at = {id(token): position for position, (token, _) in enumerate(entries)}
+        decimal = [(alignment, [*(at[id(swap.get(id(old[position]), old[position]))] for position in positions), *(at[id(swap[id(token)])] for token in near.get(gid, []))])
+                   for gid, (alignment, positions) in enumerate(found)]
+        whole_found = [(alignment, [at[id(swap[id(token)])] for token, _ in column]) for alignment, column in kept]
+        found = sorted([*decimal, *whole_found], key=lambda item: min(item[1]))
+        groups = {gid: group_of(entries, positions, alignment) for gid, (alignment, positions) in enumerate(found)}
     zones = zones_of(groups.values(), view.size)
     pay_index = {line.index for line in pay}
     attached = {index for line in pay for index in heads_above(bl, consumed, line.index, (view, zones, edge))}

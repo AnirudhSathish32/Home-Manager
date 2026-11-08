@@ -134,6 +134,94 @@ def test_sc90_a_whole_number_under_no_heading_on_one_row_stays_label_text(tmp_pa
     assert [row.label for row in table.rows] == ["Regular 40", "Overtime"]
 
 
+# --- SC-90 (code review round 1, R1-1): rows printed in whole numbers only -----------------------------------------------------
+
+def whole_page(rows, above=()):
+    """A headed `Description Current YTD` table (columns right-aligned at 430 and 520), `above` the heading lines of a details box."""
+    items = [item for number, (label, *cells) in enumerate(above) for item in row_items(740 - 16 * number, [(40, label), *[(430, cells[0], True)]])] if above else []
+    items += row_items(700, [(40, "Description"), (430, "Current", True), (520, "YTD", True)])
+    for number, (label, current, ytd) in enumerate(rows):
+        items += row_items(680 - 16 * number, [(40, label), (430, current, True), (520, ytd, True)])
+    return [{"items": [*items, (40, 60, pf.FOOTER)]}]
+
+
+def check_the_whole_number_table(found, texts):
+    [table] = found.tables
+    assert [column.labels for column in table.columns] == [["Current"], ["YTD"]]
+    assert [found.roles[0].roles[column.id] for column in table.columns] == ["current", "ytd"]
+    assert [(row.label, [token.text for token in row.amounts.values()]) for row in table.rows] == [
+        ("Regular", list(texts[0])), ("Bonus", list(texts[1]))]
+    [total] = table.totals
+    assert (total.label, total.kind, [token.text for token in total.values.values()]) == ("Gross Pay", "gross", list(texts[2]))
+    assert found.unplaced == [] and found.notes == [] and paystub_tables.mismatches(found) == []  # the total holds: 100 + 20 = 120, 1300 + 260 = 1560
+
+
+def test_sc90_r1_1_a_table_printed_in_whole_numbers_only_reads_three_rows_with_the_total_holding(tmp_path):
+    found = paystub_tables.read(fx.read_pdf(tmp_path, whole_page([("Regular", "100", "1300"), ("Bonus", "20", "260"), ("Gross Pay", "120", "1560")])))
+
+    check_the_whole_number_table(found, [("100", "1300"), ("20", "260"), ("120", "1560")])
+    assert [row.amounts[column.id].value[0] for row in found.tables[0].rows for column in found.tables[0].columns] == [
+        Decimal(100), Decimal(1300), Decimal(20), Decimal(260)]
+
+
+def test_sc90_r1_1_a_whole_number_total_that_does_not_add_up_is_noted(tmp_path):
+    found = paystub_tables.read(fx.read_pdf(tmp_path, whole_page([("Regular", "100", "1300"), ("Bonus", "20", "260"), ("Gross Pay", "125", "1560")])))
+
+    [note] = paystub_tables.mismatches(found)
+    assert '"Gross Pay" 125 (this period)' in note and "add up to 120" in note
+
+
+def test_sc90_r1_1_a_whole_number_in_a_table_of_decimal_amounts_is_an_amount_of_its_column(tmp_path):
+    found = paystub_tables.read(fx.read_pdf(tmp_path, whole_page([("Regular", "100", "1300"), ("Bonus", "20.00", "260.00"), ("Gross Pay", "120.00", "1560.00")])))
+
+    check_the_whole_number_table(found, [("100", "1300"), ("20.00", "260.00"), ("120.00", "1560.00")])
+
+
+def test_sc90_r1_1_a_details_box_above_the_whole_number_table_forms_no_row(tmp_path):
+    """`Federal Allowances 2` and `Exemptions 1` print above the first heading, in the Current column's edge: no amount, no row, no stray line."""
+    pages = whole_page([("Regular", "100", "1300"), ("Bonus", "20", "260"), ("Gross Pay", "120", "1560")],
+                       above=[("Federal Allowances", "2"), ("Exemptions", "1")])
+    result = fx.read_pdf(tmp_path, pages)
+    found = paystub_tables.read(result)
+
+    check_the_whole_number_table(found, [("100", "1300"), ("20", "260"), ("120", "1560")])
+    assert "Federal Allowances" not in [row.label for table in found.tables for row in table.rows]
+
+
+def test_sc90_r1_1_a_one_row_whole_number_column_under_no_heading_stays_text(tmp_path):
+    items = row_items(680, [(40, "Regular"), (430, "100", True)])
+    reading = pay_tables.read(fx.read_pdf(tmp_path, [{"items": [*items, (40, 60, pf.FOOTER)]}]))
+
+    assert reading.tables == [] and reading.unplaced == []
+
+
+def test_sc90_r1_1_a_column_of_integer_only_rows_with_no_heading_over_it_stays_text_though_two_rows_line_up(tmp_path):
+    """Stricter than a pay line's column (R-B): `Current` is headed, the second column is not, so its two rows' numbers are no amounts and no row forms."""
+    items = row_items(700, [(40, "Description"), (430, "Current", True)])
+    for number, (label, current, other) in enumerate([("Regular", "100", "1300"), ("Bonus", "20", "260")]):
+        items += row_items(680 - 16 * number, [(40, label), (430, current, True), (520, other, True)])
+    reading = pay_tables.read(fx.read_pdf(tmp_path, [{"items": [*items, (40, 60, pf.FOOTER)]}]))
+
+    assert reading.tables == [] and reading.unplaced == []
+
+
+def test_sc90_r1_1_a_stub_printed_in_whole_numbers_records_its_lines_in_minor_units(pdf_store, local_model):
+    """100 / 1300 and 20 / 260 are amounts of the Current and YTD columns: the record's lines hold 10000 / 130000 and 2000 / 26000, each citing a cell."""
+    items = [*pf.page_of([*row_items(700, [(40, "Description"), (430, "Current", True), (520, "YTD", True)]),
+                          *[item for number, (label, current, ytd) in enumerate([("Regular", "100", "1300"), ("Bonus", "20", "260"), ("Gross Pay", "120", "1560")])
+                            for item in row_items(680 - 16 * number, [(40, label), (430, current, True), (520, ytd, True)])]])["items"]]
+    run = started(pdf_store, local_model, [{"items": items}])
+    run.stub(classes=[("Regular", "earnings", "regular_pay", "Regular"), ("Bonus", "earnings", "bonus", "Bonus")],
+             summary={"gross_pay": ("Gross Pay", "120"), "gross_pay_ytd": ("Gross Pay", "1560")})
+    run.extract()
+
+    record = run.record
+    assert [(line["description"], line["current_minor"], line["ytd_minor"]) for line in record["lines"]] == [("Regular", 10000, 130000), ("Bonus", 2000, 26000)]
+    assert (record["gross_pay_minor"], record["gross_pay_ytd_minor"]) == (12000, 156000)
+    assert all(line["cell_evidence"] for line in record["lines"])
+    assert not [note for note in run.notes if "doesn't match" in note]
+
+
 # --- SC-91: the layouts the generator avoided (FR-92) ------------------------------------------------------------------------------------------
 
 def values_by_role(found, table):

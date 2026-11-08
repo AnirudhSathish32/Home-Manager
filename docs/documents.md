@@ -796,7 +796,11 @@ words and their positions, with no model and no network; the same input gives th
   letters (`401K`, `403(b)`) is label text, never an amount. A whole number (`80` hours) is an amount only in a column: a line of
   one integer starts no row, and a column of integers that no decimal column lies within 0.75 font sizes of counts when a
   heading sits over it or two rows line up in it; one printed alone under no heading (`SECTION 125`, one row of `40`) stays
-  label text. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
+  label text. A row printed in whole numbers only (`Regular 100 1300`, no decimal amount) is read under a heading: a whole number
+  within 0.75 font sizes of a decimal column's edge is an amount of that column (`100` under `20.00`); a column made only of
+  such rows is kept only with a heading over it and two rows lined up in it; and the row is a pay row only when every one of its
+  numbers is read as an amount. A details-box line (`Federal Allowances 2`) above the first heading, or a number under no
+  heading, stays text. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
   one line of words that fall over two or more columns, such as "This Period Year To Date"), only label them. A text line at the table's left edge above a row is a section title and the rows' section; an indented text line under
   a row joins that row's label (a wrapped label). A different column set starts a table of its own (stacked Earnings / Taxes /
   Deductions tables), and a table continues over later pages, with or without a repeated heading, only when the page's first
