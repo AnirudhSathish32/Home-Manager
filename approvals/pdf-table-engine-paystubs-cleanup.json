@@ -1,18 +1,18 @@
 {
   "feature": "pdf-table-engine-paystubs-cleanup",
   "spec": {
-    "sha256": "dc29671638800aa91bc9e61d0b08645f712b6c5210c6d2ba387c1ec65d40580d",
+    "sha256": "c30fcdf17b227b06474dd33a2275d65e4c3bb7b2c51fc11e5726ee23b587c1e7",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-11-07T17:57:58-05:00",
+    "approved_at": "2026-11-08T16:02:39-05:00",
     "approved_via": "agent",
-    "permission": "approve the spec and plan then proceed"
+    "permission": "approve the spec and plan then start sl-10"
   },
   "plan": {
-    "sha256": "884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815",
+    "sha256": "c069140c31a86610d4b327e6c5b06141a9d65cd9cfae51463e8923bd5c6c31da",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-11-07T20:39:51-05:00",
+    "approved_at": "2026-11-08T16:02:39-05:00",
     "approved_via": "agent",
-    "permission": "i approve the ammended plan then run the fixes and codex review",
-    "spec_sha256": "dc29671638800aa91bc9e61d0b08645f712b6c5210c6d2ba387c1ec65d40580d"
+    "permission": "approve the spec and plan then start sl-10",
+    "spec_sha256": "c30fcdf17b227b06474dd33a2275d65e4c3bb7b2c51fc11e5726ee23b587c1e7"
   }
 }

@@ -1,8 +1,8 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: pdf-table-engine-paystubs-cleanup
-plan_sha256: 884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815
+plan_sha256: c069140c31a86610d4b327e6c5b06141a9d65cd9cfae51463e8923bd5c6c31da
 previous_plan_sha256: c365dbb5b2f8daec1f77cd9b64508d7e020b7e5f1468f764739e4c9ff2079c14  # re-approved 2026-11-07 after SC-94 amendment (SL-02 E-1)
-session_plan_hash: 884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815  # re-approved 2026-11-07 after P1 step 7 amendment (R1-1); before: dbb5fd1f24d6fc9a115dd7a17842e8397477626ab77c0ab9a1b6e090ed09cbb9
+session_plan_hash: c069140c31a86610d4b327e6c5b06141a9d65cd9cfae51463e8923bd5c6c31da  # re-approved 2026-11-08 after the FR-92 (f) text-cue amendment (R2-1, R3-1; SL-10); before: 884889e3087679759f41bbebbd950f148a51707d2508528bd0fa7fdca22ca815 (P1 step 7, R1-1)
 slices:
   - id: SL-01
     status: done
@@ -136,9 +136,25 @@ slices:
       Known limit (documented in docs/documents.md "Known limits"): a 4+ word title starting right of the label column whose
       words line up by one edge with every amount still cuts; the row below then forms its own table or is unplaced with the note.
   - id: SL-09
-    status: in_progress
+    status: done
     title: "fix for code review round 3 (R3-1)"
-    start_head: ec1ab12
+    start_head: 721ed9b
+    end_head: 2dfd196
+    commit: 967698c
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "8-file targeted command (as SL-08) -> 985 passed (orchestrator rerun)"
+      - "/tmp/claude-fv/r3 sparse_title_regression.py + review_r2_assertions.py -> 3 passed; 9 reviewer probe scripts exit 0 (orchestrator rerun)"
+      - "ruff -> the 2 pre-existing errors only; table_engine.py unchanged since ef7cff3 (FR-67)"
+    notes: >-
+      Escalated: an exactly centred title of 3+ words (Health Insurance Premiums) still cuts, geometrically the same as the R1-2
+      heading; and a one-run leave heading with fewer pieces than the pay table's columns no longer cuts. User chose a text cue:
+      FR-92 (f) / SC-91 (f) / plan P3 (f) amended (01292ee), re-approved; SL-10 replaces SL-09's table-above rule.
+  - id: SL-10
+    status: in_progress
+    title: "one-run headings need a leave or deposit word (FR-92 f amendment; R2-1, R3-1)"
+    start_head: 01292ee
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
