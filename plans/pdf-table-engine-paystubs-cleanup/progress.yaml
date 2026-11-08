@@ -84,9 +84,23 @@ slices:
       list (continuation bound, tight columns, layout (c), SL-04 notes). 15 pre-existing doc citations don't match a
       heading (line-wrapped or older); none touched by this feature.
   - id: SL-06
-    status: in_progress
+    status: blocked
     title: "fixes for code review round 1"
-    start_head: fe54dae
+    start_head: c1cbcf3
+    end_head: f3512ce
+    commit: [e990f8a, 114ae6e]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q -> 971 passed (orchestrator rerun)"
+      - "reviewer probes for R1-2 (original/one_run/two_runs) and R1-3 (engine and end-to-end) -> fixed (orchestrator rerun)"
+      - ".venv/bin/ruff check src scripts tests evals -> the 2 pre-existing errors only"
+    blocked_on: >-
+      Orchestrator probe /tmp/claude-fv/probe_title.py: stacked stub, heading Description/Current/YTD, earnings rows, Total
+      Earnings, then a section title of 3+ words ("Pre Tax Deductions") and a single deduction row Vision 6.00 / 6.00 with no
+      total: `wide_heading` cuts at the title and the Vision row vanishes (in no table, not other, not unplaced, no note). With
+      the title "Deductions", and with every title at c1cbcf3, Vision is read (current 6.00, ytd 6.00). Regression from
+      e990f8a; needs a round 2 (heading must lie over the amount columns, and a cut must never drop a row silently).
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
