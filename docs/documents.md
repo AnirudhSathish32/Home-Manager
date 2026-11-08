@@ -790,7 +790,7 @@ words and their positions, with no model and no network; the same input gives th
   into a text PDF. A text page without a pay table adds the note "Page N: no pay table was found in the printed columns, so its
   amounts are the reading's; check them." If the engine raises, every page of the stub is read like flat text with the note "The
   pay table couldn't be read from the printed columns, so the reading's amounts were used; check them." (logged by class, never
-  with document text). Readings made before extraction version `typed-extraction-v36-paystub-one-path` are read again on
+  with document text). Readings made before extraction version `typed-extraction-v37-paystub-one-row-headings` are read again on
   **Extract again**; a stub you confirmed or rejected is not rewritten.
 - **Rows.** A row is a label followed by amounts, found by alignment alone; no date or heading is needed. A number joined to
   letters (`401K`, `403(b)`) is label text, never an amount. A whole number (`80` hours) is an amount only in a column: a line of
