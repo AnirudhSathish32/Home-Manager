@@ -467,6 +467,73 @@ def test_sc91_f_r3_a_leave_table_under_a_two_word_one_run_heading_is_a_table_of_
         assert found.unplaced == [], title
 
 
+def test_sc91_f_r3_a_one_word_section_title_over_a_sparse_row_does_not_cut_the_block(tmp_path):
+    """(f), review round 3 R3-1: after Regular, Overtime and Total Earnings (Current 430, YTD 520) a one-word section title, centred over the two amount
+    columns or shifted left, then "Travel 6.00" with the YTD blank. The one amount of the row is under the title's only piece, but the YTD column of the
+    table above has no unit of the title (no word lies over it, none lines up with it), so the title is no heading: Travel stays a pay row under Current
+    with 6.00, and nothing is unplaced."""
+    for number, (title, shift) in enumerate((("Reimbursements", 0), ("Deductions", 0), ("Deductions", -45))):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        centre = (430 - width("6.00") + 520) / 2 + shift
+        items = [(round(centre - width(text) / 2, 3) if text == title else x, y, text) for x, y, text in stacked_stub_with_title(title, [("Travel", "6.00", "")])]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+        [table] = found.tables
+        assert [found.roles[0].roles[column.id] for column in table.columns] == ["current", "ytd"], title
+        assert [(row.label, [row.amounts[column.id].text for column in table.columns if column.id in row.amounts]) for row in table.rows] == \
+            [("Regular", ["2,000.00", "24,000.00"]), ("Overtime", ["150.00", "900.00"]), ("Travel", ["6.00"])], title
+        assert [total.label for total in table.totals] == ["Total Earnings"], title
+        assert found.other_tables == [] and found.unplaced == [] and found.pages_without_tables == [], title
+
+
+def test_sc91_f_r3_a_three_word_title_with_words_off_the_amounts_does_not_cut_a_sparse_row(tmp_path):
+    """(f), review round 3 R3-1: the three-word "Health Insurance Premiums" and "Employee Benefit Contributions", shifted 15 or 30 off the centre of
+    the columns, have no word lined up with each amount column of the table above by one edge, and "Vision 6.00" (YTD blank) is under them. They are no
+    heading: Vision stays in the pay table. Titles whose words do line up with both columns (Health Insurance Premiums exactly centred) are the cut's
+    known limit (docs/documents.md "Known limits"), not tested here."""
+    for number, (title, shift) in enumerate((("Health Insurance Premiums", -15), ("Health Insurance Premiums", 30), ("Employee Benefit Contributions", 15),
+                                               ("Employee Benefit Contributions", -30))):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        centre = (430 - width("6.00") + 520) / 2 + shift
+        items = [(round(centre - width(text) / 2, 3) if text == title else x, y, text) for x, y, text in stacked_stub_with_title(title, [("Vision", "6.00", "")])]
+        found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+        [table] = found.tables
+        assert [row.label for row in table.rows] == ["Regular", "Overtime", "Vision"], (title, shift)
+        assert [row.amounts[table.columns[0].id].text for row in table.rows] == ["2,000.00", "150.00", "6.00"], (title, shift)
+        assert found.other_tables == [] and found.unplaced == [], (title, shift)
+
+
+def test_sc91_f_r3_a_sparse_leave_row_under_a_heading_over_every_pay_column_is_a_table_of_its_own(tmp_path):
+    """(f), review round 3 R3-1: a sparse row ("Vacation 8.00", one amount) under a two-piece heading "Used Balance" still cuts when the pieces cover every
+    column of the table above. (1) The pay table has one column (the leave amounts line up with it): Base Pay 2,662.41 and Retro Pay 225.58 stay, Vacation and
+    Sick are the other table. (2) The pay table is Current 430 / YTD 520 and "Used" and "Balance" end at 430 and 520, one piece over each column: Regular and Overtime
+    stay with both literals, Vacation 8.00 and Sick 0.00 are the other table."""
+    folder = tmp_path / "one-column"
+    folder.mkdir()
+    items = [*stub_left(780, "2,662.41", "225.58", "2,888.00", "2,250.00"), (196.66, 584, "Used"), (230, 584, "Balance"), (40, 568, "Vacation"),
+             (200.54, 568, "8.00"), (40, 552, "Sick"), (200.54, 552, "0.00")]
+    found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items, above=())]))
+
+    [table] = found.tables
+    assert [(row.label, row.amounts[table.columns[0].id].text) for row in table.rows] == [("Base Pay", "2,662.41"), ("Retro Pay", "225.58")]
+    assert [[row.label for row in other.rows] for other in found.other_tables] == [["Vacation", "Sick"]] and found.unplaced == []
+
+    folder = tmp_path / "two-columns"
+    folder.mkdir()
+    items = [item for item in stacked_stub_with_title("Used", [("Vacation", "8.00", ""), ("Sick", "0.00", "")]) if item[2] != "Used"]
+    top = next(y for x, y, text in stacked_stub_with_title("Used", []) if text == "Used")
+    items += [(430 - width("Used"), top, "Used"), (520 - width("Balance"), top, "Balance")]
+    found = paystub_tables.read(fx.read_pdf(folder, [pf.page_of(items)]))
+
+    [table] = found.tables
+    assert [(row.label, [row.amounts[column.id].text for column in table.columns]) for row in table.rows] == \
+        [("Regular", ["2,000.00", "24,000.00"]), ("Overtime", ["150.00", "900.00"])]
+    assert [[row.label for row in other.rows] for other in found.other_tables] == [["Vacation", "Sick"]] and found.unplaced == []
+
+
 # --- SL-04: the record of a text-PDF stub never comes from a printed table (FR-93, FR-94)----------------------------------------------------
 
 def printed_grid_ids(run):

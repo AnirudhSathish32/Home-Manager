@@ -259,14 +259,30 @@ def block_split(view, lines, tolerance):
     return median(value for value, _ in best)
 
 
-def wide_heading(view, bl, position):
-    """Whether a one-run all-text line is a heading printed over the columns of the pay rows that follow (FR-89), judged before zones exist: the
-    pay line comes next, the line does not start in its label column, and each amount of that line has a unit of the heading of its own: a piece
-    over it (the line splits where its words lie further apart than a space, as `heading_runs` does) or a word aligned with it by an edge within
-    `ALIGN` font sizes (a heading phrase printed at one pitch, "Accrued Vacation Used Leave Balance"; the same edge for every word); no word
-    serves two amounts. A section title is one piece, so in the label column it never cuts, and out of it a title cuts only if words of it line
-    up by one edge with the amounts."""
+def amount_columns(boxes):
+    """One box per column of amounts: boxes that overlap horizontally are one column, and the column is represented by its last box."""
+    columns = []
+    for box in boxes:
+        found = next((column for column in columns if box[0] <= column[1] and box[2] >= column[0]), None)
+        if found is None:
+            columns.append([box[0], box[2], box])
+        else:
+            found[:] = [min(found[0], box[0]), max(found[1], box[2]), box]
+    return [column[2] for column in columns]
+
+
+def wide_heading(view, bl, position, above=None):
+    """Whether a one-run all-text line is a heading printed over the columns of the table it cuts (FR-89), judged before zones exist: the pay line
+    comes next, the line does not start in its label column, and every column of amounts has a unit of the heading of its own, the columns of the pay
+    lines `above` (the boxes of their amounts since the table began) and those of the next pay line. A unit is a piece over the column (the line
+    splits where its words lie further apart than a space, as `heading_runs` does) or a word aligned with it by an edge within `ALIGN` font sizes (a
+    heading phrase printed at one pitch, "Accrued Vacation Used Leave Balance"; the same edge for every word); no word serves two columns. A section
+    title is one piece, so in the label column it never cuts, and out of it a title cuts only if it has a unit over each column of the table above,
+    which a sparse row under it ("Travel 6.00", the YTD blank) doesn't spare it. Two pieces over a table of three columns don't cut it. Without
+    `above`, the table above is every pay line of `bl` before the line."""
     line = bl[position]
+    if above is None:
+        above = [token.box for other in bl[:position] if is_pay(other) for token in amounts_of(other)]
     if not is_title_like(line):
         return False
     following = next((other for other in bl[position + 1:] if other.runs), None)
@@ -275,42 +291,45 @@ def wide_heading(view, bl, position):
     tolerance = view.size * ALIGN
     if view.box[line.words[0].id][0] <= view.box[following.runs[0][0].id][0] + tolerance:
         return False
-    # Units: a piece over an amount (it takes all its words) or one word aligned with it, all words by the same edge. No word serves two amounts.
+    # Units: a piece over a column (it takes all its words) or one word aligned with it, all words by the same edge. No word serves two columns.
     units = [(box, {word.id for word in piece}, True) for piece in run_pieces(view, line.runs[0]) for box in [union(view.box[word.id] for word in piece)]]
     units += [(view.box[word.id], {word.id}, False) for word in line.runs[0]]
 
-    def seat(amounts, used, alignment):
-        if not amounts:
+    def seat(columns, used, alignment):
+        if not columns:
             return True
-        amount, rest = amounts[0], amounts[1:]
+        column, rest = columns[0], columns[1:]
         for box, ids, piece in units:
-            fits = (box[0] <= amount.box[2] and box[2] >= amount.box[0]) if piece else abs(edge_of(box, alignment) - edge_of(amount.box, alignment)) <= tolerance
+            fits = (box[0] <= column[2] and box[2] >= column[0]) if piece else abs(edge_of(box, alignment) - edge_of(column, alignment)) <= tolerance
             if fits and not ids & used and seat(rest, used | ids, alignment):
                 return True
         return False
 
-    return any(seat(amounts_of(following), set(), alignment) for alignment in ALIGNMENTS)
+    columns = amount_columns([*above, *(token.box for token in amounts_of(following))])
+    return any(seat(columns, set(), alignment) for alignment in ALIGNMENTS)
 
 
 def tables_cut(view, bl, starts):
     """A block's lines as one (lines, indexes) pair per table (FR-92 f): the lines from the first line after a totals line, when a heading line follows
-    before the next pay line (two or more runs, or one run over the columns of the pay rows below it), and those from a stub start line that follows
-    pay lines, start a new table's list, so each table's amounts are clustered on their own and a leave or deposit table whose columns line up with
-    a pay table's doesn't merge with it. Each list is the block's length with the lines outside its indexes emptied, so line indexes stay the page's."""
-    cuts, total, start, seen = [], False, None, False
+    before the next pay line (two or more runs, or one run over every column of the table above and of the pay row below it), and those from a stub
+    start line that follows pay lines, start a new table's list, so each table's amounts are clustered on their own and a leave or deposit table
+    whose columns line up with a pay table's doesn't merge with it. Each list is the block's length with the lines outside its indexes emptied, so
+    line indexes stay the page's. The table above is the pay lines since the last cut: their amounts' boxes are the columns a one-run heading must cover."""
+    cuts, total, start, seen, above = [], False, None, False, []
     for position, line in enumerate(bl):
         if line.index in starts and seen:
             cuts.append(position)
-            total, start, seen = False, None, False
+            total, start, seen, above = False, None, False, []
         if not line.runs:
             continue
         if is_pay(line):
             total, start, seen = total_kind(label_of(line)) is not None, None, True
+            above += [token.box for token in amounts_of(line)]
         elif total:
             start = position if start is None else start
-            if is_heading_like(line) or wide_heading(view, bl, position):
+            if is_heading_like(line) or wide_heading(view, bl, position, above):
                 cuts.append(start)
-                total, start = False, None
+                total, start, above = False, None, []
     edges = [0, *cuts, len(bl)]
     return [([line if low <= position < high else subline(line, []) for position, line in enumerate(bl)], range(low, high))
             for low, high in zip(edges, edges[1:])]
