@@ -68,6 +68,21 @@ Order inside `read_block`:
    runs' `led_by_text` becomes False, so `amounts_of`, `is_pay` and `label_of` see it (review pass 4, MINOR). A comma-grouped whole number (`4,000`) is already an amount.
 6. Integers in the label run (`SECTION 125`) stay label text; an integer on a line that is no pay line (a details-box line
    such as `Federal Allowances 2`, above the table's first row) is never an amount.
+7. **Rows printed in whole numbers only** (code review round 1, R1-1; amends steps 2 and 5 for these rows only). A line
+   whose label run is followed only by runs each holding a single integer (no decimal amount) is an *integer-only line*:
+   not a pay line yet, but its integer runs enter step 2 alongside the pay lines' (box lines stay excluded).
+   - An integer whose edge is within `ALIGN` font sizes of a decimal column's edge (step 2's test, reversed) becomes an
+     amount of that column (FR-90 "numbers in amount columns": `Regular 100 1300` under `20.00` / `260.00`).
+   - A tentative column holding only integer-only lines' integers is kept only when a heading piece sits over it **and**
+     at least two rows line up in it (stricter than step 5's "or", R-B); a column mixing them with pay lines follows step 5.
+   - An integer-only line becomes a pay line when every one of its integer runs is in a kept column (or a decimal
+     column, first bullet); otherwise all its integers stay text and it is no pay row.
+   - Unchanged: a lone integer above the first heading or with no heading over its column (`Federal Allowances 2`,
+     `Exemptions 1` in a details box) is never an amount (SC-90); the table that follows reads as before.
+   Literal regression cases (SL-07): the headed table `Description Current YTD` / `Regular 100 1300` / `Bonus 20 260` /
+   `Gross Pay 120 1560` reads three rows with Current and YTD roles and the total holding; the same table with
+   `Bonus 20.00 260.00` and `Gross Pay 120.00 1560.00` reads all three rows; a details box (`Federal Allowances 2`,
+   `Exemptions 1`) above the integer-only table forms no pay row; a one-row integer column with no heading stays text.
 `table_engine.tokenize`, `tokenize_page` and `Line` are not changed (statements can't move, FR-67): everything happens in
 `pay_tables.py` (m6).
 With `80` an amount under `Hours`, the earnings pair rate × hours = this period (50.00 × 80 = 4,000.00) decides Rate and
@@ -132,6 +147,8 @@ No model or network call added; no schema change; `EXTRACTION_VERSION` bump only
 | SL-03 | FR-92; SC-91 | SL-02 | `documents/pay_tables.py` (P3 b, d, f), `finance/paystub_tables.py` (P3 a, e), `evals/paystub_layouts.py` and `tests/test_paystub_engine_generator.py` (re-enable a, b, d, e, f; ≥ 3 each), `tests/test_paystub_cleanup.py` (`sc91_*`) | `.venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py -q` |
 | SL-04 | FR-93, FR-94, FR-95, FR-99; SC-90, SC-92, SC-93, SC-94, SC-97 | SL-03 | `finance/paystub_tables.py` (P4 trust → flat), `documents/extraction.py` (P4, version), `tests/test_paystub_cleanup.py` (`sc90`, `sc92`, `sc93`, `sc97`), `tests/test_paystub_engine_record.py` (SC-63 test edited as SC-93 says), `scripts/statement_diagnose.py` and its probe test (M2), a mixed text-and-scan file test (M3) | `.venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_paystub_engine_record.py tests/test_paystub_split.py tests/test_layout_consumers.py tests/test_paystub_forms.py tests/test_vision_tables.py tests/test_extraction.py -q`; `.venv/bin/python -m pytest tests/test_paystub_engine_generator.py -k probe -q` |
 | SL-05 | FR-96, FR-97; SC-95 | SL-04 | `evals/run.py`, `evals/report.py`, `evals/graders.py` (if the stand-in lives there), `tests/test_evals.py` (legacy pay reader tests → engine only), `docs/documents.md`, `docs/money.md`, `docs/evals.md`, `docs/open-work.md` | `.venv/bin/python -m pytest tests/test_evals.py -q`; `.venv/bin/python -m evals.synthetic <tmp>` writes 53 cases |
+| SL-06 | FR-92 (f), FR-93; SC-91, SC-92 (code review round 1: R1-2, R1-3) | SL-05 | `documents/pay_tables.py` (`tables_cut` recognises one-run headings), `finance/paystub_tables.py` and `documents/extraction.py` (an untrusted page keeps FR-64's note with a summary box), `tests/test_paystub_cleanup.py` (regression tests), `docs/documents.md` | `.venv/bin/python -m pytest tests/test_paystub_cleanup.py tests/test_pay_tables_repairs.py tests/test_paystub_engine.py tests/test_paystub_engine_record.py tests/test_paystub_engine_generator.py tests/test_table_engine.py tests/test_layout_consumers.py tests/test_extraction.py -q` |
+| SL-07 | FR-90; SC-90 (code review round 1: R1-1; P1 step 7) | SL-06 | `documents/pay_tables.py` (P1 step 7), `tests/test_paystub_cleanup.py` (the four literal cases of step 7, each failing before the change), `docs/documents.md` ("Known limits" and the whole-number rule), `docs/open-work.md` if it lists the case | same command as SL-06 |
 
 ## Final verification
 ```
@@ -144,9 +161,9 @@ The 74 failing ids recorded in `plans/pdf-table-engine-paystubs/progress.yaml` `
 ## Requirements & scenarios coverage matrix
 | Requirement | Slice | Scenarios |
 |---|---|---|
-| FR-89, FR-90, FR-91 | SL-02, SL-04 | SC-90 |
-| FR-92 | SL-03 | SC-91 |
-| FR-93 | SL-04 | SC-90, SC-92 |
+| FR-89, FR-90, FR-91 | SL-02, SL-04, SL-07 (FR-90) | SC-90 |
+| FR-92 | SL-03, SL-06 | SC-91 |
+| FR-93 | SL-04, SL-06 | SC-90, SC-92 |
 | FR-94 | SL-04 | SC-93 |
 | FR-95 | SL-02, SL-04, final | SC-94 |
 | FR-96 | SL-05 | SC-95 |
