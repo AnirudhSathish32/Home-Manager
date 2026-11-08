@@ -167,6 +167,16 @@ slices:
     notes: >-
       Three tests' docstrings reworded (SL-09 a, SL-09 b, SL-07 centred title); no assertion changed. Remaining limit (docs/documents.md
       "Known limits"): a section title holding a listed word and lining up with the amounts still cuts; a leave heading with no listed word merges.
+  - id: SL-11
+    status: in_progress
+    title: "bug fix (user report): a one-row column under a tight two-phrase heading run is dropped (Co Match 401K This Period)"
+    start_head: 1b7dc98
+    notes: >-
+      User report: "Other Benefit And Information | This Period | Year to Date" / "Co Match 401K 133.05 266.1" loses 133.05, keeps YTD.
+      User's diagnose output (scripts/statement_diagnose.py paystub, shapes only): page 2 pay table with 1 column (ytd, by headings), 1 row.
+      Root cause (synthetic, /tmp/claude-fv/comatch/probe6.py, probe7.py): read_block `supported` checks only whole heading runs' edges; a
+      tight "This Period Year to Date" is one run, so a one-row This Period column gets no support and its amount is stray. Fix restores
+      FR-89 for one-row tables (no spec change); user chose "Fix it", no Codex review.
 code_review:
   - round: 1
     reviewer: codex/gpt-6.1-sol (reasoningEffort high), 1 explorer helper
