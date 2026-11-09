@@ -25,7 +25,7 @@ directly (`from ..core.money import format_minor`). `__main__.py` is the launche
 Outside `src/`:
 - `tests/`: flat pytest modules, synthetic data only;
 - `evals/`: the eval suite ([evals](evals.md));
-- `scripts/`: `db_checks.py`, `loopback_stress.py`, `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
+- `scripts/`: `db_checks.py`, `statement_records.py` (below), `loopback_stress.py`, `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
   [taxes](taxes.md#the-engines-worksheets)) and `test_instance.py` (the agent test instance, below);
 - `docs/`.
 
@@ -494,6 +494,15 @@ library yourself. You run it in your own terminal and paste the output, redacted
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\db_checks.py "<library>\inventory.sqlite3"
+```
+
+`scripts/statement_records.py` is read-only in the same way. It prints what Record made of the latest bank and card
+statements: each reading's version, the rows the model listed and the rows recorded (and how many came from the printed
+columns), what publishing did, each statement's status, account and row counts, where its document is filed, and the
+readings' issues and notes as patterns with the document's quotes, dates, amounts and row text masked:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\statement_records.py "<library>\inventory.sqlite3"
 ```
 
 The database audit of 2026-09-30 found and fixed four problems:
