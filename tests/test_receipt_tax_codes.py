@@ -704,6 +704,36 @@ def test_sc18_variant_every_flag_answered_is_todays_rule(tmp_path, local_model):
         assert shares_of(manager.store, receipt_id) == ([429, 4190, 1573], [429, 4190, 1573])
 
 
+def missing_tax_reading(tmp_path, local_model, lines, tax_lines=(), total=None):
+    """R with one TAX line, read with the summary's tax missing (and tax_lines as the model put them); yields (manager, receipt id)."""
+    replies = r0_replies(lines, taxed=(None, None, None), tax=MISSING, total=total,
+                         tax_lines=[tax_line_reply(lines, text, None, amount) for text, amount in tax_lines])
+    return reading(tmp_path, local_model, lines, replies)
+
+
+@pytest.mark.parametrize("tax_lines", [(), (("TAX ", "2.74"),)])
+def test_missing_tax_is_read_from_the_printed_tax_line(tmp_path, local_model, tax_lines):
+    # The model left the summary's tax out (or put the single TAX line in tax_lines with no code): TAX $2.74 is the gap 61.92 - 59.18.
+    lines = r_one_tax_lines()
+    with missing_tax_reading(tmp_path, local_model, lines, tax_lines) as (manager, _again, receipt_id):
+        amounts, _items, source, stored_lines = stored(manager.store, receipt_id)
+        assert (amounts, source, stored_lines) == ((5918, 274, 6192), "printed", [])
+        record = Ledger(manager.store).record("receipt", receipt_id)
+        assert record["review_status"] == "verified"  # The item lines still add up to the subtotal.
+        cited = rows(manager.store, "SELECT locator_json FROM financial_evidence_links WHERE record_type='receipt' AND record_id=?", receipt_id)
+        assert any("line-11" in json.loads(locator)["line_ids"] for (locator,) in cited)  # TAX $2.74 is cited.
+        assert shares_of(manager.store, receipt_id) == ([449, 4384, 1359], [449, 4384, 1359])
+
+
+def test_missing_tax_with_no_printed_line_for_the_gap_goes_to_review(tmp_path, local_model):
+    lines = [*r_one_tax_lines()[:-1], "TOTAL $62.00"]  # The gap 2.82 is printed on no tax line.
+    with missing_tax_reading(tmp_path, local_model, lines, total=amount_on(lines, "TOTAL ")) as (manager, _again, receipt_id):
+        amounts, *_ = stored(manager.store, receipt_id)
+        record = Ledger(manager.store).record("receipt", receipt_id)
+        assert amounts == (5918, None, 6200) and record["review_status"] != "verified"
+        assert "Tax was not read, but the total is 2.82 USD away from the subtotal; check the tax with Edit details." in record["issues"]
+
+
 def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, local_model):
     lines = [line.replace("WATER FILTER T", "WATER FILTER") for line in R_PRINTED]  # No code beside the filter's price to read instead.
     with reading(tmp_path, local_model, lines, r0_replies(lines, codes=("BF", "BF", "N"))) as (manager, _again, receipt_id):

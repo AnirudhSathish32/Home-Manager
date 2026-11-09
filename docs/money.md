@@ -696,7 +696,9 @@ F in "BF" (a food-stamp mark), so the receipt's own tax lines are used when they
   The amount is kept as a magnitude, and the receipt's own tax gives it its sign, so a return's tax lines follow the
   return. A line whose amount can't be read is kept without one. Tax lines are replaced as a set by each new reading.
 - A line with no code ("STATE TAX $1.20") is not a per-code tax line. If any line has no code, none are kept and the
-  receipt has one tax total, as does a receipt that prints a single TAX line.
+  receipt has one tax total, as does a receipt that prints a single TAX line. A tax the model left out is taken from
+  the printed TAX line that holds the gap between total and subtotal, else the receipt goes to review
+  ([documents](documents.md#tax-codes-on-receipts)).
 - `tax_source`, which says what set up the items' taxed flags:
 
 | `tax_source` | Meaning | Taxed flag | How tax is shared |

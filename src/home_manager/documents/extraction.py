@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v37-paystub-one-row-headings"
+EXTRACTION_VERSION = "typed-extraction-v38-receipt-missing-tax"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -119,7 +119,8 @@ LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits
                       "goes back to the customer, such as REFUND, RETURN, REFUND TOTAL, MERCHANDISE CREDIT or CREDIT TO VISA, citing that line; "
                       "missing for an ordinary sale, and never a return policy; "
                       "tax_lines: only lines that print the tax for one tax code, such as T = GA TAX 7.75000 on $12.99 $1.01, each with its code, "
-                      "printed rate, taxable amount and tax amount, never a single TAX line, a tax total or a line with no code; "
+                      "printed rate, taxable amount and tax amount, never a single TAX line, a tax total or a line with no code "
+                      "(a single TAX line such as TAX 0.73 is the summary's tax); "
                       "tax_legend: only printed tax meanings such as T = TAXABLE or N = NON-TAXABLE, never a food-stamp, EBT or SNAP meaning "
                       "such as F = FOOD STAMP; order_discount: the order-wide discount total printed with the summary, such as Discounts $8.99, "
                       "Promo or Coupon savings, as printed; never an item's own discount or a member savings total; "
@@ -2304,6 +2305,31 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
             item["taxed"] = found.pop() if len(found) == 1 else None
 
 
+TAX_WORD = re.compile(r"(?<![A-Za-z])tax(?![A-Za-z])", re.IGNORECASE)
+
+
+def missing_tax(record, line_text, issues, money, currency, off):
+    """A receipt whose tax wasn't read although its total is more than its subtotal (less discounts, plus tip) (docs/documents.md
+    "Tax codes on receipts"). The tax is the gap when a transcribed line naming tax ends with exactly that amount ("TAX 0.73"),
+    and the line is added to the record's citations; otherwise an issue, so the receipt is never verified with its tax left out.
+    Runs after sign_return, so the gap carries a return's sign. The arithmetic check is not counted for a tax worked out here."""
+    subtotal, charged = record["subtotal_minor"], record["total_minor"]
+    if record["tax_minor"] is not None or subtotal is None or charged is None or currency is None:
+        return
+    gap = charged - (subtotal - off) - (record["tip_minor"] or 0)
+    if gap == 0:
+        return
+    found = [line_id for line_id, text in line_text.items() if TAX_WORD.search(text) and line_amount(text) is not None
+             and money(str(line_amount(text)), "Tax", magnitude=True) == abs(gap)]
+    if found:
+        record["tax_minor"] = gap
+        record["locator"]["line_ids"] = list(dict.fromkeys([*record["locator"]["line_ids"], found[0]]))
+        record["locator"]["quotes"] = [*record["locator"]["quotes"], line_text[found[0]]][:40]
+        return
+    issues.append(f"Tax was not read, but the total is {format_minor(abs(gap), currency)} away from the subtotal"
+                  f"{' and tip' if record['tip_minor'] else ''}{' less discounts' if off else ''}; check the tax with Edit details.")
+
+
 PAGE_ID = re.compile(r"page-(\d+)-")
 
 
@@ -2396,6 +2422,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
                 issues.append(f"{what} ({format_minor(charged, currency)}) do not equal the total ({format_minor(record['total_minor'], currency)}).")
             else:
                 record["cross_checks"] += 1
+        if gratuity is None:
+            missing_tax(record, line_text, issues, money, currency, off)
         lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
         if lines is not None and record["subtotal_minor"] is not None and not any(item["discount_minor"] for item in record["items"]):
             lines -= inside  # A discount the printed subtotal already has taken off.

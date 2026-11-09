@@ -607,13 +607,21 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   every item worked out from them, ignoring the model's. A receipt that prints its tax lines but no tax total (the
   model's tax is missing) gets their sum as its tax, when every line's amount was read. With a legend, the `taxed` flag
   follows the legend. The rules are in [money](money.md#tax-codes-and-tax-lines).
+- **A tax the model didn't read** (`missing_tax`). When the model leaves the tax out (often by putting a single TAX
+  line among the tax lines, with no code, where it isn't used), yet the total is more than the subtotal (less discounts,
+  plus tip), the gap is the tax if a transcribed line naming tax ends with exactly that amount ("TAX 0.73" on a 19.39
+  subtotal and a 20.12 total). That line is added to the receipt's citations. The subtotal-plus-tax check isn't counted
+  for such a tax, so the receipt is verified only when its item lines add up to the subtotal. With no such line the
+  issue is "Tax was not read, but the total is 2.82 USD away from the subtotal; check the tax with Edit details." and the
+  receipt goes to review, never verified with its tax left out. A dining receipt with a gratuity is left as read. The
+  instructions also say that a single TAX line is the summary's tax.
 - **Stored** in `receipt_items.tax_code`, `receipt_tax_lines` and `receipts.tax_source` (migration 075), written with the
   reading like the other read fields. A reading that fails before publishing changes none of them.
 - **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is
   published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
   `printed`, and the model's `taxed` answers.
-- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v34-order-discounts`), so a
-  receipt read by an earlier version is read again when it is next extracted.
+- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v38-receipt-missing-tax`, which
+  added the missing tax), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
