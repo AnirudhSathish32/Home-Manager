@@ -42,5 +42,12 @@ def test_last_four():
 def test_last_four_is_the_printed_numbers_own_when_given_digits_from_its_middle():
     printed = ["Account Number: 000009000123456"]
     assert (last_four("1234", printed), last_four("3456", printed), last_four("1234", ["Account 0000 0900 0123 456"])) == ("3456", "3456", "3456")
-    # Not found in what is printed, or in two printed numbers: the given digits stand.
-    assert (last_four("1234", ["Account XXXX3456"]), last_four("1234", ["Ref 912345 Acct 81234"])) == ("1234", "1234")
+    # In two printed numbers, or nothing quoted: the given digits stand.
+    assert (last_four("1234", ["Ref 912345 Acct 81234"]), last_four("1234")) == ("1234", "1234")
+
+
+def test_last_four_never_keeps_digits_that_are_not_printed():
+    # A model that copies the prompt's example (3456) for a statement printing another number: the printed one is taken.
+    assert (last_four("3456", ["Account XXXX7890"]), last_four("3456", ["Account ending in 7890", "Page 1 of 4"])) == ("7890", "7890")
+    # Several printed numbers, or none of four digits, and none holds the given digits: no account is guessed.
+    assert (last_four("3456", ["Acct 7890 Ref 1122"]), last_four("3456", ["Account ****"])) == (None, None)

@@ -161,7 +161,11 @@ async function openTransaction(id, member = null, {onChange = null} = {}) {
   const evidence = element("ul", "", "finance-list");
   for (const item of record.evidence) {
     const li = document.createElement("li");
-    li.append(homeLink(item.relative_path, `#/documents/${item.document_id}`), element("small", item.locator?.rows ? `Row ${item.locator.rows.join(", ")}` : item.locator?.line_ids ? "Statement line" : "", "muted"));
+    // The version the row was read from, at its cited lines: a file saved later at the same path is a newer version of the same
+    // document, so the bare document link opened whatever that path holds now (a pay stub, say) rather than the statement.
+    const lines = item.locator?.line_ids || [], cited = new URLSearchParams(item.blob_hash ? {version: item.blob_hash} : {});
+    if (lines.length) cited.set("lines", lines.join(","));
+    li.append(homeLink(item.relative_path, `#/documents/${item.document_id}${[...cited].length ? `?${cited}` : ""}`), element("small", item.locator?.rows ? `Row ${item.locator.rows.join(", ")}` : item.locator?.line_ids ? "Statement line" : "", "muted"));
     evidence.append(li);
   }
   for (const link of record.links) {

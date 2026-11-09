@@ -628,8 +628,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
 - **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is
   published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
   `printed`, and the model's `taxed` answers.
-- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v39-receipt-printed-signs`, which
-  added the missing tax and subtotal and the printed signs), so a receipt read by an earlier version is read again when it is next extracted.
+- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (later `typed-extraction-v39-receipt-printed-signs`, which
+  added the missing tax and subtotal and the printed signs; now `typed-extraction-v40-statement-fixes`, which stopped an
+  example account number in the instruction from being copied and told card statements from bank ones), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -686,8 +687,10 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
   more amounts printed with cents after its date is sent to review: on a line such as `09/18 DEPOSIT 0.02 0.38` the
   last is the balance (`balance_taken`). The instruction says so too.
 - **Account numbers.** The last four are the printed number's own. When the model gives four digits from inside a
-  longer number it cites (1234 of 000009000123456), the number's last four are kept instead
-  (`core/identifiers.last_four`).
+  longer number it cites (1234 of 000009000123456), the number's last four are kept instead. Digits printed in none of
+  the quoted lines are never kept: the quote's one printed number gives the last four (XXXX7890 gives 7890), and with
+  several or none, no account is suggested (`core/identifiers.last_four`). The instruction carries no example number,
+  which a model could copy.
 - **Card statements** keep the purchase and cash-advance APRs, credit limit, available credit and rewards (points stay
   text). Check: previous − payments − credits + purchases + fees + interest = statement balance, when all are printed.
 - **Nothing counts differently**: the new fields are shown, checked and traced only.
@@ -752,7 +755,9 @@ evidence (Extract again on an unchanged reading changes nothing).
 - **The model decides nothing there.** Its rows on a page the engine read change no date, amount or direction and add
   no rows. One that matches no engine row (by page, date and amount) becomes a record note ("The reading listed a row
   the printed columns don't have…"); notes show with the record but are not reasons for review. An engine row the model
-  didn't list is still recorded.
+  didn't list is still recorded. A page the engine recorded none of its rows from (the columns' roles or the date order
+  couldn't be told) is the exception: its rows are the reading's, with a record note saying so, and the page's issue
+  still sends the statement to review. Before, both were dropped and the statement had no rows at all.
 - **Lines that are not recorded** are review issues, and the statement needs review. Nothing printed is dropped
   silently: every line with a date and an amount is a recorded row, a rejected row, a balance line, a column total, a
   row of another table, or an **unplaced line** ("Page P: a printed line wasn't placed in any column, so it wasn't

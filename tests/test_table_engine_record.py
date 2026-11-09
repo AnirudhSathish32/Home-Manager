@@ -656,6 +656,17 @@ def test_sc16_a_nd_records_nothing_and_says_once_per_page_that_the_order_cant_be
     assert record_["review_status"] == "needs_review"
 
 
+def test_sc16_a2_a_page_the_engine_records_nothing_from_keeps_the_readings_rows_for_review(env, local_model):
+    # User report: a card statement whose printed columns gave no rows recorded none at all, listing every row as a note.
+    def rows(lines):
+        return [row_stub(lines, "2026-03-04", "ALPHA", "10.00", "credit", "ALPHA"), row_stub(lines, "2026-04-06", "CHARLIE", "1.00", "credit", "CHARLIE")]
+    recorded, record_ = record(env, local_model, "ND", rows=rows)
+    assert [(posted, amount) for posted, amount, _ in rows_of(recorded)] == [("2026-03-04", 1000), ("2026-04-06", 100)]
+    assert record_["review_status"] == "needs_review" and any("can't be told" in issue for issue in record_["issues"])
+    assert any("the reading's rows were recorded there" in note for note in recorded.notes())
+    assert not any("printed columns don't have" in note for note in recorded.notes())
+
+
 def test_sc16_b_nd_follows_the_order_of_an_earlier_statement_of_the_same_account(env, local_model):
     prior, record_prior = record(env, local_model, "ND-prior", file="prior")
     assert [(posted, amount) for posted, amount, _ in rows_of(prior)] == [("2026-02-15", 300), ("2026-02-16", 100)]

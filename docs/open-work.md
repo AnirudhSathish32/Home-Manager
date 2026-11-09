@@ -67,6 +67,21 @@ and link here for what isn't. When an item is built, remove it from this list an
 
 ## Money
 
+- **Recurring bills every N days** (user report, 2026-11-09). A recurring payment is weekly, monthly, quarterly,
+  semiannual or annual only (`core/categories.FREQUENCIES`, the `recurring_obligations.frequency` check), so a bill that
+  prints "every 45 days" can't be recorded as such. Wanted: an editable number of days, filled in with the model's
+  reading of the printed schedule. Needs a spec (schema, the forecast's months-apart arithmetic, the Bills page).
+- **Add missed transactions should stage, not post** (user report, 2026-11-09). Today the PDF import from the document
+  page writes its rows straight to the account ([documents](documents.md#transaction-imports)), and can create the
+  account. Wanted: the rows join the document's own record as a table you check, and count when you confirm the
+  document. Needs a spec (it changes the import's write path and the statement record).
+- **A new Inbox file under an earlier file's name is that document's next version** (user report, 2026-11-09;
+  `library/storage.py`, by `UNIQUE(source_root, path_key)`). An Inbox document keeps its Inbox path after it is
+  organized into the Library, so the next unrelated `document.pdf` dropped in becomes its newest version: a statement's
+  rows then point at a document that opens a pay stub or another statement. Records are kept per file content
+  (`blob_hash`), so nothing is lost, and the transaction drawer now opens the version and lines a row was read from.
+  Fix to spec: an organized Inbox document gives up its Inbox path, so a new file there starts a new document, plus a
+  migration that splits the documents already merged this way (a file system and identity change, so gated).
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
 - **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
   `plans/statement-accounts/plan.md`): built, with its screens ([money](money.md#new-statements-wait-for-you),

@@ -43,9 +43,17 @@ def scrub(value, keys):
 def last_four(text, quotes=()):
     """The last four digits of a printed account reference, or None when it has fewer than four. quotes: where it is
     printed. A model may give four digits from the middle of a long number (1234 of 000009000123456); when exactly one
-    printed number (digits, maybe grouped by spaces or dashes) holds the given digits, its own last four are taken."""
+    printed number (digits, maybe grouped by spaces or dashes) holds the given digits, its own last four are taken. When no
+    printed number holds them (a model copied an example, or misread), the quotes decide: the last four of their one printed
+    number of four or more digits (XXXX7890 gives 7890), or None when they print several or none."""
     digits = re.sub(r"\D", "", text or "")
     if len(digits) < 4:
         return None
-    printed = {number for quote in quotes for number in (re.sub(r"\D", "", run) for run in re.findall(r"\d(?:[ -]?\d)*", quote or "")) if digits in number}
-    return next(iter(printed))[-4:] if len(printed) == 1 else digits[-4:]
+    numbers = {re.sub(r"\D", "", run) for quote in quotes for run in re.findall(r"\d(?:[ -]?\d)*", quote or "")}
+    printed = {number for number in numbers if digits in number}
+    if len(printed) == 1:
+        return next(iter(printed))[-4:]
+    if printed or not quotes:
+        return digits[-4:]
+    long = {number for number in numbers if len(number) >= 4}
+    return next(iter(long))[-4:] if len(long) == 1 else None

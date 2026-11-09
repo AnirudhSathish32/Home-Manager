@@ -422,10 +422,11 @@ def recorded_s(env_, model, name="s.pdf", pages=None):
 
 
 def moved(lines):
-    """S's summary as a re-read that takes the statement to …7890: the model gives that reference, citing the printed number line the
-    document has. (S2's own stub cites S2's number line; the same document version has only S's.)"""
-    line = "Account Number 000009000123456"
-    return {**sf.s_summary(lines), "account_reference": sf.proposed(lines, "7890", line, line)}
+    """S's summary as a re-read that takes the statement to …7890: the model gives that reference, citing a printed number that
+    ends in it (s1's PPD ID). Digits printed nowhere it cites are never kept (`core/identifiers.last_four`), and the same document
+    version has only S's account number line, so S2's own stub cannot be used."""
+    line = "SYNTH ACCTVERIFY PPD ID 1234567890 0.36"
+    return {**sf.s_summary(lines), "account_reference": sf.proposed(lines, "7890", line, "PPD ID 1234567890")}
 
 
 def attempt(recorded, replies):
