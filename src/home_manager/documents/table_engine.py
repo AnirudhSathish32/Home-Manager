@@ -1016,9 +1016,10 @@ def read_page(number, layout_page, previous):
     for line in lines:
         tokens = line.all_tokens()
         dates = [token for token in tokens if token.kind == "date"]
-        if line.index not in page.used and len(dates) == 2 and all(token.value[2] is not None and token.value[2] > 999 for token in dates) \
+        # A candidate period line: outside every table, two dates with a year (two digits will do: `09/27/26 - 10/26/26`), no amount.
+        if line.index not in page.used and len(dates) == 2 and all(token.value[2] is not None for token in dates) \
                 and not any(token.kind == "amount" for token in tokens):
-            found.periods.append((number, page.line_id(line.index), dates[0], dates[1]))  # A candidate period line: outside every table, two dated, no amount.
+            found.periods.append((number, page.line_id(line.index), dates[0], dates[1]))
     if found.opens:
         for line in lines:
             tokens = line.all_tokens()

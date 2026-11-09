@@ -14,7 +14,7 @@ the strongest tier still differ on any row's signed amount, the roles are undeci
 
 import copy
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from itertools import product
 import json
@@ -116,6 +116,20 @@ class StatementReading:
 
     def as_rebuild(self) -> Rebuild:
         return Rebuild(self.available, self.pages, self.rows, self.issues, self.notes, self.dropped, self.opening_minor, self.closing_minor, self.period)
+
+
+SHORT_PERIOD = timedelta(days=100)  # A period printed with two-digit years is a statement's month or quarter, not two dates a year apart.
+
+
+def period_shape(token):
+    """A period date's shape with a two-digit year read as 20YY: a printed period line names its own century (docs/documents.md
+    "Statement rows from the printed columns"); a row's two-digit year is still checked against the period instead."""
+    kind, first, second, full, short = shape_of(token)
+    return (kind, first, second, 2000 + short if full is None and short is not None else full, short)
+
+
+def short_years(*tokens):
+    return any(shape_of(token)[3] is None for token in tokens)
 
 
 def outcome_key(table_id, page, row):
@@ -555,8 +569,8 @@ class Reader:
                     continue
             else:
                 order = DATE_ORDERS[0]
-            start, end = self.place(first, order, None, None)[0], self.place(second, order, None, None)[0]
-            if start and end and start <= end:
+            start, end = (placed(period_shape(token), order, None, None)[0] for token in (first, second))
+            if start and end and start <= end and (not short_years(first, second) or date.fromisoformat(end) - date.fromisoformat(start) <= SHORT_PERIOD):
                 self.period = (date.fromisoformat(start), date.fromisoformat(end))
                 break
         self.effective = self.period

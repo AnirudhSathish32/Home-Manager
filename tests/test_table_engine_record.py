@@ -414,6 +414,16 @@ def test_a_card_statement_that_prints_only_its_closing_date_places_its_year_less
     reconciles(recorded, record_)
 
 
+def test_a_card_period_printed_with_two_digit_years_places_the_rows_without_the_reading(env, local_model, monkeypatch):
+    """`Opening/Closing Date 10/05/26 - 11/04/26` is the printed period, though its years have two digits: the rows' month and day
+    are placed in it even when the reading gives no period (docs/documents.md "Statement rows from the printed columns")."""
+    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE[:4], "Opening/Closing Date 10/05/26 - 11/04/26"))
+    recorded, _ = recorded_fixture(env, local_model, "CS")
+    record_ = recorded.run(replies({**SPECS["CS"], "period": None}))
+    exact(recorded, [(row[4], row[5], row[2]) for row in tf.CS_ROWS])
+    reconciles(recorded, record_)
+
+
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
     recorded, record_ = record(env, local_model, "NB")
     exact(recorded, [(row[4], row[5], row[1]) for row in tf.NB_ROWS])
