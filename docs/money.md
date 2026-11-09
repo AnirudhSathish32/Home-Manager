@@ -288,7 +288,10 @@ A return receipt gives money back. It is recorded with negative amounts: its tot
     CREDIT TO VISA), never a return policy;
   - `returned` on each item: an item brought back.
 - **Signs are decided in code** (`extraction.sign_return`), so `REFUND TOTAL 27.00` printed without a minus sign
-  still reads as money back:
+  still reads as money back. They follow the print: a minus sign the model gave a receipt's subtotal, tax, tip, total or
+  item line is kept only when it is printed with that number in the cited line (-13.77, 13.77-, (13.77), 13.77 CR;
+  `extraction.minus_printed`), and an item's `returned` counts only when its cited lines, or any line of the receipt,
+  say return or refund (`ledger.says_return`), so a purchase that prints neither is never read as a return. Then:
   - a returned line is negative;
   - a whole return (a marker, every line returned, or a printed negative total) makes every unsigned amount negative;
   - an exchange (lines bought and returned) takes the sign that makes its arithmetic hold (subtotal, tax and tip make

@@ -24,6 +24,7 @@ from receipt_item_fixtures import (
     r_one_tax_lines,
     r_tax_lines,
     tax_line_reply,
+    with_categories,
 )
 from receipt_item_fixtures import (
     R_LINES as R_PRINTED,
@@ -732,6 +733,58 @@ def test_missing_tax_with_no_printed_line_for_the_gap_goes_to_review(tmp_path, l
         record = Ledger(manager.store).record("receipt", receipt_id)
         assert amounts == (5918, None, 6200) and record["review_status"] != "verified"
         assert "Tax was not read, but the total is 2.82 USD away from the subtotal; check the tax with Edit details." in record["issues"]
+
+
+# S: one counted item, a per-code tax line whose rate the scan split ("3. 75000"), and no SUBTOTAL printed.
+S_LINES = ["SYNTH MART", "2026-11-03", "GROCERY", "211060057 GG SALSA BF $13.77", "3 @ $4.59 ea",
+           "B = GA TAX 3. 75000 on $13.77  $0.52", "TOTAL $14.29"]
+
+
+def s_replies(tax_lines=True, tax=MISSING):
+    summary = {"subtotal": MISSING, "tax": tax, "total": amount_on(S_LINES, "TOTAL "), "tax_legend": [],
+               "tax_lines": [tax_line_reply(S_LINES, "B = GA TAX", "B", "0.52", "13.77", "3. 75000")] if tax_lines else []}
+    items = [reply_item(S_LINES, "GG SALSA", "211060057 GG SALSA", "13.77", product_code="211060057", quantity="3", unit_price="4.59",
+                        tax_code="BF", also=["3 @ $4.59 ea"])]
+    return with_categories(receipt_replies(S_LINES, "grocery", "Synth Mart", "SYNTH MART", "2026-11-03", summary, items,
+                                           kind_evidence=cite(S_LINES, "GROCERY")), "groceries", "groceries")
+
+
+@pytest.mark.parametrize(("replies", "source", "lines"), [
+    (s_replies(), "tax_lines", [("B", "3.75000", 1377, 52)]),  # The tax is the tax line's; the rate is read across the split.
+    (s_replies(tax_lines=False), "printed", []),  # The model read neither: the tax line ends with the gap 14.29 - 13.77.
+    (s_replies(tax=amount_on(S_LINES, "B = GA TAX")), "tax_lines", [("B", "3.75000", 1377, 52)])])
+def test_an_unprinted_subtotal_is_the_item_lines_and_a_missing_tax_their_gap(tmp_path, local_model, replies, source, lines):
+    with reading(tmp_path, local_model, S_LINES, replies) as (manager, _again, receipt_id):
+        amounts, _items, stored_source, stored_lines = stored(manager.store, receipt_id)
+        record = Ledger(manager.store).record("receipt", receipt_id)
+        assert (amounts, stored_source, stored_lines) == ((1377, 52, 1429), source, lines)
+        assert (record["review_status"], record["issues"]) == ("verified", [])
+
+
+@pytest.mark.parametrize("misread", ["returned", "negative_total", "negative_line"])
+def test_a_sign_or_return_the_receipt_does_not_print_is_not_kept(tmp_path, local_model, misread):
+    # Nothing on S says return or prints a minus: the reading's returned flag or minus sign doesn't make it a return.
+    replies = s_replies()
+    if misread == "returned":
+        replies["GroceryItems"][0]["items"][0]["returned"] = True
+    elif misread == "negative_total":
+        replies["ReceiptGrocerySummary"][0]["total"]["value"] = "-14.29"
+    else:
+        replies["GroceryItems"][0]["items"][0]["line_total"] = "-13.77"
+    with reading(tmp_path, local_model, S_LINES, replies) as (manager, _again, receipt_id):
+        amounts, *_ = stored(manager.store, receipt_id)
+        assert amounts == (1377, 52, 1429)
+        assert rows(manager.store, "SELECT line_total_minor FROM receipt_items WHERE receipt_id=?", receipt_id) == [(1377,)]
+        assert Ledger(manager.store).record("receipt", receipt_id)["review_status"] == "verified"
+
+
+def test_an_unprinted_subtotal_is_left_out_when_the_item_lines_and_tax_miss_the_total(tmp_path, local_model):
+    lines = [*S_LINES[:-1], "TOTAL $14.99"]
+    replies = s_replies()
+    replies["ReceiptGrocerySummary"][0]["total"] = amount_on(lines, "TOTAL ")
+    with reading(tmp_path, local_model, lines, replies) as (manager, _again, receipt_id):
+        amounts, *_ = stored(manager.store, receipt_id)
+        assert amounts == (None, 52, 1499)
 
 
 def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, local_model):

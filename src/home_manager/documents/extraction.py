@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v38-receipt-missing-tax"
+EXTRACTION_VERSION = "typed-extraction-v39-receipt-printed-signs"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -2110,6 +2110,24 @@ def receipt_checks(amounts, items):
     return passed, failed
 
 
+MINUS_BEFORE, MINUS_AFTER = ("-", "(", "\u2212"), ("-", ")", "CR", "\u2212")
+
+
+def minus_printed(value, evidence):
+    """A negative amount's sign is printed with its number in a cited line: -13.77, -$13.77, $-13.77, 13.77-, (13.77) or 13.77 CR
+    (docs/money.md "Returns"). The citation check compares numbers without their sign, so a minus the reading added is caught here."""
+    number = printed_decimal(value)
+    if number is None:
+        return False
+    for cite in evidence:
+        for match in NUMBER.finditer(cite.quote):
+            if Decimal(match.group(0).replace(",", "")) == number:
+                before, after = cite.quote[:match.start()].rstrip(" " + CURRENCY_MARKS), cite.quote[match.end():].lstrip()
+                if before.endswith(MINUS_BEFORE) or after.upper().startswith(MINUS_AFTER):
+                    return True
+    return False
+
+
 def sign_return(record, marker, issues):
     """Signs of a return or exchange receipt, decided in code from what was printed and cited (docs/money.md "Returns").
     Returned lines are already negative. A whole return makes every unsigned amount money back; an exchange (lines
@@ -2200,10 +2218,19 @@ def code_beside_price(evidence, line_text, known):
     return found.pop() if len(found) == 1 else None
 
 
+SPLIT_POINT = re.compile(r"(\d)\.\s+(\d)")
+
+
+def rate_number(text):
+    """The first number of a printed tax rate, with a space a scan put after its point closed up ("3. 75000" is 3.75000), or None."""
+    return next(iter(NUMBER.findall(SPLIT_POINT.sub(r"\1.\2", text or ""))), None)
+
+
 def rate_printed(rate, evidence):
-    """A tax line's rate equals one whole number printed in a cited line ("7.75" and "7.75000" match 7.75000; "75" and "7.7" do not)."""
+    """A tax line's rate equals one whole number printed in a cited line ("7.75" and "7.75000" match 7.75000; "75" and "7.7" do not;
+    "3. 75000", split by the scan, is 3.75000)."""
     wanted = Decimal(rate.replace(",", ""))
-    return any(Decimal(token.replace(",", "")) == wanted for cite in evidence for token in NUMBER.findall(cite.quote))
+    return any(Decimal(token.replace(",", "")) == wanted for cite in evidence for token in NUMBER.findall(SPLIT_POINT.sub(r"\1.\2", cite.quote)))
 
 
 def printed_amount(text, evidence, what, money, issues):
@@ -2267,7 +2294,7 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
         if code and not code_printed(code, entry.evidence, line_text):
             issues.append(f"Tax line {number} code was not printed where it was cited, so the tax lines were not used.")
             code = ""
-        rate = next(iter(NUMBER.findall(entry.rate or "")), None)
+        rate = rate_number(entry.rate)
         if rate is not None and not rate_printed(rate, entry.evidence):
             issues.append(f"Tax line {number} rate was not printed where it was cited and was left out.")
             rate = None
@@ -2308,26 +2335,39 @@ def tax_codes(record, header, read_rows, line_text, issues, money, details):
 TAX_WORD = re.compile(r"(?<![A-Za-z])tax(?![A-Za-z])", re.IGNORECASE)
 
 
-def missing_tax(record, line_text, issues, money, currency, off):
-    """A receipt whose tax wasn't read although its total is more than its subtotal (less discounts, plus tip) (docs/documents.md
-    "Tax codes on receipts"). The tax is the gap when a transcribed line naming tax ends with exactly that amount ("TAX 0.73"),
-    and the line is added to the record's citations; otherwise an issue, so the receipt is never verified with its tax left out.
-    Runs after sign_return, so the gap carries a return's sign. The arithmetic check is not counted for a tax worked out here."""
-    subtotal, charged = record["subtotal_minor"], record["total_minor"]
-    if record["tax_minor"] is not None or subtotal is None or charged is None or currency is None:
+def unprinted_amounts(record, line_text, issues, money, currency, off):
+    """A receipt's tax and subtotal when the reading has none (docs/documents.md "Tax codes on receipts"). With no subtotal printed,
+    the item lines stand for it. A missing tax is the gap between the total and that (less discounts, plus tip) when a transcribed
+    line naming tax ends with exactly that amount ("TAX 0.73"), and the line joins the record's citations; otherwise an issue, so the
+    receipt is never verified with its tax left out. An unprinted subtotal is kept as the item lines only when the arithmetic then
+    holds. Runs after sign_return and the printed checks, so the amounts carry a return's sign and a check of a value worked out
+    here is counted only when the tax was read: item lines and the read tax making the printed total."""
+    items, charged, tip = record["items"], record["total_minor"], record["tip_minor"] or 0
+    if charged is None or currency is None:
         return
-    gap = charged - (subtotal - off) - (record["tip_minor"] or 0)
-    if gap == 0:
+    printed = record["subtotal_minor"] is not None
+    lines = [item["line_total_minor"] for item in items]
+    if printed:
+        subtotal, against = record["subtotal_minor"], "the subtotal"
+    elif lines and None not in lines and not any(item["discount_minor"] for item in items):
+        subtotal, against = sum(lines), "the item lines"
+    else:
         return
-    found = [line_id for line_id, text in line_text.items() if TAX_WORD.search(text) and line_amount(text) is not None
-             and money(str(line_amount(text)), "Tax", magnitude=True) == abs(gap)]
-    if found:
-        record["tax_minor"] = gap
+    tax, read = record["tax_minor"], record["tax_minor"] is not None
+    gap = charged - (subtotal - off) - tip
+    if tax is None and gap:
+        found = [line_id for line_id, text in line_text.items() if TAX_WORD.search(text) and line_amount(text) is not None
+                 and money(str(line_amount(text)), "Tax", magnitude=True) == abs(gap)]
+        if not found:
+            issues.append(f"Tax was not read, but the total is {format_minor(abs(gap), currency)} away from {against}"
+                          f"{' and tip' if tip else ''}{' less discounts' if off else ''}; check the tax with Edit details.")
+            return
+        tax = record["tax_minor"] = gap
         record["locator"]["line_ids"] = list(dict.fromkeys([*record["locator"]["line_ids"], found[0]]))
         record["locator"]["quotes"] = [*record["locator"]["quotes"], line_text[found[0]]][:40]
-        return
-    issues.append(f"Tax was not read, but the total is {format_minor(abs(gap), currency)} away from the subtotal"
-                  f"{' and tip' if record['tip_minor'] else ''}{' less discounts' if off else ''}; check the tax with Edit details.")
+    if not printed and subtotal - off + (tax or 0) + tip == charged:
+        record["subtotal_minor"] = subtotal
+        record["cross_checks"] += read
 
 
 PAGE_ID = re.compile(r"page-(\d+)-")
@@ -2391,14 +2431,23 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         # The kind it was read with, and that kind's printed details (FR-01, FR-04); none when they couldn't be read (FR-14).
         record["receipt_kind"], record["details"] = receipt_kind, {}
         kind_fields = {name: getattr(header, name) for name in KIND_FIELDS.get(receipt_kind, {})} if details else {}
+        # Signs follow the print (docs/money.md "Returns"): a minus the reading gave isn't kept unless it is printed with its number,
+        # and an item is returned only when its lines, or a line of the receipt, say return or refund.
+        for name in ("subtotal", "tax", "tip", "total"):
+            if (record.get(name + "_minor") or 0) < 0 and not minus_printed(fields[name].value, fields[name].evidence):
+                record[name + "_minor"] = -record[name + "_minor"]
+        printed_return = any(says_return(text) for text in line_text.values())
         record["items"], read_rows = [], []
         for index, row in enumerate(rows, 1):
             if receipt_kind == "fuel" and pump_only(row, line_text):
                 issues.append(f"Item {index} is the pump number, not an item; it was left out.")
                 continue
             line = money(row.line_total, f"Item {index} line total")
+            if line is not None and line < 0 and not minus_printed(row.line_total, row.evidence):
+                line = -line
             # A returned line is money back: negative whether or not its minus sign was printed (docs/money.md "Returns").
-            if line is not None and row.returned and line > 0:
+            if line is not None and row.returned and line > 0 and (
+                    printed_return or any(says_return(cite.quote) for cite in row.evidence)):
                 line = -line
             record["items"].append({"description": " ".join(row.description.split()), "product_code": readable_text(row.product_code), "quantity": readable_text(row.quantity),
                                     "unit_price_minor": money(row.unit_price, f"Item {index} unit price"), "line_total_minor": line,
@@ -2422,8 +2471,6 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
                 issues.append(f"{what} ({format_minor(charged, currency)}) do not equal the total ({format_minor(record['total_minor'], currency)}).")
             else:
                 record["cross_checks"] += 1
-        if gratuity is None:
-            missing_tax(record, line_text, issues, money, currency, off)
         lines = total([item["line_total_minor"] for item in record["items"]]) if record["items"] else None
         if lines is not None and record["subtotal_minor"] is not None and not any(item["discount_minor"] for item in record["items"]):
             lines -= inside  # A discount the printed subtotal already has taken off.
@@ -2431,6 +2478,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
                 issues.append(f"Item line totals ({format_minor(lines, currency)}) do not equal the subtotal ({format_minor(record['subtotal_minor'], currency)}).")
             else:
                 record["cross_checks"] += 1
+        if gratuity is None:
+            unprinted_amounts(record, line_text, issues, money, currency, off)
     elif kind in ("bank_statement", "credit_card_statement"):
         card = kind == "credit_card_statement"
         record.update(statement_type="credit_card" if card else "bank", institution=record.pop("issuer", None) or record.get("institution"),

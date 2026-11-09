@@ -607,21 +607,27 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   every item worked out from them, ignoring the model's. A receipt that prints its tax lines but no tax total (the
   model's tax is missing) gets their sum as its tax, when every line's amount was read. With a legend, the `taxed` flag
   follows the legend. The rules are in [money](money.md#tax-codes-and-tax-lines).
-- **A tax the model didn't read** (`missing_tax`). When the model leaves the tax out (often by putting a single TAX
-  line among the tax lines, with no code, where it isn't used), yet the total is more than the subtotal (less discounts,
-  plus tip), the gap is the tax if a transcribed line naming tax ends with exactly that amount ("TAX 0.73" on a 19.39
-  subtotal and a 20.12 total). That line is added to the receipt's citations. The subtotal-plus-tax check isn't counted
-  for such a tax, so the receipt is verified only when its item lines add up to the subtotal. With no such line the
-  issue is "Tax was not read, but the total is 2.82 USD away from the subtotal; check the tax with Edit details." and the
-  receipt goes to review, never verified with its tax left out. A dining receipt with a gratuity is left as read. The
-  instructions also say that a single TAX line is the summary's tax.
+- **A tax or subtotal the model didn't read** (`unprinted_amounts`). With no subtotal printed, the item lines stand for
+  it. When the model leaves the tax out (often by putting a single TAX line among the tax lines, with no code, where it
+  isn't used), yet the total is more than the subtotal (less discounts, plus tip), the gap is the tax if a transcribed
+  line naming tax ends with exactly that amount: "TAX 0.73" on a 19.39 subtotal and a 20.12 total, or "B = GA TAX 3.
+  75000 on $13.77 $0.52" under a 13.77 item and a 14.29 total with no subtotal printed. That line is added to the
+  receipt's citations. An unprinted subtotal is kept as the item lines only when they, the tax and tip then make the
+  total. A check of a value worked out here counts only when the tax was read (the item lines and the read tax making the
+  printed total), so with a worked-out tax the receipt is verified only when its item lines add up to a printed subtotal
+  or another check holds. With no such line the issue is "Tax was not read, but the total is 2.82 USD away from the
+  subtotal; check the tax with Edit details." ("from the item lines" with no subtotal printed) and the receipt goes to
+  review, never verified with its tax left out. A dining receipt with a gratuity is left as read. The instructions also
+  say that a single TAX line is the summary's tax.
+- **Rates split by the scan.** A rate the transcription printed with a space after its point ("3. 75000") is read as
+  3.75000, not 3.
 - **Stored** in `receipt_items.tax_code`, `receipt_tax_lines` and `receipts.tax_source` (migration 075), written with the
   reading like the other read fields. A reading that fails before publishing changes none of them.
 - **Details that can't be read.** If the new fields fail their checks after the one correction request, the receipt is
   published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
   `printed`, and the model's `taxed` answers.
-- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v38-receipt-missing-tax`, which
-  added the missing tax), so a receipt read by an earlier version is read again when it is next extracted.
+- **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (now `typed-extraction-v39-receipt-printed-signs`, which
+  added the missing tax and subtotal and the printed signs), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
