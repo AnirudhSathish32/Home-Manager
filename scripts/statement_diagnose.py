@@ -6,7 +6,8 @@ Usage:  python scripts/statement_diagnose.py "<path to a statement PDF>" [year] 
 The rebuild places year-less dates in the statement's period; the script uses the whole of `year` (default this year).
 `card` runs the table engine as a credit-card statement (positive amounts are charges); the default is a bank statement.
 
-Reads the PDF with this checkout's reader (documents/pdf_reader.py `worker` and `complete_pdf`, no vision model) into a
+Reads the PDF with this checkout's reader (documents/pdf_reader.py `worker` and `complete_pdf`; a page that needs the vision model
+gets a placeholder and is listed, since the script calls no model) into a
 temporary folder that is deleted at the end, then runs Record's rebuild (finance/statement_rows.py `rebuild`) on it.
 Prints only flags, counts, column roles (date, description, amount, balance), shapes of cells (date, amount, words(n),
 blank) and positions as a percentage of the page. Review messages are printed with quotes, dates and amounts replaced by "…".
@@ -39,6 +40,18 @@ from home_manager.documents.pdf_reader import complete_pdf, read_result, worker 
 from home_manager.finance import paystub_tables, statement_rows, statement_tables  # noqa: E402
 from home_manager.finance.pdf_import import PageView, assign, is_heading, native_spec  # noqa: E402
 from home_manager.library.storage import digest_file  # noqa: E402
+from home_manager.models import vision  # noqa: E402
+
+VISION_STUB = "(not transcribed: this page needs the vision model)"
+
+
+def no_vision(config, image_path, work=None):
+    """A page the reader sends to the vision model (no trustworthy text layer) gets a placeholder line: the script calls no model.
+    The table engine reads no rows from such a page; Record leaves it to the model's reading."""
+    return vision.VisionText(full_text=VISION_STUB)
+
+
+vision.transcribe = no_vision  # complete_pdf imports it when it runs.
 
 DATE = re.compile(r"\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?")
 AMOUNT = re.compile(r"[-+(]?[$€£]?\d{1,3}(,\d{3})*\.\d{2}\)?-?")
@@ -129,6 +142,9 @@ with tempfile.TemporaryDirectory() as folder:
     worker(str(source), folder)
     complete_pdf(folder, config=None, digest=digest_file(source))
     result = read_result(json.loads((folder / "result.json").read_text(encoding="utf-8")))
+vision_pages = [page.number for page in result.pages if page.method == "vision_model"]
+if vision_pages:
+    print(f"pages the vision model would transcribe (not read here; the table engine reads no rows from them): {vision_pages}")
 
 if "paystub" in ARGUMENTS[1:]:
     pay_section(result)
