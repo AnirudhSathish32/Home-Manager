@@ -396,6 +396,24 @@ def test_sc07_cs_card_signs_come_from_the_sections_and_the_card_check_holds(env,
     no_row_review(record_)
 
 
+def test_a_card_statement_that_prints_only_its_closing_date_places_its_year_less_rows_before_it(env, local_model, monkeypatch):
+    """No period is printed, only the closing date, and the rows print month and day: the reading's closing date places them
+    (docs/documents.md "Statement rows from the printed columns"). Without a start date every row waited for a year and the
+    statement had no rows at all."""
+    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE[:4], "Closing Date 11/04/2026"))
+    chosen = {**SPECS["CS"], "period": None}
+    base = replies(chosen)
+
+    def make(lines):
+        answer = base(lines)
+        answer["CreditCardStatementSummary"][0]["period_end"] = cited(lines, "2026-11-04", "Closing Date", "11/04/2026")
+        return answer
+    recorded, record_ = recorded_fixture(env, local_model, "CS")
+    record_ = recorded.run(make)
+    exact(recorded, [(row[4], row[5], row[2]) for row in tf.CS_ROWS])
+    reconciles(recorded, record_)
+
+
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
     recorded, record_ = record(env, local_model, "NB")
     exact(recorded, [(row[4], row[5], row[1]) for row in tf.NB_ROWS])

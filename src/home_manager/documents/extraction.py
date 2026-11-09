@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v40-statement-fixes"
+EXTRACTION_VERSION = "typed-extraction-v41-closing-date-period"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1701,6 +1701,9 @@ def whole(lines, notes=None):
 
 # Several receipts in one file (docs/documents.md, "Several receipts in one file") ---------------------------
 
+# The window placing a statement's year-less dates when only its closing date (or only its due date) is read: two months
+# before it, three before a due date (docs/documents.md "Statement rows from the printed columns").
+PERIOD_FROM_CLOSING, PERIOD_FROM_DUE = 62, 92
 REBUILD_FAILED = "The rows couldn't be rebuilt from the printed columns, so the reading's rows were used; check them."
 SPLIT_NOTE = "This receipt was split from a file holding several; confirm the split on the document's page."
 # Several pay stubs in one file (docs/documents.md "Several pay stubs in one file"): these are record notes, never review reasons (FR-82, FR-85).
@@ -3995,6 +3998,13 @@ class ExtractionService:
         rebuild = None
         if evidence is not None and currency is not None:  # The pages the reading rebuilt (read), with the statement's own currency and period.
             period = [iso_date(field.value) if field.status == "proposed" else None for field in (header.period_start, header.period_end)]
+            due = getattr(header, "due_date", None)
+            due = iso_date(due.value) if due is not None and due.status == "proposed" else None
+            if not period[0] and (period[1] or due):
+                # A statement that prints only its closing date (or only a due date): its rows fall in the weeks before it, so year-less
+                # dates are placed there rather than all waiting for a year (docs/documents.md "Statement rows from the printed columns").
+                end = date.fromisoformat(period[1] or due)
+                period = [(end - timedelta(days=PERIOD_FROM_CLOSING if period[1] else PERIOD_FROM_DUE)).isoformat(), end.isoformat()]
             reference = header.account_reference
             digits = last_four(reference.value, [cite.quote for cite in reference.evidence]) if reference.status == "proposed" else None
 

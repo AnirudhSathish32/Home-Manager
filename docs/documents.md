@@ -631,8 +631,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   published with today's fields and rows only, as for the kinds' details: no codes or tax lines, `tax_source`
   `printed`, and the model's `taxed` answers.
 - **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (later `typed-extraction-v39-receipt-printed-signs`, which
-  added the missing tax and subtotal and the printed signs; now `typed-extraction-v40-statement-fixes`, which stopped an
-  example account number in the instruction from being copied and told card statements from bank ones), so a receipt read by an earlier version is read again when it is next extracted.
+  added the missing tax and subtotal and the printed signs; then `typed-extraction-v40-statement-fixes`, which stopped an
+  example account number in the instruction from being copied and told card statements from bank ones; now
+  `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -744,7 +745,9 @@ evidence (Extract again on an unchanged reading changes nothing).
   check number kept in it; the amount is in minor units. A dateless row takes the date of the row above, with a record
   note ("Page P row R: no date is printed; it takes D from the row above"). A date with no year, or a two-digit year,
   takes its year from the period. The period is the printed one (the line outside every table with exactly two dates
-  and no amount), else the model's summary period. The printed period is also the record's: if the reading gave another,
+  and no amount), else the model's summary period. A statement that prints only its closing date (many card statements)
+  places them in the 62 days up to the closing date the model read, or the 92 days up to its due date when that is all
+  it read; without that, every such row waited for a year and the statement recorded none. The printed period is also the record's: if the reading gave another,
   the record notes it ("The printed statement period … was recorded; the reading gave …"). The day/month order is the one a day over 12 decides, else the one
   under which every date falls within the period (± 7 days) and rows don't run backwards, else the order last decided
   for the same account's other statements (`statement_tables.prior_order`, at most ten, newest first), else the rows
