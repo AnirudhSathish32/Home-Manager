@@ -7,7 +7,9 @@ statement readings: the reading's version and type, how many rows the model list
 those came from the printed columns, and what publishing did (published or kept as reviewed, with the kept and new type and
 row counts). For the latest statements: type, review status, the account's type and whether it waits for Confirm, the rows on
 the statement and in the account, the account's import records, and where the document is filed (folder, in the trash,
-grouped under another, ledger status). Last, each reading's issues and notes as patterns with counts.
+grouped under another, ledger status). Last, each reading's issues and notes as patterns with counts. Each model row whose amount
+couldn't be read is listed with its page and the amount's form (digits as 9, codes like CR kept) and its unusual characters by
+code point, so a typographic minus or a stray symbol shows.
 
 Prints only counts, row ids, app enum values and code versions. Messages are printed with quotes, dates and amounts replaced by
 "…", and a row's own text (after "on page N:", or a description in brackets) cut, so no merchant, amount, date or account number
@@ -23,6 +25,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from home_manager.core.money import MoneyError, to_minor  # noqa: E402
 from home_manager.finance.ledger import confirmed  # noqa: E402
 from home_manager.library.storage import Store  # noqa: E402
 
@@ -30,6 +33,26 @@ READINGS, STATEMENTS = 6, 6
 DATE = re.compile(r"\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b")
 AMOUNT = re.compile(r"[-+(]?[$€£]?\d{1,3}(?:,\d{3})*\.\d{2}\)?-?")
 CUT = re.compile(r"^(.*?\bon page \d+): .*$")  # "…, on page 3: <the row's own date, text and amount>"
+
+
+def form(text):
+    """A printed value's form without the value: each digit is 9, a code of up to three capitals (CR, DR, USD) and symbols stay,
+    other words are counted. `$1,234.56 CR` gives `$9,999.99 CR`."""
+    parts, words = [], 0
+    for word in str(text).split():
+        if re.fullmatch(r"[A-Z]{1,3}", word) or not re.search(r"[A-Za-z]", word):
+            if words:
+                parts.append(f"words({words})")
+                words = 0
+            parts.append(re.sub(r"\d", "9", word))
+        else:
+            words += 1
+    return " ".join(parts + ([f"words({words})"] if words else [])) or "blank"
+
+
+def page_of(row):
+    pages = {int(match[1]) for cite in row.get("evidence") or [] for match in [re.match(r"page-(\d+)-", cite.get("line_id") or "")] if match}
+    return sorted(pages) or "?"
 
 
 def pattern(message):
@@ -72,6 +95,16 @@ for _run, document, version, status, kind, result, publication, error in x(
              else f"rows inserted {publication.get('inserted')}, already there {publication.get('duplicates')}, kept for you {publication.get('kept')}"))
     for name in ("issues", "notes"):
         patterns += [(document, name, pattern(message)) for message in record.get(name) or []]
+    for index, row in enumerate(result.get("rows") or [], 1):
+        try:
+            to_minor(row.get("amount"), record.get("currency") or "USD")
+            continue
+        except (MoneyError, ValueError, TypeError):
+            pass
+        amount = row.get("amount")
+        print(f"    model row {index} (page {page_of(row)}): amount not read, its form {form(amount)!r} "
+              f"(characters {[f'U+{ord(char):04X}' for char in str(amount) if not char.isalnum() and char not in ' ,.$']}); "
+              f"date form {form(row.get('posted_date') or '')!r}; direction {row.get('direction')}")
 
 print(f"\n[latest {STATEMENTS} statements]")
 documents = []

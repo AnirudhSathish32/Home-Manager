@@ -15,8 +15,9 @@ blank) and positions as a percentage of the page. Review messages are printed wi
 The last section is the table engine (documents/table_engine.py and finance/statement_tables.py, plan P13, OD-6): per page, each
 column's edges and zone as a percentage of the page width, its kind and role, and counts of rows, rejected rows, recorded rows,
 anchors, totals, other-table rows and unplaced lines; whether a period was printed, the decided date order and how it was decided,
-how each table's roles were decided (chain, summary, headings or the type default), and the first chain-break row number. It prints
-no heading word, description, date or amount.
+how each table's roles were decided (chain, summary, headings or the type default), and the first chain-break row number. Each
+row the engine turned away is listed with its reason and its runs of words as forms (`form`: digits become 9, codes like CR stay,
+other words are counted) at their position as a percentage of the page width. It prints no heading word, description, date or amount.
 
 With `paystub` the file is read as a pay stub and only the pay engine's section is printed (documents/pay_tables.py and finance/paystub_tables.py,
 specs/pdf-table-engine-paystubs plan R-A and OD-6): per page, the pay tables found (columns, their edges and zones as a percentage of the page width
@@ -66,6 +67,21 @@ def shape(text):
     if AMOUNT.fullmatch(text):
         return "amount"
     return f"words({len(text.split())})"
+
+
+def form(text):
+    """A printed run's form without its value: each digit is 9, a code of up to three capitals (CR, DR, USD) and symbols stay,
+    other words are counted. `$1,234.56 CR` gives `$9,999.99 CR`; `SYNTH SHOP 12` gives `words(2) 99`."""
+    parts, words = [], 0
+    for word in text.split():
+        if re.fullmatch(r"[A-Z]{1,3}", word) or not re.search(r"[A-Za-z]", word):
+            if words:
+                parts.append(f"words({words})")
+                words = 0
+            parts.append(re.sub(r"\d", "9", word))
+        else:
+            words += 1
+    return " ".join(parts + ([f"words({words})"] if words else [])) or "blank"
 
 
 def masked(message):
@@ -270,6 +286,13 @@ def engine_section():
                 role = reading.roles.get(table.id, {}).get(column.id, "-" if column.kind != "amount" else "undecided")
                 print(f"    {column.kind:<6} {column.align:<6} edge {percent(column.edge, width):>5}%  extent {span_text(column.extent, width)}%  "
                       f"zone {span_text(column.zone, width)}%  role {role}  heading words: {len(column.labels)}")
+        view = None
+        for table, found in on_page:
+            for row in (row for row in found if row.reject and table.kind == "transactions"):
+                view = view or PageView(layout)
+                print(f"  rejected row {row.row}: {masked(row.reject)}")
+                for index in sorted({view.row_of[word_id] for word_id in row.word_ids if word_id in view.row_of}):
+                    print(f"    words: {[f'{form(text)} @{100 * left / width:.0f}–{100 * right / width:.0f}%' for text, left, right in view.texts(index)]}")
         if not tables:
             print("  no table on this page")
 
