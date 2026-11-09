@@ -778,13 +778,25 @@ def test_a_sign_or_return_the_receipt_does_not_print_is_not_kept(tmp_path, local
         assert Ledger(manager.store).record("receipt", receipt_id)["review_status"] == "verified"
 
 
-def test_an_unprinted_subtotal_is_left_out_when_the_item_lines_and_tax_miss_the_total(tmp_path, local_model):
+def test_an_unprinted_subtotal_is_the_total_less_tax(tmp_path, local_model):
+    # No item rows read: the subtotal is still the total 14.29 less the tax 0.52.
+    replies = s_replies()
+    replies["GroceryItems"][0]["items"] = []
+    with reading(tmp_path, local_model, S_LINES, replies) as (manager, _again, receipt_id):
+        amounts, *_ = stored(manager.store, receipt_id)
+        assert amounts == (1377, 52, 1429)
+
+
+def test_item_lines_that_miss_the_worked_out_subtotal_go_to_review(tmp_path, local_model):
     lines = [*S_LINES[:-1], "TOTAL $14.99"]
     replies = s_replies()
     replies["ReceiptGrocerySummary"][0]["total"] = amount_on(lines, "TOTAL ")
     with reading(tmp_path, local_model, lines, replies) as (manager, _again, receipt_id):
         amounts, *_ = stored(manager.store, receipt_id)
-        assert amounts == (None, 52, 1499)
+        record = Ledger(manager.store).record("receipt", receipt_id)
+        assert amounts == (1447, 52, 1499) and record["review_status"] != "verified"
+        assert ("Item line totals (13.77 USD) do not equal the subtotal worked out from the total less tax (14.47 USD)."
+                in record["issues"])
 
 
 def test_a_code_that_is_not_printed_where_it_is_cited_is_left_out(tmp_path, local_model):

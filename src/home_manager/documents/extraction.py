@@ -2336,38 +2336,42 @@ TAX_WORD = re.compile(r"(?<![A-Za-z])tax(?![A-Za-z])", re.IGNORECASE)
 
 
 def unprinted_amounts(record, line_text, issues, money, currency, off):
-    """A receipt's tax and subtotal when the reading has none (docs/documents.md "Tax codes on receipts"). With no subtotal printed,
-    the item lines stand for it. A missing tax is the gap between the total and that (less discounts, plus tip) when a transcribed
+    """A receipt's tax and subtotal when the reading has none (docs/documents.md "Tax codes on receipts"). A missing tax is the gap
+    between the total and the subtotal (the item lines when no subtotal is printed), less discounts, plus tip, when a transcribed
     line naming tax ends with exactly that amount ("TAX 0.73"), and the line joins the record's citations; otherwise an issue, so the
-    receipt is never verified with its tax left out. An unprinted subtotal is kept as the item lines only when the arithmetic then
-    holds. Runs after sign_return and the printed checks, so the amounts carry a return's sign and a check of a value worked out
-    here is counted only when the tax was read: item lines and the read tax making the printed total."""
+    receipt is never verified with its tax left out. A missing subtotal is the total less tax and tip (plus an order-wide discount),
+    and the item lines are checked against it. Runs after sign_return and the printed checks, so the amounts carry a return's sign
+    and a check of a value worked out here is counted only when the tax was read: item lines and the read tax making the total."""
     items, charged, tip = record["items"], record["total_minor"], record["tip_minor"] or 0
     if charged is None or currency is None:
         return
     printed = record["subtotal_minor"] is not None
     lines = [item["line_total_minor"] for item in items]
-    if printed:
-        subtotal, against = record["subtotal_minor"], "the subtotal"
-    elif lines and None not in lines and not any(item["discount_minor"] for item in items):
-        subtotal, against = sum(lines), "the item lines"
-    else:
-        return
+    lines = sum(lines) if lines and None not in lines and not any(item["discount_minor"] for item in items) else None
+    base = record["subtotal_minor"] if printed else lines
     tax, read = record["tax_minor"], record["tax_minor"] is not None
-    gap = charged - (subtotal - off) - tip
-    if tax is None and gap:
+    if tax is None and base is not None and (gap := charged - (base - off) - tip):
         found = [line_id for line_id, text in line_text.items() if TAX_WORD.search(text) and line_amount(text) is not None
                  and money(str(line_amount(text)), "Tax", magnitude=True) == abs(gap)]
         if not found:
-            issues.append(f"Tax was not read, but the total is {format_minor(abs(gap), currency)} away from {against}"
-                          f"{' and tip' if tip else ''}{' less discounts' if off else ''}; check the tax with Edit details.")
+            issues.append(f"Tax was not read, but the total is {format_minor(abs(gap), currency)} away from "
+                          f"{'the subtotal' if printed else 'the item lines'}{' and tip' if tip else ''}{' less discounts' if off else ''}; "
+                          "check the tax with Edit details.")
             return
         tax = record["tax_minor"] = gap
         record["locator"]["line_ids"] = list(dict.fromkeys([*record["locator"]["line_ids"], found[0]]))
         record["locator"]["quotes"] = [*record["locator"]["quotes"], line_text[found[0]]][:40]
-    if not printed and subtotal - off + (tax or 0) + tip == charged:
-        record["subtotal_minor"] = subtotal
+    if printed or (tax is None and base is None):
+        return
+    # Total less tax and tip, plus the discount taken off (with no tax read, only reached when the item lines make the total).
+    record["subtotal_minor"] = subtotal = charged - (tax or 0) - tip + off
+    if lines is None:
+        return
+    if lines == subtotal:
         record["cross_checks"] += read
+    else:
+        issues.append(f"Item line totals ({format_minor(lines, currency)}) do not equal the subtotal worked out from the total "
+                      f"less tax{' and tip' if tip else ''} ({format_minor(subtotal, currency)}).")
 
 
 PAGE_ID = re.compile(r"page-(\d+)-")

@@ -612,10 +612,12 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   isn't used), yet the total is more than the subtotal (less discounts, plus tip), the gap is the tax if a transcribed
   line naming tax ends with exactly that amount: "TAX 0.73" on a 19.39 subtotal and a 20.12 total, or "B = GA TAX 3.
   75000 on $13.77 $0.52" under a 13.77 item and a 14.29 total with no subtotal printed. That line is added to the
-  receipt's citations. An unprinted subtotal is kept as the item lines only when they, the tax and tip then make the
-  total. A check of a value worked out here counts only when the tax was read (the item lines and the read tax making the
-  printed total), so with a worked-out tax the receipt is verified only when its item lines add up to a printed subtotal
-  or another check holds. With no such line the issue is "Tax was not read, but the total is 2.82 USD away from the
+  receipt's citations. A subtotal that isn't printed is the total less tax and tip (plus an order-wide discount), and the
+  item lines are checked against it: "Item line totals (13.77 USD) do not equal the subtotal worked out from the total
+  less tax (14.47 USD)." sends the receipt to review. With no tax read, it is the item lines when they make the total. A
+  check of a value worked out here counts only when the tax was read (the item lines and the read tax making the printed
+  total), so with a worked-out tax the receipt is verified only when its item lines add up to a printed subtotal or
+  another check holds. With no such line the issue is "Tax was not read, but the total is 2.82 USD away from the
   subtotal; check the tax with Edit details." ("from the item lines" with no subtotal printed) and the receipt goes to
   review, never verified with its tax left out. A dining receipt with a gratuity is left as read. The instructions also
   say that a single TAX line is the summary's tax.
