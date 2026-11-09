@@ -518,11 +518,29 @@ def test_journey_j1_a_a_re_read_of_a_statement_you_confirmed_keeps_it_as_you_rev
     before, files = snapshot(env), env.files()
     again = recorded.run(bank_replies(moved, sf.s_bad_rows), force=True)
     assert recorded.extraction["publication"]["status"] == "kept_reviewed" and again["id"] == record["id"]
+    # What was kept beside what this reading found, so the document page can warn when they differ (user report).
+    publication = recorded.extraction["publication"]
+    assert publication["kept"] == {"statement_type": "bank", "rows": 5} and publication["reading"]["statement_type"] == "bank"
     assert env.sql("SELECT id,display_name FROM accounts") == [(account_id, "SYNTH BANK Savings 3456")]
     assert env.sql("SELECT count(*) FROM accounts WHERE display_name LIKE '%7890'") == [(0,)]
     c_visible(env, account_id)
     assert snapshot(env) == before and amounts(env, record["id"]) == [36, 2, -38, 150000, -50000]
     assert env.files() == files
+
+
+def test_a_statement_recorded_after_its_rows_were_imported_joins_that_account(env, local_model):
+    # User report: Add missed transactions made a card account under a name the statement doesn't print; recording the statement
+    # again must not make a second account whose rows count twice.
+    recorded = recorded_s(env, local_model)
+    ledger = Ledger(env.store)
+    account = ledger.create_account("My savings bank", "savings", "USD", last_four="3456")
+    preview = ledger.preview_pdf_import(recorded.doc["id"], recorded.doc["current_hash"], account_id=account["id"])
+    ledger.import_pdf_transactions(recorded.doc["id"], recorded.doc["current_hash"], account_id=account["id"], reading_id=preview["reading_id"])
+    imported = env.sql("SELECT id FROM transactions ORDER BY id")
+    record = recorded.run(s_replies())
+    assert env.sql("SELECT id FROM accounts") == [(account["id"],)] and env.sql("SELECT account_id FROM statements") == [(account["id"],)]
+    assert env.sql("SELECT id FROM transactions ORDER BY id") == imported  # The statement's rows are the imported ones, once each.
+    assert {row[0] for row in env.sql("SELECT statement_id FROM transactions")} == {record["id"]}
 
 
 def test_journey_j1_b_a_second_statement_of_a_confirmed_account_keeps_the_automatic_check(env, local_model):

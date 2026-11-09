@@ -375,7 +375,7 @@ async function doc2Extraction(state, parseId) {
   }
   if (["asset", "investment_valuation", "investment_confirmation", "tax_form"].includes(publication.record_type)) await doc2Other(state, target, publication);
   else if (publication.segments) await doc2Split(target, state, publication);
-  else await doc2Ledger(state, target, publication.record_type, publication.id, publication.status === "kept_reviewed");
+  else await doc2Ledger(state, target, publication.record_type, publication.id, publication.status === "kept_reviewed" ? publication : null);
   const check = run.result?.decision || run.result?.laya;
   if (check && doc2 === state) {
     const checks = element("section", "", "doc2-section"); checks.append(element("h3", "Checks"), decisionPanel(check, run.document_type));
@@ -405,6 +405,23 @@ async function doc2Changed(state) {
   if (state.tab === "history") await doc2History(state);
 }
 // The page's h1 is the document's name; the record header says what was recorded and from whom.
+// A record you decided is kept when it is read again. A statement whose new reading differs from it (another type, other
+// rows) says so as a warning, with the way to use the new reading: back to Needs review, then Record again.
+const DOC2_STATEMENT_TYPES = {credit_card: "credit card statement", bank: "bank statement"};
+function doc2Kept(state, type, id, record, kept) {
+  const was = kept.kept, now = kept.reading;
+  if (type !== "statement" || !was || !now || (was.statement_type === now.statement_type && was.rows === now.rows))
+    return element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small");
+  const rows = count => `${count} row${count === 1 ? "" : "s"}`;
+  const use = asyncButton("Use the new reading", async () => {
+    await api(`/api/finance/records/statement/${id}/review`, {method: "POST", body: JSON.stringify({status: "needs_review"})});
+    await doc2Record(true);
+  }, "small");
+  return alertBox(`You ${record.review_status === "verified" ? "confirmed" : "rejected"} this statement earlier, so the new reading wasn't used. `
+                  + `The new reading is a ${DOC2_STATEMENT_TYPES[now.statement_type] || "statement"} with ${rows(now.rows)}; the recorded one is a `
+                  + `${DOC2_STATEMENT_TYPES[was.statement_type] || "statement"} with ${rows(was.rows)}. Using the new reading puts the statement back in review.`,
+                  {tone: "warning", action: use});
+}
 function doc2RecordTitle(type, record) {
   if (type === "income_record") return ledgerTitle(type, record);
   const kind = (record.invoice ? "Invoice" : record.document_kind === "bill" ? "Bill" : {receipt: "Receipt", statement: "Statement"}[type]) || "Record";
@@ -466,7 +483,7 @@ async function doc2Ledger(state, target, type, id, kept) {
     $("doc2-decision").querySelector(".cc-form").prepend(doc2Kind(state, record));
   const find = ids => state.viewer.highlight(ids);
   const parts = [];
-  if (kept) parts.push(element("p", "You already reviewed this record, so the new extraction did not change it.", "muted small"));
+  if (kept) parts.push(doc2Kept(state, type, id, record, kept));
   const accountNote = type === "statement" ? accountNoteBlock(record) : null;
   parts.push(...(accountNote ? [accountNote] : []), doc2Fields(state, type, record, find), ...doc2Forms(state, type, record, find));
   const categories = type === "receipt" && record.review_status !== "rejected" ? await receiptCategories() : [];
@@ -903,7 +920,7 @@ async function doc2Split(target, state, publication) {
   const record = element("div");  // The chosen receipt's record; rendering it replaces only this.
   target.append(panel, record);
   if (published?.status === "blocked") { record.append(alertBox(`Can't record this ${noun}: ${published.reason}`, {tone: "warning"})); return; }
-  if (published?.id) await doc2Ledger(state, record, published.record_type, published.id, published.status === "kept_reviewed");
+  if (published?.id) await doc2Ledger(state, record, published.record_type, published.id, published.status === "kept_reviewed" ? published : null);
 }
 
 // History: the record's changes and decisions, newest first.

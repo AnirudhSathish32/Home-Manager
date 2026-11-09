@@ -457,11 +457,11 @@ STATEMENT_TYPES = (("credit_card",), ("checking", "savings", "other"))
 
 
 def default_account_name(institution, account_type, last_four):
-    """The name an account gets unless one is given: the institution and the type, capitalized ("Chase Savings 1234"). It
-    leaves out the type when the institution already ends with it ("Household checking", not "Household checking
-    checking"); migrations 065 and 074 renamed older rows the same way."""
+    """The name an account gets unless one is given: the institution and the type, each word capitalized ("Chase Savings
+    1234", "Chase Credit Card 1234"). It leaves out the type when the institution already ends with it ("Household checking",
+    not "Household checking checking"); migrations 065, 074 and 078 renamed older rows the same way."""
     kind = account_type.replace("_", " ")
-    default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind.capitalize()}"
+    default = institution if institution.lower() == kind or institution.lower().endswith(" " + kind) else f"{institution} {kind.title()}"
     return f"{default}{' ' + last_four if last_four else ''}"[:160]
 
 
@@ -1226,10 +1226,17 @@ class Ledger:
             # prints another last four must not leave a new empty account behind).
             before = db.execute("SELECT id,account_id,review_status,review_source FROM statements WHERE blob_hash=?", (source["blob_hash"],)).fetchone()
             if before and before["review_status"] in ("verified", "rejected") and before["review_source"] == "user":
+                # What this reading found beside what was kept, so the page can say when they differ (a card statement first
+                # recorded as a bank one with no rows): the decided record never changes silently, and never without the user.
+                kept_type = db.execute("SELECT statement_type FROM statements WHERE id=?", (before["id"],)).fetchone()[0]
+                kept_rows = db.execute("SELECT count(*) FROM transactions WHERE statement_id=?", (before["id"],)).fetchone()[0]
                 return self._published("statement", before["id"], False, account_id=before["account_id"], review_status=before["review_status"],
-                                       account_confirmed=self.account_confirmed(db, before["account_id"]))
+                                       account_confirmed=self.account_confirmed(db, before["account_id"]),
+                                       kept={"statement_type": kept_type, "rows": kept_rows},
+                                       reading={"statement_type": record["statement_type"], "rows": len(record["transactions"]), "issues": len(record["issues"])})
             account = (printed and self.find_account(db, record["institution"], (printed,), record["last_four"])
-                       or self.find_account(db, record["institution"], statement_types(kind), record["last_four"]))
+                       or self.find_account(db, record["institution"], statement_types(kind), record["last_four"])
+                       or self.imported_into(db, source["blob_hash"], statement_types(kind), record["last_four"], record["currency"]))
             account = account or self.account_in(db, record["institution"], kind, record["currency"], last_four=record["last_four"], origin=origin)
             if printed and account["account_type"] in PRINTED_ACCOUNT_TYPES.values() and account["account_type"] != printed:
                 account = self.retype_account(db, account, printed)
@@ -1624,16 +1631,32 @@ class Ledger:
                 return f"This PDF is recorded as a {kind}."
         return None
 
-    def account_match(self, db, last_fours, document_currency, home_currency=None):
+    @staticmethod
+    def imported_into(db, blob_hash, account_types, last_four, currency):
+        """The one account of these types, last four and currency that rows of this very file were imported into, or None. A
+        statement recorded after its rows were imported (Add missed transactions made the account, under a name the statement
+        doesn't print) joins that account rather than making a second one whose rows would count twice."""
+        rows = db.execute(f"SELECT DISTINCT a.* FROM transaction_imports i JOIN accounts a ON a.id=i.account_id WHERE i.blob_hash=? AND a.active=1 "
+                          f"AND a.account_type IN ({','.join('?' * len(account_types))}) AND coalesce(a.account_last_four,'')=? AND a.currency=?",
+                          (blob_hash, *account_types, last_four or "", currency)).fetchall()
+        return dict(rows[0]) if len(rows) == 1 else None
+
+    def account_match(self, db, last_fours, document_currency, home_currency=None, blob_hash=None):
         """The one active account in the document's currency whose last four the document prints, or None (FR-13).
-        last_fours: each distinct NNNN found, with the page of its first occurrence."""
+        last_fours: each distinct NNNN found, with the page of its first occurrence. When several print it, the one this file's
+        rows were imported into before is the match (blob_hash), so a second Add missed transactions finds its own rows."""
         currency = document_currency or home_currency or "USD"
         found = [dict(row) for row in db.execute(f"SELECT a.* FROM accounts a WHERE a.active=1 AND a.currency=? AND {CONFIRMED} ORDER BY a.id", (currency,))
                  if row["account_last_four"] in last_fours]
+        reason = None
+        if len(found) > 1 and blob_hash:
+            imported = {row[0] for row in db.execute("SELECT account_id FROM transaction_imports WHERE blob_hash=?", (blob_hash,))}
+            found, reason = [account for account in found if account["id"] in imported], "this file's rows were imported into it before"
         if len(found) != 1:
             return None
         four = found[0]["account_last_four"]
-        return {"account_id": found[0]["id"], "last_four": four, "page": last_fours[four], "text": f"Matched …{four} printed on page {last_fours[four]}"}
+        text = f"Matched …{four} printed on page {last_fours[four]}" + (f"; {reason}" if reason else "")
+        return {"account_id": found[0]["id"], "last_four": four, "page": last_fours[four], "text": text}
 
     def row_status(self, db, account, fingerprints, blob_hash):
         """Per row, in order: New, rejected earlier, or already recorded, with where from (FR-16, FR-17). Reads only.
@@ -1704,7 +1727,7 @@ class Ledger:
                 raise ValueError(ENGINE_FAULT) from None
         if account is None:  # A first look finds the last fours and the document's currency, which choose the account and so the sign.
             first = analyzed(account_type=account_type, currency=currency or "USD")
-            match = self.account_match(db, first.last_fours, first.document_currency, home_currency)
+            match = self.account_match(db, first.last_fours, first.document_currency, home_currency, version["hash"])
             if match and account_type is None and currency in (None, db.execute("SELECT currency FROM accounts WHERE id=?", (match["account_id"],)).fetchone()[0]):
                 account = self.account(match["account_id"], db)
                 last_four = account["account_last_four"]
@@ -1713,7 +1736,7 @@ class Ledger:
                 last_four = next(iter(first.last_fours)) if len(first.last_fours) == 1 else None
         analysis = analyzed(account_type=account["account_type"] if account else account_type, currency=account["currency"] if account else currency)
         if match is None:
-            match = self.account_match(db, analysis.last_fours, analysis.document_currency, home_currency)
+            match = self.account_match(db, analysis.last_fours, analysis.document_currency, home_currency, version["hash"])
         rows = {row.key: row for row in analysis.rows}
         if set(ticked or ()) & set(unticked or ()):
             raise ValueError("A row cannot be both ticked and unticked.")

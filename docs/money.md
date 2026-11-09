@@ -514,6 +514,15 @@ currency match (as above), so an older statement whose rows came from the model 
 there. A row the new reading no longer has is removed unless you worked on it, as above; a statement you confirmed is
 never rewritten.
 
+When a statement you confirmed or rejected is read again and the new reading differs from it (a card statement where a bank
+one was kept, or another number of rows), the document page says so as a warning, naming both, with **Use the new
+reading**. That puts the statement back in review and records it again from the new reading. It never happens without you
+(`finance/ledger.py` `publish_statement`, `app/static/document_v2.js` `doc2Kept`).
+
+A statement whose rows were already imported from the same file (Add missed transactions) is recorded into the account they
+were imported into when no account matches its printed institution and last four, so its rows are those rows, once each,
+and no second account is made (`Ledger.imported_into`).
+
 ## Near matches and foreign receipts
 
 Exact-amount matching misses a tip added after the receipt printed, or a currency conversion. When no charge has the
@@ -945,7 +954,7 @@ currency, settles it.
 | `#/transactions` | Items and Charges views, with Out / In / All and an In / Out / Net line. Charges also lists receipts, bills and pay stubs that count on their own. The toolbar has search, from/to, account, category, type, status, receipt evidence and sort. The table pages 200 rows at a time (server offset). A row opens a drawer with the amount, the decision (Confirm/Reject through `confirmCorrect`, undoable for 8 seconds) and whether it counts, category with "always use for this merchant", the split, evidence and links, and history. |
 | `#/spending` | **Spending & budgets.** The month compared with the previous month and the same month last year. Figures, a by-category table with change and budget, top merchants, refunds and coverage notes. Budgets and category rules are managed here. |
 | `#/bills` | Confirmed recurring bills grouped as overdue, next 7 days and later, with subscriptions totalled separately. Recurring payments offer Confirm, Not recurring and Ended. **Look for recurring bills** runs the payee scan. |
-| `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. An account's default name is its institution, its type capitalized and any last four digits ("Chase Savings 1234"), leaving out the type when the institution already ends with it as a word ("Household checking", not "Household checking checking"; `ledger.py` `default_account_name`). Migration 065 renamed older rows still carrying the doubled form, and 074 capitalized the type in names still exactly the old generated form; names the user chose are untouched. |
+| `#/accounts` | Accounts grouped by type, each with its statement balance and "as of" date, coverage, a stale marker (over 35 days) and a link to its transactions. There is no total across accounts. An account's default name is its institution, its type with each word capitalized and any last four digits ("Chase Savings 1234", "Chase Credit Card 1234"), leaving out the type when the institution already ends with it as a word ("Household checking", not "Household checking checking"; `ledger.py` `default_account_name`). Migration 065 renamed older rows still carrying the doubled form, 074 capitalized the type in names still exactly the old generated form, and 078 the second word of "Credit card" in names still exactly 074's form; names the user chose are untouched. |
 | `#/receipts` | Receipts & statements: the money store's folders. |
 | `#/review` | The Review queue (see [ui](ui.md#review)). Its groups: Questions, Proposed matches, Records to verify, Investment and loan documents to confirm, Warranties to confirm, Tax tables to confirm, Possible write-offs and tax payments, Recurring payments, Receipt items to identify. Statements awaiting reconciliation and documents that couldn't be processed are listed beside the queue. |
 

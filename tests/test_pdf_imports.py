@@ -847,7 +847,8 @@ def test_analyzer_visual_rows_and_heading_texts_equal_every_native_table_in_the_
 
 CONTRACT_TABLES = ("accounts", "transactions", "statements", "financial_evidence_links", "transaction_imports", "review_events")
 ACCOUNTS = {"A": ("FIRST LOCAL BANK", "checking", "USD", "4821"), "C": ("SYNTH CARD SERVICES", "credit_card", "USD", "7700"),
-            "B": ("OTHER BANK", "savings", "USD", "1111"), "L": ("SYNTH LENDER", "loan", "USD", "3333"), "E": ("EURO BANK", "checking", "EUR", "4821")}
+            "B": ("OTHER BANK", "savings", "USD", "1111"), "L": ("SYNTH LENDER", "loan", "USD", "3333"), "E": ("EURO BANK", "checking", "EUR", "4821"),
+            "A2": ("SECOND LOCAL BANK", "checking", "USD", "4821")}
 INTEGRITY = "Preserved evidence failed its integrity check. Nothing was imported."
 IMPORT_ID = re.compile(r"import:[0-9a-f]{32}")
 
@@ -1215,6 +1216,18 @@ def test_sc05_an_account_is_preselected_only_on_a_unique_same_currency_last_four
     before = env.state()
     env.refused(env.run(k2, reading_id=env.ok_preview(k2)["reading_id"]), "Choose the account these transactions belong to.")
     assert env.state() == before
+
+
+def test_sc05_with_two_accounts_on_the_last_four_the_one_this_file_was_imported_into_is_the_match(env):
+    # User report: a second Add missed transactions marked every row New, because two accounts printed the same last four.
+    env.account("A")
+    second = env.account("A2")
+    k = env.add("k.pdf", fx.k_pages())
+    assert env.ok_preview(k)["account_match"] is None
+    env.ok_import(k, account_id=second)
+    preview = env.ok_preview(k)
+    assert preview["account_match"]["account_id"] == second and preview["account_match"]["text"].endswith("this file's rows were imported into it before")
+    assert {row["status"] for row in preview["rows"] if not row["rejected"]} == {"already_recorded"}
 
 
 def test_sc05_every_printed_form_of_the_last_four_matches_and_two_non_forms_do_not(env):

@@ -258,6 +258,27 @@ def test_065_drops_the_doubled_type_from_generated_account_names_only():
         db.close()
 
 
+def test_078_capitalizes_every_word_of_the_type_in_generated_account_names_only():
+    """"Synth Card Credit card 9999" (074's name) becomes "Synth Card Credit Card 9999"; a chosen name and one that leaves the
+    type out stay."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 78:
+                db.executescript(script.read_text())
+        for institution, name, last_four in (("Synth Card", "Synth Card Credit card 9999", "9999"), ("Synth Bank", "Synth Bank Credit card", None),
+                                             ("Visa credit card", "Visa credit card", None), ("Synth Card", "Travel card", "1111")):
+            db.execute("INSERT INTO accounts(institution,account_type,display_name,account_last_four,currency,created_at,updated_at) "
+                       "VALUES(?,'credit_card',?,?,'USD','t','t')", (institution, name, last_four))
+        db.commit()
+        storage.apply_migrations(db, 77)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert [row[0] for row in db.execute("SELECT display_name FROM accounts ORDER BY id")] == [
+            "Synth Card Credit Card 9999", "Synth Bank Credit Card", "Visa credit card", "Travel card"]
+    finally:
+        db.close()
+
+
 def test_074_capitalizes_the_type_in_generated_account_names_only():
     """"Chase savings 1234" becomes "Chase Savings 1234" (docs/money.md "Money pages"); a name the user chose, one that leaves
     the type out, and one already capitalized stay as they are."""
@@ -279,7 +300,7 @@ def test_074_capitalizes_the_type_in_generated_account_names_only():
         storage.apply_migrations(db, 73)
         assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
         assert [row[0] for row in db.execute("SELECT display_name FROM accounts ORDER BY id")] == [
-            "JPMorgan Chase Bank, N.A. Savings 1234", "First Local Bank Checking", "Synth Card Credit card 9999", "Household checking",
+            "JPMorgan Chase Bank, N.A. Savings 1234", "First Local Bank Checking", "Synth Card Credit Card 9999", "Household checking",
             "Rainy day fund", "Chase Checking"]
     finally:
         db.close()

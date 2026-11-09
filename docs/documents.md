@@ -336,7 +336,9 @@ is read and recorded as before: it is not a table file, and `needs_text` and `re
   rows are rebuilt) start unticked, with the page's message. Ticked rows import like any other.
 - **Account.** The dialog ignores the remembered CSV account. An account is preselected only when exactly one active
   account in the document's currency has its last four printed in the reading ("ending in 4821", `XXXX4821`, `*4821`,
-  …) and the dialog says where ("Matched …4821 printed on page 1"). Otherwise Import waits for a choice. **New
+  …) and the dialog says where ("Matched …4821 printed on page 1"). When several accounts print it, the one this same
+  file's rows were imported into before is preselected ("…; this file's rows were imported into it before"), so a second
+  Add missed transactions shows those rows as already recorded rather than New. Otherwise Import waits for a choice. **New
   account…** prefills the last four and creates the account inside the import request itself, in the same database
   transaction as the rows. A refused or failed import leaves no account. A different currency on the document blocks
   the import; no conversion.

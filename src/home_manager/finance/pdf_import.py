@@ -955,7 +955,7 @@ def summaries(db, ledger, rows, home_currency=None):
         tables, match, refused = found["transactions_tables"], None, None
         if tables:
             fours = json.loads(found["last_fours_json"])
-            matched = ledger.account_match(db, fours, found["document_currency"], home_currency) if fours else None
+            matched = ledger.account_match(db, fours, found["document_currency"], home_currency, row.get("current_hash")) if fours else None
             match = {key: matched[key] for key in ("account_id", "last_four", "page")} if matched else None
             reason = ledger.pdf_refusal(db, row["current_hash"])
             parsed = REFUSED.fullmatch(reason) if reason else None
