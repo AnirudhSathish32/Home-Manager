@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 3312952
-end_head: COMMIT   # a following commit changes only this header
-commit: COMMIT
+end_head: 2a36bab   # a following commit changes only this header
+commit: 2a36bab
 checks:
   - command: ".venv/bin/python -m pytest tests/test_document_split.py -p no:cacheprovider -q"
     exit_code: 0   # 14 passed (12 from SL-01 + 2 new)
