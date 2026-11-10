@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -453,6 +454,116 @@ def test_sc07_a_folder_event_import_and_donation_on_b_follow_b_and_the_trash_sta
         assert db.execute("SELECT document_id FROM document_descriptions").fetchall()[0][0] == owner[0]  # Document-level: it stays with the first.
         assert [row[0] for row in db.execute("SELECT deleted_at FROM occurrences ORDER BY id")] == [deleted] * 3  # Every piece stays in Trash.
         assert db.execute("SELECT count(*) FROM transactions WHERE source_document_id=?", (owner[0],)).fetchone()[0] == 3  # The statement's three rows stay with A.
+
+
+# --- SC-08: the Library copies take their new ids, durably ---------------------------------------------------------------------
+
+def managed(db, digest):
+    row = db.execute("SELECT document_id,relative_path FROM managed_files WHERE blob_hash=?", (digest,)).fetchone()
+    return row["document_id"], row["relative_path"]
+
+
+def fail_once_for(monkeypatch, tail):
+    """The library publishes with os.link on Linux and os.rename on Windows. Neither sees the source path, so the fault matches C's target
+    name: it raises OSError once for the path ending `tail` and otherwise calls the real function."""
+    name = "rename" if os.name == "nt" else "link"
+    real, seen = getattr(os, name), []
+
+    def faulty(source, target, *args, **kwargs):
+        if str(target).endswith(tail) and not seen:
+            seen.append(target)
+            raise OSError("test fault")
+        return real(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, name, faulty)
+    return seen
+
+
+def test_sc08_split_copies_are_renamed_to_their_ids_durably(tmp_path, monkeypatch):
+    merged = merged_library(tmp_path, standard())
+    root = merged.root
+    with sqlite3.connect(root / "inventory.sqlite3") as db:  # Step 1: the upgrade alone, before any organization pass.
+        storage.apply_migrations(db, SPLIT_STEP - 1)
+    with open_db(root) as db:
+        owner = {run: document_of(db, merged.hashes[indexes[0]]) for run, indexes in enumerate(merged.runs)}
+        a, b, c = owner[0], owner[1], owner[2]
+        before = {run: managed(db, merged.hashes[run]) for run in owner}
+    assert len({a, b, c}) == 3 and a == 1
+    for run, data in ((1, B), (2, C)):  # Each still names its `__d1` file, and that file opens with its own bytes.
+        document, path = before[run]
+        assert document == owner[run] and f"__d{a}." in path
+        assert (root / "Library" / path).read_bytes() == data
+    # The same pass first moves B's copy into the month of its pay stub (September), keeping its name; the rename follows there.
+    old_b = before[1][1].replace("/2026/10/", "/2026/09/")
+    assert old_b != before[1][1]
+    # Step 4's decoy: a different file already at B's target name.
+    target_b = old_b.replace(f"__d{a}.", f"__d{b}.")
+    (root / "Library" / target_b).parent.mkdir(parents=True, exist_ok=True)
+    (root / "Library" / target_b).write_bytes(b"synthetic decoy")
+    # Step 2: one pass, with the publication of C's copy failing once.
+    target_c = before[2][1].replace(f"__d{a}.", f"__d{c}.")
+    seen = fail_once_for(monkeypatch, target_c)
+    store = Store(root)
+    try:
+        assert seen, "C's rename was attempted and failed once"
+        with store.connection() as db:
+            assert managed(db, merged.hashes[1]) == (b, old_b)  # B: blocked by the decoy, still at its old name.
+            blocked = db.execute("SELECT error FROM managed_organization_intents WHERE document_id=? AND action='layout' AND status='blocked'", (b,)).fetchone()
+            assert "different bytes" in blocked["error"] and "not overwritten" in blocked["error"]
+            assert managed(db, merged.hashes[2]) == (c, before[2][1])  # C: the fault left it at its old name, and it still opens.
+            assert db.execute("SELECT count(*) FROM managed_organization_intents WHERE document_id=? AND status IN ('pending','blocked')", (c,)).fetchone()[0] == 1
+    finally:
+        store.close()
+    assert (root / "Library" / before[2][1]).read_bytes() == C
+    assert (root / "Library" / old_b).read_bytes() == B and (root / "Library" / target_b).read_bytes() == b"synthetic decoy"
+    # Step 3: reopen. The interrupted rename finishes; B stays blocked by the decoy and nothing is overwritten.
+    with reopened(root) as store:
+        with store.connection() as db:
+            assert managed(db, merged.hashes[2]) == (c, target_c)
+            assert db.execute("SELECT count(*) FROM managed_organization_intents WHERE document_id=? AND status IN ('pending','blocked')", (c,)).fetchone()[0] == 0
+            assert managed(db, merged.hashes[1]) == (b, old_b)
+    assert (root / "Library" / target_c).read_bytes() == C and not (root / "Library" / before[2][1]).exists()
+    assert (root / "Library" / old_b).read_bytes() == B and (root / "Library" / target_b).read_bytes() == b"synthetic decoy"
+    # Without the decoy B takes its id too (step 2's B), and a later pass renames nothing twice.
+    (root / "Library" / target_b).unlink()
+    with open_db(root) as db:
+        db.execute("DELETE FROM managed_organization_intents WHERE document_id=? AND status='blocked'", (b,))
+        db.commit()
+    with reopened(root):
+        pass
+    with open_db(root) as db:
+        for run, data in ((0, A), (1, B), (2, C)):
+            document, path = managed(db, merged.hashes[run])
+            assert document == owner[run] and path.endswith(f"__d{document}.pdf")
+            assert (root / "Library" / path).read_bytes() == data
+        assert len({managed(db, merged.hashes[run])[1] for run in owner}) == 3
+        assert db.execute("SELECT count(*) FROM managed_organization_intents WHERE status IN ('pending','blocked')").fetchone()[0] == 0
+        first = [tuple(row) for row in db.execute("SELECT id,target_path FROM managed_organization_intents ORDER BY id")]
+    with reopened(root):
+        pass
+    with open_db(root) as db:
+        assert [tuple(row) for row in db.execute("SELECT id,target_path FROM managed_organization_intents ORDER BY id")] == first
+    assert snapshot(root).library == merged.before.library  # Names changed, bytes did not.
+    check_split(merged)
+
+
+def test_sc08_a_given_name_never_falls_back_to_a_full_hash_name(tmp_path):
+    with reopened(tmp_path / "managed") as store:
+        (store.library.inbox / "x.pdf").write_bytes(A)
+        inbox_scan(store)
+        with store.connection() as db:
+            doc = db.execute("SELECT id FROM occurrences").fetchone()[0]
+        store.library.organize(doc, sha(A), *FILED, merchant="Bank", document_date="2026-10-31")
+        with store.connection() as db:
+            path = db.execute("SELECT relative_path FROM managed_files").fetchone()[0]
+        for bad in ("a/b.pdf", "a..pdf", "x" * 200 + ".pdf"):
+            with pytest.raises(ValueError, match="safe limits"):
+                store.library.organize(doc, sha(A), *FILED, action="layout", name=bad)
+        folder = (store.library.root / path).parent
+        (folder / "taken.pdf").write_bytes(b"synthetic decoy")
+        with pytest.raises(ValueError, match="different bytes"):
+            store.library.organize(doc, sha(A), *FILED, action="layout", name="taken.pdf")
+        assert (folder / "taken.pdf").read_bytes() == b"synthetic decoy" and (store.library.root / path).read_bytes() == A
 
 
 # --- SC-09: all or nothing ---------------------------------------------------------------------------------------------------

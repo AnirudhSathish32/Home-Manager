@@ -116,7 +116,10 @@ def filename(document_id, digest, extension, folder, merchant=None, document_dat
     if not label:
         components.append("Document" if folder == "Unfiled" else folder)
     components.extend([digest if full_hash else digest[:16], f"d{document_id}"])
-    name = "__".join(components) + extension
+    return safe_name("__".join(components) + extension)
+
+
+def safe_name(name):
     if len(name) > 180 or ".." in name or any(char in name for char in '/\\:'):
         raise ValueError("Managed filename exceeds safe limits.")
     return name
@@ -231,10 +234,11 @@ class ManagedLibrary:
 
     @locked
     def organize(self, document_id, digest, folder, reason, *, action="capture", merchant=None, document_date=None, source_override=None, keep_name=False,
-                 employer=None, section=None, label=None, title=None):
+                 employer=None, section=None, label=None, title=None, name=None):
         """employer (an employers row), section and label place a Jobs document: Jobs/<Employer>/<Section>/YYYY/MM,
         named <date>__<label>__<Employer>; title is its printed name for the library. Without them a Jobs document
-        keeps its current employer folder, if any."""
+        keeps its current employer folder, if any. name is a target file name used as given: a clash with other bytes
+        blocks the move instead of falling back to a full-hash name (docs/documents.md "The managed library")."""
         validate_folder(folder)
         if folder == "Jobs" and employer is None and (filed := self.job_filing(document_id, digest)):
             employer, section, label, title = filed, filed["section"], filed["label"], filed["title"]
@@ -256,12 +260,13 @@ class ManagedLibrary:
         document_date = document_date or (self.filing_date(document_id, digest) if folder in DATED_FOLDERS else None)
         if employer:
             merchant = employer["name"]
-        name = (PurePosixPath(existing["relative_path"]).name if keep_name and existing
+        given = name is not None
+        name = (safe_name(name) if given else PurePosixPath(existing["relative_path"]).name if keep_name and existing
                 else filename(document_id, digest, extension, folder, merchant, document_date, label=label))
         place = directory(folder, document_date, employer and employer["folder_name"], section)
         target = existing["relative_path"] if source_override and existing else place + "/" + name
         # Deterministic fallback for the short-hash collision case; never overwrite.
-        if self.path(target).exists() and target != source and digest_file(self.path(target)) != digest:
+        if not given and self.path(target).exists() and target != source and digest_file(self.path(target)) != digest:
             target = place + "/" + filename(document_id, digest, extension, folder, merchant, document_date, full_hash=True, label=label)
         with self.store.connection() as db:  # Where in Jobs the document belongs; cleared when it leaves Jobs.
             if employer:
@@ -419,6 +424,30 @@ class ManagedLibrary:
         return moved
 
     @locked
+    def retag_ids(self):
+        """Rename the Library copies of documents the 080 split made (document_splits) that still carry another document's id:
+        ...__d1.pdf becomes ...__d<its id>.pdf through the normal durable intent, never overwriting."""
+        query = ("SELECT m.* FROM managed_files m JOIN occurrences o ON o.id=m.document_id "
+                 "WHERE o.deleted_at IS NULL AND (m.document_id IN (SELECT document_id FROM document_splits) "
+                 "OR m.document_id IN (SELECT from_document_id FROM document_splits)) "
+                 "AND NOT EXISTS(SELECT 1 FROM managed_organization_intents i WHERE i.document_id=m.document_id "
+                 "AND i.blob_hash=m.blob_hash AND i.status IN ('pending','blocked'))")
+        with self.store.connection() as db:
+            rows = [dict(row) for row in db.execute(query)]
+        renamed = 0
+        for row in rows:
+            tagged = re.fullmatch(r"(.*)__d(\d+)(\.[^./]+)", PurePosixPath(row["relative_path"]).name)
+            if not tagged or int(tagged[2]) == row["document_id"]:
+                continue
+            try:
+                self.organize(row["document_id"], row["blob_hash"], row["folder"], row["reason"], action="layout",
+                              name=f"{tagged[1]}__d{row['document_id']}{tagged[3]}")
+                renamed += 1
+            except (ValueError, OSError, RuntimeError):
+                pass  # The blocked intent stays visible; the file keeps its name and still opens.
+        return renamed
+
+    @locked
     def file_classified(self, document_id, digest, document_type, merchant, dated, reason, document_name=None):
         """The one filing rule: a supported, evidence-cited type plus unambiguous merchant/issuer and
         ISO date files the copy; anything else goes to Unfiled. A manual choice always wins, and an
@@ -495,6 +524,7 @@ class ManagedLibrary:
                 pass
         self.retire_folders()
         self.relayout()  # Also moves files filed before the YYYY/MM layout existed.
+        self.retag_ids()
 
     @locked
     def retire_folders(self):
