@@ -12,6 +12,7 @@ tiers of plan P7 keep the strongest evidence that holds (chain, summary, most ch
 the strongest tier still differ on any row's signed amount, the roles are undecided and nothing is guessed.
 """
 
+from collections import Counter
 import copy
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -43,6 +44,7 @@ PENDING = 'Page {page}: a pending row isn\'t recorded until it posts: "{text}"'
 TWO_ACCOUNTS = ("This PDF may hold more than one account: the table on page {first} and the table on page {second} don't continue each "
                 "other's balances. Both tables' rows were recorded.")
 CARRIED = "Page {page} row {row}: no date is printed; it takes {date} from the row above"
+ZERO_LINES = "Page {page}: {count} line{s} printing only zero amounts (an interest-rate table, say) {were} not recorded."
 NO_TABLE = "Page {page}: no table was found in the printed columns, so its rows are the reading's; check them."
 ORDER_UNKNOWN = "Page {page} rows: the date order (month/day or day/month) can't be told from the printed dates."
 TOO_FEW = ("Page {page}: the signs of these rows come from the column headings or the statement type, because there are too few rows and "
@@ -1045,6 +1047,9 @@ class Reader:
                        posted=posted, description=first.description, amount=first.amount, first_page=first.page, second_page=second.page)
         opening, closing = self.balances()
         self.notes = [NO_TABLE.format(page=page) for page in self.engine.pages_without_tables] + self.notes
+        zeros = Counter(page for table in self.transactions() for page, _ in table.zero_lines)
+        self.notes += [ZERO_LINES.format(page=page, count=count, s="s" if count > 1 else "", were="were" if count > 1 else "was")
+                       for page, count in sorted(zeros.items())]
         year = None if "none" in self.years else "period" if "period" in self.years else "choice" if "choice" in self.years else "printed" if self.years else None
         return StatementReading([transaction for _, _, transaction in self.recorded], self.issues, self.notes, self.dropped, self.pages(),
                                 opening, closing, tuple(day.isoformat() for day in self.period) if self.period else None, self.order,

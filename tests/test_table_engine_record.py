@@ -424,6 +424,23 @@ def test_a_card_period_printed_with_two_digit_years_places_the_rows_without_the_
     reconciles(recorded, record_)
 
 
+def test_a_cards_interest_rate_lines_under_its_charges_are_no_rows_and_no_review_reason(env, local_model):
+    """The interest charge calculation printed under the charges, each line an APR, an expiry date or `-`, and `- 0 -` for its
+    balance and interest: lines printing only zero amounts are no rows, and one note says so instead of a review reason per line
+    (docs/documents.md "Statement rows from the printed columns")."""
+    pages = tf.cs_pages()
+    items = [item for item in pages[0]["items"] if item[1] > 520]  # The rows; the footer is printed again below the rate lines.
+    for y, cells in ((500, [(40, "Purchases"), (180, "19.99% (v)"), (260, "11/04/26"), (420, "- 0 -", True)]),
+                     (480, [(40, "Cash Advances"), (180, "29.99% (v)"), (260, "-"), (420, "- 0 -", True)])):
+        items += tf.row_items(y, cells)
+    pages = [{**pages[0], "items": [*items, tf.words_footer("SYNTH REWARDS CARD", 460)]}]
+    recorded, record_ = record(env, local_model, "CS", pages=pages)
+    exact(recorded, [(row[4], row[5], row[2]) for row in tf.CS_ROWS])
+    reconciles(recorded, record_)
+    no_row_review(record_)
+    assert "Page 1: 2 lines printing only zero amounts (an interest-rate table, say) were not recorded." in recorded.notes()
+
+
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
     recorded, record_ = record(env, local_model, "NB")
     exact(recorded, [(row[4], row[5], row[1]) for row in tf.NB_ROWS])

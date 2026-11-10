@@ -175,6 +175,7 @@ class EngineTable:
     anchors: list[Anchor] = field(default_factory=list)
     totals: list[Total] = field(default_factory=list)
     lead: str | None = None  # The title line directly above a headless table's first row: a section title or a page's, which can't be told apart.
+    zero_lines: list[tuple[int, str]] = field(default_factory=list)  # (page, line id) of lines printing only zero amounts: not rows.
 
 
 @dataclass
@@ -580,6 +581,14 @@ def label_of(column):
     return " ".join(column.labels) if column and column.labels else "unlabelled"
 
 
+def zero_line(reading):
+    """A line whose every amount is zero and whose other text in an amount column is only dashes (`- 0 -`): a card's interest-rate
+    table printed under the charges, or a zero summary line. No payment is zero, so it is no row (docs/documents.md "Statement rows
+    from the printed columns")."""
+    values = [token.value[0] for token in reading.amounts.values()] + [token.value[0] for token, _ in reading.extra]
+    return bool(values) and all(value == 0 for value in values) and all(set(token.text) <= set("-–—") for token in reading.text_in)
+
+
 def reject_of(reading, layout):
     """The reason a row that has its date and amounts is rejected, in today's words (FR-16), in today's order: the amount column
     rules, then the date."""
@@ -894,6 +903,11 @@ def scan(page, table, state, layout, begin, hi, readings, headings):
         if index in consumed or index in headings:
             continue
         reading = readings[index]
+        if zero_line(reading):
+            table.zero_lines.append((page.number, page.line_id(index)))
+            page.mark([index])
+            last = None
+            continue
         words = words_of(line)
         kind = balance_kind(words) if len(reading.amounts) == 1 and not reading.extra and only_amount(line) is not None else None
         if (reading.dates or reading.bad_date) and reading.amounts and not (reading.stray and reading.dates):
