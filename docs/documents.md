@@ -636,8 +636,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   added the missing tax and subtotal and the printed signs; then `typed-extraction-v40-statement-fixes`, which stopped an
   example account number in the instruction from being copied and told card statements from bank ones; then
   `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone; then
-  `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years; now
-  `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts), so a receipt read by an earlier version is read again when it is next extracted.
+  `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years; then
+  `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts; now
+  `typed-extraction-v44-two-digit-years`, which reads dates printed with two-digit years), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -667,6 +668,12 @@ and how it counts: [money](money.md#bills-and-their-lines).
 
 Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`, `statement_details`),
 `finance/document_checks.py`, `finance/document_traces.py`, `core/identifiers.py`.
+
+- **Printed dates.** The model writes dates as YYYY-MM-DD and is told a two-digit year is 20YY (`11/23/26` is
+  2026-11-23). A date it gives back as printed is still recorded when it can be read only one way
+  (`one_way_date`: one part over 12 is the day, a two-digit year is 20YY), so `Payment Due Date: 11/23/26` gives
+  2026-11-23. A date either order could read (`12/05/26`) stays unrecorded, with the issue "… is not an unambiguous ISO
+  date".
 
 - **Pay stubs** keep, for each earning line, its printed hours and rate; the paid-time-off and sick-leave balances;
   each direct-deposit split (account last four digits and amount); and for every pay amount the row label and column

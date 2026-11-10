@@ -441,6 +441,23 @@ def test_a_cards_interest_rate_lines_under_its_charges_are_no_rows_and_no_review
     assert "Page 1: 2 lines printing only zero amounts (an interest-rate table, say) were not recorded." in recorded.notes()
 
 
+def test_a_due_date_the_reading_gives_as_printed_with_a_two_digit_year_is_recorded(env, local_model, monkeypatch):
+    """`Payment Due Date: 11/23/26` given back as printed: a day over 12 says which part is the month, and a two-digit year is
+    20YY, so it is 2026-11-23 (docs/documents.md "Pay stub and statement fields"). A date either order could read stays unrecorded."""
+    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE, "Payment Due Date: 11/23/26", "Late fee after 12/05/26"))
+    for printed, expected in (("11/23/26", "2026-11-23"), ("12/05/26", None)):
+        base = replies("CS")
+
+        def make(lines, printed=printed, base=base):
+            answer = base(lines)
+            needle = "Payment Due Date" if printed == "11/23/26" else "Late fee after"
+            answer["CreditCardStatementSummary"][0]["due_date"] = cited(lines, printed, needle, printed)
+            return answer
+        recorded, _ = recorded_fixture(env, local_model, "CS", file=f"CS-due-{expected}")
+        record_ = recorded.run(make)
+        assert record_["due_date"] == expected, printed
+
+
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
     recorded, record_ = record(env, local_model, "NB")
     exact(recorded, [(row[4], row[5], row[1]) for row in tf.NB_ROWS])
