@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -28,6 +30,7 @@ from test_statement_accounts import statement
 from test_table_engine import no_network  # noqa: F401  (the autouse C-net guard)
 
 SPLIT_STEP = 80
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "document_splits.py"
 MIGRATION = next(path for number, path in storage.MIGRATIONS if number == SPLIT_STEP)  # 080_split_merged_documents.sql
 CSV = b"Date,Description,Amount\n2026-09-04,SYNTH BAKERY,-6.25\n2026-09-05,SYNTH PAYROLL,2000.00\n"
 
@@ -596,6 +599,56 @@ def test_sc11_version_missing_filing_history_keeps_the_version(tmp_path):
     check_split(merged)
     with open_db(merged.root) as db:
         assert [row[0] for row in db.execute("SELECT hash FROM versions WHERE occurrence_id=1 ORDER BY captured_at")] == [sha(A), sha(B)]
+
+
+def test_sc11_count_the_diagnostic_counts_the_version_left_without_history(tmp_path):
+    plan = {"files": [entry(A, T1, T2, no_history=True), entry(B, T3, None)]}
+    merged = merged_library(tmp_path, plan)
+    assert report(merged.root)[3] == "left as a version, history incomplete: 1"
+    with reopened(merged.root):
+        pass
+    assert report(merged.root) == ["would split: 0 documents", "split: 0 documents", "versions moved: 0", "left as a version, history incomplete: 1"]
+
+
+# --- SC-10: the diagnostic reports counts only ---------------------------------------------------------------------------------------
+
+REPORT_LINE = re.compile(r"^[a-z ,:()]+: \d+( documents?)?$")
+
+
+def report(root):
+    """`python scripts/document_splits.py <database>`: the four lines it prints, after checking it exited 0 and held to the contract's shape."""
+    done = subprocess.run([sys.executable, str(SCRIPT), str(root / "inventory.sqlite3")], capture_output=True, text=True, check=False)
+    assert done.returncode == 0 and done.stderr == ""
+    lines = done.stdout.splitlines()
+    assert len(lines) == 4 and all(REPORT_LINE.match(line) for line in lines)
+    return lines
+
+
+def test_sc10_the_diagnostic_reports_counts_only_before_and_after_the_upgrade(tmp_path):
+    merged = merged_library(tmp_path, standard(name="zz-unique-name.pdf"))
+    database = merged.root / "inventory.sqlite3"
+    stamp, content = database.stat().st_mtime_ns, database.read_bytes()
+    before = report(merged.root)
+    assert before == ["would split: 1 document", "split: 0 documents", "versions moved: 2", "left as a version, history incomplete: 0"]
+    assert database.stat().st_mtime_ns == stamp and database.read_bytes() == content  # Opened read-only: not a byte changed.
+    with reopened(merged.root):
+        pass
+    after_content = (merged.root / "inventory.sqlite3").read_bytes()
+    after = report(merged.root)
+    assert after == ["would split: 0 documents", "split: 1 document", "versions moved: 2", "left as a version, history incomplete: 0"]
+    assert (merged.root / "inventory.sqlite3").read_bytes() == after_content
+    with open_db(merged.root) as db:
+        secrets = {"zz-unique-name", "SYNTH", "Bank", "Supported metadata", "2026"}
+        secrets |= {row[0] for row in db.execute("SELECT relative_path FROM managed_files")} | {row[0] for row in db.execute("SELECT path_key FROM occurrences")}
+    for text in ("\n".join(before), "\n".join(after)):
+        assert not any(secret in text for secret in secrets | set(merged.hashes))
+        assert not re.search(r"[0-9a-f]{16}", text)
+
+
+def test_sc10_the_diagnostic_prints_all_four_lines_for_a_library_that_never_merged(tmp_path):
+    with reopened(tmp_path / "managed"):
+        pass
+    assert report(tmp_path / "managed") == ["would split: 0 documents", "split: 0 documents", "versions moved: 0", "left as a version, history incomplete: 0"]
 
 
 # --- SC-12: a merged-in version whose bytes exist elsewhere ---------------------------------------------------------------------------
