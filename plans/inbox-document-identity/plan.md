@@ -82,9 +82,13 @@ built from the one before:
    - `recurring_obligations`, from its receipt;
    - `receipt_batch_items`, through `parse_runs.blob_hash`. Its `run_id` references `parse_runs(id)`
      (`050_strict_tables.sql` `receipt_batch_items_new`), so "its run's version" (contract) is that parse run's hash;
-   - `occurrence_links`: a link naming the merged document goes to the piece whose versions include the other
-     document's `current_hash` (contract). Insert the re-pointed pair with `min()`/`max()` and `OR IGNORE`, then delete
-     the old row. A pair naming one document twice is deleted (R1 as the contract states it).
+   - `occurrence_links`: a `same_bytes` link naming a merged document goes to the pair of documents, one from each
+     side's pieces (a side that wasn't split is its own only piece), that hold a version with the same hash. Of several
+     such pairs, the one whose shared version was captured latest on either side, then the lowest ids; with none, the
+     link is deleted (amended after code review round 1, finding 2: both sides may have split and moved on from the
+     file they shared, so the other side's `current_hash` alone can miss it). Insert the re-pointed pair with
+     `min()`/`max()` and `OR IGNORE`, then delete the old row. A pair naming one document twice is deleted (R1 as the
+     contract states it).
    - `document_descriptions` and `document_group_pages` are left alone.
 6. **Inbox paths.** Let `base` be the merged row's stored `path_key` up to its first `|`, or all of it when there is
    none. The key is never recomputed from `relative_path`. Since `3466ebb` a merged document may already have been

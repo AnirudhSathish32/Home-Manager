@@ -75,3 +75,26 @@ final_verification:
       exit_code: 1
       result: "2 errors, both pre-existing (tests/test_document_v2_browser.py _newer_reading I001, tests/test_receipt_kinds.py:977)"
   verdict: "no new failures"
+code_review:
+  - round: 1
+    head: e322aa6
+    reviewer: codex/gpt-6.1-sol (model-family independence)
+    task: inbox-document-identity-review-code-r1
+    risk: HIGH
+    findings:
+      - id: CR1-1
+        severity: MAJOR
+        summary: "storage.publish releases an organized Inbox path before the stale-capture check, so recovering an older staged capture makes a new document"
+        disposition: "confirmed by reading storage.py publish (release before the job-chronology check); fix in SL-05"
+      - id: CR1-2
+        severity: MAJOR
+        summary: "080 split_links matches only the other side's current_hash; when both sides split and moved on, the link stays on pieces sharing no file"
+        disposition: "confirmed by reading 080 lines 116-130; plan rule amended with the user's choice 'Match any shared file (Recommended)', plan re-approved; fix in SL-05"
+      - id: CR1-3
+        severity: MINOR
+        summary: "re-dropping earlier bytes after the bare-key holder is purged makes a duplicate document; the released lookup only runs when an organized holder exists"
+        disposition: "confirmed by reading; fix in SL-05"
+      - id: CR1-4
+        severity: MINOR
+        summary: "document_splits.from_document_id is a foreign key, so emptying Trash of the original deletes a restored piece's split row and retag_ids never renames it"
+        disposition: "confirmed by reading trash.py FK walk and retag_ids; fix in SL-05 (080 is unreleased, so its table can change)"
