@@ -74,6 +74,18 @@ slices:
     verification:
       - ".venv/bin/python -m pytest tests/test_document_split.py tests/test_managed_library.py tests/test_library.py tests/test_statement_accounts.py tests/test_migrations.py tests/test_capture.py tests/test_trash.py tests/test_receipts.py -> 131 passed, 2 skipped (orchestrator rerun)"
       - "orchestrator read the storage.py and 080 diff 219c55f..81b28ad against the amended plan rule"
+  - id: SL-06
+    status: done
+    start_head: 043aa76
+    end_head: 3e24093
+    commit: cb01afd
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-06-r1
+    notes: fix for code review round 2 (CR2-1); the bare-key trashed-holder case is left open in the handoff
+    verification:
+      - "orchestrator read the storage.py diff 043aa76..cb01afd (deleted_at filter on the released lookup only)"
+      - ".venv/bin/python -m pytest tests/test_managed_library.py tests/test_capture.py tests/test_document_split.py -> 57 passed, 2 skipped (orchestrator rerun)"
 final_verification:
   head: 5010305
   commands:
@@ -110,3 +122,19 @@ code_review:
         severity: MINOR
         summary: "document_splits.from_document_id is a foreign key, so emptying Trash of the original deletes a restored piece's split row and retag_ids never renames it"
         disposition: "confirmed by reading trash.py FK walk and retag_ids; fix in SL-05 (080 is unreleased, so its table can change)"
+  - round: 2
+    head: 043aa76
+    reviewer: codex/gpt-6.1-sol (model-family independence)
+    task: inbox-document-identity-review-code-r2
+    risk: HIGH
+    prior: "CR1-1, CR1-2, CR1-3, CR1-4 resolved"
+    findings:
+      - id: CR2-1
+        severity: MAJOR
+        summary: "the released lookup in Store.publish matches trashed occurrences, so a re-drop can reclaim a trashed document and leave nothing visible"
+        disposition: "confirmed by reading storage.py (no deleted_at filter); fix in SL-06"
+      - id: CR2-2
+        severity: INFO
+        summary: "the split_link_pairs tie-break orders by the link's own side, then the other side, not by the canonical pair"
+        disposition: "accepted: deterministic, documented in handoffs/slice-SL-05.md; ties need two equally recent shared captures, so no change"
+
