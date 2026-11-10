@@ -110,7 +110,21 @@ baseline_failures:
   - "FAILED tests/test_traces.py::test_the_engines_own_steps_trace_down_to_the_return_inputs_and_the_law"
   - "FAILED tests/test_traces.py::test_the_return_and_tax_zen_trace_to_the_engines_lines_and_the_records"
 slices:
-  - {id: SL-01, status: todo}
+  - id: SL-01
+    status: done
+    start_head: 5a7dd8b
+    end_head: cc1d80d
+    commit: cc1d80d
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_engine.py -q -> 153 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py tests/test_table_engine.py -q -> 498 passed (orchestrator rerun)"
+      - "git diff --stat 5a7dd8b cc1d80d -> only charge_tables.py, tests/bill_engine_fixtures.py, tests/test_bill_engine.py"
+    notes: >-
+      KEY_LABELS/key_kind live in charge_tables (not bill_split) to avoid an import cycle. Model stubs are plain data
+      (evidence line ids come in SL-03); PNG builders and the generator fixtures were not built and fall to the slices
+      that first need them (SL-03 scanned regression, SL-06, SL-09). EXP_* and stubs are first exercised in SL-03.
   - {id: SL-02, status: todo}
   - {id: SL-03, status: todo}
   - {id: SL-04, status: todo}
