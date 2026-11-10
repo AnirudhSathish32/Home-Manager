@@ -1,14 +1,22 @@
 """The document page, redesigned (document_v2.js; design-system/home-manager/pages/document.md), on synthetic read
 and recorded documents (tests/seed_documents.py): its states, Find, Correct with its preview and Undo, the decision in
 view, the URL, Esc, every width, and its figures against their traces and the record."""
+from contextlib import contextmanager
 from datetime import date, timedelta
 import json
 import re
+import socket
+import threading
+import time
 from urllib.parse import quote
 
 import pytest
+import uvicorn
 
+from home_manager.app.api import create_app
+from home_manager.library.scanner import ScanLimits
 from seed_documents import document_server
+from test_document_split import merged_library, open_db, reopened, standard
 from test_ui_parity import browser_test, check_figures
 
 TOKEN = "document-v2-test"
@@ -447,5 +455,73 @@ def test_document_page_opens_the_recorded_reading_when_a_later_one_is_not_record
         page.locator("#doc2-tab-record").click()
         expect(page.locator("#doc2-panel-record")).to_contain_text("Nothing is recorded from this document yet.")
         expect(page.locator("#doc2-next").get_by_role("button", name="Record it")).to_be_visible()
+        assert failures == [], failures
+        browser.close()
+
+
+BANNER = "You're viewing an earlier preserved version of this document"
+
+
+@contextmanager
+def split_server(tmp_path, token):
+    """The app on a free port over a library that was merged under one Inbox name and then upgraded (migration 080;
+    tests/test_document_split.py). Yields (base, merged, owner): the fixture's expectations and each file's document id."""
+    merged = merged_library(tmp_path, standard())
+    with reopened(merged.root):  # The upgrade.
+        pass
+    with open_db(merged.root) as db:
+        owner = [db.execute("SELECT occurrence_id FROM versions WHERE hash=?", (digest,)).fetchone()[0] for digest in merged.hashes]
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_app(tmp_path / "control", token, port, ScanLimits(stability_seconds=0))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(.05)
+        assert server.started
+        app.state.manager.configure(str(merged.root))
+        yield f"http://127.0.0.1:{port}", merged, owner
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+@browser_test
+def test_split_documents_open_without_an_earlier_version_banner(tmp_path):
+    """After the upgrade that splits documents merged under one Inbox name (specs/inbox-document-identity SC-05 step 8): B's
+    document opens B's record, and a statement row's evidence version opens A, neither with the earlier-version banner."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with split_server(tmp_path, TOKEN) as (base, merged, owner), playwright.sync_playwright() as driver:
+        a, b, _ = owner
+        assert a != b
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1366, "height": 768})
+        failures = []
+        page.on("pageerror", lambda error: failures.append(str(error)))
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+
+        open_document(page, base, b)
+        expect(page.locator("#doc2-title")).to_have_text("Paystub 09/15/2026")  # B's record (fixture: SYNTH PAYROLL CO, 2026-09-15).
+        expect(page.locator("#doc2-version-banner")).not_to_contain_text(BANNER)
+        expect(page.locator("#doc2-panel")).to_contain_text(merged.hashes[1][:12])
+        assert page.locator("#doc2-version-banner").inner_text().strip() == ""
+
+        # The statement row's evidence, as the transaction page links it: the document and the version that read the row.
+        row = merged.records[0]["transactions"][0]
+        evidence = page.request.get(f"{base}/api/finance/records/transaction/{row}", headers=headers).json()["evidence"]
+        assert {(item["document_id"], item["blob_hash"]) for item in evidence} == {(a, merged.hashes[0])}
+        open_document(page, base, evidence[0]["document_id"], f"?version={evidence[0]['blob_hash']}")
+        expect(page.locator("#doc2-title")).to_contain_text("SYNTH BANK")  # A's statement.
+        expect(page.locator("#doc2-version-banner")).not_to_contain_text(BANNER)
+        expect(page.locator("#doc2-panel")).to_contain_text(merged.hashes[0][:12])
+        assert page.locator("#doc2-version-banner").inner_text().strip() == ""
         assert failures == [], failures
         browser.close()

@@ -75,12 +75,11 @@ and link here for what isn't. When an item is built, remove it from this list an
   page writes its rows straight to the account ([documents](documents.md#transaction-imports)), and can create the
   account. Wanted: the rows join the document's own record as a table you check, and count when you confirm the
   document. Needs a spec (it changes the import's write path and the statement record).
-- **Split the documents already merged under one Inbox name** (user report, 2026-11-09 and 2026-11-10;
-  `specs/inbox-document-identity` FR-06 – FR-09). New captures no longer merge
-  ([documents](documents.md#the-managed-library)), but a document merged before that still holds each later file as a
-  version: its page opens the newest, and an earlier statement shows as "a previous version". Records are kept per
-  file content (`blob_hash`), so nothing is lost. Next: the spec's test design and plan for the one-time repair that
-  moves each merged-in version, with its readings, records and history, to a document of its own.
+- **A watched folder's file overwritten in place is still a new version** (`specs/inbox-document-identity` OD-2, out
+  of scope). A watched folder's file is copied, never moved, so a re-download that overwrites `statement.pdf` in
+  Downloads becomes the next version of that document, as it did for the Inbox before
+  ([documents](documents.md#watched-folders)). Wanted, if it matters: a watched-folder change is a new document when
+  the earlier version has a record.
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
 - **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
   `plans/statement-accounts/plan.md`): built, with its screens ([money](money.md#new-statements-wait-for-you),

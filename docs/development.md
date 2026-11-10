@@ -25,7 +25,7 @@ directly (`from ..core.money import format_minor`). `__main__.py` is the launche
 Outside `src/`:
 - `tests/`: flat pytest modules, synthetic data only;
 - `evals/`: the eval suite ([evals](evals.md));
-- `scripts/`: `db_checks.py`, `statement_records.py` (below), `loopback_stress.py`, `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
+- `scripts/`: `db_checks.py`, `statement_records.py` and `document_splits.py` (below), `loopback_stress.py`, `taxcalc_map_skeleton.py` (Engine 2's worksheet map upkeep,
   [taxes](taxes.md#the-engines-worksheets)) and `test_instance.py` (the agent test instance, below);
 - `docs/`.
 
@@ -468,12 +468,13 @@ migration that first created it.
 |---|---|---|---|
 | 073 | `statement_accounts` | | `accounts.origin` (`user`, `record`, `family`; default `user`). It says who made the account; whether a `record` account is confirmed is derived (`ledger.CONFIRMED`: an import record, a statement you reviewed or one reconciled), never stored. The upgrade sets `record` for accounts holding a statement or extracted rows, or that an extraction run published a statement into, and `family` for those a family delivery's statement is in; it then removes a `record` account with no statement, transaction or import record (with its category and tax rules, and unlinks its recurring payments and investment link). Rewrites no stored decision. The part after `-- sort:` is idempotent ([money](money.md#new-statements-wait-for-you)) |
 
-**Account names and reading links (078 – 079)**
+**Account names, reading links and split documents (078 – 080)**
 
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
 | 078 | `account_type_words` | | Renames a card account's generated name "<institution> Credit card[ <last four>]" (074's form) to "… Credit Card …"; names the user chose stay ([money](money.md#money-pages)) |
 | 079 | `one_reading_link` | | Keeps one `financial_evidence_links` row per record and file among the reading links (`extraction:…`): the newest. Import, correction and family links stay ([money](money.md#reading-a-statement-or-receipt-again)) |
+| 080 | `split_merged_documents` | `document_splits` | Splits each document that holds files merged under one Inbox name before capture changed: the earliest file keeps the document id, every later merged-in version becomes a document of its own, and the readings, records, history, folder choices, imports and `occurrence_links` follow their file. Trash is kept on every piece. Records `document_splits` (`document_id`, `from_document_id`, `versions`); the next start renames the Library copies to their own ids (`ManagedLibrary.retag_ids`). One step, so a failure leaves the library as it was ([documents](documents.md#the-managed-library)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture
@@ -504,6 +505,15 @@ readings' issues and notes as patterns with the document's quotes, dates, amount
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\statement_records.py "<library>\inventory.sqlite3"
+```
+
+`scripts/document_splits.py` is read-only in the same way and prints four lines of counts, nothing else: the documents
+that hold merged-in files and would be split, the documents already split, the versions moved, and the versions left
+as a version because their filing history is missing. It shows no names, paths or hashes. Run it before the upgrade and
+after it:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\document_splits.py "<library>\inventory.sqlite3"
 ```
 
 The database audit of 2026-09-30 found and fixed four problems:

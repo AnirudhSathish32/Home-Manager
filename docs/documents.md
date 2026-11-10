@@ -65,8 +65,24 @@ blobs and settings live is in [operations](operations.md#where-things-live).
     next version: banks name every download alike (`document.pdf`). The filed document gives up the Inbox path it no
     longer holds (`Store.publish`, `RELEASED_PATH`). The same bytes as one of those filed documents dropped again are
     that document, unchanged, and their Inbox copy is consumed. A family delivery follows the same rule
-    (specs/inbox-document-identity FR-01 – FR-05). Documents merged before this are still one document with several
-    versions until the repair is built ([open work](open-work.md)).
+    (specs/inbox-document-identity FR-01 – FR-05).
+  - **Only an edit to a file still in the Inbox is a version.** A file filed or archived out of the Inbox never gets
+    a next version under its old name; a different file under that name is a new document.
+- **Documents merged before that are split once, by an upgrade (migration 080).** Before capture changed, each
+  download called `document.pdf` became the next version of the first one. The upgrade gives every merged-in file a
+  document of its own; edits made in the Inbox before filing stay versions of their document.
+  - **The earliest file keeps the document id**, so links and bookmarks to the old id still open it.
+  - **Every record follows its file**: the reading, statement, receipt or pay stub record, rows and their evidence,
+    filings, folder choices, history and duplicate links move with the version they were made from. Nothing is
+    deleted, and blobs and Library files keep their bytes.
+  - **Trash is kept on every piece.** A merged document in Trash leaves each split document in Trash.
+  - **A failed upgrade leaves the library as it was**, with a recovery message. Opening the library again after it
+    has been upgraded changes nothing.
+  - **The Library copies are renamed to their own id.** A copy named `…__d<n>` keeps `n` from the merged document,
+    so on the next start each split copy is renamed to its own document id, durably like any move. The rename never
+    overwrites: a file already at the new name blocks it and both stay.
+  - To see what an upgrade would split or did, run `scripts/document_splits.py`
+    ([development](development.md#database-checks)).
 - **Durable organization.** Every move records an intent first (version hash, source path, target, action, reason).
   - On Windows, a non-overwriting rename is used for existing managed files.
   - New copies are staged, flushed, hash-verified and published atomically.
