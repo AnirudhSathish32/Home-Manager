@@ -125,7 +125,23 @@ slices:
       KEY_LABELS/key_kind live in charge_tables (not bill_split) to avoid an import cycle. Model stubs are plain data
       (evidence line ids come in SL-03); PNG builders and the generator fixtures were not built and fall to the slices
       that first need them (SL-03 scanned regression, SL-06, SL-09). EXP_* and stubs are first exercised in SL-03.
-  - {id: SL-02, status: todo}
+  - id: SL-02
+    status: done
+    start_head: 6218ae8
+    end_head: 4782414
+    commit: 4782414
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_engine.py -q -> 233 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_paystub_engine.py tests/test_table_engine.py -q -> 498 passed (orchestrator rerun)"
+      - "git diff --stat 6218ae8 4782414 -> finance/bill_tables.py, tests/bill_engine_fixtures.py, tests/test_bill_engine.py"
+    notes: >-
+      Orchestrator confirmed the worker's reading: several amount columns, no sum holding and every heading an "other"
+      word gives no charge column, so the table is an other table (plan P4 (c), (d) and "a table with no charge column").
+      BillTables.line_pages is a set and lines_of maps layout ids to evidence ids (pay stub shape); BillTables.pages added.
+      Only charge_column guesses are made here; unclassified_row, amount_due and split_changed are for Record (SL-03/04/06).
+      Sum targets use summary anchors on the table's own pages; SL-06 must scope them per bill for BL-MULTI.
   - {id: SL-03, status: todo}
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
