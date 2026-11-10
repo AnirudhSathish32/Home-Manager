@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v45-printed-labels"
+EXTRACTION_VERSION = "typed-extraction-v46-rates-and-codes"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1045,13 +1045,21 @@ def balance_taken(row, magnitude, line_text, currency):
         return False
 
 
+def money_printed(text):
+    """Whether the text prints an amount of money: a number with a decimal point or a thousands comma, not joined to letters and
+    not a rate (`19.99%`). A bare
+    integer is a code, a count or a page number on a statement (`Page 1 of 2`, a mailing barcode's `454`)."""
+    return any(("." in match.group(0) or "," in match.group(0)) and not text[match.start() - 1:match.start()].isalpha()
+               and not (text[match.end():match.end() + 1].isalpha() or text[match.end():match.end() + 1] == "%") for match in NUMBER.finditer(text))
+
+
 def missed_statement_lines(lines, rows, header):
-    """The lines that look like a transaction row (a date anywhere in the line, and an amount in the rest of it) and that no transaction and no
-    summary field cites: rows the model skipped."""
+    """The lines that look like a transaction row (a date, and an amount of money once every date is taken out) and that no
+    transaction and no summary field cites: rows the model skipped. A period line (`09/27/26 - 10/26/26`) prints only dates."""
     cited = {cite.line_id for row in rows for cite in row.evidence}
     cited.update(cite.line_id for name in type(header).model_fields for item in summary_parts(getattr(header, name)) for cite in item.evidence)
     return [line for line in lines if line.id not in cited and not BALANCE_LINE.search(line.text)
-            and any(line_amounts(line.text[:date.start()] + " " + line.text[date.end():]) for date in ANY_DATE.finditer(line.text))]
+            and ANY_DATE.search(line.text) and money_printed(ANY_DATE.sub(" ", line.text))]
 
 
 COLUMN_WORDS =re.compile(r"\b(?:(?P<current>current|this\s+(?:pay\s+)?period)|(?P<ytd>ytd|year[ -]?to[ -]?date)|(?P<hours>hours?|hrs)|(?P<rate>rate))\b",
@@ -2572,7 +2580,13 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
                 if start and end and not start - timedelta(days=7) <= date.fromisoformat(posted) <= end + timedelta(days=7):
                     issues.append(f"Page {page} row {row['locator']['row']} is dated outside the statement period.")
                 found.append((page, {**row, "description": " ".join(row["description"].split())}))
+        rates = {id(row) for row in rows if (row.amount or "").strip().endswith("%")}
+        if rates:  # An APR line the reading took for a row (a card's interest charge calculation): a rate is never a payment.
+            record_notes.append(f"{len(rates)} line{'s' if len(rates) > 1 else ''} the reading listed with a percentage for an amount "
+                                f"(interest rates) {'were' if len(rates) > 1 else 'was'} not recorded.")
         for index, row in enumerate(rows, 1):
+            if id(row) in rates:
+                continue
             posted = iso_date(row.posted_date) or iso_date(row.transaction_date)
             page = next((line_page(cite.line_id) for cite in row.evidence if line_page(cite.line_id) in rebuilt), None)
             if page is not None:  # FR-20: the model's row on a rebuilt page decides nothing; it only matches a rebuilt row or becomes a note.

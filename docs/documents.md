@@ -639,8 +639,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone; then
   `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years; then
   `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts; then
-  `typed-extraction-v44-two-digit-years`, which reads dates printed with two-digit years; now
-  `typed-extraction-v45-printed-labels`, which reads a card's minimum payment and due date from their labels), so a receipt read by an earlier version is read again when it is next extracted.
+  `typed-extraction-v44-two-digit-years`, which reads dates printed with two-digit years; then
+  `typed-extraction-v45-printed-labels`, which reads a card's minimum payment and due date from their labels; now
+  `typed-extraction-v46-rates-and-codes`, which leaves out rate rows and stops flagging period and barcode lines), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -805,6 +806,11 @@ evidence (Extract again on an unchanged reading changes nothing).
   fee or interest summary, a list of checks that repeats main-table rows, and a payment schedule (rows all dated outside
   the period ± 7 days; with no period nothing is a schedule). A section title (`Daily ending balance`) or a balance
   line in a table is a hint, not an exclusion: a table with descriptions whose balances chain is still read.
+- **A rate is never a row.** A row the reading lists with a percentage for its amount (an APR line it took for a payment)
+  is not recorded; one note counts them instead of an issue or note per line.
+- **Lines the reading missed** (`missed_statement_lines`) are dated lines that print money once every date is taken out:
+  a number with a decimal point or a thousands comma, not a rate. A period line (`09/27/26 - 10/26/26`) prints only
+  dates and a mailing barcode only bare codes, so neither is asked about again or listed as missed.
 - **Lines printing only zero amounts are no rows** (`table_engine.zero_line`): a line whose every amount is zero and
   whose other text in an amount column is only dashes, such as a card's interest charge calculation printed under the
   charges (`Purchases 19.99% (v) 10/26/26 - 0 -`). No payment is zero, so such a line is not recorded and gives no review

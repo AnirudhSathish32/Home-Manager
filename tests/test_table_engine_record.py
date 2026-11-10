@@ -434,11 +434,16 @@ def test_a_cards_interest_rate_lines_under_its_charges_are_no_rows_and_no_review
                      (480, [(40, "Cash Advances"), (180, "29.99% (v)"), (260, "-"), (420, "- 0 -", True)])):
         items += tf.row_items(y, cells)
     pages = [{**pages[0], "items": [*items, tf.words_footer("SYNTH REWARDS CARD", 460)]}]
-    recorded, record_ = record(env, local_model, "CS", pages=pages)
+
+    def rates(lines):  # The reading takes each rate line for a row, its APR for the amount (user report).
+        return [row_stub(lines, None, name, rate, "debit", rate) for name, rate in (("Purchases", "19.99%"), ("Cash Advances", "29.99%"))]
+    recorded, record_ = record(env, local_model, "CS", pages=pages, rows=rates)
     exact(recorded, [(row[4], row[5], row[2]) for row in tf.CS_ROWS])
     reconciles(recorded, record_)
     no_row_review(record_)
     assert "Page 1: 2 lines printing only zero amounts (an interest-rate table, say) were not recorded." in recorded.notes()
+    assert "2 lines the reading listed with a percentage for an amount (interest rates) were not recorded." in recorded.notes()
+    assert not any("printed columns don't have" in note for note in recorded.notes())
 
 
 def test_a_due_date_the_reading_gives_as_printed_with_a_two_digit_year_is_recorded(env, local_model, monkeypatch):
@@ -473,6 +478,17 @@ def test_a_label_printing_two_different_values_records_neither(env, local_model,
     monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE, "Minimum Payment Due: $40.00", "Minimum Payment Due: $35.00"))
     _, record_ = record(env, local_model, "CS")
     assert record_["minimum_payment_minor"] is None
+
+
+def test_a_period_line_and_a_mailing_code_line_are_no_missed_rows_but_a_charge_is():
+    """`Opening/Closing Date 09/27/26 - 10/26/26` prints only dates, and a mailing barcode line prints a date and bare codes: neither
+    is a row the reading missed. A dated line printing money still is (docs/documents.md "Statement rows from the printed columns")."""
+    from home_manager.documents.receipt_schema import TextLine
+    texts = ["Opening/Closing Date 09/27/26 - 10/26/26", "0000001 FIS33339 D 454 Y 9 26 26/10/26 Page 1 of 2 06610 MA MA 11106 29910004540",
+             "Purchases 19.99% (v) 10/26/26", "10/07 SYNTH SHOP 84.04", "10/09 SYNTH STORE 1,204"]
+    lines = [TextLine(id=f"page-4-line-{number}", text=text, block_ids=[]) for number, text in enumerate(texts, 1)]
+    header = extraction.HEADER_MODELS["credit_card_statement"].model_validate(sf.fill("credit_card_statement", {}))
+    assert [line.text for line in extraction.missed_statement_lines(lines, [], header)] == texts[3:]
 
 
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
