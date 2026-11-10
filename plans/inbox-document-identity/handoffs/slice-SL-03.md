@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 30a2ccf
-end_head: COMMIT_PLACEHOLDER
-commit: COMMIT_PLACEHOLDER
+end_head: d82a0f4
+commit: d82a0f4
 changed_files:
   - scripts/document_splits.py
   - tests/test_document_split.py
