@@ -21,7 +21,10 @@ let libraryScope = "documents";
 function folderLabel(folder) {
   return folder === "all" ? LIBRARY_SCOPES[libraryScope].all : folder === "trash" ? "Trash" : folder.replaceAll("_", " ");
 }
-function fileName(doc) { return doc.relative_path.split(/[\\/]/).pop(); }
+// The file as the library names it now: the organized copy once it is filed, else the file as it was added (docs/documents.md
+// "Browsing the library"). An Unfiled copy is named Document__<hash>, which says less than the name it came with.
+function shownPath(doc) { return doc.managed_path && doc.folder !== "Unfiled" ? doc.managed_path : doc.relative_path; }
+function fileName(doc) { return shownPath(doc).split(/[\\/]/).pop(); }
 function documentName(doc) { return doc.title || fileName(doc); }
 function documentState(doc) {
   // One summary per document, derived from the per-step statuses (docs/documents.md "Browsing the library").
@@ -110,7 +113,7 @@ function openLibraryAction(docs, action) {
   pendingLibraryAction = {docs, action};
   const count = docs.length, plural = count === 1 ? "document" : `${count} documents`;
   $("library-action-title").textContent = action === "trash" ? `Delete ${count === 1 ? "document" : plural}?` : `Move ${plural}`;
-  $("library-action-document").textContent = count === 1 ? `${documentName(docs[0])} — ${docs[0].relative_path}`
+  $("library-action-document").textContent = count === 1 ? `${documentName(docs[0])} — ${shownPath(docs[0])}`
     : docs.slice(0, 3).map(documentName).join(", ") + (count > 3 ? ` and ${count - 3} more` : "");
   $("library-action-description").textContent = action === "trash" ? "This removes the document from the active library and puts it in Trash. You can restore it. Preserved copies are not deleted from disk, and scanning Inbox again will not restore it automatically." : "Move the Library file to this folder. Its preserved copy stays unchanged. Edited Library files will not be overwritten.";
   $("move-folder-label").hidden = action !== "move";
@@ -159,7 +162,7 @@ async function openImport(doc, {onDone = null, missed = false} = {}) {
   // PDF mode (docs/documents.md "PDFs"): what the user has chosen so far, as the preview request sends it. A choice left
   // empty is the server's default (tables: all, sign: the account type's); ticks are only the rows the user changed.
   importPdf = isPdf(doc) ? {tables: null, sign: null, ticked: new Set(), unticked: new Set(), result: null, sequence: 0, latest: null, matched: false, importing: false, done: false} : null;
-  $("import-document").textContent = doc.relative_path;
+  $("import-document").textContent = shownPath(doc);
   const select = $("import-account"); select.replaceChildren(new Option("New account…", ""));
   const accounts = await api("/api/finance/accounts");
   for (const account of accounts) select.add(new Option(`${account.display_name} · ${account.currency}`, account.id));

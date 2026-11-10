@@ -92,7 +92,7 @@ async function importPicker({onImported = null} = {}) {
       return;
     }
     list.replaceChildren(...exports.map(doc => {
-      const parts = doc.relative_path.split("/"), name = parts.pop();
+      const parts = shownPath(doc).split("/"), name = parts.pop();
       const li = element("li", "", "dated-row money2-import-row"), when = element("span", "", "dated-when"), text = element("div");
       if (doc.first_seen) when.append(dateDisplay(doc.first_seen.slice(0, 10)));
       const where = element("small", "", "muted");

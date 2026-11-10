@@ -500,6 +500,11 @@ one line by line:
   - A receipt item is the same item when it has the same description (ignoring case and punctuation) and the same line
     total. It keeps its identification, write-off tags, household item and your own category. It moves to its position
     in the new reading, so a line the first reading missed can appear above it.
+- **One link per reading of a file.** A record links to the newest reading of each file it comes from; a new reading
+  replaces the record's link to the earlier one (`Ledger.add_evidence`, migration 079 for older libraries). Its
+  evidence lists the file once, by the name the library gives it now (the organized copy once filed
+  in a folder), with an import of the same
+  file as its own "Imported line".
 - **A line no longer found** is removed, along with the app's own proposals about it (matches, open questions).
 - **A line no longer found that you worked on** is kept, and the record waits in Review with a note asking you to
   check it.

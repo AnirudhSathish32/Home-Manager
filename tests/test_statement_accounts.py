@@ -553,6 +553,22 @@ def test_a_statement_document_is_named_by_its_institution_and_last_four(env, loc
     assert env.store.document(recorded.doc["id"])["title"] == f"{institution} {four} - Joint"
 
 
+def test_reading_a_statement_again_leaves_each_row_one_link_to_it_named_as_the_library_names_the_file(env, local_model):
+    """User report: a transaction listed its statement four times, by the name it had in the Inbox."""
+    recorded = recorded_s(env, local_model)
+    recorded.run(s_replies())
+    recorded.run(s_replies(), force=True)
+    recorded.run(s_replies(), force=True)
+    assert env.sql("SELECT record_type,record_id,count(*) FROM financial_evidence_links WHERE source_key LIKE 'extraction:%' "
+                   "GROUP BY record_type,record_id HAVING count(*)>1") == []
+    [(transaction_id, blob_hash)] = env.sql("SELECT t.id,e.blob_hash FROM transactions t JOIN financial_evidence_links e ON e.record_type='transaction' "
+                                            "AND e.record_id=t.id ORDER BY t.id LIMIT 1")
+    [(organized,)] = env.sql("SELECT relative_path FROM managed_files WHERE document_id=? AND blob_hash=?", recorded.doc["id"], blob_hash)
+    [(added,)] = env.sql("SELECT relative_path FROM occurrences WHERE id=?", recorded.doc["id"])
+    assert organized != added
+    assert [item["relative_path"] for item in Ledger(env.store).evidence("transaction", transaction_id)] == [organized]
+
+
 def test_journey_j1_b_a_second_statement_of_a_confirmed_account_keeps_the_automatic_check(env, local_model):
     first = recorded_s(env, local_model)
     first_id = first.run(s_replies())["id"]

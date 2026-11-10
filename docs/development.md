@@ -468,11 +468,12 @@ migration that first created it.
 |---|---|---|---|
 | 073 | `statement_accounts` | | `accounts.origin` (`user`, `record`, `family`; default `user`). It says who made the account; whether a `record` account is confirmed is derived (`ledger.CONFIRMED`: an import record, a statement you reviewed or one reconciled), never stored. The upgrade sets `record` for accounts holding a statement or extracted rows, or that an extraction run published a statement into, and `family` for those a family delivery's statement is in; it then removes a `record` account with no statement, transaction or import record (with its category and tax rules, and unlinks its recurring payments and investment link). Rewrites no stored decision. The part after `-- sort:` is idempotent ([money](money.md#new-statements-wait-for-you)) |
 
-**Account names (078)**
+**Account names and reading links (078 – 079)**
 
 | # | File | Tables added | Columns added / notes |
 |---|---|---|---|
 | 078 | `account_type_words` | | Renames a card account's generated name "<institution> Credit card[ <last four>]" (074's form) to "… Credit Card …"; names the user chose stay ([money](money.md#money-pages)) |
+| 079 | `one_reading_link` | | Keeps one `financial_evidence_links` row per record and file among the reading links (`extraction:…`): the newest. Import, correction and family links stay ([money](money.md#reading-a-statement-or-receipt-again)) |
 
 **Runs and startup recovery.** Tables named `*_runs` record model or lookup work with a status. When a library opens,
 each service's `recover()` marks a run still `queued` or `running` as `interrupted`, and you can retry it. Capture

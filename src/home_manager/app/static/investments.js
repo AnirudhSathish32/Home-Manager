@@ -418,7 +418,7 @@ function cryptoTools(account) {
     if (!details.open || file.options.length) return;
     const found = await Promise.all(["csv", "xlsx"].map(q => api(`/api/documents?limit=200&q=${q}`))).catch(() => []);
     const documents = found.flatMap(page => page.items || []).filter(doc => /\.(csv|xlsx)$/i.test(doc.relative_path));
-    for (const doc of documents) file.add(new Option(doc.relative_path.split("/").pop(), String(doc.id)));
+    for (const doc of documents) file.add(new Option(fileName(doc), String(doc.id)));
     if (!documents.length) form.replaceChildren(element("p", "Add the CSV from Coinbase's transaction history to Receipts & statements first.", "muted small"));
   });
   const save = element("button", "Import", "small"); save.type = "submit";

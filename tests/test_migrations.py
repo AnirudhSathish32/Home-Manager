@@ -258,6 +258,28 @@ def test_065_drops_the_doubled_type_from_generated_account_names_only():
         db.close()
 
 
+def test_079_keeps_one_link_per_file_reading_and_every_other_kind_of_link():
+    """Three readings of file A linked transaction 1 three times: the newest stays. Its link to file B's reading, its import link
+    and transaction 2's own reading link stay."""
+    db = sqlite3.connect(":memory:")
+    try:
+        for number, script in MIGRATIONS:
+            if number < 79:
+                db.executescript(script.read_text())
+        links = [(1, "A", "extraction:r1"), (1, "A", "extraction:r2"), (1, "A", "import:i1"), (1, "A", "extraction:r3"), (1, "B", "extraction:r4"),
+                 (2, "A", "extraction:r1")]
+        for record_id, blob, key in links:
+            db.execute("INSERT INTO financial_evidence_links(record_type,record_id,document_id,blob_hash,source_key,locator_json,created_at) "
+                       "VALUES('transaction',?,1,?,?,'{}','t')", (record_id, blob, key))
+        db.commit()
+        storage.apply_migrations(db, 78)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        assert db.execute("SELECT record_id,blob_hash,source_key FROM financial_evidence_links ORDER BY id").fetchall() == [
+            (1, "A", "import:i1"), (1, "A", "extraction:r3"), (1, "B", "extraction:r4"), (2, "A", "extraction:r1")]
+    finally:
+        db.close()
+
+
 def test_078_capitalizes_every_word_of_the_type_in_generated_account_names_only():
     """"Synth Card Credit card 9999" (074's name) becomes "Synth Card Credit Card 9999"; a chosen name and one that leaves the
     type out stay."""

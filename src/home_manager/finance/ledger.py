@@ -610,14 +610,23 @@ class Ledger:
     # Evidence -----------------------------------------------------------------
 
     def add_evidence(self, db, record_type, record_id, source, locator):
-        """source: document_id, blob_hash, parse_run_id and a source_key naming the run or import."""
+        """source: document_id, blob_hash, parse_run_id and a source_key naming the run or import. A reading's link replaces the
+        record's links from earlier readings of the same file: each re-read added one more, and the record listed the statement
+        once per reading (docs/money.md "Reading a statement or receipt again")."""
+        if source["source_key"].startswith("extraction:"):
+            db.execute("DELETE FROM financial_evidence_links WHERE record_type=? AND record_id=? AND blob_hash=? AND source_key LIKE 'extraction:%' "
+                       "AND source_key<>?", (record_type, record_id, source["blob_hash"], source["source_key"]))
         db.execute("INSERT OR IGNORE INTO financial_evidence_links(record_type,record_id,document_id,blob_hash,parse_run_id,source_key,locator_json,created_at) "
                    "VALUES(?,?,?,?,?,?,?,?)", (record_type, record_id, source["document_id"], source["blob_hash"],
                                                source.get("parse_run_id"), source["source_key"], json.dumps(locator), now()))
 
     def evidence(self, record_type, record_id):
         with self.store.connection() as db:
-            rows = db.execute("SELECT e.*,o.relative_path FROM financial_evidence_links e JOIN occurrences o ON o.id=e.document_id "
+            # The file as it is named in the library now: the organized copy of that version once it is filed (an Unfiled copy's
+            # Document__<hash> name says less), else the file as added.
+            rows = db.execute("SELECT e.*,coalesce((SELECT m.relative_path FROM managed_files m WHERE m.document_id=e.document_id AND m.blob_hash=e.blob_hash "
+                              "AND m.folder<>'Unfiled'),"
+                              "o.relative_path) AS relative_path FROM financial_evidence_links e JOIN occurrences o ON o.id=e.document_id "
                               "WHERE e.record_type=? AND e.record_id=? ORDER BY e.id", (record_type, record_id))
             return [{**dict(row), "locator": json.loads(row["locator_json"])} for row in rows]
 

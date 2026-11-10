@@ -108,7 +108,8 @@ library, not just the visible page.
     [Several receipts in one file](#several-receipts-in-one-file)).
   - A bank or card statement is named by its account: the institution and the account's last four, such as
     "Chase 3456", followed by your own description if you set one. The model's description isn't used.
-- **Row details.** Under the name: the file name, type, the document's own date, amount, and one state such as Not
+- **Row details.** Under the name: the file name (as the library names it now: the organized copy's name once the
+  file is filed in a folder, else the name it was added with; an Unfiled copy's `Document__…` name isn't shown), type, the document's own date, amount, and one state such as Not
   read yet, Needs review or Recorded. Hover the state for per-step detail.
 - **Row actions.** Each row offers one next step (Read, Record, Import transactions or Restore) and a **More actions**
   menu with Versions, Move and Delete. Select rows to read, record, move, delete or combine several at once.
@@ -637,8 +638,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
   example account number in the instruction from being copied and told card statements from bank ones; then
   `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone; then
   `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years; then
-  `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts; now
-  `typed-extraction-v44-two-digit-years`, which reads dates printed with two-digit years), so a receipt read by an earlier version is read again when it is next extracted.
+  `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts; then
+  `typed-extraction-v44-two-digit-years`, which reads dates printed with two-digit years; now
+  `typed-extraction-v45-printed-labels`, which reads a card's minimum payment and due date from their labels), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -674,6 +676,11 @@ Code: `documents/extraction.py` (`PayValue`, `this_period_guards`, `pay_details`
   (`one_way_date`: one part over 12 is the day, a two-digit year is 20YY), so `Payment Due Date: 11/23/26` gives
   2026-11-23. A date either order could read (`12/05/26`) stays unrecorded, with the issue "… is not an unambiguous ISO
   date".
+- **A card's minimum payment and due date from their printed labels.** When the reading leaves either out, the value
+  printed right after `Minimum Payment Due` (or `Minimum Payment`, `Minimum Amount Due`) or `Payment Due Date` is
+  recorded (`printed_value`, `PRINTED_LABELS`), with a note naming its line, and the reading's issue about it goes. Only
+  when the lines print one value after the label: two different ones record neither. A due date either order could read
+  takes the order the statement's rows were read in.
 
 - **Pay stubs** keep, for each earning line, its printed hours and rate; the paid-time-off and sick-leave balances;
   each direct-deposit split (account last four digits and amount); and for every pay amount the row label and column

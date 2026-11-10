@@ -52,7 +52,7 @@ function review2Url() {
 }
 function review2Title(item) {
   const value = item.value;
-  if (item.kind === "group") return `${value.pages.length} images · ${value.pages[0]?.relative_path.split("/").pop() || ""}`;
+  if (item.kind === "group") return `${value.pages.length} images · ${value.pages[0] ? fileName(value.pages[0]) : ""}`;
   if (item.kind === "unmatched") return `${value.name || "Receipt"} · ${describe(value, {named: false})}`;
   if (item.kind === "routing") return `${RECORD_KINDS[value.record_type] || statusLabel(value.record_type)} · ${value.name || "Name not found"}`;
   return reviewTitle(item);
@@ -388,7 +388,7 @@ function review2Parts(item) {
   }
   if (item.kind === "group") {
     const path = `/api/document-groups/${value.id}`, pages = element("ol", "", "group-pages");
-    for (const page of value.pages) pages.append(element("li", page.relative_path.split("/").pop()));
+    for (const page of value.pages) pages.append(element("li", fileName(page)));
     return {what: `Combine ${value.pages.length} images into one document?`, why: value.reason, evidence: [pages],
             source: {chips: value.pages.map((page, index) => ({label: `Page ${index + 1}`, document: page.document_id}))}, document: value.pages[0]?.document_id,
             confirm: {label: "Combine", run: review2Decide(path, {status: "confirmed"}, "Combined. The images are read as one document's pages; progress shows in the sidebar.", {method: "PATCH"})},
