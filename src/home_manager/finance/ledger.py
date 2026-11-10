@@ -622,10 +622,10 @@ class Ledger:
 
     def evidence(self, record_type, record_id):
         with self.store.connection() as db:
-            # The file as it is named in the library now: the organized copy of that version once it is filed (an Unfiled copy's
-            # Document__<hash> name says less), else the file as added.
+            # The file as it is named in the library now: the organized copy of that version once it is filed in a folder (an
+            # Unfiled copy's Document__<hash> name says less, and an Inbox copy isn't renamed), else the file as added.
             rows = db.execute("SELECT e.*,coalesce((SELECT m.relative_path FROM managed_files m WHERE m.document_id=e.document_id AND m.blob_hash=e.blob_hash "
-                              "AND m.folder<>'Unfiled'),"
+                              "AND m.folder NOT IN ('Inbox','Unfiled')),"
                               "o.relative_path) AS relative_path FROM financial_evidence_links e JOIN occurrences o ON o.id=e.document_id "
                               "WHERE e.record_type=? AND e.record_id=? ORDER BY e.id", (record_type, record_id))
             return [{**dict(row), "locator": json.loads(row["locator_json"])} for row in rows]

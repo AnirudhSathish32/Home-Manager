@@ -59,7 +59,14 @@ blobs and settings live is in [operations](operations.md#where-things-live).
   a managed copy can't change the evidence.
   - An edited managed file blocks movement rather than being overwritten. Rescan it through Inbox, or restore the
     expected copy.
-  - A changed Inbox file creates a new captured version, and the earlier bytes stay in the evidence store.
+  - A file that changes while it is still in the Inbox creates a new captured version, and the earlier bytes stay in
+    the evidence store.
+  - **A file dropped in under a name an earlier, already filed file used is a new document**, never that document's
+    next version: banks name every download alike (`document.pdf`). The filed document gives up the Inbox path it no
+    longer holds (`Store.publish`, `RELEASED_PATH`). The same bytes as one of those filed documents dropped again are
+    that document, unchanged, and their Inbox copy is consumed. A family delivery follows the same rule
+    (specs/inbox-document-identity FR-01 – FR-05). Documents merged before this are still one document with several
+    versions until the repair is built ([open work](open-work.md)).
 - **Durable organization.** Every move records an intent first (version hash, source path, target, action, reason).
   - On Windows, a non-overwriting rename is used for existing managed files.
   - New copies are staged, flushed, hash-verified and published atomically.
@@ -109,7 +116,7 @@ library, not just the visible page.
   - A bank or card statement is named by its account: the institution and the account's last four, such as
     "Chase 3456", followed by your own description if you set one. The model's description isn't used.
 - **Row details.** Under the name: the file name (as the library names it now: the organized copy's name once the
-  file is filed in a folder, else the name it was added with; an Unfiled copy's `Document__…` name isn't shown), type, the document's own date, amount, and one state such as Not
+  file is filed in a folder, else the name it was added with; an Unfiled copy's `Document__…` name isn't shown, and a file still in the Inbox keeps its own name), type, the document's own date, amount, and one state such as Not
   read yet, Needs review or Recorded. Hover the state for per-step detail.
 - **Row actions.** Each row offers one next step (Read, Record, Import transactions or Restore) and a **More actions**
   menu with Versions, Move and Delete. Select rows to read, record, move, delete or combine several at once.

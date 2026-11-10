@@ -208,6 +208,10 @@ def digest_file(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+# Marks an Inbox path a filed document gave up (Store.publish): `|` can't be in a Windows file name, and the id keeps it unique.
+RELEASED_PATH = "|released-d"
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = safe_path(root)
@@ -378,9 +382,11 @@ class Store:
             db.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now(), job))
 
     def observe(self, job: str, relative: str, status="present"):
+        """What a scan saw at a path, for the document there. A document whose Inbox copy was filed away no longer holds the path:
+        a file found there now is new until capture says otherwise (publish), so the filed document is left as it is."""
         with self.connection() as db:
             db.execute("UPDATE occurrences SET last_seen=?,last_job=?,source_status=? "
-                       "WHERE source_root=(SELECT source_root FROM jobs WHERE id=?) AND path_key=?",
+                       "WHERE source_root=(SELECT source_root FROM jobs WHERE id=?) AND path_key=? AND source_status<>'organized'",
                        (now(), job, status, job, path_key(relative)))
 
     def prepare(self, capture_id: str, job: str, relative: str, digest: str, size: int, mtime_ns: int):
@@ -412,9 +418,22 @@ class Store:
         with self.connection() as db:
             duplicate = db.execute("SELECT 1 FROM blobs WHERE hash=?", (item["hash"],)).fetchone()
             db.execute("INSERT OR IGNORE INTO blobs VALUES(?,?,?)", (item["hash"], item["size"], stamp))
-            previous = db.execute("SELECT o.id,o.current_hash,j.created_at AS job_created FROM occurrences o "
+            previous = db.execute("SELECT o.id,o.current_hash,o.source_kind,o.source_status,j.created_at AS job_created FROM occurrences o "
                                   "JOIN jobs j ON j.id=o.last_job WHERE o.source_root=? AND o.path_key=?",
                                   (item["source_root"], path_key(item["relative_path"]))).fetchone()
+            if previous and previous["source_kind"] == "inbox" and previous["source_status"] == "organized" and previous["current_hash"] != item["hash"]:
+                # Other bytes under the name of an Inbox file already filed away are another document (banks name every download
+                # alike), never its next version: the filed document gives up the Inbox path it no longer holds. A file changed
+                # while still in the Inbox stays a version, and the same bytes dropped again stay one document (docs/documents.md
+                # "The managed library", specs/inbox-document-identity FR-01 – FR-03).
+                db.execute("UPDATE occurrences SET path_key=path_key||?||id WHERE id=?", (RELEASED_PATH, previous["id"]))
+                # These bytes may be an earlier document filed from this name, dropped again: that document, unchanged.
+                released = path_key(item["relative_path"]) + RELEASED_PATH
+                previous = db.execute("SELECT o.id,o.current_hash,o.source_kind,o.source_status,j.created_at AS job_created FROM occurrences o "
+                                      "JOIN jobs j ON j.id=o.last_job WHERE o.source_root=? AND substr(o.path_key,1,?)=? AND o.current_hash=? "
+                                      "ORDER BY o.id LIMIT 1", (item["source_root"], len(released), released, item["hash"])).fetchone()
+                if previous:  # Its file is at the path again, so the path is its own again.
+                    db.execute("UPDATE occurrences SET path_key=? WHERE id=?", (path_key(item["relative_path"]), previous["id"]))
             if previous:
                 occurrence = previous["id"]
                 intent_job_date = db.execute("SELECT created_at FROM jobs WHERE id=?", (item["job_id"],)).fetchone()[0]
@@ -424,9 +443,12 @@ class Store:
                     status = "recovered_version"
                 else:
                     status = "unchanged" if previous["current_hash"] == item["hash"] else "new_version"
-                    db.execute("UPDATE occurrences SET current_hash=?,source_status='present',last_seen=?,"
+                    # A filed document dropped again unchanged is still filed: its Library copy is it (a family delivery has no
+                    # Inbox copy to move, so nothing would mark it again), and the next other file under its name is another document.
+                    kept = "organized" if status == "unchanged" and previous["source_status"] == "organized" else "present"
+                    db.execute("UPDATE occurrences SET current_hash=?,source_status=?,last_seen=?,"
                                "last_job=?,relative_path=? WHERE id=?",
-                               (item["hash"], stamp, item["job_id"], item["relative_path"], occurrence))
+                               (item["hash"], kept, stamp, item["job_id"], item["relative_path"], occurrence))
             else:
                 status = "duplicate" if duplicate else "captured"
                 cursor = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,"

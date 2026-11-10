@@ -143,6 +143,59 @@ def test_changed_inbox_versions_and_readded_identical_file(library):
     assert len(list((store.library.root / "Receipts").iterdir())) == 1
 
 
+def test_a_different_file_under_a_filed_files_inbox_name_is_a_new_document(library):
+    """specs/inbox-document-identity FR-01: banks name every download alike. Once A is filed out of the Inbox, B dropped in as
+    `document.pdf` is a document of its own; A keeps its one version, its file and its page. B dropped again is unchanged."""
+    store, _ = library
+    path = store.library.inbox / "document.csv"
+    path.write_bytes(b"october statement")
+    scan(store)
+    first = store.documents()["items"][0]
+    store.library.organize(first["id"], first["current_hash"], "Bank_Statements", "Supported metadata", merchant="Bank", document_date="2026-10-31")
+    assert not path.exists()
+    path.write_bytes(b"november statement")
+    job = scan(store)
+    assert store.job(job)["counts"] == {"captured": 1}
+    documents = {doc["id"]: doc for doc in store.documents()["items"]}
+    assert len(documents) == 2
+    assert [version["hash"] for version in store.versions(first["id"])] == [first["current_hash"]]
+    assert documents[first["id"]]["folder"] == "Bank_Statements" and documents[first["id"]]["current_hash"] == first["current_hash"]
+    second = next(doc for doc in documents.values() if doc["id"] != first["id"])
+    assert second["version_count"] == 1 and second["current_hash"] == hashlib.sha256(b"november statement").hexdigest()
+    assert store.job(scan(store))["counts"] == {"unchanged": 1}
+
+
+def test_files_reusing_one_inbox_name_stay_their_own_documents_when_dropped_again(library):
+    """A and B both arrive as `document.csv` and are filed: two documents. A dropped again is A, unchanged, and its Inbox copy is
+    consumed; C after it is a third document. No document ever gains another file's bytes as a version."""
+    store, _ = library
+    path = store.library.inbox / "document.csv"
+
+    def drop(data):
+        path.write_bytes(data)
+        counts = store.job(scan(store))["counts"]
+        doc = next(doc for doc in store.documents(limit=100)["items"] if doc["current_hash"] == hashlib.sha256(data).hexdigest())
+        if path.exists():
+            store.library.organize(doc["id"], doc["current_hash"], "Bank_Statements", "Supported metadata", merchant="Bank", document_date="2026-10-31")
+        return doc["id"], counts
+    a, _ = drop(b"october statement")
+    b, _ = drop(b"november statement")
+    again, counts = drop(b"october statement")
+    assert again == a and counts == {"unchanged": 1} and not path.exists()
+    c, counts = drop(b"december statement")
+    assert counts == {"captured": 1} and len({a, b, c}) == 3
+    assert all(len(store.versions(doc)) == 1 for doc in (a, b, c))
+
+
+def test_family_deliveries_under_one_name_are_one_document_each(library):
+    """specs/inbox-document-identity FR-05: X then Y as receipt.png are two documents; X again adds nothing."""
+    store, _ = library
+    first, second, again = (store.import_document("receipt.png", data)[0] for data in (b"\x89PNG x", b"\x89PNG y", b"\x89PNG x"))
+    assert first != second and again == first
+    assert [len(store.versions(doc)) for doc in (first, second)] == [1, 1]
+    assert store.documents(limit=100)["total"] == 2
+
+
 def test_restart_backfills_capture_before_organization_intent(tmp_path, monkeypatch):
     root = tmp_path / "managed"
     store = Store(root)
@@ -376,9 +429,8 @@ def test_category_files_live_in_year_month_folders_and_existing_files_move_there
                        "created_at,updated_at) VALUES(?,?,'bill','2026-08-01','2026-08-20','2026-08-20',4200,'USD','proposed','t','t')",
                        (power["id"], power["current_hash"]))
         name = store.document(power["id"])["managed_path"].split("/")[-1]
-        # An older version filed before this layout existed: its copy sits at the category's top level.
-        inbox_scan(store, {"lunch.png": b"receipt bytes, second version"})
-        assert store.document(lunch["id"])["current_hash"] != lunch["current_hash"]
+        # A copy filed before this layout existed sits at the category's top level. (Dropping another lunch.png now would make a
+        # second document, not a version: specs/inbox-document-identity FR-01.)
         flat = "Housing/" + moved.split("/")[-1]
         store.library.path(moved).rename(store.library.path(flat))
         with store.connection() as db:

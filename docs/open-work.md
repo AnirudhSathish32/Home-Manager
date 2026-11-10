@@ -75,13 +75,12 @@ and link here for what isn't. When an item is built, remove it from this list an
   page writes its rows straight to the account ([documents](documents.md#transaction-imports)), and can create the
   account. Wanted: the rows join the document's own record as a table you check, and count when you confirm the
   document. Needs a spec (it changes the import's write path and the statement record).
-- **A new Inbox file under an earlier file's name is that document's next version** (user report, 2026-11-09;
-  `library/storage.py`, by `UNIQUE(source_root, path_key)`). An Inbox document keeps its Inbox path after it is
-  organized into the Library, so the next unrelated `document.pdf` dropped in becomes its newest version: a statement's
-  rows then point at a document that opens a pay stub or another statement. Records are kept per file content
-  (`blob_hash`), so nothing is lost, and the transaction drawer now opens the version and lines a row was read from.
-  Fix to spec: an organized Inbox document gives up its Inbox path, so a new file there starts a new document, plus a
-  migration that splits the documents already merged this way (a file system and identity change, so gated).
+- **Split the documents already merged under one Inbox name** (user report, 2026-11-09 and 2026-11-10;
+  `specs/inbox-document-identity` FR-06 – FR-09). New captures no longer merge
+  ([documents](documents.md#the-managed-library)), but a document merged before that still holds each later file as a
+  version: its page opens the newest, and an earlier statement shows as "a previous version". Records are kept per
+  file content (`blob_hash`), so nothing is lost. Next: the spec's test design and plan for the one-time repair that
+  moves each merged-in version, with its readings, records and history, to a document of its own.
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
 - **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
   `plans/statement-accounts/plan.md`): built, with its screens ([money](money.md#new-statements-wait-for-you),

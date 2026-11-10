@@ -563,6 +563,7 @@ def test_reading_a_statement_again_leaves_each_row_one_link_to_it_named_as_the_l
                    "GROUP BY record_type,record_id HAVING count(*)>1") == []
     [(transaction_id, blob_hash)] = env.sql("SELECT t.id,e.blob_hash FROM transactions t JOIN financial_evidence_links e ON e.record_type='transaction' "
                                             "AND e.record_id=t.id ORDER BY t.id LIMIT 1")
+    env.store.library.organize(recorded.doc["id"], blob_hash, "Bank_Statements", "Supported metadata", merchant="Synth Bank", document_date="2026-08-31")
     [(organized,)] = env.sql("SELECT relative_path FROM managed_files WHERE document_id=? AND blob_hash=?", recorded.doc["id"], blob_hash)
     [(added,)] = env.sql("SELECT relative_path FROM occurrences WHERE id=?", recorded.doc["id"])
     assert organized != added

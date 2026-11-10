@@ -503,7 +503,7 @@ one line by line:
 - **One link per reading of a file.** A record links to the newest reading of each file it comes from; a new reading
   replaces the record's link to the earlier one (`Ledger.add_evidence`, migration 079 for older libraries). Its
   evidence lists the file once, by the name the library gives it now (the organized copy once filed
-  in a folder), with an import of the same
+  in a folder other than Inbox or Unfiled), with an import of the same
   file as its own "Imported line".
 - **A line no longer found** is removed, along with the app's own proposals about it (matches, open questions).
 - **A line no longer found that you worked on** is kept, and the record waits in Review with a note asking you to

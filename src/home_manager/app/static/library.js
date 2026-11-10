@@ -22,8 +22,9 @@ function folderLabel(folder) {
   return folder === "all" ? LIBRARY_SCOPES[libraryScope].all : folder === "trash" ? "Trash" : folder.replaceAll("_", " ");
 }
 // The file as the library names it now: the organized copy once it is filed, else the file as it was added (docs/documents.md
-// "Browsing the library"). An Unfiled copy is named Document__<hash>, which says less than the name it came with.
-function shownPath(doc) { return doc.managed_path && doc.folder !== "Unfiled" ? doc.managed_path : doc.relative_path; }
+// "Browsing the library"). An Unfiled copy is named Document__<hash>, which says less than the name it came with, and an Inbox
+// copy is the file as added.
+function shownPath(doc) { return doc.managed_path && !["Inbox", "Unfiled"].includes(doc.folder) ? doc.managed_path : doc.relative_path; }
 function fileName(doc) { return shownPath(doc).split(/[\\/]/).pop(); }
 function documentName(doc) { return doc.title || fileName(doc); }
 function documentState(doc) {

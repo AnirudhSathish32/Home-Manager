@@ -79,11 +79,14 @@ def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_mode
         assert client.get("/api/documents?folder=Housing").json()["total"] == 1
         manager.start_receipt_batch(force=True); manager.future.result(timeout=30)
         assert client.get("/api/documents?folder=Housing").json()["total"] == 1  # Manual choice wins.
+        # Other bytes under the filed file's Inbox name are another document, never its next version
+        # (specs/inbox-document-identity FR-01): the document filed in Housing keeps its file, and the new one waits in Inbox.
+        inbox = client.get("/api/documents?folder=Inbox").json()["total"]
         image.write_bytes(original_bytes + b"new version")
         manager.start_inbox(); manager.future.result(timeout=30)
-        assert client.get("/api/documents?folder=Housing").json()["total"] == 0
-        assert client.get("/api/documents?folder=Inbox").json()["total"] == 3  # The new version waits in Inbox.
-        assert client.post(base + "/trash", json={"expected_hash": digest, "confirmed": True}).status_code == 409
+        assert client.get("/api/documents?folder=Housing").json()["total"] == 1
+        assert client.get("/api/documents?folder=Inbox").json()["total"] == inbox + 1
+        assert len(client.get(base + "/versions").json()) == 1
 
 
 def test_bad_classification_keeps_capture_unfiled(tmp_path, local_model):
