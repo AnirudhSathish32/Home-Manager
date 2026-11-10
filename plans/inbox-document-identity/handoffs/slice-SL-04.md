@@ -6,8 +6,8 @@ model: claude-sonnet-5-5
 model_family: anthropic
 helper_subagents: 0
 start_head: 919567e
-end_head: HEAD_PLACEHOLDER   # a following commit changes only this header
-commit: HEAD_PLACEHOLDER
+end_head: 4b06c8c   # a following commit changes only this header
+commit: 4b06c8c
 changed_files:
   - docs/documents.md
   - docs/development.md
