@@ -372,7 +372,8 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
       values.forEach((value, index) => {
         if (!shown(index)) return;
         const balance = index === 3, money = index === 2 || balance;
-        const td = tr.appendChild(element("td", money ? "" : value, money ? "numeric" : ""));
+        const td = tr.appendChild(element("td", money || index === 0 ? "" : value, money ? "numeric" : ""));
+        if (index === 0) td.appendChild(dateNumeric(value));
         // Statement rows carry a direction; a running balance doesn't.
         if (money) td.appendChild(amount(value, {signed: !balance}));
       });

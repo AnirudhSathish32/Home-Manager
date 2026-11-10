@@ -235,6 +235,14 @@ function dateDisplay(iso) {
   return time;
 }
 
+// A row date in a statement's transaction table, as MM/DD/YYYY (docs/ui.md "Money and dates on screen"); the ISO date stays its datetime.
+function dateNumeric(iso) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  const time = document.createElement("time"); time.textContent = match ? `${match[2]}/${match[3]}/${match[1]}` : (iso || "—");
+  if (match) time.dateTime = iso;
+  return time;
+}
+
 // A button that runs onClick once at a time: disabled while it runs, and any error becomes a toast.
 function asyncButton(label, onClick, className = "small") {
   const button = element("button", label, className); button.type = "button";

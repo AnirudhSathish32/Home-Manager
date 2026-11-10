@@ -106,6 +106,8 @@ library, not just the visible page.
     location and date.
   - A file holding several receipts is titled "First merchant + N more" (see
     [Several receipts in one file](#several-receipts-in-one-file)).
+  - A bank or card statement is named by its account: the institution and the account's last four, such as
+    "Chase 3456", followed by your own description if you set one. The model's description isn't used.
 - **Row details.** Under the name: the file name, type, the document's own date, amount, and one state such as Not
   read yet, Needs review or Recorded. Hover the state for per-step detail.
 - **Row actions.** Each row offers one next step (Read, Record, Import transactions or Restore) and a **More actions**
@@ -633,8 +635,9 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
 - **Run reuse.** Tax codes came with `typed-extraction-v33-tax-codes` (later `typed-extraction-v39-receipt-printed-signs`, which
   added the missing tax and subtotal and the printed signs; then `typed-extraction-v40-statement-fixes`, which stopped an
   example account number in the instruction from being copied and told card statements from bank ones; then
-  `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone; now
-  `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years), so a receipt read by an earlier version is read again when it is next extracted.
+  `typed-extraction-v41-closing-date-period`, which dates a statement's rows from its closing date alone; then
+  `typed-extraction-v42-short-year-period`, which reads a period printed with two-digit years; now
+  `typed-extraction-v43-zero-lines`, which leaves out lines printing only zero amounts), so a receipt read by an earlier version is read again when it is next extracted.
 - **Measured** by the `receipt_tax_codes` eval, on synthetic receipts ([evals](evals.md)).
 
 ### Bill kinds
@@ -788,6 +791,10 @@ evidence (Extract again on an unchanged reading changes nothing).
   fee or interest summary, a list of checks that repeats main-table rows, and a payment schedule (rows all dated outside
   the period ± 7 days; with no period nothing is a schedule). A section title (`Daily ending balance`) or a balance
   line in a table is a hint, not an exclusion: a table with descriptions whose balances chain is still read.
+- **Lines printing only zero amounts are no rows** (`table_engine.zero_line`): a line whose every amount is zero and
+  whose other text in an amount column is only dashes, such as a card's interest charge calculation printed under the
+  charges (`Purchases 19.99% (v) 10/26/26 - 0 -`). No payment is zero, so such a line is not recorded and gives no review
+  reason; one note per page counts them ("Page P: N lines printing only zero amounts … were not recorded").
 - **Checks** run on the engine's amounts. The arithmetic check is skipped when a printed line wasn't recorded, so it
   never reports a false mismatch.
 - **If the engine fails** (an exception) the model's rows are used on every page with one issue ("The rows couldn't be

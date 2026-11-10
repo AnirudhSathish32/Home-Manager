@@ -543,6 +543,16 @@ def test_a_statement_recorded_after_its_rows_were_imported_joins_that_account(en
     assert {row[0] for row in env.sql("SELECT statement_id FROM transactions")} == {record["id"]}
 
 
+def test_a_statement_document_is_named_by_its_institution_and_last_four(env, local_model):
+    """User request: the document is "Chase 3456", not the model's description; your own description still follows it."""
+    recorded = recorded_s(env, local_model)
+    recorded.run(s_replies())
+    [(institution, four)] = env.sql("SELECT institution,account_last_four FROM accounts")
+    assert env.store.document(recorded.doc["id"])["title"] == f"{institution} {four}"
+    env.store.set_description(recorded.doc["id"], "Joint")
+    assert env.store.document(recorded.doc["id"])["title"] == f"{institution} {four} - Joint"
+
+
 def test_journey_j1_b_a_second_statement_of_a_confirmed_account_keeps_the_automatic_check(env, local_model):
     first = recorded_s(env, local_model)
     first_id = first.run(s_replies())["id"]

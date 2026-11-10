@@ -560,6 +560,9 @@ class Store:
                 "(SELECT a.institution FROM statements s JOIN accounts a ON a.id=s.account_id WHERE s.blob_hash=o.current_hash AND s.review_status<>'rejected'),"
                 "(SELECT m.canonical_name FROM income_records i JOIN merchants m ON m.id=i.payer_merchant_id WHERE i.blob_hash=o.current_hash AND i.review_status<>'rejected' "
                 "ORDER BY i.segment LIMIT 1)) AS merchant,"
+                # A statement is named by its account: the institution and the last four (docs/documents.md "Browsing the library").
+                "(SELECT trim(a.institution||coalesce(' '||a.account_last_four,'')) FROM statements s JOIN accounts a ON a.id=s.account_id "
+                "WHERE s.blob_hash=o.current_hash AND s.review_status<>'rejected') AS statement_name,"
                 "coalesce(m.folder,(SELECT f.folder FROM document_folders f WHERE f.document_id=o.id AND f.blob_hash=o.current_hash),"
                 "(SELECT r.result_folder FROM organization_runs r WHERE r.document_id=o.id AND r.blob_hash=o.current_hash "
                 "AND r.status='succeeded' ORDER BY r.created_at DESC LIMIT 1),"
@@ -628,9 +631,11 @@ class Store:
                 "THEN NULL ELSE r.model_description END) AS shown_description FROM raw_library r), "
                 "library AS (SELECT r.*,coalesce(a.folder,'Unfiled') AS folder,r.shown_description AS description,"
                 "CASE WHEN r.user_description IS NOT NULL THEN 'user' WHEN r.shown_description IS NOT NULL THEN 'model' END AS description_source,"
-                # A pay stub is titled by its date and a job document by its printed name; your own description follows either.
+                # A pay stub is titled by its date, a job document by its printed name and a statement by its account; your own
+                # description follows any of them.
                 "CASE WHEN r.pay_date IS NOT NULL THEN 'Paystub '||strftime('%m/%d/%Y',r.pay_date)||coalesce(' - '||r.user_description,'') "
                 "WHEN r.job_title IS NOT NULL THEN r.job_title||coalesce(' - '||r.user_description,'') "
+                "WHEN r.statement_name IS NOT NULL THEN r.statement_name||coalesce(' - '||r.user_description,'') "
                 "ELSE nullif(substr(coalesce(' - '||r.merchant||CASE WHEN r.receipt_count>1 THEN ' + '||(r.receipt_count-1)||' more' ELSE '' END,'')||coalesce(' - '||r.location,'')||coalesce(' - '||r.shown_description,''),4),'') END AS title,"
                 "CASE WHEN coalesce(a.folder,'Unfiled')='Unfiled' THEN r.organization_reason END AS unfiled_reason "
                 "FROM described r LEFT JOIN folder_aliases a ON a.old_folder=r.stored_folder) ")
