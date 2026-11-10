@@ -1,0 +1,18 @@
+{
+  "feature": "inbox-document-identity",
+  "spec": {
+    "sha256": "ff52135c2aad27d054d28eed04a1dd55e1d87e45e1e44d05c57e8ac80cdac7e6",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-10T01:42:54-05:00",
+    "approved_via": "agent",
+    "permission": "approve the spec then plan"
+  },
+  "plan": {
+    "sha256": "e8891e87e08e52bf9432ea437dc07832daafd34c472b6567d242325b42898beb",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-10T02:52:45-05:00",
+    "approved_via": "agent",
+    "permission": "ok go ahead and approve the plan the implement the slices",
+    "spec_sha256": "ff52135c2aad27d054d28eed04a1dd55e1d87e45e1e44d05c57e8ac80cdac7e6"
+  }
+}

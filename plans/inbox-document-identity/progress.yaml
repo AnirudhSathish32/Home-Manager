@@ -1,0 +1,12 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: inbox-document-identity
+plan_sha256: e8891e87e08e52bf9432ea437dc07832daafd34c472b6567d242325b42898beb
+slices:
+  - id: SL-01
+    status: todo
+  - id: SL-02
+    status: todo
+  - id: SL-03
+    status: todo
+  - id: SL-04
+    status: todo
