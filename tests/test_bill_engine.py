@@ -2,6 +2,9 @@
 required (SC-101), sections, holder titles, totals and wrapped labels (SC-102 steps 1 and 9), summary anchors and late lines (SC-103), nothing dropped
 silently (SC-104), a page with no charge table (SC-114 step 1), and the plan's own G7 and G14 decisions.
 
+Slice SL-02 (the last sections, `bill_tables`): which column is the charge (SC-105), money off (SC-106), the rate-to-cents rule (SC-110 step 6's unit list),
+the guesses and the adapter Record reads (ids, line ids, wrapped label lines, title line ids) with `for_lines`.
+
 `pcheck_*` say each synthetic fixture has the shape the contract intends when the real reader reads it; the others compare the engine's tables with the facts
 written out by hand in tests/bill_engine_fixtures.py. A failed P-check is a fixture or reader problem, never a reason to change an expected value. No store
 and no model: every test reads a saved reading of a synthetic PDF.
@@ -20,6 +23,8 @@ import pytest
 import bill_engine_fixtures as bf
 from home_manager.documents import charge_tables
 from home_manager.documents.table_engine import PageView
+from home_manager.finance import bill_tables
+from home_manager.finance.paystub_tables import PageMap
 import pdf_import_fixtures as fx
 
 
@@ -493,3 +498,499 @@ def test_a_page_read_without_its_layout_is_not_read(reader):
         page.layout = None
     reading = charge_tables.read(bare)
     assert (reading.tables, reading.other_tables, reading.anchors, reading.unplaced, reading.pages_without_tables) == ([], [], [], [], [])
+
+
+# === SL-02: roles, money off, the rate rule, the guesses and the adapter ====================================================
+
+def bills_of(reader, source):
+    return bill_tables.read(reader(source))
+
+
+def roles_by_edge(reader, source, table=0):
+    """({the contract's column edge (r330, r420 or r520): its role}, how the roles were decided). A column's extent ends up to 1.6 pt short of its edge (a
+    word ending in a letter or a `1`: SL-01 note 10), so each is matched to the nearest edge within 3 pt."""
+    result = reader(source)
+    bills = bill_tables.read(result)
+    edges = {}
+    for edge, role in zip(right_edges(result, bills.reading.tables[table]), bills.roles[table].roles.values()):
+        near = min((bf.USAGE, bf.RATE, bf.CHARGE), key=lambda contract: abs(contract - edge))
+        assert abs(near - edge) <= 3, edge
+        edges[near] = role
+    return edges, bills.roles[table].decided_by
+
+
+def cell_texts(row):
+    return [cell.quote for cell in row.cells]
+
+
+def evidence_texts(result, number=1):
+    return PageMap(result.pages[number - 1]).text
+
+
+def kinds_of(bills):
+    return [guess.kind for guess in bills.guesses]
+
+
+# --- The rate rule (SC-110 step 6's unit list; FR-110, D21, D25) -------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, minor, kept", [
+    ("0.1430", 14, True), ("0.1450", 15, True), ("0.1449", 14, True), ("0.1451", 15, True), ("0.0050", 1, True), ("0.125", 13, True),
+    ("0.1200", 12, False), ("0.1500", 15, False), ("0.12", 12, False), ("13.00", 1300, False), ("0.0049", 0, True), ("1,234.5678", 123457, True)])
+def test_sc110_step6_the_rate_rule_judges_the_value_not_the_printed_digits(text, minor, kept):
+    rate = bill_tables.printed_rate(text, "USD")
+    assert (rate.minor, rate.text) == (minor, text if kept else None)
+
+
+def test_the_rate_rule_keeps_the_text_exactly_as_printed_and_follows_the_currency():
+    assert bill_tables.printed_rate("$0.1430", "USD") == bill_tables.PrintedRate(14, "$0.1430")
+    assert bill_tables.printed_rate("150", "JPY") == bill_tables.PrintedRate(150, None)  # Yen has no minor unit: a whole number is exact.
+    assert bill_tables.printed_rate("0.5", "JPY") == bill_tables.PrintedRate(1, "0.5")  # Half up, not half even (which would give 0).
+    assert bill_tables.printed_rate("1.2345", "KWD") == bill_tables.PrintedRate(1235, "1.2345")  # Three minor digits.
+    assert bill_tables.printed_rate("1.234", "KWD") == bill_tables.PrintedRate(1234, None)
+
+
+def test_the_rate_rule_never_raises_a_precision_issue_and_refuses_only_what_is_no_number():
+    for text in ("0.1430", "0.123456789", "3.14159"):
+        bill_tables.printed_rate(text, "USD")
+    with pytest.raises(ValueError):
+        bill_tables.printed_rate("kWh", "USD")
+
+
+@pytest.mark.parametrize("name, minor, kept", [("BL-UTIL", 14, "0.1430"), ("UTIL-HALF", 15, "0.1450"), ("UTIL-15", 15, None), ("UTIL-125", 13, "0.125")])
+def test_sc110_step6_the_rate_the_engine_reads_from_the_page_gives_the_contracts_minor_units(reader, name, minor, kept):
+    bills = bills_of(reader, name)
+    assert bills.roles[0].decided_by == "product"  # Judged on the printed rate: 140 x 0.1430 = 20.02, 140 x 0.1450 = 20.30, 140 x 0.125 = 17.50.
+    rate = bill_tables.printed_rate(cell_texts(bills.adapted[0].rows[1])[2], "USD")
+    assert (rate.minor, rate.text) == (minor, kept)
+
+
+# --- SC-105: which column is the charge ----------------------------------------------------------------------------------------
+
+def test_sc105_a_columns_shuffled_the_product_rule_finds_charge_quantity_and_rate_wherever_they_sit(reader):
+    roles, decided_by = roles_by_edge(reader, "UTIL-SHUF")
+    assert roles == {bf.USAGE: "charge", bf.RATE: "quantity", bf.CHARGE: "unit_price"} and decided_by == "product"
+    bills = bills_of(reader, "UTIL-SHUF")
+    assert bills.guesses == [] and bills.notes == []
+    # The quantity keeps its unit as printed; the cells are in column order, the charge first.
+    assert [cell_texts(row)[1:] for row in bills.adapted[0].rows] == [["60.00", "500 kWh", "0.1200"], ["20.02", "140 kWh", "0.1430"], ["12.00", "", ""], ["5.53", "", ""]]
+    assert bills.adapted[0].roles == {1: "charge", 2: "quantity", 3: "unit_price"}
+
+
+def test_sc105_b_without_headings_the_roles_and_the_cells_are_the_same_and_no_guess_is_made(reader):
+    shuffled, headless = bills_of(reader, "UTIL-SHUF"), bills_of(reader, "BL-HEADLESS")
+    assert [role.roles for role in shuffled.roles] == [role.roles for role in headless.roles]
+    assert headless.roles[0].decided_by == "product" and headless.guesses == [] and headless.notes == []
+    assert [cell_texts(row)[1:] for row in headless.adapted[0].rows] == [cell_texts(row)[1:] for row in shuffled.adapted[0].rows]
+
+
+@pytest.mark.parametrize("name", ["BL-UTIL", "UTIL-2L", "UTIL-ODD", "UTIL-NOHEAD"])
+def test_sc105_the_heading_wording_never_changes_the_roles(reader, name):
+    roles, decided_by = roles_by_edge(reader, name)
+    assert roles == {bf.USAGE: "quantity", bf.RATE: "unit_price", bf.CHARGE: "charge"} and decided_by == "product"
+
+
+@pytest.mark.parametrize("name", ["UTIL-LASTYEAR", "UTIL-LASTYEAR-C2"])
+def test_sc105_c_a_this_bill_and_last_year_pair_the_sums_choose_this_bill_with_or_without_headings(reader, name):
+    roles, decided_by = roles_by_edge(reader, name)
+    assert roles == {bf.RATE: "charge", bf.CHARGE: "other"} and decided_by == "sum"  # Last Year (r520) is the right-most: the sums, not the position, decide.
+    bills = bills_of(reader, name)
+    assert bills.guesses == [] and bills.notes == []
+    assert [(row.label, cell_texts(row)[1:]) for row in bills.adapted[0].rows][0] == ("Energy Charge", ["80.02", "72.15"])
+
+
+def test_sc105_step4_two_columns_that_both_add_up_and_no_heading_the_right_most_is_the_charge_and_a_guess_says_so(reader):
+    pages = bf.role_pages(rows=[("Service", (420, "10.00"), (520, "10.00")), ("Fee", (420, "5.00"), (520, "5.00"))], summary=[("New Charges", "15.00"), ("Amount Due", "15.00")])
+    bills = bill_tables.read(reader(pages))
+    assert [role.decided_by for role in bills.roles] == ["guess"]
+    assert list(bills.roles[0].roles.values()) == ["other", "charge"]
+    [guess] = bills.guesses
+    assert (guess.kind, guess.page, guess.table_id) == ("charge_column", 1, bills.reading.tables[0].id)
+    assert "right-most" in guess.text and guess.text.startswith("Page 1:") and bills.notes == [guess.text]
+
+
+def test_sc105_step4_with_headings_previous_and_current_the_heading_decides_and_there_is_no_guess(reader):
+    pages = bf.role_pages(heads=[(420, "Previous"), (520, "Current")], rows=[("Service", (420, "10.00"), (520, "10.00")), ("Fee", (420, "5.00"), (520, "5.00"))],
+                          summary=[("New Charges", "15.00"), ("Amount Due", "15.00")])
+    bills = bill_tables.read(reader(pages))
+    assert list(bills.roles[0].roles.values()) == ["other", "charge"] and bills.roles[0].decided_by == "heading" and bills.guesses == []
+    flipped = bf.role_pages(heads=[(420, "This Bill"), (520, "Last Year")], rows=[("Service", (420, "10.00"), (520, "10.00")), ("Fee", (420, "5.00"), (520, "5.00"))],
+                            summary=[("New Charges", "15.00"), ("Amount Due", "15.00")])
+    bills = bill_tables.read(reader(flipped))
+    assert list(bills.roles[0].roles.values()) == ["charge", "other"] and bills.roles[0].decided_by == "heading" and bills.guesses == []  # Not the right-most.
+
+
+def test_sc105_headings_are_the_only_guide_when_the_numbers_decide_nothing(reader):
+    rows = [("Service", (420, "12.00"), (520, "10.00")), ("Fee", (420, "6.00"), (520, "5.00"))]  # Neither column adds up to anything printed.
+    one = bill_tables.read(reader(bf.role_pages(heads=[(420, "Last Year"), (520, "This Bill")], rows=rows)))
+    two = bill_tables.read(reader(bf.role_pages(heads=[(420, "Amount"), (520, "Previous")], rows=rows)))
+    assert (list(one.roles[0].roles.values()), one.roles[0].decided_by, one.guesses) == (["other", "charge"], "heading", [])
+    assert (list(two.roles[0].roles.values()), two.roles[0].decided_by, two.guesses) == (["charge", "other"], "heading", [])
+
+
+def test_sc105_with_nothing_to_decide_the_right_most_is_taken_and_a_guess_of_the_column_kind_is_made(reader):
+    bills = bill_tables.read(reader(bf.role_pages(rows=[("Service", (420, "12.00"), (520, "10.00")), ("Fee", (420, "6.00"), (520, "5.00"))])))
+    assert list(bills.roles[0].roles.values()) == ["other", "charge"] and bills.roles[0].decided_by == "guess"
+    assert kinds_of(bills) == ["charge_column"] and "right-most" in bills.notes[0]
+
+
+def test_sc105_printed_subtotals_that_each_equal_the_rows_they_cover_decide_when_no_summary_amount_does(reader):
+    rows = [("Service", (420, "10.00"), (520, "20.00")), ("Fee", (420, "5.00"), (520, "7.00")), ("Total", (420, "15.00"), (520, "99.00"))]
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows)))
+    assert list(bills.roles[0].roles.values()) == ["charge", "other"] and bills.roles[0].decided_by == "subtotals" and bills.guesses == []
+
+
+def test_sc105_a_credits_row_counts_negative_in_the_sums_so_only_the_right_column_adds_up(reader):
+    rows = [("Service", (420, "10.00"), (520, "10.00")), ("Fee", (420, "5.00"), (520, "5.00")), ("Account Credits",), ("Autopay Discount", (420, "4.00"), (520, "5.00"))]
+    pages = bf.role_pages(rows=rows, summary=[("New Charges", "10.00")])  # `Account Credits` prints no amount: a section title. 10 + 5 - 5 = 10, but 10 + 5 - 4 = 11.
+    bills = bill_tables.read(reader(pages))
+    assert list(bills.roles[0].roles.values()) == ["other", "charge"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
+    assert [row.money_off for row in bills.adapted[0].rows] == [False, False, True]
+
+
+def test_sc105_the_sum_target_is_the_new_charges_else_the_worked_out_value_else_the_amount_due(reader):
+    rows = [("Service", (420, "10.00"), (520, "11.00")), ("Fee", (420, "5.00"), (520, "7.00"))]  # r420 adds up to 15.00, r520 to 18.00.
+    worked_out = bf.role_pages(rows=rows, summary=[("Previous Balance", "100.00"), ("Payments", "-100.00"), ("Total Amount Due", "18.00")])
+    amount_due = bf.role_pages(rows=rows, summary=[("Total Amount Due", "15.00")])
+    new_charges = bf.role_pages(rows=rows, summary=[("Previous Balance", "100.00"), ("New Charges", "15.00"), ("Total Amount Due", "115.00")])
+    for pages, expected in ((worked_out, ["other", "charge"]), (amount_due, ["charge", "other"]), (new_charges, ["charge", "other"])):
+        bills = bill_tables.read(reader(pages))
+        assert (list(bills.roles[0].roles.values()), bills.roles[0].decided_by, bills.guesses) == (expected, "sum", [])
+
+
+def test_sc105_a_late_amount_is_never_a_sum_target(reader):
+    rows = [("Service", (420, "10.00"), (520, "11.00")), ("Fee", (420, "5.00"), (520, "7.00"))]  # r420 adds up to 15.00 (the new charges), r520 to 18.00.
+    late = bf.left(560, "If paid after 10/15/2026, pay") + bf.heading(560, (520, "18.00"))  # Were it a target both columns would add up and the right-most win.
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows, summary=[("New Charges", "15.00")], extra=late)))
+    assert list(bills.roles[0].roles.values()) == ["charge", "other"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
+
+
+def test_sc105_only_summary_amounts_on_the_tables_own_pages_are_sum_targets(reader):
+    rows = [("Service", (420, "10.00"), (520, "11.00")), ("Fee", (420, "5.00"), (520, "7.00"))]
+    pages = [*bf.role_pages(rows=rows), bf.page_of(bf.amounts_at(700, "New Charges", (bf.CHARGE, "15.00")))]  # Page 2 prints a figure that r420 adds up to.
+    bills = bill_tables.read(reader(pages))
+    assert bills.reading.tables[0].pages == [1] and bills.roles[0].decided_by == "guess" and list(bills.roles[0].roles.values()) == ["other", "charge"]
+
+
+def test_sc105_a_quantity_column_of_whole_numbers_and_a_rate_with_the_charge_are_found_by_the_product(reader):
+    rows = [("Widget", (330, "3"), (420, "2.50"), (520, "7.50")), ("Gadget", (330, "2"), (420, "10.00"), (520, "20.00")), ("Fee", (520, "5.00"))]
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows)))
+    assert list(bills.roles[0].roles.values()) == ["quantity", "unit_price", "charge"] and bills.roles[0].decided_by == "product"
+    assert [row.kind for row in bills.reading.tables[0].columns] == ["integer", "amount", "amount"]
+
+
+def test_sc105_of_two_amount_columns_the_one_printing_fewer_decimals_is_the_quantity(reader):
+    rows = [("Bulk", (330, "12.5"), (420, "0.2400"), (520, "3.00")), ("Pack", (330, "10.0"), (420, "0.2500"), (520, "2.50"))]
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows)))
+    assert list(bills.roles[0].roles.values()) == ["quantity", "unit_price", "charge"]
+
+
+def test_sc105_one_row_that_breaks_the_product_means_no_product_roles(reader):
+    rows = [("Widget", (330, "3"), (420, "2.50"), (520, "7.50")), ("Gadget", (330, "2"), (420, "10.00"), (520, "21.00"))]
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows)))
+    assert bills.roles[0].decided_by != "product" and "quantity" not in bills.roles[0].roles.values()
+    assert list(bills.roles[0].roles.values()).count("charge") == 1
+
+
+def test_sc105_one_amount_column_is_the_charge(reader):
+    bills = bills_of(reader, "BL-MULTI")
+    assert [role.decided_by for role in bills.roles] == ["single"] and list(bills.roles[0].roles.values()) == ["charge"]
+
+
+def test_sc105_a_table_whose_headings_name_every_column_as_something_else_is_another_table(reader):
+    rows = [("Jan", (420, "12.00"), (520, "10.00")), ("Feb", (420, "6.00"), (520, "5.00"))]
+    bills = bill_tables.read(reader(bf.role_pages(heads=[(420, "Last Year"), (520, "Prior")], rows=rows)))
+    assert bills.reading.tables == [] and len(bills.reading.other_tables) == 1 and bills.roles == [] and bills.adapted == [] and bills.guesses == []
+    assert bills.reading.pages_without_tables == [1] and bills.reading.unplaced == []
+
+
+def test_sc105_every_charge_table_of_every_contract_fixture_has_exactly_one_charge_column_and_no_guess(reader):
+    for name in NATIVE:
+        bills = bills_of(reader, name)
+        assert bills.guesses == [] and bills.notes == [], name
+        assert len(bills.roles) == len(bills.reading.tables), name
+        for table, roles in zip(bills.reading.tables, bills.roles):
+            assert roles.table_id == table.id and set(roles.roles) == {column.id for column in table.columns}, name
+            assert list(roles.roles.values()).count("charge") == 1 and set(roles.roles.values()) <= set(bill_tables.ROLES), name
+            assert all(column.kind == "amount" for column in table.columns if roles.roles[column.id] == "charge"), name
+        assert bills.pages == {page for table in bills.reading.tables for page in table.pages}, name
+
+
+# --- SC-106: money off -----------------------------------------------------------------------------------------------------
+
+def phone_row(reader, **variant):
+    """BL-PHONE with the Autopay Discount printed as `variant` says: (the bills, its row)."""
+    bills = bill_tables.read(reader(bf.phone_pages(**variant)))
+    return bills, next(row for row in bills.reading.tables[0].rows if row.label == "Autopay Discount")
+
+
+@pytest.mark.parametrize("variant, text, section", [
+    ({}, "-5.00", "Account Credits"), ({"discount": "(5.00)"}, "(5.00)", "Account Credits"), ({"discount": "5.00-"}, "5.00-", "Account Credits"),
+    ({"discount": "5.00 CR"}, "5.00 CR", "Account Credits"), ({"discount": "5.00"}, "5.00", "Account Credits")])
+def test_sc106_step4_a_minus_parentheses_a_trailing_minus_cr_or_an_unsigned_amount_under_credits_is_money_off_of_five(reader, variant, text, section):
+    bills, row = phone_row(reader, **variant)
+    [token] = row.amounts.values()
+    assert token.text == text and row.section == section
+    assert bill_tables.signed(token, row.section) == Decimal("-5.00")
+    assert bill_tables.money_off(row, bills.roles[0]) is True
+    assert [entry.money_off for entry in bills.adapted[0].rows if not entry.total] == [False, False, False, False, True]
+    assert bills.roles[0].decided_by == "sum" and bills.guesses == []  # The signed rows add up to 118.50, the new charges.
+
+
+def test_sc106_the_other_rows_of_the_phone_bill_are_charges(reader):
+    bills, _ = phone_row(reader)
+    assert [bill_tables.money_off(row, bills.roles[0]) for row in bills.reading.tables[0].rows] == [False, False, False, False, True]
+
+
+@pytest.mark.parametrize("title", ["Account Credits", "Discounts", "Adjustment", "Credit", "Your discounts"])
+def test_sc106_an_unsigned_row_under_a_credits_discounts_or_adjustments_section_is_money_off(reader, title):
+    bills, row = phone_row(reader, discount="5.00", credits=title)
+    assert row.section == title and bill_tables.money_off(row, bills.roles[0]) is True
+
+
+@pytest.mark.parametrize("title", ["Account Charges", "Discounted Items", "Creditworthy Services", "Accredited"])
+def test_sc106_other_section_titles_make_an_unsigned_row_a_charge(reader, title):
+    bills, row = phone_row(reader, discount="5.00", credits=title)
+    assert row.section == title and bill_tables.money_off(row, bills.roles[0]) is False
+
+
+def test_sc106_a_signed_row_in_a_credits_section_is_negative_once(reader):
+    bills, row = phone_row(reader, discount="-5.00")
+    assert bill_tables.signed(next(iter(row.amounts.values())), "Credits") == Decimal("-5.00")
+    assert bill_tables.signed(next(iter(row.amounts.values())), None) == Decimal("-5.00")
+
+
+def test_sc106_a_debit_marker_is_a_charge_even_under_credits(reader):
+    token = charge_tables.Token("amount", ["w"], (0, 0, 0, 0), "5.00 DR", (Decimal("5.00"), "debit", None))
+    assert bill_tables.signed(token, "Account Credits") == Decimal("5.00")
+
+
+# --- The adapter (plan P4): ids, line ids, wrapped label lines, title line ids ------------------------------------------------------
+
+def test_p4_the_adapter_makes_one_table_in_the_shape_record_reads_with_a_header_row_and_a_cell_per_column(reader):
+    bills = bills_of(reader, "BL-UTIL")
+    [table] = bills.adapted
+    assert (table.id, table.page, table.pages, table.source) == (bills.reading.tables[0].id, 1, [1], "bill_engine")
+    assert table.roles == {1: "quantity", 2: "unit_price", 3: "charge"}
+    [header] = table.header_rows
+    assert header.id == f"{table.id}-row-0" and [cell.quote for cell in header.cells] == ["", "Usage", "Rate", "Charge"]
+    assert [row.id for row in table.rows] == [f"{table.id}-row-{number}" for number in (1, 2, 3, 4)]
+    assert [cell_texts(row) for row in table.rows] == [["Energy Tier 1", "500 kWh", "0.1200", "60.00"], ["Energy Tier 2", "140 kWh", "0.1430", "20.02"],
+                                                       ["Customer Charge", "", "", "12.00"], ["State Tax", "", "", "5.53"]]
+    for row in table.rows:
+        assert len(row.cells) == 4 and row.total is False and row.page == 1 and row.money_off is False
+        assert [cell.id for cell in row.cells] == [f"{row.id}-cell-{number}" for number in range(4)]
+    assert [(row.section, row.label) for row in table.rows][2:] == [("Electric Charges", "Customer Charge"), ("Taxes and Fees", "State Tax")]
+
+
+def test_p4_every_cell_quotes_the_words_it_cites_and_a_blank_cell_cites_nothing(reader):
+    result = reader("BL-UTIL")
+    bills = bill_tables.read(result)
+    words = PageMap(result.pages[0]).words
+    for row in bills.adapted[0].rows:
+        for cell in row.cells:
+            assert " ".join(words[word_id] for word_id in cell.word_ids) == cell.quote
+            assert (cell.word_ids == []) == (cell.quote == "")
+
+
+def test_p4_a_rows_line_ids_are_evidence_lines_holding_its_words_with_the_label_line_first(reader):
+    result = reader("BL-UTIL")
+    texts = evidence_texts(result)
+    row = bill_tables.read(result).adapted[0].rows[1]
+    assert row.line_id == row.line_ids[0] and set(row.line_ids) <= set(texts)
+    assert texts[row.line_ids[0]].startswith("Energy Tier 2")
+    held = " ".join(texts[line_id] for line_id in row.line_ids)
+    assert all(text in held for text in ("140 kWh", "0.1430", "20.02"))
+    assert not any("Energy Tier 1" in texts[line_id] for line_id in row.line_ids)
+    for cell in row.cells:
+        assert cell.line_id in row.line_ids
+        assert cell.source_line_ids and set(cell.source_line_ids) <= {line.id for line in result.pages[0].layout.lines}
+
+
+def test_p4_a_wrapped_label_lists_both_lines_label_first_and_the_cell_cites_both(reader):
+    result = reader("BL-PHONE")
+    texts = evidence_texts(result)
+    bills = bill_tables.read(result)
+    row = next(row for row in bills.adapted[0].rows if row.label.startswith("International Pack"))
+    assert row.label == "International Pack (Canada and Mexico)"
+    assert len(row.line_ids) == 2 and texts[row.line_ids[0]].startswith("International Pack") and texts[row.line_ids[1]] == "(Canada and Mexico)"
+    assert row.line_id == row.line_ids[0] and cell_texts(row)[0] == row.label and cell_texts(row)[1] == "8.51"
+    assert [text for _, text in row.cells[0].cites] == ["International Pack", "(Canada and Mexico)"]
+    assert [line for line, _ in row.cells[0].cites] == row.line_ids
+
+
+def test_p4_a_label_on_one_line_has_no_separate_cites(reader):
+    row = bills_of(reader, "BL-PHONE").adapted[0].rows[0]
+    assert row.cells[0].cites is None
+
+
+def test_p4_title_line_ids_and_phone_flags_for_the_holder_titles(reader):
+    result = reader("BL-PHONE")
+    texts = evidence_texts(result)
+    rows = bill_tables.read(result).adapted[0].rows
+    assert [(row.label, texts[row.title_line_id] if row.title_line_id else None, row.title_phone) for row in rows] == [
+        ("Unlimited Plan", "Alex 555-201-1111", True), ("Device Payment", "Alex 555-201-1111", True), ("Total for Alex", None, False),
+        ("Basic Plan", "Blair (555) 202-2222", True), ("International Pack (Canada and Mexico)", "Blair (555) 202-2222", True), ("Total for Blair", None, False),
+        ("Autopay Discount", "Account Credits", False)]
+    assert rows[0].title_line_id == rows[1].title_line_id != rows[3].title_line_id
+    assert rows[0].title_line_id not in rows[0].line_ids  # The title line is Record's to add to the evidence (P5), not a line of the row.
+
+
+def test_p4_totals_are_rows_flagged_total_with_their_cell_and_no_money_off(reader):
+    rows = bills_of(reader, "BL-PHONE").adapted[0].rows
+    totals = [row for row in rows if row.total]
+    assert [(row.label, cell_texts(row)[1], row.id.rpartition("-")[2]) for row in totals] == [("Total for Alex", "79.99", "3"), ("Total for Blair", "43.51", "6")]
+    assert not any(row.money_off for row in totals) and all(row.title_line_id is None for row in totals)
+
+
+def test_p4_the_money_off_flag_is_on_the_credit_row_only(reader):
+    assert [row.money_off for row in bills_of(reader, "BL-PHONE").adapted[0].rows] == [False, False, False, False, False, False, True]
+
+
+def test_p4_a_usage_cell_that_forms_no_column_stays_in_the_label_and_the_row_has_one_amount_cell(reader):
+    [table] = bills_of(reader, "BL-RENT").adapted
+    assert [cell_texts(row) for row in table.rows] == [["Rent 10/01/2026 - 10/31/2026", "$1,450.00"], ["Water Usage 08/15/2026 - 09/14/2026 3,200 GAL", "$38.42"]]
+
+
+def test_p4_a_table_over_several_pages_is_one_adapted_table_whose_rows_keep_their_pages(reader):
+    [table] = bills_of(reader, "BL-MULTI").adapted
+    assert table.pages == [1, 2, 3] and [row.page for row in table.rows] == [1, 1, 1, 2, 2, 2, 3, 3, 3]
+    assert [row.id.rpartition("-")[2] for row in table.rows] == [str(number) for number in range(1, 10)]
+    assert all(row.line_id.startswith(f"page-{row.page}-") for row in table.rows)
+
+
+def test_p4_the_header_row_names_the_columns_by_their_heading_words(reader):
+    [table] = bills_of(reader, "UTIL-2L").adapted
+    assert [cell.quote for cell in table.header_rows[0].cells] == ["", "Usage (kWh)", "Rate per kWh", "This Charge"]
+
+
+def test_p4_a_page_with_no_layout_gives_no_adapted_table(reader):
+    bare = reader("BL-UTIL").model_copy(deep=True)
+    for page in bare.pages:
+        page.layout = None
+    bills = bill_tables.read(bare)
+    assert (bills.reading.tables, bills.roles, bills.adapted, bills.guesses, bills.engine_pages, bills.pages) == ([], [], [], [], set(), set())
+
+
+def test_p4_engine_pages_lines_of_and_line_pages_describe_the_evidence(reader):
+    bills = bills_of(reader, "UTIL-2P")
+    assert bills.engine_pages == {1} and bills.pages == {1} and bills.line_pages == {1, 2}
+    assert bills.reading.pages_without_tables == [2]
+    result = reader("UTIL-2P")
+    assert set(bills.lines_of) == {line.id for page in result.pages for line in page.layout.lines}
+    assert set(bills.lines_of.values()) == set(evidence_texts(result, 1)) | set(evidence_texts(result, 2))
+
+
+# --- for_lines: what lies in one part ------------------------------------------------------------------------------------------
+
+def part_ids(result, number, first=None, last=None):
+    """The evidence line ids of one page, optionally from the line that starts with `first` to the one that starts with `last`."""
+    texts = evidence_texts(result, number)
+    ids = list(texts)
+    start = next((position for position, line in enumerate(ids) if first and texts[line].startswith(first)), 0)
+    stop = next((position for position, line in enumerate(ids) if last and texts[line].startswith(last)), len(ids) - 1)
+    return ids[start:stop + 1]
+
+
+def test_sc128_step8_a_table_cut_between_pages_gives_each_part_its_own_rows_anchors_and_pages(reader):
+    result = reader("BL-MULTI")
+    bills = bill_tables.read(result)
+    for number in (1, 2, 3):
+        part = bill_tables.for_lines(bills, part_ids(result, number))
+        [table] = part.adapted
+        assert [row.page for row in table.rows] == [number] * 3 and [row.id for row in table.rows] == [f"{bills.adapted[0].id}-row-{n}" for n in range(3 * number - 2, 3 * number + 1)]
+        assert [row.page for row in part.reading.tables[0].rows] == [number] * 3 and [row.row for row in part.reading.tables[0].rows] == list(range(3 * number - 2, 3 * number + 1))
+        assert {anchor.page for anchor in part.reading.anchors} == {number} and len(part.reading.anchors) == 6
+        assert part.engine_pages == {number} and part.pages == {number}
+        assert part.roles == bills.roles and part.reading.pages_without_tables == []
+
+
+def test_for_lines_cuts_inside_a_page_at_the_row_the_part_ends_with(reader):
+    result = reader("BL-UTIL")
+    bills = bill_tables.read(result)
+    part = bill_tables.for_lines(bills, part_ids(result, 1, last="Customer Charge"))
+    assert [row.label for row in part.adapted[0].rows] == ["Energy Tier 1", "Energy Tier 2", "Customer Charge"]
+    assert [row.label for row in part.reading.tables[0].rows] == ["Energy Tier 1", "Energy Tier 2", "Customer Charge"]
+    assert [anchor.kind for anchor in part.reading.anchors] == ["previous_balance", "payments", "new_charges", "amount_due"]  # Not the late total or the stub.
+    rest = bill_tables.for_lines(bills, part_ids(result, 1, first="Taxes and Fees"))
+    assert [row.label for row in rest.adapted[0].rows] == ["State Tax"]
+    assert [anchor.kind for anchor in rest.reading.anchors] == ["new_charges", "amount_due"] and len(rest.reading.other_tables) == 1
+    assert part.reading.other_tables == []  # The usage history lies in the other part.
+
+
+def test_for_lines_keeps_the_totals_of_the_part_and_drops_the_tables_of_other_parts(reader):
+    result = reader("BL-PHONE")
+    bills = bill_tables.read(result)
+    part = bill_tables.for_lines(bills, part_ids(result, 1, last="Total for Alex"))
+    assert [(row.label, row.total) for row in part.adapted[0].rows] == [("Unlimited Plan", False), ("Device Payment", False), ("Total for Alex", True)]
+    assert [total.label for total in part.reading.tables[0].totals] == ["Total for Alex"]
+    nothing = bill_tables.for_lines(bills, [])
+    assert (nothing.adapted, nothing.reading.tables, nothing.roles, nothing.reading.anchors, nothing.engine_pages, nothing.notes) == ([], [], [], [], set(), [])
+
+
+def test_for_lines_keeps_the_guesses_and_notes_of_the_tables_in_the_part_and_the_pages_without_tables(reader):
+    pages = bf.role_pages(rows=[("Service", (420, "12.00"), (520, "10.00")), ("Fee", (420, "6.00"), (520, "5.00"))])
+    result = reader(pages)
+    bills = bill_tables.read(result)
+    assert len(bills.guesses) == 1
+    whole = bill_tables.for_lines(bills, part_ids(result, 1))
+    assert whole.guesses == bills.guesses and whole.notes == bills.notes
+    assert bill_tables.for_lines(bills, []).guesses == []
+    plain = reader("UTIL-2P")
+    both = bill_tables.read(plain)
+    assert bill_tables.for_lines(both, part_ids(plain, 1) + part_ids(plain, 2)).reading.pages_without_tables == [2]
+    assert bill_tables.for_lines(both, part_ids(plain, 1)).reading.pages_without_tables == []
+
+
+def test_for_lines_does_not_change_what_it_was_given(reader):
+    result = reader("BL-MULTI")
+    bills = bill_tables.read(result)
+    before = serialized(bills.reading), [serialized(role) for role in bills.roles], len(bills.adapted[0].rows)
+    bill_tables.for_lines(bills, part_ids(result, 2))
+    assert (serialized(bills.reading), [serialized(role) for role in bills.roles], len(bills.adapted[0].rows)) == before
+
+
+# --- Determinism and the unchanged modules ---------------------------------------------------------------------------------------
+
+def adapted_facts(bills):
+    """The adapted tables as plain data (the adapter's rows are namespaces), for comparing two readings."""
+    def plain(value):
+        if hasattr(value, "__dict__"):
+            return {key: plain(item) for key, item in vars(value).items()}
+        if isinstance(value, (list, tuple)):
+            return [plain(item) for item in value]
+        if isinstance(value, set):
+            return sorted(value)
+        return value
+    return json.dumps(plain(bills.adapted), sort_keys=True, default=str)
+
+
+def test_the_same_reading_gives_the_same_roles_guesses_and_adapted_tables_every_time(reader):
+    for source in ("BL-UTIL", "BL-PHONE", "BL-MULTI", bf.role_pages(rows=[("Service", (420, "12.00"), (520, "10.00")), ("Fee", (420, "6.00"), (520, "5.00"))])):
+        result = reader(source)
+        one, two = bill_tables.read(result), bill_tables.read(result)
+        assert (serialized(one.reading), [serialized(role) for role in one.roles], [serialized(guess) for guess in one.guesses], adapted_facts(one)) == (
+            serialized(two.reading), [serialized(role) for role in two.roles], [serialized(guess) for guess in two.guesses], adapted_facts(two))
+
+
+def test_the_order_the_pdf_prints_its_items_in_does_not_change_the_roles_or_the_adapted_cells(tmp_path):
+    pages = bf.FIXTURES["BL-UTIL"]()
+    items = list(pages[0]["items"])
+    random.Random(11).shuffle(items)
+    (tmp_path / "shuffled").mkdir()
+    (tmp_path / "plain").mkdir()
+    one = bill_tables.read(fx.read_pdf(tmp_path / "shuffled", [{**pages[0], "items": items}]))
+    two = bill_tables.read(fx.read_pdf(tmp_path / "plain", pages))
+    assert [role.roles for role in one.roles] == [role.roles for role in two.roles] and [role.decided_by for role in one.roles] == ["product"]
+    assert [cell_texts(row) for row in one.adapted[0].rows] == [cell_texts(row) for row in two.adapted[0].rows]
+
+
+def test_reading_the_bill_does_not_change_what_the_pay_and_statement_engines_get(reader):
+    """The statement and pay stub engines are not changed (FR-120): the new modules only read the saved reading, never write to it."""
+    result = reader("BL-UTIL")
+    before = result.model_dump_json()
+    bill_tables.read(result)
+    assert result.model_dump_json() == before
+
+
+def test_the_guess_kinds_are_the_four_the_eval_counts():
+    assert bill_tables.GUESS_KINDS == ("charge_column", "unclassified_row", "amount_due", "split_changed")

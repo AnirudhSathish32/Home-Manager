@@ -193,7 +193,8 @@ def util_r2_pages(variant="r2"):
 PHONE_HEADER = ("METRO WIRELESS", "Account Number 555-0100-7788", "Due Date 10/12/2026")
 
 
-def phone_pages():
+def phone_pages(discount="-5.00", credits="Account Credits"):
+    """BL-PHONE. SC-106's variants print the discount differently (`(5.00)`, `5.00 CR`, unsigned `5.00`) or under another section title."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(PHONE_HEADER)]
     for y, label, amount in ((732, "Previous Balance", "120.00"), (716, "Payments", "-120.00"), (700, "New Charges", "118.50"), (684, "Amount Due", "118.50")):
         items += amounts_at(y, label, (CHARGE, amount))
@@ -201,9 +202,21 @@ def phone_pages():
     for y, label, amount in ((644, "Unlimited Plan", "55.00"), (628, "Device Payment", "24.99"), (612, "Total for Alex", "79.99")):
         items += amounts_at(y, label, (CHARGE, amount))
     items += left(588, "Blair (555) 202-2222") + amounts_at(572, "Basic Plan", (CHARGE, "35.00")) + amounts_at(556, "International Pack", (CHARGE, "8.51"))
-    items += left(546, "(Canada and Mexico)", 52) + amounts_at(530, "Total for Blair", (CHARGE, "43.51")) + left(506, "Account Credits")
-    items += amounts_at(490, "Autopay Discount", (CHARGE, "-5.00"))
+    items += left(546, "(Canada and Mexico)", 52) + amounts_at(530, "Total for Blair", (CHARGE, "43.51")) + left(506, credits)
+    items += amounts_at(490, "Autopay Discount", (CHARGE, discount))
     return [page_of(items)]
+
+
+def role_pages(heads=(), rows=(), summary=(), extra=()):
+    """A hand-built page for SC-105's role tests: `summary` (label, amount) anchor lines from y 700 down; `heads` (right edge, text) cells; `rows` (label,
+    (right edge, text) ...) from y 600 down, 16 apart, each given as `(label, *cells)`; `extra` ready items below the rows."""
+    items = []
+    for number, (label, amount) in enumerate(summary):
+        items += amounts_at(700 - 16 * number, label, (CHARGE, amount))
+    items += heading(620, *heads) if heads else []
+    for number, (label, *cells) in enumerate(rows):
+        items += amounts_at(600 - 16 * number, label, *cells)
+    return [page_of([*items, *extra])]
 
 
 # --- BL-RENT: the rent bill as a text PDF -----------------------------------------------------------------------------------------
