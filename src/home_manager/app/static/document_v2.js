@@ -511,6 +511,7 @@ function doc2Fields(state, type, record, find) {
   const corrected = field => (record.corrections || []).filter(item => item.field === field).at(-1);
   // A kinded bill's money is in its rows under the lines, and an Issued it doesn't print is left out (specs/bill-kinds FR-46, FR-50).
   const kinded = Boolean(record.bill_summary);
+  const day = type === "statement" ? dateNumericText : dateText;  // A statement's dates read as its rows do: MM/DD/YYYY.
   for (const [fieldLabel, field, end] of RECORD_FIELDS[type === "receipt" && record.document_kind === "bill" ? "bill" : type] || []) {
     if (field === "account_type") {  // A bank statement's printed account type, with its source line (FR-25); never guessed.
       const detail = record.details?.account_type;
@@ -524,7 +525,7 @@ function doc2Fields(state, type, record, find) {
     if (field === "tip_minor" && !showsTip(record)) continue;
     // A receipt's Total is its printed total; what was paid after gift cards is in its Paid line (doc2Forms).
     const printed = type === "receipt" && field === "total_minor" && record.paid_summary ? record.printed_total?.display : null;
-    const shown = end ? (record[field] || record[end] ? `${dateText(record[field]) || "?"} to ${dateText(record[end]) || "?"}` : null) : printed || record.display[field] || record[field];
+    const shown = end ? (record[field] || record[end] ? `${day(record[field]) || "?"} to ${day(record[end]) || "?"}` : null) : printed || record.display[field] || record[field];
     const correction = fix(field);
     if (shown == null && !correction) continue;
     const value = element("dd", "", "doc2-value");
@@ -533,7 +534,7 @@ function doc2Fields(state, type, record, find) {
     if (spread.length) value.append(...spread.map(name => element("span", categoryLabel(name === "uncategorized" ? null : name), "category-tag")));
     else if (shown == null) value.append(element("span", isDateField(field) ? "Not printed" : field === "category" ? "Not set" : "Not found", "muted"));
     else value.append(record.display[field] || printed ? amount(shown, {signed: false})
-      : document.createTextNode(isDateField(field) ? dateText(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
+      : document.createTextNode(isDateField(field) ? day(shown) : field === "category" ? categoryLabel(shown) : field === "direction" ? directionText(record)
         : field === "document_kind" ? DOCUMENT_KIND_LABELS[shown] || shown
         : field === "recurrence" ? FREQUENCY_LABELS[shown] || shown : field === "pay_frequency" ? PAY_FREQUENCIES[shown] || shown : shown));
     // Not printed as a total: the server's subtotal of the lines in From gross pay to net pay.

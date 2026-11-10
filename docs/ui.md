@@ -30,8 +30,8 @@ pages, the design system, accessibility and money display.
 - **Status** always goes through `statusBadge()` and the `STATUS` map in `ui.js`, as icon, text and tone. Color is
   never used alone.
 - **Money.** The browser does no arithmetic. It renders the server's text with `amount()`, right-aligned with tabular
-  figures. Dates use `dateText()`/`dateDisplay()`; a statement's transaction table on the document page shows its row
-  dates as MM/DD/YYYY with `dateNumeric()`.
+  figures. Dates use `dateText()`/`dateDisplay()`; a statement on the document page shows its dates (period, due date and
+  its transaction table's rows) as MM/DD/YYYY with `dateNumericText()`/`dateNumeric()`.
 - **DOM idiom.** Use vanilla factory functions (`element()`, `cell()`, `homeLink()`, `asyncButton()`). There is no
   framework and no build step. A strict CSP allows no inline scripts or styles and no CDN assets, so fonts are self-hosted
   and icons come from `icons.svg`.
