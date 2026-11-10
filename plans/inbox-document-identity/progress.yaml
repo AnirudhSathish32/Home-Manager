@@ -62,6 +62,18 @@ slices:
       - "doc links checked: documents.md#watched-folders exists; no citation of the renamed development.md heading"
     attempts:
       - "r1: stopped on a Claude API rate limit before any change; redispatched as r2"
+  - id: SL-05
+    status: done
+    start_head: 219c55f
+    end_head: 093b7df
+    commit: 81b28ad
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-05-r1
+    notes: fixes for code review round 1 (CR1-1 to CR1-4), one regression test each
+    verification:
+      - ".venv/bin/python -m pytest tests/test_document_split.py tests/test_managed_library.py tests/test_library.py tests/test_statement_accounts.py tests/test_migrations.py tests/test_capture.py tests/test_trash.py tests/test_receipts.py -> 131 passed, 2 skipped (orchestrator rerun)"
+      - "orchestrator read the storage.py and 080 diff 219c55f..81b28ad against the amended plan rule"
 final_verification:
   head: 5010305
   commands:
