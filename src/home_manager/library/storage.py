@@ -434,10 +434,11 @@ class Store:
             if previous is None:
                 # These bytes may be an earlier document filed from this name, dropped again: that document, unchanged. Nobody holds
                 # the bare key here, either because it was just released or because its holder is gone (emptied from Trash).
+                # A document in Trash is not found: the drop is a new one.
                 released = path_key(item["relative_path"]) + RELEASED_PATH
                 previous = db.execute("SELECT o.id,o.current_hash,o.source_kind,o.source_status,j.created_at AS job_created FROM occurrences o "
                                       "JOIN jobs j ON j.id=o.last_job WHERE o.source_root=? AND substr(o.path_key,1,?)=? AND o.current_hash=? "
-                                      "ORDER BY o.id LIMIT 1", (item["source_root"], len(released), released, item["hash"])).fetchone()
+                                      "AND o.deleted_at IS NULL ORDER BY o.id LIMIT 1", (item["source_root"], len(released), released, item["hash"])).fetchone()
                 if previous and previous["job_created"] <= intent_job_date:  # Its file is at the path again, so the path is its own again.
                     db.execute("UPDATE occurrences SET path_key=? WHERE id=?", (path_key(item["relative_path"]), previous["id"]))
             if previous:

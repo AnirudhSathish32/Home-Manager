@@ -236,6 +236,51 @@ def test_a_family_delivery_dropped_again_after_the_holder_of_the_name_was_delete
     assert store.documents(limit=100)["total"] == 1
 
 
+def _a_trashed_earlier_document_is_not_reclaimed(store, purge_b):
+    """Code review round 2, finding 1: A and B arrive as `document.csv` and are filed; A is trashed (and B too, then emptied for good, when
+    purge_b). A's bytes dropped again are not the trashed A (a document in Trash is not what a drop finds): they are a new live document, filed
+    and listed, and trashed A stays in Trash untouched."""
+    path = store.library.inbox / "document.csv"
+    a_bytes, b_bytes = b"october statement", b"november statement"
+
+    def drop(data):
+        path.write_bytes(data)
+        counts = store.job(scan(store))["counts"]
+        with store.connection() as db:
+            doc = db.execute("SELECT id,current_hash FROM occurrences WHERE current_hash=? AND deleted_at IS NULL", (hashlib.sha256(data).hexdigest(),)).fetchone()
+        if doc and path.exists():
+            store.library.organize(doc["id"], doc["current_hash"], "Bank_Statements", "Supported metadata", merchant="Bank", document_date="2026-10-31")
+        return doc, counts
+    a, _ = drop(a_bytes)
+    b, _ = drop(b_bytes)
+    if purge_b:
+        store.library_action(b["id"], b["current_hash"], "trash")
+        assert empty(store)["deleted"] == 1
+    store.library_action(a["id"], a["current_hash"], "trash")
+    with store.connection() as db:
+        trashed = tuple(db.execute("SELECT id,path_key,current_hash,source_status,deleted_at FROM occurrences WHERE id=?", (a["id"],)).fetchone())
+    new, counts = drop(a_bytes)
+    assert counts.get("organization_failed") is None and counts == {"duplicate": 1}
+    assert new is not None and new["id"] != a["id"] and not path.exists()
+    with store.connection() as db:
+        assert tuple(db.execute("SELECT id,path_key,current_hash,source_status,deleted_at FROM occurrences WHERE id=?", (a["id"],)).fetchone()) == trashed
+        assert trashed[4] is not None
+        live = db.execute("SELECT id,current_hash,deleted_at FROM occurrences WHERE deleted_at IS NULL AND current_hash=?", (a["current_hash"],)).fetchall()
+        assert [tuple(row) for row in live] == [(new["id"], a["current_hash"], None)]
+        assert db.execute("SELECT count(*) FROM occurrences WHERE id=? AND source_status='organized'", (new["id"],)).fetchone()[0] == 1
+    visible = [doc for doc in store.documents(limit=100)["items"] if doc["current_hash"] == a["current_hash"]]
+    assert [doc["id"] for doc in visible] == [new["id"]]
+    assert store.blob_path(a["current_hash"]).read_bytes() == a_bytes
+
+
+def test_dropping_earlier_bytes_again_after_it_was_trashed_and_the_holder_of_the_name_was_deleted_is_a_new_document(library):
+    _a_trashed_earlier_document_is_not_reclaimed(library[0], purge_b=True)
+
+
+def test_dropping_earlier_bytes_again_after_it_was_trashed_while_another_holds_the_name_is_a_new_document(library):
+    _a_trashed_earlier_document_is_not_reclaimed(library[0], purge_b=False)
+
+
 def test_restart_backfills_capture_before_organization_intent(tmp_path, monkeypatch):
     root = tmp_path / "managed"
     store = Store(root)
