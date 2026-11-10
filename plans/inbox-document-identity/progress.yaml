@@ -3,10 +3,75 @@ feature: inbox-document-identity
 plan_sha256: e8891e87e08e52bf9432ea437dc07832daafd34c472b6567d242325b42898beb
 slices:
   - id: SL-01
-    status: todo
+    status: done
+    start_head: adff24b
+    end_head: 3312952
+    commit: 98a63c2
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-01-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_document_split.py -k \"sc05 or sc06 or sc07 or sc09 or sc11_version or sc12 or sc13 or sc14 or merged_in or coverage\" -> 12 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_migrations.py tests/test_receipts.py tests/test_statement_accounts.py tests/test_managed_library.py -> 78 passed (orchestrator rerun)"
+      - "ruff check tests/test_document_split.py scripts/document_splits.py -> passed"
+    notes: >-
+      080 reviewed against P1 by the orchestrator. Worker deviations kept: released keys recognised by '|released-d'
+      (identical for every key the app writes); Inbox test by substr instead of LIKE (exact case); SC-13 step 2 run on a
+      raw connection with apply_migrations, since Store(root)'s recover() bumps library_revision on any fixture.
   - id: SL-02
-    status: todo
+    status: done
+    start_head: 3312952
+    end_head: 30a2ccf
+    commit: 2a36bab
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-02-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_document_split.py -> 14 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest tests/test_managed_library.py tests/test_capture.py tests/test_library.py -> 36 passed, 2 skipped (orchestrator rerun)"
+      - "ruff check managed_library.py, test_document_split.py -> passed"
+    notes: >-
+      organize(name=...) with no full-hash fallback (safe_name shared with filename); retag_ids in recover() after
+      relayout, limited to document_splits ids, per-row catch. The contract's GET /api/documents/{id}/file doesn't exist;
+      SC-08 checks the Library file at its recorded path instead (the app serves it through its preview route).
   - id: SL-03
-    status: todo
+    status: done
+    start_head: 30a2ccf
+    end_head: 919567e
+    commit: d82a0f4
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-03-r1
+    verification:
+      - ".venv/bin/python -m pytest tests/test_document_split.py -k \"sc10 or sc11_count or merged_in\" -> 5 passed (orchestrator rerun)"
+      - "ruff check scripts/document_splits.py tests/test_document_split.py -> passed"
+    notes: >-
+      Report reads a read-only in-memory copy and prints the four lines; HISTORY_INCOMPLETE is its own query; MERGED_IN
+      unchanged.
   - id: SL-04
-    status: todo
+    status: done
+    start_head: 919567e
+    end_head: 5010305
+    commit: 4b06c8c
+    provider: claude
+    model: claude-sonnet-5-5
+    task: inbox-document-identity-SL-04-r2
+    verification:
+      - ".venv/bin/python -m pytest tests/test_document_split.py -> 17 passed (orchestrator rerun)"
+      - ".venv/bin/python -m pytest --browser tests/test_document_v2_browser.py -k split -> 1 passed (orchestrator rerun)"
+      - "doc links checked: documents.md#watched-folders exists; no citation of the renamed development.md heading"
+    attempts:
+      - "r1: stopped on a Claude API rate limit before any change; redispatched as r2"
+final_verification:
+  head: 5010305
+  commands:
+    - command: ".venv/bin/python -m pytest -q -p no:cacheprovider"
+      exit_code: 1
+      result: "54 failed, 3056 passed, 115 skipped, 20 errors; every failure and error is in the pre-existing set of the 2026-11-10 runs (agent instance, agent findings, agent guards, tax engines, engine worksheets, traces, cpa pack, scenarios, tax family, tax year, tax zen); none new"
+    - command: ".venv/bin/python -m pytest -q --browser -p no:cacheprovider tests/test_document_v2_browser.py tests/test_browser.py tests/test_records_v2_browser.py"
+      exit_code: 1
+      result: "2 failed, 13 passed; both pre-existing (test_real_browser_configures_scans_and_inspects_versions, test_records_v2_filters_strip_read_all_and_trash)"
+    - command: ".venv/bin/ruff check src tests scripts"
+      exit_code: 1
+      result: "2 errors, both pre-existing (tests/test_document_v2_browser.py _newer_reading I001, tests/test_receipt_kinds.py:977)"
+  verdict: "no new failures"
