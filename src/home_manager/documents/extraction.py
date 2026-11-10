@@ -46,7 +46,7 @@ from .receipt_schema import StrictModel
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v44-two-digit-years"
+EXTRACTION_VERSION = "typed-extraction-v45-printed-labels"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1719,6 +1719,37 @@ def one_way_date(text):
         return None
 
 
+# A card statement's summary values read from their printed labels when the reading leaves them out (printed_value): the label,
+# the value, how a note names it and the start of the issue the reading gave about it.
+PRINTED_LABELS = {"minimum_payment_minor": (re.compile(r"\bminimum\s+(?:payment|amount)(?:\s+due)?\b[\s:.]*", re.IGNORECASE),
+                                            re.compile(r"(\$?\s?\d{1,3}(?:,\d{3})*\.\d{2})(?![\d%])"), "minimum payment", "Minimum payment"),
+                  "due_date": (re.compile(r"\bpayment\s+due\s+date\b[\s:.]*", re.IGNORECASE), re.compile(r"(\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))(?!\d)"),
+                               "payment due date", "Due date")}
+
+
+def printed_value(line_text, label, value):
+    """The one value printed right after a label anywhere in the lines, with the first line printing it: (text, line id), or
+    (None, None) when none is printed or the lines print different ones (docs/documents.md "Pay stub and statement fields")."""
+    found, where = set(), None
+    for line_id, text in line_text.items():
+        for match in label.finditer(text):
+            printed = value.match(text, match.end())
+            if printed:
+                found.add(printed.group(1).replace(" ", ""))
+                where = where or line_id
+    return (found.pop(), where) if len(found) == 1 else (None, None)
+
+
+def ordered_date(text, order):
+    """A slash date in a decided order, a two-digit year read as 20YY; None when it isn't a real date."""
+    first, second, year = (int(part) for part in text.split("/"))
+    month, day = (first, second) if order == "MM/DD/YYYY" else (second, first)
+    try:
+        return date(year + (2000 if year < 100 else 0), month, day).isoformat()
+    except ValueError:
+        return None
+
+
 # The window placing a statement's year-less dates when only its closing date (or only its due date) is read: two months
 # before it, three before a due date (docs/documents.md "Statement rows from the printed columns").
 PERIOD_FROM_CLOSING, PERIOD_FROM_DUE = 62, 92
@@ -2597,6 +2628,29 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
             if expected != closing:
                 issues.append(f"Statement arithmetic does not reconcile: opening balance and transactions give {format_minor(expected, currency)}, "
                               f"but the closing balance is {format_minor(closing, currency)}. Rows may be missing or misread.")
+        if card:  # The minimum payment and due date from their printed labels when the reading left them out.
+            for key, (label, value, what, issue_start) in PRINTED_LABELS.items():
+                if record.get(key) is not None:
+                    continue
+                text, line_id = printed_value(line_text, label, value)
+                if text is None:
+                    continue
+                if key == "due_date":
+                    order = rebuild.order if rebuild is not None and rebuild.available else None
+                    found = one_way_date(text) or (ordered_date(text, order) if order else None)
+                else:
+                    try:
+                        found = to_minor(text, currency) if currency else None
+                    except MoneyError:
+                        found = None
+                if found is not None:
+                    record[key] = found
+                    if key in AMOUNTS or key.endswith("_minor"):
+                        record["summary"][key.removesuffix("_minor")] = found
+                    record_notes.append(f"The {what} was read from its printed line \u201c{line_text[line_id]}\u201d; the reading left it out.")
+                    if record_notes and "notes" not in record:
+                        record["notes"] = record_notes
+                    issues[:] = [issue for issue in issues if not issue.startswith(issue_start)]
         if details:
             statement_details(kind, record, {name: getattr(header, name) for name in DETAIL_FIELDS[kind]}, money, issues, currency, line_text)
     elif kind == "bill":

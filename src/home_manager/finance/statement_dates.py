@@ -23,6 +23,7 @@ class Rebuild:
     opening_minor: int | None = None  # The printed opening (previous) balance, when the reader found one (the engine does; the old reader doesn't).
     closing_minor: int | None = None  # The printed closing (new) balance.
     period: tuple | None = None  # The printed statement period as ISO dates (start, end), when the reader found one.
+    order: str | None = None  # The date order the rows were read in (MM/DD/YYYY or DD/MM/YYYY), when one was decided.
 
 
 def read_period(value):

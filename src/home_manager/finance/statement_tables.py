@@ -117,7 +117,8 @@ class StatementReading:
     checks: list[Check] = field(default_factory=list)  # The issues about the money, also in `issues`, for the PDF import to show.
 
     def as_rebuild(self) -> Rebuild:
-        return Rebuild(self.available, self.pages, self.rows, self.issues, self.notes, self.dropped, self.opening_minor, self.closing_minor, self.period)
+        return Rebuild(self.available, self.pages, self.rows, self.issues, self.notes, self.dropped, self.opening_minor, self.closing_minor, self.period,
+                       self.order)
 
 
 SHORT_PERIOD = timedelta(days=100)  # A period printed with two-digit years is a statement's month or quarter, not two dates a year apart.

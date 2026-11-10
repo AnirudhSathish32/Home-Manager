@@ -444,8 +444,10 @@ def test_a_cards_interest_rate_lines_under_its_charges_are_no_rows_and_no_review
 def test_a_due_date_the_reading_gives_as_printed_with_a_two_digit_year_is_recorded(env, local_model, monkeypatch):
     """`Payment Due Date: 11/23/26` given back as printed: a day over 12 says which part is the month, and a two-digit year is
     20YY, so it is 2026-11-23 (docs/documents.md "Pay stub and statement fields"). A date either order could read stays unrecorded."""
-    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE, "Payment Due Date: 11/23/26", "Late fee after 12/05/26"))
+    above = tf.CS_ABOVE
     for printed, expected in (("11/23/26", "2026-11-23"), ("12/05/26", None)):
+        # The second prints no due date label, so nothing but the reading could give it (see the printed-label test below).
+        monkeypatch.setattr(tf, "CS_ABOVE", (*above, "Payment Due Date: 11/23/26" if expected else "Late fee after 12/05/26"))
         base = replies("CS")
 
         def make(lines, printed=printed, base=base):
@@ -456,6 +458,21 @@ def test_a_due_date_the_reading_gives_as_printed_with_a_two_digit_year_is_record
         recorded, _ = recorded_fixture(env, local_model, "CS", file=f"CS-due-{expected}")
         record_ = recorded.run(make)
         assert record_["due_date"] == expected, printed
+
+
+def test_a_cards_minimum_payment_and_due_date_left_out_by_the_reading_are_read_from_their_printed_labels(env, local_model, monkeypatch):
+    """User report: `Minimum Payment Due: $40.00` and `Payment Due Date: 11/23/26` are printed, the reading gave neither. One value
+    after each label is recorded with a note naming its line (docs/documents.md "Pay stub and statement fields")."""
+    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE, "Minimum Payment Due: $40.00", "Payment Due Date: 11/23/26"))
+    recorded, record_ = record(env, local_model, "CS")
+    assert (record_["minimum_payment_minor"], record_["due_date"]) == (4000, "2026-11-23")
+    assert sum("was read from its printed line" in note for note in recorded.notes()) == 2
+
+
+def test_a_label_printing_two_different_values_records_neither(env, local_model, monkeypatch):
+    monkeypatch.setattr(tf, "CS_ABOVE", (*tf.CS_ABOVE, "Minimum Payment Due: $40.00", "Minimum Payment Due: $35.00"))
+    _, record_ = record(env, local_model, "CS")
+    assert record_["minimum_payment_minor"] is None
 
 
 def test_sc07_nb_the_summary_decides_which_column_is_money_out(env, local_model):
