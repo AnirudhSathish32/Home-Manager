@@ -6,7 +6,7 @@
 -- Stage 1 is scripts/document_splits.py MERGED_IN, repeated: a migration cannot import, and a test holds the two together.
 CREATE TABLE IF NOT EXISTS document_splits (
     document_id INTEGER PRIMARY KEY REFERENCES occurrences(id),
-    from_document_id INTEGER NOT NULL REFERENCES occurrences(id),
+    from_document_id INTEGER NOT NULL,  -- Provenance only, no foreign key: emptying Trash of the original must not delete a restored piece's row.
     versions INTEGER NOT NULL,
     created_at TEXT NOT NULL
 ) STRICT;
@@ -110,24 +110,36 @@ WHERE source_document_id IN (SELECT from_id FROM split_pieces) AND source_receip
       (SELECT document_id FROM split_pieces WHERE from_id = recurring_obligations.source_document_id)
   AND (SELECT r.document_id FROM receipts r WHERE r.id = recurring_obligations.source_receipt_id) <> source_document_id;
 
--- A link to the merged document goes to the piece whose versions include the other document's current file (a same_bytes link). The
--- other document may itself have been merged, so both sides are worked out from the states before this stage. A link that would name
--- one document twice is dropped. Descriptions and group pages are document-level and stay.
+-- A same_bytes link naming a merged document goes to the pair of documents, one from each side's pieces (a side that wasn't split is its
+-- own only piece), that hold a version with the same hash, as the versions are now. Of several such pairs the one whose shared version
+-- was captured latest on either side, then the lowest ids; with none the link is dropped. Other reasons stay where they are. A link that
+-- would name one document twice is dropped too. Descriptions and group pages are document-level and stay.
+CREATE TEMP TABLE split_link_pieces AS
+SELECT document_id, from_id FROM split_pieces
+UNION SELECT id, id FROM occurrences WHERE id NOT IN (SELECT from_id FROM split_pieces)
+  AND (id IN (SELECT occurrence_id FROM occurrence_links) OR id IN (SELECT other_occurrence_id FROM occurrence_links));
+CREATE TEMP TABLE split_link_pairs AS
+SELECT link_id, pa, pb FROM (
+    SELECT l.id AS link_id, xa.document_id AS pa, xb.document_id AS pb,
+           ROW_NUMBER() OVER (PARTITION BY l.id ORDER BY max(va.captured_at, vb.captured_at) DESC, xa.document_id, xb.document_id) AS n
+    FROM occurrence_links l
+    JOIN split_link_pieces xa ON xa.from_id = l.occurrence_id
+    JOIN split_link_pieces xb ON xb.from_id = l.other_occurrence_id
+    JOIN versions va ON va.occurrence_id = xa.document_id
+    JOIN versions vb ON vb.occurrence_id = xb.document_id AND vb.hash = va.hash
+    WHERE l.reason = 'same_bytes'
+      AND (l.occurrence_id IN (SELECT from_id FROM split_pieces) OR l.other_occurrence_id IN (SELECT from_id FROM split_pieces))
+) WHERE n = 1;
 CREATE TEMP TABLE split_links AS
 SELECT l.id, l.occurrence_id AS a, l.other_occurrence_id AS b, l.reason, l.status, l.created_at,
-       CASE WHEN l.reason = 'same_bytes' AND l.occurrence_id IN (SELECT from_id FROM split_pieces) THEN COALESCE(
-           (SELECT p.document_id FROM split_pieces p JOIN versions v ON v.occurrence_id = p.document_id
-            WHERE p.from_id = l.occurrence_id AND v.hash = (SELECT current_hash FROM occurrences WHERE id = l.other_occurrence_id) LIMIT 1),
-           l.occurrence_id) ELSE l.occurrence_id END AS new_a,
-       CASE WHEN l.reason = 'same_bytes' AND l.other_occurrence_id IN (SELECT from_id FROM split_pieces) THEN COALESCE(
-           (SELECT p.document_id FROM split_pieces p JOIN versions v ON v.occurrence_id = p.document_id
-            WHERE p.from_id = l.other_occurrence_id AND v.hash = (SELECT current_hash FROM occurrences WHERE id = l.occurrence_id) LIMIT 1),
-           l.other_occurrence_id) ELSE l.other_occurrence_id END AS new_b
-FROM occurrence_links l
+       CASE WHEN l.reason = 'same_bytes' THEN p.pa ELSE l.occurrence_id END AS new_a,
+       CASE WHEN l.reason = 'same_bytes' THEN p.pb ELSE l.other_occurrence_id END AS new_b
+FROM occurrence_links l LEFT JOIN split_link_pairs p ON p.link_id = l.id
 WHERE l.occurrence_id IN (SELECT from_id FROM split_pieces) OR l.other_occurrence_id IN (SELECT from_id FROM split_pieces);
 INSERT OR IGNORE INTO occurrence_links(occurrence_id, other_occurrence_id, reason, status, created_at)
-SELECT min(new_a, new_b), max(new_a, new_b), reason, status, created_at FROM split_links WHERE new_a <> new_b AND (new_a <> a OR new_b <> b) ORDER BY id;
-DELETE FROM occurrence_links WHERE id IN (SELECT id FROM split_links WHERE new_a = new_b OR new_a <> a OR new_b <> b);
+SELECT min(new_a, new_b), max(new_a, new_b), reason, status, created_at FROM split_links
+WHERE new_a IS NOT NULL AND new_a <> new_b AND (new_a <> a OR new_b <> b) ORDER BY id;
+DELETE FROM occurrence_links WHERE id IN (SELECT id FROM split_links WHERE new_a IS NULL OR new_a = new_b OR new_a <> a OR new_b <> b);
 
 -- 6. The Inbox path. The stored key is never recomputed from relative_path: since capture stopped merging, a merged document may
 -- already have given up the bare key to a later file. A document that still holds the bare key passes it, and its status, to the piece
@@ -160,6 +172,8 @@ FROM split_map m JOIN split_runs r ON r.occurrence_id = m.occurrence_id AND r.ru
 
 -- 8.
 DROP TABLE split_links;
+DROP TABLE split_link_pairs;
+DROP TABLE split_link_pieces;
 DROP TABLE split_keys;
 DROP TABLE split_transactions;
 DROP TABLE split_hashes;

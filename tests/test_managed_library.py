@@ -10,6 +10,7 @@ from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.library.managed_library import LIBRARY_FOLDERS, filename
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import MIGRATIONS, Store
+from home_manager.library.trash import empty
 from test_reasoning import proposal
 from test_receipts import make_receipt
 
@@ -194,6 +195,45 @@ def test_family_deliveries_under_one_name_are_one_document_each(library):
     assert first != second and again == first
     assert [len(store.versions(doc)) for doc in (first, second)] == [1, 1]
     assert store.documents(limit=100)["total"] == 2
+
+
+def test_dropping_earlier_bytes_again_after_the_holder_of_the_name_was_deleted_finds_the_earlier_document(library):
+    """Code review round 1, finding 3: A and B arrive as `document.csv` and are filed; B is deleted from Trash for good, so nobody holds the
+    bare key. A dropped again is A, unchanged, and gets its bare key back; it is not a second document."""
+    store, _ = library
+    path = store.library.inbox / "document.csv"
+
+    def drop(data):
+        path.write_bytes(data)
+        counts = store.job(scan(store))["counts"]
+        doc = next(doc for doc in store.documents(limit=100)["items"] if doc["current_hash"] == hashlib.sha256(data).hexdigest())
+        if path.exists():
+            store.library.organize(doc["id"], doc["current_hash"], "Bank_Statements", "Supported metadata", merchant="Bank", document_date="2026-10-31")
+        return doc, counts
+    a, _ = drop(b"october statement")
+    b, _ = drop(b"november statement")
+    store.library_action(b["id"], b["current_hash"], "trash")
+    assert empty(store)["deleted"] == 1
+    again, counts = drop(b"october statement")
+    assert counts == {"unchanged": 1} and again["id"] == a["id"] and not path.exists()
+    with store.connection() as db:
+        assert [tuple(row) for row in db.execute("SELECT id,path_key,current_hash,source_status,deleted_at FROM occurrences")] == [
+            (a["id"], "document.csv", a["current_hash"], "organized", None)]
+        assert db.execute("SELECT count(*) FROM versions").fetchone()[0] == 1
+
+
+def test_a_family_delivery_dropped_again_after_the_holder_of_the_name_was_deleted_is_the_earlier_document(library):
+    store, _ = library
+    first, digest = store.import_document("receipt.png", b"\x89PNG x")
+    second, other = store.import_document("receipt.png", b"\x89PNG y")
+    store.library_action(second, other, "trash")
+    assert empty(store)["deleted"] == 1
+    again, _ = store.import_document("receipt.png", b"\x89PNG x")
+    assert again == first
+    with store.connection() as db:
+        assert [tuple(row) for row in db.execute("SELECT id,path_key,current_hash,source_status FROM occurrences")] == [(first, "receipt.png", digest, "organized")]
+        assert db.execute("SELECT count(*) FROM versions").fetchone()[0] == 1
+    assert store.documents(limit=100)["total"] == 1
 
 
 def test_restart_backfills_capture_before_organization_intent(tmp_path, monkeypatch):

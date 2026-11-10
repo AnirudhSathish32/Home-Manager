@@ -24,6 +24,7 @@ from conftest import inbox_scan
 from home_manager.finance.ledger import Ledger
 from home_manager.library import storage
 from home_manager.library.storage import RELEASED_PATH, MigrationError, Store
+from home_manager.library.trash import empty
 from scripts.document_splits import MERGED_IN
 from test_paystub_split import stub
 from test_statement_accounts import statement
@@ -155,6 +156,7 @@ class Merged:
     runs: list                   # the files of each run, in order: the expected split, computed from the plan
     records: list = field(default_factory=list)  # per file: the ids of what was recorded on it
     other: int | None = None     # the document dropped after the merge (the already-released variant), or the duplicate of SC-12
+    copies: list = field(default_factory=list)  # the documents each "copy" entry made, before they were merged
     before: Snapshot | None = None
 
     @property
@@ -262,13 +264,14 @@ def fix_times(root, plan, hashes):
 
 def merged_library(tmp_path, plan):
     """A library at schema 079 whose files merged under one Inbox name (test-contract.md "Fixtures"). plan: {"files": [entry(...)], plus
-    "name" (default document.pdf), "merge" (False keeps each file its own document), "trash", "description", "duplicate" (SC-12: the index of the file whose bytes are dropped again as copy.pdf) and "released"
+    "name" (default document.pdf), "merge" (False keeps each file its own document), "trash", "description", "duplicate" (SC-12: the index of the file whose bytes are dropped again as copy.pdf),
+    "copy" (entries dropped as copy.pdf after the others, merged under that name too: a same_bytes link between two merged documents) and "released"
     (a later file D dropped under the same name and filed, after the merge: the already-released variant)}."""
     root = tmp_path / "managed"
     name = plan.get("name", "document.pdf")
     files = plan["files"]
     store = Store(root)
-    ids, hashes, records, other = [], [], [], None
+    ids, hashes, records, other, copies = [], [], [], None, []
     try:
         ledger = Ledger(store)
         for index, item in enumerate(files):
@@ -287,6 +290,13 @@ def merged_library(tmp_path, plan):
                 with store.connection() as db:
                     other = db.execute("SELECT id FROM occurrences WHERE relative_path='copy.pdf'").fetchone()[0]
                 assert other not in ids
+        for item in plan.get("copy", ()):  # The same bytes as a file above make a same_bytes link at capture.
+            (store.library.inbox / "copy.pdf").write_bytes(item["data"])
+            inbox_scan(store)
+            with store.connection() as db:
+                copies.append(db.execute("SELECT id FROM occurrences WHERE relative_path='copy.pdf' AND current_hash=?", (sha(item["data"]),)).fetchone()[0])
+            if item["left"] is not None:
+                store.library.organize(copies[-1], sha(item["data"]), *FILED, merchant="Bank", document_date="2026-10-31")
         if plan.get("description"):
             with store.connection() as db:
                 db.execute("INSERT INTO document_descriptions VALUES(?,?,?)", (ids[0], plan["description"], T1))
@@ -295,10 +305,14 @@ def merged_library(tmp_path, plan):
     runs = expected_runs(files)
     if plan.get("merge", True):
         merge_documents(root, plan, ids, hashes)
-    merged = Merged(root, plan, hashes, ids, runs, records, other)
+        if copies:
+            merge_documents(root, plan, copies, [sha(item["data"]) for item in plan["copy"]])
+    merged = Merged(root, plan, hashes, ids, runs, records, other, copies)
     if plan.get("released"):
         merged.other = drop_later_file(root, plan)
     fix_times(root, plan, hashes)
+    if copies:
+        fix_times(root, {"files": plan["copy"]}, [sha(item["data"]) for item in plan["copy"]])
     db = sqlite3.connect(root / "inventory.sqlite3")
     try:
         with db:
@@ -571,6 +585,31 @@ def test_sc08_a_given_name_never_falls_back_to_a_full_hash_name(tmp_path):
 
 # --- SC-09: all or nothing ---------------------------------------------------------------------------------------------------
 
+def test_cr1_4_a_restored_piece_is_still_renamed_after_the_original_is_emptied_from_trash(tmp_path):
+    """Code review round 1, finding 4: Trash holds every piece. B is restored, then Trash is emptied (A and C go). The purge's foreign-key
+    walk must not take B's document_splits row with the original, or B's Library copy keeps document 1's id for good."""
+    merged = merged_library(tmp_path, standard(trash=True))
+    with reopened(merged.root):
+        pass
+    with open_db(merged.root) as db:
+        b = document_of(db, merged.hashes[1])
+        assert [row["from"] for row in db.execute("PRAGMA foreign_key_list(document_splits)")] == ["document_id"]  # from_document_id is provenance only.
+        assert db.execute("SELECT relative_path FROM managed_files WHERE document_id=?", (b,)).fetchone()[0].endswith("__d1.pdf")
+    with reopened(merged.root) as store:
+        store.library_action(b, merged.hashes[1], "restore")
+        assert empty(store)["deleted"] == 2
+        store.library.recover()
+    with open_db(merged.root) as db:
+        assert [row[0] for row in db.execute("SELECT id FROM occurrences ORDER BY id")] == [b]
+        assert db.execute("SELECT deleted_at FROM occurrences WHERE id=?", (b,)).fetchone()[0] is None
+        assert [tuple(row) for row in db.execute("SELECT document_id,from_document_id FROM document_splits")] == [(b, 1)]
+        path = db.execute("SELECT relative_path FROM managed_files WHERE document_id=?", (b,)).fetchone()[0]
+        assert db.execute("SELECT count(*) FROM managed_files").fetchone()[0] == 1
+        assert db.execute("SELECT status FROM managed_organization_intents WHERE document_id=? AND action='layout'", (b,)).fetchone()[0] == "succeeded"
+    assert path.endswith(f"__d{b}.pdf") and sha((merged.root / "Library" / path).read_bytes()) == merged.hashes[1]
+    assert files_under(merged.root / "Library") == Counter([merged.hashes[1]])
+
+
 def test_sc09_a_failure_in_the_middle_of_the_repair_leaves_the_library_as_it_was(tmp_path):
     merged = merged_library(tmp_path, standard(fault=True))
     root = merged.root
@@ -662,6 +701,42 @@ def test_sc12_a_merged_in_version_whose_bytes_exist_elsewhere_keeps_its_same_byt
         links = [tuple(row) for row in db.execute("SELECT occurrence_id,other_occurrence_id,reason FROM occurrence_links")]
     assert len(links) == 1 and links[0][2] == "same_bytes" and set(links[0][:2]) == {owner[1], merged.other}
     assert links[0][0] < links[0][1]
+
+
+def test_cr1_2_a_link_between_two_merged_documents_names_the_pieces_that_share_a_file(tmp_path):
+    """Code review round 1, finding 2: document 1 is A, B, C and copy.pdf is B, D, both split. The link made when B arrived twice must end
+    on the two pieces holding B, though neither side's current file is the other's."""
+    later = b"synthetic later copy D"
+    merged = merged_library(tmp_path, standard(copy=[entry(B, T3, T4), entry(later, T5, None)]))
+    twin = merged.copies[0]
+    assert len(merged.copies) == 2 and twin != merged.ids[1]
+    with open_db(merged.root) as db:
+        assert [tuple(row) for row in db.execute("SELECT occurrence_id,other_occurrence_id,reason FROM occurrence_links")] == [(1, twin, "same_bytes")]
+        assert db.execute("SELECT count(*) FROM versions WHERE occurrence_id=?", (twin,)).fetchone()[0] == 2
+    with reopened(merged.root):
+        pass
+    owner = check_split(merged, expected_new=3)
+    with open_db(merged.root) as db:
+        b_copy = db.execute("SELECT occurrence_id FROM versions v JOIN occurrences o ON o.id=v.occurrence_id WHERE v.hash=? AND o.relative_path='copy.pdf'", (sha(B),)).fetchone()[0]
+        assert b_copy == twin and db.execute("SELECT count(*) FROM versions WHERE occurrence_id=?", (twin,)).fetchone()[0] == 1
+        links = [tuple(row) for row in db.execute("SELECT occurrence_id,other_occurrence_id,reason FROM occurrence_links")]
+    assert links == [(min(owner[1], twin), max(owner[1], twin), "same_bytes")]
+
+
+def test_cr1_2_a_same_bytes_link_with_no_shared_file_left_is_dropped(tmp_path):
+    """The link names a merged document and one that shares no file with any of its pieces: no pair, so no link."""
+    merged = merged_library(tmp_path, standard(duplicate=1))
+    other = merged.other
+    with open_db(merged.root) as db:
+        with db:
+            db.execute("INSERT INTO blobs VALUES(?,?,?)", (sha(b"unrelated"), 9, T9))
+            db.execute("UPDATE versions SET hash=? WHERE occurrence_id=?", (sha(b"unrelated"), other))
+            db.execute("UPDATE occurrences SET current_hash=? WHERE id=?", (sha(b"unrelated"), other))
+    merged.before = snapshot(merged.root)
+    with sqlite3.connect(merged.root / "inventory.sqlite3") as db:
+        storage.apply_migrations(db, SPLIT_STEP - 1)
+    with open_db(merged.root) as db:
+        assert db.execute("SELECT count(*) FROM occurrence_links").fetchone()[0] == 0
 
 
 # --- SC-13, SC-14: once, and the Inbox path ---------------------------------------------------------------------------------------

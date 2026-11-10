@@ -421,22 +421,27 @@ class Store:
             previous = db.execute("SELECT o.id,o.current_hash,o.source_kind,o.source_status,j.created_at AS job_created FROM occurrences o "
                                   "JOIN jobs j ON j.id=o.last_job WHERE o.source_root=? AND o.path_key=?",
                                   (item["source_root"], path_key(item["relative_path"]))).fetchone()
-            if previous and previous["source_kind"] == "inbox" and previous["source_status"] == "organized" and previous["current_hash"] != item["hash"]:
+            intent_job_date = db.execute("SELECT created_at FROM jobs WHERE id=?", (item["job_id"],)).fetchone()[0]
+            if (previous and previous["source_kind"] == "inbox" and previous["source_status"] == "organized"
+                    and previous["current_hash"] != item["hash"] and previous["job_created"] <= intent_job_date):
                 # Other bytes under the name of an Inbox file already filed away are another document (banks name every download
                 # alike), never its next version: the filed document gives up the Inbox path it no longer holds. A file changed
                 # while still in the Inbox stays a version, and the same bytes dropped again stay one document (docs/documents.md
-                # "The managed library", specs/inbox-document-identity FR-01 – FR-03).
+                # "The managed library", specs/inbox-document-identity FR-01 – FR-03). An older capture recovered after a newer
+                # scan releases nothing: it is history (recovered_version, below).
                 db.execute("UPDATE occurrences SET path_key=path_key||?||id WHERE id=?", (RELEASED_PATH, previous["id"]))
-                # These bytes may be an earlier document filed from this name, dropped again: that document, unchanged.
+                previous = None
+            if previous is None:
+                # These bytes may be an earlier document filed from this name, dropped again: that document, unchanged. Nobody holds
+                # the bare key here, either because it was just released or because its holder is gone (emptied from Trash).
                 released = path_key(item["relative_path"]) + RELEASED_PATH
                 previous = db.execute("SELECT o.id,o.current_hash,o.source_kind,o.source_status,j.created_at AS job_created FROM occurrences o "
                                       "JOIN jobs j ON j.id=o.last_job WHERE o.source_root=? AND substr(o.path_key,1,?)=? AND o.current_hash=? "
                                       "ORDER BY o.id LIMIT 1", (item["source_root"], len(released), released, item["hash"])).fetchone()
-                if previous:  # Its file is at the path again, so the path is its own again.
+                if previous and previous["job_created"] <= intent_job_date:  # Its file is at the path again, so the path is its own again.
                     db.execute("UPDATE occurrences SET path_key=? WHERE id=?", (path_key(item["relative_path"]), previous["id"]))
             if previous:
                 occurrence = previous["id"]
-                intent_job_date = db.execute("SELECT created_at FROM jobs WHERE id=?", (item["job_id"],)).fetchone()[0]
                 if previous["job_created"] > intent_job_date:
                     # A failed old publication may recover after a newer scan.
                     # Preserve it as history without rolling the current pointer back.

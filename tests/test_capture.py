@@ -217,6 +217,30 @@ def test_recovery_preserves_newer_current_version(store):
     assert store.job(old_job)["counts"] == {"recovered_version": 1}
 
 
+def test_recovering_an_older_capture_after_the_newer_version_was_filed_makes_no_second_document(store):
+    """Code review round 1, finding 1: an intent staged before a newer in-place edit that has since been filed is history (a version),
+    not a reason to release the filed document's Inbox path and start another document."""
+    path = write(store, "document.csv", b"initial")
+    scan(store)
+    old_job = store.create_job()
+    capture = uuid.uuid4().hex
+    older = b"older interrupted capture"
+    (store.work / (capture + ".part")).write_bytes(older)
+    store.prepare(capture, old_job, "document.csv", hashlib.sha256(older).hexdigest(), len(older), 123)
+    path.write_bytes(b"newest")
+    scan(store)
+    newest = hashlib.sha256(b"newest").hexdigest()
+    doc = store.documents()["items"][0]
+    store.library.organize(doc["id"], newest, "Bank_Statements", "Supported metadata", merchant="Bank", document_date="2026-10-31")
+    store.recover()
+    assert store.job(old_job)["counts"] == {"recovered_version": 1}
+    with store.connection() as db:
+        assert [tuple(row) for row in db.execute("SELECT id,path_key,current_hash,source_status FROM occurrences")] == [(doc["id"], "document.csv", newest, "organized")]
+        assert sorted(row[0] for row in db.execute("SELECT hash FROM versions WHERE occurrence_id=?", (doc["id"],))) == sorted(
+            hashlib.sha256(data).hexdigest() for data in (b"initial", older, b"newest"))
+        assert db.execute("SELECT count(*) FROM capture_intents").fetchone()[0] == 0
+
+
 def test_recover_staged_bytes_and_orphan_cleanup(store):
     job = store.create_job()
     capture = uuid.uuid4().hex
