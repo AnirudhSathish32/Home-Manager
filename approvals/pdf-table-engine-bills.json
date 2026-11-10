@@ -1,0 +1,18 @@
+{
+  "feature": "pdf-table-engine-bills",
+  "spec": {
+    "sha256": "3e503a0397d6d19e92f8e7406f145f9c0b41eb1919e3801a42abd3334d491128",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-09T00:13:36-05:00",
+    "approved_via": "agent",
+    "permission": "i accept every default then accept the spec then run plan feature"
+  },
+  "plan": {
+    "sha256": "130f8fd47ee9e3304e2161c366a10907b16348fd1bb0ff6ba72a54cfd7c08aaa",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-10T14:43:50-05:00",
+    "approved_via": "agent",
+    "permission": "H3 doesnt apply to me i havent done this. H1, H2 confirmed H4 dont commit the uncommited work yet just commit the work you were in charge of then reapprove the spec and plan then implement slices",
+    "spec_sha256": "3e503a0397d6d19e92f8e7406f145f9c0b41eb1919e3801a42abd3334d491128"
+  }
+}
