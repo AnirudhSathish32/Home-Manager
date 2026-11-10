@@ -1,0 +1,123 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: pdf-table-engine-bills
+plan_sha256: 130f8fd47ee9e3304e2161c366a10907b16348fd1bb0ff6ba72a54cfd7c08aaa
+session_plan_hash: 130f8fd47ee9e3304e2161c366a10907b16348fd1bb0ff6ba72a54cfd7c08aaa
+spec_sha256: 3e503a0397d6d19e92f8e7406f145f9c0b41eb1919e3801a42abd3334d491128
+checkout: /home/anirudh/Documents/Projects/Home-Manager-bills  # git worktree, branch pdf-table-engine-bills (plan H4)
+start_head: f95182a
+rebase_onto_start_head:
+  # The plan cites HEAD e2c2d5d. Commits up to f95182a (inbox-document-identity and others) moved code. The orchestrator
+  # re-checked every citation (read-only subagent, 2026-11-10): mechanical drift only, no contract, slice or expected
+  # value changes. The approved plan text is NOT edited; workers apply these instead.
+  verdict: mechanical
+  extraction_version: >-
+    EXTRACTION_VERSION at START_HEAD is typed-extraction-v46-rates-and-codes, and v41 is already used
+    (v41-closing-date-period). The plan's typed-extraction-v41-bill-engine becomes typed-extraction-v47-bill-engine
+    (plan "Version" row, P7 item 11, Decisions "Version"). SC-121 step 1 (!= v39) and the v39 test double are unaffected.
+  migrations: >-
+    START_HEAD adds 078_account_type_words, 079_one_reading_link, 080_split_merged_documents. The feature still adds no
+    migration; SL-04's literal migration listing is START_HEAD's (through 080). 080 repairs Inbox document identity and
+    does not change document_segments' schema or the split code.
+  offsets:
+    documents/extraction.py: "1-607 +0; 608-1046 +1; 1047-1703 +9; 1704-2522 +60; 2579-3997 +89; 3998- +96 (publish 4066, run 4201, read 4308, split 4534, confirm_split 4557, set_split 4580, save_segments 4621, bill_lines 3053, normalize 2449)"
+    finance/ledger.py: "-612 +0; 621-1228 +9; 1233-1627 +16; 1637- +32 (_replace_items 999, publish_bill 1444, record 1910, apply_corrections 2726, correct_line 2911)"
+    documents/table_engine.py: "178-582 +1"
+    library/storage.py: "559->581, 576-581->601-606, 583-586->608-611, 596->621"
+    app/static/document_v2.js: "497- +18 (doc2Split 878-923)"
+    scripts/statement_diagnose.py: "+32 from pay_section (paystub mode 165-167)"
+    unchanged: "pay_tables, paystub_tables, layout_context, document_checks, document_traces, family_routing, evals/*, tests/test_evals.py (still 53 at 321, 325, 365, 402), receipt.js 229-230"
+  implementer_notes:
+    - "normalize parses every date with iso_date(text) or one_way_date(text) (extraction.py:2483); bills included."
+    - "Ledger.add_evidence (ledger.py:613-618) deletes earlier extraction:% links per file; compare financial_evidence_links as a set without source_key (precedent tests/test_paystub_split.py:449)."
+    - "doc2Ledger's kept argument is now the publication object or null (document_v2.js:378, :924); P10's doc2Split must keep `published.status === \"kept_reviewed\" ? published : null`."
+    - "table_engine gained zero_line (:585) and a read_page period change (:1033), statement-only."
+baseline_failures:
+  # START_HEAD f95182a, worktree, 2026-11-10. Full suite: 54 failed, 3056 passed, 115 skipped, 1 deselected, 20 errors (exit 1, 30m36s).
+  # Browser set (paystub_engine, table_engine, document_v2 browser tests; bill browser test not yet written): 14 passed, exit 0.
+  # All failures are outside the bill path (agent instance/guards/findings, tax engines and traces, cpa pack, scenarios).
+  - "ERROR tests/test_agent_instance.py::test_changes_from_one_test_are_gone_in_the_next"
+  - "ERROR tests/test_agent_instance.py::test_pid_is_the_server"
+  - "ERROR tests/test_agent_instance.py::test_reset_keeps_evidence"
+  - "ERROR tests/test_agent_instance.py::test_reset_models"
+  - "ERROR tests/test_agent_instance.py::test_reset_refuses_foreign_port"
+  - "ERROR tests/test_agent_instance.py::test_reset_settles_before_manifest"
+  - "ERROR tests/test_agent_instance.py::test_restored_instance_is_independent"
+  - "ERROR tests/test_agent_instance.py::test_sc01_reset_start_verify"
+  - "ERROR tests/test_agent_instance.py::test_sc10_stop_reset_start_returns_to_the_seed"
+  - "ERROR tests/test_agent_instance.py::test_sc12_and_start_warn_on_8765"
+  - "ERROR tests/test_agent_instance.py::test_sc13_broken_seed_step"
+  - "ERROR tests/test_agent_instance.py::test_sc17_port_in_use"
+  - "ERROR tests/test_agent_instance.py::test_sc18_restart_keeps_changes"
+  - "ERROR tests/test_agent_instance.py::test_sc19_reset_while_running"
+  - "ERROR tests/test_agent_instance.py::test_stale_pid_is_not_signalled"
+  - "ERROR tests/test_agent_instance.py::test_start_reports_failed_serve"
+  - "ERROR tests/test_agent_instance.py::test_stop_from_another_console"
+  - "ERROR tests/test_agent_instance.py::test_verify_after_agent_change"
+  - "ERROR tests/test_agent_instance.py::test_verify_fails_without_guards"
+  - "ERROR tests/test_agent_instance.py::test_verify_incomplete_seed"
+  - "FAILED tests/test_agent_findings.py::test_comment_in_field_escaped"
+  - "FAILED tests/test_agent_findings.py::test_concurrent_findings"
+  - "FAILED tests/test_agent_findings.py::test_finding_cli_smoke"
+  - "FAILED tests/test_agent_findings.py::test_heading_in_field_escaped"
+  - "FAILED tests/test_agent_findings.py::test_marker_outside_section_ignored"
+  - "FAILED tests/test_agent_findings.py::test_sc09_recorded_once_and_seen_again"
+  - "FAILED tests/test_agent_findings.py::test_seen_again_lands_in_its_entry"
+  - "FAILED tests/test_agent_findings.py::test_seen_again_message"
+  - "FAILED tests/test_agent_findings.py::test_text_after_section_kept"
+  - "FAILED tests/test_agent_guards.py::test_hook_allows_passive_bind_lookup"
+  - "FAILED tests/test_agent_guards.py::test_sc03_protected_paths_refused_at_every_input"
+  - "FAILED tests/test_agent_guards.py::test_sc14_profile_and_restore_folders_refused"
+  - "FAILED tests/test_agent_instance.py::test_pid_is_the_server"
+  - "FAILED tests/test_agent_instance.py::test_reset_models"
+  - "FAILED tests/test_agent_instance.py::test_sc10_stop_reset_start_returns_to_the_seed"
+  - "FAILED tests/test_agent_instance.py::test_sc12_and_start_warn_on_8765"
+  - "FAILED tests/test_agent_instance.py::test_start_reports_failed_serve"
+  - "FAILED tests/test_agent_instance.py::test_stop_from_another_console"
+  - "FAILED tests/test_agent_instance.py::test_verify_fails_without_guards"
+  - "FAILED tests/test_cpa_pack.py::test_same_data_gives_back_the_same_pack_and_new_data_never_overwrites"
+  - "FAILED tests/test_engine_worksheets.py::test_engine_1_breaks_every_rule_down_to_facts_and_law"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-actc_low]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-cdcc_phased]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-charity]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-eitc_phaseout]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-head_of_household]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-high_wages]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-hsa_family]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-itemizing_high]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-itemizing_retiree]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-joint_contract]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-qbi_phase_in]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-qbi_sole]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-senior_couple]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-senior_phaseout]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-students]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-tipped]"
+  - "FAILED tests/test_engine_worksheets.py::test_every_line_is_explained_by_the_engines_worksheet[engine_1-w2]"
+  - "FAILED tests/test_scenarios.py::test_scenario_endpoints"
+  - "FAILED tests/test_tax_engines.py::test_2026_law_the_old_hand_written_return_lacked[engine_1]"
+  - "FAILED tests/test_tax_engines.py::test_a_joint_return_with_children_gains_and_contract_work[engine_1]"
+  - "FAILED tests/test_tax_engines.py::test_a_w2_return[engine_1]"
+  - "FAILED tests/test_tax_engines.py::test_engine_2_claims_a_credit_the_return_qualifies_for[ACTC_LOW-pay_actc]"
+  - "FAILED tests/test_tax_engines.py::test_engine_2_claims_a_credit_the_return_qualifies_for[EITC_PHASEOUT-pay_eitc]"
+  - "FAILED tests/test_tax_engines.py::test_high_wages_with_additional_medicare_and_investment_income_tax[engine_1]"
+  - "FAILED tests/test_tax_engines.py::test_the_engine_asks_for_what_it_needs_and_never_guesses"
+  - "FAILED tests/test_tax_engines.py::test_the_second_engine_checks_the_first_line_by_line"
+  - "FAILED tests/test_tax_family.py::test_the_family_computes_a_couples_joint_return"
+  - "FAILED tests/test_tax_year.py::test_a_worse_tax_zen_is_put_on_home_until_the_taxes_page_is_opened"
+  - "FAILED tests/test_tax_year.py::test_tax_year_endpoints"
+  - "FAILED tests/test_tax_zen.py::test_a_planned_paycheck_at_tax_time"
+  - "FAILED tests/test_traces.py::test_family_figures_trace_to_each_members_own"
+  - "FAILED tests/test_traces.py::test_the_engines_own_steps_trace_down_to_the_return_inputs_and_the_law"
+  - "FAILED tests/test_traces.py::test_the_return_and_tax_zen_trace_to_the_engines_lines_and_the_records"
+slices:
+  - {id: SL-01, status: todo}
+  - {id: SL-02, status: todo}
+  - {id: SL-03, status: todo}
+  - {id: SL-04, status: todo}
+  - {id: SL-05, status: todo}
+  - {id: SL-06, status: todo}
+  - {id: SL-07, status: todo}
+  - {id: SL-08, status: todo}
+  - {id: SL-09, status: todo}
+  - {id: SL-10, status: todo}
+final_verification: pending
