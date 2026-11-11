@@ -80,6 +80,12 @@ and link here for what isn't. When an item is built, remove it from this list an
   Downloads becomes the next version of that document, as it did for the Inbox before
   ([documents](documents.md#watched-folders)). Wanted, if it matters: a watched-folder change is a new document when
   the earlier version has a record.
+- **A file dropped again while its document is in Trash** (found in the `inbox-document-identity` code review, round 3;
+  older than that feature). When the trashed document still holds the file's Inbox name, the same bytes dropped again
+  match it: the scan reports the file unchanged, filing fails, nothing shows in the Library and the file stays in the
+  Inbox. Wanted: a trashed document gives up its Inbox name, so the drop becomes a new document. A file whose
+  document was released first already does ([documents](documents.md#the-managed-library)). Family deliveries pick
+  their document by hash in `finance/family_routing.py` without skipping Trash either.
 - **Per-currency totals.** Category totals, budgets and the Home dashboard are still per currency, with no USD total.
 - **Statement accounts** (`specs/statement-accounts/spec.md`, approved 2026-10-26; plan in
   `plans/statement-accounts/plan.md`): built, with its screens ([money](money.md#new-statements-wait-for-you),

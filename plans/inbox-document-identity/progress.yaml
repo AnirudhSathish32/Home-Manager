@@ -137,4 +137,26 @@ code_review:
         severity: INFO
         summary: "the split_link_pairs tie-break orders by the link's own side, then the other side, not by the canonical pair"
         disposition: "accepted: deterministic, documented in handoffs/slice-SL-05.md; ties need two equally recent shared captures, so no change"
+  - round: 3
+    head: 14c536e
+    reviewer: codex/gpt-6.1-sol (model-family independence)
+    task: inbox-document-identity-review-code-r3
+    risk: HIGH
+    prior: "CR2-1 resolved; CR2-2 accepted"
+    findings:
+      - id: CR3-1
+        severity: INFO
+        summary: "a trashed document still holding the bare Inbox key is matched by a same-bytes re-drop: unchanged, filing fails, nothing visible"
+        disposition: "pre-existing (reproduced at 28cf91b by the reviewer), not a regression of this feature; recorded in docs/open-work.md"
+      - id: CR3-2
+        severity: INFO
+        summary: "finance/family_routing.py selects documents by hash without excluding Trash"
+        disposition: "pre-existing, unchanged by this feature; recorded in docs/open-work.md"
+    exit: "no BLOCKER or MAJOR remains after round 3"
+review_final_verification:
+  head: 14c536e
+  command: ".venv/bin/python -m pytest -q -p no:cacheprovider"
+  exit_code: 1
+  result: "54 failed, 3064 passed, 115 skipped, 1 deselected, 20 errors; failures and errors are the same pre-existing files as final_verification (agent instance/findings/guards, cpa pack, engine worksheets, scenarios, tax engines/family/year/zen, traces); 8 more passed from the SL-05 and SL-06 regression tests"
+  verdict: "no new failures"
 
