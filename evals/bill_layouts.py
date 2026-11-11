@@ -127,6 +127,8 @@ def settle(choices):
         c["prev_printed"] = False
     if c["columns"] == "lastyear":
         c["new_printed"] = True  # Two amount columns that both could be the charge are told apart by which sums to the new charges (FR-105 b).
+    if c["columns"] == "lastyear" and c["heading"] == "none" and c["cut"] == "tail":
+        c["cut"] = "none"  # With no heading the sum rule tells the columns apart, and it reads only the new charges printed on the table's own pages (FR-105 b).
     if c["bills"] == 1:
         c["acct_same_dates"] = False
     if c["stub"] == "own_page":
