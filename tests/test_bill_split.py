@@ -1,6 +1,6 @@
 """Several bills in one file (specs/pdf-table-engine-bills/test-contract.md), slice SL-06: SC-126 (finding the bills), SC-127 (uncertain boundaries go to review),
 SC-128 (one record per bill, and the library), SC-129 steps 1 and 3 - 6 (the API; the browser step is SL-08's), SC-130 (reading again and retired bills), SC-115 (b),
-SC-121 (3) and SC-122's BL-MULTI case, plus the contract's retry, duplicate-capture, restart and concurrent variants. SC-131 (VOID and duplicate bills) is SL-07's.
+SC-121 (3) and SC-122's BL-MULTI case, plus the contract's retry, duplicate-capture, restart and concurrent variants. SC-131 (VOID and duplicate bills) is SL-07's, at the end.
 
 Every file goes through the real services as tests/test_paystub_split.py does: `make_pdf` into the Inbox, `capture`, `ReceiptService`, then `ExtractionService`
 with the contract's doubles (`local_model` by schema, one answer per part in file order). Expected values are the contract's literals in
@@ -20,7 +20,7 @@ from conftest import assert_ledger_healthy
 from home_manager.app.api import create_app
 from home_manager.core.jobs import Work
 from home_manager.documents import bill_split, extraction
-from home_manager.documents.extraction import BILL_SPLIT_CHANGED, BILL_SPLIT_FAILED, BILL_SPLIT_NOTE, ExtractionService
+from home_manager.documents.extraction import BILL_SPLIT_CHANGED, BILL_SPLIT_FAILED, BILL_SPLIT_NOTE, BILL_VOID_NOTE, ExtractionService
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
@@ -979,3 +979,211 @@ def test_two_extract_requests_in_a_row_are_one_run_and_three_bills(pdf_store, lo
     assert run.run["status"] == "succeeded"
     segment_check(run, 3)
     assert len(run.bills()) == 3
+
+
+# === SC-131: VOID and duplicate bills (FR-133, FR-134) =======================================================================================
+
+VOID_TEXT = BILL_VOID_NOTE
+assert VOID_TEXT == "This bill is printed VOID, so it doesn't count."
+REPEATS = "This bill repeats the one from CITY POWER & WATER due 2026-08-20 (87.26), so it doesn't count."
+SAME_DUE = "Another bill from CITY POWER & WATER has the same due date."
+JULY_TO_SEPTEMBER = ("2026-07-01", "2026-09-30")
+
+
+def status_of(record):
+    return record["review_status"], record["review_source"]
+
+
+def alone(pdf_store, local_model, name="alone.pdf", amount=None, extra=()):
+    """MINI-2-ALONE (SC-131 b): MINI-BILL(2) as a one-page file of its own, answered; with `amount` printed as the corrected Total Amount Due and stub Amount Due."""
+    pages = bf.mini_pages(2)
+    if amount:
+        pages[0]["items"] = [(x, y, amount if text == "87.26" and y in (652, 284) else text) for x, y, text in pages[0]["items"]]
+    pages[0]["items"] += list(extra)
+    run = started_bills(pdf_store, local_model, pages, name)
+    replies = run.answer([2])
+    if amount:
+        field = replies["BillSummary"][0]["amount_due"]
+        field["value"], field["evidence"][0]["quote"] = amount, amount
+    return run
+
+
+def recite_split_amounts(run):
+    """BL-MULTI-VOID: the reader reads page 2's summary block by column once `VOID` stands at x 260 (labels, then VOID, then the amounts as lines of their own), so the
+    stub cites an amount's own line where its label's line no longer holds the quote, as a model reading these lines would."""
+    texts = {line.id: line.text for line in run.blank_free()}
+    for header in run.local_model["by_schema"]["BillSummary"]:
+        for field in header.values():
+            if isinstance(field, dict) and field.get("evidence"):
+                [cite] = field["evidence"]
+                if cite["quote"] not in texts[cite["line_id"]]:
+                    cite["line_id"] = next(line_id for line_id, text in texts.items() if text == cite["quote"] and line_id.startswith(cite["line_id"][:7]))
+
+
+def test_sc131_a_a_void_line_on_page_two_rejects_bill_two_automatically_and_the_other_two_count(pdf_store, local_model):
+    run = multi(pdf_store, local_model, pages=bf.multi_void_pages())
+    recite_split_amounts(run)
+    run.extract()
+    segment_check(run, 3)
+    first, second, third = [record for _, _, record in run.bills()]
+    assert status_of(second) == ("rejected", "automatic")
+    noted(second, VOID_TEXT)
+    expect_mini(second, 2)  # Recorded with its lines.
+    for record, k in ((first, 1), (third, 3)):
+        expect_mini(record, k, "9012")
+        auto(record)
+        assert VOID_TEXT not in notes_of(record)
+    assert [row["review_status"] for row in run.run["publication"]["segments"]] == ["verified", "rejected", "verified"]
+    assert [spending(run.store, day, day) for day in DUES] == [8142, 0, 7472]
+    assert spending(run.store, *JULY_TO_SEPTEMBER) == 8142 + 7472 == 15614
+    snapshot = rows_of(run)
+    run.answer([1, 2, 3])
+    recite_split_amounts(run)
+    run.extract(force=True)  # Extract again gives the same result.
+    assert rows_of(run) == snapshot and spending(run.store, *JULY_TO_SEPTEMBER) == 15614
+    assert_ledger_healthy(run.store)
+
+
+def test_sc131_a_a_sentence_with_the_word_void_is_no_void_bill(pdf_store, local_model):
+    run = multi(pdf_store, local_model, pages=bf.multi_void_pages(word=True))
+    run.extract()
+    segment_check(run, 3)
+    for record in [record for _, _, record in run.bills()]:
+        auto(record)
+        assert VOID_TEXT not in notes_of(record)
+    assert spending(run.store, *JULY_TO_SEPTEMBER) == 24340
+
+
+def test_sc131_a_a_void_bill_you_verified_stays_verified(pdf_store, local_model):
+    run = multi(pdf_store, local_model, pages=bf.multi_void_pages())
+    recite_split_amounts(run)
+    run.extract()
+    second_id = bill_ids(run)[1]
+    Ledger(run.store).review("receipt", second_id, "verified")  # You decide the bill that was rejected automatically.
+    run.answer([1, 2, 3])
+    recite_split_amounts(run)
+    run.extract(force=True)
+    second = run.bills()[1][2]
+    assert status_of(second) == ("verified", "user")
+    assert spending(run.store, *JULY_TO_SEPTEMBER) == 24340
+
+
+def test_sc131_a_a_photographed_bill_printed_void_is_rejected_too(pdf_store, local_model):
+    run = started_scan(pdf_store, local_model, [[*bf.mini_transcription(1), "VOID"]])
+    run.answer([1])
+    run.extract()
+    [(_, _, record)] = run.bills()
+    assert status_of(record) == ("rejected", "automatic")
+    noted(record, VOID_TEXT)
+    expect_read(record, 1)
+    assert spending(run.store, "2026-07-01", "2026-07-31") == 0
+
+
+def test_sc131_b_a_bill_repeating_another_in_a_new_file_is_rejected_with_a_note_and_counts_again_when_the_original_is_rejected(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    original_ids = bill_ids(run)
+    copy = alone(pdf_store, local_model)
+    copy.extract()
+    [(_, copy_id, record)] = copy.bills()
+    assert status_of(record) == ("rejected", "automatic")
+    noted(record, REPEATS)
+    expect_mini(record, 2, "9012")  # Recorded with its lines.
+    assert copy.run["publication"]["review_status"] == "rejected"
+    assert spending(run.store, "2026-08-01", "2026-08-31") == 8726  # Counted once.
+    assert [status_of(bill) for _, _, bill in run.bills()] == [("verified", "automatic")] * 3
+    assert not [text for _, _, bill in run.bills() for text in notes_of(bill) if "repeats" in text]
+    snapshot = rows_of(copy)
+    copy.answer([2])
+    copy.extract(force=True)  # Extract again of the copy gives the same result.
+    assert rows_of(copy) == snapshot
+    run.answer([1, 2, 3])
+    run.extract(force=True)  # Extract again of the file recorded first: it still counts.
+    assert bill_ids(run) == original_ids and [status_of(bill) for _, _, bill in run.bills()] == [("verified", "automatic")] * 3
+    assert status_of(copy.bills()[0][2]) == ("rejected", "automatic") and spending(run.store, "2026-08-01", "2026-08-31") == 8726
+    Ledger(run.store).review("receipt", original_ids[1], "rejected")  # You reject BL-MULTI's bill 2.
+    assert spending(run.store, "2026-08-01", "2026-08-31") == 0
+    copy.answer([2])
+    copy.extract(force=True)
+    [(_, again_id, counted)] = copy.bills()
+    assert again_id == copy_id and counted["review_status"] == "verified" and REPEATS not in notes_of(counted)
+    assert spending(run.store, "2026-08-01", "2026-08-31") == 8726
+    assert_ledger_healthy(run.store)
+
+
+def test_sc131_b_a_photographed_copy_of_a_bill_is_a_duplicate_too(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    scan = started_scan(pdf_store, local_model, [bf.mini_transcription(2)])
+    scan.answer([2])
+    scan.extract()
+    [(_, _, record)] = scan.bills()
+    assert status_of(record) == ("rejected", "automatic")
+    noted(record, REPEATS)
+    assert spending(run.store, "2026-08-01", "2026-08-31") == 8726
+
+
+def test_sc131_a_corrected_bill_with_another_amount_due_counts_and_carries_the_same_due_date_note(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    corrected = alone(pdf_store, local_model, amount="90.26")
+    corrected.extract()
+    [(_, _, record)] = corrected.bills()
+    assert record["amount_due_minor"] == 9026 and record["review_status"] != "rejected"
+    noted(record, SAME_DUE)
+    assert REPEATS not in notes_of(record)
+    assert record["review_status"] == "needs_review"  # Its own carried check: 81.42 - 81.42 + 87.26 is not 90.26.
+    assert [status_of(bill) for _, _, bill in run.bills()] == [("verified", "automatic")] * 3
+    assert not [text for _, _, bill in run.bills() for text in notes_of(bill) if "same due date" in text]  # The first bill carries no note: the later one does.
+    snapshot = rows_of(corrected)
+    corrected.answer([2])
+    field = corrected.local_model["by_schema"]["BillSummary"][0]["amount_due"]
+    field["value"], field["evidence"][0]["quote"] = "90.26", "90.26"
+    corrected.extract(force=True)
+    assert rows_of(corrected) == snapshot
+
+
+def test_sc131_c_bills_of_one_provider_and_due_date_for_two_accounts_both_count_with_no_note(pdf_store, local_model):
+    run = multi(pdf_store, local_model, ((1, "9012"), (2, "3456", 1)), pages=bf.acct_pages())
+    run.extract()
+    segment_check(run, 2)
+    for _, _, record in run.bills():
+        auto(record)
+        assert not [text for text in notes_of(record) if "repeats" in text or "same due date" in text]
+    assert spending(run.store, "2026-07-20", "2026-07-20") == 8142 + 8726
+
+
+def test_sc131_an_invoice_is_never_a_duplicate_and_two_invoice_files_with_the_same_total_both_count(pdf_store, local_model):
+    runs = []
+    for name in ("one.pdf", "two.pdf"):
+        pages = bf.mini_pages(2)
+        pages[0]["items"] += bf.left(720, "Invoice Number INV-2002") + bf.left(250, name)  # The second file differs, so it is another file.
+        run = started_bills(pdf_store, local_model, pages, name)
+        run.answer([2], invoice_at=0)
+        run.extract()
+        runs.append(run)
+    for run in runs:
+        [(_, _, record)] = run.bills()
+        assert record["invoice"] is not None and record["review_status"] != "rejected"
+        assert not [text for text in notes_of(record) if "repeats" in text or "same due date" in text]
+
+
+def test_sc131_marking_never_overrides_your_decision_or_follows_a_rejected_original(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    copy = alone(pdf_store, local_model)
+    copy.extract()
+    ledger, original, repeat = Ledger(run.store), bill_ids(run)[1], copy.bills()[0][1]
+    ledger.review("receipt", repeat, "verified")  # You decided the copy.
+    assert ledger.reject_receipt_automatically(repeat, original) is False and ledger.mark_bill_void(repeat) is False
+    assert status_of(copy.bills()[0][2]) == ("verified", "user")
+    copy.answer([2])
+    copy.extract(force=True)  # Extract again keeps your decision.
+    assert status_of(copy.bills()[0][2]) == ("verified", "user")
+    with run.store.connection() as db:
+        db.execute("UPDATE receipts SET review_status='rejected',review_source='automatic' WHERE id=?", (original,))
+        db.execute("UPDATE receipts SET review_status='verified',review_source='automatic' WHERE id=?", (repeat,))
+    assert ledger.mark_bill_duplicate(repeat, original) is False  # Its original no longer counts.
+    assert ledger.mark_bill_duplicate(repeat, repeat) is False and ledger.mark_bill_duplicate(repeat + 100, original) is False
+    assert status_of(copy.bills()[0][2]) == ("verified", "automatic")
+    assert ledger.mark_bill_void(repeat) is True and status_of(copy.bills()[0][2]) == ("rejected", "automatic")
