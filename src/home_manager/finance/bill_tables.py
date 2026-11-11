@@ -13,19 +13,21 @@ the right-most is the charge and a `Guess` says so (FR-124, a note and never a r
 
 The rate rule (`printed_rate`, FR-110, D21, D25) turns a printed rate into minor units: a rate whose value is a whole number of minor units is exact and
 keeps no text, any other is rounded half up and keeps the printed text. `for_lines` keeps what lies in one part of a file, as `paystub_tables.for_lines`
-does for a pay stub. What Record says beyond the cells (the FR-117 and FR-112 guesses, summary values, notes for unplaced lines) is built where Record reads
+does for a pay stub. A table may run on over the pages of several bills of one file: a section title never reaches a row of another bill (FR-102, FR-106),
+and the sum rule is judged on each bill's own rows and anchors (FR-105 b), the bills being where `documents/bill_split` starts them. What Record says beyond the cells (the FR-117 and FR-112 guesses, summary values, notes for unplaced lines) is built where Record reads
 a part, from the kinds named here.
 """
 
+from bisect import bisect_right
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 import re
 from types import SimpleNamespace
 
 from ..core.money import EXPONENTS
-from ..documents import charge_tables
+from ..documents import bill_split, charge_tables
 from ..documents.charge_tables import CREDIT_SECTION, ChargeTotal
-from ..documents.layout_context import native_page
+from ..documents.layout_context import evidence_lines, native_page
 from ..documents.table_engine import value_of
 from .document_checks import decimal
 from .paystub_tables import PageMap, adapt_header, cell_of, evidence_index, multiplies, page_number, spans_of
@@ -322,11 +324,47 @@ def adapt(tables, roles, evidence):
     return made
 
 
+# --- Bills of one file (FR-128) ------------------------------------------------------------------------------------------
+
+def anchors_by_line(anchors, lines_of):
+    """{evidence line id holding an anchor's label: [(kind, value), ...]}: the engine's anchors as the split rule reads them (bill_split.bill_parts)."""
+    found = {}
+    for anchor in anchors:
+        found.setdefault(lines_of.get(anchor.line_id, anchor.line_id), []).append((anchor.kind, anchor.token.value[0]))
+    return found
+
+
+def bill_starts(evidence, anchors, lines_of):
+    """The first page of each bill the split rule finds in the file ([1] for one bill, or when the rule raises: the caller words that, FR-129 d)."""
+    try:
+        lines = [line for line in evidence_lines(evidence) if line.text.strip()]
+        found = bill_split.bill_parts(lines, anchors_by_line(anchors, lines_of))
+        return [bill_split.page_of(lines[first]) for first, last in found.parts if last > first] or [1]
+    except Exception:
+        return [1]
+
+
+def bill_of(starts, page):
+    """The index of the bill a page belongs to."""
+    return max(bisect_right(starts, page) - 1, 0)
+
+
+def own_sections(table, starts):
+    """The table with each row's section kept only when its title is printed in the row's own bill: a bill's last title (`Account Credits`) does not
+    carry into the next bill's rows (FR-102, FR-106)."""
+    rows = [row if row.title is None or bill_of(starts, row.title.page) == bill_of(starts, row.page) else replace(row, section=None, title=None)
+            for row in table.rows]
+    return replace(table, rows=rows)
+
+
 # --- Entry point ---------------------------------------------------------------------------------------------------------
 
 def read(evidence):
     """Read a saved PDF reading (`PDFResult`) into charge tables, their column roles and Record's adapted tables."""
     reading = charge_tables.read(evidence)
+    lines_of, line_pages = evidence_index(evidence)
+    starts = bill_starts(evidence, reading.anchors, lines_of)
+    reading = replace(reading, tables=[own_sections(table, starts) for table in reading.tables])
     decided = [(table, decide(table, reading.anchors)) for table in reading.tables]
     tables = [table for table, found in decided if found]
     moved = [table for table, found in decided if not found]
@@ -339,7 +377,7 @@ def read(evidence):
     found = BillTables(reading, roles, guesses=guesses, notes=[guess.text for guess in guesses], pages=pages)
     found.adapted = adapt(tables, roles, evidence)
     found.engine_pages = {row.page for table in found.adapted for row in table.rows}
-    found.lines_of, found.line_pages = evidence_index(evidence)
+    found.lines_of, found.line_pages = lines_of, line_pages
     return found
 
 
@@ -370,12 +408,9 @@ def for_lines(bills, line_ids):
 
 
 def split_anchors(bills):
-    """The engine's summary anchors for the split rule (FR-128, plan P8.1): {evidence line id holding the anchor's label: [(kind, value), ...]}, so a part
-    whose `Amount Due` label and amount are on separate layout lines still prints its amount due (bill_split.bill_parts)."""
-    found = {}
-    for anchor in bills.reading.anchors:
-        found.setdefault(bills.lines_of.get(anchor.line_id, anchor.line_id), []).append((anchor.kind, anchor.token.value[0]))
-    return found
+    """The engine's summary anchors for the split rule (FR-128, plan P8.1), so a part whose `Amount Due` label and amount are on separate layout lines
+    still prints its amount due (bill_split.bill_parts)."""
+    return anchors_by_line(bills.reading.anchors, bills.lines_of)
 
 
 def replace_rows(table, rows):

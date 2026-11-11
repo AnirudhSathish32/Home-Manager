@@ -37,11 +37,8 @@ from test_pdf import make_pdf, pdf_store  # noqa: F401
 # the assertions below still judge in full: the entry only turns the failure into a strict expected failure, so it fails loudly once the engine is fixed.
 LAST_YEAR = ("a last-year column with no heading in a file of several bills: the column roles are decided once for the whole table, and the sum rule compares "
              "the whole column's sum with each bill's new charges, never the sum of them (finance/bill_tables.py targets_of, decide)")
-CARRIED_TITLE = ("the last section title of one bill (`Account Credits`) is still the section of the next bill's first rows when that bill prints no title of "
-                 "its own, so they read as money off (finance/bill_tables.py: a row's section is the last title above it, whatever bill it belongs to)")
 ESCALATED_RECORD = {
     **dict.fromkeys((29, 33, 64, 67), LAST_YEAR),
-    **dict.fromkeys((56, 83), CARRIED_TITLE),
 }
 ESCALATED_ROWS = {index: LAST_YEAR for index in (29, 33, 64, 67)}
 

@@ -994,3 +994,41 @@ def test_reading_the_bill_does_not_change_what_the_pay_and_statement_engines_get
 
 def test_the_guess_kinds_are_the_four_the_eval_counts():
     assert bill_tables.GUESS_KINDS == ("charge_column", "unclassified_row", "amount_due", "split_changed")
+
+
+# --- A table that runs on over the pages of several bills (FR-128 with FR-102, FR-105 b, FR-106) ----------------------------------------------
+
+def two_bills(first, second, extra=()):
+    """Two one-page bills (MINI-BILL(1) and (2)) whose charge rows print in the same column, so the engine reads one table over both pages; `extra` (items)
+    are added below page 1's charges."""
+    return [bf.page_of([*bf.mini_items(first), *extra]), bf.page_of(bf.mini_items(second))]
+
+
+def test_a_section_title_of_one_bill_does_not_reach_the_rows_of_the_next_bill(reader):
+    """Generator case 56's defect, by hand: page 1 ends with `Account Credits`; page 2 is another bill (another due date) whose rows print no title, so none
+    of them is money off."""
+    pages = two_bills(1, 2, [*bf.left(548, "Account Credits"), *bf.amounts_at(532, "Paperless Credit", (bf.CHARGE, "2.50"))])
+    bills = bill_tables.read(reader(pages))
+    [table] = bills.reading.tables
+    assert table.pages == [1, 2]  # One table over both bills: the case under test.
+    rows = {(row.page, row.label): row for row in table.rows}
+    assert rows[1, "Paperless Credit"].section == "Account Credits" and bill_tables.money_off(rows[1, "Paperless Credit"], bills.roles[0])
+    second = [row for row in table.rows if row.page == 2]
+    assert [row.label for row in second] == ["Customer Charge", "Energy Charge", "State Tax"]
+    assert [(row.section, row.title) for row in second] == [(None, None)] * 3
+    assert not [row for row in second if bill_tables.money_off(row, bills.roles[0])]
+    assert not [row for adapted in bills.adapted for row in adapted.rows if row.page == 2 and row.money_off]
+
+
+def test_a_section_title_carries_onto_the_next_page_of_the_same_bill(reader):
+    """The other side of the rule: page 2 repeats bill 1's keys, so it is the same bill and its rows stay in the `Account Credits` section."""
+    first = [*bf.mini_items(1, omit=("Total Current Charges", "Due Date", "Amount Due")), *bf.left(548, "Account Credits"),
+             *bf.amounts_at(532, "Paperless Credit", (bf.CHARGE, "2.50"))]
+    second = [*bf.left(780, "CITY POWER & WATER"), *bf.left(768, "Account Number 1234-5678-9012"), *bf.left(756, "Due Date 07/20/2026"),
+              *bf.amounts_at(700, "Total Amount Due", (bf.CHARGE, "81.42")),  # An anchor between the keys and the rows: a key line is no title here (G14).
+              *bf.amounts_at(620, "Loyalty Credit", (bf.CHARGE, "1.00")), *bf.amounts_at(604, "Referral Credit", (bf.CHARGE, "3.00"))]
+    bills = bill_tables.read(reader([bf.page_of(first), bf.page_of(second)]))
+    [table] = bills.reading.tables
+    second = [row for row in table.rows if row.page == 2]
+    assert table.pages == [1, 2] and [row.label for row in second] == ["Loyalty Credit", "Referral Credit"]
+    assert [row.section for row in second] == ["Account Credits"] * 2 and all(bill_tables.money_off(row, bills.roles[0]) for row in second)
