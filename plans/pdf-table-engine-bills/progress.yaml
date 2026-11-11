@@ -294,5 +294,21 @@ slices:
       heading-like); a title-shaped key line (masked account, Due Date) directly above rows becomes a section title (G14
       design); the engine splits a table into bills by the split rule, not a user-saved split, so a section or sum could
       cross a user boundary that differs from the rule's. For review-code.
-  - {id: SL-10, status: todo}
+  - id: SL-10
+    status: done
+    start_head: caf9449
+    end_head: d409174
+    commit: [ab98767, c8cb614, 2a222b2, d409174]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_evals.py -q -> 31 passed (orchestrator rerun at d409174)"
+      - "PYTHONPATH=src .venv/bin/python -m evals.synthetic <tmp> -> 'Synthetic corpus with 58 cases' (orchestrator rerun)"
+    notes: >-
+      For review-code: tests/test_evals.py edits go beyond the four 53->58 tests (bill count 2->7, pay stub slice
+      everything[48:53], three `!= "paystub"` filters made statement-only, stubs.json check excludes bill files) because
+      the new bills are also tagged `aligned`; the synthetic bills' footer reads "US dollars (USD)". checks_held counts the
+      lines check only. Three doc citations were already broken at START_HEAD (documents.md "Known limits", "Native PDF
+      layout", open-work.md "UI redesign"), not this feature's. In the worktree, `python -m evals.run` needs
+      PYTHONPATH=src (the .venv editable install points at the main checkout).
 final_verification: pending
