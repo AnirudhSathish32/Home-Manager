@@ -2,6 +2,7 @@
 
 Usage:  python scripts/statement_diagnose.py "<path to a statement PDF>" [year] [card]
         python scripts/statement_diagnose.py "<path to a pay stub PDF>" paystub
+        python scripts/statement_diagnose.py "<path to a bill PDF>" bill
 
 The rebuild places year-less dates in the statement's period; the script uses the whole of `year` (default this year).
 `card` runs the table engine as a credit-card statement (positive amounts are charges); the default is a bank statement.
@@ -24,6 +25,13 @@ specs/pdf-table-engine-paystubs plan R-A and OD-6): per page, the pay tables fou
 and the role decided for each, how the roles were decided, rows, totals, heading lines, the block and whether a partner table sits beside it), the
 summary boxes (their columns' roles and how they were decided), other tables set aside, lines placed in no column, the guesses by kind, and how
 many pay stubs the file splits into with the number of lines of each. Shapes and counts only: no heading word, label, amount, date or employer.
+
+With `bill` the file is read as a bill and only the bill engine's section is printed (documents/charge_tables.py, finance/bill_tables.py and documents/bill_split.py,
+specs/pdf-table-engine-bills FR-127, plan P11): per page, the charge tables found (each column's edges and zone as a percentage of the page width, its kind, the
+role decided and how it was decided), counts of rows, totals, section titles (holder titles counted apart), wrapped labels, summary anchors by kind, late-payment
+lines, other-table rows and unplaced lines; the guesses by kind; how many bills the file splits into and the pages of each; per page, which keys it prints (due date,
+statement date, account) and whether each equals the open bill's or differs, never a value; and which uncertainty rules of FR-129 fired, by letter. It needs no model
+and prints no heading word, label, provider, amount, date or digit of an account. The output holds only words of its own and numbers that count or place things.
 """
 from datetime import date
 import json
@@ -35,10 +43,11 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from home_manager.documents import bill_split  # noqa: E402
 from home_manager.documents.layout_context import evidence_lines, native_page, viewer_context  # noqa: E402
 from home_manager.documents.paystub_split import stub_parts  # noqa: E402
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker  # noqa: E402
-from home_manager.finance import paystub_tables, statement_rows, statement_tables  # noqa: E402
+from home_manager.finance import bill_tables, paystub_tables, statement_rows, statement_tables  # noqa: E402
 from home_manager.finance.pdf_import import PageView, assign, is_heading, native_spec  # noqa: E402
 from home_manager.library.storage import digest_file  # noqa: E402
 from home_manager.models import vision  # noqa: E402
@@ -151,6 +160,91 @@ def pay_section(result):
     print(f"\npay stubs found: {len(parts)}   lines of each: {[last - first for first, last in parts]}   lines in all: {len(lines)}")
 
 
+def bill_section(result):
+    """The bill engine's reading of a bill PDF (FR-127, plan P11): counts, roles, shapes and positions only, never a word of the bill."""
+    print(f"pages: {len(result.pages)}")
+    try:
+        bill = bill_tables.read(result)
+    except Exception as exc:  # The type only: an exception's text may quote the document.
+        print(f"the bill engine raised {type(exc).__name__}")
+        bill = None
+    if bill is not None:
+        reading = bill.reading
+        roles = {entry.table_id: entry for entry in bill.roles}
+        guesses = {}
+        for guess in bill.guesses:
+            guesses[guess.kind] = guesses.get(guess.kind, 0) + 1
+        print(f"charge tables: {len(reading.tables)}   other tables: {len(reading.other_tables)}   unplaced lines: {len(reading.unplaced)}"
+              f"   pages without a charge table: {reading.pages_without_tables}")
+        print(f"guesses by kind: {guesses or 'none'}")
+        late = {}
+        for line_id in reading.late_lines:
+            late[int(bill_split.PAGE.match(line_id).group(1))] = late.get(int(bill_split.PAGE.match(line_id).group(1)), 0) + 1
+        for page in result.pages:
+            layout = page.layout
+            print(f"\n=== Page {page.number} === method: {page.method}")
+            if layout is None:
+                print("no layout saved")
+                continue
+            width = layout.preview_width
+            view = PageView(layout)
+
+            def span(pair, width=width):
+                return "edge" if any(math.isinf(value) for value in pair) else f"{100 * pair[0] / width:.1f}–{100 * pair[1] / width:.1f}"
+            tables = [table for table in reading.tables if page.number in table.pages]
+            others = [table for table in reading.other_tables if page.number in table.pages]
+            rows = [row for table in tables for row in table.rows if row.page == page.number]
+            totals = [total for table in tables for total in table.totals if total.page == page.number]
+            titles = [title for table in tables for title in table.titles if title.page == page.number]
+            wrapped = sum(1 for row in rows if len({view.row_of[word_id] for word_id in row.word_ids if word_id in view.row_of}) > 1)
+            anchors = {}
+            for anchor in reading.anchors:
+                if anchor.page == page.number:
+                    anchors[anchor.kind] = anchors.get(anchor.kind, 0) + 1
+            other_rows = sum(1 for table in others for row in table.rows if row.page == page.number)
+            unplaced = sum(1 for line in reading.unplaced if line.page == page.number)
+            print(f"charge tables: {len(tables)}   rows: {len(rows)}   totals: {len(totals)}   section titles: {len(titles) - sum(title.phone for title in titles)}"
+                  f"   holder titles: {sum(title.phone for title in titles)}   wrapped labels: {wrapped}")
+            print(f"anchors by kind: {anchors or 'none'}   late-payment lines: {late.get(page.number, 0)}   other tables: {len(others)} ({other_rows} rows)   unplaced lines: {unplaced}")
+            for table in tables:
+                decided = roles[table.id]
+                print(f"  {table.id}: {len(table.columns)} columns, roles decided by: {decided.decided_by}   rows here: {len([row for row in table.rows if row.page == page.number])}"
+                      f"   heading lines: {len(table.headings)}   pages: {table.pages}")
+                for column in table.columns:
+                    print(f"    {column.kind:<7} {column.align:<6} edge {100 * column.edge / width:.1f}%  extent {span(column.extent)}%  zone {span(column.zone)}%"
+                          f"  role {decided.roles.get(column.id, 'other')}  heading words: {len(column.labels)}")
+            if not tables:
+                print("  no charge table on this page")
+    lines = [line for line in evidence_lines(result) if line.text.strip()]
+    try:
+        split = bill_split.bill_parts(lines)
+    except Exception as exc:
+        print(f"\nthe split rule raised {type(exc).__name__}   FR-129 reasons that fired: d")
+        return
+    pages = bill_split.pages_of(lines)
+    bills = []
+    for first, last in split.parts:
+        numbers = [page for page, start, _ in pages if first <= start < last]
+        bills.append(f"{numbers[0]}" if len(numbers) == 1 else f"{numbers[0]}-{numbers[-1]}")
+    print(f"\n{len(bills)} bill{'s' if len(bills) != 1 else ''}" + (f": pages {', '.join(bills)}" if len(bills) > 1 else f": pages {bills[0]}"))
+    starts = {first for first, _ in split.parts[1:]}
+    opened = {}
+    for page, start, stop in pages:  # What the split rule compares: a key's value against the one the open bill printed first (FR-128).
+        found = {}
+        for line in lines[start:stop]:
+            key = bill_split.key_of(line)
+            if key:
+                found.setdefault(key.kind, key.value)
+        shown = [f"{bill_split.NAMES[kind]} {'opens' if kind not in opened else 'equal' if opened[kind] == value else 'differs'}" for kind, value in found.items()]
+        if start in starts:
+            opened = {}
+        for kind, value in found.items():
+            opened.setdefault(kind, value)
+        print(f"  page {page}: keys {', '.join(shown) or 'none'}" + ("   (a bill starts here)" if start in starts else ""))
+    letters = sorted({"abc"[[bool(pattern.fullmatch(reason)) for pattern in bill_split.REASONS].index(True)] for reasons in split.reasons.values() for reason in reasons})
+    print(f"FR-129 reasons that fired: {', '.join(letters) or 'none'}")
+
+
 ARGUMENTS = sys.argv[1:]
 source = Path(ARGUMENTS[0]).resolve()
 with tempfile.TemporaryDirectory() as folder:
@@ -164,6 +258,10 @@ if vision_pages:
 
 if "paystub" in ARGUMENTS[1:]:
     pay_section(result)
+    raise SystemExit(0)
+
+if "bill" in ARGUMENTS[1:]:
+    bill_section(result)
     raise SystemExit(0)
 
 print("pages:", len(result.pages))
