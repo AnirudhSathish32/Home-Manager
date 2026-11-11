@@ -18,7 +18,7 @@ from .corpus import CASE_ID, TAGS, write_json
 from .decision import decide
 from .decision import markdown as decision_markdown
 from .decision import rules as decision_rules
-from .graders import FAILURE_KINDS, FIELD_ERRORS, GUESS_KINDS, score
+from .graders import BILL_GUESS_KINDS, FAILURE_KINDS, FIELD_ERRORS, GUESS_KINDS, score
 
 SUMMARY_FORMAT = "home-manager-eval-summary/1"
 MIN_CELL = 3
@@ -33,6 +33,10 @@ PAY_READERS = ("engine",)  # The pay stub comparison is the engine alone (specs/
 READER_NAMES_PAY = {"engine": "Pay engine"}
 READER_COUNTS = ("documents", "rows", "recorded", "exact", "reconcilable", "reconciled", "dropped", "unplaced", "failed")
 PAY_COUNTS = ("documents", "stubs", "values", "exact", "left_out", "checkable", "checks_held", "to_review", "split_right", "unplaced", "failed")
+BILL_READERS = ("engine",)  # The bill comparison is the engine alone (specs/pdf-table-engine-bills FR-124).
+READER_NAMES_BILL = {"engine": "Bill engine"}
+BILL_COUNTS = ("documents", "lines", "exact", "left_out", "checkable", "checks_held", "to_review", "unplaced", "failed", "files_split", "split_right",
+               "split_review")
 GUESS_COUNTS = ("made", "right")
 LABEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,80}")
 PATHLIKE = re.compile(r"^(?:[A-Za-z]:|/|\\)|\\|\.\.")
@@ -77,7 +81,7 @@ def aggregate(lines):
            "rows": Counter(), "documents": Counter(), "strata": defaultdict(lambda: defaultdict(lambda: {"checked": 0, "wrong": 0, "cases": 0, "passed": 0})),
            "wall": [], "model_ms": [], "tokens": Counter(), "failures": Counter(), "first_try": Counter(), "arithmetic": Counter(),
            "attempts": Counter(), "readers": {reader: Counter() for reader in READERS}, "pay_readers": {reader: Counter() for reader in PAY_READERS},
-           "guesses": defaultdict(Counter)}
+           "bill_readers": {reader: Counter() for reader in BILL_READERS}, "guesses": defaultdict(Counter)}
     for line in lines:
         kind, grades = line["document_type"], line["grades"] or {"fields": {}, "rows": {"scored": False}, "document": {"fully_checked": False, "perfect": None}}
         line_checked = line_wrong = 0
@@ -133,6 +137,15 @@ def aggregate(lines):
             counts = out["pay_readers"][reader]
             counts["documents"] += 1
             for key in ("stubs", "values", "exact", "left_out", "checkable", "checks_held", "split_right", "failed"):
+                counts[key] += counted[key]
+            counts["unplaced"] += counted["unplaced"] or 0
+            counts["to_review"] += counted.get("to_review") or 0
+        for reader, counted in (details.get("bill_readers") or {}).items():
+            if reader not in BILL_READERS:
+                continue
+            counts = out["bill_readers"][reader]
+            counts["documents"] += 1
+            for key in ("lines", "exact", "left_out", "checkable", "checks_held", "files_split", "split_right", "split_review", "failed"):
                 counts[key] += counted[key]
             counts["unplaced"] += counted["unplaced"] or 0
             counts["to_review"] += counted.get("to_review") or 0
@@ -225,15 +238,34 @@ def pay_reader_summary(stats):
                      "checks_share": share(counts[reader]["checks_held"], counts[reader]["checkable"])} for reader in PAY_READERS}
 
 
+def bill_reader_summary(stats):
+    """The text-PDF bills the bill engine read (docs/evals.md "The two table readers"), counts and shares only. Suppressed below MIN_CELL bill files, like
+    any other cell."""
+    counts = stats["bill_readers"]
+    documents = counts["engine"]["documents"]
+    if not documents:
+        return None
+    if documents < MIN_CELL:
+        return {"suppressed": True}
+    return {reader: {**{key: counts[reader][key] for key in BILL_COUNTS},
+                     "exact_share": share(counts[reader]["exact"], counts[reader]["lines"]),
+                     "checks_share": share(counts[reader]["checks_held"], counts[reader]["checkable"])} for reader in BILL_READERS}
+
+
+def guess_kinds(stats):
+    """The guess kinds a run reports: the pay engine's always, and the bill engine's besides when the run read text-PDF bills."""
+    return GUESS_KINDS + tuple(kind for kind in BILL_GUESS_KINDS if kind not in GUESS_KINDS) if stats["bill_readers"]["engine"]["documents"] else GUESS_KINDS
+
+
 def guess_summary(stats):
-    """How many guesses the pay engine made of each kind, and how many were right (the values it chose equal the answers; FR-74). Suppressed with
-    the pay stub comparison when it is, since both rest on the same few files."""
-    documents = stats["pay_readers"]["engine"]["documents"]
+    """How many guesses the pay and bill engines made of each kind, and how many were right (the values they chose equal the answers; FR-74, FR-124).
+    Suppressed with the pay stub and bill comparisons when they are, since both rest on the same few files."""
+    documents = stats["pay_readers"]["engine"]["documents"] + stats["bill_readers"]["engine"]["documents"]
     if not documents and not stats["guesses"]:
         return None
     if documents < MIN_CELL:
         return {"suppressed": True}
-    return {kind: {key: stats["guesses"][kind][key] for key in GUESS_COUNTS} for kind in GUESS_KINDS}
+    return {kind: {key: stats["guesses"][kind][key] for key in GUESS_COUNTS} for kind in guess_kinds(stats)}
 
 
 def summary(manifest, results, regressions):
@@ -286,6 +318,8 @@ def summary(manifest, results, regressions):
             candidates[name]["table_readers"] = reader_summary(stats)
         if pay_reader_summary(stats):
             candidates[name]["pay_readers"] = pay_reader_summary(stats)
+        if bill_reader_summary(stats):
+            candidates[name]["bill_readers"] = bill_reader_summary(stats)
         if guess_summary(stats) is not None:
             candidates[name]["guesses"] = guess_summary(stats)
     data = {"format": SUMMARY_FORMAT, "run_id": manifest["run_id"], "split": manifest["split"], "repeat": manifest["repeat"],
@@ -312,9 +346,10 @@ def allowed_keys():
             "sampling", "temperature", "seed", "schema_enforced", "mean_score", "score_spread", "failures", "first_try", "valid", "arithmetic",
             "consistent", "attempts", "calls", "follow_ups", "truncated", "tag", "table_readers", "legacy", "engine", "recorded", "exact",
             "reconcilable", "reconciled", "dropped", "unplaced", "failed", "exact_share", "reconciled_share", "pay_readers", "stubs", "values",
-            "left_out", "checkable", "checks_held", "to_review", "split_right", "checks_share", "guesses", "made", "right"}
+            "left_out", "checkable", "checks_held", "to_review", "split_right", "checks_share", "guesses", "made", "right", "bill_readers", "lines", "files_split",
+            "split_review"}
     keys |= set(STATUSES) | set(SOURCE_KINDS) | set(PAGE_BUCKETS) | set(ROW_COUNTS) | set(DOCUMENT_TYPES) | set(FIELD_ERRORS) | CASE_LISTS
-    keys |= set(FAILURE_KINDS) | set(TAGS) | set(GUESS_KINDS)
+    keys |= set(FAILURE_KINDS) | set(TAGS) | set(GUESS_KINDS) | set(BILL_GUESS_KINDS)
     keys |= {field for fields in CRITICAL.values() for field in fields}
     return keys
 
@@ -493,11 +528,38 @@ def pay_comparison(stats):
             "an answer value the reader placed nowhere. Checks hold means every this-period value was placed and they add up to the answers' gross and "
             "net pay. Stubs sent to review are the stubs the engine's records put in To check. Split right means the engine made as many parts as "
             "the file has stubs, each holding its stub's net pay. Unplaced lines are printed lines the engine found no column for and listed."]
+    return out + guess_line(stats)
+
+
+def guess_line(stats):
     guesses = stats["guesses"]
-    made = {kind: guesses[kind] for kind in GUESS_KINDS if guesses[kind]["made"]}
-    out += ["", "Guesses the engine made: " + (", ".join(f"{kind} {each['right']} right of {each['made']}" for kind, each in made.items()) if made else "none")
+    made = {kind: guesses[kind] for kind in guess_kinds(stats) if guesses[kind]["made"]}
+    return ["", "Guesses the engine made: " + (", ".join(f"{kind} {each['right']} right of {each['made']}" for kind, each in made.items()) if made else "none")
             + ". A guess is right when the values it chose equal the answers."]
-    return out
+
+
+def bill_comparison(stats):
+    """docs/evals.md "The two table readers": the bill engine's counts on the text-PDF bills of this run (its guesses are listed once, with the pay engine's)."""
+    counts = stats["bill_readers"]
+    if not counts["engine"]["documents"]:
+        return []
+    out = ["", f"Text-PDF bills read by the bill engine ({counts['engine']['documents']} files, "
+           f"{counts['engine']['lines']} charge lines, read from the saved reading with no model; more exact lines, more bills whose checks hold and fewer "
+           "sent to review are better):", "",
+           "| Reader | Charge lines recorded exactly | Left out | Bills whose checks hold | Files sent to review | Files split right | Files that split | Split reasons raised "
+           "| Unplaced lines | Reader failed |",
+           "|---|---|---|---|---|---|---|---|---|---|"]
+    for reader in BILL_READERS:
+        each = counts[reader]
+        out.append(f"| {READER_NAMES_BILL[reader]} | {each['exact']} of {each['lines']} ({percent(each['exact'], each['lines'])}) | {each['left_out']} | "
+                   f"{each['checks_held']} of {each['checkable']} | {each['to_review']} of {each['documents']} | {each['split_right']} of {each['files_split']} | "
+                   f"{each['files_split']} | {each['split_review']} | {each['unplaced']} | {each['failed']} |")
+    out += ["", "Exact means the charge cell equals the answer's line total (a credit by magnitude), matched to the answer's line by amount. Left out is an answer "
+            "line the reader placed nowhere. Checks hold means every line was placed and they add up to the answers' new charges. Files sent to review are "
+            "the files whose records put a bill in To check. Files that split are files that hold several bills or that the split rule cut into several; split right "
+            "means the rule made as many parts as the file has bills, each holding its bill's amount due. Split reasons raised are the files where the rule "
+            "named a doubt (FR-129). Unplaced lines are printed lines the engine found no column for and listed."]
+    return out + ([] if stats["pay_readers"]["engine"]["documents"] else guess_line(stats))
 
 
 def markdown(manifest, results, regressions, previous):
@@ -559,6 +621,7 @@ def markdown(manifest, results, regressions, previous):
                     f"{rows['description_errors']} with a wrong description."]
         out += reader_comparison(stats)
         out += pay_comparison(stats)
+        out += bill_comparison(stats)
         out += ["", "| Stratum | Value | Cases passed | Fields wrong of checked |", "|---|---|---|---|"]
         for dimension in ("document_type", "source_kind", "pages", "tag"):
             for value, stratum in sorted(stats["strata"].get(dimension, {}).items()):

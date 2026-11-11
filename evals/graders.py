@@ -11,11 +11,13 @@ from decimal import Decimal
 import re
 
 from home_manager.core.answers import CRITICAL, ROWS, kind_of
-from home_manager.finance import paystub_tables
+from home_manager.finance import bill_tables, paystub_tables
 
 # The kinds of guess the pay engine and Record record on a pay stub (FR-74), the only names the summary may hold for them.
 GUESS_KINDS = (paystub_tables.HEADINGS_OVERRULED, paystub_tables.COLUMNS_GUESSED, paystub_tables.GROUP_GUESSED, paystub_tables.BOX_COLUMNS_GUESSED,
                paystub_tables.SPLIT_CHANGED)
+# The kinds of guess the bill engine and Record record on a bill (specs/pdf-table-engine-bills FR-124); split_changed is shared with the pay stubs.
+BILL_GUESS_KINDS = (bill_tables.CHARGE_COLUMN, bill_tables.UNCLASSIFIED_ROW, bill_tables.AMOUNT_DUE, bill_tables.SPLIT_CHANGED)
 FIELD_ERRORS = ("missing", "invented", "sign", "scale", "digit", "date_swap", "year", "wrong_value")
 ROW_ERRORS = ("missing_row", "extra_row", "duplicate_row")
 # Why a document was not read or extracted: the model's JSON did not parse, broke the schema, or failed the app's
@@ -258,6 +260,60 @@ def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
     return out
 
 
+def bill_reader(bills, rows, parts, reasons=0, unplaced=None, failed=False):
+    """How the bill engine did on a text-PDF bill file (specs/pdf-table-engine-bills FR-124). `bills` is the answers of each bill in file order
+    (Case.stubs); `rows` is the charge amount the engine placed on each row, in minor units as printed (a credit by magnitude: Record signs it by its kind);
+    `parts` is the list of each part's printed amounts (sets of minor units) under the split rule (documents/bill_split.bill_parts); `reasons` is how many of its
+    parts carry an FR-129 review reason. Counts only, no values.
+
+    Each answer line takes the first unused row whose charge equals its line total (by magnitude); the printed label is not the answer's description, so the
+    amount is what matches.
+
+    documents    1 per file (the file the engine read)
+    lines        the answers' charge lines
+    exact        lines the engine placed with exactly the right charge
+    left_out     lines the engine placed nowhere
+    checkable    bills whose answers include the new charges, so their lines can be added up
+    checks_held  checkable bills whose every line was placed and whose lines add up to the answers' new charges (the lines check; the carried check
+                 needs the previous balance and payments, which the answers don't hold)
+    unplaced     printed lines the engine found no column for and listed
+    files_split  1 when the file holds several bills or the rule cut it into several
+    split_right  1 when files_split and the rule made as many parts as the file has bills, each holding its bill's amount due
+    split_review 1 when the rule raised an FR-129 review reason on any part
+    failed       the engine raised, so it placed nothing
+    """
+    unused = [] if failed else [abs(value) for value in rows]
+    out = {"lines": 0, "exact": 0, "left_out": 0, "checkable": 0, "checks_held": 0, "unplaced": unplaced, "files_split": int(len(bills) > 1 or len(parts) > 1),
+           "split_right": 0, "split_review": int(bool(reasons)), "failed": failed}
+    for answers in bills:
+        total, complete = Decimal(0), True
+        for line in answers.rows or []:
+            value = line["line_total_minor"]
+            if value is None:
+                continue
+            out["lines"] += 1
+            if abs(value) in unused:
+                unused.remove(abs(value))
+                out["exact"] += 1
+                total += value
+            else:
+                out["left_out"] += 1
+                complete = False
+        new = answers.fields["total_minor"].value if answers.fields["total_minor"].state != "unchecked" else None
+        if isinstance(new, int):
+            out["checkable"] += 1
+            out["checks_held"] += complete and total == new
+    out["split_right"] = int(out["files_split"] and bill_split_is_right(bills, parts) and not failed)
+    return out
+
+
+def bill_split_is_right(bills, parts):
+    """Whether a rule's parts are the file's bills: as many parts as bills, and part k's printed amounts include bill k's amount due. `parts` is the list of
+    each part's amounts as minor units (sets)."""
+    dues = [bill.fields["amount_due_minor"].value if bill.fields["amount_due_minor"].state != "unchecked" else None for bill in bills]
+    return len(parts) == len(bills) and all(due is None or due in amounts for due, amounts in zip(dues, parts))
+
+
 def split_is_right(stubs, parts):
     """Whether a reader's parts are the file's stubs: as many parts as stubs, and part k's printed amounts include stub k's net pay. `parts` is
     the list of each part's amounts as minor units (sets)."""
@@ -305,7 +361,7 @@ def grade_stubs(stubs, records):
 
 
 def guess_counts(records, each):
-    """{kind: {"made": n, "right": n}} of the guesses recorded on a pay stub file's records (details.guesses, FR-74). A guess is right when the
+    """{kind: {"made": n, "right": n}} of the guesses recorded on a pay stub or bill file's records (details.guesses, FR-74, FR-124). A guess is right when the
     values it chose equal the answers: the stub's money values are all right (`values_right`). Guesses on a stub that cannot be judged (no
     per-stub grades, or its rows not confirmed complete) are not counted. Kinds are the engine's fixed list, so nothing else is recorded."""
     counts = {}
@@ -314,7 +370,7 @@ def guess_counts(records, each):
         if right is None:
             continue
         for guess in ((record or {}).get("details") or {}).get("guesses") or []:
-            if guess.get("kind") in GUESS_KINDS:
+            if guess.get("kind") in GUESS_KINDS or guess.get("kind") in BILL_GUESS_KINDS:
                 entry = counts.setdefault(guess["kind"], {"made": 0, "right": 0})
                 entry["made"] += 1
                 entry["right"] += right

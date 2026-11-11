@@ -1,4 +1,4 @@
-"""A synthetic corpus: 53 invented receipts, bank and card statements, pay stubs and bills with known answers.
+"""A synthetic corpus: 58 invented receipts, bank and card statements, pay stubs and bills with known answers.
 
   python -m evals.synthetic OUT_FOLDER
 
@@ -13,9 +13,12 @@ statements printed in aligned columns (tag aligned: a Wells Fargo-style two-line
 descriptions, a card statement with sections), drawn by evals/statement_layouts.py so their answers come from its inputs, and five text-PDF pay
 stub files in aligned columns (also tag aligned: one table with Hours, Rate, Current and YTD; stacked sections with no headings; side-by-side
 blocks with a summary box; two-line headings with a year-to-date-only row; a file of three stubs), drawn by evals/paystub_layouts.py. The
-three-stub file's case also carries stubs.json, one answer file per stub in file order (corpus.Case.stubs).
+three-stub file's case also carries stubs.json, one answer file per stub in file order (corpus.Case.stubs). Last come five text-PDF bill files in aligned columns
+(tag aligned: a utility bill with Usage, Rate and Charge and a summary box; a phone bill with holder sections, subtotals and a credit; a rent bill with line periods,
+a previous balance and payments; a two-page bill with no headings and a remittance stub on its own page; a file of three monthly bills), drawn by
+evals/bill_layouts.py. The three-bill file's case also carries stubs.json, one answer file per bill in file order.
 Every answer is consistent with the printed text: items add up to the subtotal, subtotal, tax and tip to the total,
-transactions to the closing balance, and pay lines to gross and net pay.
+transactions to the closing balance, pay lines to gross and net pay, and bill lines to the new charges.
 """
 
 import argparse
@@ -29,12 +32,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 from home_manager.core.answers import CRITICAL, ROWS, Answers, FieldAnswer
 
-from . import paystub_layouts, statement_layouts
+from . import bill_layouts, paystub_layouts, statement_layouts
 from .corpus import CaseInfo, Corpus, write_json
 
 SEED = 20261003
 LAYOUT_SEED = SEED + 1  # The aligned-column statements' own seed: drawing them never touches the other documents' random draws.
 PAYSTUB_SEED = SEED + 2  # The aligned-column pay stubs' own seed (evals/paystub_layouts.py), for the same reason.
+BILL_SEED = SEED + 3  # The aligned-column bills' own seed (evals/bill_layouts.py), for the same reason.
 PDF_LINES_PER_PAGE = 50
 # The five aligned-column pay stub files, as (index, the generator's fixed choices): one table with Hours, Rate, Current and YTD; stacked sections with
 # no headings; side-by-side blocks with a summary box; two-line headings with a year-to-date-only row; a file of three stubs. Each prints only a pay
@@ -47,6 +51,20 @@ PAYSTUB_FILES = (
     (2, {**ONE_TABLE, "layout": "side", "hours": False, "heading": "known1", "box": True, "box_heads": "known", "box_shuffled": False, "stubs": 1}),
     (3, {**ONE_TABLE, "heading": "known2", "ytd_only": True, "stubs": 1}),
     (4, {**ONE_TABLE, "heading": "known1", "stubs": 3}),
+)
+# The five aligned-column bill files, as (index, the generator's fixed choices): a utility bill with Usage, Rate and Charge and a summary box above and below;
+# a phone bill with holder sections, subtotals and a credit; a rent bill with line periods, a previous balance and payments and no new charges printed (so
+# they are worked out); a two-page bill with no headings and a remittance stub on its own page; a file of three monthly bills. Every dimension the generator
+# draws is fixed here (a bill's own `settle` rules still apply); the index only picks which drawn labels and words print.
+BILL_BASE = dict(kind="utility", bills=1, sections="sections", heading="known1", columns="plain", credit="minus", summary="above", prev_printed=True,
+                 new_printed=True, due_diff=False, stub="none", stub_line="amount_due", cut="none", repeat=False, late="none", late_row=False, sentence="none",
+                 wrapped=False, history=False, dots=False, acct_same_dates=False, rate_kind="whole_2dp", due_label=0, swap=False, holder_forms=(), holder_modes=())
+BILL_FILES = (
+    (0, {**BILL_BASE, "columns": "qr", "summary": "both", "rate_kind": "frac_4dp"}),
+    (1, {**BILL_BASE, "kind": "phone", "credit": "paren", "summary": "below", "holder_forms": ("full", "paren"), "holder_modes": ("first_row", "first_row")}),
+    (2, {**BILL_BASE, "kind": "rent", "new_printed": False, "due_diff": True, "due_label": 1}),
+    (3, {**BILL_BASE, "heading": "none", "stub": "own_page"}),
+    (4, {**BILL_BASE, "bills": 3, "columns": "qr", "summary": "both", "rate_kind": "whole_4dp"}),
 )
 SHOPS = [  # Printed name, the name a person would type, the kind of things it sells.
     ("CORNER COFFEE", "Corner Coffee", "cafe"), ("HILLSIDE HARDWARE", "Hillside Hardware", "hardware"),
@@ -90,7 +108,7 @@ def random_day(rng, start=date(2026, 1, 5), end=date(2026, 9, 25)):
 
 def case(document_type, lines, fields, rows, tags=(), source="png", faded=False, layout=None, stubs=None):
     """layout: positioned pages ({"items": [(x, y, text), ...]}) for a PDF whose columns are placed by position; lines are then its texts.
-    stubs: for a file of several pay stubs, [{"fields": ..., "rows": ...}] one per stub in file order (fields and rows are then the first stub's)."""
+    stubs: for a file of several pay stubs or bills, [{"fields": ..., "rows": ...}] one per stub or bill in file order (fields and rows are then the first's)."""
     assert set(fields) == set(CRITICAL[document_type]), (document_type, set(fields) ^ set(CRITICAL[document_type]))
     return {"document_type": document_type, "lines": lines, "fields": fields, "rows": rows, "tags": list(tags), "source": source, "faded": faded,
             "layout": layout, "stubs": stubs}
@@ -265,6 +283,24 @@ def aligned_paystub(index, **choices):
     return case("paystub", lines, first["fields"], first["rows"], ("aligned",), "pdf", layout=pages, stubs=stubs if len(stubs) > 1 else None)
 
 
+def aligned_bill(index, **choices):
+    """A bill file printed in aligned columns, drawn by the layout generator (evals/bill_layouts.py): its charge lines, amounts due and dates are the
+    generator's own inputs, never a reader's output. `choices` fix what the generator would draw (see its `draw`); every one of its rules still applies. A file
+    of several bills keeps one set of answers per bill (`stubs`), the first bill's being the case's own. A line's holder is the one the print gives it."""
+    layout = bill_layouts.make(BILL_SEED, index, **choices)
+    # Every page's footer names the currency by its code too, so the answers' currency is printed as the other documents' is.
+    pages = [{"items": [(x, y, text.replace("US dollars.", "US dollars (USD).")) for x, y, text in page["items"]]} for page in layout.pages]
+    lines = [text for page in pages for _, _, text in page["items"]]
+    bills = []
+    for answer in layout.bills:
+        fields = {"provider": answer["provider"].title(), "issue_date": answer["issue_date"], "due_date": answer["due_date"], "currency": "USD",
+                  "amount_due_minor": answer["amount_due"], "total_minor": answer["new_charges"]}
+        rows = [{"description": line["description"], "line_total_minor": line["minor"], "line_holder": line["holder"]} for line in answer["lines"]]
+        bills.append({"fields": fields, "rows": rows})
+    first = bills[0]
+    return case("bill", lines, first["fields"], first["rows"], ("aligned",), "pdf", layout=pages, stubs=bills if len(bills) > 1 else None)
+
+
 def documents():
     """Every synthetic document, in a fixed order, from the fixed seed."""
     rng = random.Random(SEED)
@@ -327,6 +363,8 @@ def documents():
             aligned_statement(3, "card", signs="sectioned", heading="known1", dates="mdy4", balance=False, rows=11, wrap=1, extras=())]
     # Text-PDF pay stubs in aligned columns (PAYSTUB_FILES), after everything above so that no other document changes: a test pins the first 48.
     out += [aligned_paystub(index, **choices) for index, choices in PAYSTUB_FILES]
+    # Text-PDF bills in aligned columns (BILL_FILES), after everything above so that no other document changes: a test pins the first 53.
+    out += [aligned_bill(index, **choices) for index, choices in BILL_FILES]
     for document in out:
         assert all(set(row) == set(ROWS[document["document_type"]][1]) for row in document["rows"])
     return out
@@ -419,7 +457,7 @@ def write_case(corpus, document, rng):
         draw(document["lines"], folder / "original.png", document["faded"], rng)
     answers = checked_answers(kind, document["fields"], document["rows"])
     (folder / "answers.json").write_text(answers.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    if document["stubs"]:  # A file of several pay stubs: one answer file per stub, in file order.
+    if document["stubs"]:  # A file of several pay stubs or bills: one answer file per stub or bill, in file order.
         write_json(folder / "stubs.json", [json.loads(checked_answers(kind, stub["fields"], stub["rows"]).model_dump_json()) for stub in document["stubs"]])
     info = CaseInfo(case_id=case_id, donor="synthetic", bundle_id="synthetic", document_type=kind,
                     source_kind="native_pdf" if document["source"] == "pdf" else "scan", pages=len(split_pages), redacted=False,

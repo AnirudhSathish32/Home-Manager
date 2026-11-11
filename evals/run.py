@@ -26,12 +26,13 @@ import tomllib
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.core.money import MoneyError, to_minor
+from home_manager.documents import bill_split
 from home_manager.documents.extraction import EXTRACTION_VERSION, cell_amount, line_amounts, paystub_columns
 from home_manager.documents.layout_context import evidence_lines
 from home_manager.documents.paystub_split import stub_parts
 from home_manager.documents.pdf_reader import PDFResult, read_result
 from home_manager.documents.reasoning import ReasoningConfig
-from home_manager.finance import paystub_tables, statement_rows, statement_tables
+from home_manager.finance import bill_tables, paystub_tables, statement_rows, statement_tables
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.model_client import DEFAULT_TEMPERATURE, check_connection, model_identity, recording
@@ -40,7 +41,7 @@ from home_manager.models.vision import VISION_VERSION, Sampling, VisionConfig
 
 from .corpus import Corpus, write_json
 from .decision import rules as decision_rules
-from .graders import failure_kind, grade, grade_stubs, guess_counts, pay_reader, split_is_right, table_reader
+from .graders import bill_reader, failure_kind, grade, grade_stubs, guess_counts, pay_reader, split_is_right, table_reader
 from .guard import GuardError, check_server, install_network_guard
 
 RUN_FORMAT = "home-manager-eval-run/1"
@@ -240,8 +241,49 @@ def pay_readers(case, stubs, evidence):
         return {"engine": pay_reader(stubs, [], False, failed=True)}
 
 
+def bill_rows(tables, currency):
+    """What the bill engine placed: the charge amount of each row of its charge tables, in minor units as printed, in the order printed. A table whose charge
+    column can't be told places no value; a total is no charge line."""
+    found = []
+    for table in tables:
+        column = next((number for number, role in table.roles.items() if role == "charge"), None)
+        for row in table.rows:
+            if getattr(row, "total", False) or not row.cells:
+                continue
+            value = cell_minor(row, column, currency)
+            if value is not None:
+                found.append(value)
+    return found
+
+
+def bill_readers(case, bills, evidence):
+    """docs/evals.md "The two table readers": for a native-PDF bill with a text page whose charge lines the donor confirmed complete, the bill engine
+    (`bill_tables.read`, whose columns are decided from the printed numbers) reads the saved reading, with no model. Its file split
+    (`bill_split.bill_parts` with the engine's anchors) is the rule Record uses. None when the case is not such a bill; image bills are not counted."""
+    if (case.info.document_type != "bill" or case.info.source_kind != "native_pdf" or not isinstance(evidence, PDFResult)
+            or not any(page.method == "embedded_text" and page.layout is not None for page in evidence.pages)
+            or any(not answers.rows_complete or answers.rows is None for answers in bills)):
+        return None
+    first = bills[0].fields["currency"]
+    currency = (first.value if first.state != "unchecked" else None) or case.info.home_currency or "USD"
+    lines = [line for line in evidence_lines(evidence) if line.text.strip()]
+    def printed(first, last):
+        return {minor(amount, currency) for line in lines[first:last] for amount in line_amounts(line.text)}
+    try:
+        engine = bill_tables.read(evidence)
+        rows, unplaced = bill_rows(engine.adapted, currency), len(engine.reading.unplaced)
+        try:
+            found = bill_split.bill_parts(lines, bill_tables.split_anchors(engine))
+            parts, reasons = [printed(first, last) for first, last in found.parts], len(found.reasons)
+        except Exception:  # A split that raises is a split missed (the app reads the file as one bill with a review reason), not a stop.
+            parts, reasons = [], 1
+        return {"engine": bill_reader(bills, rows, parts, reasons, unplaced)}
+    except Exception:  # An engine that raises placed nothing; that is a result, not a stop.
+        return {"engine": bill_reader(bills, [], [], 0, failed=True)}
+
+
 def review_count(publication):
-    """How many pay stubs of an extraction run were sent to review: published and not counted automatically (a stub rejected as a duplicate or
+    """How many pay stubs or bills of an extraction run were sent to review: published and not counted automatically (a stub rejected as a duplicate or
     VOID is not). None when the run published nothing."""
     if not isinstance(publication, dict):
         return None
@@ -250,8 +292,8 @@ def review_count(publication):
 
 
 def grade_case(case, answers, record, details):
-    """The case's grades. A pay stub file's records (a list, one per stub) are graded one stub at a time against `Case.stubs` and merged; a different
-    count than the file has stubs is a split miss. Its guesses are counted by kind in `details`."""
+    """The case's grades. A pay stub or bill file's records (a list, one per stub or bill) are graded one at a time against `Case.stubs` and merged; a
+    different count than the file has is a split miss. Its guesses are counted by kind in `details`."""
     if not isinstance(record, list):
         return grade(answers, record)
     grades, each = grade_stubs(case.stubs(), record)
@@ -306,6 +348,9 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
             pay = pay_readers(case, case.stubs(), evidence) if case.info.document_type == "paystub" else None
             if pay:
                 details["pay_readers"] = pay
+            billed = bill_readers(case, case.stubs(), evidence) if case.info.document_type == "bill" else None
+            if billed:
+                details["bill_readers"] = billed
             with manager.store.connection() as db:
                 row = db.execute("SELECT id FROM extraction_runs WHERE document_id=? ORDER BY created_at DESC LIMIT 1", (document["id"],)).fetchone()
             if row is None:
@@ -316,15 +361,16 @@ def pipeline(case, candidate, base_url, timeout, sampling, attempts):
                 return failed("extract_failed", "extraction", extraction, details)
             result = extraction["result"] or {}
             details["predicted_type"] = (result.get("classification") or {}).get("document_type")
-            paystub = case.info.document_type == "paystub"
-            if paystub and pay:
-                pay["engine"]["to_review"] = review_count(extraction.get("publication"))  
-            if result.get("segments"):  # A pay stub file is graded stub by stub (grade_case); any other split document by its first part.
+            listed = case.info.document_type in ("paystub", "bill")
+            for readers in (pay, billed):
+                if readers:
+                    readers["engine"]["to_review"] = review_count(extraction.get("publication"))
+            if result.get("segments"):  # A pay stub or bill file is graded one at a time (grade_case); any other split document by its first part.
                 records = [(segment or {}).get("normalized") for segment in result["segments"]]
-                return "split", records if paystub else records[0], details
+                return "split", records if listed else records[0], details
             if not result.get("normalized"):
                 return "no_record", None, details
-            return "ok", [result["normalized"]] if paystub else result["normalized"], details
+            return "ok", [result["normalized"]] if listed else result["normalized"], details
         finally:
             manager.close()
 
