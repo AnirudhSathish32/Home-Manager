@@ -246,7 +246,22 @@ slices:
       a test helper (recite_split_amounts) has the stub cite each amount's own line; no fixture or assertion changed and
       every contract value holds. Same-file exact duplicates can't be built (an identical key continues the bill), so that
       path is covered by lookup logic only. For review-code.
-  - {id: SL-08, status: todo}
+  - id: SL-08
+    status: done
+    start_head: fc3b0eb
+    end_head: 26bd177
+    commit: [ffefadb, 39fd824, 5d91932, 26bd177]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_bill_engine_browser.py tests/test_document_v2_browser.py -q -> 14 passed (orchestrator rerun at 26bd177)"
+      - ".venv/bin/python -m pytest tests/test_bill_engine_record.py -k sc110 -q -> 9 passed, 75 deselected (orchestrator rerun)"
+    orchestrator_decisions:
+      - >-
+        The bill chip first stripped the currency code in the browser (regex on display.amount_due). docs/ui.md "Screen
+        rules" (money from the server) and non-USD bills: the chip shows the server's string unchanged ("81.42 USD").
+        Fix 5d91932; contract amounts unchanged.
+    notes: "docs/ui.md cites documents.md \"Several bills in one file\", a heading SL-10 adds."
   - {id: SL-09, status: todo}
   - {id: SL-10, status: todo}
 final_verification: pending
