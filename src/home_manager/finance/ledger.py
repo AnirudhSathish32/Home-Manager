@@ -976,16 +976,18 @@ class Ledger:
         return previous
 
     def retire_segments(self, blob_hash, keep, note=None):
-        """Receipts and pay stubs of a file's segments that its latest reading no longer finds (keep: the segments it found;
+        """Receipts, bills and pay stubs of a file's segments that its latest reading no longer finds (keep: the segments it found;
         none when the file became a later page of a combined document). One the user never decided stops counting (rejected
-        automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note."""
+        automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note.
+        The note names a bill a "bill" (FR-132)."""
         retired = 0
         with self.store.connection() as db:
             marks = ",".join("?" * len(keep))
             for table, noun in (("receipts", "receipt"), ("income_records", "pay stub")):
-                text = note or f"The latest reading of this file no longer finds this {noun}; check how the file was split."
-                for row in db.execute(f"SELECT id,review_source,validation_json FROM {table} WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
+                kind = ", document_kind" if table == "receipts" else ", 'receipt' AS document_kind"
+                for row in db.execute(f"SELECT id,review_source,validation_json{kind} FROM {table} WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
                                       (blob_hash, *keep)).fetchall():
+                    text = note or f"The latest reading of this file no longer finds this {'bill' if row['document_kind'] == 'bill' else noun}; check how the file was split."
                     issues = [issue for issue in json.loads(row["validation_json"]) if issue != text] + [text]
                     if row["review_source"] == "user":
                         db.execute(f"UPDATE {table} SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
