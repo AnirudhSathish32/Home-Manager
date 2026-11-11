@@ -671,7 +671,8 @@ Code: `documents/extraction.py` (`Item.tax_code`, `TaxLine`, `TaxCodeMeaning`, `
 
 Code: `documents/extraction.py` (`bill_kind`, `BILL_KINDS`, `BILL_FORMS`, `RENT_ROWS`, `bill_dates`, `bill_lines`),
 `finance/ledger.py` (`bill_summary`), `app/manager.py` `change_kind`. Spec: `specs/bill-kinds`. What a rent bill reads
-and how it counts: [money](money.md#bills-and-their-lines).
+and how it counts: [money](money.md#bills-and-their-lines). A text-PDF bill's amounts come from its printed columns
+([below](#bill-lines-from-the-printed-columns)), and a file of several bills is one bill each ([below](#several-bills-in-one-file)).
 
 - **Two kinds.** The classifier also proposes a bill's kind, citing the lines that show it (a heading or line naming
   rent, a resident or a lease charge): `rent` or `general` (no extra model call). An uncited, mis-cited or unlisted
@@ -994,6 +995,224 @@ A file such as a year of stubs in one PDF is recorded as one pay stub each.
   shown reconciliation status is the worst of its stubs'; a stub with no deposit has none. A file whose only pay stub is
   rejected shows no library amount, as receipts. Tax tables are looked up for the tax year of every stub.
   Donating a file with several pay stubs is not supported.
+
+### Bill lines from the printed columns
+
+Code: `documents/charge_tables.py` (rows, columns, sections, holder titles, totals, summary anchors, other tables, unplaced lines),
+`finance/bill_tables.py` (which tables are charge tables, what each column is, the rate rule, the guesses and the cells Record reads),
+`documents/extraction.py` (`anchor_bill`, `bill_tables_of`, `bill_lines`, `bill_unplaced_notes`), `documents/layout_context.py`,
+`finance/document_traces.py` (the quantity × unit price and worked-out checks). Spec: `specs/pdf-table-engine-bills`. Like the statement and
+pay stub engines it reads the saved reading's words and their positions, with no model and no network; the same input gives the same tables,
+roles, guesses and evidence. What a bill counts and how it is checked: [money](money.md#bills-and-their-lines).
+
+- **Which pages (one path).** Every `embedded_text` page of a text-PDF bill, general or rent, that holds a charge table takes its
+  amounts from the engine. Every other page is read like a photographed bill: the model's values with the citation checks, never
+  the reader's printed tables (`table_grid`). A text page with no charge table adds the note "Page N: no charge table was found in the
+  printed columns, so its amounts are the reading's; check them." If the engine raises, every page of the bill is read that way with the
+  note "The charge lines couldn't be read from the printed columns, so the reading's amounts were used; check them." (logged by class,
+  never with document text), and a file of several bills is still split. A layout note on a page of an engine-read bill that says only
+  `unresolved_columns` is not a review reason, on every text page of the file, with a charge table or not; any other layout issue
+  still sends the bill to review. A photographed or scanned bill, and a bill with no text page, is read as before. **Invoices
+  (`invoice_marker`, `invoice_number` or `invoice_total` read) keep today's path** (`anchor_rows`, `anchor_summary`): a text-PDF bill
+  the model's summary reads as an invoice is read again with the printed tables, which costs one more summary question. Bills read
+  before extraction version `typed-extraction-v47-bill-engine` are read again on **Extract again**; a bill you confirmed or
+  rejected is not rewritten.
+- **Rows.** A row is a label at the left followed by an amount in an amount column, found by alignment alone; no date or heading is
+  needed. A date printed on the line (`Rent 10/01/2026 - 10/31/2026 $1,450.00`) is label text, never an amount. A number followed in its own
+  run by a word other than `CR` or `DR` (`3,200 GAL`, `500 kWh`, `450 min`) is usage: label text, never money. Where such numbers line up
+  in a column of their own, they are that column's values with the unit kept as printed, so the quantity column can be found; they are
+  still never money. Columns are amounts that line up by right edge, left edge or centre; headings, when printed (one or two lines, or
+  one line of words that fall over several columns), only label them, and their wording is never required. A text line at the label
+  column's left edge followed by a row is a **section title** and the rows' section; an indented text line directly under a row joins
+  its label (a wrapped label). A line starting `total`, `subtotal` or `total for`, or ending `total`, is a total with its value, not a
+  row. A table continues over later pages as the pay stub engine's does, and a table that runs on over several bills of one file keeps
+  each bill's sections and sums to its own bill: a section title never reaches a row of a later bill.
+- **Which column is the charge** (from the printed numbers; the model decides nothing). In order: **(a)** quantity and rate: a pair of
+  columns whose product equals a third column on every row printing all three (a rate may print four decimals) are quantity and unit
+  price, the third is the charge; **(b)** the column whose signed amounts add up to the bill's new charges (printed, or worked out when
+  not printed, below), else to the amount due when neither is available, or whose printed subtotals each equal the rows they cover; when
+  a table runs over several bills, every bill's rows must add up to that bill's own new charges; **(c)** headings break a tie and are the
+  only guide when (a) and (b) decide nothing; **(d)** one amount column is the charge. Every other column (a last-year column, meter
+  reads, days) is `other` and never money. When two columns both add up and no heading decides, the right-most is the charge and a note
+  says so (a `charge_column` guess). A table with no charge column (a usage history, a payment history, a budget billing schedule) is
+  an other table and gives no lines.
+- **Money off.** A row printed with a minus sign, parentheses or `CR` is money off. An unsigned row under a section title naming credits,
+  discounts or adjustments is money off. Every other row is a charge. A row printed as money off is recorded as a `credit` line (rent
+  type `credit` on a rent bill) whatever the model called it, with the note ""D" is printed as money off, so it was recorded as a credit."
+  when the model said otherwise. An unsigned row the model calls a credit stays money off, and the lines check judges it.
+- **Summary lines.** A line whose whole label is a fixed phrase and that prints an amount is a summary anchor, never a charge row,
+  wherever it is printed: above the charges, below them, on a remittance stub, on another page. The phrases are whole labels, case
+  ignored, with dates, dot leaders, `$`, a colon and separating dashes taken out (`ANCHOR_WORDS` in `documents/charge_tables.py`):
+  - **previous balance:** previous balance, balance forward, last bill, previous bill amount;
+  - **payments:** payment, payments, payment received, payments received, payment thank you, payments thank you;
+  - **new charges:** new charges, current charges, total current charges, total new charges;
+  - **amount due:** amount due, total amount due, total due, balance due, amount to pay, total amount to pay, payment due.
+  A label that only holds one of these inside a sentence (`Your previous balance was paid in full 82.10`: a multi-word phrase and three more
+  words) is no anchor and no charge row: it is an unplaced line. A line that applies only after a date or if paid late (`If paid after
+  10/15/2026, pay $102.55`, `Late fee after 10/15/2026`, `If paid late, pay …`, `If not paid by the due date`; `LATE_WORDS`) is nothing:
+  not an anchor, not a charge, and never the amount due.
+- **The key lines.** A line whose text starts with one of these labels directly followed by its value (dot leaders, a colon or `#` allowed) is
+  a key line, not a charge (`KEY_LABELS`, used by the split, [below](#several-bills-in-one-file)): **due date** (due date, payment due
+  date, payment due); **statement date** (statement date, bill date, billing date); **account** (account number, account no., account
+  no, account #, account). A key word inside a sentence or after other words (`Previous Statement Date …`) is no key line.
+- **Headings and credit words.** Headings only break ties (FR-105 c): charge-like words are `charge(s)`, `amount`, `current`, `this bill`,
+  `this period`, `total`; other-column words are `last year`, `previous`, `prior`, `usage`, `rate`, `kwh`, `meter`, `reading`, `days`
+  (`CHARGE_HEADS`, `OTHER_HEADS` in `finance/bill_tables.py`). A credit section title holds `credit(s)`, `discount(s)` or `adjustment(s)`
+  (`CREDIT_SECTION`). All the lists above are whole words, case-insensitive and kept in one place each, so a new word is one edit.
+- **Holders.** A section title is a **holder title** when it prints a phone number: grouped digits ending in a group of exactly four, which
+  directly follows a group of exactly three (`555-201-1111`, `(555) 201-1111`, `201-1111`; an optional `+1` and area code), or masked
+  (`xxx-xxx-1111`, `***-1111`, `•••• 1111`) or after `ending`, `ending in` or `ends in` (`Line ending 1111`); or when it prints no
+  number but the model's holder for some row of that section holds a word printed in the title. A year range (`Charges 2025-2026`), a
+  bare four-digit year and an account number (`Account 1234-5678-9012`) are not phone numbers, so they make no holder title; an
+  `Account ****9012` is (masked). The title's holder is the title as printed, whitespace collapsed, cut to 80 characters, so family
+  routing finds the member by the number's last four digits; a title longer than 80 characters can lose the end of its number. Every
+  row under a holder title takes that holder, whether the model gives the row a holder or none (and an engine row no model line cites
+  too), and cites the title line as well as its own. When the model's holder for such a row disagrees with the title (it agrees when the
+  last four digits match where both print digits, else when a word of it is printed in the title), the title wins and the bill gets the
+  note "Line N: the holder X differs from its section title; the title's holder Y was used." (N is the line's position on the
+  bill). A row under no holder title keeps the older rule: the model's holder is kept only when printed in the row's own lines.
+- **What the model does.** It classifies each charge row (description, category, line kind or rent type, holder, period, usage) citing
+  the row's first line; the description is its own. Every amount, quantity and unit price is copied from the row's cell in its role
+  column, and a blank cell stays blank. A model line citing a total, a summary line, a section title or a key line is left out, with a
+  note ("… is a printed total, not a charge"); two model lines on one row keep the first, with a note; a line citing a line that is no
+  row keeps its value only when its amount is printed in the cited line. An engine row no model line cites is still recorded: its
+  description is the printed label, its kind is `credit` or `other`, it has no category of its own, with the note "Page N: the printed
+  charge line "…" wasn't classified, so it was recorded as other." (an `unclassified_row` guess).
+- **A rate with more decimals than the currency allows.** Judged by value: a rate that is a whole number of minor units (`0.12`, `0.1200`) is
+  stored exactly in `unit_price_minor`, with no printed text kept. Any other (`0.1430`, 14.3 cents) is kept exactly as printed in the
+  line's details (`details.unit_price.text`) and `unit_price_minor` is that rate rounded half up (14); no "more precision" issue is raised
+  for it, quantity × unit price is checked on the printed rate, and the line shows the printed rate (sent by the server; a unit price
+  you correct replaces it).
+- **Summary amounts.** Amount due, new charges, previous balance and payments come from their anchors, else the model's value with the
+  usual checks. Previous balance and payments are kept on a bill of either kind, so the carried check and the page's carried rows run
+  wherever they are printed. When previous balance, payments or new charges print more than one value, the first on the bill's first
+  page in reading order is used, with the note "The previous balance is printed as A and B; A, the first on page N, was used." and the
+  checks judge it. When the **amount due** prints more than one value, the value that makes the bill's checks hold is used: the carried
+  check (previous balance − payments + new charges = amount due) when the other three are printed, else the lines check when it runs
+  against the amount due; if no check decides, the first on the bill's first page, with the note "The amount due is printed as X and Y; X,
+  the first on page N, was used." (an `amount_due` guess). Only printed values decide; the model's never does. A value printed several
+  times alike is one value, with no note.
+- **New charges not printed.** A bill that prints no new charges but prints its previous balance, payments (a printed 0.00 counts) and
+  amount due has them worked out as amount due − previous balance + payments (payments by magnitude), with the note "New charges aren't
+  printed; worked out as amount due A − previous balance P + payments R = N." The lines must add up to that value, and it is what counts; the
+  carried check is not run (it would hold by construction), and the lines check's working shows the subtraction. Without a printed
+  previous balance or payments the older rule stands (the lines against the amount due; the lines' sum counts).
+- **Guesses are notes.** Wherever the engine or Record has to choose it picks its best choice, writes it down and says so; a guess is never a
+  review reason. The kinds (`details.guesses` on the record, each with the page, the table and the note text): `charge_column` (two
+  columns both add up, or the columns could not be told apart: the right-most), `unclassified_row` (an engine row the model did not
+  classify), `amount_due` (the first of several printed values) and `split_changed` ([below](#several-bills-in-one-file)). The notes are
+  also in `details.notes`. The evals count every guess and how often it was right ([evals](evals.md#the-two-table-readers)).
+- **Review.** The usual checks run on the copied values, unchanged: the lines against the new charges, the carried check, quantity × unit
+  price (rounded half up to the minor unit), the dates, the guards of [money](money.md#bills-and-their-lines). A bill goes to review from
+  this feature only when its printed numbers still do not add up after the best guesses, when a line correction of yours is held after a
+  new reading ([money](money.md#reading-a-statement-or-receipt-again)), or when a split boundary is uncertain ([below](#several-bills-in-one-file)).
+  Notes, not review reasons: an unplaced line (a label and an amount that is no row, total, summary line, key line or other-table row:
+  "Page N: a printed line wasn't placed in any column, so it wasn't recorded: "…""), a printed subtotal its rows do not add up to, an
+  unclassified row, a column guess, a money-off row the model called a charge, a holder the title overruled.
+- **Evidence.** Every copied amount cites its printed words, so Find lights them, and a wrapped label cites every line. The reader may save a
+  right-aligned column apart from its labels as one layout line per column, so a row can list several evidence lines (label first) and
+  an anchor's label and amount can be on different lines. Amount due cites the anchor's amount.
+- **Checking it on a real bill.** `python scripts/statement_diagnose.py "<bill PDF>" bill` prints the engine's shapes and counts only: per
+  page the charge tables (each column's edges and zone as a percentage of the page width, its role and how it was decided), counts of rows,
+  totals, section titles, wrapped labels, summary anchors by kind, other tables and unplaced lines; the guesses by kind; how many bills the
+  file splits into and their pages; per page which keys it prints (due date, statement date, account) and whether each equals the open
+  bill's or differs, never the value; and which uncertain-boundary rules fired (a to d). It never prints a label, heading word,
+  provider, amount, date or account digit, so its output can be pasted anywhere, and it needs no model.
+- **Known limits.** Each ends in a guess or a note, never an invented number.
+  - A section title directly above a heading printed over the amount column alone (`Charge`, or two lines `This` / `Charge`) is lost: such a
+    heading isn't heading-like to the shared table code, so the title's next line is a text line, not a row, and the rows get no section
+    (a phone bill's holder title in that place gives rows with no holder). A heading with a word at the label side too (`Description …
+    Charge`) keeps the title.
+  - A key line that is shaped like a title (a masked `Account No. ****9012`, or `Due Date 07/20/2026`) is not consumed as a key, so when
+    rows follow it directly it becomes a section title: the masked account is a holder title by the phone rule above, so a continuation
+    page's repeated header that ends with the account line directly above the first row gives those rows the account as their holder. A
+    summary or anchor line between the key lines and the rows avoids it.
+  - The year-range and account-number exclusion makes the phone rule narrower than "any digit groups ending in four": an international number
+    grouped like `20 7946 0958` is not a holder title either.
+  - A holder title longer than 80 characters is cut at 80, which can drop or cut the phone number at its end. The model's own holder has the
+    same cut.
+  - The engine splits a table into bills by the split rule (`bill_split`), not by a split you saved, so a section or a sum can cross a
+    boundary you drew where it differs from the rule's.
+  - Two misread layouts the generator found are described in [open work](open-work.md#pdf-table-engine).
+  - Photographed and scanned bills, invoices and decimal-comma amounts are not read from columns. Accuracy on real bills is unmeasured
+    ([open work](open-work.md#pdf-table-engine)).
+
+### Several bills in one file
+
+Code: `documents/bill_split.py` (`bill_parts`), `finance/bill_tables.py` (`split_anchors`, `bill_starts`), `documents/extraction.py`
+(`ExtractionService.bill_parts`, `run`, `split`, `set_split`, `confirm_split`, `filing_identity`), `finance/ledger.py` (`bill_twin`,
+`mark_bill_void`, `mark_bill_duplicate`, `retire_segments`). Spec: `specs/pdf-table-engine-bills`. A file such as a year of monthly bills
+in one PDF is recorded as one bill each. The split shares `document_segments` and its calls with receipts and pay stubs; a receipt file
+splits exactly as before.
+
+- **Finding the bills (no model).** The rule reads the transcribed lines and their pages only, so it runs on every bill file: a text PDF, a
+  scanned PDF and a combined-image document ([several images](#several-images-as-one-document)) all split the same way, each part of a
+  scanned or combined-image file being read like a photographed bill; a single image is one page and is never split. A **key line**
+  (the labels [above](#bill-lines-from-the-printed-columns)) gives its page's value of that key: dates are compared as dates and an account
+  by its last four digits (`****9012` counts; `Account no. xxxx 3456` doesn't, since the first word after the label must hold a digit). A
+  **page starts a new bill** when one of its key lines prints a value that differs from the value the open bill already printed for that key
+  (the first differing key in the order due date, statement date, account); a page that prints only equal values, keys the open bill
+  hasn't printed or no keys continues the open bill (a remittance stub, a repeated header, a usage history page). A billing or service
+  period is no key. The rule splits only between pages: two bills printed on one page stay one bill. On a text PDF the rule also reads
+  the engine's summary anchors, so a bill whose `Amount Due` label and amount sit in separate layout lines (a heading over the amount
+  column makes the reader save the column's amounts as lines of their own) still counts as printing its amount due. Each part must print
+  an amount due of its own (an anchor, never a late-payment line): a part without one joins the part before it, and the first part, if it
+  has none, joins the next. A file with one bill reads exactly as without the rule. At most 200 bills per file.
+- **Uncertain boundaries go to review**, never a silent guess. Each gives the bill concerned one review reason, worded with its page and
+  printed values: **(a)** a page whose key lines print two values of one key: "Page N prints more than one due date (A, B), so it may hold
+  more than one bill; check it and split it on the document's page." (a statement date, or an account as `ending A, ending B`, likewise;
+  not split); **(b)** a part joined to its neighbour because it prints no amount due: "Page N prints its own due date (A) but no amount due, so
+  it was read with the bill before it; check how the file was split." ("with the bill after it" when the first part joins the next; a
+  part with no key at all says "Page N prints no amount due, …"); **(c)** one bill whose new-charges anchors print different values on
+  different pages with no key line telling the pages apart: "This bill prints new charges of A and B on different pages, so the file may
+  hold more than one bill; check it and split it on the document's page."; **(d)** the rule raises, or finds more than 200 bills: the
+  file is read as one bill with "Where each bill starts couldn't be read, so the file was read as one; check whether it holds more than one
+  bill." A split you made or confirmed raises none of these. The rule's reasons are dropped when the file falls back to one document.
+- **Each bill is a record of its own** (`receipts.segment`, as for pay stubs). Every part is classified before any is read. A part the model
+  classifies as something other than a bill makes the file read as one document with the note "A part of this file is not a bill, so the
+  file was read as one document." A file of several **invoices is not split**: if any part reads as an invoice (`invoice_marker`,
+  `invoice_number` or `invoice_total` read), the whole file is read as one document on today's path with the note "A part of this file is
+  an invoice, so the file was read as one document." Otherwise each part is read on its own lines: its own bill kind, the engine's rows,
+  totals and anchors whose lines lie in the part (the engine reads the file once; a table cut by your split gives each part its own
+  rows), the amount-due and worked-out rules on its own anchors, its own checks, and is published with its own review status, payment
+  match, recurring bill and counting on its own due date. A run that fails part-way publishes nothing.
+- **No review for a certain split.** A bill split from a file by the rule with none of the reasons above carries the record note "Split from a file
+  holding several bills", which is not a review reason. The document page's split panel names the bills (provider · due date · amount due as the
+  server sends it, with its currency code), says "This file holds N bills", offers **Confirm split** (drops the note and the reasons,
+  judging each bill by its own checks), **Merge with next** and **Split here**, and shows no "waits in To check" warning for bills. A bill
+  read as one with a reason (a), (c) or (d) also shows the panel ("This file may hold more than one bill") with **Split here**, so you can split it
+  ([ui](ui.md#the-document-page)); a part joined by reason (b) does not offer it. Your own split wins on later readings and the file is
+  recorded again; when you change where the bills start, the next reading adds a `split_changed` guess note to each bill ("You changed
+  where the bills in this file start; the file was read with your split."). If your saved split no longer matches the text, the file is
+  split again by the rule with the note "How you split this file no longer matches its text, so it was split again."
+- **Reading again.** Extract again on an unchanged reading gives the same records (ids, segments), lines, notes and split. A bill a later
+  reading no longer finds stops counting (rejected automatically; restored if found again) with the note "The latest reading of this file no
+  longer finds this bill; check how the file was split."; a bill you decided keeps your decision and gets the same note. A file you decided
+  as one bill before this feature, that the rule now splits, becomes several bills: its record keeps segment 0 and its id, and the others are
+  new, so its first bill is counted as you decided it and the others are added.
+- **VOID bills.** A bill with a line whose whole text is VOID (`*` and `-` around it allowed; inside a sentence it doesn't count) is recorded with the
+  note "This bill is printed VOID, so it doesn't count." and rejected automatically, so it counts nowhere; a bill you decided is left alone. This
+  applies to every non-invoice bill, photographed or scanned too.
+- **Duplicates.** A non-invoice bill with the same provider, due date (else issue date), amount due and currency as another bill that counts
+  (and the same account last four when both print one), in this file or another, is recorded with its lines, noted "This bill repeats the
+  one from P due D (A), so it doesn't count." and rejected automatically; the first recorded counts. If the first is rejected, the duplicate
+  counts on its next Extract again. Only exact duplicates stop counting: the same provider, account and due date with another amount due (a
+  corrected bill) counts, and the later one carries the note "Another bill from P has the same due date." Two bills of one file for
+  different accounts with the same dates both count. Two invoices never match.
+- **In the library** a file holding several bills has no single amount; its date is the earliest non-rejected bill's due date (its counting
+  date) and it is filed under the first non-rejected bill's provider and that bill's due date (its issue date when it prints none): a
+  file whose first bill is due 2026-07-20 goes to `Bills/2026/07/2026-07-20__<provider>…`. Its shown due date and period are the first non-rejected bill's.
+  A review decision never renames the file: rejecting the first bill refiles it under the next one the next time the file is
+  extracted or filed again. A file with one non-rejected bill shows that bill's amount, and a file of one bill is filed under its
+  statement date as before.
+- **Known limits.**
+  - **After you change the split,** a bill whose part moved keeps the record, and the record-level corrections (a corrected due date,
+    provider or amount due), of whatever bill had its segment number before, as split receipts and pay stubs do. Line corrections are held
+    per bill by the rule in [money](money.md#reading-a-statement-or-receipt-again).
+  - Two bills on one page are not split by the rule; **Split here** does it by hand. A bill's previous balance is not compared with the bill
+    before it in the same file. A consolidated bill over several accounts is one bill.
+  - The engine reads a table's bills where the rule splits it, not where a saved split of yours does.
+  - Donating a file with several bills is not supported. A file of several invoices stays one document.
 
 ### Model runs, queues and cancellation
 

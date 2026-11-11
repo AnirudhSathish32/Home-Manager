@@ -148,7 +148,11 @@ The engine reads bank and card statements from their printed columns, in Record 
 `specs/pdf-table-engine`; built: [documents](documents.md#statement-rows-from-the-printed-columns), [evals](evals.md#the-two-table-readers)),
 and text-PDF pay stubs, with several stubs in one file split into their own records (phase 2, `specs/pdf-table-engine-paystubs`;
 built: [documents](documents.md#pay-stub-rows-from-the-printed-columns), [documents](documents.md#several-pay-stubs-in-one-file),
-[money](money.md#money-in-and-paystubs), [evals](evals.md#the-two-table-readers)).
+[money](money.md#money-in-and-paystubs), [evals](evals.md#the-two-table-readers)),
+and text-PDF bills, with several bills in one file split into their own records and a bill line's correction held when a new
+reading moves it (phase 4, FR-41, `specs/pdf-table-engine-bills`; built: [documents](documents.md#bill-lines-from-the-printed-columns),
+[documents](documents.md#several-bills-in-one-file), [money](money.md#bills-and-their-lines),
+[money](money.md#reading-a-statement-or-receipt-again), [evals](evals.md#the-two-table-readers)).
 What is not built:
 - **Remove the old statement path** (spec D4). The old reader (`pdf_import.analyze_legacy`, `finance/statement_rows.py`
   with its `Reading`, `heading_row`, `cut_at` and `rebuilt_pages`) stays only so the evals can compare it with the engine.
@@ -161,9 +165,7 @@ What is not built:
 - **Accuracy on real statements is unmeasured.** The engine is proved on synthetic statements (the layout generator's
   200 seeded cases, the four `aligned` eval cases). `scripts/statement_diagnose.py` prints a statement's shapes and counts, never
   its text, for you to run on your own PDFs.
-- **The next document kinds** (phase 1 spec FR-41 – FR-44; FR-40, pay stubs, is built as phase 2; each needs its own approved spec and test contract first, OD-5):
-  - **FR-41 bills:** charge lines from the engine; their sum is the amount due, and previous balance − payments + new
-    charges = balance where printed.
+- **The next document kinds** (phase 1 spec FR-41 – FR-44; FR-40, pay stubs, is built as phase 2 and FR-41, bills, as phase 4; each needs its own approved spec and test contract first, OD-5):
   - **FR-42 text-PDF receipts:** item lines from the engine; quantity × unit price = line total, lines sum to the
     subtotal, subtotal + tax (+ tip) = total.
   - **FR-43 investment statements:** holdings from the engine; shares × price = value, and holdings sum to the account
@@ -185,6 +187,42 @@ What is not built:
     two stubs' lines (a merge of two stubs by the user) reads them as one record; its values are not asserted.
   - **`tests/test_tax_engines.py` has 8 failures** that also fail at the commit before this feature (44f40b0); they are not this
     feature's.
+- **Bills (phase 4, `specs/pdf-table-engine-bills`): what is left.** A text-PDF bill's amounts come from the engine alone; the lines add
+  up to the new charges (printed, or worked out), not the amount due as the phase 1 spec said
+  ([documents](documents.md#bill-lines-from-the-printed-columns), [money](money.md#bills-and-their-lines)).
+  - **Accuracy on real bills is unmeasured.** It is proved on the generator's 120 seeded files (`tests/test_bill_engine_generator.py`),
+    the hand-built pages of the unit tests and the five `aligned` eval files. Run `python -m evals.run` on your donated corpus in your
+    own terminal and read the `bill_readers` and `guesses` counts ([evals](evals.md#the-two-table-readers)), and run
+    `scripts/statement_diagnose.py <pdf> bill` on a bill that reads badly: it prints shapes and counts, never text or amounts. It
+    also answers how your multi-bill files lay out (one bill a page? keys printed?).
+  - **Invoices** (D5) keep the older path (`anchor_rows`, `anchor_summary`) and move with text-PDF receipts (FR-42), whose
+    arithmetic they share. **A file of several invoices** (D16) is not split: it is one document with a note.
+  - **Budget or levelized billing** (D12): nothing new in code. A budget billing schedule is an other table that gives no lines, and
+    a bill whose lines don't add up to its new charges goes to review as before.
+  - **Two bills printed on one page** (D18) are not split by the rule: the page's bill gets a review reason (more than one due date,
+    statement date or account) and **Split here** splits it by hand. The rule splits only between pages.
+  - **A consolidated bill over several service accounts** is one bill, not one per account. **A previous balance isn't compared with the
+    bill before it** in the same file (D19): a mismatch is common on real bills.
+  - **Record-level corrections after a split change** (D20): when you change where the bills start, a bill whose part moved keeps the
+    record, and the record-level corrections (due date, provider, amount due), of the bill that had its segment number before, as split
+    receipts and pay stubs do. Line corrections are held per bill.
+  - **Donating a file with several bills** isn't supported, as for receipts and pay stubs.
+  - **A split you saved can differ from the rule's.** The engine scopes sections and sums to the bills where the rule splits a table
+    (it can't read your saved split), so a section title or a sum can cross the boundary you drew; the bills you split are still read on
+    their own lines. A rare case.
+  - **Phone numbers in a section title are matched narrowly** (plan G14, your decision H1): the last four digits must follow a group of
+    exactly three, so a year range (`Charges 2025-2026`) and an account number (`Account 1234-5678-9012`) are not holders, and neither
+    is an international number grouped like `20 7946 0958`. Widening it needs a spec amendment that still excludes year ranges.
+  - **A holder is cut to 80 characters** (H2): a long title can lose the end of its phone number, and so its member match. Keeping the
+    number would change the holder format and needs a spec amendment. The model's own holder has the same cut.
+  - **Two layouts the generator found read wrong** (not generated, so the suite doesn't cover them): a section title printed above a
+    heading that sits over the amount column alone is lost, so the rows get no section or holder; and a title-shaped key line (a masked
+    `Account No. ****9012`, or `Due Date …`) directly above rows becomes a section title, a holder for a masked account. A fix would
+    widen the heading shape in `charge_tables` or require a key line to sit within a line gap of its row, each with its own test pass.
+  - **Held reasons of a deleted line.** Deleting a line removes its correction rows but not the reason a held correction left on the bill,
+    which stays until the next reading.
+  - **The eval's `checks_held` for bills is the lines check only**, because the answers hold no previous balance or payments for the
+    carried check.
 - **Two accounts in one layout** (test contract G10). A combined checking-and-savings statement whose accounts print
   the same columns is one table: its rows are recorded and the second account's first balance shows as a chain break
   ("the balance … doesn't follow from the row above"), not as the "may hold more than one account" issue, which is for
