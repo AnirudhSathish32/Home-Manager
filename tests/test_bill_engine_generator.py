@@ -20,31 +20,40 @@ import sys
 
 import pytest
 
+import bill_engine_generator as gen
 from evals import bill_layouts as layouts
 from home_manager.documents import bill_split
 from home_manager.documents.extraction import BILL_SPLIT_NOTE, NO_BILL_TABLE
 from home_manager.finance import bill_tables
-import bill_engine_generator as gen
 import pdf_import_fixtures as fx
-from test_bill_split import Bills
 from test_bill_engine_record import finished, lines_of, no_network, started  # noqa: F401 - no_network is the autouse C-net fixture
+from test_bill_split import Bills
 from test_extraction import MISSING
 from test_pdf import pdf_store  # noqa: F401
 
 # Engine defects the generator found that need a source change outside this slice (the handoff lists them with their seed, index and choices). Each is a case
 # the assertions below still judge in full: the entry only turns the failure into a strict expected failure, so it fails loudly once the engine is fixed.
-ESCALATED = {
-    64: "a last-year column in a file of several bills, with no heading to tell it from the charge column: the column roles are decided once for the whole table, "
-        "and the sum rule compares the whole column's sum with each bill's new charges, never the sum of them (finance/bill_tables.py targets_of, decide)",
-    67: "the same defect",
+SPLIT_BLIND = ("a file of several bills whose pages print a heading over the amount column (or a rate column, or a usage history): the reader sets the column's "
+               "values in lines of their own, so no line holds `Amount Due <amount>` and bill_split.bill_parts (FR-128, FR-129 b) finds no amount due on pages 2 on "
+               "and reads the whole file as one bill (documents/bill_split.py has_due, anchor_of)")
+LAST_YEAR = ("a last-year column with no heading in a file of several bills: the column roles are decided once for the whole table, and the sum rule compares "
+             "the whole column's sum with each bill's new charges, never the sum of them (finance/bill_tables.py targets_of, decide)")
+CARRIED_TITLE = ("the last section title of one bill (`Account Credits`) is still the section of the next bill's first rows when that bill prints no title of "
+                 "its own, so they read as money off (finance/bill_tables.py: a row's section is the last title above it, whatever bill it belongs to)")
+ESCALATED_RECORD = {
+    **dict.fromkeys((1, 7, 15, 18, 19, 20, 28, 34, 37, 40, 45, 60, 63, 77, 83, 87, 93, 96, 100, 112, 113, 117, 119), SPLIT_BLIND),
+    **dict.fromkeys((29, 33, 64, 67), LAST_YEAR),
+    56: CARRIED_TITLE,
 }
+ESCALATED_ROWS = {index: LAST_YEAR for index in (29, 33, 64, 67)}
 
 
-def escalated(index):
-    return [pytest.mark.xfail(strict=True, reason=ESCALATED[index])] if index in ESCALATED else []
+def escalated(index, table):
+    return [pytest.mark.xfail(strict=True, reason=table[index])] if index in table else []
 
 
-CASES = [pytest.param(index, marks=escalated(index), id=f"case{index}") for index in range(gen.CASES)]
+CASES = [pytest.param(index, marks=escalated(index, ESCALATED_RECORD), id=f"case{index}") for index in range(gen.CASES)]
+ROW_CASES = [pytest.param(index, marks=escalated(index, ESCALATED_ROWS), id=f"case{index}") for index in range(gen.CASES)]
 
 
 def context(case, index, seed=gen.SEED):
@@ -89,7 +98,7 @@ def engine_rows(reading):
     return Counter(found)
 
 
-@pytest.mark.parametrize("index", CASES)
+@pytest.mark.parametrize("index", ROW_CASES)
 def test_generator_only_case_engine_rows_are_exact(index, tmp_path):
     case = gen.layout(index)
     where = context(case, index)

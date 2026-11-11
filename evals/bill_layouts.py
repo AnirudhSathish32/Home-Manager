@@ -415,8 +415,8 @@ class Printer:
         lines.append(f"{case.due_label} {us(self.due)}")
         if short:
             lines = [lines[0], lines[1], lines[-1]]
-        if self.c["swap"]:
-            lines[1:3] = lines[2:3] + lines[1:2] if not short else lines[1:2]
+        if self.c["swap"] and not short:  # The account line and the statement date change places; a continuation header always ends with the due date.
+            lines[1:3] = [lines[2], lines[1]]
         for text in lines:
             self.pages[-1].append((LABEL_X, self.y, text))
             self.y -= 12
@@ -581,7 +581,11 @@ class Printer:
         sections = self.sections()
         count = sum(len(rows) for _, rows, _ in sections)
         cut = next((at for at in range(2, count - 1)), None) if c["cut"] == "mid" else None
-        placed, headed = 0, False
+        placed = 0
+        heads = self.heading_lines()  # The heading comes first and the section titles under it, as on BL-UTIL.
+        self.room(len(heads) + 3)
+        for number, cells in enumerate(heads):
+            self.amounts("", *cells, step=12 if number < len(heads) - 1 else None)
         for title, rows, total in sections:
             if cut is not None and placed == cut:
                 self.new_page()
@@ -589,11 +593,6 @@ class Printer:
             if title:
                 self.room(4)
                 self.put_line(title)
-            if not headed:
-                headed = True
-                heads = self.heading_lines()
-                for number, cells in enumerate(heads):
-                    self.amounts("", *cells, step=12 if number < len(heads) - 1 else None)
             for row in rows:
                 if cut is not None and placed == cut:
                     self.new_page()
