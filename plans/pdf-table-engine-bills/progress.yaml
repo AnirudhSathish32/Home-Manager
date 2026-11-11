@@ -262,6 +262,22 @@ slices:
         rules" (money from the server) and non-USD bills: the chip shows the server's string unchanged ("81.42 USD").
         Fix 5d91932; contract amounts unchanged.
     notes: "docs/ui.md cites documents.md \"Several bills in one file\", a heading SL-10 adds."
-  - {id: SL-09, status: todo}
+  - id: SL-09
+    status: in_progress
+    start_head: 8fc02cb
+    provider: claude
+    model: claude-sonnet-5-5
+    commit: [25d3dc9, 75bd763, 5dc8e1a, cde2fe7, c0389e2]
+    attempts:
+      - "1: provider rate limit mid-slice; uncommitted draft backed up to /tmp/bills-sl09-partial"
+      - "2: generator (120 files) + bill diagnose mode; orchestrator rerun tests/test_bill_engine_generator.py -> 249 passed, 32 xfailed (strict)"
+    blocked_on: >-
+      The generator found three engine defects (escalated, pinned as strict xfails; SC-123 requires every generated file to
+      pass): SPLIT_BLIND (23 of 80 multi-bill files: a heading over the amount column puts amounts on lines of their own, so
+      bill_split sees no amount-due line and records 2-4 bills as one -- the R3 failure the user asked to prevent);
+      LAST_YEAR (4 files: column roles decided once for a multi-bill table, so the sum rule matches nothing and a right-most
+      last-year column is taken as the charge); CARRIED_TITLE (1 file: a bill's last section title carries into the next
+      bill's rows, reading them as money off). Within approved scope (FR-105, FR-128, FR-102); fix dispatched via
+      debug-issue route (claude-opus-5-5).
   - {id: SL-10, status: todo}
 final_verification: pending
