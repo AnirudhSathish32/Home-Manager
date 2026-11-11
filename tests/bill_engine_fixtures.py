@@ -201,7 +201,7 @@ def phone_pages(discount="-5.00", credits="Account Credits"):
     items += left(660, "Alex 555-201-1111")
     for y, label, amount in ((644, "Unlimited Plan", "55.00"), (628, "Device Payment", "24.99"), (612, "Total for Alex", "79.99")):
         items += amounts_at(y, label, (CHARGE, amount))
-    items += left(588, "Blair (555) 202-2222") + amounts_at(572, "Basic Plan", (CHARGE, "35.00")) + amounts_at(556, "International Pack", (CHARGE, "8.51"))
+    items += left(588, "Blair 555-202-2222") + amounts_at(572, "Basic Plan", (CHARGE, "35.00")) + amounts_at(556, "International Pack", (CHARGE, "8.51"))
     items += left(546, "(Canada and Mexico)", 52) + amounts_at(530, "Total for Blair", (CHARGE, "43.51")) + left(506, credits)
     items += amounts_at(490, "Autopay Discount", (CHARGE, discount))
     return [page_of(items)]
@@ -383,8 +383,8 @@ UTIL_ENGINE_ANCHORS = [("previous_balance", "82.10"), ("payments", "-82.10"), ("
 UTIL_ENGINE_HISTORY = UTIL_HISTORY  # (label, kWh, Days)
 
 # BL-PHONE: (label, section, charge), the totals, the anchors.
-PHONE_ENGINE_ROWS = [("Unlimited Plan", "Alex 555-201-1111", "55.00"), ("Device Payment", "Alex 555-201-1111", "24.99"), ("Basic Plan", "Blair (555) 202-2222", "35.00"),
-                     ("International Pack (Canada and Mexico)", "Blair (555) 202-2222", "8.51"), ("Autopay Discount", "Account Credits", "-5.00")]
+PHONE_ENGINE_ROWS = [("Unlimited Plan", "Alex 555-201-1111", "55.00"), ("Device Payment", "Alex 555-201-1111", "24.99"), ("Basic Plan", "Blair 555-202-2222", "35.00"),
+                     ("International Pack (Canada and Mexico)", "Blair 555-202-2222", "8.51"), ("Autopay Discount", "Account Credits", "-5.00")]
 PHONE_ENGINE_TOTALS = [("Total for Alex", "79.99"), ("Total for Blair", "43.51")]
 PHONE_ENGINE_ANCHORS = [("previous_balance", "120.00"), ("payments", "-120.00"), ("new_charges", "118.50"), ("amount_due", "118.50")]
 

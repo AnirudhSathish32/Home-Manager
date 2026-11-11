@@ -238,9 +238,9 @@ def test_sc102_step1_phone_bill_gives_five_rows_two_totals_four_anchors_and_hold
     assert anchors_of(reading) == bf.PHONE_ENGINE_ANCHORS
     assert reading.unplaced == [] and reading.late_lines == []
     # Each of the four rows under a holder title is cited to the title line as well as its own lines; the credits title is no holder title.
-    alex, blair, credits = (line_with(result, word) for word in ("555-201-1111", "202-2222", "Credits"))
+    alex, blair, credits = (line_with(result, word) for word in ("555-201-1111", "555-202-2222", "Credits"))
     assert [(row.title.line_id, row.title.phone) for row in table.rows] == [(alex, True), (alex, True), (blair, True), (blair, True), (credits, False)]
-    assert [title.text for title in table.titles] == ["Alex 555-201-1111", "Blair (555) 202-2222", "Account Credits"]
+    assert [title.text for title in table.titles] == ["Alex 555-201-1111", "Blair 555-202-2222", "Account Credits"]
     assert [title.line_id for title in table.titles] == [alex, blair, credits]
     assert all(title.line_id not in row.line_ids for row in table.rows for title in [row.title])  # The title line is its own line, cited by the title.
 
@@ -829,7 +829,7 @@ def test_p4_title_line_ids_and_phone_flags_for_the_holder_titles(reader):
     rows = bill_tables.read(result).adapted[0].rows
     assert [(row.label, texts[row.title_line_id] if row.title_line_id else None, row.title_phone) for row in rows] == [
         ("Unlimited Plan", "Alex 555-201-1111", True), ("Device Payment", "Alex 555-201-1111", True), ("Total for Alex", None, False),
-        ("Basic Plan", "Blair (555) 202-2222", True), ("International Pack (Canada and Mexico)", "Blair (555) 202-2222", True), ("Total for Blair", None, False),
+        ("Basic Plan", "Blair 555-202-2222", True), ("International Pack (Canada and Mexico)", "Blair 555-202-2222", True), ("Total for Blair", None, False),
         ("Autopay Discount", "Account Credits", False)]
     assert rows[0].title_line_id == rows[1].title_line_id != rows[3].title_line_id
     assert rows[0].title_line_id not in rows[0].line_ids  # The title line is Record's to add to the evidence (P5), not a line of the row.
