@@ -337,6 +337,15 @@ returns to the list with its filters, page and scroll position.
 - The page also hosts the split controls for several receipts in one file, the page order of combined images, and
   "Also found" duplicate links ([documents](documents.md)). The decision model's result is an advisory disclosure
   under Checks.
+- **The split panel for bills.** One panel (`doc2Split`, the pay stub panel's markup and classes) serves receipts, pay
+  stubs and bills, worded by what the file's segments are. When every segment is a bill the panel is labelled "Bills in
+  this file" and reads "This file holds N bills". Each chip names a bill by its provider, due date and amount due (the
+  server's `display.amount_due`, shown without its currency code to fit the chip). No "waits in To check" warning shows,
+  because a bill counts by its own checks. **Confirm split** and **Merge with next** show as for pay stubs. A file read as
+  one bill that carries a reason to split it (the segments endpoint answers `one: true`) reads "This file may hold more than
+  one bill" and offers only **Split here**, from the bill's own lines; there is nothing to confirm or merge until
+  it is split. A line's Unit price is the server's text, so a printed rate such as `0.1430` shows as printed until you
+  correct it. See [documents](documents.md) "Several bills in one file".
 - **The builders** for the record's rows, pay stub, rewards and investment records, its details and its readings'
   telemetry are in `receipt.js`.
 - **Layout.** The source (`sourceViewer`) is on the left, sticky and scrolling on its own, at 45:55, or 40:60 from
