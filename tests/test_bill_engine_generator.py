@@ -13,6 +13,7 @@ run `scripts/statement_diagnose.py <pdf> bill` as a subprocess with `-I` (SC-125
 """
 
 from collections import Counter
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -20,6 +21,7 @@ import sys
 
 import pytest
 
+import bill_engine_fixtures as bf
 import bill_engine_generator as gen
 from evals import bill_layouts as layouts
 from home_manager.documents import bill_split
@@ -29,7 +31,7 @@ import pdf_import_fixtures as fx
 from test_bill_engine_record import finished, lines_of, no_network, started  # noqa: F401 - no_network is the autouse C-net fixture
 from test_bill_split import Bills
 from test_extraction import MISSING
-from test_pdf import pdf_store  # noqa: F401
+from test_pdf import make_pdf, pdf_store  # noqa: F401
 
 # Engine defects the generator found that need a source change outside this slice (the handoff lists them with their seed, index and choices). Each is a case
 # the assertions below still judge in full: the entry only turns the failure into a strict expected failure, so it fails loudly once the engine is fixed.
@@ -255,37 +257,107 @@ def test_case_is_recorded_exactly_through_the_real_services(index, pdf_store, lo
     finished(run)
 
 
-# --- SC-125: the redacted probe on generated bills ----------------------------------------------------------------------------------------------
+ONE_BILL = [pytest.param(index, id=f"case{index}") for index in sorted(ESCALATED_RECORD)]
+
+
+@pytest.mark.parametrize("index", ONE_BILL)
+def test_escalated_layout_as_a_single_bill_is_recorded_exactly(index, pdf_store, local_model):
+    """The escalated files' layouts, with one bill each, so everything but the escalated defect (a file of several bills) is still judged in full."""
+    case = gen.layout(index, bills=1)
+    run = recorded(pdf_store, local_model, case, index)
+    assert_records_exactly(case, context(case, index), run)
+    finished(run)
+
+
+# --- SC-125: the redacted probe ---------------------------------------------------------------------------------------------------------------
 
 PROBE = Path(__file__).resolve().parents[1] / "scripts" / "statement_diagnose.py"
 MONEY = re.compile(r"\d[\d,]*\.\d{2}\b")
 DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b")
+FORBIDDEN = ("CITY", "POWER", "WATER", "Energy", "Tier", "Customer", "Electric", "State Tax", "kWh", "Usage History", "97.55", "82.10", "60.00", "20.02", "12.00",
+             "5.53", "0.1200", "0.1430", "81.42", "87.26", "74.72", "111.98", "64.80", "70.20", "58.50", "4.62", "5.06", "4.22", "80.00", "50.00",
+             "9755", "8210", "6000", "2002", "1200", "553", "8142", "8726", "7472", "11198", "6480", "7020", "5850", "462", "506", "422", "8000", "5000",
+             "1234", "5678", "9012", "07/02/2026", "2026-07-02", "07/20/2026", "2026-07-20", "08/20/2026", "09/20/2026", "10/15/2026", "09/20/2026")
 
 
-def probe(path):
-    return subprocess.run([sys.executable, "-I", str(PROBE), str(path), "bill"], capture_output=True, text=True, timeout=180, check=False)
+def probe(path, tmp_path):
+    """The `bill` mode as a subprocess with `-I`; its temporary folders go to a folder of the test's own, so what it leaves behind can be counted."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(exist_ok=True)
+    done = subprocess.run([sys.executable, "-I", str(PROBE), str(path), "bill"], capture_output=True, text=True, timeout=180, check=False,
+                          env={**os.environ, "TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)})
+    assert list(scratch.iterdir()) == [], f"the probe left {list(scratch.iterdir())} behind"
+    return done
 
 
-@pytest.mark.parametrize("index", [0, 1, 4, 5, 9, 13])  # A utility with a split, a phone with holder sections, a rent bill, a multi-bill file, two pages.
+def written(tmp_path, name, pages):
+    path = tmp_path / name
+    make_pdf(path, pages)
+    return path
+
+
+def test_diagnose_bl_multi_and_bl_util_print_counts_and_splits_and_none_of_the_bills_words(tmp_path):
+    """SC-125: the counts, roles and splits are printed; no fixture word, amount (as printed or in minor units), date or account digit is."""
+    multi = probe(written(tmp_path, "multi.pdf", bf.FIXTURES["BL-MULTI"]()), tmp_path)
+    util = probe(written(tmp_path, "util.pdf", bf.FIXTURES["BL-UTIL"]()), tmp_path)
+    assert multi.returncode == 0 and util.returncode == 0, (multi.stderr[-300:], util.stderr[-300:])
+    assert "3 bills: pages 1, 2, 3" in multi.stdout
+    assert [line.strip() for line in multi.stdout.splitlines() if line.strip().startswith("page ") and "keys" in line] == [
+        "page 1: keys account opens, statement date opens, due date opens",
+        "page 2: keys account equal, statement date differs, due date differs   (a bill starts here)",
+        "page 3: keys account equal, statement date differs, due date differs   (a bill starts here)"]
+    assert "FR-129 reasons that fired: none" in multi.stdout
+    assert multi.stdout.count("=== Page ") == 3 and multi.stdout.count("charge tables: 1   rows: 3   totals: 0   section titles: 0") == 3
+    assert "1 bill" in util.stdout and "3 bills" not in util.stdout and "roles decided by: product" in util.stdout
+    assert [line.split("role ")[1].split()[0] for line in util.stdout.splitlines() if "role " in line] == ["quantity", "rate", "charge"]
+    assert "section titles: 2" in util.stdout and "other tables: 1 (12 rows)" in util.stdout
+    for name, output in (("BL-MULTI", multi.stdout), ("BL-UTIL", util.stdout)):
+        assert [text for text in FORBIDDEN if text in output] == [], name
+        assert not DATE.search(output) and not MONEY.search(output), name
+
+
+def probed_cases():
+    """Generated files for the probe: a one-bill file of each kind, files of 2 to 4 bills the engine splits, and a file with wrapped labels and two pages."""
+    found = {}
+    for index in range(gen.CASES):
+        case = gen.layout(index)
+        choices = case.choices
+        if index in ESCALATED_RECORD:
+            continue
+        found.setdefault(f"one-{choices['kind']}" if choices["bills"] == 1 else f"many-{choices['bills']}", index)
+        if choices["wrapped"] and choices["pages"] == 2:
+            found.setdefault("wrapped-two-pages", index)
+    return sorted(set(found.values()))
+
+
+@pytest.mark.parametrize("index", probed_cases())
 def test_diagnose_generated_bill_prints_no_document_text_amounts_or_dates(index, tmp_path):
-    """FR-127 / SC-125: the bill section of the redacted probe runs on a generated PDF and its output holds no word, amount, date or account digit the document
-    prints, only shapes and counts. The only capitalised words it prints by design are `Page`, `Charge` and `Bills`-style labels of its own."""
+    """FR-127: the probe runs on a generated PDF; its output holds no word, amount, date or account digit the document prints, only shapes and counts, and it
+    reports the file's bills and their pages as the generator printed them."""
     case = gen.layout(index)
     pdf = gen.build(tmp_path / "bill.pdf", case)
-    done = probe(pdf)
+    done = probe(pdf, tmp_path)
     where = context(case, index)
     assert done.returncode == 0, f"{where}: {done.stderr[-300:]}"
     output = done.stdout
     printed = [text for page in case.pages for _, _, text, *_ in page["items"]]
-    words = {word for text in printed for word in re.findall(r"[A-Z][A-Za-z]{2,}", text)} - {"Page", "Account"}
+    words = {word for text in printed for word in re.findall(r"[A-Z][A-Za-z]{2,}", text)} - {"Page", "Account", "Charge"}
     leaked = sorted(word for word in words if re.search(rf"(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", output))
     assert not leaked, f"{where}: the probe printed document words {leaked}"
-    assert not MONEY.search(output) and not DATE.search(output), f"{where}: the probe printed an amount or a date"
+    assert not DATE.search(output), f"{where}: the probe printed a date"
     amounts = {money for text in printed for money in MONEY.findall(text)}
-    assert not any(amount in output or amount.replace(",", "").replace(".", "") in output for amount in amounts), where
+    assert not any(re.search(rf"(?<![\d.]){re.escape(amount)}(?!\d)", output) or amount.replace(",", "").replace(".", "") in output for amount in amounts), where
     assert not any(digits in output for bill in case.bills for digits in (bill["account"], bill["last_four"], bill["due_date"], bill["issue_date"])), where
-    bills = len(case.bills)
-    assert (f"{bills} bills: pages " if bills > 1 else "1 bill") in output, f"{where}: {output[-300:]}"
+    spans = [f"{bill['first_page'] + 1}" if bill["pages"] == 1 else f"{bill['first_page'] + 1}-{bill['first_page'] + bill['pages']}" for bill in case.bills]
+    assert (f"{len(spans)} bills: pages {', '.join(spans)}" if len(spans) > 1 else f"1 bill: pages {spans[0]}") in output, f"{where}: {output[-400:]}"
+    assert f"=== Page {len(case.pages)} ===" in output and f"=== Page {len(case.pages) + 1} ===" not in output, where
+
+
+def test_diagnose_runs_without_a_model_and_names_no_file(tmp_path):
+    """No model is configured for the probe (it needs none), and a file that is no bill still gives counts, not an error."""
+    path = written(tmp_path, "plain.pdf", [{"items": [(40, 700, "Just a note"), (40, 40, bf.FOOTER)]}])
+    done = probe(path, tmp_path)
+    assert done.returncode == 0 and "1 bill: pages 1" in done.stdout and "Just" not in done.stdout and "note" not in done.stdout, (done.stdout[-300:], done.stderr[-300:])
 
 
 # --- generator_only: the generator's own rules and its coverage ---------------------------------------------------------------------------------
@@ -316,6 +388,31 @@ def test_generator_only_every_fr123_variation_occurs():
         seen.update(layouts.variations(gen.layout(index)))
     missing = sorted(tag for tag in REQUIRED if not seen[tag])
     assert not missing, f"seed {gen.SEED}: variations that no case of {gen.CASES} has: {missing}"
+
+
+def test_generator_only_every_variation_is_also_read_by_a_case_that_passes_through_the_record():
+    """The escalated files (strict expected failures above) never take a variation out of the Record test: each is covered by a case that is not escalated."""
+    seen = Counter()
+    for index in range(gen.CASES):
+        if index not in ESCALATED_RECORD:
+            seen.update(layouts.variations(gen.layout(index)))
+    assert not sorted(tag for tag in REQUIRED if not seen[tag])
+
+
+def test_generator_only_prints_rates_exactly_half_a_cent_past_at_three_and_four_decimals():
+    """SC-123's rates: at least one exactly half a cent past a whole cent at each precision (0.125 and 0.1450 style), and whole-cent rates that print 2 and 4 decimals."""
+    seen = set()
+    for index in range(gen.CASES):
+        for bill in gen.layout(index).bills:
+            for line in bill["lines"]:
+                if line.get("rate_kind"):
+                    tenths = round(float(line["rate"]) * 10000)
+                    places = len(line["rate"].split(".")[1])
+                    seen.add((line["rate_kind"], places, tenths % 100 == 50 or tenths % 100 == 0))
+                    if tenths % 100 == 50:
+                        seen.add(("half", places))
+    assert {("half", 3), ("half", 4)} <= seen, seen
+    assert {("whole_2dp", 2, True), ("whole_4dp", 4, True)} <= seen, seen
 
 
 def test_generator_only_follows_its_own_rules():

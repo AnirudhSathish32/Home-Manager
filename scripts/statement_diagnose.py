@@ -44,6 +44,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from home_manager.documents import bill_split  # noqa: E402
+from home_manager.documents.extraction import MAX_BILLS  # noqa: E402
 from home_manager.documents.layout_context import evidence_lines, native_page, viewer_context  # noqa: E402
 from home_manager.documents.paystub_split import stub_parts  # noqa: E402
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker  # noqa: E402
@@ -160,6 +161,9 @@ def pay_section(result):
     print(f"\npay stubs found: {len(parts)}   lines of each: {[last - first for first, last in parts]}   lines in all: {len(lines)}")
 
 
+ROLE_NAMES = {"unit_price": "rate"}  # The contract's name for the rate column's role.
+
+
 def bill_section(result):
     """The bill engine's reading of a bill PDF (FR-127, plan P11): counts, roles, shapes and positions only, never a word of the bill."""
     print(f"pages: {len(result.pages)}")
@@ -212,7 +216,7 @@ def bill_section(result):
                       f"   heading lines: {len(table.headings)}   pages: {table.pages}")
                 for column in table.columns:
                     print(f"    {column.kind:<7} {column.align:<6} edge {100 * column.edge / width:.1f}%  extent {span(column.extent)}%  zone {span(column.zone)}%"
-                          f"  role {decided.roles.get(column.id, 'other')}  heading words: {len(column.labels)}")
+                          f"  role {ROLE_NAMES.get(decided.roles.get(column.id, 'other'), decided.roles.get(column.id, 'other'))}  heading words: {len(column.labels)}")
             if not tables:
                 print("  no charge table on this page")
     lines = [line for line in evidence_lines(result) if line.text.strip()]
@@ -222,6 +226,9 @@ def bill_section(result):
         print(f"\nthe split rule raised {type(exc).__name__}   FR-129 reasons that fired: d")
         return
     pages = bill_split.pages_of(lines)
+    if len(split.parts) > MAX_BILLS:  # The caller's rule (FR-129 d): more bills than a file may hold is read as one.
+        print(f"\n{len(split.parts)} bills: more than {MAX_BILLS}, so the file is read as one   FR-129 reasons that fired: d")
+        return
     bills = []
     for first, last in split.parts:
         numbers = [page for page, start, _ in pages if first <= start < last]

@@ -215,7 +215,7 @@ class Case:
     def phone_lines(self, first):
         c, rng = self.c, self.rng
         lines = []
-        for number, name in enumerate(self.names):
+        for number, _name in enumerate(self.names):
             title = self.holder_title(number)
             holders = {"holder": title, "section": title, "owner": number}
             lines.append(self.line("Unlimited Plan" if number == 0 else "Basic Plan", rng.choice((5500, 3500, 4500)), "service", **holders))
