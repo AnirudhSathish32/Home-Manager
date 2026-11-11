@@ -16,6 +16,7 @@ from collections import Counter
 import dataclasses
 import json
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -733,11 +734,43 @@ def test_sc114_a_page_with_no_charge_table_keeps_the_models_line_and_says_so(pdf
     assert (record["total_minor"], record["amount_due_minor"]) == (9955, 9955)
     noted(run, "Page 2: no charge table was found in the printed columns, so its amounts are the reading's; check them.")
     assert {check["name"]: check["passes"] for check in record["checks"]}["lines"] and {check["name"]: check["passes"] for check in record["checks"]}["carried"]
-    # The contract says C-auto here. Plan P7.1 waives the reader's `unresolved_columns` note only on a page the engine read a charge table on, so page 2's
-    # own layout note stays the one review reason; nothing else of this feature is (escalated in the handoff).
-    assert record["issues"] == ["Page 2 PDF layout needs review: unresolved_columns."]
+    # The reader's `unresolved_columns` note on page 2 is waived (FR-114: its printed grids are dropped), so the bill is C-auto.
+    assert run.evidence.pages[1].layout.issues == ["unresolved_columns"]  # P-check: the reading does carry it.
+    auto(record)
     no_feature_review(record)
     finished(run)
+
+
+def test_sc114_a_text_page_with_no_charge_table_and_another_layout_issue_still_needs_review(pdf_store, local_model, monkeypatch):
+    run = started(pdf_store, local_model, bf.util_2p_pages())
+    run.__class__ = BillRun
+    note = "Page 2 PDF layout needs review: unresolved_columns, glyph_outside_page."
+    original = extraction.read_result
+
+    def with_issue(value):
+        result = original(value)
+        result.pages[1].layout.issues = ["unresolved_columns", "glyph_outside_page"]
+        [issue] = [issue for issue in result.issues if issue.message.startswith("Page 2 ")]
+        issue.message = note
+        return result
+    monkeypatch.setattr(extraction, "read_result", with_issue)
+    fee = {"description": "Paper Bill Fee", "amount": "2.00", "quantity": None, "unit_price": None, "category": None, "line_kind": "tax_fee",
+           "line_holder": None, "evidence": run.cite("Your paper bill fee")}
+    run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, "amount_due": ("99.55", "Amount Due", "99.55"), "new_charges": ("99.55", "99.55", "99.55")}, extra=[fee])
+    run.extract()
+    reasons(run.record, note)
+    assert not [issue for issue in run.record["issues"] if "Page 1" in issue]
+
+
+def test_sc114_a_pay_stub_page_without_an_engine_table_keeps_its_layout_note():
+    """The widening is the bill's: a pay stub (no text_pages) waives `unresolved_columns` only on a page its engine read a table on."""
+    page = SimpleNamespace(number=1, layout=SimpleNamespace(issues=["unresolved_columns"]))
+    evidence = SimpleNamespace(pages=[page], issues=[SimpleNamespace(code="pdf_layout_review", message="Page 1 PDF layout needs review: unresolved_columns.")])
+    lines = [SimpleNamespace(id="page-1-layout-line-1")]
+    pay = SimpleNamespace(engine_pages=set(), line_pages={1})
+    assert extraction.pay_layout_notes(evidence, pay, lines) == ["Page 1 PDF layout needs review: unresolved_columns."]
+    assert extraction.pay_layout_notes(evidence, SimpleNamespace(engine_pages={1}, line_pages={1}), lines) == []
+    assert extraction.pay_layout_notes(evidence, pay, lines, {1}) == []  # a bill's text page
 
 
 def test_sc114_a_reading_saved_without_layout_is_read_like_a_photographed_bill(pdf_store, local_model, monkeypatch):

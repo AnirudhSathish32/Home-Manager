@@ -1379,12 +1379,15 @@ def pay_tables_for_viewer(pay, readings):
     return shown
 
 
-def pay_layout_notes(evidence, pay, lines):
+def pay_layout_notes(evidence, pay, lines, text_pages=None):
     """The pdf_layout_review messages (each starts "Page N") a pay stub part takes (P7.1a): only for pages holding its lines, and not for a page
     the pay engine read a table on when the layout's only issue is unresolved_columns (the rule finance/pdf_import.py already uses: table_grid
-    raises it exactly when it can't build a headerless table). Any other layout issue stays a review note."""
+    raises it exactly when it can't build a headerless table). Any other layout issue stays a review note.
+    text_pages: for a bill read by the bill engine, every text page of the file. The printed grids of those pages are dropped (FR-114), so a page
+    whose only issue is unresolved_columns is waived whether or not a charge table was found on it; a pay stub passes None."""
     pages = {line_page(line.id) for line in lines}
-    waived = {page.number for page in evidence.pages if page.number in pay.engine_pages and page.layout is not None and page.layout.issues == ["unresolved_columns"]}
+    waivable = pay.engine_pages | set(text_pages or ())
+    waived = {page.number for page in evidence.pages if page.number in waivable and page.layout is not None and page.layout.issues == ["unresolved_columns"]}
     found = []
     for issue in evidence.issues:
         number = re.match(r"Page (\d+)", issue.message)
@@ -4568,7 +4571,7 @@ class ExtractionService:
         text_pages = {page.number for page in evidence.pages if page.method == "embedded_text" and page.layout is not None} if reading_bill else set()
         bill_part = bill_tables.for_lines(reading_bill, ids) if reading_bill and text_pages & {line_page(line_id) for line_id in ids} else None
         from_columns = bill_part is not None and bool(bill_part.engine_pages)
-        layout_notes = (pay_layout_notes(evidence, engine or reading_bill, lines) if engine or bill_part is not None
+        layout_notes = (pay_layout_notes(evidence, engine or reading_bill, lines, None if engine else text_pages) if engine or bill_part is not None
                         else [issue.message for issue in evidence.issues if issue.code == "pdf_layout_review"])
         notes.extend(message for message in layout_notes if message not in notes)
         tables = reported_tables(evidence)
