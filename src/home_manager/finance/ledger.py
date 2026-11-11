@@ -218,6 +218,13 @@ TRANSACTION_LABELS = {"posted_date": "Date", "amount": "Amount", "direction": "M
 # The review note when a correction clears a record's last issue; with no actor, the history shows it as automatic.
 AUTO_VERIFIED_NOTE = "Every automatic check passes after your correction."
 UNDO_REASON = "Undid a change"
+# A bill's line corrections are kept by printed position, so a reading that moves the lines must not move them too (FR-119). The
+# reserved key beside a bill's kind entries in receipts.details_json remembers each correction's line amount, which corrections are held
+# (not applied: their line prints another amount now) and which held ones were undone. Nothing else reads it.
+LINE_CORRECTIONS = "line_corrections"
+# What a held correction's reason calls the field: the history's own word for it.
+HELD_WORDS = {"member": "person", "line_kind": "type", "line_type": "type", "price": "price", "description": "name", "product_code": "code",
+              "quantity": "quantity", "unit_price": "unit price"}
 # A receipt's printed details a person may correct, as "detail:<name>" (docs/money.md "Corrections"): name -> (kind, label).
 # A tender's amount is "detail:tenders.<n>.amount", n counted from 1.
 DETAIL_CORRECTABLE = {"volume": ("decimal_text", "Fuel volume"), "price_per_unit": ("decimal_text", "Fuel price per unit"),
@@ -763,13 +770,16 @@ class Ledger:
                                 now(), receipt_id))
             if written:
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
+                # A bill's lines as stored before this reading, for the line corrections made before FR-119 remembered amounts.
+                stored = {row[0]: row[1] for row in db.execute("SELECT position,line_total_minor FROM receipt_items WHERE receipt_id=?", (receipt_id,))} \
+                    if record.get("document_kind") == "bill" else None
                 kept = self._replace_items(db, receipt_id, record, source, status)
                 if kept:
                     issues = [*record["issues"], f"This reading no longer finds {kept} item{'s' if kept > 1 else ''} you worked on; "
                               "they were kept at the end of the list. Check them against the receipt."]
                     db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
                 # After the items: a sale-or-return correction signs them as well as the totals.
-                self.apply_corrections(db, "receipt", receipt_id)
+                self.apply_corrections(db, "receipt", receipt_id, stored)
                 self.refresh_paid(db, receipt_id)
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
@@ -789,10 +799,10 @@ class Ledger:
         """A receipt's details by kind: this reading replaces only the entry for the kind it read, so an earlier kind's
         details come back with an undo of a kind change. None for a record not read with kinds (a bill read before bill kinds).
         kind is the receipt kind or, for a bill, the bill kind (kind_column)."""
-        if kind is None:
-            return None
         row = db.execute("SELECT details_json FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
         found = json.loads(row["details_json"]) if row and row["details_json"] else {}
+        if kind is None:  # A bill's held line corrections outlive a reading without a kind (FR-119).
+            return json.dumps({LINE_CORRECTIONS: found[LINE_CORRECTIONS]}) if LINE_CORRECTIONS in found else None
         return json.dumps({**found, kind: details or {}})
 
     def chosen_kind(self, blob_hash, segment, field="receipt_kind"):
@@ -966,16 +976,18 @@ class Ledger:
         return previous
 
     def retire_segments(self, blob_hash, keep, note=None):
-        """Receipts and pay stubs of a file's segments that its latest reading no longer finds (keep: the segments it found;
+        """Receipts, bills and pay stubs of a file's segments that its latest reading no longer finds (keep: the segments it found;
         none when the file became a later page of a combined document). One the user never decided stops counting (rejected
-        automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note."""
+        automatically, so a later reading that finds it again restores it); one the user decided keeps their decision with a note.
+        The note names a bill a "bill" (FR-132)."""
         retired = 0
         with self.store.connection() as db:
             marks = ",".join("?" * len(keep))
             for table, noun in (("receipts", "receipt"), ("income_records", "pay stub")):
-                text = note or f"The latest reading of this file no longer finds this {noun}; check how the file was split."
-                for row in db.execute(f"SELECT id,review_source,validation_json FROM {table} WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
+                kind = ", document_kind" if table == "receipts" else ", 'receipt' AS document_kind"
+                for row in db.execute(f"SELECT id,review_source,validation_json{kind} FROM {table} WHERE blob_hash=?" + (f" AND segment NOT IN ({marks})" if keep else ""),
                                       (blob_hash, *keep)).fetchall():
+                    text = note or f"The latest reading of this file no longer finds this {'bill' if row['document_kind'] == 'bill' else noun}; check how the file was split."
                     issues = [issue for issue in json.loads(row["validation_json"]) if issue != text] + [text]
                     if row["review_source"] == "user":
                         db.execute(f"UPDATE {table} SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
@@ -1529,6 +1541,50 @@ class Ledger:
         longer counts; True when it was marked. Extract again of the stub lets it count when its original is rejected or deleted."""
         return self.reject_automatically(income_id, original_id)
 
+    def bill_twin(self, record, source):
+        """The other bills a bill about to be published looks like (FR-134): {"original": id or None, "same_date": bool}, or None when there are none.
+        Only a non-invoice bill recorded before this one that still counts is a twin (a lower id; any, while this one is not recorded yet), so the first
+        recorded keeps counting and Extract again gives the same answer. Bills of one provider, due date (else issue date) and account (when both print
+        a last four) are compared: original: the same amount due and currency; same_date: another amount due (a corrected bill, which counts).
+        An invoice is never a twin, and never has one."""
+        provider, day = record.get("provider"), record.get("due_date") or record.get("issue_date")
+        if record.get("invoice") or not provider or not day or record.get("amount_due_minor") is None or not record.get("currency"):
+            return None
+        last_four = record.get("last_four") or record.get("account_last_four")
+        with self.store.connection() as db:
+            merchant = db.execute("SELECT id FROM merchants WHERE normalized_name=?", (normalize_name(provider),)).fetchone()
+            if merchant is None:
+                return None
+            mine = db.execute("SELECT id FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            others = db.execute("SELECT id,amount_due_minor,currency,account_last_four FROM receipts WHERE document_kind='bill' AND invoice_json IS NULL "
+                                "AND merchant_id=? AND coalesce(due_date,issue_date)=? AND review_status<>'rejected' AND id<? ORDER BY id",
+                                (merchant["id"], day, mine["id"] if mine else 2 ** 62)).fetchall()
+        others = [row for row in others if not last_four or not row["account_last_four"] or row["account_last_four"] == last_four]
+        same = [row["id"] for row in others if row["amount_due_minor"] == record["amount_due_minor"] and row["currency"] == record["currency"]]
+        return {"original": same[0] if same else None, "same_date": bool(others)} if others else None
+
+    def reject_receipt_automatically(self, receipt_id, original_id=None):
+        """Stop counting a bill (rejected, automatic) unless the user decided it, and rebuild its category shares. original_id: the bill it repeats,
+        which must still count. True when it was marked."""
+        with self.store.connection() as db:
+            if original_id is not None and not db.execute("SELECT 1 FROM receipts WHERE id=? AND id<>? AND review_status<>'rejected'",
+                                                          (original_id, receipt_id)).fetchone():
+                return False
+            marked = bool(db.execute("UPDATE receipts SET review_status='rejected',review_source='automatic',updated_at=? WHERE id=? "
+                                     "AND review_source IS NOT 'user'", (now(), receipt_id)).rowcount)
+            if marked:
+                self.refresh_splits(db, receipt_id)
+            return marked
+
+    def mark_bill_void(self, receipt_id):
+        """A bill printed VOID is recorded but counts nowhere (FR-133). A bill the user decided is left alone; True when it was marked."""
+        return self.reject_receipt_automatically(receipt_id)
+
+    def mark_bill_duplicate(self, receipt_id, original_id):
+        """A bill that repeats another counts nowhere (FR-134). A bill the user decided is left alone, and so is one whose original no longer counts;
+        True when it was marked. Extract again of the bill lets it count when its original is rejected or deleted."""
+        return self.reject_receipt_automatically(receipt_id, original_id)
+
     # Deterministic CSV/XLSX import ---------------------------------------------
 
     def table_rows(self, document_id, digest, currency, mapping):
@@ -1911,6 +1967,7 @@ class Ledger:
         """One canonical record with its rows, evidence and review history."""
         if record_type not in RECORD_TABLES:
             raise ValueError("Unknown financial record type.")
+        printed_rates = {}  # A bill line's unit price as printed (position to text), where it isn't a whole number of cents and no correction of yours replaced it.
         with self.store.connection() as db:
             row = db.execute(f"SELECT * FROM {RECORD_TABLES[record_type]} WHERE id=?", (record_id,)).fetchone()
             if row is None:
@@ -1957,6 +2014,12 @@ class Ledger:
                                                {"field": "unit_price", "label": "Unit price", "kind": "receipt_money",
                                                 "value": money(abs(unit), row["currency"])["decimal"] if unit is not None else None},
                                                {**item["correctable"][0], "label": "Line total"}]
+                    text = ((item["details"] or {}).get("unit_price") or {}).get("text") if bill else None
+                    if text:
+                        changes = db.execute("SELECT value,previous,reason FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? "
+                                             "ORDER BY id", (record_id, f"unit_price:{item['position']}")).fetchall()
+                        if not changes or changes[-1]["reason"] == UNDO_REASON and changes[-1]["value"] == changes[0]["previous"]:
+                            printed_rates[item["position"]] = text
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
                         # A rent bill's line takes a rent type (specs/bill-kinds FR-45), which sets its line kind.
                         kind = ({"field": "line_type", "label": "Type", "kind": "choice", "value": item["line_type"], "options": list(RENT_LINE_TYPES)}
@@ -2082,6 +2145,9 @@ class Ledger:
         for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", []), *value.get("tax_lines", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()
                               if key.endswith("_minor") and isinstance(amount, int)}
+        for item in value.get("items", []):  # FR-110: a rate printed with more decimals than cents shows as printed, from the server (the page does no money work).
+            if item["position"] in printed_rates:
+                item["display"]["unit_price_minor"] = printed_rates[item["position"]]
         if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).
             value["breakdown"] = paystub.with_display(paystub.breakdown(value, value["lines"]), value["currency"])
             # Taxes and deductions the stub doesn't print as totals are shown from the breakdown's subtotals; the record keeps
@@ -2688,10 +2754,13 @@ class Ledger:
                     continue
                 if row["record_type"] == "receipt_item":
                     name, position = row["field"].split(":")
+                    if self.undo_held_line(db, record_id, row):
+                        continue
                     if name in LINE_FIELDS:
-                        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
-                                   "VALUES('receipt_item',?,?,?,?,?,?,?)", (record_id, row["field"], row["previous"], row["value"], UNDO_REASON,
-                                                                           actor.current(), now()))
+                        undo_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                                             "VALUES('receipt_item',?,?,?,?,?,?,?)", (record_id, row["field"], row["previous"], row["value"], UNDO_REASON,
+                                                                                     actor.current(), now())).lastrowid
+                        self.remember_line_amount(db, record_id, int(position), name, undo_id)
                         self._set_line(db, record_id, int(position), name, row["previous"])
                     elif name in ITEM_FIELDS:
                         self._correct_item_field(db, record_id, int(position), name, row["previous"], UNDO_REASON, stored=True)
@@ -2723,18 +2792,161 @@ class Ledger:
                 self.refresh_paid(db, record_id)  # Last, after the restored notes and the revert above.
         return self.record(record_type, record_id)
 
-    def apply_corrections(self, db, record_type, record_id):
-        """Re-apply the latest correction of each field after an extraction rewrote the model's values."""
+    # A bill's line corrections after a reading again (docs/money.md "Reading a statement or receipt again"; FR-119) -----------------
+
+    @staticmethod
+    def line_state(db, receipt_id):
+        """The remembered line amounts by correction id (minor units), the held correction ids and the undone undo rows, as text ids."""
+        row = db.execute("SELECT details_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        found = (json.loads(row[0]) if row and row[0] else {}).get(LINE_CORRECTIONS) or {}
+        return {"amounts": dict(found.get("amounts") or {}), "held": list(found.get("held") or []), "undone": list(found.get("undone") or [])}
+
+    @staticmethod
+    def save_line_state(db, receipt_id, state):
+        row = db.execute("SELECT details_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        details = json.loads(row[0]) if row and row[0] else {}
+        if any(state.values()):
+            details[LINE_CORRECTIONS] = state
+        else:
+            details.pop(LINE_CORRECTIONS, None)
+        db.execute("UPDATE receipts SET details_json=? WHERE id=?", (json.dumps(details) if details or row and row[0] else None, receipt_id))
+
+    @staticmethod
+    def held_prefix(position, name, value):
+        """How a held correction's reason starts: line N and what was changed (the history's word and the value)."""
+        shown = value if value is not None else ("nobody" if name == "member" else "none")
+        return f"Your change to line {position} ({HELD_WORDS[name]}: {shown}) wasn't applied:"
+
+    @staticmethod
+    def forget_held_reasons(db, receipt_id, prefixes):
+        if not prefixes:
+            return
+        issues = json.loads(db.execute("SELECT validation_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0])
+        kept = [issue for issue in issues if not issue.startswith(tuple(prefixes))]
+        if kept != issues:
+            db.execute("UPDATE receipts SET validation_json=? WHERE id=?", (json.dumps(kept), receipt_id))
+
+    @staticmethod
+    def price_chain_start(db, receipt_id, position, currency):
+        """The amount a line had before the latest unbroken run of price corrections on it: (found, minor) from the `previous` of the run's
+        first row. A run breaks where a row's previous is not the value of the row before it (G4). found is False without a price correction."""
+        rows = db.execute("SELECT value,previous FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? ORDER BY id DESC",
+                          (receipt_id, f"price:{position}")).fetchall()
+        if not rows:
+            return False, None
+        minor = lambda text: to_minor(text, currency) if text is not None else None  # noqa: E731
+        start = rows[0]
+        for older in rows[1:]:
+            if minor(start["previous"]) != minor(older["value"]):
+                break
+            start = older
+        return True, minor(start["previous"])
+
+    def remember_line_amount(self, db, receipt_id, position, field, correction_id):
+        """A bill line's correction was just written: remember the amount the line has as read, before any price correction of yours, so a
+        reading again applies it only to a line that prints that amount (FR-119). Making the same change again replaces a held one: its
+        held mark and reason go. Called before the correction changes the line. Receipts keep nothing."""
+        row = db.execute("SELECT i.line_total_minor,r.currency FROM receipt_items i JOIN receipts r ON r.id=i.receipt_id "
+                         "WHERE i.receipt_id=? AND i.position=? AND r.document_kind='bill'", (receipt_id, position)).fetchone()
+        if row is None:
+            return
+        state = self.line_state(db, receipt_id)
+        amount = row["line_total_minor"]
+        prior = db.execute("SELECT id FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? AND id<? ORDER BY id DESC LIMIT 1",
+                           (receipt_id, f"price:{position}", correction_id)).fetchone()
+        if prior is not None and str(prior[0]) not in (*state["held"], *state["undone"]):  # An applied price correction: its line is not as read.
+            if str(prior[0]) in state["amounts"]:
+                amount = state["amounts"][str(prior[0])]
+            else:  # Made before amounts were remembered.
+                found, before = self.price_chain_start(db, receipt_id, position, row["currency"])
+                amount = before if found else amount
+        state["amounts"][str(correction_id)] = amount
+        replaced = []
+        for held in list(state["held"]):
+            earlier = db.execute("SELECT field,value FROM record_corrections WHERE id=?", (int(held),)).fetchone()
+            if earlier is None or earlier["field"] == f"{field}:{position}":
+                state["held"].remove(held)
+                if earlier is not None:
+                    replaced.append(self.held_prefix(position, field, earlier["value"]))
+        self.save_line_state(db, receipt_id, state)
+        self.forget_held_reasons(db, receipt_id, replaced)
+
+    def guard_line_corrections(self, db, receipt_id, found, rent, stored):
+        """A bill read again (FR-119): the ids of the latest line corrections not to apply. A correction goes to the line now at its position
+        only when that line prints the amount the correction was made on, or, for a price, exactly the corrected price. Any other is held:
+        kept, with the bill back in To check and a reason saying what the line prints now. A held one that fits again is applied and its
+        reason goes. One undone while it was held stays off. stored: the lines (position to amount) before this reading, for corrections
+        made before amounts were remembered."""
+        state = self.line_state(db, receipt_id)
+        currency = db.execute("SELECT currency FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
+        printed = {row[0]: row[1] for row in db.execute("SELECT position,line_total_minor FROM receipt_items WHERE receipt_id=?", (receipt_id,))}
+        plain = lambda minor: money(minor, currency)["decimal"] if minor is not None else "no amount"  # noqa: E731
+        skipped, held, reasons = set(), [], []
+        for item in sorted(found, key=lambda row: int(row["field"].split(":")[1])):
+            name, position = item["field"].split(":")
+            position = int(position)
+            if name == "line_type" and not rent:  # Never applied on this bill.
+                continue
+            if str(item["id"]) in state["undone"]:
+                skipped.add(item["id"])
+                continue
+            if str(item["id"]) not in state["amounts"]:  # Made before this change: the line's amount at the last reading, as G4 says.
+                found_chain, before = self.price_chain_start(db, receipt_id, position, currency)
+                state["amounts"][str(item["id"])] = before if found_chain else stored.get(position)
+            remembered = state["amounts"][str(item["id"])]
+            now_prints = printed.get(position)
+            fits = position in printed and (now_prints == remembered or (
+                name == "price" and now_prints == (to_minor(item["value"], currency) if item["value"] is not None else None)))
+            if fits:
+                continue
+            skipped.add(item["id"])
+            held.append(str(item["id"]))
+            what = self.held_prefix(position, name, item["value"])
+            prints = f"that line now prints {plain(now_prints)}, not {plain(remembered)}." if position in printed \
+                else f"the bill no longer has a line {position}; it printed {plain(remembered)}."
+            reasons.append(f"{what} {prints} Check the bill's lines and make the change again on the right line.")
+        state["held"] = held
+        self.save_line_state(db, receipt_id, state)
+        if reasons:
+            issues = json.loads(db.execute("SELECT validation_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0])
+            db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?",
+                       (json.dumps([*issues, *(reason for reason in reasons if reason not in issues)]), receipt_id))
+        return skipped
+
+    def undo_held_line(self, db, receipt_id, row):
+        """Undo a correction that is held (nothing was applied, so nothing is put back): its undo row is written as for any, the line now at
+        its position keeps its own values, the held mark and reason go, and later readings skip the field until it is corrected again.
+        False when the correction is not held."""
+        state = self.line_state(db, receipt_id)
+        if str(row["id"]) not in state["held"]:
+            return False
+        name, position = row["field"].split(":")
+        undo_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
+                             "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, row["field"], row["previous"], row["value"], UNDO_REASON,
+                                                                     actor.current(), now())).lastrowid
+        state["held"].remove(str(row["id"]))
+        state["undone"].append(str(undo_id))
+        self.save_line_state(db, receipt_id, state)
+        self.forget_held_reasons(db, receipt_id, [self.held_prefix(int(position), name, row["value"])])
+        return True
+
+    def apply_corrections(self, db, record_type, record_id, stored=None):
+        """Re-apply the latest correction of each field after an extraction rewrote the model's values. stored: a bill's lines
+        (position to amount) as they were before this reading; with it, a bill's line correction goes only to a line that prints the
+        amount it was made on and is held otherwise (FR-119). A receipt passes none and every correction is re-applied by position."""
         if record_type == "receipt":
             rent = db.execute("SELECT bill_kind FROM receipts WHERE id=?", (record_id,)).fetchone()[0] == "rent"
-            found = db.execute("SELECT field,value FROM record_corrections c WHERE record_type='receipt_item' AND record_id=? "
+            found = db.execute("SELECT id,field,value FROM record_corrections c WHERE record_type='receipt_item' AND record_id=? "
                                "AND id=(SELECT max(id) FROM record_corrections WHERE record_type=c.record_type AND record_id=c.record_id AND field=c.field)",
                                (record_id,)).fetchall()
+            skipped = self.guard_line_corrections(db, record_id, found, rent, stored) if stored is not None else set()
             # A rent type first (only on a bill read as rent), then a line kind, so a person's line kind wins over the
             # rent type's mapping (specs/bill-kinds plan "Replaying line corrections on a re-read").
             for item in sorted(found, key=lambda row: not row["field"].startswith("line_type:")):
                 name, position = item["field"].split(":")
                 if name == "line_type" and not rent:
+                    continue
+                if item["id"] in skipped:  # Held, or undone while held: this reading leaves its line as it prints.
                     continue
                 if name in LINE_FIELDS:  # A bill line's type or person, as the person set it.
                     self._set_line(db, record_id, int(position), name, item["value"])
@@ -2905,6 +3117,7 @@ class Ledger:
         correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
                                    "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"{field}:{position}", shown, previous,
                                                                            clean_reason(reason), actor.current(), now())).lastrowid
+        self.remember_line_amount(db, receipt_id, position, field, correction_id)
         db.execute(f"UPDATE receipt_items SET {column}=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
         return correction_id
 
@@ -2935,6 +3148,7 @@ class Ledger:
             correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
                                        "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"{field}:{position}", value, row[LINE_FIELDS[field]],
                                                                                clean_reason(reason), actor.current(), now())).lastrowid
+            self.remember_line_amount(db, receipt_id, position, field, correction_id)
             self._set_line(db, receipt_id, position, field, value)
         return {"record": self.record("receipt", receipt_id), "correction_ids": [correction_id]}
 
@@ -2976,6 +3190,7 @@ class Ledger:
         correction_id = db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,reason,actor,created_at) "
                                    "VALUES('receipt_item',?,?,?,?,?,?,?)", (receipt_id, f"price:{position}", decimal(value), decimal(row["line_total_minor"]),
                                                                            clean_reason(reason), actor.current(), now())).lastrowid
+        self.remember_line_amount(db, receipt_id, position, "price", correction_id)
         db.execute("UPDATE receipt_items SET line_total_minor=?,updated_at=? WHERE receipt_id=? AND position=?", (value, now(), receipt_id, position))
         self.refresh_splits(db, receipt_id)
         return correction_id

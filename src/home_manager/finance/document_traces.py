@@ -82,6 +82,7 @@ def bill_checks(db, row):
         return provenance(db, "receipt", row, f"detail:{name}", details[name]["locator"])
     items = db.execute("SELECT * FROM receipt_items WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (row["id"],)).fetchall()
     new = (details.get("new_charges") or {}).get("minor")
+    worked = (details.get("new_charges") or {}).get("worked_out")  # FR-118: the new charges aren't printed, so they are worked out from the other three.
     due = row["amount_due_minor"]
     if items and all(item["line_total_minor"] is not None for item in items) and (new if new is not None else due) is not None:
         inputs = []
@@ -90,16 +91,39 @@ def bill_checks(db, row):
                                   (item["id"],)).fetchone()
             inputs.append(("money", f"line:{item['position']}", item["description"], item["line_total_minor"],
                            provenance(db, "receipt_item", row, f"price:{item['position']}", json.loads(evidence["locator_json"]) if evidence else {})))
-        if new is not None:
+        if worked:
+            inputs += [("money", "amount_due", "Amount due", worked["amount_due"], provenance(db, "receipt", row, "amount_due", result=result)),
+                       ("money", "previous_balance", "Previous balance", worked["previous_balance"], detail("previous_balance")),
+                       ("money", "payments_received", "Payments received", worked["payments"], detail("payments_received"))]
+        elif new is not None:
             inputs.append(("money", "new_charges", "New charges", new, detail("new_charges")))
         else:
             inputs.append(("money", "amount_due", "Amount due", due, provenance(db, "receipt", row, "amount_due", result=result)))
         found.append({"name": "lines", "label": "Charge lines", "ref": ref("bill.lines", receipt_id=row["id"]), "check": document_checks.bill_lines,
                       "args": ([(item["description"], item["line_total_minor"]) for item in items], new if new is not None else due),
-                      "inputs": inputs, "formula": "The charge lines added up, credits as money off, against the printed new charges, or the "
-                                                   "amount due when no new charges are printed."})
+                      "inputs": inputs, "formula": (
+                          f"The charge lines added up, credits as money off, against the new charges worked out as the amount due {decimal(worked['amount_due'], row['currency'])} "
+                          f"\u2212 previous balance {decimal(worked['previous_balance'], row['currency'])} + payments {decimal(worked['payments'], row['currency'])} "
+                          f"= {decimal(new, row['currency'])}; the bill doesn't print them." if worked else
+                          "The charge lines added up, credits as money off, against the printed new charges, or the amount due when no new charges are printed.")})
+    for item in items:  # FR-113: the printed quantity times the printed rate, half up (the rate as printed when it isn't a whole number of cents).
+        unit = (json.loads(item["details_json"] or "null") or {}).get("unit_price") if item["details_json"] else None
+        rate = unit["text"] if unit else decimal(item["unit_price_minor"], row["currency"]) if item["unit_price_minor"] is not None else None
+        if not item["quantity"] or rate is None or item["line_total_minor"] is None \
+                or document_checks.unit_line(item["quantity"], rate, abs(item["line_total_minor"]), row["currency"]) is None:
+            continue
+        evidence = db.execute("SELECT locator_json FROM financial_evidence_links WHERE record_type='receipt_item' AND record_id=? ORDER BY id LIMIT 1",
+                              (item["id"],)).fetchone()
+        locator = json.loads(evidence["locator_json"]) if evidence else {}
+        found.append({"name": f"product:{item['position']}", "label": f"{item['description']}: quantity × unit price",
+                      "ref": ref("bill.product", receipt_id=row["id"], position=item["position"]), "check": document_checks.unit_line,
+                      "args": (item["quantity"], rate, abs(item["line_total_minor"])),
+                      "inputs": [("text", "quantity", "Quantity", item["quantity"], None, provenance(db, "receipt", row, None, locator)),
+                                 ("text", "unit_price", "Unit price", rate, None, provenance(db, "receipt", row, None, (unit or {}).get("locator") or locator)),
+                                 ("money", "line_total", "Line total", abs(item["line_total_minor"]), provenance(db, "receipt_item", row, f"price:{item['position']}", locator))],
+                      "formula": "The printed quantity times the unit price as printed, rounded half-up to the cent, against the line total (within a cent)."})
     previous, payments = ((details.get(name) or {}).get("minor") for name in ("previous_balance", "payments_received"))
-    if None not in (previous, payments, new, due):
+    if None not in (previous, payments, new, due) and not worked:  # Worked-out new charges would make it hold by construction (FR-118).
         found.append({"name": "carried", "label": "Previous balance, payments and new charges", "ref": ref("bill.carried", receipt_id=row["id"]),
                       "check": document_checks.bill_carried, "args": (previous, payments, new, due),
                       "inputs": [("money", "previous_balance", "Previous balance", previous, detail("previous_balance")),
@@ -282,6 +306,7 @@ TRACES = {
     "receipt.paid": lambda store, text, params: check_trace(store, text, params, "receipt", "receipt_id", lambda _: "paid"),
     "paystub.hours": lambda store, text, params: check_trace(store, text, params, "income_record", "income_id", lambda found: f"hours:{position(found)}"),
     "paystub.deposits": lambda store, text, params: check_trace(store, text, params, "income_record", "income_id", lambda _: "deposits"),
+    "bill.product": lambda store, text, params: check_trace(store, text, params, "receipt", "receipt_id", lambda found: f"product:{position(found)}"),
     "bill.lines": lambda store, text, params: check_trace(store, text, params, "receipt", "receipt_id", lambda _: "lines"),
     "bill.carried": lambda store, text, params: check_trace(store, text, params, "receipt", "receipt_id", lambda _: "carried"),
     "statement.summary": lambda store, text, params: check_trace(store, text, params, "statement", "statement_id", lambda _: "summary"),

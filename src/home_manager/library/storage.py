@@ -611,10 +611,10 @@ class Store:
                 "(SELECT CASE WHEN count(*)=1 THEN max(currency) END FROM income_records WHERE blob_hash=o.current_hash AND review_status<>'rejected'),"
                 "(SELECT currency FROM statements WHERE blob_hash=o.current_hash)) AS ledger_currency,"
                 # A bill is a receipt with document_kind 'bill' (docs/money.md "Bills and their lines"): its tag, due date and period.
-                "(SELECT r.document_kind FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS ledger_kind,"
-                "(SELECT r.due_date FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS due_date,"
-                "(SELECT r.period_start FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS bill_period_start,"
-                "(SELECT r.period_end FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' LIMIT 1) AS bill_period_end,"
+                "(SELECT r.document_kind FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' ORDER BY r.segment LIMIT 1) AS ledger_kind,"
+                "(SELECT r.due_date FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' ORDER BY r.segment LIMIT 1) AS due_date,"
+                "(SELECT r.period_start FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' ORDER BY r.segment LIMIT 1) AS bill_period_start,"
+                "(SELECT r.period_end FROM receipts r WHERE r.blob_hash=o.current_hash AND r.review_status<>'rejected' AND r.document_kind='bill' ORDER BY r.segment LIMIT 1) AS bill_period_end,"
                 # Review state of the ledger record published from this version, or 'imported' for CSV/XLSX.
                 "coalesce((SELECT review_status FROM receipts WHERE blob_hash=o.current_hash ORDER BY CASE review_status WHEN 'needs_review' THEN 0 "
                 "WHEN 'proposed' THEN 1 WHEN 'verified' THEN 2 ELSE 3 END LIMIT 1),(SELECT review_status FROM statements WHERE blob_hash=o.current_hash),"

@@ -99,7 +99,26 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
   otherwise it is left out.
 - **What counts is the new charges** (`total_minor`). The amount due (`amount_due_minor`) can include a past-due
   balance and is kept beside it. The lines must add up to the new charges; that is the bill's arithmetic cross-check. With
-  no new charges printed, the lines' sum counts, else the amount due, with a note.
+  no new charges printed, the lines' sum counts, else the amount due, with a note; a text-PDF bill that prints its previous
+  balance and payments instead has its new charges worked out (below).
+- **A text-PDF bill takes its amounts from the print** ([documents](documents.md#bill-lines-from-the-printed-columns)). Every line's
+  amount, quantity and unit price is copied from the column it is printed in, and the amount due, new charges, previous balance and
+  payments from the lines that print them; the model names and classifies the lines and never decides which printed number is a
+  line's charge. A page with no charge table, a photographed or scanned bill, and an invoice are read as before.
+  - **Guesses are notes.** When the engine or Record has to choose (which of two columns that both add up is the charge, an
+    unclassified row, which of several printed amounts due), it takes the best choice and writes it in the bill's notes; a guess never
+    sends a bill to review. The checks above still do.
+  - **New charges may be worked out.** A bill that prints no new charges but prints its previous balance, payments and amount due
+    counts amount due − previous balance + payments as its new charges, with the note "New charges aren't printed; worked out as amount
+    due A − previous balance P + payments R = N."; the lines must add up to that value, and the carried check isn't run.
+  - **A rate printed with more decimals than the currency allows** (`0.1430` a kWh) is kept as printed in the line's details and its
+    cents (14) are stored beside it; quantity × unit price is checked on the printed rate.
+  - **A line under a holder title** (a phone bill's `Alex 555-201-1111`) takes the title's holder, so family routing finds the member
+    by the number's last four digits.
+  - **A VOID bill or an exact duplicate doesn't count.** A bill with a line that says only VOID, and a bill with the same provider,
+    due date, amount due and currency as another that counts, is recorded with its lines and rejected automatically; a corrected bill
+    (same due date, other amount due) counts. A file of several bills is one bill each
+    ([documents](documents.md#several-bills-in-one-file)).
 - **How often** comes from the period's length (`BILL_PERIODS`); monthly when no period is printed.
 - **Counting.** A verified bill counts on its due date (`purchase_date` follows the due date, or the issue date when none
   is printed), by its lines' categories, until its payment replaces it, like any receipt. A line with no category counts
@@ -512,6 +531,17 @@ one line by line:
     transfer or a bill, or linked it to an investment.
   - For a receipt item, it means you categorised, identified or tagged it, or it is in your household items. It is
     placed after the new reading's items.
+
+- **A bill line you corrected, after a bill is read again.** Each line's type, person, price, description, code, quantity and unit
+  price you correct is kept by its printed position and is applied again after a new reading only when the line now at that position
+  prints the same amount as the line you corrected (its amount as read, before any price correction of yours), or, for a price you
+  corrected, prints exactly your corrected price. Otherwise the correction is **held**: not applied, kept in the history, and the bill
+  waits in Review with the reason "Your change to line N (what you changed) wasn't applied: that line now prints X, not Y. Check the
+  bill's lines and make the change again on the right line." (a position that no longer has a line reads "the bill no longer has a line
+  N"). A held correction applies again, and its reason goes, when a later reading prints the remembered amount at that position again;
+  making the same kind of change on that position again replaces it, and **Undo** removes it. Because the reading may add a line the
+  model missed, a line that moves keeps your person and category by what the item is (its description and amount), not by its number.
+  This guards every bill, text PDF, photographed, scanned or invoice, and never rewrites a bill you decided. Receipts are unchanged.
 
 A statement PDF read again takes its rows from the printed columns ([documents](documents.md#statement-rows-from-the-printed-columns))
 when it has a text layer, so the same reading gives the same rows. A row is the same line when its posted date, amount and

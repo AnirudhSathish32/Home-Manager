@@ -26,8 +26,8 @@ from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_C
 from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
-from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
-from ..finance import document_checks, paystub_tables, statement_tables
+from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, as_decimal_text, currency_code, decimals_in, format_minor, printed_decimal, to_minor
+from ..finance import bill_tables, document_checks, paystub_tables, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
@@ -38,15 +38,18 @@ from ..library.storage import now
 from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
+from . import bill_split
+from .charge_tables import ChargeTotal, key_kind
 from .layout_context import evidence_lines, evidence_tables, native_page, project_page
 from .paystub_split import stub_parts
 from .pdf_reader import read_result
 from .reasoning import EvidenceQuote, ReasoningConfig, require_transcription
 from .receipt_schema import StrictModel
+from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v46-rates-and-codes"
+EXTRACTION_VERSION = "typed-extraction-v47-bill-engine"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1193,11 +1196,14 @@ def paystub_table_context(tables, part):
         rows = [row for row in table.rows if row.line_id in ids]
         if rows:
             # The pay engine's cells are the printed page's own: the model is told so, as for a printed table's.
-            context.append({"table_id": table.id, "source": {"pay_engine": "pdf_text"}.get(getattr(table, "source", None), getattr(table, "source", "transcription")),
+            context.append({"table_id": table.id, "source": {"pay_engine": "pdf_text", "bill_engine": "pdf_text"}.get(getattr(table, "source", None),
+                                                                 getattr(table, "source", "transcription")),
                             "header_rows": [{"row_id": row.id, "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]}
                                             for row in table.header_rows],
                             "rows": [{"row_id": row.id, "line_id": row.line_id,
-                                      "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]} for row in rows]})
+                                      "cells": [{"cell_id": cell.id, "text": cell.quote} for cell in row.cells]} for row in rows],
+                            # The bill engine says what each column is (cell 0 is the label): charge, quantity, unit_price or other (FR-105).
+                            **({"roles": {str(number): role for number, role in table.roles.items()}} if getattr(table, "source", None) == "bill_engine" else {})})
     return context
 
 
@@ -1374,12 +1380,15 @@ def pay_tables_for_viewer(pay, readings):
     return shown
 
 
-def pay_layout_notes(evidence, pay, lines):
+def pay_layout_notes(evidence, pay, lines, text_pages=None):
     """The pdf_layout_review messages (each starts "Page N") a pay stub part takes (P7.1a): only for pages holding its lines, and not for a page
     the pay engine read a table on when the layout's only issue is unresolved_columns (the rule finance/pdf_import.py already uses: table_grid
-    raises it exactly when it can't build a headerless table). Any other layout issue stays a review note."""
+    raises it exactly when it can't build a headerless table). Any other layout issue stays a review note.
+    text_pages: for a bill read by the bill engine, every text page of the file. The printed grids of those pages are dropped (FR-114), so a page
+    whose only issue is unresolved_columns is waived whether or not a charge table was found on it; a pay stub passes None."""
     pages = {line_page(line.id) for line in lines}
-    waived = {page.number for page in evidence.pages if page.number in pay.engine_pages and page.layout is not None and page.layout.issues == ["unresolved_columns"]}
+    waivable = pay.engine_pages | set(text_pages or ())
+    waived = {page.number for page in evidence.pages if page.number in waivable and page.layout is not None and page.layout.issues == ["unresolved_columns"]}
     found = []
     for issue in evidence.issues:
         number = re.match(r"Page (\d+)", issue.message)
@@ -1387,6 +1396,267 @@ def pay_layout_notes(evidence, pay, lines):
         if issue.code == "pdf_layout_review" and number not in waived and (number not in pay.line_pages or number in pages):
             found.append(issue.message)
     return found
+
+
+# Bills read from their printed columns (specs/pdf-table-engine-bills; plan P7) --------------------------------------------
+
+BILL_FAILED = object()  # What `run` passes `read` when the bill engine raised: the bill is read like a photographed one with BILL_FAILED_NOTE (FR-115).
+BILL_FAILED_NOTE = "The charge lines couldn't be read from the printed columns, so the reading's amounts were used; check them."
+NO_BILL_TABLE = "Page {page}: no charge table was found in the printed columns, so its amounts are the reading's; check them."
+# The summary anchor kinds and the header field each one fills (FR-111).
+ANCHOR_FIELDS = {"previous_balance": "previous_balance", "payments": "payments_received", "new_charges": "new_charges", "amount_due": "amount_due"}
+INVOICE_FIELDS = ("invoice_marker", "invoice_number", "invoice_total")
+
+
+class InvoiceBill(Exception):
+    """read_form: a bill read from its printed columns proved to be an invoice, which stays on today's path (D5, FR-120)."""
+
+
+def bill_tables_of(tables, part, line_ids):
+    """The tables of one part of a bill PDF, as `pay_tables_of` makes them: every printed table of the reader is dropped, the bill engine's charge tables stand
+    in for them, and the vision tables of scanned pages keep only the part's rows."""
+    return pay_tables_of(tables, None, part, line_ids)
+
+
+def invoice_header(header):
+    """Whether a bill's summary reads as an invoice (bill_lines' own test)."""
+    return header is not None and any(getattr(header, name).status == "proposed" for name in INVOICE_FIELDS if hasattr(header, name))
+
+
+def bill_unplaced_notes(part):
+    return [f"Page {line.page}: a printed line wasn't placed in any column, so it wasn't recorded: \"{line.text}\"" for line in part.reading.unplaced]
+
+
+def bill_mismatches(part):
+    """Notes for a printed subtotal or total of a charge table that is not the charge lines above it (FR-113): the lines since the previous total, or since
+    the start of the total's section, either adds up to it. A note, never a review reason."""
+    notes = []
+    for table, found in zip(part.reading.tables, part.roles):
+        column = bill_tables.charge_column(found)
+        entries = sorted([*table.rows, *table.totals], key=lambda entry: entry.row)
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, ChargeTotal) or column not in entry.values or entry.values[column].value[0] is None:
+                continue
+            groups = [[bill_tables.signed(row.amounts[column], row.section) for row in group if column in row.amounts] for group in bill_tables.covered(entries, position)]
+            if not groups[0] or any(None in group for group in groups):
+                continue
+            sums = [sum(group, Decimal(0)) for group in groups]
+            printed = entry.values[column]
+            if (-printed.value[0] if printed.value[1] == "minus" else printed.value[0]) not in sums:
+                notes.append(f"Page {entry.page}: the printed subtotal \"{entry.label}\" ({printed.text}) doesn't match the lines above it, which add up to {sums[0]:f}.")
+    return notes
+
+
+def collapsed(text):
+    return " ".join((text or "").split())
+
+
+def holder_agrees(holder, title, cite):
+    """The model's holder agrees with a section title's: the last four digits match where both print at least four, else a word of it is in the title (P5)."""
+    held, titled = (re.sub(r"\D", "", text) for text in (holder, title))
+    return held[-4:] == titled[-4:] if len(held) >= 4 and len(titled) >= 4 else name_supported(holder, [cite])
+
+
+def anchor_bill(header, rows, part, evidence, lines, rent=False):
+    """What a bill's engine-read part decides, over the model's classes (plan P7.4, P6): (header, rows, cell_references, summary_references, bill_fields,
+    engine_lines, notes, guesses). Each charge row of the printed columns is one line, its amount, quantity and unit price copied from its cells and its
+    evidence all its lines (FR-110, FR-112). A model line citing no charge row keeps its values only when its amount is printed where it cites; a line
+    citing a total, a summary amount, a section title or a key line is left out. A printed row no line took is added as other (or a credit). A row printed as
+    money off is a credit (FR-106). Rows under a holder title take the title's holder (FR-102, D22, D24). The summary amounts are the printed ones where a kind
+    prints a single value (FR-111)."""
+    from .native_values import reference
+    texts = {line.id: line.text for line in lines}
+    position = {line.id: place for place, line in enumerate(lines)}
+    maps = {page.number: paystub_tables.PageMap(page) for page in evidence.pages if page.method == "embedded_text" and page.layout is not None and native_page(page)}
+    notes, guesses = [], []
+    engine = {f"{table.id}-row-{row.row}": (row, found) for table, found in zip(part.reading.tables, part.roles) for row in table.rows}
+    charges, special = [], {}
+    for table in part.adapted:
+        index = {role: number for number, role in table.roles.items() if role != "other"}
+        for row in table.rows:
+            if row.total:
+                for line_id in row.line_ids:
+                    special.setdefault(line_id, "a printed total")
+                continue
+            if row.title_line_id:
+                special.setdefault(row.title_line_id, "a printed section title")
+            found = engine.get(row.id)
+            token = found[0].amounts.get(bill_tables.charge_column(found[1])) if found else None
+            if "charge" in index and token is not None and token.kind == "amount" and token.value[0] is not None:
+                charges.append(SimpleNamespace(table=table, row=row, index=index, token=token, title=found[0].title))
+    for anchor in part.reading.anchors:  # A summary amount may print its label and its amount on different evidence lines.
+        mapping = maps.get(anchor.page)
+        for line_id in mapping.lines(anchor.word_ids) if mapping is not None else [part.lines_of.get(anchor.line_id, anchor.line_id)]:
+            special.setdefault(line_id, "a printed summary amount")
+    by_line = {line_id: entry for entry in charges for line_id in entry.row.line_ids}
+
+    def reason(cites):
+        for line_id in cites:
+            if line_id in special:
+                return special[line_id]
+            if key_kind(collapsed(texts.get(line_id, "").replace("|", " "))):
+                return "a printed account or date line"
+        return None
+
+    # FR-112: each model line takes the charge row it cites, is left out, or keeps its own values.
+    kept, taken = [], set()
+    for model in rows:
+        cites = [cite.line_id for cite in model.evidence]
+        entry = next((by_line[line_id] for line_id in cites if line_id in by_line), None)
+        if entry is not None:
+            if entry.row.id in taken:
+                notes.append(f"Two lines were read from the printed line \"{entry.row.label}\"; the first was kept.")
+                continue
+            taken.add(entry.row.id)
+            kept.append((model, entry))
+        elif (why := reason(cites)) is not None:
+            notes.append(f"\"{model.description}\" is {why}, not a charge; it was left out.")
+        elif model.amount and amount_supported(model.amount, model.evidence):
+            kept.append((model, None))
+        else:
+            notes.append(f"The line \"{collapsed(model.description)}\" isn't printed with its amount in the line it cites, so it was left out.")
+    # FR-102 (P5): a section title is a holder title when it prints a phone number, or a holder a model line of the section gave has a word in it.
+    sections = {}
+    for model, entry in kept:
+        if entry is not None and entry.row.title_line_id:
+            sections.setdefault(entry.row.title_line_id, []).append(model)
+    titled = {}
+    for entry in charges:
+        line_id = entry.row.title_line_id
+        if not line_id or line_id in titled or line_id not in texts:
+            continue
+        cite = EvidenceQuote(line_id=line_id, quote=texts[line_id])
+        if entry.row.title_phone or any(model.line_holder and name_supported(model.line_holder, [cite]) for model in sections.get(line_id, [])):
+            titled[line_id] = (collapsed(entry.title.text if entry.title else texts[line_id])[:80], cite)
+
+    def copy(entry, model):
+        """(values the printed row decides, cell references, the engine line) for a charge row; model: the line that took it, or None."""
+        row, cells = entry.row, entry.row.cells
+        title = titled.get(row.title_line_id)
+        cites = [EvidenceQuote(line_id=line_id, quote=texts[line_id]) for line_id in dict.fromkeys(row.line_ids) if line_id in texts]
+        if title:
+            cites.append(title[1])
+        quantity = cells[entry.index["quantity"]].quote.strip() or None if "quantity" in entry.index else None
+        rate = cells[entry.index["unit_price"]] if "unit_price" in entry.index else None
+        rate_text = rate.quote.strip() or None if rate is not None else None
+        given = collapsed(model.line_holder) if model is not None else ""
+        values = {"amount": format(entry.token.value[0], "f"), "quantity": quantity, "unit_price": rate_text, "evidence": cites[:10],
+                  "line_holder": title[0] if title else (given or None) if model is not None else None}
+        refs = {name: reference(cells[entry.index[role]]) for name, role in (("amount", "charge"), ("quantity", "quantity"), ("unit_price", "unit_price"))
+                if role in entry.index and cells[entry.index[role]].word_ids}
+        line = {"copied": True, "rate_text": rate_text, "rate_locator": {"line_ids": [rate.line_id], "quotes": [rate.quote]} if rate_text else None,
+                "model_holder": given or None, "title_holder": title[0] if title else None,
+                "disagrees": bool(title and given and not holder_agrees(given, title[0], title[1]))}
+        return values, refs, line
+
+    out = []  # (first cited line's place, model line, cell references, engine line)
+    for model, entry in kept:
+        if entry is None:
+            out.append((model, {}, {"copied": False}))
+            continue
+        values, refs, line = copy(entry, model)
+        if entry.row.money_off:
+            field = "rent_type" if rent else "line_kind"
+            if getattr(model, field) != "credit":
+                notes.append(f"\"{collapsed(model.description)}\" is printed as money off, so it was recorded as a credit.")
+            values[field] = "credit"
+        out.append((model.model_copy(update=values), refs, line))
+    for entry in charges:
+        if entry.row.id in taken:
+            continue
+        values, refs, line = copy(entry, None)
+        label = collapsed(entry.row.label)[:500] or "Unlabeled charge"
+        what = "a credit" if entry.row.money_off else "other"
+        shape = RentBillLine if rent else BillLine
+        model = shape(description=label, category=None, **values, **{"rent_type" if rent else "line_kind": "credit" if entry.row.money_off else "other"})
+        out.append((model, refs, line))
+        text = f"Page {entry.row.page}: the printed charge line \"{label}\" wasn't classified, so it was recorded as {what}."
+        notes.append(text)
+        guesses.append(asdict(bill_tables.Guess(bill_tables.UNCLASSIFIED_ROW, entry.row.page, entry.table.id, text)))
+    out.sort(key=lambda found: position.get(found[0].evidence[0].line_id, len(position)))
+    # FR-111, FR-117, FR-118: a kind that prints a single value takes it from the print; a kind that prints several is decided below; the cell lights in Find.
+    updates, bill_fields, references, worked_out = {}, {}, {}, None
+    printed = {kind: sorted((anchor for anchor in part.reading.anchors if anchor.kind == kind and anchor.token.value[0] is not None),
+                            key=lambda found: found.order) for kind in ANCHOR_FIELDS}
+
+    def count(kind, anchor):  # Payments count by magnitude (FR-118), so -100.00 and 100.00 are one value.
+        value = value_of(anchor.token)
+        return abs(value) if kind == "payments" else value
+
+    def distinct(kind):  # [(value, its first anchor)] in reading order: a value printed alike counts once (FR-117).
+        found = {}
+        for anchor in printed[kind]:
+            found.setdefault(count(kind, anchor), anchor)
+        return list(found.items())
+
+    def listed(values):
+        shown = [anchor.token.text for _, anchor in values]
+        return f"{', '.join(shown[:-1])} and {shown[-1]}"
+
+    def cited(anchor, kind):
+        """(the amount's own line, its quote, the cell reference or None) for a summary anchor, or None when its line isn't in the part."""
+        mapping = maps.get(anchor.page)
+        line_id = mapping.line_of.get(anchor.token.word_ids[0]) if mapping is not None and anchor.token.word_ids else part.lines_of.get(anchor.line_id)
+        if line_id not in texts:
+            return None
+        quote = anchor.token.text if anchor.token.text in texts[line_id] else texts[line_id]
+        found = reference(paystub_tables.cell_of(f"{anchor.line_id}-{kind}", line_id, anchor.token.text, anchor.token.word_ids, mapping,
+                                                 mapping.lines(anchor.token.word_ids), native=True)) if mapping is not None else None
+        return line_id, quote, found
+
+    chosen = {}
+    for kind in ("previous_balance", "payments", "new_charges"):
+        found = distinct(kind)
+        if found:
+            chosen[kind] = found[0][1]
+        if len(found) > 1:  # FR-111: the first on the part's first page in reading order, and the checks judge it.
+            label = {"previous_balance": "previous balance", "payments": "payment received", "new_charges": "new charges"}[kind]
+            first = found[0][1]
+            notes.append(f"The {label} is printed as {listed(found)}; {first.token.text}, the first on page {first.page}, was used.")
+    prev, pay, new = (count(kind, chosen[kind]) if kind in chosen else None for kind in ("previous_balance", "payments", "new_charges"))
+    worked = new is None and prev is not None and pay is not None  # FR-118: a printed 0.00 counts as printed.
+    found = distinct("amount_due")
+    if found:
+        chosen["amount_due"] = found[0][1]
+    if len(found) > 1:  # FR-117: the value that makes the bill's checks hold, else the first, with a guess note.
+        pick = None
+        if None not in (prev, pay, new):
+            pick = next((anchor for value, anchor in found if prev - pay + new == value), None)
+        elif new is None and not worked:
+            try:
+                amounts = [Decimal(model.amount.replace(",", "")) * (-1 if "credit" in (getattr(model, "line_kind", None), getattr(model, "rent_type", None)) else 1)
+                           for model, _, _ in out]
+            except (ArithmeticError, AttributeError):
+                amounts = []
+            if amounts and len(amounts) == len(out):
+                pick = next((anchor for value, anchor in found if sum(amounts, Decimal(0)) == value), None)
+        if pick is None:
+            pick = found[0][1]
+            text = f"The amount due is printed as {listed(found)}; {pick.token.text}, the first on page {pick.page}, was used."
+            notes.append(text)
+            guesses.append(asdict(bill_tables.Guess(bill_tables.AMOUNT_DUE, pick.page, None, text)))
+        chosen["amount_due"] = pick
+    for kind, name in ANCHOR_FIELDS.items():
+        anchor = chosen.get(kind)
+        found = cited(anchor, kind) if anchor is not None else None
+        if found is None:
+            continue
+        line_id, quote, ref = found
+        value = Value(value=format(value_of(anchor.token), "f"), status="proposed", evidence=[EvidenceQuote(line_id=line_id, quote=quote)])
+        (updates if hasattr(header, name) else bill_fields)[name] = value
+        if ref is not None:
+            references[name] = ref
+    if worked and "amount_due" in chosen:  # FR-118: no new charges are printed, so they are worked out and the model's are not used.
+        pieces = [(kind, cited(chosen[kind], kind)) for kind in ("amount_due", "previous_balance", "payments")]
+        if all(found for _, found in pieces):
+            due = count("amount_due", chosen["amount_due"])
+            worked_out = {"amount_due": format(due, "f"), "previous_balance": format(prev, "f"), "payments": format(pay, "f"), "new_charges": format(due - prev + pay, "f"),
+                          "locator": {"line_ids": list(dict.fromkeys(found[0] for _, found in pieces)), "quotes": [found[1] for _, found in pieces]}}
+            if hasattr(header, "new_charges"):
+                updates["new_charges"] = Value(value=None, status="missing", evidence=[])
+            references.pop("new_charges", None)
+    return (header.model_copy(update=updates) if updates else header, [model for model, _, _ in out], [refs for _, refs, _ in out], references, bill_fields,
+            [line for _, _, line in out], notes, guesses, worked_out)
 
 
 # A pay stub's printed totals row, which may be lettered: "Total Earnings (A)", "Net Payment (A-B)".
@@ -1767,8 +2037,15 @@ SPLIT_NOTE = "This receipt was split from a file holding several; confirm the sp
 PAY_SPLIT_NOTE = "Split from a file holding several pay stubs"
 PAY_SPLIT_FAILED = "Where each pay stub starts couldn't be read, so the file was read as one."
 PAY_SPLIT_CHANGED = "You changed where the pay stubs in this file start; the file was read with your split."
+# Several bills in one file (docs/documents.md "Several bills in one file"): the note is a record note, never a review reason (FR-131); the failure is the
+# review reason of FR-129 (d). The other reasons, (a) - (c), are worded by documents/bill_split.py.
+BILL_SPLIT_NOTE = "Split from a file holding several bills"
+BILL_SPLIT_FAILED = "Where each bill starts couldn't be read, so the file was read as one; check whether it holds more than one bill."
+BILL_SPLIT_CHANGED = "You changed where the bills in this file start; the file was read with your split."
+MAX_BILLS = 200  # receipts.segment is 0 - 199.
 VOID_LINE = re.compile(r"[\s*-]*void[\s*-]*", re.IGNORECASE)  # A line whose whole text is VOID: a word inside a sentence is not a void stub (G4).
 VOID_NOTE = "This pay stub is printed VOID, so it doesn't count."
+BILL_VOID_NOTE = "This bill is printed VOID, so it doesn't count."
 # A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.
 TOTAL_LINE = re.compile(r"(?<![\w-])(grand\s+)?total(?!\s*(tax|savings?|saved|discounts?|items?|number|qty|quantity|units|points))\b", re.IGNORECASE)
 # What every receipt prints somewhere: what was owed or how it was paid. A part without one is not a receipt of its own.
@@ -2440,19 +2717,32 @@ def unprinted_amounts(record, line_text, issues, money, currency, off):
 PAGE_ID = re.compile(r"page-(\d+)-")
 
 
+def split_reason(issue):
+    """Whether an issue is one of FR-129's reasons (a) - (d): a split you confirm drops them."""
+    return bill_split.reason_of(issue) or issue == BILL_SPLIT_FAILED
+
+
+def offers_split(issues):
+    """Whether a bill read as one carries FR-129's (a), (c) or (d): its document page offers Split here (FR-131)."""
+    return any(bill_split.offers_split([issue]) or issue == BILL_SPLIT_FAILED for issue in issues)
+
+
 def line_page(line_id):
     """The page a cited line is on ("page-2-layout-line-7" is 2), or None for an id that names none."""
     found = PAGE_ID.match(line_id or "")
     return int(found.group(1)) if found else None
 
 
-def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None, rebuild=None):
+def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None, rebuild=None, engine_lines=None,
+              bill_fields=None, worked_out=None):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
     when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
     printed_columns: a pay stub read like flat text, whose values get the column checks (column_checks). bill_kind: the
     form a bill was read with (specs/bill-kinds), or None for a bill read without kinds. rebuild: a statement's rows rebuilt from its
-    printed columns (finance/statement_tables.py), which replace the model's rows on their pages (specs/statement-accounts FR-20)."""
+    printed columns (finance/statement_tables.py), which replace the model's rows on their pages (specs/statement-accounts FR-20).
+    engine_lines, bill_fields, worked_out: for a bill read from its printed columns, what anchor_bill decided beside each row, the summary fields the bill's
+    form lacks, and the new charges it worked out when none are printed (specs/pdf-table-engine-bills); None for any other bill."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -2671,7 +2961,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         kind_fields = {name: getattr(header, name) for name in BILL_KIND_FIELDS.get(bill_kind or "", ()) if hasattr(header, name)}
         notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
         header_period = bill_dates(record, fields, issues, notes)
-        bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields}, bill_kind, notes, header_period)
+        bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields, **(bill_fields or {})}, bill_kind, notes, header_period, engine_lines,
+                   worked_out)
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
                       printed_columns)
@@ -3050,7 +3341,7 @@ def rent_recurrence(record):
     return names.pop() if len(names) == 1 and None not in names else "monthly"
 
 
-def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ())):
+def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ()), engine_lines=None, worked_out=None):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
     charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note.
@@ -3059,7 +3350,10 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     (bill_dates); a bill read without kinds has no details to keep them in, so they are issues there. header_period:
     bill_dates' (issues, notes) on the header period, kept unless the period is the rent lines'. A rent bill also leaves
     out a ledger's earlier months (FR-54) and notes prorated rent (FR-56); every non-invoice bill gets the lines and
-    carried checks (FR-49, finance/document_checks.py)."""
+    carried checks (FR-49, finance/document_checks.py). engine_lines: for a bill read from its printed columns, one entry per row (anchor_bill): a row
+    copied from its cells has its quantity and unit price as printed, the rate kept as printed text when it is not a whole number of minor units
+    (FR-110, D21, D25), and its product checked on the printed rate (FR-113). worked_out: the amount due, previous balance and payments (decimal text) and the new charges
+    they give, when a bill printing no new charges has its previous balance and payments (FR-118); those new charges count and the carried check is not run."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     rent = bill_kind == "rent" and not invoice
     due_date = record.get("due_date")
@@ -3067,23 +3361,37 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     if bill_kind is not None:
         record["bill_kind"], record["details"] = "general" if invoice else bill_kind, {}
     record["items"] = []
+    engine_of = {}
     for index, row in enumerate(rows, 1):
+        engine = engine_lines[index - 1] if engine_lines and engine_lines[index - 1].get("copied") else None
         amount = money(row.amount, f"Charge line {index}", magnitude=True)
         holder = " ".join((row.line_holder or "").split())[:80] or None
         digits = re.sub(r"\D", "", holder or "")
         if holder and not (name_supported(holder, row.evidence) or len(digits) >= 4 and digits[-4:] in re.sub(r"\D", "", " ".join(cite.quote for cite in row.evidence))):
             holder = None  # Who a line is for (a name, or a phone number) must be printed where it is cited.
-        quantity = row.quantity if row.quantity and printed_in(row.quantity, row.evidence) else None
-        unit = money(row.unit_price, f"Charge line {index} unit price") if row.unit_price and printed_in(row.unit_price, row.evidence) else None
-        if row.quantity and quantity is None or row.unit_price and unit is None:
-            issues.append(f"Charge line {index}: quantity or unit price was not supported by its citation and was left out.")
-        if quantity and unit is not None and amount is not None:
-            try:
-                extended = (Decimal(quantity.replace(",", "")) * unit).quantize(Decimal(1), ROUND_HALF_EVEN)
-                if abs(extended) != amount:
+        rate = None
+        if engine is not None:  # Copied from the printed cells: printed by construction. The rate is judged by its value, never by a precision issue (D25).
+            quantity = row.quantity
+            rate = bill_tables.printed_rate(engine["rate_text"], currency) if engine["rate_text"] and currency in EXPONENTS else None
+            unit = rate.minor if rate else None
+            if quantity and rate and amount is not None:  # FR-113: the product on the printed rate, half up, within a cent.
+                checked = document_checks.unit_line(quantity, engine["rate_text"], amount, currency)
+                if checked and checked[2]:
+                    record["cross_checks"] += 1
+                elif checked:
                     issues.append(f"Charge line {index}: quantity times unit price does not equal its line total; check discounts and columns.")
-            except (ValueError, ArithmeticError):
-                issues.append(f"Charge line {index}: quantity could not be checked.")
+        else:
+            quantity = row.quantity if row.quantity and printed_in(row.quantity, row.evidence) else None
+            unit = money(row.unit_price, f"Charge line {index} unit price") if row.unit_price and printed_in(row.unit_price, row.evidence) else None
+            if row.quantity and quantity is None or row.unit_price and unit is None:
+                issues.append(f"Charge line {index}: quantity or unit price was not supported by its citation and was left out.")
+            if quantity and unit is not None and amount is not None:
+                try:
+                    extended = (Decimal(quantity.replace(",", "")) * unit).quantize(Decimal(1), ROUND_HALF_EVEN)
+                    if abs(extended) != amount:
+                        issues.append(f"Charge line {index}: quantity times unit price does not equal its line total; check discounts and columns.")
+                except (ValueError, ArithmeticError):
+                    issues.append(f"Charge line {index}: quantity could not be checked.")
         # A rent row's type maps to a line kind (RENT_LINE_KINDS); on an invoice read as rent it is only that (FR-40).
         rent_type = getattr(row, "rent_type", None)
         line_kind = RENT_LINE_KINDS[rent_type] if rent_type else row.line_kind
@@ -3091,8 +3399,12 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
                 "category": row.category, "line_kind": line_kind, "line_holder": holder, "locator": locator(row.evidence)}
         if rent and rent_type:
             rent_line(item, row, due_date, notes)
+        if rate is not None and rate.text:  # Not a whole number of minor units: the rate as printed is kept beside its rounded cents (D21, D25).
+            item["details"] = {**(item.get("details") or {}), "unit_price": {"text": rate.text, "locator": engine["rate_locator"]}}
         item["line_total_minor"] = -amount if amount is not None and item["line_kind"] == "credit" else amount
         record["items"].append(item)
+        if engine is not None:
+            engine_of[id(item)] = engine
     if bill_kind is not None and not invoice:
         # The printed amounts carried and charged (FR-43, FR-49), on every bill kind: kept only when printed, so an
         # unprinted one stays missing, never 0, and a bill printing none has no details. An invoice keeps its own.
@@ -3104,6 +3416,15 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             minor = printed[name] if name in printed else money(field.value.strip(), name.replace("_", " ").capitalize())
             if minor is not None:
                 record["details"][name] = {"minor": abs(minor) if name == "payments_received" else minor, "locator": locator(field.evidence)}
+        if worked_out and currency in EXPONENTS:  # FR-118: the lines add up to these new charges, and they are what counts (G3's lines reason).
+            minors = {name: to_minor(text, currency) for name, text in worked_out.items() if name != "locator"}
+            record["new_charges_minor"] = minors["new_charges"]
+            record["details"]["new_charges"] = {"minor": minors["new_charges"], "locator": worked_out["locator"],
+                                                "worked_out": {name: minors[name] for name in ("amount_due", "previous_balance", "payments")}}
+            notes.append(f"New charges aren't printed; worked out as amount due {worked_out['amount_due']} \u2212 previous balance {worked_out['previous_balance']} "
+                         f"+ payments {worked_out['payments']} = {worked_out['new_charges']}.")
+        else:
+            worked_out = None
     if rent:
         earlier_lines(record, issues, notes)
         # The bill's period is its rent lines' printed period, never a utility line's or the model's header (FR-47, SC-40).
@@ -3116,6 +3437,10 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
                 "quotes": list(dict.fromkeys(quote for period in periods for quote in period["locator"].get("quotes", [])))}}
         elif not any(item.get("line_type") == "rent" for item in record["items"]):
             notes.append("No rent line was read.")
+    for place, item in enumerate(record["items"], 1):  # P5: a model holder the section's title overruled, by the line's final position (G13).
+        engine = engine_of.get(id(item))
+        if engine and engine["disagrees"]:
+            notes.append(f"Line {place}: the holder {engine['model_holder']} differs from its section title; the title's holder {engine['title_holder']} was used.")
     if not (rent and "period" in record["details"]):
         issues.extend(header_period[0])
         notes.extend(header_period[1])
@@ -3152,7 +3477,7 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
         if due is not None and not invoice:
             issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
     carried = record.get("details") or {}
-    if not invoice and currency:
+    if not invoice and currency and not worked_out:  # Worked-out new charges would make the carried check hold by construction (FR-118).
         # Previous balance − payments + new charges = amount due, when all are printed (FR-49).
         previous, payments = ((carried.get(name) or {}).get("minor") for name in ("previous_balance", "payments_received"))
         checked = document_checks.bill_carried(previous, payments, new, due, currency)
@@ -3797,6 +4122,9 @@ class ExtractionService:
         header = ask(config, work, forms.get(chosen) or HEADER_MODELS[kind], f"Extract the {LABELS[kind]} summary fields in the schema. "
                      f"The lines are {scope}; rows are extracted separately.{labels.get(chosen, '')} " + known, summary_lines,
                      4096 if kind == "bill" else 2048, notes=notes, table_context=summary_context)
+        engine_tables = {table.id for table in tables if getattr(table, "source", None) == "bill_engine"}
+        if kind == "bill" and engine_tables and invoice_header(header):
+            raise InvoiceBill()  # An invoice stays on today's path (D5, FR-120): the part is read again with the printed tables.
         identity = None
         if kind == "receipt":
             identity = self.identify(config, work, summary_lines)
@@ -3858,22 +4186,25 @@ class ExtractionService:
                 direction += (" For invoices, include goods and service lines, shipping, tax and discounts once each. "
                               "amount is the extended line total, never the unit price. Copy quantity and unit_price when printed. "
                               "Exclude invoice totals, subtotals, payments, deposits and balance due from charge rows.")
-            for part in (paystub_chunks(lines, tables, split_covered=kind == "paystub") if tables else chunks(lines)):
+            for part in (paystub_chunks(lines, tables, split_covered=kind == "paystub" or bool(engine_tables)) if tables else chunks(lines)):
                 work.check()
                 context = paystub_table_context(tables, part)
                 classified_cells = kind == "paystub" and bool(context)
+                # A bill's lines the bill engine covers with charge rows: the application copies their numbers from the cells, so the model's are not checked.
+                copied_cells = any(entry["table_id"] in engine_tables for entry in context)
                 answer_schema = PayRowClasses if classified_cells else schema
                 row_direction = (" Classify each printed earning, deduction, tax and employer contribution row by group and "
                                  "category. Never list totals such as gross pay, net pay, total deductions or total taxes. "
                                  "Do not return money values; the application copies them from the cited reported table cells. "
                                  "hours and rate: an earning row's printed hours and hourly rate, or null. "
-                                 if classified_cells else direction)
+                                 if classified_cells else direction + (" The application copies each amount, quantity and unit price from the cited reported "
+                                                                       "table cells; cite the row's first line; classify it. " if copied_cells else ""))
                 answer = ask(config, work, answer_schema, f"List every {row_label} printed in these lines of a {LABELS[kind]}, in order, "
                                         f"one entry per printed row; repeated identical rows are separate entries. Do not skip rows.{row_direction} "
                                         + ("The reported_tables include stable row and cell IDs and repeat their headings; "
                                            "classify each earning, deduction, tax, or employer contribution row. "
                                            "The application copies money from the reported cells; cite the exact source line. " if classified_cells else ""),
-                                        part, 8192, None if classified_cells else amount_field, notes, context)
+                                        part, 8192, None if classified_cells or copied_cells else amount_field, notes, context)
                 if classified_cells:
                     rows.extend(PayLine(description=row.description, group=row.group, category=row.category,
                                         current=None, ytd=None, evidence=row.evidence, hours=row.hours, rate=row.rate) for row in answer.lines)
@@ -4065,7 +4396,8 @@ class ExtractionService:
 
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
-                receipt_kind=None, kind_change=False, printed_columns=False, evidence=None, engine_notes=None, guesses=None):
+                receipt_kind=None, kind_change=False, printed_columns=False, evidence=None, engine_notes=None, guesses=None, engine_lines=None,
+                bill_fields=None, worked_out=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -4106,9 +4438,12 @@ class ExtractionService:
                 notes.append(REBUILD_FAILED)
         record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes,
                                    receipt_kind=receipt_kind if kind == "receipt" else None, printed_columns=printed_columns,
-                                   bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild)
+                                   bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild, engine_lines=engine_lines, bill_fields=bill_fields, worked_out=worked_out)
         record_notes += record.pop("notes", [])
-        record_notes += [note for note in engine_notes or [] if note not in record_notes]  # The pay engine's guesses and page notes (pay stubs only).
+        record_notes += [note for note in engine_notes or [] if note not in record_notes]  # The pay or bill engine's guesses and page notes.
+        if kind == "bill" and engine_notes and record.get("details") is not None:  # A bill keeps them with its own details, after its lines' notes (plan P7.6).
+            kept = record["details"].setdefault("notes", [])
+            kept += [note for note in engine_notes if note not in kept]
         if summary_references:
             record["locator"]["cells"] = summary_references
         if kind == "paystub" and cell_references:
@@ -4158,11 +4493,21 @@ class ExtractionService:
                 record_notes.append(f"This pay stub repeats the one paid by {shown}, so it doesn't count.")
             elif twin and twin["same_date"]:
                 record_notes.append(f"Another pay stub from {record['payer_or_employer']} has the same pay date.")
+        if kind == "bill":  # A bill printed VOID, or repeating another, is recorded but doesn't count (FR-133, FR-134), photographed ones included.
+            void = any(VOID_LINE.fullmatch(line.text.strip()) for line in lines)
+            twin = None if void else self.ledger.bill_twin(record, source)
+            shown = f"{record['provider']} due {record.get('due_date') or record.get('issue_date')} ({as_decimal_text(record['amount_due_minor'], currency)})" if twin else ""
+            bill_note = (BILL_VOID_NOTE if void else f"This bill repeats the one from {shown}, so it doesn't count." if twin and twin["original"]
+                         else f"Another bill from {record['provider']} has the same due date." if twin and twin["same_date"] else None)
+            if bill_note:
+                record_notes.append(bill_note)
+                if record.get("details") is not None:
+                    record["details"].setdefault("notes", []).append(bill_note)
         if record_notes:
             record["notes"] = record_notes
             if kind in ("bank_statement", "credit_card_statement", "paystub"):  # Kept with the record, which stores its details but not its notes (P19).
                 record.setdefault("details", {})["notes"] = record_notes
-        if guesses and kind == "paystub":  # FR-74: every guess the engine made, by kind.
+        if guesses and (kind == "paystub" or kind == "bill" and record.get("details") is not None):  # FR-74: every guess the engine made, by kind.
             record.setdefault("details", {})["guesses"] = guesses
         # Exception-based review: a record counts on its own only when every automatic check passed.
         status = "needs_review" if issues else "verified"
@@ -4196,6 +4541,9 @@ class ExtractionService:
             Investments(self.ledger.store).refresh_payroll_links()
             if void and self.ledger.mark_void(published["id"]) or twin and twin["original"] and self.ledger.mark_duplicate(published["id"], twin["original"]):
                 published = {**published, "review_status": "rejected"}
+        elif kind == "bill" and (void and self.ledger.mark_bill_void(published["id"])
+                                 or twin and twin["original"] and self.ledger.mark_bill_duplicate(published["id"], twin["original"])):
+            published = {**published, "review_status": "rejected"}
         return record, {**published, "review_status": published.get("review_status", status)}
 
     def run(self, run_id, work=None):
@@ -4228,37 +4576,59 @@ class ExtractionService:
                     except Exception as exc:
                         log_failure(log, "pay table read", exc, run=run_id)
                         pay = PAY_FAILED
+                bills = None
+                if classification.document_type == "bill" and hasattr(evidence, "pages") and any(page.method == "embedded_text" and page.layout is not None
+                                                                                              for page in evidence.pages):
+                    try:  # The bill engine reads the whole file once; any failure reads the bill like a photographed one with a note (FR-115).
+                        bills = bill_tables.read(evidence)
+                    except Exception as exc:
+                        log_failure(log, "bill table read", exc, run=run_id)
+                        bills = BILL_FAILED
                 # A file holding several receipts or pay stubs is read one at a time; anything else stays one document.
-                parts, split_notes, pay_notes, changed = [(0, len(lines))], [], [], False
+                parts, split_notes, pay_notes, changed, reasons = [(0, len(lines))], [], [], False, {}
                 if classification.document_type == "receipt":
                     parts = self.segments(config, work, run, parse, evidence, lines, split_notes)
                 elif classification.document_type == "paystub":
                     parts, changed = self.pay_parts(run, parse, lines, split_notes, pay_notes)
+                elif classification.document_type == "bill":
+                    parts, changed, reasons = self.bill_parts(run, parse, lines, split_notes, bills)
                 # Every part is classified before any is read, so a file that is not all of one kind costs no further questions.
-                kinds, noun = [], "pay stub" if classification.document_type == "paystub" else "receipt"
+                kinds, noun = [], {"paystub": "pay stub", "bill": "bill"}.get(classification.document_type, "receipt")
                 for first, last in parts if len(parts) > 1 else []:
                     part_notes = []
                     kind = ask(config, work, Classification, CLASSIFY, whole(lines[first:last], part_notes), 1024, notes=part_notes)
                     if kind.document_type != classification.document_type:
                         split_notes.append(f"A part of this file is not a {noun}, so the file was read as one document.")
-                        parts, kinds, changed = [(0, len(lines))], [], False
+                        parts, kinds, changed, reasons = [(0, len(lines))], [], False, {}
                         break
                     kinds.append((kind, part_notes))
                 requested = self.requested_kinds(parse, lines, parts, kind_change, classification.document_type,
                                                  [part_notes for _, part_notes in kinds] or [notes])
-                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0], pay=pay)
+                readings = [self.read(config, work, run_id, evidence, lines[first:last], decision, part_notes, kind, requested[ordinal][0], pay=pay, bill=bills)
                             for ordinal, ((first, last), (kind, part_notes)) in enumerate(zip(parts, kinds))]
                 if not readings:
-                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0], pay=pay)]
+                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0], pay=pay, bill=bills)]
+                elif classification.document_type == "bill" and len(readings) > 1 and any(invoice_header(reading["header"]) for reading in readings):
+                    # D16: a file of several invoices is not split. It is read again as one document on today's path.
+                    split_notes.append("A part of this file is an invoice, so the file was read as one document.")
+                    parts, changed, reasons = [(0, len(lines))], False, {}
+                    requested = self.requested_kinds(parse, lines, parts, kind_change, classification.document_type, [notes])
+                    readings = [self.read(config, work, run_id, evidence, lines, decision, notes, classification, requested[0][0], pay=pay, bill=bills)]
                 for (first, _), reading in zip(parts, readings):
                     if classification.document_type == "paystub":  # Notes about the split are record notes; a split the user changed is one guess (FR-74).
                         reading["record_notes"] += [note for note in pay_notes if note not in reading["record_notes"]]
                         if changed:
                             reading["guesses"].append(asdict(paystub_tables.Guess("split_changed", line_page(lines[first].id) or 1, None, PAY_SPLIT_CHANGED)))
+                    elif classification.document_type == "bill" and changed:  # The same for a bill: a note and one guess on each bill (FR-131).
+                        reading["record_notes"] += [BILL_SPLIT_CHANGED] if BILL_SPLIT_CHANGED not in reading["record_notes"] else []
+                        reading["guesses"].append(asdict(bill_tables.Guess("split_changed", line_page(lines[first].id) or 1, None, BILL_SPLIT_CHANGED)))
                 for reading, (_, asked) in zip(readings, requested):
                     reading["kind_change"] = asked  # Only the receipt this run was asked to read as a kind records the change (FR-11).
             work.check()  # Cancellation always wins: never publish after a cancel request.
             confirmed = self.split_confirmed(run, parse, lines, parts)  # Also true for the user's own choice of one receipt.
+            if classification.document_type == "bill" and not confirmed:  # FR-129's reasons: a split you made or confirmed raises none.
+                for ordinal, reading in enumerate(readings):
+                    reading["notes"] += [reason for reason in reasons.get(ordinal, []) if reason not in reading["notes"]]
             outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
                         for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
             result, publication = outcomes[0]
@@ -4269,6 +4639,10 @@ class ExtractionService:
                                "split_confirmed": confirmed}
             elif split_notes:
                 result["split_notes"] = split_notes
+            if len(parts) == 1 and classification.document_type == "bill" and not confirmed and outcomes[0][1] is not None and offers_split(reasons.get(0, [])):
+                # FR-131: a bill read as one with reason (a), (c) or (d) is offered Split here, in the shape of a split file's one segment. No row is saved for it.
+                publication = {**publication, "segments": [{"ordinal": 0, "first_line": lines[0].id, "last_line": lines[-1].id, **outcomes[0][1], "one": True}],
+                               "split_confirmed": False}
             if pay is not None:
                 result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
             self.save_segments(run, parse, lines, parts, confirmed)
@@ -4305,24 +4679,39 @@ class ExtractionService:
                                          f"{(document_type or 'document').replace('_', ' ')}.")
         return found
 
-    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None, *, pay=None):
+    def read(self, config, work, run_id, evidence, lines, decision, notes, classification=None, requested_kind=None, *, pay=None, bill=None):
         """Every model question for one document, or one receipt of a file holding several; nothing is published here.
         requested_kind: the receipt kind this reading must use (a kind change). pay: for a pay stub, what the pay engine read from the whole file
-        (paystub_tables.read), or PAY_FAILED; this reading takes the part of it that lies in `lines`. None for any other document."""
+        (paystub_tables.read), or PAY_FAILED; this reading takes the part of it that lies in `lines`. None for any other document.
+        bill: the same for a bill (bill_tables.read, or BILL_FAILED), which is None for a bill with no text page (a scan or a photo)."""
         # Incomplete or ambiguous native source coverage requires review even when
         # the typed extractor can resolve individual cells.
         engine = pay if pay is not None and pay is not PAY_FAILED else None
-        record_notes, guesses = ([PAY_FAILED_NOTE] if pay is PAY_FAILED else []), []
-        layout_notes = pay_layout_notes(evidence, engine, lines) if engine else [issue.message for issue in evidence.issues if issue.code == "pdf_layout_review"]
+        record_notes, guesses = ([PAY_FAILED_NOTE] if pay is PAY_FAILED else [BILL_FAILED_NOTE] if bill is BILL_FAILED else []), []
+        reading_bill = bill if bill is not None and bill is not BILL_FAILED else None
+        ids = {line.id for line in lines}
+        # P7.1: the bill engine's path for this part. A part with a charge table is read from its columns; one with text pages and none is read like a
+        # photographed bill; one with no text page (a scan, a photo) is read as before.
+        text_pages = {page.number for page in evidence.pages if page.method == "embedded_text" and page.layout is not None} if reading_bill else set()
+        bill_part = bill_tables.for_lines(reading_bill, ids) if reading_bill and text_pages & {line_page(line_id) for line_id in ids} else None
+        from_columns = bill_part is not None and bool(bill_part.engine_pages)
+        layout_notes = (pay_layout_notes(evidence, engine or reading_bill, lines, None if engine else text_pages) if engine or bill_part is not None
+                        else [issue.message for issue in evidence.issues if issue.code == "pdf_layout_review"])
         notes.extend(message for message in layout_notes if message not in notes)
         tables = reported_tables(evidence)
         part = None
         if engine:
-            part = paystub_tables.for_lines(engine, {line.id for line in lines})
-            tables = pay_tables_of(tables, engine, part, {line.id for line in lines})
-        elif pay is PAY_FAILED:
-            tables = without_printed_tables(tables)
-        classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
+            part = paystub_tables.for_lines(engine, ids)
+            tables = pay_tables_of(tables, engine, part, ids)
+        elif pay is PAY_FAILED or bill is BILL_FAILED or bill_part is not None:
+            tables = bill_tables_of(tables, bill_part, ids) if from_columns else without_printed_tables(tables)
+        try:
+            classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
+        except InvoiceBill:  # D5: the engine's work is thrown away, and the part is read again as today (one more summary question).
+            bill_part = from_columns = None
+            notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
+            classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, reported_tables(evidence), requested_kind)
+            tables = reported_tables(evidence)
         # A bank or card statement PDF has its rows rebuilt from the printed columns (FR-16). The pages that get rows are not asked
         # about again (missed_rows) or anchored; any other page keeps the model's reading (FR-23).
         rebuilt, rebuild_failed = set(), False
@@ -4334,7 +4723,7 @@ class ExtractionService:
                 log_failure(log, "statement row rebuild", exc)
                 rebuild_failed = True
                 notes.append(REBUILD_FAILED)
-        cell_references, summary_references = [], {}
+        cell_references, summary_references, bill_fields, engine_lines, worked_out = [], {}, {}, None, None
         # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
         # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
         printed_columns = classification.document_type == "paystub" and not tables
@@ -4363,6 +4752,11 @@ class ExtractionService:
                             from .native_values import reference
                             summary_references[name] = reference(found[1].cells[column])
             summary_references.update(extras.references)  # A summary field taken from the summary box cites its cell (FR-75).
+        elif from_columns and classification.document_type == "bill" and header is not None:
+            header, rows, cell_references, summary_references, bill_fields, engine_lines, bill_notes, bill_guesses, worked_out = anchor_bill(
+                header, rows, bill_part, evidence, lines, rent=kind == "rent")
+            record_notes += [note for note in bill_notes if note not in record_notes]
+            guesses = bill_guesses
         elif tables and header is not None:
             from .native_values import anchor_rows, anchor_summary
             header, summary_references = anchor_summary(header, tables, notes)
@@ -4429,8 +4823,12 @@ class ExtractionService:
                              if note not in record_notes]
             record_notes += [NO_PAY_TABLE.format(page=page) for page in part.pages_without_tables if page not in part.pages or page in part.untrusted]
             guesses = [asdict(guess) for guess in (*part.guesses, *extras.guesses)]
+        if bill_part is not None and classification.document_type == "bill":  # What the bill engine says beside the cells (plan P7.6).
+            record_notes += [note for note in (*bill_part.notes, *bill_mismatches(bill_part), *bill_unplaced_notes(bill_part),
+                                               *[NO_BILL_TABLE.format(page=page) for page in bill_part.reading.pages_without_tables]) if note not in record_notes]
+            guesses = [*(asdict(guess) for guess in bill_part.guesses), *guesses]
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
-                "record_notes": record_notes, "guesses": guesses,
+                "record_notes": record_notes, "guesses": guesses, "bill_fields": bill_fields, "engine_lines": engine_lines, "worked_out": worked_out,
                 "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
                 "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns,
@@ -4439,9 +4837,9 @@ class ExtractionService:
     def record(self, run, parse, reading, lines, home_currency, segment=0, split=False):
         """(result, publication) for one reading: its saved result, and the record published from it."""
         classification, header, rows, identity = reading["classification"], reading["header"], reading["rows"], reading["identity"]
-        paystub = classification.document_type == "paystub"
-        notes = reading["notes"] + ([SPLIT_NOTE] if split and not paystub else [])  # A split pay stub carries its note as a record note (FR-82).
-        engine_notes = (reading.get("record_notes") or []) + ([PAY_SPLIT_NOTE] if split and paystub else [])
+        paystub, bill = classification.document_type == "paystub", classification.document_type == "bill"
+        notes = reading["notes"] + ([SPLIT_NOTE] if split and not paystub and not bill else [])  # A split pay stub or bill carries its note as a record note (FR-82, FR-131).
+        engine_notes = (reading.get("record_notes") or []) + ([PAY_SPLIT_NOTE] if split and paystub else [BILL_SPLIT_NOTE] if split and bill else [])
         result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
                   "rows": [row.model_dump() for row in rows], "description": reading["description"], "category": reading["category"],
                   "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
@@ -4468,7 +4866,7 @@ class ExtractionService:
                                                              reading.get("cell_references"), reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
                                                              reading.get("printed_columns", False), reading.get("evidence"),
-                                                             engine_notes, reading.get("guesses"))
+                                                             engine_notes, reading.get("guesses"), reading.get("engine_lines"), reading.get("bill_fields"), reading.get("worked_out"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------
@@ -4515,6 +4913,26 @@ class ExtractionService:
             record_notes.append(PAY_SPLIT_FAILED)
             return [(0, len(lines))], False
 
+    def bill_parts(self, run, parse, lines, split_notes, bills=None):
+        """([(first, last)], changed, reasons) for a bill file, as `pay_parts` for pay stubs: the user's own split wins (changed: it replaced the rule's, so each
+        bill gets a split_changed guess, and it raises no FR-129 reason); otherwise the rule that reads the lines (bill_split.bill_parts). reasons is
+        {part index: [FR-129's review reasons]}. A rule that raises, or finds more than 200 bills, reads the file as one bill with reason (d) (FR-129). `bills` is the
+        bill engine's reading of a text PDF, whose anchors the rule also reads (an amount due printed apart from its label)."""
+        saved = self.saved_segments(run, parse, source="user")
+        if saved:
+            ranges = user_ranges(saved, lines)
+            if ranges:
+                return ranges, any(row["extraction_run_id"] for row in saved), {}
+            split_notes.append("How you split this file no longer matches its text, so it was split again.")
+        try:
+            found = bill_split.bill_parts(lines, bill_tables.split_anchors(bills) if isinstance(bills, bill_tables.BillTables) else None)
+            if len(found.parts) > MAX_BILLS:
+                raise ValueError("too many bills")
+            return found.parts, False, found.reasons
+        except Exception as exc:
+            log_failure(log, "bill split", exc, run=run["id"])
+            return [(0, len(lines))], False, {0: [BILL_SPLIT_FAILED]}
+
     def receipt_starts(self, config, work, lines, notes):
         """Indexes of lines where a new receipt begins, asked chunk by chunk; None when an answer is unusable."""
         index = {line.id: position for position, line in enumerate(lines)}
@@ -4538,7 +4956,7 @@ class ExtractionService:
         with self.store.connection() as db:
             rows = [dict(row) for row in db.execute(
                 "SELECT s.ordinal,s.first_line_id,s.last_line_id,s.status,s.source,r.id AS receipt_id,r.review_status,r.total_minor,r.currency,"
-                "r.purchase_date,m.canonical_name AS merchant,i.id AS income_record_id,i.review_status AS income_status,i.net_pay_minor,"
+                "r.purchase_date,r.document_kind,r.due_date,r.amount_due_minor,m.canonical_name AS merchant,i.id AS income_record_id,i.review_status AS income_status,i.net_pay_minor,"
                 "i.currency AS income_currency,i.pay_date,p.canonical_name AS employer,"
                 "coalesce(i.updated_at>coalesce(r.updated_at,''),0) AS is_paystub FROM document_segments s "
                 "LEFT JOIN receipts r ON r.blob_hash=s.blob_hash AND r.segment=s.ordinal "
@@ -4546,13 +4964,36 @@ class ExtractionService:
                 "LEFT JOIN merchants p ON p.id=i.payer_merchant_id WHERE s.document_id=? AND s.blob_hash=? ORDER BY s.ordinal",
                 (document_id, doc["current_hash"]))]
         for row in rows:
-            row["kind"] = "paystub" if row["income_record_id"] is not None and (row["receipt_id"] is None or row["is_paystub"]) else "receipt"
+            row["kind"] = ("paystub" if row["income_record_id"] is not None and (row["receipt_id"] is None or row["is_paystub"])
+                           else "bill" if row["document_kind"] == "bill" else "receipt")
             if row["kind"] == "paystub":
                 row["display"] = {"net_pay": format_minor(row["net_pay_minor"], row["income_currency"])} if row["net_pay_minor"] is not None else {}
+            elif row["kind"] == "bill":  # Provider (merchant), due date and amount due name a bill in the panel (FR-131).
+                row["display"] = {"amount_due": format_minor(row["amount_due_minor"], row["currency"])} if row["amount_due_minor"] is not None else {}
             else:
                 row["display"] = {"total_minor": format_minor(row["total_minor"], row["currency"])} if row["total_minor"] is not None else {}
             del row["is_paystub"]
-        return {"segments": rows, "confirmed": bool(rows) and all(row["status"] == "confirmed" for row in rows)}
+        return {"segments": rows, "confirmed": bool(rows) and all(row["status"] == "confirmed" for row in rows)} if rows else self.one_bill(doc)
+
+    def one_bill(self, doc):
+        """A file read as one bill that carries FR-129's reason (a), (c) or (d) is offered the panel's Split here (FR-131): the same shape as a split
+        file's one segment, "one": true. Nothing is saved for it. Empty for any other file."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT r.id AS receipt_id,r.review_status,r.total_minor,r.currency,r.purchase_date,r.document_kind,r.due_date,r.amount_due_minor,"
+                             "r.validation_json,m.canonical_name AS merchant FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id "
+                             "WHERE r.blob_hash=? AND r.segment=0 AND r.document_kind='bill' AND r.review_status<>'rejected'", (doc["current_hash"],)).fetchone()
+            latest = db.execute("SELECT e.parse_run_id FROM extraction_runs e JOIN parse_runs p ON p.id=e.parse_run_id WHERE e.document_id=? AND p.blob_hash=? "
+                                "AND e.status='succeeded' ORDER BY e.created_at DESC LIMIT 1", (doc["id"], doc["current_hash"])).fetchone()
+        if row is None or latest is None or not offers_split(json.loads(row["validation_json"])):
+            return {"segments": [], "confirmed": False}
+        lines = [line for line in evidence_lines(read_result(self.receipts.get(latest["parse_run_id"])["result"])) if line.text.strip()]
+        if not lines:
+            return {"segments": [], "confirmed": False}
+        found = {key: row[key] for key in row.keys() if key not in ("validation_json", "amount_due_minor")}
+        return {"segments": [{"ordinal": 0, "first_line_id": lines[0].id, "last_line_id": lines[-1].id, "status": "proposed", "source": "model", **found,
+                              "kind": "bill", "income_record_id": None, "income_status": None, "due_date": row["due_date"],
+                              "display": {"amount_due": format_minor(row["amount_due_minor"], row["currency"])} if row["amount_due_minor"] is not None else {}}],
+                "confirmed": False, "one": True}
 
     def confirm_split(self, document_id):
         """The user agrees with how the file was split: each receipt drops its split note and is judged by its own checks."""
@@ -4560,16 +5001,22 @@ class ExtractionService:
         with self.store.connection() as db:
             if not db.execute("UPDATE document_segments SET status='confirmed',updated_at=? WHERE document_id=? AND blob_hash=?",
                               (now(), document_id, doc["current_hash"])).rowcount:
-                raise ValueError("This document is not split into several receipts or pay stubs.")
+                raise ValueError("This document is not split into several receipts, pay stubs or bills.")
             for row in db.execute("SELECT id,review_status,review_source,validation_json FROM receipts WHERE blob_hash=? AND review_status<>'rejected'",
                                   (doc["current_hash"],)).fetchall():
-                issues = [issue for issue in json.loads(row["validation_json"]) if issue != SPLIT_NOTE]
+                issues = [issue for issue in json.loads(row["validation_json"]) if issue != SPLIT_NOTE and not split_reason(issue)]
                 if row["review_source"] == "user":
                     db.execute("UPDATE receipts SET validation_json=?,updated_at=? WHERE id=?", (json.dumps(issues), now(), row["id"]))
                 else:  # Exception-based review again: it counts on its own only when every other check passed.
                     status = "needs_review" if issues else "verified"
                     db.execute("UPDATE receipts SET validation_json=?,review_status=?,review_source=?,updated_at=? WHERE id=?",
                                (json.dumps(issues), status, "automatic" if status == "verified" else None, now(), row["id"]))
+            for row in db.execute("SELECT id,details_json FROM receipts WHERE blob_hash=? AND document_kind='bill' AND details_json IS NOT NULL", (doc["current_hash"],)).fetchall():
+                details = json.loads(row["details_json"])  # A bill's note sits in its kind's details; only the note goes, as for a pay stub.
+                kept = {name: {**value, "notes": [note for note in value["notes"] if note != BILL_SPLIT_NOTE]} if isinstance(value, dict) and BILL_SPLIT_NOTE in value.get("notes", [])
+                        else value for name, value in details.items()}
+                if kept != details:
+                    db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(kept), now(), row["id"]))
             for row in db.execute("SELECT id,details_json FROM income_records WHERE blob_hash=? AND details_json IS NOT NULL", (doc["current_hash"],)).fetchall():
                 details = json.loads(row["details_json"])
                 if PAY_SPLIT_NOTE in details.get("notes", []):  # Only the note goes: it was never a review reason, so no status changes.
@@ -4648,4 +5095,14 @@ class ExtractionService:
         merchant = merchant or cited(header.get(merchant_field)) or cited(classification.get("issuer"))
         dated = iso_date(dated) or iso_date(cited(classification.get("document_date")))
         name = (normalized.get("document_name") or cited(header.get("document_name"))) if kind == "employment_document" else None
+        if kind == "bill" and len(result.get("segments") or ()) > 1:  # A file of several bills is filed under the first one still counting (FR-135).
+            merchant, dated = self.first_bill_identity(run) or (merchant, dated)
         return kind, merchant, dated, name
+
+    def first_bill_identity(self, run):
+        """(provider, date) of the first non-rejected bill of the run's file by segment: the date it counts on, its due date or else its issue date.
+        None when every bill was rejected, so the file keeps the identity of the run's own reading."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT m.canonical_name,r.purchase_date FROM receipts r JOIN parse_runs p ON p.blob_hash=r.blob_hash LEFT JOIN merchants m ON m.id=r.merchant_id "
+                             "WHERE p.id=? AND r.document_kind='bill' AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1", (run["parse_run_id"],)).fetchone()
+        return (row["canonical_name"], iso_date(row["purchase_date"])) if row and row["canonical_name"] and iso_date(row["purchase_date"]) else None

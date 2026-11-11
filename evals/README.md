@@ -10,14 +10,14 @@ Tests of how well Home Manager's local models do their jobs, for choosing betwee
 ## Try it on synthetic documents first
 
 ```powershell
-python -m evals.synthetic .runtime\synthetic-corpus            # 53 made-up documents with known answers
+python -m evals.synthetic .runtime\synthetic-corpus            # 58 made-up documents with known answers
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml --dry-run
 python -m evals.run --corpus .runtime\synthetic-corpus --config evals\models.toml
 ```
 
 Edit `evals\models.toml` to list your LM Studio model IDs. Each candidate pairs a vision model with a reasoning model.
 
-The synthetic corpus is the same every time (a fixed seed): 24 receipts, 9 bank statements, 6 card statements, 7 pay stubs and 2 bills. 38 are images read by the vision model, and 10 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
+The synthetic corpus is the same every time (a fixed seed): 24 receipts, 9 bank statements, 6 card statements, 12 pay stubs and 7 bills. 38 are images read by the vision model, and 20 are PDFs with a text layer, up to 7 pages long. Each case's tags name the edge it tests, and the report shows results by tag:
 
 | Tag | What it tests |
 |---|---|
@@ -32,7 +32,7 @@ The synthetic corpus is the same every time (a fixed seed): 24 receipts, 9 bank 
 | `faded` | Grey, speckled, slightly tilted print |
 | `ytd` | Pay stubs with a year-to-date column |
 | `return` | A return and an exchange printed without minus signs: the answers are negative (money back) |
-| `aligned` | Text-PDF bank and card statements printed in aligned columns: a Wells Fargo-style two-line heading, DD/MM/YYYY dates, wrapped descriptions, a card statement with sections. They also measure the two table readers ([below](#the-two-table-readers)) |
+| `aligned` | Text-PDF bank and card statements printed in aligned columns (a Wells Fargo-style two-line heading, DD/MM/YYYY dates, wrapped descriptions, a card statement with sections), five pay stub files and five bill files (a utility bill with Usage, Rate and Charge, a phone bill with holder sections, a rent bill, a two-page bill with a remittance stub, a file of three bills). They also measure the table readers ([below](#the-two-table-readers)) |
 
 Generate it into an empty folder: `evals.synthetic` adds to a folder and never deletes.
 
@@ -91,6 +91,8 @@ For every native-PDF bank or card statement with a confirmed-complete row list, 
 - `results.jsonl` holds, per case and reader, `details.table_readers.legacy` and `.engine`: the printed rows, the rows recorded, the rows recorded with exactly the right date and signed amount, whether the recorded rows take the opening balance to the closing balance (null when either balance was not checked), what the reader counted as left out, its unplaced lines (the engine only) and whether it failed.
 - `summary.json` has `table_readers: {legacy, engine}` per candidate: `documents`, `rows`, `recorded`, `exact`, `exact_share`, `reconcilable`, `reconciled`, `reconciled_share`, `dropped`, `unplaced` and `failed`. Counts and shares only; fewer than 3 statements are suppressed. The old reader's `unplaced` is null because it names no unplaced lines.
 - `report.md` shows the two side by side in each candidate's section: printed rows recorded exactly, statements that reconcile, unplaced lines, and what each reader counted and left out. The engine should be at least the old reader on the first two; the old reader goes only after you report that on your own corpus ([open work](../docs/open-work.md)).
+
+For every native-PDF pay stub file or bill file with a text page and a confirmed-complete row list, a run likewise reads the saved reading with the pay engine or the bill engine, with no model. `summary.json` then has `pay_readers: {engine}` (`documents`, `stubs`, `values`, `exact`, `left_out`, `checkable`, `checks_held`, `to_review`, `split_right`, `unplaced`, `failed`, `exact_share`, `checks_share`) or `bill_readers: {engine}` (`documents`, `lines`, `exact`, `left_out`, `checkable`, `checks_held`, `to_review`, `unplaced`, `failed`, `files_split`, `split_right`, `split_review`, `exact_share`, `checks_share`), and `guesses: {kind: {made, right}}` for the guesses the engines' records carry. Counts and shares only; fewer than 3 files are suppressed. Photographed bills are not counted.
 
 The design and the limits are in [docs/evals.md](../docs/evals.md#the-two-table-readers).
 
@@ -194,7 +196,7 @@ Calibration:
 ## Tests
 
 These cover the suites and the app's donation export, using synthetic data only:
-- `tests/test_evals.py`: the documents suite, including the synthetic corpus (53 cases, the four `aligned` statements and then the five `aligned` pay stub files added after the others) and the old reader against the table engine (`-k table_engine`);
+- `tests/test_evals.py`: the documents suite, including the synthetic corpus (58 cases, the four `aligned` statements, then the five `aligned` pay stub files and the five `aligned` bill files, each added after the others) and the old reader against the table engine (`-k table_engine`);
 - `tests/test_eval_tasks.py`: the task suite, the decision rule and the judge;
 - `tests/test_donations.py`: the donation export.
 

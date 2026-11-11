@@ -14,9 +14,11 @@ import pytest
 from evals import intake
 from evals.corpus import TAGS, Corpus
 from evals.graders import (
+    BILL_GUESS_KINDS,
     FAILURE_KINDS,
     GUESS_KINDS,
     arithmetic,
+    bill_reader,
     compare,
     failure_kind,
     grade,
@@ -32,7 +34,7 @@ from evals.graders import (
 from evals.guard import GuardError, _hook, check_server
 from evals.report import case_pass, check_summary, rebuild
 from evals.run import load_config, run
-from evals.synthetic import PAYSTUB_FILES, PAYSTUB_SEED, aligned_paystub, documents, money, write_case
+from evals.synthetic import BILL_FILES, BILL_SEED, PAYSTUB_FILES, PAYSTUB_SEED, aligned_bill, aligned_paystub, documents, money, write_case
 from evals.synthetic import create as create_synthetic
 from home_manager.core.answers import CRITICAL as CRITICAL_FIELDS
 from home_manager.core.answers import ROWS, Answers, FieldAnswer, empty_answers
@@ -318,11 +320,11 @@ def test_a_dry_run_checks_everything_and_writes_nothing(tmp_path, local_model):
     create_synthetic(corpus.root)
     said = []
     assert run(corpus, config_for(local_model), repeat=3, network_guard=False, echo=said.append, dry_run=True) is None
-    assert said[0].startswith("Dry run: 53 test cases x 1 candidates x 3 repeats = 159 documents.")
+    assert said[0].startswith("Dry run: 58 test cases x 1 candidates x 3 repeats = 174 documents.")
     assert local_model["requests"] == [] and not (corpus.root / "results").exists()
     said.clear()
     run(corpus, config_for(local_model), network_guard=False, echo=said.append, dry_run=True, compare_schema=True)
-    assert said[0].startswith("Dry run: 53 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
+    assert said[0].startswith("Dry run: 58 test cases x 2 candidates") and said[2].startswith("  synthetic@no-schema:")
 
 
 def test_a_model_that_cannot_load_is_one_load_failure_per_case(tmp_path, local_model, monkeypatch):
@@ -362,9 +364,9 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
     created = create_synthetic(tmp_path / "synthetic")
     corpus = Corpus(tmp_path / "synthetic")
     cases = corpus.cases(split="test")
-    assert len(created) == len(set(created)) == len(cases) == 53
+    assert len(created) == len(set(created)) == len(cases) == 58
     assert {kind: sum(case.info.document_type == kind for case in cases) for kind in ROWS} == {
-        "receipt": 24, "bank_statement": 9, "credit_card_statement": 6, "paystub": 12, "bill": 2}
+        "receipt": 24, "bank_statement": 9, "credit_card_statement": 6, "paystub": 12, "bill": 7}
     assert {tag for case in cases for tag in case.info.tags} == set(TAGS)  # Every edge is tested at least once.
     assert all(case.answers().rows_complete for case in cases)
     assert {case.original.suffix for case in cases} == {".png", ".pdf"} and max(case.info.pages for case in cases) >= 6
@@ -382,6 +384,7 @@ def test_the_synthetic_corpus_and_the_example_config_are_valid(tmp_path):
 
 EXISTING_DOCUMENTS = "fbabda291e8cc424a7658a29b1a010aa3af93050fd9b75ef53e8af1d84a94609"  # sha256 of the 44 documents of the corpus before the aligned statements.
 BEFORE_PAY_STUBS = "4435fba7588668761baac7447daef1614598343b62f24bb158b905e8f69bf8aa"  # sha256 of the 48 documents before the aligned pay stubs.
+BEFORE_BILLS = "872b0550c4ab2e1426a3f879f19c37622f876e9b0399b6f1f3bd6621aebd91af"  # sha256 of the 53 documents before the aligned bills.
 
 
 def test_table_engine_aligned_statements_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
@@ -399,9 +402,9 @@ def test_table_engine_aligned_statements_are_added_after_the_existing_documents_
     assert len(added[2]["layout"]) == 2 and max(len(row["description"].split()) for row in added[2]["rows"]) >= 5
     assert any(title in texts[3] for title in ("Payments and Credits", "Payments", "Credits and Refunds")) and any(title in texts[3] for title in ("Purchases", "Charges and Interest"))
     created = create_synthetic(tmp_path / "synthetic")
-    assert len(created) == 53 and all(len(identifier) == 16 for identifier in created)
+    assert len(created) == 58 and all(len(identifier) == 16 for identifier in created)
     corpus = Corpus(tmp_path / "synthetic")
-    aligned = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type != "paystub"]
+    aligned = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type in ("bank_statement", "credit_card_statement")]
     assert len(aligned) == 4 and all(case.info.source_kind == "native_pdf" and case.original.read_bytes().startswith(b"%PDF") for case in aligned)
     assert all(case.answers().rows_complete and case.answers().document_type in ("bank_statement", "credit_card_statement") for case in aligned)
 
@@ -412,8 +415,8 @@ def test_pay_stub_aligned_files_are_added_after_the_existing_documents_and_chang
     everything = documents()
     keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
     assert hashlib.sha256(json.dumps([{key: document[key] for key in keys} for document in everything[:48]], sort_keys=True).encode()).hexdigest() == BEFORE_PAY_STUBS
-    added = everything[48:]
-    assert len(everything) == 53 and [document["document_type"] for document in added] == ["paystub"] * 5
+    added = everything[48:53]
+    assert len(everything) == 58 and [document["document_type"] for document in added] == ["paystub"] * 5
     assert all(document["tags"] == ["aligned"] and document["source"] == "pdf" and document["layout"] for document in added)
     texts = ["\n".join(document["lines"]) for document in added]
     assert all(word in texts[0] for word in ("Hours", "Rate")) and re.search(r"YTD|Year to", texts[0]) and re.search(r"YTD|Year to", texts[3])
@@ -426,12 +429,39 @@ def test_pay_stub_aligned_files_are_added_after_the_existing_documents_and_chang
     created = create_synthetic(tmp_path / "synthetic")
     corpus = Corpus(tmp_path / "synthetic")
     stubs = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type == "paystub"]
-    assert len(created) == 53 and len(stubs) == 5 and all(case.info.source_kind == "native_pdf" and case.answers().rows_complete for case in stubs)
+    assert len(created) == 58 and len(stubs) == 5 and all(case.info.source_kind == "native_pdf" and case.answers().rows_complete for case in stubs)
     assert sorted(len(case.stubs()) for case in stubs) == [1, 1, 1, 1, 3]
-    assert all(len(case.stubs()) == 1 for case in corpus.cases() if case not in stubs)  # Every other case, one-stub pay stubs included, is its own stub.
+    assert all(len(case.stubs()) == 1 for case in corpus.cases() if case not in stubs and case.info.document_type != "bill" or case.info.source_kind == "scan")  # Every other case, one-stub pay stubs included, is its own stub; the bill files have their own pin.
     three = next(case for case in stubs if len(case.stubs()) == 3)
     assert three.stubs()[0] == three.answers() and (three.folder / "stubs.json").is_file()
-    assert [(folder / "stubs.json").exists() for folder in (case.folder for case in corpus.cases())].count(True) == 1
+    assert [(case.folder / "stubs.json").exists() for case in corpus.cases() if case.info.document_type != "bill"].count(True) == 1
+
+
+def test_bill_aligned_files_are_added_after_the_existing_documents_and_change_none_of_them(tmp_path):
+    """FR-124 / SC-124: the existing 53 cases keep their ids and answers; five text-PDF bill files in aligned columns follow them, from the layout
+    generator's inputs, and the three-bill file carries one answer file per bill."""
+    everything = documents()
+    keys = ("document_type", "lines", "fields", "rows", "tags", "source", "faded")
+    assert hashlib.sha256(json.dumps([{key: document[key] for key in keys} for document in everything[:53]], sort_keys=True).encode()).hexdigest() == BEFORE_BILLS
+    added = everything[53:]
+    assert len(everything) == 58 and [document["document_type"] for document in added] == ["bill"] * 5
+    assert all(document["tags"] == ["aligned"] and document["source"] == "pdf" and document["layout"] for document in added)
+    texts = ["\n".join(document["lines"]) for document in added]
+    assert all(word in texts[0] for word in ("Usage", "Rate", "Charge", "Account Summary")) and any(row["line_total_minor"] < 0 for row in added[1]["rows"])
+    assert [row["line_holder"] is not None for row in added[1]["rows"]].count(True) == 4  # The phone bill's holder sections.
+    assert any(line.startswith("Total for ") for line in added[1]["lines"]) and any(word in texts[2] for word in ("Previous Balance", "Balance Forward", "Last Bill"))
+    assert [len(document["layout"]) for document in added] == [1, 1, 1, 2, 3] and "Return this portion with your payment" in added[3]["lines"]
+    assert [len(document["stubs"] or []) for document in added] == [0, 0, 0, 0, 3] and len({bill["fields"]["due_date"] for bill in added[4]["stubs"]}) == 3
+    assert added[4]["stubs"][0]["fields"] == added[4]["fields"] and added[4]["stubs"][0]["rows"] == added[4]["rows"]
+    assert all(sum(row["line_total_minor"] for row in bill["rows"]) == bill["fields"]["total_minor"] for document in added for bill in document["stubs"] or [document])
+    created = create_synthetic(tmp_path / "synthetic")
+    corpus = Corpus(tmp_path / "synthetic")
+    bills = [case for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type == "bill"]
+    assert len(created) == 58 and len(bills) == 5 and all(case.info.source_kind == "native_pdf" and case.answers().rows_complete for case in bills)
+    assert sorted(len(case.stubs()) for case in bills) == [1, 1, 1, 1, 3]
+    assert [case.info.source_kind for case in corpus.cases() if case.info.document_type == "bill" and case not in bills] == ["scan", "scan"]  # The image bills stay.
+    assert [(case.folder / "stubs.json").exists() for case in corpus.cases() if case.info.document_type == "bill"].count(True) == 1
+    assert [aligned_bill(index, **choices)["lines"] for index, choices in BILL_FILES] == [document["lines"] for document in added]  # The same seed makes the same files.
 
 
 def test_every_synthetic_answer_is_printed_and_adds_up():
@@ -512,7 +542,7 @@ def test_table_engine_comparison_leaves_out_what_is_not_a_text_pdf_statement_and
         raise RuntimeError("injected engine fault")
 
     monkeypatch.setattr("evals.run.statement_tables.read", broken)
-    aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type != "paystub"][:3]
+    aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type in ("bank_statement", "credit_card_statement")][:3]
     folder = run(corpus, config_for(local_model), case_ids=aligned, network_guard=False, echo=lambda _: None)
     readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"]
     assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["reconciled"] == 0 and readers["legacy"]["failed"] == 0
@@ -522,7 +552,7 @@ def test_table_engine_comparison_leaves_out_what_is_not_a_text_pdf_statement_and
 def test_table_engine_comparison_is_suppressed_in_the_summary_for_few_statements(tmp_path, local_model):
     corpus = Corpus(tmp_path / "synthetic")
     create_synthetic(corpus.root)
-    chosen = [case.id for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type != "paystub"][:2]
+    chosen = [case.id for case in corpus.cases() if "aligned" in case.info.tags and case.info.document_type in ("bank_statement", "credit_card_statement")][:2]
     folder = run(corpus, config_for(local_model), case_ids=chosen, network_guard=False, echo=lambda _: None)
     assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["table_readers"] == {"suppressed": True}
 
@@ -703,6 +733,120 @@ def test_pay_stub_comparison_leaves_out_other_documents_counts_a_failing_reader_
     readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["pay_readers"]
     assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["checks_held"] == 0 and "legacy" not in readers
     assert readers["engine"]["values"] > 0
+
+
+def scripted_bills(corpus, local_model, tmp_path, files=BILL_FILES):
+    """The model double for bill files (the five aligned ones unless `files`, a list of (index, choices), says otherwise) in the order a run reads them (case id
+    order): what test_bill_engine_generator answers for each file from the generator's inputs, one reply per schema and bill."""
+    from evals import bill_layouts
+    from test_bill_engine_generator import Generated
+    made = {}
+    for index, choices in files:
+        lines = aligned_bill(index, **choices)["lines"]
+        made[hashlib.sha256(("synthetic:pdf:" + "|".join(lines)).encode()).hexdigest()[:16]] = (index, choices)
+    replies = {}
+    for case_id in sorted(made):
+        index, choices = made[case_id]
+        reader = object.__new__(Generated)
+        reader.evidence = read_original(corpus.case(case_id).original, tmp_path / ("read-" + case_id))
+        reader.lines = evidence_lines(reader.evidence)
+        reader.local_model = {"requests": []}
+        reader.answer(bill_layouts.make(BILL_SEED, index, **choices))
+        for schema, found in reader.local_model["by_schema"].items():
+            replies.setdefault(schema, []).extend(found)
+    local_model["by_schema"] = replies
+    return sorted(made)
+
+
+def test_bill_readers_are_compared_and_the_engine_reads_every_aligned_bill_exactly(tmp_path, local_model):
+    """SC-124: `evals.run.run` over the five aligned bill files (the model double answers from the generator's inputs) shows the bill engine alone; it
+    records every charge line exactly, splits the three-bill file into three, raises no split reason and guesses nothing wrong; summary.json holds counts only."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    chosen = scripted_bills(corpus, local_model, tmp_path)
+    folder = run(corpus, config_for(local_model), case_ids=chosen, network_guard=False, echo=lambda _: None)
+    lines = [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sorted(line["case_id"] for line in lines) == chosen
+    for line in lines:
+        bills = len(corpus.case(line["case_id"]).stubs())
+        assert line["status"] == ("split" if bills == 3 else "ok") and line["details"]["split_miss"] is False, line["details"]
+        assert line["grades"]["document"]["perfect"] is True and case_pass(line), line["case_id"]
+        engine = line["details"]["bill_readers"]["engine"]
+        assert (engine["exact"], engine["left_out"], engine["checks_held"], engine["checkable"], engine["split_review"], engine["unplaced"],
+                engine["failed"]) == (engine["lines"], 0, bills, bills, 0, 0, False), line["case_id"]
+        assert (engine["files_split"], engine["split_right"]) == ((1, 1) if bills == 3 else (0, 0)), line["case_id"]
+        assert set(line["details"]["bill_readers"]) == {"engine"} and "pay_readers" not in line["details"]
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert set(summary["bill_readers"]) == {"engine"} and "pay_readers" not in summary
+    engine = summary["bill_readers"]["engine"]
+    assert engine["documents"] == 5 and engine["lines"] == 39 and engine["exact"] == 39 and engine["left_out"] == 0
+    assert engine["checks_held"] == engine["checkable"] == 7 and engine["exact_share"] == engine["checks_share"] == 1.0
+    assert (engine["files_split"], engine["split_right"], engine["split_review"], engine["unplaced"], engine["failed"]) == (1, 1, 0, 0, 0)
+    assert engine["to_review"] == sum(line["details"]["bill_readers"]["engine"]["to_review"] for line in lines)
+    # Every guess is counted by kind and, on this corpus, right; the bill engine's kinds are reported because the run read bills.
+    assert set(summary["guesses"]) == set(GUESS_KINDS) | set(BILL_GUESS_KINDS)
+    assert all(each["made"] == each["right"] for each in summary["guesses"].values()) and summary["guesses"]["split_changed"] == {"made": 0, "right": 0}
+    # summary.json passes the allowlist and holds no provider, description, amount or date of any bill; report.md shows the engine's counts.
+    text = (folder / "summary.json").read_text(encoding="utf-8")
+    check_summary(json.loads(text))
+    for case_id in chosen:
+        for bill in corpus.case(case_id).stubs():
+            assert bill.fields["provider"].value not in text and bill.fields["due_date"].value not in text and bill.fields["issue_date"].value not in text
+            assert all(row["description"] not in text for row in bill.rows)
+            assert not [value for value in (bill.fields["amount_due_minor"].value, bill.fields["total_minor"].value) if money(value) in text]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "read by the bill engine (5 files, 39 charge lines" in report and "pay engine" not in report
+    table = [line for line in report.splitlines() if line.startswith(("| Reader | Charge lines", "| Bill engine |"))]
+    assert len(table) == 2 and "Files split right" in table[0] and "| Bill engine | 39 of 39 (" in table[1] and "| 7 of 7 |" in table[1] and "| 1 of 1 |" in table[1]
+    assert "Guesses the engine made:" in report
+
+
+def test_bill_comparison_leaves_out_image_bills_counts_a_failing_engine_and_suppresses_few_files(tmp_path, local_model, monkeypatch):
+    """A photographed bill has no bill readers; an engine that raises placed nothing and is counted; fewer than three files are suppressed in the summary."""
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    cases = corpus.cases()
+    others = [case.id for case in cases if case.info.document_type == "receipt"][:1] + [case.id for case in cases if case.info.document_type == "bill"
+                                                                                           and case.info.source_kind == "scan"][:1]
+    folder = run(corpus, config_for(local_model), case_ids=others, network_guard=False, echo=lambda _: None)
+    assert all("bill_readers" not in json.loads(text)["details"] for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines())
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert "bill_readers" not in summary and "read by the bill engine" not in (folder / "report.md").read_text(encoding="utf-8")
+    aligned = [case.id for case in cases if "aligned" in case.info.tags and case.info.document_type == "bill"]
+    folder = run(corpus, config_for(local_model), case_ids=aligned[:2], network_guard=False, echo=lambda _: None)
+    summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]
+    assert summary["bill_readers"] == {"suppressed": True} and summary["guesses"] == {"suppressed": True}
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("injected engine fault")
+
+    monkeypatch.setattr("evals.run.bill_tables.read", broken)
+    folder = run(corpus, config_for(local_model), case_ids=aligned[:3], network_guard=False, echo=lambda _: None)
+    readers = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["candidates"]["synthetic"]["bill_readers"]
+    assert readers["engine"]["failed"] == 3 and readers["engine"]["exact"] == 0 and readers["engine"]["checks_held"] == 0
+    assert readers["engine"]["lines"] > 0 and readers["engine"]["left_out"] == readers["engine"]["lines"]
+
+
+def test_bill_reader_counts_lines_checks_and_the_split_and_never_text():
+    """graders.bill_reader: lines are matched by amount (a credit by magnitude), the lines check needs every line placed, and the split is right only when the
+    parts are the file's bills."""
+    def bill(due, new, lines):
+        fields = {name: FieldAnswer(value=None, state="unchecked") for name in CRITICAL_FIELDS["bill"]}
+        fields.update(amount_due_minor=FieldAnswer(value=due, state="correct"), total_minor=FieldAnswer(value=new, state="correct"))
+        return Answers(document_type="bill", fields=fields, rows=[{"description": f"line {n}", "line_total_minor": amount, "line_holder": None}
+                                                                  for n, amount in enumerate(lines)], rows_state="correct", rows_complete=True)
+    one, two = bill(1500, 1500, [2000, -500]), bill(900, 900, [900])
+    right = bill_reader([one], [2000, 500], [{1500}])
+    assert right == {"lines": 2, "exact": 2, "left_out": 0, "checkable": 1, "checks_held": 1, "unplaced": None, "files_split": 0, "split_right": 0,
+                     "split_review": 0, "failed": False}
+    missed = bill_reader([one], [2000], [{1500}], reasons=2, unplaced=1)
+    assert (missed["exact"], missed["left_out"], missed["checks_held"], missed["unplaced"], missed["split_review"]) == (1, 1, 0, 1, 1)
+    both = bill_reader([one, two], [900, 500, 2000], [{1500, 2000}, {900}])
+    assert (both["lines"], both["exact"], both["checks_held"], both["files_split"], both["split_right"]) == (3, 3, 2, 1, 1)
+    assert bill_reader([one, two], [900, 500, 2000], [{1500, 2000, 900}])["split_right"] == 0  # Left as one bill: the file split is missed.
+    assert bill_reader([one], [2000, 500], [{1500}, {7}])["files_split"] == 1 and bill_reader([one], [2000, 500], [{1500}, {7}])["split_right"] == 0
+    failed = bill_reader([one, two], [900], [], failed=True)
+    assert (failed["exact"], failed["left_out"], failed["checks_held"], failed["split_right"], failed["failed"]) == (0, 3, 0, 0, True)
 
 
 # The shareable summary -----------------------------------------------------------------------------------------------

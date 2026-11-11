@@ -879,19 +879,23 @@ async function doc2Split(target, state, publication) {
   const split = await api(`/api/documents/${state.doc.id}/segments`);
   if (doc2 !== state) return;
   const segments = split.segments, chosen = Math.min(state.segment || 0, segments.length - 1);
-  // A file of pay stubs is worded for them, and nothing waits for the split (FR-82): the stubs count by their own checks.
-  const stubs = segments.length > 0 && segments.every(segment => segment.kind === "paystub"), noun = stubs ? "pay stub" : "receipt";
+  // A file of pay stubs or of bills is worded for them, and nothing waits for the split (FR-82, FR-131): they count by their own checks.
+  const stubs = segments.length > 0 && segments.every(segment => segment.kind === "paystub"), bills = segments.length > 0 && segments.every(segment => segment.kind === "bill");
+  const noun = stubs ? "pay stub" : bills ? "bill" : "receipt";
   const published = publication.segments.find(part => part.ordinal === segments[chosen]?.ordinal) || publication.segments[chosen];
   const panel = element("section", "", "split-panel");
-  panel.setAttribute("aria-label", stubs ? "Pay stubs in this file" : "Receipts in this file");
-  panel.append(element("h3", `This file holds ${segments.length} ${noun}s`));
-  if (!split.confirmed && !stubs) panel.append(alertBox("Each receipt waits in To check until you confirm how the file was split.", {tone: "warning"}));
+  panel.setAttribute("aria-label", stubs ? "Pay stubs in this file" : bills ? "Bills in this file" : "Receipts in this file");
+  panel.append(element("h3", split.one ? "This file may hold more than one bill" : `This file holds ${segments.length} ${noun}s`));
+  if (!split.confirmed && !stubs && !bills) panel.append(alertBox("Each receipt waits in To check until you confirm how the file was split.", {tone: "warning"}));
   const picker = element("div", "", "work-filters");
   segments.forEach((segment, index) => {
     const button = element("button", "", "filter-chip"); button.type = "button";
     button.setAttribute("aria-pressed", String(index === chosen));
-    const facts = stubs ? [segment.pay_date && dateText(segment.pay_date), segment.display?.net_pay] : [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)];
-    button.append(element("span", (stubs ? segment.employer : segment.merchant) || `${stubs ? "Pay stub" : "Receipt"} ${index + 1}`),
+    // A bill's chip is its provider, due date and amount due, each as the server's text (the amount keeps its currency code).
+    const facts = stubs ? [segment.pay_date && dateText(segment.pay_date), segment.display?.net_pay]
+      : bills ? [segment.due_date && dateText(segment.due_date), segment.display?.amount_due]
+      : [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)];
+    button.append(element("span", (stubs ? segment.employer : segment.merchant) || `${stubs ? "Pay stub" : bills ? "Bill" : "Receipt"} ${index + 1}`),
                   element("span", facts.filter(Boolean).join(" · "), "chip-count"));
     button.addEventListener("click", () => { state.segment = index; state.renderedKey = ""; doc2Extraction(state, state.runId); });
     picker.append(button);
@@ -899,7 +903,7 @@ async function doc2Split(target, state, publication) {
   panel.append(picker);
   const starts = segments.map(segment => segment.first_line_id), lines = segmentLines(segments[chosen], state.result?.layout_context?.lines || state.result?.lines);
   const actions = element("div", "", "button-row");
-  if (!split.confirmed) actions.append(asyncButton("Confirm split", async () => {
+  if (!split.confirmed && !split.one) actions.append(asyncButton("Confirm split", async () => {
     await api(`/api/documents/${state.doc.id}/segments/confirm`, {method: "POST", body: "{}"});
     notice(`Split confirmed. Each ${noun} now counts by its own checks.`); state.renderedKey = ""; await doc2Extraction(state, state.runId);
   }, "primary"));
