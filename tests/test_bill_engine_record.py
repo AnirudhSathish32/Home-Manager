@@ -16,15 +16,19 @@ from collections import Counter
 import dataclasses
 import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import bill_engine_fixtures as bf
+from home_manager.core.jobs import Work
 from home_manager.documents import extraction
+from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance import bill_tables
 from home_manager.finance.family_routing import FamilyRouting
 from home_manager.finance.ledger import Ledger
+import home_manager.library
 from test_bills_ledger import WHO
 from test_extraction import MISSING
 from test_paystub_engine_record import Run, no_network, started  # noqa: F401  (no_network is autouse: C-net)
@@ -636,6 +640,227 @@ def test_sc111_a_general_bill_keeps_its_previous_balance_and_payments_from_the_b
     finished(run)
 
 
+# --- SC-111 step 4: a kind printed twice with different values (FR-111; slice SL-04) ---------------------------------------------------
+
+def previous_twice(first, second):
+    """BL-UTIL printing `Previous Balance` twice: `first` in the box and `second` on its own line at y 476, below the charge table."""
+    summary = [("Previous Balance", first), *bf.UTIL_SUMMARY[1:]]
+    return [bf.page_of(bf.util_items(summary=summary, extra=bf.amounts_at(476, "Previous Balance", (bf.CHARGE, second))))]
+
+
+def test_sc111_sl04_a_previous_balance_printed_twice_takes_the_first_on_page_one_with_a_note_and_the_check_judges_it(pdf_store, local_model):
+    run = util(pdf_store, local_model, previous_twice("82.10", "90.00"))
+    record = run.record
+    assert record["details"]["previous_balance"]["minor"] == 8210
+    assert record["details"]["previous_balance"]["locator"]["quotes"] == ["82.10"]
+    noted(run, "The previous balance is printed as 82.10 and 90.00;", "82.10, the first on page 1, was used.")
+    assert {check["name"]: check["passes"] for check in record["checks"]}["carried"] is True  # The carried check runs on 82.10 and holds.
+    auto(record)
+    finished(run)
+
+
+def test_sc111_sl04_a_misprint_listed_first_is_used_and_the_carried_check_fails_for_it(pdf_store, local_model):
+    run = util(pdf_store, local_model, previous_twice("90.00", "82.10"))
+    record = run.record
+    assert record["details"]["previous_balance"]["minor"] == 9000
+    assert [note for note in run.notes if "The previous balance is printed as 90.00 and 82.10; 90.00, the first on page 1, was used." in note]
+    assert {check["name"]: check["passes"] for check in record["checks"]}["carried"] is False  # No check chooses among the values.
+    reasons(record, "Amount due: previous balance 90.00 USD", "97.55 USD")
+    finished(run)
+
+
+def test_sc111_sl04_a_value_printed_alike_twice_is_one_value_and_gets_no_note(pdf_store, local_model):
+    run = util(pdf_store, local_model, previous_twice("82.10", "82.10"))
+    assert run.record["details"]["previous_balance"]["minor"] == 8210
+    assert [note for note in run.notes if "is printed as" in note] == []
+    auto(run.record)
+    finished(run)
+
+
+# === SC-117: amount due printed several times (FR-117; slice SL-04) ========================================================
+
+def r1_run(pdf_store, local_model, variant, due="50.00", pages=None):
+    """BL-UTIL-R1 (a), (b) or (c) with the stub answering the amount due 50.00 (printed in the page's past-due banner, so it passes its citation check)."""
+    fields = {**UTIL_FIELDS, "amount_due": (due, due, due), "new_charges": ("60.00", "60.00", "60.00")}
+    changes = {"new_charges": MISSING} if variant == "b" else {}  # (b) prints no new charges and the model gives none: the lines' sum counts.
+    return bill_run(pdf_store, local_model, pages if pages is not None else bf.util_r1_pages(variant), bf.STUB_UTIL_WRONG, fields, **changes)
+
+
+def guesses_of(run):
+    return (run.record["details"] or {}).get("guesses", [])
+
+
+def test_sc117_a_the_carried_check_picks_147_55_over_a_first_printed_50_00(pdf_store, local_model):
+    run = r1_run(pdf_store, local_model, "a")
+    record = run.record
+    assert record["amount_due_minor"] == 14755 and record["total_minor"] == 9755
+    assert [note for note in run.notes if "The amount due is printed as" in note] == [] and guesses_of(run) == []
+    checks = {check["name"]: check["passes"] for check in record["checks"]}
+    assert checks["carried"] is True and checks["lines"] is True
+    auto(record)
+    finished(run)
+
+
+def test_sc117_b_the_lines_check_picks_97_55_when_no_new_charges_are_printed(pdf_store, local_model):
+    run = r1_run(pdf_store, local_model, "b")
+    record = run.record
+    assert record["amount_due_minor"] == 9755 and record["total_minor"] == 9755  # The lines' sum counts: no new charges are printed.
+    assert [note for note in run.notes if "The amount due is printed as" in note] == [] and guesses_of(run) == []
+    assert {check["name"]: check["passes"] for check in record["checks"]} == {"lines": True, "product:1": True, "product:2": True}  # Against the amount due.
+    auto(record)
+    finished(run)
+
+
+def test_sc117_c_nothing_decides_so_the_first_on_page_one_is_used_with_a_guess_note(pdf_store, local_model):
+    run = r1_run(pdf_store, local_model, "c")
+    record = run.record
+    assert record["amount_due_minor"] == 5000 and record["total_minor"] == 9755
+    noted(run, "The amount due is printed as 50.00 and 147.55; 50.00, the first on page 1, was used.")
+    assert [(guess["kind"], guess["page"]) for guess in guesses_of(run)] == [("amount_due", 1)]
+    assert [check["name"] for check in record["checks"] if check["name"] == "carried"] == []  # No check involves the amount due.
+    auto(record)
+    finished(run)
+
+
+def test_sc117_a_late_payment_amount_is_never_the_amount_due(pdf_store, local_model):
+    late = [*bf.left(216, "If paid after 10/15/2026, pay"), *bf.heading(216, (bf.CHARGE, "102.55"))]
+    first = bf.amounts_at(720, "Balance Due", (bf.CHARGE, "50.00"))
+    page = bf.page_of(bf.util_items(summary=[bf.UTIL_SUMMARY[2], ("Total Amount Due", "147.55")], stub_amount="147.55", above=first, extra=late))
+    run = r1_run(pdf_store, local_model, "c", pages=[page])
+    assert run.record["amount_due_minor"] == 5000
+    assert not [text for text in [*run.notes, *run.record["issues"], *(guess["text"] for guess in guesses_of(run))] if "102.55" in text]
+    finished(run)
+
+
+# === SC-118: new charges worked out (FR-118; slice SL-04) ===================================================================
+
+def r2_run(pdf_store, local_model, variant, **changes):
+    """BL-UTIL-R2 or a variant, the stub answering the amount due and the new charges wrong but printed (150.00 and 100.00)."""
+    wrong = ("12.00", "12.00", "12.00") if variant == "noprev" else None  # R2-NOPREV prints neither 150.00 nor 100.00.
+    fields = {**UTIL_FIELDS, "amount_due": wrong or ("150.00", "150.00", "150.00"), "new_charges": wrong or ("100.00", "100.00", "100.00")}
+    return bill_run(pdf_store, local_model, bf.util_r2_pages(variant), bf.STUB_UTIL_WRONG, fields, **changes)
+
+
+def counted(run, minor):
+    """Spending on the bill's due date (2026-10-15), from the same tool the page uses."""
+    from home_manager.finance.tools import FinanceTools, PeriodInput
+    rows = FinanceTools(run.store).get_spending(PeriodInput(start="2026-10-01", end="2026-10-31"))["by_currency"]
+    assert rows and rows[0]["spending"]["minor"] == minor
+
+
+def test_sc118_new_charges_not_printed_are_worked_out_and_that_is_what_counts_with_no_carried_check(pdf_store, local_model):
+    from home_manager.finance import traces
+    run = r2_run(pdf_store, local_model, "r2")
+    record = run.record
+    assert (record["total_minor"], record["amount_due_minor"]) == (9755, 14755)
+    details = record["details"]
+    assert (details["previous_balance"]["minor"], details["payments_received"]["minor"], details["new_charges"]["minor"]) == (15000, 10000, 9755)
+    assert details["new_charges"]["worked_out"] == {"amount_due": 14755, "previous_balance": 15000, "payments": 10000}  # The model's 100.00 is not used.
+    noted(run, "New charges aren't printed; worked out as amount due 147.55", "previous balance 150.00", "payments 100.00", "= 97.55.")
+    checks = {check["name"]: check for check in record["checks"]}
+    assert checks["lines"]["passes"] is True and "carried" not in checks
+    assert checks["lines"]["compared_with"]["minor"] == 9755
+    trace = traces.trace(run.store, checks["lines"]["figure"]["trace"])
+    assert {item["key"]: item["value"]["decimal"] for item in trace["inputs"] if item["key"] in ("amount_due", "previous_balance", "payments_received")} == {
+        "amount_due": "147.55", "previous_balance": "150.00", "payments_received": "100.00"}
+    assert "147.55 \u2212 previous balance 150.00 + payments 100.00 = 97.55" in trace["formula"]
+    assert trace["reconciles"] is True
+    auto(record)
+    counted(run, 9755)
+    finished(run)
+
+
+def test_sc118_a_misprinted_amount_due_works_out_a_wrong_new_charges_the_lines_check_catches(pdf_store, local_model):
+    run = r2_run(pdf_store, local_model, "bad")
+    record = run.record
+    assert (record["total_minor"], record["amount_due_minor"]) == (10055, 15055)  # The worked-out value counts until corrected.
+    noted(run, "New charges aren't printed; worked out as amount due 150.55", "payments 100.00", "= 100.55.")
+    reasons(record, "the lines add up to 97.55 USD", "100.55 USD")
+    assert "carried" not in {check["name"] for check in record["checks"]}
+    Ledger(run.store).review("receipt", record["id"], "verified")  # The bill waits in To check; once you keep it, it counts the worked-out 100.55.
+    counted(run, 10055)
+    finished(run)
+
+
+def test_sc118_without_a_previous_balance_and_payments_todays_rule_stands(pdf_store, local_model):
+    run = r2_run(pdf_store, local_model, "noprev", new_charges=MISSING)
+    record = run.record
+    assert (record["total_minor"], record["amount_due_minor"]) == (9755, 14755)
+    reasons(record, "Amount due: the lines add up to 97.55 USD, but the amount due is 147.55 USD")
+    assert [note for note in run.notes if "worked out" in note] == []
+    assert "worked_out" not in ((record["details"] or {}).get("new_charges") or {})
+    finished(run)
+
+
+# === SC-121: version and existing records (slice SL-04: cases (1) and (2)) ===============================================
+
+def read_as_v39(run, rows_of, fields, monkeypatch):
+    """The reading the previous version left: the engine fault double (the model's lines are used) with the version patched, left in To check by SQL."""
+    def fault(evidence):
+        raise RuntimeError("injected engine fault")
+    run.stub_bill({}, fields, extra=rows_of, single_run=True)
+    with monkeypatch.context() as patch:
+        patch.setattr(extraction, "EXTRACTION_VERSION", V39)
+        patch.setattr(bill_tables, "read", fault)
+        run.extract()
+    assert run.run["status"] == "succeeded"
+    with run.store.connection() as db:
+        assert db.execute("SELECT prompt_version FROM extraction_runs WHERE id=?", (run.run["id"],)).fetchone()[0] == V39
+
+
+def model_rows(run):
+    return [{**run.model_line(key, bf.STUB_UTIL[key]), "evidence": [{"line_id": run.line(text).id, "quote": run.line(text).text} for text in cites]}
+            for key, cites in UTIL_CITES.items()]
+
+
+def test_sc121_the_version_moved_and_an_undecided_v39_bill_is_read_again_from_its_printed_columns(pdf_store, local_model, monkeypatch):
+    assert extraction.EXTRACTION_VERSION != V39
+    run = started(pdf_store, local_model, bf.util_pages())
+    run.__class__ = BillRun
+    read_as_v39(run, model_rows(run), {**UTIL_FIELDS, "amount_due": ("97.55", "97.55", "97.55"), "new_charges": ("97.55", "97.55", "97.55")}, monkeypatch)
+    receipt_id = run.run["publication"]["id"]
+    with run.store.connection() as db:
+        db.execute("UPDATE receipts SET review_status='needs_review' WHERE id=?", (receipt_id,))
+    run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, **UTIL_WRONG_AMOUNTS})
+    config = ReasoningConfig(base_url=run.local_model["config"].base_url, model="synthetic-reasoning")
+    run_id, reused = run.extraction.enqueue(run.doc["id"], run.parse_id, config)
+    assert reused is True  # `reused` False in the contract: enqueue made a new run, since the previous version's run is not reused.
+    run.extraction.run(run_id, Work.detached())
+    run.run = run.extraction.get(run_id)
+    assert run.run["status"] == "succeeded" and run.run["publication"]["id"] == receipt_id
+    expect_util(run)
+    finished(run)
+
+
+def test_sc121_a_decided_bill_keeps_its_receipt_and_item_rows_byte_for_byte(pdf_store, local_model, monkeypatch):
+    run = started(pdf_store, local_model, bf.util_r1_pages("a"))
+    run.__class__ = BillRun
+    read_as_v39(run, model_rows(run), {**UTIL_FIELDS, "amount_due": ("147.55", "147.55", "147.55"), "new_charges": ("97.55", "97.55", "97.55")}, monkeypatch)
+    receipt_id = run.run["publication"]["id"]
+    Ledger(run.store).review("receipt", receipt_id, "verified")
+
+    def rows():
+        with run.store.connection() as db:
+            return ([tuple(row) for row in db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,))],
+                    [tuple(row) for row in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))])
+    before = rows()
+    run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, "amount_due": ("50.00", "50.00", "50.00"), "new_charges": ("60.00", "60.00", "60.00")})
+    config = ReasoningConfig(base_url=run.local_model["config"].base_url, model="synthetic-reasoning")
+    run_id, reused = run.extraction.enqueue(run.doc["id"], run.parse_id, config)
+    assert reused is True
+    run.extraction.run(run_id, Work.detached())
+    assert run.extraction.get(run_id)["status"] == "succeeded"
+    assert rows() == before
+    finished(run)
+
+
+def test_sc121_no_migration_is_added_by_this_feature():
+    """The `library/migrations/` listing is START_HEAD's: 001 to 080, with 080_split_merged_documents the last: this feature adds none."""
+    names = sorted(path.name for path in (Path(home_manager.library.__file__).parent / "migrations").iterdir() if path.suffix == ".sql")
+    assert len(names) == 80 and names[0].startswith("001_") and names[-1] == "080_split_merged_documents.sql"
+    assert [int(name[:3]) for name in names] == list(range(1, 81))
+
+
 # === SC-112: matching model lines to engine rows ============================================================================
 
 def total_line(run, text="Total for Alex", amount="79.99", **changes):
@@ -884,6 +1109,23 @@ def test_sc122_a_second_reading_of_a_bill_with_an_unplaced_line_changes_nothing(
     assert second_run["id"] != first_run["id"]
     assert snapshot(run) == first
     assert run.notes == first_notes and run.asked() == first_questions  # The same schemas, in the same count (C-model-calls).
+    finished(run)
+
+
+def test_sc122_sl04_a_second_reading_of_a_bill_with_an_amount_due_guess_changes_nothing(pdf_store, local_model):
+    run = started(pdf_store, local_model, bf.util_r1_pages("c"))
+    run.__class__ = BillRun
+    fields = {**UTIL_FIELDS, "amount_due": ("50.00", "50.00", "50.00"), "new_charges": ("60.00", "60.00", "60.00")}
+    run.stub_bill(bf.STUB_UTIL_WRONG, fields)
+    first_run = run.extract()
+    first = snapshot(run)
+    first_notes, first_questions, first_guesses = run.notes, run.asked(), guesses_of(run)
+    assert [guess["kind"] for guess in first_guesses] == ["amount_due"]
+    run.stub_bill(bf.STUB_UTIL_WRONG, fields)
+    second_run = run.extract(force=True)
+    assert second_run["id"] != first_run["id"]
+    assert snapshot(run) == first
+    assert (run.notes, run.asked(), guesses_of(run)) == (first_notes, first_questions, first_guesses)
     finished(run)
 
 
