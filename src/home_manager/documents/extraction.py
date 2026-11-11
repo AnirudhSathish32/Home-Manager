@@ -5080,4 +5080,14 @@ class ExtractionService:
         merchant = merchant or cited(header.get(merchant_field)) or cited(classification.get("issuer"))
         dated = iso_date(dated) or iso_date(cited(classification.get("document_date")))
         name = (normalized.get("document_name") or cited(header.get("document_name"))) if kind == "employment_document" else None
+        if kind == "bill" and len(result.get("segments") or ()) > 1:  # A file of several bills is filed under the first one still counting (FR-135).
+            merchant, dated = self.first_bill_identity(run) or (merchant, dated)
         return kind, merchant, dated, name
+
+    def first_bill_identity(self, run):
+        """(provider, date) of the first non-rejected bill of the run's file by segment: the date it counts on, its due date or else its issue date.
+        None when every bill was rejected, so the file keeps the identity of the run's own reading."""
+        with self.store.connection() as db:
+            row = db.execute("SELECT m.canonical_name,r.purchase_date FROM receipts r JOIN parse_runs p ON p.blob_hash=r.blob_hash LEFT JOIN merchants m ON m.id=r.merchant_id "
+                             "WHERE p.id=? AND r.document_kind='bill' AND r.review_status<>'rejected' ORDER BY r.segment LIMIT 1", (run["parse_run_id"],)).fetchone()
+        return (row["canonical_name"], iso_date(row["purchase_date"])) if row and row["canonical_name"] and iso_date(row["purchase_date"]) else None

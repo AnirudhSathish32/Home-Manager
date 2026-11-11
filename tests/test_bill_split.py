@@ -574,16 +574,41 @@ def test_sc128_the_library_row_takes_its_due_date_and_period_from_the_first_non_
     assert shown["ledger_amount_minor"] is None
 
 
-@pytest.mark.xfail(strict=True, reason="SC-128 says the file is filed under 2026-07-20, the first bill's due date. Filing names every bill by its statement date "
-                                       "(extraction.IDENTITY['bill'] is issue_date), 2026-07-02 here, as it does for a one-bill file (FR-120); escalated in the handoff.")
+def filed_paths(manager):
+    with manager.store.connection() as db:
+        return [row["relative_path"] for row in db.execute("SELECT relative_path FROM managed_files")]
+
+
 def test_sc128_the_file_is_filed_under_the_first_bills_due_date(app, local_model):
     client, manager = app
     run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
     run.answer([1, 2, 3])
     extract_through_app(manager, run)
-    with manager.store.connection() as db:
-        [filed] = [row["relative_path"] for row in db.execute("SELECT relative_path FROM managed_files")]
+    [filed] = filed_paths(manager)
     assert filed.startswith("Bills/2026/07/2026-07-20__CITY_POWER_WATER")
+
+
+def test_fr120_a_file_of_one_bill_is_filed_under_its_statement_date_as_before(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1))
+    run.answer([1])
+    extract_through_app(manager, run)
+    [filed] = filed_paths(manager)
+    assert filed.startswith("Bills/2026/07/2026-07-02__CITY_POWER_WATER")  # MINI-BILL(1) is dated 07/02/2026 and due 07/20/2026.
+
+
+def test_fr135_filing_follows_the_first_non_rejected_bill_whenever_the_file_is_filed_again(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    run.answer([1, 2, 3])
+    extract_through_app(manager, run)
+    [before] = filed_paths(manager)
+    assert "2026-07-20__" in before
+    manager.ledger.review("receipt", bill_ids(run)[0], "rejected")
+    assert filed_paths(manager) == [before]  # Rejecting a bill renames nothing: filing is only refreshed when the file is extracted or filed again.
+    manager.file_extraction(run.doc["id"], run.run["id"])  # Extract on an unchanged file files again from the first bill still counting.
+    [after] = filed_paths(manager)
+    assert after.startswith("Bills/2026/08/2026-08-20__CITY_POWER_WATER")
 
 
 def test_sc128_spending_counts_each_bill_on_its_own_due_date(pdf_store, local_model):
