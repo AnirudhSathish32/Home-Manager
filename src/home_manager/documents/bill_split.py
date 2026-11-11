@@ -40,7 +40,7 @@ class BillSplit:
 class Key:
     kind: str  # due_date, statement_date or account
     value: object  # What is compared: a date as (month, day, year), an account as its last four digits.
-    printed: str  # The value as printed (an account as `ending NNNN` is made by the caller's wording).
+    printed: str  # The value as printed (an account: its last four digits).
 
 
 def page_of(line):
@@ -103,10 +103,6 @@ def anchor_of(line):
 
 def plain(value):
     return format(value, "f")
-
-
-def named(key, printed):
-    return f"{NAMES[key]} (ending {printed})" if key == "account" else f"{NAMES[key]} ({printed})"
 
 
 def reason_of(text):
