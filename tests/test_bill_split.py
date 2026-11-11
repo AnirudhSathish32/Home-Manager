@@ -8,16 +8,15 @@ tests/bill_engine_fixtures.py (`exp_mini`), never what the code produced.
 """
 
 from collections import Counter
-import hashlib
+import dataclasses
 import json
-import logging
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
 
 import bill_engine_fixtures as bf
-from conftest import inbox_scan
+from conftest import assert_ledger_healthy
 from home_manager.app.api import create_app
 from home_manager.core.jobs import Work
 from home_manager.documents import bill_split, extraction
@@ -69,14 +68,14 @@ class Bills(BillRun):
         except Exception:  # A scanned reading has no engine pages.
             return set()
 
-    def answer(self, stubs, parts=None, fail_summary_at=None, kinds=None, invoice_at=None, whole_invoice=False):
+    def answer(self, stubs, parts=None, fail_summary_at=None, kinds=None, invoice_at=None, whole_invoice=False, flat=False):
         """The bills' answers. stubs: k (MINI-BILL's number), (k, account last four) or (k, account, j) per part, where j is the MINI-BILL whose statement date, period
         and due date the part prints (BL-ACCT); parts: the lines of each part (default: one per page, one part for one stub). kinds: {part index: classification}
         (bill by default; `rent` reads the part with the rent form); invoice_at: the part whose summary reads an invoice number; whole_invoice: the file is
         read again as one document, so its summary is asked once more (twice for an invoice: D5)."""
         lines = self.blank_free()
         parts = parts or (self.pages() if len(stubs) > 1 else [lines])
-        covered = self.covered()
+        covered = set() if flat else self.covered()  # flat: the engine failed, so each part is one question
         replies = {"Classification": [], "BillSummary": [], "BillLines": [], "BillRentSummary": [], "RentBillLines": []}
         for number, (part, stub) in enumerate(zip(parts, stubs)):
             k, account, j = (stub, "9012", stub) if isinstance(stub, int) else (stub[0], stub[1], stub[2] if len(stub) > 2 else stub[0])
@@ -245,7 +244,7 @@ def test_sc126_a_part_with_no_amount_due_anchor_joins_the_part_before_and_the_fi
 
 
 def test_sc126_two_hundred_and_one_one_page_bills_are_two_hundred_and_one_parts_and_the_run_reads_them_as_one(pdf_store, local_model, monkeypatch, caplog):
-    pages = [[f"Account Number 1234-5678-9012", f"Due Date {1 + page // 28:02d}/{1 + page % 28:02d}/2026", "Total Amount Due 10.00"] for page in range(201)]
+    pages = [["Account Number 1234-5678-9012", f"Due Date {1 + page // 28:02d}/{1 + page % 28:02d}/2026", "Total Amount Due 10.00"] for page in range(201)]
     assert len(bill_split.bill_parts(lines_from(*pages)).parts) == 201
     run = multi(pdf_store, local_model, (1,), pages=bf.mini_pages(1))
     monkeypatch.setattr(bill_split, "bill_parts", lambda lines: bill_split.BillSplit([(0, 1)] * 201))
@@ -277,7 +276,6 @@ def test_sc126_bl_multi_is_three_bills_with_their_due_dates_and_sc128_each_is_re
     assert len(run.asked()) == run.questions
     assert all(row for row in run.run["publication"]["segments"]) and [row["status"] for row in run.run["publication"]["segments"]] == ["published"] * 3
     assert run.fingerprint() == before
-    from conftest import assert_ledger_healthy
     assert_ledger_healthy(run.store)
 
 
@@ -558,6 +556,24 @@ def test_sc128_the_library_shows_no_single_amount_for_three_bills_and_the_first_
     assert (shown["ledger_amount_minor"], shown["ledger_currency"], shown["due_date"], shown["document_date"]) == (7472, "USD", "2026-09-20", "2026-09-20")
 
 
+def test_sc128_the_library_row_takes_its_due_date_and_period_from_the_first_non_rejected_bill_by_segment_not_by_insertion(app):
+    from conftest import documents_by_name, inbox_scan
+    from test_reconcile_tools import source_of
+    client, manager = app
+    inbox_scan(manager.store, {"two.pdf": b"synthetic file holding two bills"})
+    doc = documents_by_name(manager.store)["two.pdf"]
+
+    def bill(provider, due, total):
+        return {"provider": provider, "due_date": due, "issue_date": None, "period_start": f"{due[:8]}01", "period_end": due, "currency": "USD", "total_minor": total,
+                "amount_due_minor": total, "issues": [], "locator": {}, "items": []}
+    manager.ledger.publish_bill(bill("SECOND CO", "2026-09-20", 100), {**source_of(doc, "extraction:two"), "segment": 1}, "verified")  # Published first.
+    manager.ledger.publish_bill(bill("FIRST CO", "2026-08-20", 200), {**source_of(doc, "extraction:two"), "segment": 0}, "verified")
+    shown = client.get(f"/api/documents/{doc['id']}").json()
+    assert (shown["merchant"], shown["due_date"], shown["bill_period_start"], shown["bill_period_end"], shown["document_date"]) == (
+        "FIRST CO", "2026-08-20", "2026-08-01", "2026-08-20", "2026-08-20")
+    assert shown["ledger_amount_minor"] is None
+
+
 @pytest.mark.xfail(strict=True, reason="SC-128 says the file is filed under 2026-07-20, the first bill's due date. Filing names every bill by its statement date "
                                        "(extraction.IDENTITY['bill'] is issue_date), 2026-07-02 here, as it does for a one-bill file (FR-120); escalated in the handoff.")
 def test_sc128_the_file_is_filed_under_the_first_bills_due_date(app, local_model):
@@ -650,3 +666,291 @@ def test_sc128_a_split_inside_a_table_gives_each_part_its_own_rows_and_every_lin
 def bill_tables_read(run):
     from home_manager.finance import bill_tables
     return bill_tables.read(run.evidence)
+
+
+# === SC-129: no review for a certain split; the user can change it (API steps 1 and 3 - 6) =================================================
+
+def test_sc129_the_split_api_lists_three_bills_none_in_review_for_the_split_and_the_users_change_wins(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    before = run.fingerprint()
+    run.answer([1, 2, 3])
+    run.extract()
+    # Step 1: each bill carries the split note, none waits for the split, and the segments endpoint names each bill.
+    for _, _, record in run.bills():
+        noted(record, BILL_SPLIT_NOTE)
+        auto(record)
+    shown = client.get(f"/api/documents/{run.doc['id']}/segments").json()
+    assert shown["confirmed"] is False and len(shown["segments"]) == 3 and "one" not in shown
+    assert [(row["kind"], row["merchant"], row["due_date"], row["display"]) for row in shown["segments"]] == [
+        ("bill", CITY, due, {"amount_due": f"{amount} USD"}) for due, amount in zip(DUES, ("81.42", "87.26", "111.98"))]
+    assert [row["status"] for row in shown["segments"]] == ["proposed"] * 3
+    starts = run.starts()
+    # Step 3: Merge with next on bill 2 (starts of bills 1 and 2 only): the file is read again with the user's split.
+    pages = run.pages()
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    assert client.put(f"/api/documents/{run.doc['id']}/segments", json={"starts": starts[:2]}).status_code == 202
+    manager.future.result(timeout=60)
+    assert len(run.segments()) == 2 and [row[3] for row in run.segments()] == ["confirmed"] * 2
+    bills = run.bills()
+    assert [segment for segment, _, _ in bills] == [0, 1, 2]
+    expect_mini(bills[0][2], 1)
+    retired = bills[2][2]
+    assert (retired["review_status"], retired["review_source"]) == ("rejected", "automatic")
+    assert "The latest reading of this file no longer finds this bill; check how the file was split." in retired["issues"]
+    for _, _, record in bills[:2]:
+        noted(record, BILL_SPLIT_CHANGED)
+        assert [guess["kind"] for guess in record["details"]["guesses"]].count("split_changed") == 1
+        assert BILL_SPLIT_NOTE not in notes_of(record)
+    # Step 4: Extract again still has two segments: the user's split wins.
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    run.extract(force=True)
+    assert [row[0] for row in run.segments()] == [0, 1] and len(run.run["publication"]["segments"]) == 2
+    # Step 5: Confirm split: the file is confirmed; the merged bill keeps its lines reason (G9), and bill 1 is judged by its own checks.
+    confirmed = client.post(f"/api/documents/{run.doc['id']}/segments/confirm").json()
+    assert confirmed["confirmed"] is True
+    first, merged = [record for _, _, record in run.bills()[:2]]
+    assert BILL_SPLIT_NOTE not in notes_of(first) and BILL_SPLIT_NOTE not in notes_of(merged)
+    assert first["review_status"] == "verified" and merged["review_status"] == "needs_review"
+    assert [issue for issue in merged["issues"] if issue.startswith("New charges: the lines add up to")]
+    assert run.fingerprint() == before
+
+
+def test_sc129_a_bill_read_as_one_with_reason_a_is_offered_split_here_and_splitting_it_makes_two_verified_bills(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.two_on_page_pages())
+    run.answer([1])
+    run.extract()
+    [(_, _, record)] = run.bills()
+    reasons(record, SPLIT_REASON_A)
+    # Step 6: the panel offers Split here although the file is one bill.
+    shown = client.get(f"/api/documents/{run.doc['id']}/segments").json()
+    lines = run.blank_free()
+    assert shown["one"] is True and shown["confirmed"] is False and len(shown["segments"]) == 1
+    [one] = shown["segments"]
+    assert (one["kind"], one["ordinal"], one["first_line_id"], one["last_line_id"]) == ("bill", 0, lines[0].id, lines[-1].id)
+    assert (one["merchant"], one["due_date"], one["display"]) == (CITY, "2026-07-20", {"amount_due": "81.42 USD"})
+    assert run.run["publication"]["segments"][0]["one"] is True and run.run["publication"]["split_confirmed"] is False
+    assert run.segments() == []  # Nothing is saved for the offer.
+    second = [index for index, line in enumerate(lines) if line.text == CITY][1]  # MINI-BILL(2)'s first line.
+    run.answer([1, 2], parts=[lines[:second], lines[second:]])
+    assert client.put(f"/api/documents/{run.doc['id']}/segments", json={"starts": [lines[0].id, lines[second].id]}).status_code == 202
+    manager.future.result(timeout=60)
+    segment_check(run, 2)
+    first, second_bill = [record for _, _, record in run.bills()]
+    expect_mini(first, 1)
+    expect_mini(second_bill, 2)
+    for record in (first, second_bill):
+        assert [issue for issue in record["issues"] if "more than one due date" in issue] == []
+        assert record["review_status"] == "verified"
+
+
+def test_sc129_confirm_split_is_refused_for_a_file_that_is_one_bill(pdf_store, local_model):
+    run = multi(pdf_store, local_model, (1,), pages=bf.two_on_page_pages())
+    run.extract()
+    with pytest.raises(ValueError, match="not split"):
+        run.extraction.confirm_split(run.doc["id"])
+
+
+# === SC-130: reading again and retired bills ===============================================================================
+
+def rows_of(run):
+    """The rows a reading wrote (test_bill_engine_record.SNAPSHOT), without the clock or the run's own id; the evidence links without their source key."""
+    from test_bill_engine_record import snapshot
+    return snapshot(run)
+
+
+def test_sc130_extract_again_twice_gives_the_same_three_bills_segments_lines_notes_and_split(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    first, ids = rows_of(run), bill_ids(run)
+    notes_first = [notes_of(record) for _, _, record in run.bills()]
+    for _ in range(2):
+        run.answer([1, 2, 3])
+        run.extract(force=True)
+        assert bill_ids(run) == ids and rows_of(run) == first
+        assert [notes_of(record) for _, _, record in run.bills()] == notes_first
+
+
+def merge_bill_two(run):
+    """Merge with next on bill 2: the user's split has the starts of bills 1 and 2 only; the file is read again."""
+    pages = run.pages()
+    starts = run.starts()
+    run.extraction.set_split(run.doc["id"], starts[:2])
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    run.extract(force=True)
+
+
+RETIRED = "The latest reading of this file no longer finds this bill; check how the file was split."
+
+
+def test_sc130_a_bill_the_new_split_no_longer_finds_stops_counting_and_comes_back_when_found_again(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    ids = bill_ids(run)
+    starts = run.starts()
+    merge_bill_two(run)
+    third = run.bills()[2][2]
+    assert (third["review_status"], third["review_source"]) == ("rejected", "automatic") and RETIRED in third["issues"]
+    assert spending(run.store, "2026-09-20", "2026-09-20") == 0
+    # Splitting back: the automatically rejected bill is found again and restored, not a new id.
+    run.extraction.set_split(run.doc["id"], starts)
+    run.answer([1, 2, 3])
+    run.extract(force=True)
+    assert bill_ids(run) == ids
+    third = run.bills()[2][2]
+    assert third["review_status"] == "verified" and third["review_source"] == "automatic" and RETIRED not in third["issues"]
+    assert spending(run.store, "2026-09-20", "2026-09-20") == 7472
+
+
+def test_sc130_a_bill_you_decided_keeps_your_decision_and_gets_the_note(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    run.answer([1, 2, 3])
+    run.extract()
+    third_id = bill_ids(run)[2]
+    manager.ledger.review("receipt", third_id, "verified")  # The user decides bill 3 first.
+    merge_bill_two(run)
+    third = run.bills()[2][2]
+    assert (third["review_status"], third["review_source"]) == ("verified", "user") and RETIRED in third["issues"]
+    assert spending(run.store, "2026-09-20", "2026-09-20") == 7472
+
+
+# === SC-115 (b), SC-121 (3) and SC-122 for BL-MULTI ========================================================================================
+
+def test_sc115_b_when_the_engine_fails_every_bill_of_the_file_is_read_like_a_photographed_one_with_one_log_record(pdf_store, local_model, monkeypatch, caplog):
+    from home_manager.finance import bill_tables
+
+    def broken(evidence):
+        raise RuntimeError("injected engine fault")
+
+    run = started_bills(pdf_store, local_model, bf.mini_pages(1, 2, 3))
+    monkeypatch.setattr(bill_tables, "read", broken)
+    run.answer([1, 2, 3], flat=True)
+    run.extract()
+    segment_check(run, 3)
+    for (_, _, record), k in zip(run.bills(), (1, 2, 3)):
+        expect_read(record, k)
+        noted(record, extraction.BILL_FAILED_NOTE)
+        noted(record, BILL_SPLIT_NOTE)
+    failures = [entry for entry in caplog.records if "bill table read" in entry.getMessage()]
+    assert len(failures) == 1 and "RuntimeError" in failures[0].getMessage()
+    assert not [entry for entry in caplog.records if CITY in entry.getMessage() or "81.42" in entry.getMessage()]
+    no_grid_in_questions(run)
+
+
+def no_grid_in_questions(run):
+    """C-no-grid: no request after the classifications carries the reader's printed grid."""
+    for schema in ("BillSummary", "BillLines"):
+        for request in run.requests(schema):
+            assert all("-layout-table-" not in table["table_id"] for table in request.get("reported_tables", []))
+
+
+V39 = "typed-extraction-v39-receipt-printed-signs"
+
+
+def test_sc121_3_a_file_recorded_as_one_undecided_bill_before_the_split_becomes_three_and_keeps_its_first_id(pdf_store, local_model, monkeypatch):
+    run = started_bills(pdf_store, local_model, bf.mini_pages(1, 2, 3))
+    with monkeypatch.context() as patch:  # As v39 recorded it: one bill, from the whole file.
+        patch.setattr(extraction, "EXTRACTION_VERSION", V39)
+        patch.setattr(bill_split, "bill_parts", lambda lines: bill_split.BillSplit([(0, len(lines))]))
+        run.answer([1])
+        run.extract()
+    [(_, original, _)] = run.bills()
+    assert run.run["prompt_version"] == V39 and run.segments() == []
+    assert extraction.EXTRACTION_VERSION != V39
+    run.answer([1, 2, 3])
+    again = run.extract()
+    assert again["prompt_version"] == extraction.EXTRACTION_VERSION
+    segment_check(run, 3)
+    bills = run.bills()
+    assert bills[0][1] == original and len(set(bill_ids(run))) == 3  # Segment 0 keeps the old id; segments 1 and 2 are new.
+    for (_, _, record), k in zip(bills, (1, 2, 3)):
+        expect_mini(record, k)
+
+
+def test_sc122_bl_multi_read_again_changes_nothing_and_asks_the_same_questions(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    first, first_questions = rows_of(run), run.asked()
+    engine = json.dumps(dataclasses.asdict(ENGINE(run.evidence).reading), sort_keys=True, default=str)
+    assert engine == json.dumps(dataclasses.asdict(ENGINE(run.evidence).reading), sort_keys=True, default=str)  # Engine reads are equal.
+    split = [bill_split.bill_parts(run.blank_free()) for _ in range(2)]
+    assert split[0] == split[1]
+    run.answer([1, 2, 3])
+    run.extract(force=True)
+    assert rows_of(run) == first and run.asked() == first_questions
+    assert_ledger_healthy(run.store)
+
+
+# === The contract's failure, retry, duplicate-capture, restart and concurrent variants ======================================================
+
+def test_a_failed_run_publishes_nothing_and_extract_again_gives_exactly_the_three_bills(pdf_store, local_model):
+    run = multi(pdf_store, local_model, fail_summary_at=1)
+    run_id, _ = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config())
+    run.extraction.run(run_id, Work.detached())
+    assert run.extraction.get(run_id)["status"] == "failed"
+    assert run.bills() == [] and run.segments() == []
+    run.answer([1, 2, 3])
+    run.extract()
+    segment_check(run, 3)
+    with run.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 3
+    for (_, _, record), k in zip(run.bills(), (1, 2, 3)):
+        expect_mini(record, k)
+        auto(record)
+
+
+def test_the_file_dropped_twice_is_one_file_with_the_same_three_bills(pdf_store, local_model):
+    inbox, store = pdf_store
+    from conftest import inbox_scan
+    run = multi(pdf_store, local_model)
+    run.extract()
+    first = [(segment, bill_id) for segment, bill_id, _ in run.bills()]
+    (inbox / "again.pdf").write_bytes(store.blob_path(run.blob()).read_bytes())
+    inbox_scan(store)
+    names = {item["relative_path"]: item for item in store.documents()["items"]}
+    assert set(names) == {"bills.pdf", "again.pdf"} and names["again.pdf"]["current_hash"] == names["bills.pdf"]["current_hash"]
+    assert [link["relative_path"] for link in store.linked_documents(names["again.pdf"]["id"])] == ["bills.pdf"]
+    with store.connection() as db:
+        assert len(db.execute("SELECT DISTINCT blob_hash FROM receipts").fetchall()) == 1
+    run.answer([1, 2, 3])
+    run.extract()
+    assert [(segment, bill_id) for segment, bill_id, _ in run.bills()] == first
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 3
+
+
+def test_a_run_stopped_after_reading_and_before_publishing_is_recovered_and_read_again(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    run_id, _ = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config())
+
+    def stopped(*args, **kwargs):
+        raise KeyboardInterrupt  # The process stops: nothing catches it, so the run stays "running".
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ExtractionService, "record", stopped)
+        with pytest.raises(KeyboardInterrupt):
+            run.extraction.run(run_id, Work.detached())
+    assert run.extraction.get(run_id)["status"] == "running" and run.bills() == []
+    run.extraction.recover()  # On restart.
+    assert run.extraction.get(run_id)["status"] == "interrupted"
+    run.answer([1, 2, 3])
+    run.extract()
+    segment_check(run, 3)
+    for (_, _, record), k in zip(run.bills(), (1, 2, 3)):
+        expect_mini(record, k)
+        noted(record, BILL_SPLIT_NOTE)
+        auto(record)
+
+
+def test_two_extract_requests_in_a_row_are_one_run_and_three_bills(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    first, created_first = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config())
+    second, created_second = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config())
+    assert (created_first, created_second) == (True, False) and first == second  # The existing queue's dedupe.
+    run.extraction.run(first, Work.detached())
+    run.run = run.extraction.get(first)
+    assert run.run["status"] == "succeeded"
+    segment_check(run, 3)
+    assert len(run.bills()) == 3
