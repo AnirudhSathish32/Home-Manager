@@ -263,7 +263,8 @@ slices:
         Fix 5d91932; contract amounts unchanged.
     notes: "docs/ui.md cites documents.md \"Several bills in one file\", a heading SL-10 adds."
   - id: SL-09
-    status: in_progress
+    status: done
+    end_head: b622f3e
     start_head: 8fc02cb
     provider: claude
     model: claude-sonnet-5-5
@@ -279,5 +280,19 @@ slices:
       last-year column is taken as the charge); CARRIED_TITLE (1 file: a bill's last section title carries into the next
       bill's rows, reading them as money off). Within approved scope (FR-105, FR-128, FR-102); fix dispatched via
       debug-issue route (claude-opus-5-5).
+    resolved_by: >-
+      Debug task (claude-opus-5-5): 7bb86e3 SPLIT_BLIND (bill_parts reads the engine's anchors via bill_tables.split_anchors),
+      4f886f3 CARRIED_TITLE (bill_tables.read drops a section whose title is in an earlier bill), 684b2f9 LAST_YEAR (sum rule
+      judged per bill, every bill must add up), handoff b622f3e. Each with a regression test that fails without its fix.
+      test_sc105 now expects BL-MULTI's column decided by `sum` not `single` (FR-105 (b) before (d); the contract doesn't pin
+      it), and FR-105 (d) is checked on a hand-built table. Accepted by the orchestrator.
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_engine_generator.py tests/test_bill_engine.py tests/test_bill_engine_record.py tests/test_bill_split.py tests/test_bill_corrections.py -q -> 673 passed, 0 xfailed (orchestrator rerun at b622f3e)"
+      - "Debug worker: paystub/table/bill_kinds/bills_ledger set 676 passed, 1 skipped"
+    notes: >-
+      For SL-10 docs/open-work: a title above a heading printed over the amount column alone is lost (that heading is not
+      heading-like); a title-shaped key line (masked account, Due Date) directly above rows becomes a section title (G14
+      design); the engine splits a table into bills by the split rule, not a user-saved split, so a section or sum could
+      cross a user boundary that differs from the rule's. For review-code.
   - {id: SL-10, status: todo}
 final_verification: pending
