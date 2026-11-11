@@ -692,8 +692,13 @@ def test_sc105_one_row_that_breaks_the_product_means_no_product_roles(reader):
 
 
 def test_sc105_one_amount_column_is_the_charge(reader):
+    """FR-105 (d) on a table whose sums decide nothing. BL-MULTI's one column over three bills adds up to each bill's own new charges, so the sum rule,
+    judged per bill, decides it first (FR-105 b before d; it read `single` while the sum was judged over the whole table)."""
+    pages = bf.role_pages(rows=[("Service", (520, "10.00")), ("Fee", (520, "5.00"))], summary=[("New Charges", "99.00"), ("Amount Due", "99.00")])
+    one = bill_tables.read(reader(pages))
+    assert [role.decided_by for role in one.roles] == ["single"] and list(one.roles[0].roles.values()) == ["charge"] and one.guesses == []
     bills = bills_of(reader, "BL-MULTI")
-    assert [role.decided_by for role in bills.roles] == ["single"] and list(bills.roles[0].roles.values()) == ["charge"]
+    assert [role.decided_by for role in bills.roles] == ["sum"] and list(bills.roles[0].roles.values()) == ["charge"] and bills.reading.tables[0].pages == [1, 2, 3]
 
 
 def test_sc105_a_table_whose_headings_name_every_column_as_something_else_is_another_table(reader):
@@ -1032,3 +1037,36 @@ def test_a_section_title_carries_onto_the_next_page_of_the_same_bill(reader):
     second = [row for row in table.rows if row.page == 2]
     assert table.pages == [1, 2] and [row.label for row in second] == ["Loyalty Credit", "Referral Credit"]
     assert [row.section for row in second] == ["Account Credits"] * 2 and all(bill_tables.money_off(row, bills.roles[0]) for row in second)
+
+
+def lastyear_bill(due, rows, new_charges):
+    """A one-page bill with a `This Bill` (r420) and a `Last Year` (r520, the right-most) column and no heading over them (UTIL-LASTYEAR-C2's shape)."""
+    items = [*bf.left(780, "CITY POWER & WATER"), *bf.left(768, "Account Number 1234-5678-9012"), *bf.left(756, f"Due Date {due}")]
+    items += bf.amounts_at(700, "New Charges", (bf.CHARGE, new_charges)) + bf.amounts_at(684, "Total Amount Due", (bf.CHARGE, new_charges))
+    items += bf.left(620, "Electric Charges")
+    for number, (label, this, last) in enumerate(rows):
+        items += bf.amounts_at(588 - 16 * number, label, (bf.RATE, this), (bf.CHARGE, last))
+    return bf.page_of(items)
+
+
+def test_sc105_c_a_last_year_column_over_two_bills_is_other_the_sums_judged_per_bill(reader):
+    """Generator cases 29, 33, 64 and 67's defect, by hand: one table over two bills; neither column's whole sum (97.55 + 86.00) is a bill's new charges, but
+    `This Bill` adds up to each bill's own, so it is the charge although `Last Year` is right-most, and no guess is made."""
+    pages = [lastyear_bill("07/20/2026", (("Energy Charge", "80.02", "72.15"), ("Customer Charge", "12.00", "12.00"), ("State Tax", "5.53", "4.98")), "97.55"),
+             lastyear_bill("08/20/2026", (("Energy Charge", "70.00", "60.00"), ("Customer Charge", "12.00", "12.00"), ("State Tax", "4.00", "4.00")), "86.00")]
+    result = reader(pages)
+    bills = bill_tables.read(result)
+    [table] = bills.reading.tables
+    assert table.pages == [1, 2]  # One table over both bills: the case under test.
+    edges = [min((bf.RATE, bf.CHARGE), key=lambda contract: abs(contract - edge)) for edge in right_edges(result, table)]
+    assert dict(zip(edges, bills.roles[0].roles.values())) == {bf.RATE: "charge", bf.CHARGE: "other"} and bills.roles[0].decided_by == "sum"
+    assert bills.guesses == []
+
+
+def test_sc105_the_sum_rule_still_needs_every_bill_to_add_up(reader):
+    """Per bill means every bill: when the second bill's `This Bill` column does not add up to its new charges, the sums decide nothing and the right-most
+    is taken with the guess note, as for one bill (FR-105, FR-124)."""
+    pages = [lastyear_bill("07/20/2026", (("Energy Charge", "80.02", "72.15"), ("Customer Charge", "12.00", "12.00"), ("State Tax", "5.53", "4.98")), "97.55"),
+             lastyear_bill("08/20/2026", (("Energy Charge", "70.00", "60.00"), ("Customer Charge", "12.00", "12.00"), ("State Tax", "4.00", "4.00")), "99.00")]
+    bills = bill_tables.read(reader(pages))
+    assert [role.decided_by for role in bills.roles] == ["guess"] and kinds_of(bills) == [bill_tables.CHARGE_COLUMN]

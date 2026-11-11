@@ -177,12 +177,6 @@ def product_roles(table):
     return quantity, rate, third
 
 
-def amounts_in(table, column):
-    """(the column's signed amounts per row, None when one is unreadable)."""
-    values = [signed(row.amounts[column], row.section) for row in table.rows if column in row.amounts]
-    return None if any(value is None for value in values) else values
-
-
 def covered(entries, position):
     """The two row sets a printed total at `position` of the table's rows and totals may cover (phase 3 FR-91): the rows since the previous total, and the
     rows since the previous total or the title of the section it ends (one set when the table has no sections after the previous total)."""
@@ -211,10 +205,11 @@ def subtotals_hold(table, column):
     return bool(verdicts) and all(verdicts)
 
 
-def targets_of(table, anchors):
-    """What the charge column should add up to (FR-105 b): every new-charges value printed on the table's pages; else, with a previous balance and
-    payments there, the amount due less the previous balance plus the payments (FR-118); else every amount-due value."""
-    here = [anchor for anchor in anchors if anchor.page in table.pages and anchor.token.value[0] is not None]
+def targets_of(table, anchors, pages=None):
+    """What the charge column should add up to (FR-105 b): every new-charges value printed on the table's pages (or those of `pages`, one bill's); else,
+    with a previous balance and payments there, the amount due less the previous balance plus the payments (FR-118); else every amount-due value."""
+    pages = table.pages if pages is None else pages
+    here = [anchor for anchor in anchors if anchor.page in pages and anchor.token.value[0] is not None]
     values = lambda kind: [value_of(anchor.token) for anchor in here if anchor.kind == kind]  # noqa: E731
     if values("new_charges"):
         return values("new_charges")
@@ -222,6 +217,19 @@ def targets_of(table, anchors):
     if due and previous and payments:
         return [value - previous[0] + abs(payments[0]) for value in due]
     return due
+
+
+def adds_up(table, column, anchors, starts=(1,)):
+    """Whether a column's signed amounts add up to a target (FR-105 b), judged per bill when the table runs on over several bills of the file: each bill's
+    rows in the column against the targets on that bill's pages of the table."""
+    verdicts = []
+    for bill in sorted({bill_of(starts, page) for page in table.pages}):
+        values = [signed(row.amounts[column], row.section) for row in table.rows if column in row.amounts and bill_of(starts, row.page) == bill]
+        if None in values:
+            return False
+        if values:
+            verdicts.append(sum(values) in targets_of(table, anchors, [page for page in table.pages if bill_of(starts, page) == bill]))
+    return bool(verdicts) and all(verdicts)
 
 
 def head_of(column):
@@ -235,8 +243,9 @@ def guess_for(table, text):
     return Guess(CHARGE_COLUMN, table.pages[0], table.id, f"Page {table.pages[0]}: {text}")
 
 
-def decide(table, anchors):
-    """The roles of one charge table (FR-105 in order) and its guesses; None when no column of it is a charge (then it is another table)."""
+def decide(table, anchors, starts=(1,)):
+    """The roles of one charge table (FR-105 in order) and its guesses; None when no column of it is a charge (then it is another table). `starts` is the
+    first page of each bill of the file (`bill_starts`): the sum rule is judged per bill."""
     columns = [column.id for column in table.columns]
     amount = [column.id for column in table.columns if column.kind == "amount"]
     if not amount:
@@ -253,10 +262,8 @@ def decide(table, anchors):
         return Roles(table.id, roles, by), guesses
 
     if len(amount) == 1:
-        by = "sum" if amounts_in(table, amount[0]) and sum(amounts_in(table, amount[0])) in targets_of(table, anchors) else "single"
-        return decided(amount[0], by)
-    targets = targets_of(table, anchors)
-    by_sum = [column for column in amount if (values := amounts_in(table, column)) and sum(values) in targets]
+        return decided(amount[0], "sum" if adds_up(table, amount[0], anchors, starts) else "single")
+    by_sum = [column for column in amount if adds_up(table, column, anchors, starts)]
     holding = [column for column in amount if column in by_sum or subtotals_hold(table, column)]
     if len(holding) == 1:
         return decided(holding[0], "sum" if holding[0] in by_sum else "subtotals")
@@ -365,7 +372,7 @@ def read(evidence):
     lines_of, line_pages = evidence_index(evidence)
     starts = bill_starts(evidence, reading.anchors, lines_of)
     reading = replace(reading, tables=[own_sections(table, starts) for table in reading.tables])
-    decided = [(table, decide(table, reading.anchors)) for table in reading.tables]
+    decided = [(table, decide(table, reading.anchors, starts)) for table in reading.tables]
     tables = [table for table, found in decided if found]
     moved = [table for table, found in decided if not found]
     roles = [found[0] for _, found in decided if found]

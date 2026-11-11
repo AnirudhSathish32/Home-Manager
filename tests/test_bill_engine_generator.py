@@ -33,14 +33,10 @@ from test_bill_split import Bills
 from test_extraction import MISSING
 from test_pdf import make_pdf, pdf_store  # noqa: F401
 
-# Engine defects the generator found that need a source change outside this slice (the handoff lists them with their seed, index and choices). Each is a case
-# the assertions below still judge in full: the entry only turns the failure into a strict expected failure, so it fails loudly once the engine is fixed.
-LAST_YEAR = ("a last-year column with no heading in a file of several bills: the column roles are decided once for the whole table, and the sum rule compares "
-             "the whole column's sum with each bill's new charges, never the sum of them (finance/bill_tables.py targets_of, decide)")
-ESCALATED_RECORD = {
-    **dict.fromkeys((29, 33, 64, 67), LAST_YEAR),
-}
-ESCALATED_ROWS = {index: LAST_YEAR for index in (29, 33, 64, 67)}
+# Engine defects the generator found are listed here as strict expected failures until the engine is fixed (none now; SL-09's three were fixed, see
+# plans/pdf-table-engine-bills/handoffs/debug-generator-defects.md). Each such case is still judged in full, so it fails loudly once the engine is fixed.
+ESCALATED_RECORD = {}
+ESCALATED_ROWS = {}
 
 
 def escalated(index, table):
@@ -250,12 +246,14 @@ def test_case_is_recorded_exactly_through_the_real_services(index, pdf_store, lo
     finished(run)
 
 
-ONE_BILL = [pytest.param(index, id=f"case{index}") for index in sorted(ESCALATED_RECORD)]
+FIXED = (1, 7, 15, 18, 19, 20, 28, 29, 33, 34, 37, 40, 45, 56, 60, 63, 64, 67, 77, 83, 87, 93, 96, 100, 112, 113, 117, 119)  # SL-09's escalated files, now fixed.
+ONE_BILL = [pytest.param(index, id=f"case{index}") for index in sorted({*ESCALATED_RECORD, *FIXED})]
 
 
 @pytest.mark.parametrize("index", ONE_BILL)
 def test_escalated_layout_as_a_single_bill_is_recorded_exactly(index, pdf_store, local_model):
-    """The escalated files' layouts, with one bill each, so everything but the escalated defect (a file of several bills) is still judged in full."""
+    """The escalated files' layouts (and those SL-09 escalated), with one bill each, so everything but the escalated defect (a file of several bills) is
+    still judged in full."""
     case = gen.layout(index, bills=1)
     run = recorded(pdf_store, local_model, case, index)
     assert_records_exactly(case, context(case, index), run)
