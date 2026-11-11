@@ -232,7 +232,20 @@ slices:
       ("...read with the bill after it"); the split rule's reasons are dropped when a file falls back to one document;
       the invoice check after all parts costs extra model calls; display.amount_due is "81.42 USD" while the contract's
       browser chips show 81.42 (SL-08 must trim); KEY_LABELS stays in charge_tables.
-  - {id: SL-07, status: todo}
+  - id: SL-07
+    status: done
+    start_head: 2885575
+    end_head: 82bf251
+    commit: [2b8165d, 6c8eed6, 82bf251]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_split.py tests/test_paystub_split.py tests/test_bills_ledger.py tests/test_bill_kinds.py tests/test_recurring_bills.py tests/test_invoice_ingestion.py tests/test_reconcile_tools.py -q -> 225 passed, 1 skipped (orchestrator rerun at 82bf251)"
+    notes: >-
+      BL-MULTI-VOID's VOID at x 260, y 720 makes the reader split page 2's summary block into label and amount columns;
+      a test helper (recite_split_amounts) has the stub cite each amount's own line; no fixture or assertion changed and
+      every contract value holds. Same-file exact duplicates can't be built (an identical key continues the bill), so that
+      path is covered by lookup logic only. For review-code.
   - {id: SL-08, status: todo}
   - {id: SL-09, status: todo}
   - {id: SL-10, status: todo}
