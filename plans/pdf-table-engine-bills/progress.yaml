@@ -190,7 +190,20 @@ slices:
         Ledger.review and then asserts spending 10055. The contract's value (the worked-out total, not 15055) holds.
       - "FR-117 decides only from printed (anchored) previous/payments/new values; no check deciding -> first-value guess."
       - "SC-121 step 3 asserts the migration listing 001-080 ending 080_split_merged_documents.sql (START_HEAD's)."
-  - {id: SL-05, status: todo}
+  - id: SL-05
+    status: done
+    start_head: c456e92
+    end_head: 20a954f
+    commit: [daa5e69, 20a954f]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_corrections.py <SL-05 regression set> tests/test_bill_engine_record.py -q -> 336 passed, 1 skipped (orchestrator rerun at 20a954f)"
+    notes: >-
+      line_corrections in receipts.details_json (no migration). Uncovered by the contract and decided by the worker:
+      a correction whose line no longer exists is held ("no longer has a line N"); a missing amount reads "no amount";
+      G4 can hold a member correction where the new reading prints the user's corrected price (conservative);
+      delete_item leaves a deleted line's held reason until the next reading. For the review-code stage to look at.
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
   - {id: SL-08, status: todo}
