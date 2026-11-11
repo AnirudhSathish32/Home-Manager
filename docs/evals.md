@@ -109,7 +109,7 @@ in `tests/test_layout_consumers.py`. No configured-model or private-corpus accur
   retries, so first-try validity is measured.
 - **Two suites** (`evals/`, flat layout):
   - **Documents suite** (`python -m evals.run`): whole documents end to end through the real pipeline. It runs on the
-    53-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
+    58-case synthetic corpus (`evals/synthetic.py`) or on the private corpus. Its `return` cases (a return and an
     exchange printed without minus signs) have negative answers, so they measure `return_marker`, `returned` and the
     sign rules ([money](money.md#returns)). Task-suite cases built from printed amounts leave them out. Its two bills (a
     family phone plan read per line with a past-due balance, and rent with water and trash) measure the provider, dates,
@@ -171,7 +171,7 @@ The report names a winner, or says that no model passes the gate.
 
 ## The two table readers
 
-Text-PDF bank and card statements are read from their printed columns, and the app has two readers for them: the **old
+Text-PDF bank and card statements, pay stubs and bills are read from their printed columns. For statements the app has two readers: the **old
 reader** (the heading-first `finance/statement_rows.py rebuild`, built on `pdf_import.analyze_legacy`) and the **table
 engine** (`documents/table_engine.py` with `finance/statement_tables.py`, [documents](documents.md#statement-rows-from-the-printed-columns)).
 The documents suite compares them (`evals/run.py table_readers`, `evals/graders.py table_reader`), so the old one can be
@@ -241,6 +241,46 @@ removed with the path it stood for; only the statement comparison above still ha
   lines, label digits, deductions' signs, totals, employer-cost column, wrapped labels, pages, deposit and leave tables, one to four
   stubs a file). `tests/test_paystub_engine_generator.py` records 120 files of the fixed seed through the real services (`local_model`
   stubs) and reads 120 more with the engine alone for seeds 1 to 3; it takes about 3.5 minutes.
+
+**Bills.** Text-PDF bills have one reader too, the bill **engine** (`finance/bill_tables.read`,
+[documents](documents.md#bill-lines-from-the-printed-columns)), so the bill counts (`evals/run.py bill_readers`, `evals/graders.py bill_reader`;
+no model, no network) measure it alone, and its file split is the rule Record uses ([documents](documents.md#several-bills-in-one-file)).
+
+- **What is counted.** Every native-PDF bill file that has a text page and whose charge lines the donor confirmed complete. Photographed
+  and scanned bills are not counted. Each answer line is matched, in file order, to the first charge the engine placed with the same
+  amount (a credit by magnitude; Record signs it by its kind), because the printed label is not the answer's description.
+- **Counts**, in `results.jsonl` and `summary.json` as `bill_readers: {engine}` (the only key): `documents` (bill files), `lines` (the
+  answers' charge lines), `exact` (placed with the right charge), `left_out` (answer lines the engine placed nowhere), `checkable` and
+  `checks_held` (bills with the new charges checked, whose lines were all placed and add up to them: the lines check only, since the
+  answers hold no previous balance or payments for the carried check), `to_review` (bills the records put in To check; the
+  pipeline's own review status), `unplaced` (printed lines the engine found no column for), `failed` (the engine raised), and the split:
+  `files_split` (files that hold several bills, by the answers, or that the rule cut into several), `split_right` (of those, files cut
+  into exactly the answer's bills, each part holding its bill's amount due) and `split_review` (files where the rule raised an FR-129
+  review reason on any part), with `exact_share` and `checks_share`. A file of one bill left whole counts in none of the split counts.
+  Fewer than 3 bill files are suppressed like any other cell. **report.md** shows the engine's row in a table of its own.
+- **Split files.** A bill file holding several bills is graded per bill, in order, against the case's `stubs` (the answers' `stubs.json`, one
+  answer file per bill); a count that differs from the answer's is a split miss. A one-bill file is graded as one record.
+- **Guess counts.** The bill engine's guesses (`charge_column`, `unclassified_row`, `amount_due` and `split_changed`, the kinds in
+  [documents](documents.md#bill-lines-from-the-printed-columns)) are counted by kind in the same `guesses: {kind: {made, right}}` as the
+  pay engine's, from the records' `details.guesses`. The bill kinds appear in `summary.json` only when the run read text-PDF bills. A guess is
+  right when the bill's money values equal the answers'. On the synthetic corpus every guess is right.
+- **The aligned bills.** The synthetic corpus has five text-PDF bill files, tag `aligned`, drawn by the bill layout generator
+  (`evals/bill_layouts.py`) from fixed choices (`random.Random(SEED + 3)`), so their answers come from the generator's inputs: a utility bill
+  with Usage / Rate / Charge and a summary box above and below; a phone bill with holder sections, subtotals and a credit; a rent bill
+  with line periods, a previous balance and payments and no new charges printed (so they are worked out); a two-page bill with no headings
+  and a remittance stub on its own page; and a file of three monthly bills (its case carries `stubs.json`). They come after the other 53
+  documents, whose ids and answers are unchanged (a test pins them). Each page's footer prints the currency code as well, as the aligned
+  statements' footers do.
+- **The generator.** `evals/bill_layouts.py make(seed, index)` draws one bill file's pages and per-bill answers from its inputs alone,
+  varying the layouts the spec lists (utility, phone and rent bills; sections and subtotals; headings known, unknown or none; a Usage and
+  Rate pair of columns or a last-year column; credits printed several ways; a summary above, below or none; the previous balance, payments and
+  new charges printed or not; the amount due printed twice; a stub; a page break; a continuation header; late-fee lines; prose that holds an
+  anchor phrase; wrapped labels; a usage history; one to four bills a file). `tests/test_bill_engine_generator.py` records 120 files of the
+  fixed seed through the real services (`local_model` stubs) and checks each against the generator's answers.
+- **Reading the counts on your corpus.** Run `python -m evals.run` on the donated corpus in your own terminal, and run
+  `scripts/statement_diagnose.py <pdf> bill` on a bill that reads badly (it prints counts, never text or amounts; documents.md says what it
+  shows). Read `exact_share`, `checks_share`, `files_split`, `split_right`, `split_review`, `to_review` and the `guesses` counts to see which
+  bills read badly ([open work](open-work.md#pdf-table-engine)). Real-bill accuracy is not measured yet.
 
 ## Donating documents
 

@@ -546,17 +546,17 @@ def bill_comparison(stats):
     out = ["", f"Text-PDF bills read by the bill engine ({counts['engine']['documents']} files, "
            f"{counts['engine']['lines']} charge lines, read from the saved reading with no model; more exact lines, more bills whose checks hold and fewer "
            "sent to review are better):", "",
-           "| Reader | Charge lines recorded exactly | Left out | Bills whose checks hold | Files sent to review | Files split right | Files that split | Split reasons raised "
+           "| Reader | Charge lines recorded exactly | Left out | Bills whose checks hold | Bills sent to review | Files split right | Files that split | Split reasons raised "
            "| Unplaced lines | Reader failed |",
            "|---|---|---|---|---|---|---|---|---|---|"]
     for reader in BILL_READERS:
         each = counts[reader]
         out.append(f"| {READER_NAMES_BILL[reader]} | {each['exact']} of {each['lines']} ({percent(each['exact'], each['lines'])}) | {each['left_out']} | "
-                   f"{each['checks_held']} of {each['checkable']} | {each['to_review']} of {each['documents']} | {each['split_right']} of {each['files_split']} | "
+                   f"{each['checks_held']} of {each['checkable']} | {each['to_review']} | {each['split_right']} of {each['files_split']} | "
                    f"{each['files_split']} | {each['split_review']} | {each['unplaced']} | {each['failed']} |")
     out += ["", "Exact means the charge cell equals the answer's line total (a credit by magnitude), matched to the answer's line by amount. Left out is an answer "
-            "line the reader placed nowhere. Checks hold means every line was placed and they add up to the answers' new charges. Files sent to review are "
-            "the files whose records put a bill in To check. Files that split are files that hold several bills or that the split rule cut into several; split right "
+            "line the reader placed nowhere. Checks hold means every line was placed and they add up to the answers' new charges. Bills sent to review are "
+            "the bills the engine's records put in To check. Files that split are files that hold several bills or that the split rule cut into several; split right "
             "means the rule made as many parts as the file has bills, each holding its bill's amount due. Split reasons raised are the files where the rule "
             "named a doubt (FR-129). Unplaced lines are printed lines the engine found no column for and listed."]
     return out + ([] if stats["pay_readers"]["engine"]["documents"] else guess_line(stats))
