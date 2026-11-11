@@ -142,7 +142,38 @@ slices:
       BillTables.line_pages is a set and lines_of maps layout ids to evidence ids (pay stub shape); BillTables.pages added.
       Only charge_column guesses are made here; unclassified_row, amount_due and split_changed are for Record (SL-03/04/06).
       Sum targets use summary anchors on the table's own pages; SL-06 must scope them per bill for BL-MULTI.
-  - {id: SL-03, status: todo}
+  - id: SL-03
+    status: done
+    start_head: af94a57
+    end_head: 013e45c
+    commit: [57bd9b7, 86d52eb, 013e45c]
+    provider: claude
+    model: claude-sonnet-5-5
+    attempts:
+      - "1: provider rate limit, no changes"
+      - "2: commits 57bd9b7 (source), 86d52eb (tests); orchestrator rerun: record 68 passed, regression set 347 passed 1 skipped, engine sets 731 passed"
+    orchestrator_decisions:
+      - >-
+        SC-114 step 2 (approved contract) expects C-auto for UTIL-2P, but the plan's P7.1 layout-note rule waives a
+        `unresolved_columns`-only note only on pages the engine read a charge table on, so page 2 (no charge table) kept
+        "Page 2 PDF layout needs review: unresolved_columns". The approved contract wins over the plan's narrower wording:
+        FR-114 says such a page is read like a photographed bill and the reader's printed tables don't decide it (they are
+        dropped), and its amounts keep today's citation checks. Fix: on a bill with an engine reading (not BILL_FAILED),
+        waive a `unresolved_columns`-only layout note on every text page of the part, charge table or not. Other layout
+        issues still raise review. No spec/contract/plan text changes. Fix worker dispatched.
+      - "Accepted: BL-PHONE fixture now prints `Blair 555-202-2222` as the contract's BL-PHONE table and EXP-PHONE-HOLDERS say."
+      - >-
+        Fix 013e45c: pay_layout_notes(text_pages=...) passed only for an engine-read bill; the waived set is the file's
+        text pages (each part still sees only its own pages' notes). Pay stubs unchanged. Plan P7.1's wording is
+        narrower; the implemented rule is the one recorded above.
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_engine_record.py tests/test_paystub_engine_record.py tests/test_paystub_split.py tests/test_paystub_cleanup.py tests/test_layout_consumers.py tests/test_bill_kinds.py -q -> 292 passed (orchestrator rerun at 013e45c)"
+      - "Before the fix, at 86d52eb (orchestrator rerun): record 68 passed; SL-03 regression set 347 passed, 1 skipped; bill_engine + paystub_engine + table_engine 731 passed; EXTRACTION_VERSION typed-extraction-v47-bill-engine"
+    notes: >-
+      Summary stubs must be wrong-but-printed (ask checks amount_supported). SC-116 step 1's provenance endpoint has no
+      receipt_item type; the test reads line_ids and cell_evidence. SC-110 step 7's server side is asserted here; the
+      browser side is SL-08's. Helpers for later slices live in tests/test_bill_engine_record.py (BillRun, bill_run, ...).
+      FR-117/118 go in anchor_bill's ANCHOR_FIELDS loop; worked_out still to thread through normalize/bill_lines (SL-04).
   - {id: SL-04, status: todo}
   - {id: SL-05, status: todo}
   - {id: SL-06, status: todo}
