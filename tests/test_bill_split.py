@@ -103,7 +103,7 @@ class Bills(BillRun):
             replies["Classification"].append({"document_type": "bill" if rent else kind, "evidence": [{"line_id": find(CITY).id, "quote": CITY}],
                                               "issuer": header["provider"], "document_date": MISSING, "bill_kind": "rent" if rent else "general",
                                               "bill_kind_evidence": [{"line_id": find("Customer Charge").id, "quote": "Customer Charge"}] if rent else []})
-            replies["BillRentSummary" if rent else "BillSummary"].append(header)
+            replies["BillRentSummary" if rent else "BillSummary"] += [header, header] if invoice_at == number else [header]  # An invoice is asked twice (D5).
             entries = []
             for line in part:
                 label = next((label for label in ROWS if line.text.startswith(label)), None)
@@ -489,3 +489,164 @@ def test_sc127_a_split_you_confirm_raises_none_of_these_reasons(pdf_store, local
     run.extract(force=True)  # Read again, the confirmed split raises none of FR-129's reasons and carries no note.
     first = run.bills()[0][2]
     assert [issue for issue in first["issues"] if "Page 2 prints its own due date" in issue] == [] and BILL_SPLIT_NOTE not in notes_of(first)
+
+
+# === The app: the library row, the split API and the actions a user takes ===============================================================
+
+@pytest.fixture
+def app(tmp_path, local_model):
+    """The real app on a managed library: (client, manager); the reasoning model is the contract's `local_model` and home currency USD."""
+    from home_manager.finance.ledger import HouseholdConfig
+    app = create_app(tmp_path / "control", "t", limits=ScanLimits(stability_seconds=0))
+    with TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": "Bearer t"}) as client:
+        client.put("/api/settings", json={"managed_directory": str(tmp_path / "managed")})
+        manager = app.state.manager
+        manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
+        manager.configure_household(HouseholdConfig(home_currency="USD", auto_identify_items=False))
+        yield client, manager
+
+
+def started_in(manager, local_model, pages, name="bills.pdf"):
+    """A fixture captured into the app's Inbox and read by the real reader, as `started` does for a bare library."""
+    from conftest import inbox_scan
+    make_pdf(manager.store.library.inbox / name, pages)
+    inbox_scan(manager.store)
+    doc = next(item for item in manager.store.documents()["items"] if item["relative_path"].endswith(name))
+    parse_id, _ = manager.receipts.enqueue(doc["id"], vision=local_model["config"])
+    manager.receipts.run(parse_id, Work.detached())
+    assert manager.receipts.get(parse_id)["status"] == "succeeded"
+    run = Bills(manager.store, manager.receipts, local_model, parse_id, doc)
+    return run
+
+
+def extract_through_app(manager, run):
+    """Extract as the app does (the reading, then filing), waiting for it."""
+    started_run = manager.start_extraction(run.doc["id"], run.parse_id, force=True)
+    manager.future.result(timeout=60)
+    run.run = run.extraction.get(started_run["run_id"])
+    assert run.run["status"] == "succeeded", run.run["error"]
+    return run.run
+
+
+def bill_ids(run):
+    return [bill_id for _, bill_id, _ in run.bills()]
+
+
+def library_row(client, run):
+    return client.get(f"/api/documents/{run.doc['id']}").json()
+
+
+def test_sc128_the_library_shows_no_single_amount_for_three_bills_and_the_first_non_rejected_bills_dates(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    run.answer([1, 2, 3])
+    extract_through_app(manager, run)
+    shown = library_row(client, run)
+    assert (shown["ledger_amount_minor"], shown["ledger_currency"]) == (None, None)
+    assert (shown["document_date"], shown["merchant"], shown["due_date"]) == ("2026-07-20", CITY, "2026-07-20")
+    assert (shown["bill_period_start"], shown["bill_period_end"]) == ("2026-06-01", "2026-06-30")
+    with manager.store.connection() as db:
+        [filed] = [row["relative_path"] for row in db.execute("SELECT relative_path FROM managed_files")]
+    assert filed.startswith("Bills/2026/") and "CITY_POWER_WATER" in filed  # Filed under the first bill's provider, as a one-bill file is.
+    ids = bill_ids(run)
+    manager.ledger.review("receipt", ids[0], "rejected")  # After the user rejects bill 1 the first non-rejected bill is bill 2.
+    shown = library_row(client, run)
+    assert (shown["document_date"], shown["due_date"], shown["bill_period_start"], shown["bill_period_end"], shown["ledger_amount_minor"]) == (
+        "2026-08-20", "2026-08-20", "2026-07-01", "2026-07-31", None)
+    manager.ledger.review("receipt", ids[1], "rejected")  # One non-rejected bill left: as for any single bill.
+    shown = library_row(client, run)
+    assert (shown["ledger_amount_minor"], shown["ledger_currency"], shown["due_date"], shown["document_date"]) == (7472, "USD", "2026-09-20", "2026-09-20")
+
+
+@pytest.mark.xfail(strict=True, reason="SC-128 says the file is filed under 2026-07-20, the first bill's due date. Filing names every bill by its statement date "
+                                       "(extraction.IDENTITY['bill'] is issue_date), 2026-07-02 here, as it does for a one-bill file (FR-120); escalated in the handoff.")
+def test_sc128_the_file_is_filed_under_the_first_bills_due_date(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    run.answer([1, 2, 3])
+    extract_through_app(manager, run)
+    with manager.store.connection() as db:
+        [filed] = [row["relative_path"] for row in db.execute("SELECT relative_path FROM managed_files")]
+    assert filed.startswith("Bills/2026/07/2026-07-20__CITY_POWER_WATER")
+
+
+def test_sc128_spending_counts_each_bill_on_its_own_due_date(pdf_store, local_model):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    assert [spending(run.store, day, day) for day in DUES] == [8142, 8726, 7472]
+    assert spending(run.store, "2026-07-01", "2026-09-30") == 24340
+
+
+def test_sc128_a_payment_to_the_provider_is_proposed_as_bill_1s_match_only(pdf_store, local_model):
+    from test_reconcile_tools import add
+    run = multi(pdf_store, local_model)
+    run.extract()
+    checking = Ledger(run.store).create_account("First Local Bank", "checking", "USD")
+    [payment] = add(run.store, Ledger(run.store), checking, run.doc, [("2026-07-18", CITY, -8142)])
+    Reconciler(run.store).run()
+    with run.store.connection() as db:
+        links = {bill_id: [tuple(row) for row in db.execute("SELECT transaction_id,review_status FROM transaction_receipt_links WHERE receipt_id=?", (bill_id,))]
+                 for bill_id in bill_ids(run)}
+    first, second, third = bill_ids(run)
+    assert links == {first: [(payment, "proposed")], second: [], third: []}
+
+
+def test_sc128_a_part_classified_as_rent_is_read_with_the_rent_form_and_the_others_as_general(pdf_store, local_model):
+    run = multi(pdf_store, local_model, kinds={1: "rent"})
+    run.extract()
+    with run.store.connection() as db:
+        kinds = [row["bill_kind"] for row in db.execute("SELECT bill_kind FROM receipts WHERE blob_hash=? ORDER BY segment", (run.blob(),))]
+    assert kinds == ["general", "rent", "general"]
+    assert run.asked().count("BillRentSummary") == 1 and run.asked().count("BillSummary") == 2 and run.asked().count("RentBillLines") >= 1
+    segment_check(run, 3)
+
+
+def test_sc128_a_part_that_is_not_a_bill_makes_the_file_one_document(pdf_store, local_model):
+    run = started_bills(pdf_store, local_model, bf.mini_pages(1, 2, 3))
+    three, one = run.answer([1, 2, 3]), run.answer([1])  # The three parts are classified (the second is a receipt); then the whole file is read as one.
+    run.local_model["by_schema"] = {"Classification": [*three["Classification"][:2], {**three["Classification"][2], "document_type": "receipt"}],
+                                    "BillSummary": one["BillSummary"], "BillLines": one["BillLines"]}
+    run.extract()
+    assert run.run["result"]["split_notes"] == ["A part of this file is not a bill, so the file was read as one document."]
+    segment_check(run, 1)
+    assert "segments" not in run.run["publication"]
+
+
+def test_sc128_a_part_that_reads_as_an_invoice_makes_the_file_one_document_on_todays_path(pdf_store, local_model):
+    run = multi(pdf_store, local_model, pages=bf.multi_inv_pages(), invoice_at=1, whole_invoice=True)
+    run.extract()
+    segment_check(run, 1)
+    [(_, _, record)] = run.bills()
+    assert run.run["result"]["split_notes"] == ["A part of this file is an invoice, so the file was read as one document."]
+    assert record["invoice"] is not None and BILL_SPLIT_NOTE not in notes_of(record)
+    for question in run.requests("BillLines")[-1:]:  # The whole file is read on the anchor_rows path: no engine table.
+        assert not [table for table in question.get("reported_tables", []) if "charges" in table["table_id"]]
+
+
+def test_sc128_a_split_inside_a_table_gives_each_part_its_own_rows_and_every_line_one_segment(app, local_model):
+    client, manager = app
+    run = started_in(manager, local_model, bf.mini_pages(1, 2, 3))
+    run.answer([1, 2, 3])
+    extract_through_app(manager, run)
+    lines = run.blank_free()
+    energy = next(line for line in lines if line.text.startswith("Energy Charge"))
+    firsts = [next(line for line in lines if bill_split.page_of(line) == page) for page in (1, 2, 3)]
+    starts = [firsts[0].id, energy.id, firsts[1].id, firsts[2].id]
+    answer = client.put(f"/api/documents/{run.doc['id']}/segments", json={"starts": starts})
+    assert answer.status_code == 202
+    manager.future.result(timeout=60)
+    ids = [line.id for line in lines]
+    shown = client.get(f"/api/documents/{run.doc['id']}/segments").json()
+    spans = [(ids.index(row["first_line_id"]), ids.index(row["last_line_id"])) for row in shown["segments"]]
+    assert len(spans) == 4 and spans[0][0] == 0 and spans[-1][1] == len(ids) - 1 and all(spans[i][1] + 1 == spans[i + 1][0] for i in range(3))
+    reading = bill_tables_read(run)
+    from home_manager.finance import bill_tables
+    inside = lambda span: {line.id for line in lines[span[0]:span[1] + 1]}  # noqa: E731
+    before, after = (bill_tables.for_lines(reading, inside(span)) for span in spans[:2])
+    labels = lambda part: [row.label for table in part.reading.tables for row in table.rows]  # noqa: E731
+    assert labels(before) == ["Customer Charge"] and labels(after) == ["Energy Charge", "State Tax"]
+
+
+def bill_tables_read(run):
+    from home_manager.finance import bill_tables
+    return bill_tables.read(run.evidence)
