@@ -26,7 +26,7 @@ from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_C
 from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
-from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, currency_code, decimals_in, format_minor, printed_decimal, to_minor
+from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, as_decimal_text, currency_code, decimals_in, format_minor, printed_decimal, to_minor
 from ..finance import bill_tables, document_checks, paystub_tables, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
@@ -2045,6 +2045,7 @@ BILL_SPLIT_CHANGED = "You changed where the bills in this file start; the file w
 MAX_BILLS = 200  # receipts.segment is 0 - 199.
 VOID_LINE = re.compile(r"[\s*-]*void[\s*-]*", re.IGNORECASE)  # A line whose whole text is VOID: a word inside a sentence is not a void stub (G4).
 VOID_NOTE = "This pay stub is printed VOID, so it doesn't count."
+BILL_VOID_NOTE = "This bill is printed VOID, so it doesn't count."
 # A receipt's own total line: TOTAL or GRAND TOTAL with an amount, not a subtotal, tax, savings or item count.
 TOTAL_LINE = re.compile(r"(?<![\w-])(grand\s+)?total(?!\s*(tax|savings?|saved|discounts?|items?|number|qty|quantity|units|points))\b", re.IGNORECASE)
 # What every receipt prints somewhere: what was owed or how it was paid. A part without one is not a receipt of its own.
@@ -4492,6 +4493,16 @@ class ExtractionService:
                 record_notes.append(f"This pay stub repeats the one paid by {shown}, so it doesn't count.")
             elif twin and twin["same_date"]:
                 record_notes.append(f"Another pay stub from {record['payer_or_employer']} has the same pay date.")
+        if kind == "bill":  # A bill printed VOID, or repeating another, is recorded but doesn't count (FR-133, FR-134), photographed ones included.
+            void = any(VOID_LINE.fullmatch(line.text.strip()) for line in lines)
+            twin = None if void else self.ledger.bill_twin(record, source)
+            shown = f"{record['provider']} due {record.get('due_date') or record.get('issue_date')} ({as_decimal_text(record['amount_due_minor'], currency)})" if twin else ""
+            bill_note = (BILL_VOID_NOTE if void else f"This bill repeats the one from {shown}, so it doesn't count." if twin and twin["original"]
+                         else f"Another bill from {record['provider']} has the same due date." if twin and twin["same_date"] else None)
+            if bill_note:
+                record_notes.append(bill_note)
+                if record.get("details") is not None:
+                    record["details"].setdefault("notes", []).append(bill_note)
         if record_notes:
             record["notes"] = record_notes
             if kind in ("bank_statement", "credit_card_statement", "paystub"):  # Kept with the record, which stores its details but not its notes (P19).
@@ -4530,6 +4541,9 @@ class ExtractionService:
             Investments(self.ledger.store).refresh_payroll_links()
             if void and self.ledger.mark_void(published["id"]) or twin and twin["original"] and self.ledger.mark_duplicate(published["id"], twin["original"]):
                 published = {**published, "review_status": "rejected"}
+        elif kind == "bill" and (void and self.ledger.mark_bill_void(published["id"])
+                                 or twin and twin["original"] and self.ledger.mark_bill_duplicate(published["id"], twin["original"])):
+            published = {**published, "review_status": "rejected"}
         return record, {**published, "review_status": published.get("review_status", status)}
 
     def run(self, run_id, work=None):

@@ -1541,6 +1541,50 @@ class Ledger:
         longer counts; True when it was marked. Extract again of the stub lets it count when its original is rejected or deleted."""
         return self.reject_automatically(income_id, original_id)
 
+    def bill_twin(self, record, source):
+        """The other bills a bill about to be published looks like (FR-134): {"original": id or None, "same_date": bool}, or None when there are none.
+        Only a non-invoice bill recorded before this one that still counts is a twin (a lower id; any, while this one is not recorded yet), so the first
+        recorded keeps counting and Extract again gives the same answer. Bills of one provider, due date (else issue date) and account (when both print
+        a last four) are compared: original: the same amount due and currency; same_date: another amount due (a corrected bill, which counts).
+        An invoice is never a twin, and never has one."""
+        provider, day = record.get("provider"), record.get("due_date") or record.get("issue_date")
+        if record.get("invoice") or not provider or not day or record.get("amount_due_minor") is None or not record.get("currency"):
+            return None
+        last_four = record.get("last_four") or record.get("account_last_four")
+        with self.store.connection() as db:
+            merchant = db.execute("SELECT id FROM merchants WHERE normalized_name=?", (normalize_name(provider),)).fetchone()
+            if merchant is None:
+                return None
+            mine = db.execute("SELECT id FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            others = db.execute("SELECT id,amount_due_minor,currency,account_last_four FROM receipts WHERE document_kind='bill' AND invoice_json IS NULL "
+                                "AND merchant_id=? AND coalesce(due_date,issue_date)=? AND review_status<>'rejected' AND id<? ORDER BY id",
+                                (merchant["id"], day, mine["id"] if mine else 2 ** 62)).fetchall()
+        others = [row for row in others if not last_four or not row["account_last_four"] or row["account_last_four"] == last_four]
+        same = [row["id"] for row in others if row["amount_due_minor"] == record["amount_due_minor"] and row["currency"] == record["currency"]]
+        return {"original": same[0] if same else None, "same_date": bool(others)} if others else None
+
+    def reject_receipt_automatically(self, receipt_id, original_id=None):
+        """Stop counting a bill (rejected, automatic) unless the user decided it, and rebuild its category shares. original_id: the bill it repeats,
+        which must still count. True when it was marked."""
+        with self.store.connection() as db:
+            if original_id is not None and not db.execute("SELECT 1 FROM receipts WHERE id=? AND id<>? AND review_status<>'rejected'",
+                                                          (original_id, receipt_id)).fetchone():
+                return False
+            marked = bool(db.execute("UPDATE receipts SET review_status='rejected',review_source='automatic',updated_at=? WHERE id=? "
+                                     "AND review_source IS NOT 'user'", (now(), receipt_id)).rowcount)
+            if marked:
+                self.refresh_splits(db, receipt_id)
+            return marked
+
+    def mark_bill_void(self, receipt_id):
+        """A bill printed VOID is recorded but counts nowhere (FR-133). A bill the user decided is left alone; True when it was marked."""
+        return self.reject_receipt_automatically(receipt_id)
+
+    def mark_bill_duplicate(self, receipt_id, original_id):
+        """A bill that repeats another counts nowhere (FR-134). A bill the user decided is left alone, and so is one whose original no longer counts;
+        True when it was marked. Extract again of the bill lets it count when its original is rejected or deleted."""
+        return self.reject_receipt_automatically(receipt_id, original_id)
+
     # Deterministic CSV/XLSX import ---------------------------------------------
 
     def table_rows(self, document_id, digest, currency, mapping):
