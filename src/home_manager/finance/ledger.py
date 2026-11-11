@@ -1911,6 +1911,7 @@ class Ledger:
         """One canonical record with its rows, evidence and review history."""
         if record_type not in RECORD_TABLES:
             raise ValueError("Unknown financial record type.")
+        printed_rates = {}  # A bill line's unit price as printed (position to text), where it isn't a whole number of cents and no correction of yours replaced it.
         with self.store.connection() as db:
             row = db.execute(f"SELECT * FROM {RECORD_TABLES[record_type]} WHERE id=?", (record_id,)).fetchone()
             if row is None:
@@ -1957,6 +1958,12 @@ class Ledger:
                                                {"field": "unit_price", "label": "Unit price", "kind": "receipt_money",
                                                 "value": money(abs(unit), row["currency"])["decimal"] if unit is not None else None},
                                                {**item["correctable"][0], "label": "Line total"}]
+                    text = ((item["details"] or {}).get("unit_price") or {}).get("text") if bill else None
+                    if text:
+                        changes = db.execute("SELECT value,previous,reason FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? "
+                                             "ORDER BY id", (record_id, f"unit_price:{item['position']}")).fetchall()
+                        if not changes or changes[-1]["reason"] == UNDO_REASON and changes[-1]["value"] == changes[0]["previous"]:
+                            printed_rates[item["position"]] = text
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
                         # A rent bill's line takes a rent type (specs/bill-kinds FR-45), which sets its line kind.
                         kind = ({"field": "line_type", "label": "Type", "kind": "choice", "value": item["line_type"], "options": list(RENT_LINE_TYPES)}
@@ -2082,6 +2089,9 @@ class Ledger:
         for row in [value, *([value["invoice"]] if value.get("invoice") else []), *value.get("items", []), *value.get("transactions", []), *value.get("lines", []), *value.get("splits", []), *value.get("tax_lines", [])]:
             row["display"] = {key: format_minor(amount, value["currency"]) for key, amount in row.items()
                               if key.endswith("_minor") and isinstance(amount, int)}
+        for item in value.get("items", []):  # FR-110: a rate printed with more decimals than cents shows as printed, from the server (the page does no money work).
+            if item["position"] in printed_rates:
+                item["display"]["unit_price_minor"] = printed_rates[item["position"]]
         if record_type == "income_record":  # Gross to net, grouped with subtotals (finance/paystub.py).
             value["breakdown"] = paystub.with_display(paystub.breakdown(value, value["lines"]), value["currency"])
             # Taxes and deductions the stub doesn't print as totals are shown from the breakdown's subtotals; the record keeps
