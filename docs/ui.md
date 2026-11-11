@@ -340,7 +340,7 @@ returns to the list with its filters, page and scroll position.
 - **The split panel for bills.** One panel (`doc2Split`, the pay stub panel's markup and classes) serves receipts, pay
   stubs and bills, worded by what the file's segments are. When every segment is a bill the panel is labelled "Bills in
   this file" and reads "This file holds N bills". Each chip names a bill by its provider, due date and amount due (the
-  server's `display.amount_due`, shown without its currency code to fit the chip). No "waits in To check" warning shows,
+  server's `display.amount_due` as sent, with its currency code, for example `81.42 USD`). No "waits in To check" warning shows,
   because a bill counts by its own checks. **Confirm split** and **Merge with next** show as for pay stubs. A file read as
   one bill that carries a reason to split it (the segments endpoint answers `one: true`) reads "This file may hold more than
   one bill" and offers only **Split here**, from the bill's own lines; there is nothing to confirm or merge until

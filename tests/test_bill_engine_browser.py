@@ -70,7 +70,7 @@ def test_sc129_step_2_the_split_panel_names_the_bills_and_warns_of_no_review(tmp
         expect(chips).to_have_count(3)
         for chip, due, amount in zip(chips.all(), ("Jul 20, 2026", "Aug 20, 2026", "Sep 20, 2026"), ("81.42", "87.26", "111.98")):
             assert chip.locator("span").first.inner_text() == CITY
-            assert chip.locator(".chip-count").inner_text() == f"{due} · {amount}"
+            assert chip.locator(".chip-count").inner_text() == f"{due} · {amount} USD"
         for label in ("Confirm split", "Merge with next", "Split here"):
             expect(panel.get_by_role("button", name=label)).to_be_visible()
         expect(panel).not_to_contain_text("To check")
@@ -101,7 +101,7 @@ def test_sc129_step_6_a_file_that_is_one_bill_is_offered_split_here(tmp_path, lo
         chips = panel.locator(".filter-chip")
         expect(chips).to_have_count(1)
         assert chips.locator("span").first.inner_text() == CITY
-        assert chips.locator(".chip-count").inner_text() == "Jul 20, 2026 · 81.42"
+        assert chips.locator(".chip-count").inner_text() == "Jul 20, 2026 · 81.42 USD"
         expect(panel.get_by_role("button", name="Split here")).to_be_visible()
         expect(panel.get_by_role("button", name="Confirm split")).to_have_count(0)
         expect(panel.get_by_role("button", name="Merge with next")).to_have_count(0)

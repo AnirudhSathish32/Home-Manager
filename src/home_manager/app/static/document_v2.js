@@ -891,9 +891,9 @@ async function doc2Split(target, state, publication) {
   segments.forEach((segment, index) => {
     const button = element("button", "", "filter-chip"); button.type = "button";
     button.setAttribute("aria-pressed", String(index === chosen));
-    // A bill's chip is its provider, due date and amount due; the server's text loses its currency code to fit the chip.
+    // A bill's chip is its provider, due date and amount due, each as the server's text (the amount keeps its currency code).
     const facts = stubs ? [segment.pay_date && dateText(segment.pay_date), segment.display?.net_pay]
-      : bills ? [segment.due_date && dateText(segment.due_date), segment.display?.amount_due?.replace(/ [A-Z]{3}$/, "")]
+      : bills ? [segment.due_date && dateText(segment.due_date), segment.display?.amount_due]
       : [segment.display?.total_minor, segment.purchase_date && dateText(segment.purchase_date)];
     button.append(element("span", (stubs ? segment.employer : segment.merchant) || `${stubs ? "Pay stub" : bills ? "Bill" : "Receipt"} ${index + 1}`),
                   element("span", facts.filter(Boolean).join(" · "), "chip-count"));
