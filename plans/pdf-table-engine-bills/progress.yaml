@@ -311,4 +311,15 @@ slices:
       lines check only. Three doc citations were already broken at START_HEAD (documents.md "Known limits", "Native PDF
       layout", open-work.md "UI redesign"), not this feature's. In the worktree, `python -m evals.run` needs
       PYTHONPATH=src (the .venv editable install points at the main checkout).
-final_verification: pending
+final_verification:
+  head: 3c01a79
+  date: 2026-11-11
+  commands:
+    - command: ".venv/bin/python -m pytest -q"
+      exit_code: 1
+      result: "54 failed, 3733 passed, 119 skipped, 1 deselected, 20 errors (37m38s)"
+      compared_with_baseline: "identical failure/error ids to baseline_failures (74 ids); no new failure, none fixed"
+    - command: "RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_bill_engine_browser.py tests/test_paystub_engine_browser.py tests/test_table_engine_browser.py tests/test_document_v2_browser.py -q"
+      exit_code: 0
+      result: "18 passed"
+  verdict: pass (only baseline failures)
