@@ -4591,7 +4591,7 @@ class ExtractionService:
                 elif classification.document_type == "paystub":
                     parts, changed = self.pay_parts(run, parse, lines, split_notes, pay_notes)
                 elif classification.document_type == "bill":
-                    parts, changed, reasons = self.bill_parts(run, parse, lines, split_notes)
+                    parts, changed, reasons = self.bill_parts(run, parse, lines, split_notes, bills)
                 # Every part is classified before any is read, so a file that is not all of one kind costs no further questions.
                 kinds, noun = [], {"paystub": "pay stub", "bill": "bill"}.get(classification.document_type, "receipt")
                 for first, last in parts if len(parts) > 1 else []:
@@ -4913,10 +4913,11 @@ class ExtractionService:
             record_notes.append(PAY_SPLIT_FAILED)
             return [(0, len(lines))], False
 
-    def bill_parts(self, run, parse, lines, split_notes):
+    def bill_parts(self, run, parse, lines, split_notes, bills=None):
         """([(first, last)], changed, reasons) for a bill file, as `pay_parts` for pay stubs: the user's own split wins (changed: it replaced the rule's, so each
         bill gets a split_changed guess, and it raises no FR-129 reason); otherwise the rule that reads the lines (bill_split.bill_parts). reasons is
-        {part index: [FR-129's review reasons]}. A rule that raises, or finds more than 200 bills, reads the file as one bill with reason (d) (FR-129)."""
+        {part index: [FR-129's review reasons]}. A rule that raises, or finds more than 200 bills, reads the file as one bill with reason (d) (FR-129). `bills` is the
+        bill engine's reading of a text PDF, whose anchors the rule also reads (an amount due printed apart from its label)."""
         saved = self.saved_segments(run, parse, source="user")
         if saved:
             ranges = user_ranges(saved, lines)
@@ -4924,7 +4925,7 @@ class ExtractionService:
                 return ranges, any(row["extraction_run_id"] for row in saved), {}
             split_notes.append("How you split this file no longer matches its text, so it was split again.")
         try:
-            found = bill_split.bill_parts(lines)
+            found = bill_split.bill_parts(lines, bill_tables.split_anchors(bills) if isinstance(bills, bill_tables.BillTables) else None)
             if len(found.parts) > MAX_BILLS:
                 raise ValueError("too many bills")
             return found.parts, False, found.reasons

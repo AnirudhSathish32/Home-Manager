@@ -4,7 +4,9 @@ text, so it works on text PDFs, scanned PDFs and combined images, and asks no mo
 A key line starts with a key label directly followed by its value (`Due Date 07/20/2026`, `Account #: ****9012`): a due date, a statement date or an account
 (its last four digits). Pages are walked in order and page 1 opens bill 1. A later page whose key line prints a value that differs from the value the open bill
 printed for that key starts a new bill at the page's first line; otherwise it continues the open bill. The rule splits only between pages. Each part must hold an
-amount-due line, else it joins the part before it (the first joins the next). The labels are `charge_tables.KEY_LABELS` (SL-01 put them beside the anchor
+amount-due line, else it joins the part before it (the first joins the next). On a text PDF the bill engine's anchors count too (`anchors`): a heading over the
+amount column sets the amounts in layout lines of their own, so the line `Amount Due ....` holds no amount, but the engine pairs it with the amount printed
+beside it (charge_tables.read). The labels are `charge_tables.KEY_LABELS` (SL-01 put them beside the anchor
 words, because the charge reader needs `key_kind` too and this module imports `anchor_kind` from there).
 """
 
@@ -137,8 +139,15 @@ def own(kind, printed):
     return f"its own {NAMES[kind]} ({'ending ' + printed if kind == 'account' else printed})"
 
 
-def bill_parts(lines):
-    """The bills of a file as a BillSplit (FR-128, FR-129 a - c); one part for a file with one bill."""
+def bill_parts(lines, anchors=None):
+    """The bills of a file as a BillSplit (FR-128, FR-129 a - c); one part for a file with one bill. `anchors` is {line id: [(kind, value), ...]}, the bill
+    engine's summary anchors by the evidence line holding their label (bill_tables.split_anchors); a line is an anchor when its own text is one, or the
+    engine found one there."""
+    anchors = anchors or {}
+
+    def anchors_of(line):
+        own = anchor_of(line)
+        return [own] if own else anchors.get(line.id, [])
     if not lines:
         return BillSplit([(0, 0)])
     pages = pages_of(lines)
@@ -169,7 +178,7 @@ def bill_parts(lines):
     parts = list(zip(bounds, bounds[1:]))
 
     def has_due(first, last):
-        return any((anchor_of(line) or (None,))[0] == "amount_due" for line in lines[first:last])
+        return any(kind == "amount_due" for line in lines[first:last] for kind, _ in anchors_of(line))
 
     # (b) Each bill prints an amount due of its own: a part without one joins the part before it; the first, without one, joins the next.
     groups = []  # [first, last, [(start of a part joined in, the direction)]]
@@ -201,7 +210,7 @@ def bill_parts(lines):
         for position, (_, start, stop) in enumerate(pages):
             if not first <= start < last:
                 continue
-            values = [value for line in lines[start:stop] for kind, value in [anchor_of(line) or (None, None)] if kind == "new_charges"]
+            values = [value for line in lines[start:stop] for kind, value in anchors_of(line) if kind == "new_charges"]
             if values:
                 charges[position] = values
         different = None

@@ -369,5 +369,14 @@ def for_lines(bills, line_ids):
                    engine_pages=engine_pages, pages=engine_pages)
 
 
+def split_anchors(bills):
+    """The engine's summary anchors for the split rule (FR-128, plan P8.1): {evidence line id holding the anchor's label: [(kind, value), ...]}, so a part
+    whose `Amount Due` label and amount are on separate layout lines still prints its amount due (bill_split.bill_parts)."""
+    found = {}
+    for anchor in bills.reading.anchors:
+        found.setdefault(bills.lines_of.get(anchor.line_id, anchor.line_id), []).append((anchor.kind, anchor.token.value[0]))
+    return found
+
+
 def replace_rows(table, rows):
     return SimpleNamespace(**{**vars(table), "rows": rows})

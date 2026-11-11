@@ -9,6 +9,7 @@ tests/bill_engine_fixtures.py (`exp_mini`), never what the code produced.
 
 from collections import Counter
 import dataclasses
+from decimal import Decimal
 import json
 from types import SimpleNamespace
 
@@ -16,16 +17,19 @@ from fastapi.testclient import TestClient
 import pytest
 
 import bill_engine_fixtures as bf
+import bill_engine_generator as gen
 from conftest import assert_ledger_healthy
 from home_manager.app.api import create_app
 from home_manager.core.jobs import Work
 from home_manager.documents import bill_split, extraction
-from home_manager.documents.extraction import BILL_SPLIT_CHANGED, BILL_SPLIT_FAILED, BILL_SPLIT_NOTE, BILL_VOID_NOTE, ExtractionService
+from home_manager.documents.extraction import BILL_SPLIT_CHANGED, BILL_SPLIT_FAILED, BILL_SPLIT_NOTE, BILL_VOID_NOTE, ExtractionService, evidence_lines
 from home_manager.documents.reasoning import ReasoningConfig
+from home_manager.finance import bill_tables
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
+import pdf_import_fixtures as fx
 from test_bill_engine_record import ENGINE, BillRun, auto, finished, lines_of, reasons  # noqa: F401
 from test_extraction import MISSING
 from test_paystub_engine_record import no_network, started  # noqa: F401  (no_network is autouse: C-net)
@@ -243,11 +247,33 @@ def test_sc126_a_part_with_no_amount_due_anchor_joins_the_part_before_and_the_fi
     assert split.parts == [(0, 17)] and split.reasons[0][0].endswith("so it was read with the bill after it; check how the file was split.")
 
 
+def test_sc126_an_amount_due_printed_apart_from_its_label_is_the_parts_amount_due_when_the_engine_pairs_them():
+    """A heading over the amount column sets the amounts in layout lines of their own (generator case 1): the line `Amount Due ....` holds no amount, so only
+    the engine's anchor on that line tells the split the page prints its own amount due (FR-128)."""
+    pages = [["Account Number 1234-5678-9012", f"Due Date 0{month}/20/2026", "Amount Due ..........", "This", "Charge", f"8{month}.42"] for month in (7, 8)]
+    lines = lines_from(*pages)
+    alone = bill_split.bill_parts(lines)
+    assert alone.parts == [(0, 12)] and len(alone.reasons[0]) == 1  # The lines alone: no amount due on page 2, so it joins page 1 (FR-129 b).
+    engine = {"page-1-layout-line-3": [("amount_due", Decimal("87.42"))], "page-2-layout-line-3": [("amount_due", Decimal("88.42"))]}
+    split = bill_split.bill_parts(lines, engine)
+    assert split.parts == [(0, 6), (6, 12)] and split.reasons == {}
+
+
+def test_sc126_generator_case_1_with_a_heading_over_the_amount_column_is_four_bills_from_the_engines_anchors(tmp_path):
+    case = gen.layout(1)
+    assert case.choices["heading"] == "known2" and case.choices["bills"] == 4
+    result = fx.read_pdf(tmp_path, case.pages)
+    lines = [line for line in evidence_lines(result) if line.text.strip()]
+    assert not [line for line in lines if (bill_split.anchor_of(line) or (None,))[0] == "amount_due"]  # No line holds `Amount Due <amount>`.
+    split = bill_split.bill_parts(lines, bill_tables.split_anchors(bill_tables.read(result)))
+    assert [bill_split.page_of(lines[first]) for first, _ in split.parts] == [1, 2, 3, 4] and split.reasons == {}
+
+
 def test_sc126_two_hundred_and_one_one_page_bills_are_two_hundred_and_one_parts_and_the_run_reads_them_as_one(pdf_store, local_model, monkeypatch, caplog):
     pages = [["Account Number 1234-5678-9012", f"Due Date {1 + page // 28:02d}/{1 + page % 28:02d}/2026", "Total Amount Due 10.00"] for page in range(201)]
     assert len(bill_split.bill_parts(lines_from(*pages)).parts) == 201
     run = multi(pdf_store, local_model, (1,), pages=bf.mini_pages(1))
-    monkeypatch.setattr(bill_split, "bill_parts", lambda lines: bill_split.BillSplit([(0, 1)] * 201))
+    monkeypatch.setattr(bill_split, "bill_parts", lambda lines, anchors=None: bill_split.BillSplit([(0, 1)] * 201))
     run.extract()
     [(_, _, record)] = run.bills()
     reasons(record, BILL_SPLIT_FAILED)
@@ -453,7 +479,7 @@ def test_sc127_a_file_that_may_hold_two_bills_but_cannot_be_split_between_pages_
 
 @pytest.mark.parametrize("fault", ["raises", "201 parts"])
 def test_sc127_a_split_rule_that_fails_reads_the_file_as_one_bill_with_reason_d_and_logs_no_text(pdf_store, local_model, monkeypatch, caplog, fault):
-    def broken(lines):
+    def broken(lines, anchors=None):
         if fault == "raises":
             raise RuntimeError("injected split fault")
         return bill_split.BillSplit([(0, 1)] * 201)

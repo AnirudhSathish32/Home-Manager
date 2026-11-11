@@ -221,7 +221,7 @@ def bill_section(result):
                 print("  no charge table on this page")
     lines = [line for line in evidence_lines(result) if line.text.strip()]
     try:
-        split = bill_split.bill_parts(lines)
+        split = bill_split.bill_parts(lines, bill_tables.split_anchors(bill) if bill is not None else None)
     except Exception as exc:
         print(f"\nthe split rule raised {type(exc).__name__}   FR-129 reasons that fired: d")
         return
