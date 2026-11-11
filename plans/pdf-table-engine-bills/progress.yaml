@@ -204,7 +204,34 @@ slices:
       a correction whose line no longer exists is held ("no longer has a line N"); a missing amount reads "no amount";
       G4 can hold a member correction where the new reading prints the user's corrected price (conservative);
       delete_item leaves a deleted line's held reason until the next reading. For the review-code stage to look at.
-  - {id: SL-06, status: todo}
+  - id: SL-06
+    status: done
+    start_head: c838537
+    end_head: 3b3cd06
+    commit: [5f1628d, 891214a, 1c9c199, aade38d, 5ec1057, 2416759, 3b3cd06]
+    provider: claude
+    model: claude-sonnet-5-5
+    attempts:
+      - "1: provider rate limit, no changes"
+      - "2: commits 5f1628d, 891214a, 1c9c199, aade38d, 5ec1057; worker ended before its regression runs reported and before writing the handoff"
+    orchestrator_decisions:
+      - >-
+        SC-128 step 3 / FR-135 (approved): a file holding several bills is filed under the first non-rejected bill's
+        provider and due date (2026-07-20 for BL-MULTI). The worker left filing on IDENTITY['bill'] (issue_date) and added a
+        strict xfail. Decision: meet the approved contract for files with more than one bill only; a one-bill file keeps
+        today's filing by statement date (FR-120). Fix worker dispatched; it removes the xfail.
+      - >-
+        Fix 2416759: filing_identity uses first_bill_identity (purchase_date = due date, else issue date) when the run
+        recorded more than one segment. A review rejection does not rename the file (as for every kind); the next
+        Extract or filing pass moves it under the next non-rejected bill. Tested, plus one-bill filing unchanged.
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_split.py -k 'not sc131' tests/test_paystub_split.py tests/test_receipt_segments.py tests/test_library.py tests/test_managed_library.py tests/test_extraction.py tests/test_bill_engine_record.py tests/test_bill_corrections.py -q -> 233 passed (orchestrator rerun at 3b3cd06)"
+      - "Worker (fix): wider bill regression set (bill_kinds, bills_ledger, recurring_bills, layout_consumers, paystub_engine_record, paystub_cleanup, invoice_ingestion, receipt_kinds, bill_engine) 504 passed, 1 skipped"
+    notes: >-
+      Open points for review-code / later slices: FR-129 (b) wording when the FIRST part joins the next is the worker's
+      ("...read with the bill after it"); the split rule's reasons are dropped when a file falls back to one document;
+      the invoice check after all parts costs extra model calls; display.amount_due is "81.42 USD" while the contract's
+      browser chips show 81.42 (SL-08 must trim); KEY_LABELS stays in charge_tables.
   - {id: SL-07, status: todo}
   - {id: SL-08, status: todo}
   - {id: SL-09, status: todo}
