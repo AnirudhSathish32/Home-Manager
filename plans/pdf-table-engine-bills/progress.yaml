@@ -174,7 +174,22 @@ slices:
       receipt_item type; the test reads line_ids and cell_evidence. SC-110 step 7's server side is asserted here; the
       browser side is SL-08's. Helpers for later slices live in tests/test_bill_engine_record.py (BillRun, bill_run, ...).
       FR-117/118 go in anchor_bill's ANCHOR_FIELDS loop; worked_out still to thread through normalize/bill_lines (SL-04).
-  - {id: SL-04, status: todo}
+  - id: SL-04
+    status: done
+    start_head: 0ab6f53
+    end_head: 32fb96d
+    commit: [b244221, 32fb96d]
+    provider: claude
+    model: claude-sonnet-5-5
+    verification:
+      - ".venv/bin/python -m pytest tests/test_bill_engine_record.py tests/test_bill_kinds.py tests/test_bills_ledger.py tests/test_recurring_bills.py tests/test_provenance.py tests/test_bill_engine.py -q -> 448 passed, 1 skipped (orchestrator rerun at 32fb96d)"
+    orchestrator_decisions:
+      - >-
+        SC-118 step 2 says R2-BAD's "spending counts 10055 until corrected" while it is in review; the app keeps bills
+        waiting in To check out of spending (unchanged behavior, out of scope), so the test verifies the bill through
+        Ledger.review and then asserts spending 10055. The contract's value (the worked-out total, not 15055) holds.
+      - "FR-117 decides only from printed (anchored) previous/payments/new values; no check deciding -> first-value guess."
+      - "SC-121 step 3 asserts the migration listing 001-080 ending 080_split_merged_documents.sql (START_HEAD's)."
   - {id: SL-05, status: todo}
   - {id: SL-06, status: todo}
   - {id: SL-07, status: todo}
