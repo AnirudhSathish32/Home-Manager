@@ -4631,27 +4631,30 @@ class ExtractionService:
             if classification.document_type == "bill" and not confirmed:  # FR-129's reasons: a split you made or confirmed raises none.
                 for ordinal, reading in enumerate(readings):
                     reading["notes"] += [reason for reason in reasons.get(ordinal, []) if reason not in reading["notes"]]
-            outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
-                        for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
-            result, publication = outcomes[0]
-            if len(parts) > 1:
-                bounds = [{"ordinal": ordinal, "first_line": lines[first].id, "last_line": lines[last - 1].id} for ordinal, (first, last) in enumerate(parts)]
-                result = {**result, "segments": [{**bound, **outcome[0]} for bound, outcome in zip(bounds, outcomes)], "split_notes": split_notes}
-                publication = {**(publication or {}), "segments": [{**bound, **(outcome[1] or {})} for bound, outcome in zip(bounds, outcomes)],
-                               "split_confirmed": confirmed}
-            elif split_notes:
-                result["split_notes"] = split_notes
-            if len(parts) == 1 and classification.document_type == "bill" and not confirmed and outcomes[0][1] is not None and offers_split(reasons.get(0, [])):
-                # FR-131: a bill read as one with reason (a), (c) or (d) is offered Split here, in the shape of a split file's one segment. No row is saved for it.
-                publication = {**publication, "segments": [{"ordinal": 0, "first_line": lines[0].id, "last_line": lines[-1].id, **outcomes[0][1], "one": True}],
-                               "split_confirmed": False}
-            if pay is not None:
-                result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
-            self.save_segments(run, parse, lines, parts, confirmed)
-            self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
-            with self.store.connection() as db:
-                db.execute("UPDATE extraction_runs SET status='succeeded',document_type=?,result_json=?,publication_json=?,error=NULL,updated_at=? WHERE id=?",
-                           (result["classification"]["document_type"], json.dumps(result), json.dumps(publication), now(), run_id))
+            # Every part's publication, the retirement of parts the file no longer has, where the parts sit and the run's success are one transaction (FR-130,
+            # FR-132): a failure anywhere in them leaves the ledger, the split and the evidence as they were, and the run says nothing was published.
+            with self.store.transaction():
+                outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
+                            for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
+                result, publication = outcomes[0]
+                if len(parts) > 1:
+                    bounds = [{"ordinal": ordinal, "first_line": lines[first].id, "last_line": lines[last - 1].id} for ordinal, (first, last) in enumerate(parts)]
+                    result = {**result, "segments": [{**bound, **outcome[0]} for bound, outcome in zip(bounds, outcomes)], "split_notes": split_notes}
+                    publication = {**(publication or {}), "segments": [{**bound, **(outcome[1] or {})} for bound, outcome in zip(bounds, outcomes)],
+                                   "split_confirmed": confirmed}
+                elif split_notes:
+                    result["split_notes"] = split_notes
+                if len(parts) == 1 and classification.document_type == "bill" and not confirmed and outcomes[0][1] is not None and offers_split(reasons.get(0, [])):
+                    # FR-131: a bill read as one with reason (a), (c) or (d) is offered Split here, in the shape of a split file's one segment. No row is saved for it.
+                    publication = {**publication, "segments": [{"ordinal": 0, "first_line": lines[0].id, "last_line": lines[-1].id, **outcomes[0][1], "one": True}],
+                                   "split_confirmed": False}
+                if pay is not None:
+                    result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
+                self.save_segments(run, parse, lines, parts, confirmed)
+                self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
+                with self.store.connection() as db:
+                    db.execute("UPDATE extraction_runs SET status='succeeded',document_type=?,result_json=?,publication_json=?,error=NULL,updated_at=? WHERE id=?",
+                               (result["classification"]["document_type"], json.dumps(result), json.dumps(publication), now(), run_id))
         except Cancelled as exc:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='cancelled',error=?,updated_at=? WHERE id=?", (str(exc), now(), run_id))

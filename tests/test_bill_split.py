@@ -876,6 +876,82 @@ def merge_bill_two(run):
     run.extract(force=True)
 
 
+LEDGER_TABLES = ("receipts", "receipt_items", "document_segments", "financial_evidence_links", "category_splits", "review_events", "record_corrections",
+                 "merchants", "record_shares")
+
+
+def ledger_state(run):
+    """Every row the ledger, the split and the evidence hold for the library, whole (the clock and run ids included): a rolled-back publication changes none."""
+    with run.store.connection() as db:
+        return {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY 1")] for table in LEDGER_TABLES}
+
+
+def fail_after_first_publication(run, monkeypatch, force=False):
+    """The run, extracted with a fault injected after the first bill's real publication (the second `record` raises): (the run, its calls of `record`)."""
+    real, calls = ExtractionService.record, []
+
+    def flaky(self, *args, **kwargs):
+        if calls:
+            raise RuntimeError("injected fault after the first publication")
+        calls.append(1)
+        return real(self, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(ExtractionService, "record", flaky)
+        run_id, _ = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config(), force=force)
+        run.extraction.run(run_id, Work.detached())
+    assert calls == [1]  # The first bill really was published, inside the run.
+    return run.extraction.get(run_id)
+
+
+def test_sl11_f1_a_failure_after_the_first_bill_was_published_leaves_nothing_behind_and_a_clean_retry_succeeds(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    before = ledger_state(run)
+    failed = fail_after_first_publication(run, monkeypatch)
+    assert failed["status"] == "failed" and failed["error"] == "Extraction failed; nothing was published."
+    assert ledger_state(run) == before  # No bill, no segment row, no evidence, not even a merchant: the run says nothing was published and it is true.
+    assert run.bills() == [] and run.segments() == [] and spending(run.store, "2026-07-01", "2026-09-30") == 0
+    run.answer([1, 2, 3])
+    run.extract()
+    segment_check(run, 3)
+    assert [record["due_date"] for _, _, record in run.bills()] == DUES and spending(run.store, "2026-07-01", "2026-09-30") == 24340
+    assert_ledger_healthy(run.store)
+
+
+def test_sl11_f1_a_failure_while_the_file_is_read_again_leaves_the_earlier_bills_and_split_unchanged_and_a_retry_succeeds(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    before, ids = ledger_state(run), bill_ids(run)
+    run.answer([1, 2, 3])
+    failed = fail_after_first_publication(run, monkeypatch, force=True)
+    assert failed["status"] == "failed"
+    assert ledger_state(run) == before and bill_ids(run) == ids  # Bill 1 was rewritten by the failed run; the rollback put it back with the rest.
+    run.answer([1, 2, 3])
+    run.extract(force=True)
+    assert bill_ids(run) == ids and [record["review_status"] for _, _, record in run.bills()] == ["verified"] * 3
+    assert_ledger_healthy(run.store)
+
+
+def test_sl11_f1_a_failure_while_the_file_is_split_again_keeps_the_obsolete_bill_counting_exactly_as_before(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    before, starts = ledger_state(run), run.starts()
+    pages = run.pages()
+    run.extraction.set_split(run.doc["id"], starts[:2])  # Merge with next on bill 2: three bills become two.
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    with run.store.connection() as db:
+        split_saved = [tuple(row) for row in db.execute("SELECT * FROM document_segments ORDER BY 1")]
+    failed = fail_after_first_publication(run, monkeypatch, force=True)
+    assert failed["status"] == "failed"
+    after = ledger_state(run)
+    assert {key: rows for key, rows in after.items() if key != "document_segments"} == {key: rows for key, rows in before.items() if key != "document_segments"}
+    assert after["document_segments"] == split_saved  # Only the user's own saved split (written before the run) differs from the first reading's.
+    assert [record["review_status"] for _, _, record in run.bills()] == ["verified"] * 3 and spending(run.store, "2026-09-20", "2026-09-20") == 7472
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    run.extract(force=True)
+    assert [record["review_status"] for _, _, record in run.bills()] == ["verified", "needs_review", "rejected"]  # The merged bill keeps its lines reason (G9).
+    assert_ledger_healthy(run.store)
+
+
 RETIRED = "The latest reading of this file no longer finds this bill; check how the file was split."
 
 
@@ -1257,3 +1333,37 @@ def test_sc131_marking_never_overrides_your_decision_or_follows_a_rejected_origi
     assert ledger.mark_bill_duplicate(repeat, repeat) is False and ledger.mark_bill_duplicate(repeat + 100, original) is False
     assert status_of(copy.bills()[0][2]) == ("verified", "automatic")
     assert ledger.mark_bill_void(repeat) is True and status_of(copy.bills()[0][2]) == ("rejected", "automatic")
+
+
+# === Review round 1, finding 1: the transaction the publication runs in (library/storage.py `Store.transaction`) ============================================
+
+def test_sl11_f1_store_transaction_commits_together_rolls_back_together_and_keeps_a_failed_inner_step_alone(tmp_path):
+    from home_manager.library.storage import Store
+    store = Store(tmp_path / "managed")
+    try:
+        with store.connection() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS sl11_probe(v TEXT)")
+
+        def saved():
+            with store.connection() as db:
+                return [row[0] for row in db.execute("SELECT v FROM sl11_probe ORDER BY rowid")]
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('one')")
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('two')")
+                raise RuntimeError("after two inner steps")
+        assert saved() == []
+        with store.transaction():
+            with store.connection() as db:
+                db.execute("INSERT INTO sl11_probe VALUES('kept')")
+            with pytest.raises(RuntimeError):  # An inner step that fails and is caught takes only its own writes back.
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('lost')")
+                    raise RuntimeError("inner")
+            with store.connection() as db:
+                db.execute("INSERT INTO sl11_probe VALUES('also kept')")
+        assert saved() == ["kept", "also kept"]
+    finally:
+        store.close()
