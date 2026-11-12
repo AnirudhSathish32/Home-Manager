@@ -259,14 +259,17 @@ What is not built:
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.
 
-- **Account holder, what is left** (`specs/bill-total-and-account-holder`; built: [money](money.md#bills-and-their-lines),
-  [documents](documents.md#bill-lines-from-the-printed-columns), [family](family.md#family-inbox)). Part B of that spec (the "due now"
-  line and the printed total as the amount due, FR-141 – FR-146) is not built. Of FR-149, the bill generator's account-name line forms
-  (alone or before an account number on the same line) and the documents eval's `account_holder_read` count with an appended synthetic
-  bill are not built; the diagnose `bill` mode already counts account-name lines. An invoice's `bill_to` is not an account holder, a bill
-  printing only a bare `Name:` or `Customer:` label still says Shared (OD-5), and a bill you confirmed or rejected before this existed
-  shows Shared until you set **Account holder** by Correct (OD-8). A business or landlord printed as `Customer Name` shows its printed name
-  instead of Shared (it matches nobody); Correct can clear it.
+- **Account holder and printed total, what is left** (`specs/bill-total-and-account-holder`; built: [money](money.md#bills-and-their-lines),
+  [documents](documents.md#bill-lines-from-the-printed-columns), [family](family.md#family-inbox), [evals](evals.md)). An invoice's `bill_to`
+  is not an account holder, a bill printing only a bare `Name:` or `Customer:` label still says Shared (OD-5), and a bill you confirmed or
+  rejected before this existed shows Shared and keeps its old amount due until you set **Account holder** and the amount due by Correct (OD-8).
+  A business or landlord printed as `Customer Name` shows its printed name instead of Shared (it matches nobody); Correct can clear it.
+  The due-now line: a numeric date that could be read either way (`11/01/2026`) is read month first when it gives the due date (the model's
+  due date, checked against its cited line, is preferred); only the first due-now line of a bill is kept; a photographed or scanned bill is
+  helped only when the model cites a due-now line for the amount due (a bill whose model cites nothing of the kind reads as before); and
+  a due-now line is not matched across a file of several bills except through each part's own lines. The Bills page and the forecast
+  still follow the new charges (OD-1), so on a bill with a previous balance they differ from the page's Amount due. The user's
+  own bill was never read (OD-10): if its charge lines add up to 62.91 rather than 1,667.91 it still goes to review.
 
 ## Planning and investments
 

@@ -104,7 +104,7 @@ def test_generator_only_case_engine_rows_are_exact(index, tmp_path):
 
 UNPLACED_NOTE = re.compile(r"^Page \d+: a printed line wasn't placed in any column, so it wasn't recorded: \".*\b4\.00\"$")  # The sentence that holds an anchor phrase (G7, FR-104).
 WORKED_OUT = "New charges aren't printed; worked out as amount due"
-DUE_GUESS = re.compile(r"^The amount due is printed as .+; .+, the first on page \d+, was used\.$")
+DUE_GUESS = re.compile(r"^The amount due is printed as .+; .+, (?:the first on page \d+|the total), was used\.$")  # FR-142 (a) adds `the total`.
 
 
 class Generated(Bills):
@@ -141,11 +141,12 @@ class Generated(Bills):
                           account_reference=field(bill["last_four"], find(keys["account"]), bill["account"]),
                           issue_date=field(bill["issue_date"], find(keys["statement"]), us(bill["issue_date"])),
                           due_date=field(bill["due_date"], find(keys["due"]), us(bill["due_date"])),
-                          amount_due=field(money(bill["amount_due"]), with_amount(money(bill["amount_due"])), money(bill["amount_due"])),
                           currency=field("USD", find("This bill is for"), "US dollars"))
             if not rent:
                 fields.update(period_start=field(bill["period"][0], find("Billing Period"), us(bill["period"][0])),
                               period_end=field(bill["period"][1], find("Billing Period"), us(bill["period"][1])))
+            shown = bill["due_now"] if case.choices["due_now"] == "alone" else bill["amount_due"]  # With none printed, the model takes the due-now line for the amount due.
+            fields["amount_due"] = field(money(shown), with_amount(money(shown)), money(shown))
             if bill["new_printed"]:
                 fields["new_charges"] = field(money(bill["new_charges"]), with_amount(money(bill["new_charges"])), money(bill["new_charges"]))
             replies["Classification"].append({"document_type": "bill", "evidence": fields["provider"]["evidence"], "issuer": fields["provider"], "document_date": MISSING,
@@ -208,7 +209,10 @@ def assert_bill(case, bill, record, where, count):
         assert details["new_charges"]["worked_out"] == {"amount_due": bill["amount_due"], "previous_balance": bill["previous"], "payments": bill["payments"]}, where
     checks = {check["name"]: check for check in record["checks"]}
     assert checks["lines"]["passes"] and all(check["passes"] for check in checks.values()), f"{where}: {checks}"
-    assert ("carried" in checks) == (bill["previous"] is not None and bill["new_printed"]), f"{where}: {sorted(checks)}"
+    alone = case.choices["due_now"] == "alone"  # FR-142 (b): the amount due is worked out from the carried amounts, so no carried check is run.
+    assert ("carried" in checks) == (bill["previous"] is not None and bill["new_printed"] and not alone), f"{where}: {sorted(checks)}"
+    assert (details.get("account_holder") or {}).get("text") == bill["account_holder"], f"{where}: account holder"  # FR-136, FR-149
+    assert (details["due_now"]["minor"], details["due_now"]["date"]) == (bill["due_now"], bill["due_date"]) if bill["due_now"] else "due_now" not in details, where
     assert record["review_status"] == "verified" and record["issues"] == [], f"{where}: {record['review_status']} {record['issues']}"
     notes = details.get("notes", [])
     expected = bill["notes"]
@@ -369,6 +373,7 @@ REQUIRED = {
     "late:fee_after", "late_row", "sentence:due_prose", "sentence:late_prose", "sentence:statement_prose", "sentence:anchor_prose", "wrapped", "history", "dots",
     "cut:tail", "cut:mid", "acct_same_dates", "bills:1", "bills:2", "bills:3", "bills:4", "pages_per_bill:1", "pages_per_bill:2", "worked_out", "new_charges:summed",
     "decision:check", "decision:lines", "decision:guess",
+    *(f"account_line:{form}" for form in layouts.ACCOUNT_LINES), *(f"due_now:{form}" for form in layouts.DUE_NOWS),  # FR-149
     *(f"rate:{kind}" for kind in layouts.RATE_KINDS), *(f"holder_form:{form}" for form in layouts.PHONE_FORMS), *(f"holder_mode:{mode}" for mode in layouts.HOLDER_MODES),
 }
 
@@ -421,6 +426,7 @@ def test_generator_only_follows_its_own_rules():
             assert bill["new_charges"] == sum(line["minor"] for line in bill["lines"]), where
             assert bill["amount_due"] == bill["new_charges"] + (0 if bill["previous"] is None else bill["previous"] - bill["payments"]), where
             assert bill["wrong_due"] is None or bill["wrong_due"] != bill["amount_due"], where
+            assert bill["due_now"] is None or bill["due_now"] not in (bill["new_charges"], bill["amount_due"]), where
             for line in bill["lines"]:
                 assert isinstance(line["minor"], int), where
                 if line["quantity"]:
@@ -433,6 +439,8 @@ def test_generator_only_follows_its_own_rules():
                     assert line["unit_minor"] is None and line["unit_text"] is None, where
             assert all(line["holder"] is None for line in bill["lines"] if line.get("owner") is None), where
         if choices["kind"] == "phone":
-            assert len(choices["holder_forms"]) == 2 and all(bill["notes"] == [] or "differs from its section title" in bill["notes"][0] for bill in case.bills), where
+            assert len(choices["holder_forms"]) == 2 and all(
+                "differs from its section title" in note or choices["due_now"] == "alone" and note.startswith(("The amount due is worked out", "The bill prints"))
+                for bill in case.bills for note in bill["notes"]), where
         if choices["columns"] == "lastyear":
             assert choices["new_printed"], where

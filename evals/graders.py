@@ -260,7 +260,10 @@ def pay_reader(stubs, rows, split_right, unplaced=None, failed=False):
     return out
 
 
-def bill_reader(bills, rows, parts, reasons=0, unplaced=None, failed=False):
+TOTAL_COUNTS = ("account_holder_read", "due_now", "amount_due_total")  # FR-149: counts of bills, never a name, label, amount or date.
+
+
+def bill_reader(bills, rows, parts, reasons=0, unplaced=None, failed=False, totals=None):
     """How the bill engine did on a text-PDF bill file (specs/pdf-table-engine-bills FR-124). `bills` is the answers of each bill in file order
     (Case.stubs); `rows` is the charge amount the engine placed on each row, in minor units as printed (a credit by magnitude: Record signs it by its kind);
     `parts` is the list of each part's printed amounts (sets of minor units) under the split rule (documents/bill_split.bill_parts); `reasons` is how many of its
@@ -281,10 +284,13 @@ def bill_reader(bills, rows, parts, reasons=0, unplaced=None, failed=False):
     split_right  1 when files_split and the rule made as many parts as the file has bills, each holding its bill's amount due
     split_review 1 when the rule raised an FR-129 review reason on any part
     failed       the engine raised, so it placed nothing
+    account_holder_read  bills (parts) with an account-name line, so an account holder is read from it (FR-136)
+    due_now              bills (parts) printing a due-now line (FR-141)
+    amount_due_total     of those, bills whose answer's amount due is the printed total the reading settles on (FR-142), not the due-now part
     """
     unused = [] if failed else [abs(value) for value in rows]
     out = {"lines": 0, "exact": 0, "left_out": 0, "checkable": 0, "checks_held": 0, "unplaced": unplaced, "files_split": int(len(bills) > 1 or len(parts) > 1),
-           "split_right": 0, "split_review": int(bool(reasons)), "failed": failed}
+           "split_right": 0, "split_review": int(bool(reasons)), "failed": failed, **{name: (totals or {}).get(name, 0) for name in TOTAL_COUNTS}}
     for answers in bills:
         total, complete = Decimal(0), True
         for line in answers.rows or []:

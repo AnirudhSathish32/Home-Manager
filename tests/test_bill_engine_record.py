@@ -738,7 +738,7 @@ def test_sc117_a_late_payment_amount_is_never_the_amount_due(pdf_store, local_mo
     first = bf.amounts_at(720, "Balance Due", (bf.CHARGE, "50.00"))
     page = bf.page_of(bf.util_items(summary=[bf.UTIL_SUMMARY[2], ("Total Amount Due", "147.55")], stub_amount="147.55", above=first, extra=late))
     run = r1_run(pdf_store, local_model, "c", pages=[page])
-    assert run.record["amount_due_minor"] == 5000
+    assert run.record["amount_due_minor"] == 14755  # BL-UTIL-R1 (c)'s tie: the total-worded one (was 5000), FR-142 (a); the late 102.55 is still never the amount due.
     assert not [text for text in [*run.notes, *run.record["issues"], *(guess["text"] for guess in guesses_of(run))] if "102.55" in text]
     finished(run)
 

@@ -407,3 +407,15 @@ def test_fr148_a_second_reading_changes_nothing_and_asks_the_model_nothing_more(
     run.stub_bill(bf.STUB_TOTAL, FIELDS, classify=PROVIDER)
     run.extract(force=True)
     assert snapshot(run) == first and run.notes == first_notes and run.asked() == first_questions
+
+
+# === FR-149: diagnose counts due-now lines and prints no label, amount or date ================================================================
+
+def test_sc145_diagnose_counts_due_now_lines_per_page_and_prints_nothing_of_them(tmp_path):
+    from test_bill_engine_generator import probe, written
+    named = probe(written(tmp_path, "total.pdf", bf.total_pages()), tmp_path)
+    plain = probe(written(tmp_path, "util.pdf", bf.util_pages()), tmp_path)
+    assert named.returncode == 0 and plain.returncode == 0, (named.stderr[-300:], plain.stderr[-300:])
+    assert "due-now lines: 1" in named.stdout and "due-now lines: 0" in plain.stdout
+    for text in ("Current Charges", "62.91", "1,667.91", "11/01/2026", "LAKESIDE"):
+        assert text not in named.stdout, text

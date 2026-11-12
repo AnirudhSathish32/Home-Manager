@@ -216,7 +216,7 @@ def bill_section(result):
             print(f"charge tables: {len(tables)}   rows: {len(rows)}   totals: {len(totals)}   section titles: {len(titles) - sum(title.phone for title in titles)}"
                   f"   holder titles: {sum(title.phone for title in titles)}   wrapped labels: {wrapped}")
             print(f"anchors by kind: {anchors or 'none'}   late-payment lines: {late.get(page.number, 0)}   other tables: {len(others)} ({other_rows} rows)   unplaced lines: {unplaced}"
-                  f"   account-name lines: {named.get(page.number, 0)}")
+                  f"   account-name lines: {named.get(page.number, 0)}   due-now lines: {anchors.get('due_now', 0)}")  # FR-149: counts only.
             for table in tables:
                 decided = roles[table.id]
                 print(f"  {table.id}: {len(table.columns)} columns, roles decided by: {decided.decided_by}   rows here: {len([row for row in table.rows if row.page == page.number])}"

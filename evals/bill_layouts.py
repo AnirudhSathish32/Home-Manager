@@ -47,6 +47,10 @@ DUE_LABELS = ("Total Amount Due", "Amount Due", "Total Due", "Balance Due", "Amo
 PREVIOUS_LABELS = ("Previous Balance", "Balance Forward", "Last Bill")
 PAYMENT_LABELS = ("Payment Received {paid}", "Payments Received", "Payment - Thank You")
 NEW_LABELS = ("New Charges", "Total Current Charges", "Current Charges")
+# specs/bill-total-and-account-holder FR-149: the account-name line in each label form (the last one followed by an account number on the same line), and the
+# due-now line (`Current Charges due 11/01/2026 $62.91`) printed beside an amount due, or alone where the amount due would be (FR-141, FR-142).
+ACCOUNT_LINES = ("none", "none", "name", "holder", "holder_name", "customer", "name_on", "with_number")
+DUE_NOWS = ("none", "none", "with_due", "alone")
 
 PROVIDERS = {"utility": ("CITY POWER & WATER", "SYNTH ENERGY CO", "NORTHWIND UTILITIES"), "phone": ("METRO WIRELESS", "SYNTH MOBILE"),
              "rent": ("SYNTH PROPERTY MANAGEMENT", "NORTHWIND APARTMENTS")}
@@ -72,6 +76,11 @@ def collapse(text):
 
 def iso(day):
     return day.isoformat()
+
+
+def plain(minor):
+    """A positive amount as the reading writes it in a note: no thousands separator."""
+    return f"{minor // 100}.{minor % 100:02d}"
 
 
 def us(day):
@@ -125,6 +134,9 @@ def settle(choices):
         c["history"] = False
     if c["summary"] == "none":
         c["prev_printed"] = False
+    if c["due_now"] == "alone":
+        c["new_printed"] = True  # The total is the amount due: it is worked out from the new charges, and the lines check needs them (FR-142 b).
+        c["due_diff"] = False  # No amount due is printed, so none is printed twice.
     if c["columns"] == "lastyear":
         c["new_printed"] = True  # Two amount columns that both could be the charge are told apart by which sums to the new charges (FR-105 b).
     if c["columns"] == "lastyear" and c["heading"] == "none" and c["cut"] == "tail":
@@ -161,6 +173,7 @@ def draw(seed, index):
         "acct_same_dates": pick(seed, "acctdates", index, (False, True)), "rate_kind": pick(seed, "ratekind", index, RATE_KINDS),
         "due_label": pick(seed, "duelabel", index, tuple(range(len(DUE_LABELS)))), "swap": pick(seed, "swap", index, (False, True)),
         "holder_forms": forms, "holder_modes": modes,
+        "account_line": pick(seed, "accountline", index, ACCOUNT_LINES), "due_now": pick(seed, "duenow", index, DUE_NOWS),
     })
 
 
@@ -286,6 +299,17 @@ class Case:
             bills.append(self.bill(number, statement, due, period_end, account))
         return self.print_file(bills)
 
+    def account_holder(self):
+        """The account holder the account-name line prints (FR-136): the first drawn name with a last name, `Last, First` in the `name on account` form."""
+        if self.c["account_line"] == "none":
+            return None
+        return f"Sample, {self.names[0]}" if self.c["account_line"] == "name_on" else f"{self.names[0]} Sample"
+
+    def due_now(self, new, amount_due):
+        """The part of the bill the due-now line asks for: about a third of the new charges in whole dollars, never the new charges or the amount due."""
+        part = max(100, (new // 3) // 100 * 100)
+        return part + 100 if part in (new, amount_due) else part
+
     def bill(self, number, statement, due, period_end, account):
         c, rng = self.c, self.rng
         lines = self.bill_lines(number)
@@ -293,6 +317,7 @@ class Case:
         prev = rng.randint(5000, 15000) if c["prev_printed"] else None
         paid = None if prev is None else rng.choice((prev, prev, prev - 1500))
         amount_due = new if prev is None else prev - paid + new
+        due_now = self.due_now(new, amount_due) if c["due_now"] != "none" else None
         wrong = amount_due + rng.choice((1234, 3377, 5000)) if c["due_diff"] else None
         carried = prev is not None and c["new_printed"]
         # FR-117: the carried check picks the amount due when previous balance, payments and new charges all print; the lines check when no new charges are
@@ -306,10 +331,15 @@ class Case:
             if sum(line.get("last", 0) for line in lines) + sum(line["minor"] for line in lines if line.get("credit")) in (new, amount_due):
                 lines[0]["last"] += 111
         notes = self.holders(lines) if c["kind"] == "phone" else []
+        if c["due_now"] == "alone":  # FR-142 (b): the total is the amount due, noted as the reading notes it (the due date is the Due Date line's own).
+            if prev is not None:
+                notes.append(f"The amount due is worked out as previous balance {plain(prev)} \u2212 payments {plain(paid)} + new charges {plain(new)} = {plain(amount_due)}.")
+            notes.append(f"The bill prints Current Charges due {us(due)} {plain(due_now)} and a total of {plain(amount_due)}; the total is the amount due.")
         if c["kind"] != "phone":
             for place, line in enumerate(lines, 1):
                 line["position"] = place
         bill = {"provider": self.provider, "account": account, "last_four": account[-4:], "kind": c["kind"], "number": number,
+                "account_holder": self.account_holder(), "due_now": due_now,
                 "issue_date": iso(statement), "due_date": iso(due), "statement": iso(statement), "due": iso(due),
                 "period": (iso(period_end - timedelta(days=29)), iso(period_end)),
                 "lines": lines, "previous": prev, "payments": paid, "new_printed": c["new_printed"], "new_charges": new, "worked_out": prev is not None and not c["new_printed"],
@@ -419,6 +449,12 @@ class Printer:
             lines = [lines[0], lines[1], lines[-1]]
         if self.c["swap"] and not short:  # The account line and the statement date change places; a continuation header always ends with the due date.
             lines[1:3] = [lines[2], lines[1]]
+        holder = bill["account_holder"]
+        if holder and not short:  # FR-136: the account-name line, in the label form the case drew, beside the provider's name.
+            form = self.c["account_line"]
+            lines.insert(1, {"name": f"Account Name: {holder}", "holder": f"Account Holder: {holder}", "holder_name": f"Account Holder Name - {holder}",
+                             "customer": f"Customer Name ..... {holder}", "name_on": f"Name on account: {holder}",
+                             "with_number": f"Account Name: {holder}   {case.account_label} {bill['account']}"}[form])
         for text in lines:
             self.pages[-1].append((LABEL_X, self.y, text))
             self.y -= 12
@@ -446,8 +482,17 @@ class Printer:
             lines.append((PAYMENT_LABELS[(bill["number"] + self.c["due_label"]) % 3].format(paid=paid), -bill["payments"]))
         if bill["new_printed"]:
             lines.append((NEW_LABELS[0] if box else NEW_LABELS[1 + bill["number"] % 2], bill["new_charges"]))
-        lines.append((self.due_label(), bill["amount_due"]))
+        lines.append(self.due_line())
         return lines
+
+    def due_line(self):
+        """(label, minor) of the line that prints the amount due: the due-now line itself when the bill prints no amount due (FR-142 b)."""
+        if self.c["due_now"] == "alone":
+            return self.due_now_line()
+        return self.due_label(), self.bill["amount_due"]
+
+    def due_now_line(self):
+        return f"Current Charges due {us(self.due)}", self.bill["due_now"]
 
     # -- The bill --
 
@@ -472,7 +517,11 @@ class Printer:
         elif c["summary"] == "none":
             if bill["new_printed"]:
                 self.amounts(NEW_LABELS[1], (CHARGE, self.money(bill["new_charges"])), dots=c["dots"])
-            self.amounts(self.due_label(), (CHARGE, self.money(bill["amount_due"])), dots=c["dots"])
+            label, minor = self.due_line()
+            self.amounts(label, (CHARGE, self.money(minor)), dots=c["dots"])
+        if c["due_now"] == "with_due":  # The due-now line beside the amount due (FR-141: it is no amount-due anchor).
+            label, minor = self.due_now_line()
+            self.amounts(label, (CHARGE, self.money(minor)), dots=c["dots"])
         self.late()
         self.sentence()
         if c["history"]:
@@ -491,7 +540,10 @@ class Printer:
             self.room(5)
         self.put_line("Return this portion with your payment")
         self.put_line(f"{case.account_label} {bill['account']}")
-        if self.c["stub_line"] == "payment_due":
+        if self.c["due_now"] == "alone":
+            label, minor = self.due_now_line()
+            self.amounts(label, (CHARGE, self.money(minor)))
+        elif self.c["stub_line"] == "payment_due":
             self.amounts(f"Payment Due {us(self.due)}", (CHARGE, self.money(bill["amount_due"])))
         else:
             self.put_line(f"{case.due_label} {us(self.due)}")
@@ -626,6 +678,7 @@ def variations(layout):
         tags.add("due:different")
     elif sum(1 for bill in layout.bills if bill["amount_due"] is not None) and (c["summary"] in ("above", "below") and c["stub"] != "none" or c["summary"] == "both"):
         tags.add("due:alike")
+    tags.update((f"account_line:{c['account_line']}", f"due_now:{c['due_now']}"))
     for tag, on in (("wrapped", c["wrapped"]), ("history", c["history"]), ("dots", c["dots"]), ("late_row", c["late_row"]),
                     ("repeat", c["repeat"] and layout.choices["pages"] == 2), ("acct_same_dates", c["acct_same_dates"])):
         if on:

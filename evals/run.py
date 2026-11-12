@@ -27,6 +27,7 @@ from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
 from home_manager.core.money import MoneyError, to_minor
 from home_manager.documents import bill_split
+from home_manager.documents.charge_tables import DUE_NOW, account_holder_of
 from home_manager.documents.extraction import EXTRACTION_VERSION, cell_amount, line_amounts, paystub_columns
 from home_manager.documents.layout_context import evidence_lines
 from home_manager.documents.paystub_split import stub_parts
@@ -256,6 +257,35 @@ def bill_rows(tables, currency):
     return found
 
 
+def total_counts(lines, found, anchors, bills, currency):
+    """specs/bill-total-and-account-holder FR-149: per bill (part of the split), whether it prints an account-name line (`account_holder_read`) and a due-now line
+    (`due_now`), and of the latter, whether the answer's amount due is the total the reading settles on (`amount_due_total`: FR-142 (a) a printed amount due,
+    else (b) previous balance - payments + new charges, else the new charges, else the due-now amount). Counts of bills only: no name, label, amount or date."""
+    out = {"account_holder_read": 0, "due_now": 0, "amount_due_total": 0}
+    for (first, last), answers in zip(found, bills):
+        part = lines[first:last]
+        out["account_holder_read"] += any(account_holder_of(line.text) for line in part)
+        kinds = {}
+        for line in part:
+            for kind, value in {*([own] if (own := bill_split.anchor_of(line)) else []), *anchors.get(line.id, [])}:
+                kinds.setdefault(kind, set()).add(value)
+        if DUE_NOW not in kinds:
+            continue
+        out["due_now"] += 1
+        wanted = answers.fields["amount_due_minor"]
+        if wanted.state == "unchecked" or not isinstance(wanted.value, int):
+            continue
+        as_minor = lambda values: {to_minor(format(value, "f"), currency) for value in values}  # noqa: E731
+        if kinds.get("amount_due"):
+            settled = as_minor(kinds["amount_due"])
+        elif len(kinds.get("previous_balance", ())) == 1 and len(kinds.get("payments", ())) == 1 and len(kinds.get("new_charges", ())) == 1:
+            settled = {next(iter(as_minor(kinds["previous_balance"]))) - abs(next(iter(as_minor(kinds["payments"])))) + next(iter(as_minor(kinds["new_charges"])))}
+        else:
+            settled = as_minor(kinds.get("new_charges") or kinds[DUE_NOW])
+        out["amount_due_total"] += wanted.value in settled
+    return out
+
+
 def bill_readers(case, bills, evidence):
     """docs/evals.md "The two table readers": for a native-PDF bill with a text page whose charge lines the donor confirmed complete, the bill engine
     (`bill_tables.read`, whose columns are decided from the printed numbers) reads the saved reading, with no model. Its file split
@@ -272,12 +302,19 @@ def bill_readers(case, bills, evidence):
     try:
         engine = bill_tables.read(evidence)
         rows, unplaced = bill_rows(engine.adapted, currency), len(engine.reading.unplaced)
+        totals = None
         try:
-            found = bill_split.bill_parts(lines, bill_tables.split_anchors(engine))
+            anchors = bill_tables.split_anchors(engine)
+            found = bill_split.bill_parts(lines, anchors)
             parts, reasons = [printed(first, last) for first, last in found.parts], len(found.reasons)
         except Exception:  # A split that raises is a split missed (the app reads the file as one bill with a review reason), not a stop.
             parts, reasons = [], 1
-        return {"engine": bill_reader(bills, rows, parts, reasons, unplaced)}
+        else:
+            try:
+                totals = total_counts(lines, found.parts, anchors, bills, currency)
+            except Exception:  # Counting the totals never costs the file its comparison.
+                totals = None
+        return {"engine": bill_reader(bills, rows, parts, reasons, unplaced, totals=totals)}
     except Exception:  # An engine that raises placed nothing; that is a result, not a stop.
         return {"engine": bill_reader(bills, [], [], 0, failed=True)}
 

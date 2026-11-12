@@ -1090,9 +1090,32 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   page in reading order is used, with the note "The previous balance is printed as A and B; A, the first on page N, was used." and the
   checks judge it. When the **amount due** prints more than one value, the value that makes the bill's checks hold is used: the carried
   check (previous balance − payments + new charges = amount due) when the other three are printed, else the lines check when it runs
-  against the amount due; if no check decides, the first on the bill's first page, with the note "The amount due is printed as X and Y; X,
-  the first on page N, was used." (an `amount_due` guess). Only printed values decide; the model's never does. A value printed several
-  times alike is one value, with no note.
+  against the amount due; if no check decides, the first `total`-worded one (`Total Amount Due`, `Total Due`, `Total Amount to Pay`),
+  with the note "The amount due is printed as X and Y; X, the total, was used.", else the first on the bill's first page, with the note
+  "The amount due is printed as X and Y; X, the first on page N, was used." (an `amount_due` guess). Only printed values decide; the
+  model's never does. A value printed several times alike is one value, with no note.
+- **The due-now line and the printed total.** A line whose label is a new-charges or amount-due phrase followed by `due`, `due on`, `due
+  by` or `payable by` and a date (`Current Charges due 11/01/2026 $62.91`, `New Charges Due Nov 1, 2026 62.91`) is a **due-now line**
+  (`charge_tables.due_now_of`; summary anchor kind `due_now`, with its printed date). It is never a charge row, never the new charges and
+  never an amount-due anchor, so it can't be counted twice; `Amount Due by 11/01/2026` stays an amount-due anchor and a late line is
+  never a due-now line. A bill's **amount due is the total it prints**, not the due-now part: when an amount due is printed it is chosen
+  as above; when none is printed but a due-now line is, the amount due is previous balance − payments + new charges when all three are
+  printed (a printed 0.00 counts; note "The amount due is worked out as previous balance P − payments R + new charges N = A.", and the
+  carried check is not run on it), else the printed new charges (`Total Current Charges 1,667.91`), else the due-now amount; when that
+  total differs from the due-now amount the bill adds the note "The bill prints Current Charges due 11/01/2026 62.91 and a total of
+  1667.91; the total is the amount due." Amounts are never added except in that worked-out total, so a `Total Amount Due 147.55` that
+  already holds the previous balance stays 147.55. The due-now amount is kept in the details (`due_now`: `minor`, `date`, `label`,
+  `locator`) when it differs from the amount due, shown one row below **Amount due** with its Find, and a payment of exactly it matches
+  the bill like a payment of the amount due ([money](money.md#bills-and-their-lines)). **What counts doesn't change**: the new charges,
+  so a due-now amount is never counted (not through the model's new-charges answer, not through the fallback to the amount due). The
+  due date stays the model's answer kept by the usual date check; when it is missing or was dropped the due-now line's date is the due
+  date, cited to that line, and when both are kept and differ the bill adds the note "The bill also prints Current Charges due
+  11/01/2026." The due-now line's date is never the issue date. A numeric date that could be read either way is read month first.
+  A photographed, scanned or engine-failed bill has no engine anchors: the same label rule is applied to the lines its amount due and
+  new charges cite. A new-charges answer citing a due-now line is dropped with a note; an amount due citing one beside a new-charges
+  answer citing a `Total ...` line is replaced by the total as above; with nothing else read, a due-now amount counts nowhere (the bill
+  goes to review with the reason "New charges: the bill's new charges were not read, and its amount due is the due-now amount …"). A
+  bill that cites no due-now line reads exactly as before.
 - **New charges not printed.** A bill that prints no new charges but prints its previous balance, payments (a printed 0.00 counts) and
   amount due has them worked out as amount due − previous balance + payments (payments by magnitude), with the note "New charges aren't
   printed; worked out as amount due A − previous balance P + payments R = N." The lines must add up to that value, and it is what counts; the
@@ -1142,7 +1165,7 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
     A label inside a sentence or after other words (`Your account name is …`) is no account-name line, and a bare `Name:` is none either.
     It is kept in the details (`account_holder`: `text` and `locator`), never in a line's holder, and each part of a file of several bills
     reads only its own lines. How it is matched and shown: [money](money.md#bills-and-their-lines). The diagnose `bill` mode counts the
-    account-name lines per page, never the name.
+    account-name lines and the due-now lines per page, never a name, label, amount or date.
   - Photographed and scanned bills, invoices and decimal-comma amounts are not read from columns. Accuracy on real bills is unmeasured
     ([open work](open-work.md#pdf-table-engine)).
 
@@ -1169,7 +1192,7 @@ splits exactly as before.
   period is no key. The rule splits only between pages: two bills printed on one page stay one bill. On a text PDF the rule also reads
   the engine's summary anchors, so a bill whose `Amount Due` label and amount sit in separate layout lines (a heading over the amount
   column makes the reader save the column's amounts as lines of their own) still counts as printing its amount due. Each part must print
-  an amount due of its own (an anchor, never a late-payment line): a part without one joins the part before it, and the first part, if it
+  an amount due of its own (an anchor or a due-now line, never a late-payment line): a part without one joins the part before it, and the first part, if it
   has none, joins the next. A file with one bill reads exactly as without the rule. At most 200 bills per file.
 - **Uncertain boundaries go to review**, never a silent guess. Each gives the bill concerned one review reason, worded with its page and
   printed values: **(a)** a page whose key lines print two values of one key: "Page N prints more than one due date (A, B), so it may hold
