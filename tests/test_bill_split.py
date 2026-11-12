@@ -237,6 +237,32 @@ def test_sl11_f7_the_same_account_in_another_format_continues_the_bill(second):
     assert bill_split.bill_parts(lines_from(*pages)).parts == [(0, 6)]
 
 
+def test_sl12_r2_1_alphanumeric_accounts_that_differ_with_every_date_and_amount_alike_are_two_bills():
+    pages = [[f"Account Number AB1234-5678-{tail}", "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for tail in ("9012", "3456")]
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("second", ["Account Number AB1234 5678 9012", "Account Number AB1234-5678-9012", "Account Number AB1234-XXXX-9012", "Account Number ****9012",
+                                    "Account Number AB1234 **** 9012"])
+def test_sl12_r2_1_the_same_alphanumeric_account_in_an_equivalent_format_continues_the_bill(second):
+    pages = [["Account Number AB1234-5678-9012", "Due Date 10/15/2026", "Total Amount Due 30.00"], [second, "Due Date 10/15/2026", "Total Amount Due 30.00"]]
+    assert bill_split.bill_parts(lines_from(*pages)).parts == [(0, 6)]
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-9012", "9012"), ("Account Number AB1234 5678 3456", "3456"), ("Account # ACCT-77889900", "9900"),
+                                             ("Account Number 1234 5678 9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234-5678-9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234 5678 9012 Due Date 10/15/2026", "9012")])
+def test_sl12_r2_1_an_alphanumeric_account_keys_its_last_four_digits_and_stops_at_a_following_text_field(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("text", ["Account Number AB12", "Account Number Service 1234", "Account no. xxxx 345", "Account Number AB-CD"])
+def test_sl12_r2_1_fewer_than_four_digits_or_a_first_word_with_no_digit_gives_no_key(text):
+    assert key_of(text) is None
+
+
 def test_sc126_a_payment_due_line_with_dot_leaders_is_a_due_date_key():
     assert key_of("Payment Due ........ 10/15/2026") == ("due_date", (10, 15, 2026))
     assert key_of("Due Date | 07/20/2026") == key_of("Due Date 07/20/2026") == ("due_date", (7, 20, 2026))
