@@ -311,6 +311,35 @@ slices:
       lines check only. Three doc citations were already broken at START_HEAD (documents.md "Known limits", "Native PDF
       layout", open-work.md "UI redesign"), not this feature's. In the worktree, `python -m evals.run` needs
       PYTHONPATH=src (the .venv editable install points at the main checkout).
+  - id: SL-11
+    title: "fixes for code review round 1"
+    status: done
+    verification:
+      - "17 targeted files (bill suites + split/ledger/extraction/library importers) -> 1089 passed, 1 skipped (opt-in browser) (orchestrator rerun at f46e02e)"
+      - "RUN_BROWSER_TESTS=1 bill/paystub/table/document_v2 browser tests -> 18 passed (orchestrator rerun at f46e02e)"
+    start_head: 4e31dc4
+    end_head: f46e02e
+    commit: [df976e5, 9ecb4bf, 0f4f923, 117b95c, d1e9a73, c758a0f, f9d2628, ca48df8, f46e02e]
+    provider: claude
+    model: claude-sonnet-5-5
+    review_findings_round_1:
+      - {id: 1, severity: major, disposition: fixed, fix: "Store.transaction() wraps run's whole publish phase (bills, automatic rejection, split, retirement, run success); nested connection() uses savepoints"}
+      - {id: 2, severity: major, disposition: fixed, fix: "explicit + or DR under a money-off section stays a charge"}
+      - {id: 3, severity: major, disposition: fixed, fix: "invoice falls back to the old native-anchor path whenever the engine took the printed tables away"}
+      - {id: 4, severity: major, disposition: fixed, fix: "a saved split decides section ownership and money-off signs, including cuts inside a page"}
+      - {id: 5, severity: major, disposition: fixed, fix: "a bill's summary on another page of the same bill decides its charge column"}
+      - {id: 6, severity: major, disposition: fixed, fix: "a fresh non-price correction remembers the current reading's amount; G4 unchanged"}
+      - {id: 7, severity: major, disposition: fixed, fix: "account key is the last four of the whole printed value"}
+      - {id: 8, severity: minor, disposition: fixed, fix: "shown rate follows whether the latest unit-price correction applies"}
+      - {id: 9, severity: minor, disposition: fixed, fix: "product check uses the same effective-rate rule as the display"}
+    notes: >-
+      Orchestrator decisions: findings 2 and 7 confirmed by reading the code; the rest rest on the reviewer's reproductions.
+      Finding 5 follows spec FR-103/FR-105(b) over plan.md line 202 ("targets are every new-charges anchor value on the
+      table's pages"); the plan text is left as approved and this deviation is recorded here. The SL-11 worker inverted
+      test_sc105_only_summary_amounts_on_the_tables_own_pages_are_sum_targets accordingly (it pinned the plan rule, not
+      a test-contract value). EXTRACTION_VERSION is now "typed-extraction-v48-bill-review-fixes". The saved-split
+      credit-section limitation was removed from docs/open-work.md. The transaction holds the write lock from the first
+      bill's publication to the run's success; no model call happens inside it.
 final_verification:
   head: 3c01a79
   date: 2026-11-11
