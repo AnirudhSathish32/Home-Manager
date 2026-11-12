@@ -221,3 +221,69 @@ The audit wrapper invoked pytest on `tests/test_bill_split.py -k 'sl11_f1 and no
 - **Reported, not independently rerun here:** the orchestrator's 1089 passed / 1 skipped at f46e02e and 18 browser passes. No full suite or browser run was performed in round 2. The full-suite rerun remains the orchestrator's post-review step; real-data accuracy remains unmeasured.
 
 Only this round-2 section was appended. No source, test or other documentation edit, commit, push or merge was made.
+
+## Code review (round 3)
+
+Reviewer: OpenAI / Codex `gpt-6.1-sol`, high reasoning effort, fresh independent review sub-agent; no helper subagents. Risk: **HIGH**, final allowed review round. Independence: **model-family** (`handoffs/slice-SL-12.md` identifies the fix worker as `model_family: anthropic`). Reviewed only `git diff a4b8578 bfdef11`, including code commit `d00c3fa`, with surrounding code and prior revisions read to establish behavior. Reviewed HEAD `bfdef1117f4883d81d37e13ad25f66bdea62c821` in `/home/anirudh/Documents/Projects/Home-Manager-bills`. Read both earlier code-review sections in full, SL-12's handoff/progress dispositions, FR-126/FR-128, SC-126 and the relevant plan contract. Synthetic data only; no protected path was accessed.
+
+**Verdict: REQUEST CHANGES — 2 major findings; no blocker, minor or nit.** R2-1's reported reproduction and R2-2 are resolved; round-1 finding 7 remains partially resolved because the account value can still be truncated or extended into another field.
+
+### Prior finding dispositions
+
+- **R2-1: resolved as reported.** Re-ran the round-2 reproduction using the real modules loaded from Git at `4e31dc4`, `a4b8578` and `bfdef11`. Each synthetic page prints the same due date `10/15/2026`, new charges `30.00` and total amount due `30.00`; only `AB1234-5678-9012` versus `AB1234-5678-3456` differs. Results: `4e31dc4` keys `9012 / 3456`, parts `[(0,4),(4,8)]`; `a4b8578` keys `None / None`, parts `[(0,8)]`; `bfdef11` again keys `9012 / 3456`, parts `[(0,4),(4,8)]`. All three return empty reasons. The reported regression is repaired; this does not establish that every alphanumeric format is handled (R3-1).
+- **R2-2: resolved.** `docs/documents.md:1153` now correctly says `Account no. xxxx 3456` keys `3456` and uses `xxxx 345` for fewer than four digits. Independently reproduced both results.
+- **Round-1 finding 7: partially resolved.** Numeric space-separated groups now key the final group, and ordinary full/masked/hyphenated equivalents continue one bill. However, the changed account loop still fails the whole-account/last-four requirement in R3-1 and R3-2 below. Earlier findings 1–6, 8 and 9 were not reopened or re-reviewed; their code is outside this fix diff.
+
+### Findings
+
+**R3-1 — major — A later alphanumeric account group is truncated, causing silent false splits and merges.** `src/home_manager/documents/bill_split.py:87` (`key_of`; `ACCOUNT_START` at `:27`). Requirement: **FR-128**.
+
+Only the first group can contain letters other than masking `x/X`; a subsequent digit-bearing group such as `CD9012` terminates the value. Consequently `Account Number AB1234-5678-CD9012` keys `9012`, but the equivalent space-separated `Account Number AB1234 5678 CD9012` keys **5678**. Two four-line pages with these equivalent account values and otherwise identical dates/charges/amounts return `[(0,4),(4,8)]`, reasons `{}`: one bill becomes two. Two genuinely different accounts `AB1234 5678 CD9012` and `AB1234 5678 CD3456` both key **5678**, returning `[(0,8)]`, reasons `{}`: two bills merge. A full grouped value followed by its masked `****9012` form also splits incorrectly.
+
+This is directly attributable to the changed first-versus-later-group condition: at `a4b8578` the equivalent alphanumeric inputs yielded no keys and stayed one part; the fix now emits contradictory partial keys and introduces a false split. The older `4e31dc4` first-token parser also mishandled grouped alphanumeric values, so the different-account merge is an unresolved whole-value case of round-1 finding 7, rather than a claim that all of this behavior first appeared in SL-12. SL-12's handoff acknowledges later mixed groups as a residual, but FR-128 does not authorize dropping digits from those account groups.
+
+**Suggested fix:** accept digit-bearing alphanumeric groups throughout the account value, while retaining termination at following textual fields and real cell boundaries. Add equivalent compact/grouped/masked continuation and different-tail/same-prefix split cases for accounts with letters in later groups. Do not publish a truncated prefix as the complete account key.
+
+**R3-2 — major — A following address or phone cell supplies the account's last four digits.** `src/home_manager/documents/bill_split.py:87` (`key_of`; separator removal at `:58`). Requirement: **FR-128**.
+
+The restored alphanumeric first group is followed by unlimited numeric groups, after `text_of` has removed every `|` cell separator. A separate text field beginning with digits is therefore absorbed before its first ordinary word. With the same synthetic four-line page shape:
+
+```text
+page 1: Account Number AB1234-5678-9012
+page 2: Account Number AB1234-5678-9012 | 12 Main St
+keys:   9012 / 1212
+parts:  [(0,4),(4,8)]; reasons {}
+```
+
+The repeated account wrongly starts another bill because its adjacent address cell contributes `12`. Conversely, two account lines `Account Number AB1234-5678-9012 | 212-555-0123` and `Account Number AB1234-5678-3456 | 212-555-0123` both key **0123** and silently merge into `[(0,8)]`. This scenario concerns a digit-leading address/phone cell, not the correctly handled label-first field `Service Address 12 Main St` or `Phone 212-555-0123`.
+
+At `4e31dc4`, the account's complete first token keyed `9012 / 3456` without consuming the next cell; the repeated-account/address case remained one bill and the different-account/shared-phone case split correctly. At the scoped base `a4b8578`, the alphanumeric inputs yielded no keys; SL-12 restores recognition but now consumes the unrelated cell. The numeric-only path already had the separator-loss weakness before this diff; this finding is the newly restored alphanumeric path's incorrect keys and regression against its pre-SL-11 behavior.
+
+**Suggested fix:** preserve field/cell boundaries while parsing the account, allowing a separator between the key label and its value but stopping before a subsequent address/phone cell. Continue accumulating actual space-separated account groups. Add both repeated-account/different-adjacent-field and different-account/shared-adjacent-field regressions; assert keys, part ranges and reasons.
+
+Both findings were reproduced first with hand-built lines (the SC-126 unit-test entry point), then with validated synthetic `PDFResult`/`PDFPage(method='vision_model')`/`TextLine` objects passed through the real `evidence_lines -> key_of -> bill_parts` path. No model or private data was used. Downstream record-count consequences are traced from these returned part ranges; no new end-to-end ledger reproduction was run for these two cases.
+
+### Other requested checks and version/docs
+
+Labeled following fields containing digits (`Service Address 12 Main St`, `Phone 212-555-0123`, `Due Date 10/15/2026`) stop correctly. Supported masked groups, `Account #:`, `Account No.`, and an additional `#` before the value key correctly. A newline inside one line's text is normalized as whitespace and its numeric groups accumulate; genuinely separate evidence lines are not joined, which is the pre-existing line-local key rule, outside this fix's changed behavior. No new finding is asserted for that existing line-boundary limitation.
+
+`EXTRACTION_VERSION` at `src/home_manager/documents/extraction.py:52`, the persisted-run pin at `tests/test_bill_engine_record.py:248`, and `docs/documents.md:1018` all agree on `typed-extraction-v49-bill-account-keys`. The bump correctly prevents v48 extraction runs from being reused for the restored account formats: `enqueue` includes `prompt_version` in its reuse lookup. No migration or new persistence behavior was introduced. The changed docs accurately describe the implemented first-group restriction and correct R2-2; that restriction does not waive FR-128 or the failures above. No separate documentation finding is added.
+
+### Independent verification and coverage
+
+Commands ran in the specified worktree with `PYTHONDONTWRITEBYTECODE=1`, without xdist or pytest cache:
+
+```text
+.venv/bin/python -m pytest tests/test_bill_split.py -q -p no:cacheprovider
+95 passed, 2 warnings (84.97s)
+
+.venv/bin/python -m pytest tests/test_bill_engine_record.py -k 'version or v49 or sc121' -q -p no:cacheprovider
+3 passed, 87 deselected, 2 warnings (3.94s)
+
+.venv/bin/python -m pytest tests/test_bill_engine_record.py -k 'sc110_every_amount' -q -p no:cacheprovider
+1 passed, 89 deselected, 2 warnings (2.35s)
+```
+
+`git diff --check a4b8578 bfdef11` passed. Independent inline synthetic probes produced the prior-revision comparisons and edge-case outputs above; they were not added as tests. The 99 passing tests support the existing SC-126–131 split/service coverage and FR-121 version/reread behavior within their fixtures. **FR-128 fails the two additional account-value variants above; FR-126's R2-2 correction and v49 documentation are verified.** No full-suite, browser, maximum-size or real-data accuracy claim is made. The orchestrator's 801-passed result at `d27f9b3` is reported evidence, not independently rerun in full here.
+
+Only this round-3 section was appended. No source, test or other documentation edit, commit, push or merge was made. Two major findings remain after the final allowed review round; no additional review round or implementation was started.
