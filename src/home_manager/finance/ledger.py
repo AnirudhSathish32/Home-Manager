@@ -2796,10 +2796,13 @@ class Ledger:
 
     @staticmethod
     def line_state(db, receipt_id):
-        """The remembered line amounts by correction id (minor units), the held correction ids and the undone undo rows, as text ids."""
+        """The remembered line amounts by correction id (minor units), the held correction ids, the undone undo rows (as text ids), and `read`: the
+        amount each position printed in the latest reading of a bill with line corrections, before any was applied (the current reading's own
+        amounts, which a correction made now remembers; the `amounts` stay the history of each correction)."""
         row = db.execute("SELECT details_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()
         found = (json.loads(row[0]) if row and row[0] else {}).get(LINE_CORRECTIONS) or {}
-        return {"amounts": dict(found.get("amounts") or {}), "held": list(found.get("held") or []), "undone": list(found.get("undone") or [])}
+        return {"amounts": dict(found.get("amounts") or {}), "held": list(found.get("held") or []), "undone": list(found.get("undone") or []),
+                "read": dict(found.get("read") or {})}
 
     @staticmethod
     def save_line_state(db, receipt_id, state):
@@ -2855,7 +2858,9 @@ class Ledger:
         prior = db.execute("SELECT id FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? AND id<? ORDER BY id DESC LIMIT 1",
                            (receipt_id, f"price:{position}", correction_id)).fetchone()
         if prior is not None and str(prior[0]) not in (*state["held"], *state["undone"]):  # An applied price correction: its line is not as read.
-            if str(prior[0]) in state["amounts"]:
+            if str(position) in state["read"]:  # A reading since has printed this position: that is the line as read, whatever the price correction says.
+                amount = state["read"][str(position)]
+            elif str(prior[0]) in state["amounts"]:
                 amount = state["amounts"][str(prior[0])]
             else:  # Made before amounts were remembered.
                 found, before = self.price_chain_start(db, receipt_id, position, row["currency"])
@@ -2880,6 +2885,8 @@ class Ledger:
         state = self.line_state(db, receipt_id)
         currency = db.execute("SELECT currency FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
         printed = {row[0]: row[1] for row in db.execute("SELECT position,line_total_minor FROM receipt_items WHERE receipt_id=?", (receipt_id,))}
+        if found:
+            state["read"] = {str(position): minor for position, minor in printed.items() if minor is not None}  # This reading's own amounts (FR-119).
         plain = lambda minor: money(minor, currency)["decimal"] if minor is not None else "no amount"  # noqa: E731
         skipped, held, reasons = set(), [], []
         for item in sorted(found, key=lambda row: int(row["field"].split(":")[1])):

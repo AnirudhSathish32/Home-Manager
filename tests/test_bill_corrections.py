@@ -359,3 +359,63 @@ def test_sc119_g4_a_correction_made_before_this_change_is_compared_with_the_amou
         assert_ledger_healthy(store)
     finally:
         store.close()
+
+
+# --- Review round 1, finding 6 (SL-11): a fresh correction remembers the current reading's amount, not an earlier one's ---------------------------------
+
+def caught_up_tax(tmp_path):
+    """BL: the tax line misread 5.35, its price corrected to 5.53, then a reading that prints 5.53 itself (the reading caught up). Returns the books and a
+    `read(amount)` that publishes a reading of the same bill."""
+    store, ledger, docs = open_books(tmp_path / "managed")
+
+    def read(amount):
+        lines = [line("Energy", 6000, "utilities", "usage"), line("State Tax", amount, "utilities", "tax_fee")]
+        return bill(ledger, docs["phone.png"], "City Power", "2026-10-15", lines, status="needs_review")
+    receipt_id = read(535)
+    ledger.correct_item(receipt_id, 2, "5.53")
+    assert read(553) == receipt_id
+    record = ledger.record("receipt", receipt_id)
+    assert held_reasons(record) == [] and [item["line_total_minor"] for item in record["items"]] == [6000, 553]
+    return store, ledger, receipt_id, read
+
+
+def test_sl11_f6_a_code_set_after_the_reading_caught_up_with_the_price_correction_is_kept_on_an_unchanged_reread(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_item_fields(receipt_id, 2, {"product_code": "TAX-CODE"})
+        with store.connection() as db:
+            code_row = db.execute("SELECT max(id) FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field='product_code:2'",
+                                  (receipt_id,)).fetchone()[0]
+        assert line_state(store, receipt_id)["amounts"][str(code_row)] == 553  # The line as the current reading prints it, not the earlier 5.35.
+        assert read(553) == receipt_id  # An unchanged reread.
+        record = ledger.record("receipt", receipt_id)
+        assert held_reasons(record) == [] and record["items"][1]["product_code"] == "TAX-CODE"
+        assert line_state(store, receipt_id)["held"] == []
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f6_a_member_set_after_the_reading_caught_up_is_not_held_on_an_unchanged_reread(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_line(receipt_id, 2, "member", "blair", members=MEMBERS)
+        assert read(553) == receipt_id
+        record = ledger.record("receipt", receipt_id)
+        assert held_reasons(record) == [] and (record["items"][1]["member_id"], record["items"][1]["member_source"]) == ("blair", "user")
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f6_the_fresh_correction_is_held_for_a_shifted_line_that_happens_to_print_the_older_amount(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_item_fields(receipt_id, 2, {"product_code": "TAX-CODE"})
+        assert read(535) == receipt_id  # The line at position 2 now prints 5.35, the amount an earlier reading had: it is not the line the code was set on.
+        record = ledger.record("receipt", receipt_id)
+        only_reason(record, "line 2", "wasn't applied", "5.35", "5.53")
+        assert record["items"][1]["product_code"] is None
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
