@@ -357,6 +357,28 @@ slices:
     notes: >-
       EXTRACTION_VERSION is now "typed-extraction-v49-bill-account-keys" (files read at v48 with alphanumeric accounts
       were kept as one bill). Round 2 reviewer agreed finding 5 was a plan defect, not a contract change.
+  - id: SL-13
+    title: "fixes for code review round 3"
+    status: done
+    start_head: 608dcd8
+    end_head: 1140f8d
+    commit: [f153ed4, 1140f8d]
+    provider: claude
+    model: claude-sonnet-5-5
+    review_round_3_status: "R2-1, R2-2 resolved; round-1 #7 partially resolved; R3-1 and R3-2 major (FR-128 account keys)"
+    review_findings_round_3:
+      - {id: R3-1, severity: major, disposition: fixed, fix: "one account-group rule for every word of the value: digit-bearing alphanumeric groups count anywhere"}
+      - {id: R3-2, severity: major, disposition: fixed, fix: "cells_of keeps | cell boundaries; the account value stops at the next cell"}
+    human_decision: >-
+      Round 3 was the last allowed review round and left two majors, so the loop stopped and asked. The user chose
+      "A": fix, orchestrator verifies, no fourth review.
+    verification:
+      - "Orchestrator probes of every round-3 reproduction through key_of: 9012/9012/9012 for AB1234-5678-CD9012, AB1234 5678 CD9012, ****9012; CD3456 -> 3456; '| 12 Main St' and '| 212-555-0123' cells ignored; labelled fields, Account #:, xxxx 345 (None), dates unchanged"
+      - "7 targeted files (bill split/engine/record/generator, evals, receipt segments, paystub split) -> 822 passed (orchestrator rerun at 1140f8d)"
+    notes: >-
+      EXTRACTION_VERSION is now "typed-extraction-v50-bill-account-cells". Residual (recorded, not fixed): an unlabelled
+      digit-bearing word after the account in the same cell (`Account Number 1234 5678 9012 12th St`) is read as part of
+      the value; only labelled fields and | cell boundaries end it.
 final_verification:
   head: 3c01a79
   date: 2026-11-11
