@@ -391,3 +391,16 @@ final_verification:
       exit_code: 0
       result: "18 passed"
   verdict: pass (only baseline failures)
+review_code:
+  rounds: 3
+  reviewer: codex/gpt-6.1-sol (high), independence model-family
+  result: "round 1: 7 major, 2 minor; round 2: 1 major, 1 minor; round 3: 2 major (FR-128 account keys). All fixed in SL-11 to SL-13; round 3 fixes verified by the orchestrator only (user decision A, no fourth review)."
+  residual: "an unlabelled digit-bearing word after an account number in the same cell is read as part of it (docs/open-work.md)"
+merged_verification:
+  head: 8e15d9e
+  branch: reorganize-packages
+  date: 2026-11-12
+  command: ".venv/bin/python -m pytest -q -p no:cacheprovider -rfE"
+  result: "54 failed, 3831 passed, 119 skipped, 1 deselected, 20 errors (39m33s)"
+  compared_with_baseline: "identical failure/error ids to baseline_failures (74 ids); no new failure, none fixed"
+  not_run: "browser tests on the merged tree (18 passed on the branch at f46e02e, before SL-12/SL-13, which touched no page code); running-app validation BLOCKED (missing ~/.agent-harness/environment.py)"
