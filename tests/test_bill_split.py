@@ -218,6 +218,25 @@ def test_sc126_an_account_masked_or_in_full_is_the_same_account():
     assert key_of("Account no. ****3456") == ("account", "3456")
 
 
+@pytest.mark.parametrize("text, last_four", [("Account Number 1234 5678 9012", "9012"), ("Account Number 1234 5678 3456", "3456"), ("Account: 1234 5678 9012 Due Date 10/15/2026", "9012"),
+                                             ("Account Number XXXX XXXX 9012", "9012"), ("Account Number 1234 5678 9012 Page 3 of 4", "9012"),
+                                             ("Account Number 9012 Due Date 10/15/2026 12345678", "9012")])
+def test_sl11_f7_an_account_is_the_last_four_of_its_whole_printed_value_up_to_a_following_text_field(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+def test_sl11_f7_accounts_that_differ_after_a_space_group_are_two_bills_even_with_every_date_and_amount_alike():
+    pages = [[f"Account Number 1234 5678 {tail}", "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for tail in ("9012", "3456")]
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("second", ["Account Number ****9012", "Account Number 1234-5678-9012", "Account Number XXXX XXXX 9012", "Account #: 5555 5555 9012"])
+def test_sl11_f7_the_same_account_in_another_format_continues_the_bill(second):
+    pages = [["Account Number 1234 5678 9012", "Due Date 10/15/2026", "Total Amount Due 30.00"], [second, "Due Date 10/15/2026", "Total Amount Due 30.00"]]
+    assert bill_split.bill_parts(lines_from(*pages)).parts == [(0, 6)]
+
+
 def test_sc126_a_payment_due_line_with_dot_leaders_is_a_due_date_key():
     assert key_of("Payment Due ........ 10/15/2026") == ("due_date", (10, 15, 2026))
     assert key_of("Due Date | 07/20/2026") == key_of("Due Date 07/20/2026") == ("due_date", (7, 20, 2026))
