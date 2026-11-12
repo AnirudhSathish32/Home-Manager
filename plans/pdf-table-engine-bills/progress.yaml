@@ -340,6 +340,23 @@ slices:
       a test-contract value). EXTRACTION_VERSION is now "typed-extraction-v48-bill-review-fixes". The saved-split
       credit-section limitation was removed from docs/open-work.md. The transaction holds the write lock from the first
       bill's publication to the run's success; no model call happens inside it.
+  - id: SL-12
+    title: "fixes for code review round 2"
+    status: done
+    start_head: a4b8578
+    end_head: d27f9b3
+    commit: [d00c3fa, d27f9b3]
+    provider: claude
+    model: claude-sonnet-5-5
+    review_round_1_status_after_round_2: "1-6, 8, 9 resolved; 7 partially resolved (alphanumeric regression, R2-1)"
+    review_findings_round_2:
+      - {id: R2-1, severity: major, disposition: fixed, fix: "key_of accepts an alphanumeric first account word again, then numeric or masked groups; key is the last four digits of the whole value"}
+      - {id: R2-2, severity: minor, disposition: fixed, fix: "docs/documents.md account example corrected"}
+    verification:
+      - "8 targeted files (bill split/engine/record/corrections/generator, evals, receipt segments, paystub split) -> 801 passed (orchestrator rerun at d27f9b3)"
+    notes: >-
+      EXTRACTION_VERSION is now "typed-extraction-v49-bill-account-keys" (files read at v48 with alphanumeric accounts
+      were kept as one bill). Round 2 reviewer agreed finding 5 was a plan defect, not a contract change.
 final_verification:
   head: 3c01a79
   date: 2026-11-11
