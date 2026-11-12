@@ -117,6 +117,9 @@ Code: `app/profiles.py`, `app/family_sync.py`, `app/family_hub.py`, `app/family_
   - A card or phone line that isn't listed is asked about once: the record says so and offers **Add to Who has what**,
     with whose it is. Members' own accounts ending in four digits are offered as entries to add, never used to guess.
   - For a pay stub, the suggestion is an employer that exactly one member already has pay stubs from.
+  - A bill none of that decides, with no line holder, whose printed account name (`Account Name: Blair Sample`) matches exactly one
+    member's name is suggested for that member, with the reason "The account is in Blair Sample's name". It is only a suggestion: a name
+    never sets a line's member, and Who has what stays the only automatic owner.
   - Nothing is sent until you choose **Send**.
 - **Sharing a cost.** The total is divided into equal whole-cent parts among the people ticked (`splits.equal_shares`:
   50.01 between two is 25.01 and 25.00; the first listed gets the extra cent).
@@ -169,7 +172,10 @@ number, and a last four can name only one member's line or card.
   delivery names whose lines a library's part is (`record_shares.member_id`, migration 067).
 - **The payer's charge** counts only their part (`CHARGE_SHARE`), as for any shared receipt.
 - **In the family's inbox** each line shows whose it is, changed with its own choice
-  (`PUT /api/family/routing/receipt/{id}/lines/{position}`); a line set to nobody is shared out like the taxes.
+  (`PUT /api/family/routing/receipt/{id}/lines/{position}`); a line set to nobody is shared out like the taxes and says **Shared**
+  (the select's empty choice reads "Shared (taxes, fees)"), whatever account name the bill prints. In a member's own library, a bill
+  delivered shared by line also says Shared on lines nobody is named on; a bill delivered to one person shows the account name by the
+  rule in [money](money.md#bills-and-their-lines).
 - **From a person's own library.** A bill with lines for more than one person offers **Ask the family to share by
   line** (`PUT /api/receipts/{id}/share-by-line`, `share_requests`). Their next copy carries the request; the family
   computer reads it when its inbox is opened (`Manager.import_share_requests`) and puts the bill in its inbox, once per

@@ -85,6 +85,9 @@ KEY_LABELS = {
     "account": ("account number", "account no.", "account no", "account #", "account"),
 }
 
+# FR-136: the labels of an account-name line (`Account Name: Jordan A. Rivera`), longest first so `account holder name` wins over `account holder`.
+ACCOUNT_HOLDER_LABELS = ("account holder name", "account name", "account holder", "customer name", "name on account")
+
 # FR-102 (a): a phone number in a section title. (i) grouped digits ending in a 4-digit group directly after a 3-digit group (G14: a year range or an
 # account number is none), (ii) masked, (iii) after `ending`, `ending in` or `ends in`.
 PHONE = re.compile("|".join((
@@ -231,6 +234,32 @@ def key_kind(text):
             rest = re.sub(r"^[\s.:#…]+", "", rest)
             if (re.match(DATE, rest, re.IGNORECASE) if kind != "account" else re.match(r"\S*\d", rest)):
                 return kind
+    return None
+
+
+def _label_words():
+    """Every label that ends an account holder's name printed on the same line: FR-103's anchor phrases, FR-128's key labels and the account-name labels."""
+    words = {*ANCHOR_KIND, *ACCOUNT_HOLDER_LABELS, *(label for labels in KEY_LABELS.values() for label in labels)}
+    return re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(word).replace(r"\ ", r"\s+") for word in sorted(words, key=len, reverse=True)) + r")(?![A-Za-z0-9])",
+                      re.IGNORECASE)
+
+
+NEXT_LABEL = _label_words()
+
+
+def account_holder_of(text):
+    """The account holder an account-name line prints (FR-136), else None: the text must start with an account-name label directly followed (a colon, dot
+    leaders or a dash allowed) by a value holding a letter. The value is cut before the next label printed on the same line (`Account Name: JORDAN A RIVERA
+    Account Number 4455` gives `JORDAN A RIVERA`), whitespace collapsed, at most 80 characters."""
+    text = " ".join(text.replace("|", " ").split())
+    lower = text.lower()
+    for label in ACCOUNT_HOLDER_LABELS:
+        if not lower.startswith(label) or lower[len(label):len(label) + 1].isalpha():
+            continue
+        rest = re.sub(r"^[\s.:\-–—…]+", "", text[len(label):])
+        later = NEXT_LABEL.search(rest, 1)
+        value = re.sub(r"[\s.:\-–—…,;]+$", "", rest[:later.start()] if later else rest)
+        return value[:80].rstrip() if re.search(r"[^\W\d_]", value) else None
     return None
 
 

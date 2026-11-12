@@ -97,6 +97,20 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
   read per line holder. Add-ons such as Apple TV+ or Apple Music are `subscription` lines. Taxes and fees are lines of
   their own. A holder must be printed where its line is cited (a word of the name, or the number's last four digits);
   otherwise it is left out.
+- **The account holder and the Person column.** A bill that prints whose account it is (`Account Name: Jordan A. Rivera`; the labels
+  `account name`, `account holder`, `account holder name`, `customer name`, `name on account`) keeps that name as its **account holder**
+  in the bill's details (`account_holder`, with its source line), read from the transcribed lines by code on every bill that isn't an
+  invoice: a text PDF, a photographed or a scanned one. It is never a line's `line_holder`. The page shows each line's **Person** as the
+  server decides (`finance/account_holder.py`, `Manager.record_view`): the member set on the line (by hand or by Who has what), else the
+  line's own printed holder (a section title such as `Alex 555-201-1111`), else the bill's account holder, else **Shared**. The name is
+  matched when the record is shown, against the profile's name and the spouse named on the latest tax return (in a family, the members'
+  names): first and last words equal, a middle name ignored or matched by its initial, `Last, First`, titles (Mr, Dr) and suffixes
+  (Jr, III) handled, joint names (`Jordan & Casey`) and a first-name initial matching nobody, a one-word name matching a first name when it
+  is the only candidate that does. A match shows the person's name (and `Account holder` reads `… (you)`); no match shows the name as
+  printed, so renaming a profile changes what is shown with no re-read, and the profile's name is never stored in the library. A bill
+  shared by line in the family leaves lines nobody is named on at **Shared**, because they are shared out with the taxes and fees.
+  **Account holder** is correctable like the bill's other details (cleared means none); a correction is re-applied after every reading,
+  and a confirmed or rejected bill isn't rewritten, so one read before this existed shows Shared until you set it.
 - **What counts is the new charges** (`total_minor`). The amount due (`amount_due_minor`) can include a past-due
   balance and is kept beside it. The lines must add up to the new charges; that is the bill's arithmetic cross-check. With
   no new charges printed, the lines' sum counts, else the amount due, with a note; a text-PDF bill that prints its previous
@@ -366,6 +380,8 @@ reading the document again.
 - **Pay stub lines:** `PATCH /api/paystubs/{id}/lines/{position}` with `changes.current` or `changes.ytd` and an optional
   `reason` corrects the amount in that column. Corrections follow the line's group, description and occurrence across
   later readings and appear in the pay stub's history with Undo. Correcting a line clears its notes; Undo puts them back.
+- **A bill's account holder:** `detail:account_holder` (text of at most 80 characters, cleared with an empty value) on a bill read with a
+  kind that is not an invoice, including one that printed none ([Bills and their lines](#bills-and-their-lines)).
 - **Receipt details:** the same `PATCH` with `detail:<name>` (fuel volume, price per unit, pump, fuel amount, gratuity,
   party size, savings total) or `detail:tenders.<n>.amount` (n from 1) corrects a printed detail of the receipt's
   current kind ([documents](documents.md#receipt-kinds)). A gift card correction works the amount paid out again

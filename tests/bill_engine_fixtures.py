@@ -51,11 +51,12 @@ UTIL_HISTORY = [("Sep 2025", "590", "30"), ("Oct 2025", "610", "31"), ("Nov 2025
 UTIL_STUB = (("Account Number 1234-5678-9012"), ("Due Date 10/15/2026"))
 
 
-def util_items(summary=None, heading_lines="std", energy=None, total_current="97.55", stub_amount="97.55", history=True, stub=True, extra=(), above=()):
+def util_items(summary=None, heading_lines="std", energy=None, total_current="97.55", stub_amount="97.55", history=True, stub=True, extra=(), above=(), account=None):
     """BL-UTIL's items. `summary` replaces the four box lines (None keeps them; a line is (label, amount) from y 692 down, 16 apart); `heading_lines` is
     "std", "2l", "odd", None (no heading) or a list of ready items; `total_current` None leaves the `Total Current Charges` line out; `history` and `stub`
     leave the usage history and the remittance stub out when False."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(UTIL_HEADER)]
+    items += left(720, account) if account else []  # BL-UTIL-AH: `Account Name: Blair Sample` between the header and the summary box.
     items += left(708, "Account Summary")
     for number, (label, amount) in enumerate(UTIL_SUMMARY if summary is None else summary):
         items += amounts_at(692 - 16 * number, label, (CHARGE, amount))
@@ -193,9 +194,11 @@ def util_r2_pages(variant="r2"):
 PHONE_HEADER = ("METRO WIRELESS", "Account Number 555-0100-7788", "Due Date 10/12/2026")
 
 
-def phone_pages(discount="-5.00", credits="Account Credits"):
-    """BL-PHONE. SC-106's variants print the discount differently (`(5.00)`, `5.00 CR`, unsigned `5.00`) or under another section title."""
+def phone_pages(discount="-5.00", credits="Account Credits", account=None):
+    """BL-PHONE. SC-106's variants print the discount differently (`(5.00)`, `5.00 CR`, unsigned `5.00`) or under another section title. `account` prints
+    an account-name line under the header (BL-PHONE-AH: `Account Name: Alex Sample`)."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(PHONE_HEADER)]
+    items += left(744, account) if account else []
     for y, label, amount in ((732, "Previous Balance", "120.00"), (716, "Payments", "-120.00"), (700, "New Charges", "118.50"), (684, "Amount Due", "118.50")):
         items += amounts_at(y, label, (CHARGE, amount))
     items += left(660, "Alex 555-201-1111")
@@ -217,6 +220,28 @@ def role_pages(heads=(), rows=(), summary=(), extra=()):
     for number, (label, *cells) in enumerate(rows):
         items += amounts_at(600 - 16 * number, label, *cells)
     return [page_of([*items, *extra])]
+
+
+# --- BL-TOTAL: the account holder and the due-now line (specs/bill-total-and-account-holder), with a synthetic provider and name ------------
+
+TOTAL_HEADER = ("LAKESIDE GAS & ELECTRIC", "Account Name: Jordan A. Rivera", "Account Number 4455-6677-8899", "Statement Date 10/10/2026",
+                "Billing Period 09/01/2026 - 09/30/2026")
+TOTAL_ROWS = [("Delivery Charges", "1,180.40"), ("Supply Charges", "412.26"), ("Taxes and Fees", "75.25")]
+
+
+def total_pages(header=TOTAL_HEADER, rows=TOTAL_ROWS):
+    """BL-TOTAL: the user's two lines word for word (`Current Charges due 11/01/2026 $62.91`, `Total Current Charges $1,667.91`) under three charge lines.
+    `header` replaces the five header lines (a different or missing account-name line); BL-TOTAL-NOW passes rows adding up to 62.91."""
+    items = [(40, 780 - 12 * number, text) for number, text in enumerate(header)]
+    for number, (label, amount) in enumerate(rows):
+        items += amounts_at(680 - 16 * number, label, (CHARGE, amount))
+    items += amounts_at(620, "Current Charges due 11/01/2026", (CHARGE, "$62.91")) + amounts_at(604, "Total Current Charges", (CHARGE, "$1,667.91"))
+    return [page_of(items)]
+
+
+STUB_TOTAL = {"Delivery Charges": ("Delivery Charges", "service", "utilities", None, "1,180.40", None, None),
+              "Supply Charges": ("Supply Charges", "usage", "utilities", None, "412.26", None, None),
+              "Taxes and Fees": ("Taxes and Fees", "tax_fee", "utilities", None, "75.25", None, None)}
 
 
 # --- BL-RENT: the rent bill as a text PDF -----------------------------------------------------------------------------------------
@@ -364,7 +389,8 @@ FIXTURES = {
     "UTIL-STRAY": util_stray_pages, "UTIL-SENTENCE": util_sentence_pages, "UTIL-MISNC": util_misnc_pages, "UTIL-2P": util_2p_pages,
     "UTIL-R1-A": util_r1_pages, "UTIL-R1-B": lambda: util_r1_pages("b"), "UTIL-R1-C": lambda: util_r1_pages("c"),
     "UTIL-R2": util_r2_pages, "UTIL-R2-BAD": lambda: util_r2_pages("bad"), "UTIL-R2-NOPREV": lambda: util_r2_pages("noprev"),
-    "BL-PHONE": phone_pages, "BL-RENT": rent_pages, "PAYMENT-RECEIVED": payment_received_page,
+    "BL-PHONE": phone_pages, "BL-PHONE-AH": lambda: phone_pages(account="Account Name: Alex Sample"),
+    "BL-UTIL-AH": lambda: util_pages(account="Account Name: Blair Sample"), "BL-TOTAL": total_pages, "BL-RENT": rent_pages, "PAYMENT-RECEIVED": payment_received_page,
     "MINI-1": lambda: mini_pages(1), "MINI-2-ALONE": lambda: mini_pages(2), "BL-MULTI": lambda: mini_pages(1, 2, 3), "BL-REMIT": remit_pages, "BL-ACCT": acct_pages,
     "BL-JOIN": join_pages, "BL-TWOONPAGE": two_on_page_pages, "BL-NOKEY": nokey_pages, "BL-MULTI-VOID": multi_void_pages,
     "BL-MULTI-VOIDWORD": lambda: multi_void_pages(True), "BL-MULTI-INV": multi_inv_pages,

@@ -571,6 +571,9 @@ function doc2Fields(state, type, record, find) {
     value.append(links);
     list.append(element("dt", label), value);
   }
+  // A bill's account holder as printed, with who it is (the server matched it) and Find for the account-name line (FR-139).
+  const holder = record.account_holder_view, holderField = (record.correctable || []).find(item => item.field === "detail:account_holder");
+  if (type === "receipt" && (holder || holderField)) doc2DetailRow(state, record, list, "Account holder", holder || {display: "Not printed"}, find, "detail:account_holder");
   // What the record adds to the app's totals, each a figure whose breakdown says how.
   const figureRow = (label, items) => {
     const value = element("dd", "", "doc2-value doc2-counts");

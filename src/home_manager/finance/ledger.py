@@ -230,6 +230,7 @@ HELD_WORDS = {"member": "person", "line_kind": "type", "line_type": "type", "pri
 DETAIL_CORRECTABLE = {"volume": ("decimal_text", "Fuel volume"), "price_per_unit": ("decimal_text", "Fuel price per unit"),
                       "pump_number": ("decimal_text", "Pump number"), "fuel_amount": ("money", "Fuel amount"), "gratuity": ("money", "Gratuity"),
                       "party_size": ("decimal_text", "Party size"), "savings_total": ("money", "Savings total")}
+ACCOUNT_HOLDER = "detail:account_holder"  # A bill's account holder, corrected as text of at most 80 characters; cleared means no account holder (FR-139).
 TENDER_LABELS = {"gift_card": "Gift card", "ebt": "EBT", "card": "Card", "cash": "Cash", "other": "Payment"}
 # What decides a receipt's amount paid after gift cards (refresh_paid): corrections to these fields, or any detail.
 PAID_FIELDS = ("total", "direction", "document_kind", "receipt_kind")
@@ -942,7 +943,9 @@ class Ledger:
 
     def detail_fields(self, row):
         """A receipt's current details a person may correct: {"detail:<path>": (kind, label)}."""
-        details = self.current_details(row) if row["document_kind"] != "bill" else {}
+        if row["document_kind"] == "bill":  # A kinded bill that is not an invoice has an account holder to correct, printed or not (FR-139).
+            return {ACCOUNT_HOLDER: ("detail_text", "Account holder")} if row["bill_kind"] and not row["invoice_json"] else {}
+        details = self.current_details(row)
         fields = {f"detail:{name}": entry for name, entry in DETAIL_CORRECTABLE.items() if name in details}
         tenders = details.get("tenders", [])
         for number, tender in enumerate(tenders, 1):
@@ -969,6 +972,8 @@ class Ledger:
         no longer has is refused."""
         row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
         details = self.current_details(row)
+        if field == ACCOUNT_HOLDER:
+            return self._set_account_holder(db, row, details, text)
         found = self.detail_entry(details, field)
         if found is None:
             raise ValueError("This detail is no longer in the reading.")
@@ -989,6 +994,20 @@ class Ledger:
         everything = json.loads(row["details_json"])
         everything[row[kind_column(row)]] = details
         db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(everything), now(), receipt_id))
+        return previous
+
+    def _set_account_holder(self, db, row, details, text):
+        """Write a bill's corrected account holder into its details; returns its text before. A bill that printed none gets the entry, with no source line;
+        one the reading printed keeps its source line, so Find still shows what the bill says."""
+        text = " ".join(str(text).split()) if text is not None else None
+        if text is not None and (len(text) > 80 or not re.search(r"[^\W\d_]", text)):
+            raise ValueError("Enter the account holder's name, up to 80 characters.")
+        entry = details.setdefault("account_holder", {"text": None, "locator": {"line_ids": [], "quotes": []}})
+        previous, entry["text"] = entry.get("text"), text
+        entry["status"] = "proposed" if text else "missing"
+        everything = json.loads(row["details_json"])
+        everything[row[kind_column(row)]] = details
+        db.execute("UPDATE receipts SET details_json=?,updated_at=? WHERE id=?", (json.dumps(everything), now(), row["id"]))
         return previous
 
     def retire_segments(self, blob_hash, keep, note=None):
@@ -2643,6 +2662,9 @@ class Ledger:
         if record_type == "receipt":
             details = self.current_details(row)
             for field, (kind, label) in self.detail_fields(row).items():
+                if field == ACCOUNT_HOLDER:
+                    found.append({"field": field, "label": label, "kind": kind, "value": (details.get("account_holder") or {}).get("text"), "shown_as": field})
+                    continue
                 entry, key = self.detail_entry(details, field)
                 shown = (money(abs(entry[key]), row["currency"])["decimal"] if entry.get(key) is not None else None) if key == "minor" else entry.get("text")
                 found.append({"field": field, "label": label, "kind": kind, "value": shown, "shown_as": field})
@@ -2665,7 +2687,7 @@ class Ledger:
     def reapply_detail(self, db, receipt_id, field, text, currency):
         """A saved detail correction written again after a reading; False when the reading no longer has that detail."""
         row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
-        if self.detail_entry(self.current_details(row), field) is None:
+        if self.detail_entry(self.current_details(row), field) is None and not (field == ACCOUNT_HOLDER and field in self.detail_fields(row)):
             return False
         self._set_detail(db, receipt_id, field, text, currency)
         return True

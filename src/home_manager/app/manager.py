@@ -32,7 +32,7 @@ from ..documents.reasoning import ReasoningConfig, ReasoningService
 from ..documents.receipt_batch import ReceiptBatches
 from ..documents.receipt_service import ReceiptService
 from ..documents.reviewer import ReviewerConfig, review
-from ..finance import correction_preview, paycheck, paystub, pdf_import, plan_tracking, scenarios, traces
+from ..finance import account_holder, correction_preview, paycheck, paystub, pdf_import, plan_tracking, scenarios, traces
 from ..finance.assistant import AssistantService
 from ..finance.charts import chart_key, tax_buckets_svg
 from ..finance.checkin import CheckinService
@@ -317,6 +317,22 @@ class Manager:
         if self.family:
             found += [member["name"] for member in self.family.summary()["members"] if member.get("name")]
         return list(dict.fromkeys(found))
+
+    def account_people(self):
+        """The people a name printed on a bill can be (finance/account_holder.py, FR-137): in a person's own library the profile's owner ("you") and the
+        spouse named on their latest return, in a family's every member. Worked out when a bill is shown, so a renamed profile changes it with no re-read."""
+        if self.family:
+            found = [{"name": member["name"], "member_id": member["member_id"]} for member in self.family_people() if member["name"]]
+        elif self.profile:
+            from ..finance.tax_year import TaxYears
+            found = [{"name": self.profile["name"], "you": True}]
+            found += [{"name": name, "you": False} for name in (TaxYears(self.store).spouse_names() if self.store else [])]
+        else:
+            found = []
+        first = {}
+        for person in found:
+            first.setdefault(person["name"].casefold(), person)  # The same name twice (a spouse named like the profile) is one person.
+        return list(first.values())
 
     def settings(self):
         activity = self.activity() if self.store else []
@@ -797,7 +813,7 @@ class Manager:
             self.import_share_requests(members)
             who = self.family.who_has_what()
             routing = FamilyRouting(store)
-            routing.refresh(facts, who)
+            routing.refresh(facts, who, self.family_people())
             # What members' own accounts end in, offered as Who has what entries to add; never used to guess an owner.
             listed = {(entry["kind"], entry["last_four"]) for entry in who}
             offers = [{"member_id": member, "kind": "card", "last_four": account["last_four"], "label": account["institution"]}
@@ -985,7 +1001,8 @@ class Manager:
         if not family:
             raise ValueError("Open a family profile first.")
         with family.mutex:
-            return family_record(self.family_members(), member_id, record_type, record_id, family.pending_corrections())
+            record = family_record(self.family_members(), member_id, record_type, record_id, family.pending_corrections())
+        return account_holder.annotate(record, self.account_people()) if record_type == "receipt" else record
 
     def correct_family_record(self, member_id, record_type, record_id, changes):
         """A change made in the family ledger to a member's record (finance/family_corrections.py). Each field is checked
@@ -2215,6 +2232,8 @@ class Manager:
     def record_view(self, record_type, record_id, figures=False):
         """One record as the document page shows it; figures adds what it counts as and in (docs/money.md "Corrections")."""
         record = self.paystub(record_id) if record_type == "income_record" else self.ledger.record(record_type, record_id)
+        if record_type == "receipt":  # A bill's account holder and each line's Person, decided here, not by the page (FR-138).
+            account_holder.annotate(record, self.account_people())
         if not figures:
             return record
         shown = {}

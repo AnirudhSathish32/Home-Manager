@@ -39,7 +39,7 @@ from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
 from . import bill_split
-from .charge_tables import ChargeTotal, key_kind
+from .charge_tables import ChargeTotal, account_holder_of, key_kind
 from .layout_context import evidence_lines, evidence_tables, native_page, project_page
 from .paystub_split import stub_parts
 from .pdf_reader import read_result
@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v50-bill-account-cells"
+EXTRACTION_VERSION = "typed-extraction-v51-bill-account-holder"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -2962,7 +2962,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
         header_period = bill_dates(record, fields, issues, notes)
         bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields, **(bill_fields or {})}, bill_kind, notes, header_period, engine_lines,
-                   worked_out)
+                   worked_out, account_holder(lines or []))
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
                       printed_columns)
@@ -3341,7 +3341,27 @@ def rent_recurrence(record):
     return names.pop() if len(names) == 1 and None not in names else "monthly"
 
 
-def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ()), engine_lines=None, worked_out=None):
+def account_holder(lines):
+    """(the bill's account holder, its note) from the transcribed lines, by code (FR-136; docs/documents.md "Bill lines from the printed columns"): the first
+    account-name line in reading order gives {"text", "locator"}; another value printed later adds a note. (None, None) when no line is one."""
+    found = []
+    for line in lines:
+        name = account_holder_of(line.text)
+        if name:
+            found.append((name, line))
+    if not found:
+        return None, None
+    first, line = found[0]
+    names = list(dict.fromkeys(name for name, _ in found if name.casefold() != first.casefold()))
+    note = None
+    if names:
+        listed = f"{first} and {names[0]}" if len(names) == 1 else f"{first}, {', '.join(names[:-1])} and {names[-1]}"
+        note = f"The account name is printed as {listed}; {first}, the first, was used."
+    return {"text": first, "locator": {"line_ids": [line.id], "quotes": [line.text]}}, note
+
+
+def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ()), engine_lines=None, worked_out=None,
+               account=(None, None)):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
     charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note.
@@ -3353,7 +3373,8 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     carried checks (FR-49, finance/document_checks.py). engine_lines: for a bill read from its printed columns, one entry per row (anchor_bill): a row
     copied from its cells has its quantity and unit price as printed, the rate kept as printed text when it is not a whole number of minor units
     (FR-110, D21, D25), and its product checked on the printed rate (FR-113). worked_out: the amount due, previous balance and payments (decimal text) and the new charges
-    they give, when a bill printing no new charges has its previous balance and payments (FR-118); those new charges count and the carried check is not run."""
+    they give, when a bill printing no new charges has its previous balance and payments (FR-118); those new charges count and the carried check is not run.
+    account: account_holder's answer, kept in the details of a kinded bill that is not an invoice (FR-136)."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     rent = bill_kind == "rent" and not invoice
     due_date = record.get("due_date")
@@ -3416,6 +3437,10 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             minor = printed[name] if name in printed else money(field.value.strip(), name.replace("_", " ").capitalize())
             if minor is not None:
                 record["details"][name] = {"minor": abs(minor) if name == "payments_received" else minor, "locator": locator(field.evidence)}
+        if account[0] is not None:  # FR-136: a name by code from the lines, never in a line's holder.
+            record["details"]["account_holder"] = account[0]
+            if account[1]:
+                notes.append(account[1])
         if worked_out and currency in EXPONENTS:  # FR-118: the lines add up to these new charges, and they are what counts (G3's lines reason).
             minors = {name: to_minor(text, currency) for name, text in worked_out.items() if name != "locator"}
             record["new_charges_minor"] = minors["new_charges"]

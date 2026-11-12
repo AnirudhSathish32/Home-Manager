@@ -29,7 +29,7 @@ many pay stubs the file splits into with the number of lines of each. Shapes and
 With `bill` the file is read as a bill and only the bill engine's section is printed (documents/charge_tables.py, finance/bill_tables.py and documents/bill_split.py,
 specs/pdf-table-engine-bills FR-127, plan P11): per page, the charge tables found (each column's edges and zone as a percentage of the page width, its kind, the
 role decided and how it was decided), counts of rows, totals, section titles (holder titles counted apart), wrapped labels, summary anchors by kind, late-payment
-lines, other-table rows and unplaced lines; the guesses by kind; how many bills the file splits into and the pages of each; per page, which keys it prints (due date,
+lines, account-name lines (a count; never the name), other-table rows and unplaced lines; the guesses by kind; how many bills the file splits into and the pages of each; per page, which keys it prints (due date,
 statement date, account) and whether each equals the open bill's or differs, never a value; and which uncertainty rules of FR-129 fired, by letter. It needs no model
 and prints no heading word, label, provider, amount, date or digit of an account. The output holds only words of its own and numbers that count or place things.
 """
@@ -44,6 +44,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from home_manager.documents import bill_split  # noqa: E402
+from home_manager.documents.charge_tables import account_holder_of  # noqa: E402
 from home_manager.documents.extraction import MAX_BILLS  # noqa: E402
 from home_manager.documents.layout_context import evidence_lines, native_page, viewer_context  # noqa: E402
 from home_manager.documents.paystub_split import stub_parts  # noqa: E402
@@ -167,6 +168,11 @@ ROLE_NAMES = {"unit_price": "rate"}  # The contract's name for the rate column's
 def bill_section(result):
     """The bill engine's reading of a bill PDF (FR-127, plan P11): counts, roles, shapes and positions only, never a word of the bill."""
     print(f"pages: {len(result.pages)}")
+    named = {}  # FR-149: per page, how many lines are account-name lines (specs/bill-total-and-account-holder FR-136); the count only, never the name.
+    for line in evidence_lines(result):
+        if account_holder_of(line.text):
+            page = int(bill_split.PAGE.match(line.id).group(1))
+            named[page] = named.get(page, 0) + 1
     try:
         bill = bill_tables.read(result)
     except Exception as exc:  # The type only: an exception's text may quote the document.
@@ -209,7 +215,8 @@ def bill_section(result):
             unplaced = sum(1 for line in reading.unplaced if line.page == page.number)
             print(f"charge tables: {len(tables)}   rows: {len(rows)}   totals: {len(totals)}   section titles: {len(titles) - sum(title.phone for title in titles)}"
                   f"   holder titles: {sum(title.phone for title in titles)}   wrapped labels: {wrapped}")
-            print(f"anchors by kind: {anchors or 'none'}   late-payment lines: {late.get(page.number, 0)}   other tables: {len(others)} ({other_rows} rows)   unplaced lines: {unplaced}")
+            print(f"anchors by kind: {anchors or 'none'}   late-payment lines: {late.get(page.number, 0)}   other tables: {len(others)} ({other_rows} rows)   unplaced lines: {unplaced}"
+                  f"   account-name lines: {named.get(page.number, 0)}")
             for table in tables:
                 decided = roles[table.id]
                 print(f"  {table.id}: {len(table.columns)} columns, roles decided by: {decided.decided_by}   rows here: {len([row for row in table.rows if row.page == page.number])}"

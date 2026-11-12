@@ -1015,7 +1015,7 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   still sends the bill to review. A photographed or scanned bill, and a bill with no text page, is read as before. **Invoices
   (`invoice_marker`, `invoice_number` or `invoice_total` read) keep today's path** (`anchor_rows`, `anchor_summary`): a text-PDF bill
   the model's summary reads as an invoice is read again with the printed tables, which costs one more summary question. Bills read
-  before extraction version `typed-extraction-v50-bill-account-cells` are read again on **Extract again**; a bill you confirmed or
+  before extraction version `typed-extraction-v51-bill-account-holder` are read again on **Extract again**; a bill you confirmed or
   rejected is not rewritten.
 - **Rows.** A row is a label at the left followed by an amount in an amount column, found by alignment alone; no date or heading is
   needed. A date printed on the line (`Rent 10/01/2026 - 10/31/2026 $1,450.00`) is label text, never an amount. A number followed in its own
@@ -1133,6 +1133,16 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   - A holder title longer than 80 characters is cut at 80, which can drop or cut the phone number at its end. The model's own holder has the
     same cut.
   - Two misread layouts the generator found are described in [open work](open-work.md#pdf-table-engine).
+  - **The account-name line.** On every bill that isn't an invoice, text or photographed, a transcribed line that starts with `account name`,
+    `account holder`, `account holder name`, `customer name` or `name on account` (case ignored; a colon, dot leaders or a dash may follow)
+    and a value holding a letter gives the bill's **account holder** (`charge_tables.ACCOUNT_HOLDER_LABELS`, `account_holder_of`, beside
+    the anchor and key-label lists). The value ends before the next label printed on the same line (`Account Name: JORDAN A RIVERA Account
+    Number …` is `JORDAN A RIVERA`) and is cut at 80 characters. It is read by code, not asked of the model. The first such line in reading
+    order counts; a different value printed later adds the note "The account name is printed as X and Y; X, the first, was used."
+    A label inside a sentence or after other words (`Your account name is …`) is no account-name line, and a bare `Name:` is none either.
+    It is kept in the details (`account_holder`: `text` and `locator`), never in a line's holder, and each part of a file of several bills
+    reads only its own lines. How it is matched and shown: [money](money.md#bills-and-their-lines). The diagnose `bill` mode counts the
+    account-name lines per page, never the name.
   - Photographed and scanned bills, invoices and decimal-comma amounts are not read from columns. Accuracy on real bills is unmeasured
     ([open work](open-work.md#pdf-table-engine)).
 

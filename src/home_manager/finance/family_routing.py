@@ -10,7 +10,8 @@ stubs go to one person.
 Owners come from the family's Who has what list (docs/family.md "Who has what"), never a guess: a receipt, bill or
 statement paid with a listed card goes to that card's member, and a bill line whose printed number ends in a listed
 phone line is that member's. A card or line that isn't listed stays unassigned, and Review offers to add it. A pay stub
-is suggested for the one member who already has pay stubs from that employer. The user confirms each one.
+is suggested for the one member who already has pay stubs from that employer. A bill none of that decides, with no
+line holder, is suggested for the one member whose name its account name matches (never set on a line). The user confirms each one.
 """
 
 import hashlib
@@ -21,6 +22,7 @@ import uuid
 from ..core import actor
 from ..core.money import money
 from ..library.storage import now
+from .account_holder import holder_of, person_of
 from .ledger import CONFIRMED, Ledger, normalize_name
 from .splits import equal_shares, line_shares
 
@@ -65,9 +67,10 @@ def phone_member(holder, who):
     return next((entry["member_id"] for entry in who if entry["kind"] == "phone" and entry["last_four"] == digits[-4:]), None)
 
 
-def suggest(row, facts, who, lines=()):
+def suggest(row, facts, who, lines=(), people=(), holder=None):
     """(mode, members, reason, ask) for a new record: ask is a card or phone line to offer adding to Who has what, else
-    None. mode is None when nothing says whose it is."""
+    None. mode is None when nothing says whose it is. holder, people: a bill's printed account holder and the family's members; a bill with no line
+    holders whose account is in exactly one member's name is suggested for that member (specs/bill-total-and-account-holder FR-140), only a suggestion."""
     owners = sorted({line["member_id"] for line in lines if line["member_id"]})
     unlisted = sorted({re.sub(r"\D", "", line["line_holder"])[-4:] for line in lines if line["line_holder"] and not line["member_id"]
                        and len(re.sub(r"\D", "", line["line_holder"])) >= 4})
@@ -88,6 +91,9 @@ def suggest(row, facts, who, lines=()):
         found = [member for member, known in facts.items() if normalize_name(row["name"]) in known["employers"]]
         if len(found) == 1:
             return "member", found, f"Earlier pay stubs from {row['name']}", None
+    named = person_of(holder, people) if holder and not any(line["line_holder"] for line in lines) else None
+    if named:
+        return "member", [named["member_id"]], f"The account is in {named['name']}'s name", None
     return None, [], "Nothing on it says whose it is", None
 
 
@@ -99,7 +105,13 @@ class FamilyRouting:
         return [dict(row) for row in db.execute("SELECT id,position,description,line_total_minor,discount_minor,line_holder,line_kind,member_id,member_source "
                                                 "FROM receipt_items WHERE receipt_id=? AND review_status<>'rejected' ORDER BY position", (record_id,))]
 
-    def refresh(self, facts, who=()):
+    def account_holder(self, db, record_id):
+        """The account holder a bill's reading printed (documents/extraction.py account_holder), or one you set; None for no holder."""
+        row = db.execute("SELECT bill_kind,details_json FROM receipts WHERE id=?", (record_id,)).fetchone()
+        details = (json.loads(row["details_json"] or "null") or {}).get(row["bill_kind"]) if row and row["bill_kind"] else None
+        return holder_of(details)
+
+    def refresh(self, facts, who=(), people=()):
         """An assignment row for every routable record, with a suggestion for each one not confirmed yet. Who has what
         applies again to everything not yet delivered: a bill's phone lines take their listed member (a person's own
         choice of member stays), and the suggestion is worked out again."""
@@ -121,7 +133,8 @@ class FamilyRouting:
                                     line["member_id"] = member
                             lines.append(line)
                         self.ledger.refresh_splits(db, row["id"])
-                    mode, members, reason, ask = suggest(dict(row), facts, who, lines)
+                    holder = self.account_holder(db, row["id"]) if row["document_kind"] == "bill" else None
+                    mode, members, reason, ask = suggest(dict(row), facts, who, lines, people, holder)
                     requested = db.execute("SELECT source_key FROM financial_evidence_links WHERE record_type='receipt' AND record_id=? "
                                            "AND source_key LIKE 'request:%' ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone() if record_type == "receipt" else None
                     suggested = {"mode": mode, "member_id": members[0] if len(members) == 1 else None, "members": members, "reason": reason, "ask": ask,

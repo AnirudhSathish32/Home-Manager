@@ -259,6 +259,15 @@ What is not built:
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.
 
+- **Account holder, what is left** (`specs/bill-total-and-account-holder`; built: [money](money.md#bills-and-their-lines),
+  [documents](documents.md#bill-lines-from-the-printed-columns), [family](family.md#family-inbox)). Part B of that spec (the "due now"
+  line and the printed total as the amount due, FR-141 – FR-146) is not built. Of FR-149, the bill generator's account-name line forms
+  (alone or before an account number on the same line) and the documents eval's `account_holder_read` count with an appended synthetic
+  bill are not built; the diagnose `bill` mode already counts account-name lines. An invoice's `bill_to` is not an account holder, a bill
+  printing only a bare `Name:` or `Customer:` label still says Shared (OD-5), and a bill you confirmed or rejected before this existed
+  shows Shared until you set **Account holder** by Correct (OD-8). A business or landlord printed as `Customer Name` shows its printed name
+  instead of Shared (it matches nobody); Correct can clear it.
+
 ## Planning and investments
 
 - **Investment income modelled separately** in the forecast (`yield_bp`, `reinvest`, `investment_tax_percent`). The

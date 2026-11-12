@@ -256,6 +256,9 @@ function billLines(record, categories, onSaved, find, correctField = null) {
       who.value = row.member_id || "";
       who.addEventListener("change", () => save(row, "member", who.value, who));
       person.append(who);
+    } else if (row.person) {  // The server decides who the line is for and where that came from (finance/account_holder.py annotate, FR-138).
+      person.textContent = row.person.text; person.title = row.person.title;
+      if (row.person.source === "account") person.append(element("small", row.person.title, "muted block"));
     } else person.textContent = nameOf(row.member_id) || (row.member_id ? "Someone in the family" : row.line_holder ? row.line_holder.replace(/[\d()\-\s]+$/, "") || "—" : "Shared");
     const paid = element("td", "", "numeric");
     if (row.display.share_minor && row.share_minor !== row.line_total_minor) { paid.append(amount(row.display.share_minor, {signed: false}), element("small", "with taxes and fees", "muted block")); }
