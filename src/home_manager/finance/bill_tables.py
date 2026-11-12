@@ -99,11 +99,11 @@ def printed_rate(text, currency):
 
 def signed(token, section):
     """A charge token's amount with its sign: minus, parentheses, a trailing minus and `CR` make it negative; so does an unsigned amount under a credits,
-    discounts or adjustments section. None for an unreadable amount."""
+    discounts or adjustments section. An explicit `+` or `DR` is a charge wherever it is printed (FR-106). None for an unreadable amount."""
     magnitude, marker, _ = token.value
     if magnitude is None:
         return None
-    if marker in ("minus", "credit") or (marker in (None, "plus") and section and CREDIT_SECTION.search(section)):
+    if marker in ("minus", "credit") or (marker is None and section and CREDIT_SECTION.search(section)):
         return -magnitude
     return magnitude
 

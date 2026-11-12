@@ -572,6 +572,16 @@ def test_sc106_a_row_printed_as_money_off_is_a_credit(pdf_store, local_model, pr
     finished(run)
 
 
+@pytest.mark.parametrize("title", ["Account Credits", "Discounts", "Adjustments"])
+def test_sl11_f2_a_plus_five_under_a_money_off_section_is_stored_as_a_charge_of_five(pdf_store, local_model, title):
+    """FR-106 applies the section only to an UNSIGNED amount: `+5.00` is a charge even under `Account Credits`, the model's `service` stays."""
+    run = phone(pdf_store, local_model, rows=discount_stub("service"), pages=bf.phone_pages("+5.00", credits=title))
+    [item] = [item for item in run.record["items"] if item["description"] == "Autopay Discount"]
+    assert item["line_total_minor"] == 500 and (item["line_type"] or item["line_kind"]) != "credit"
+    assert sum(item["line_total_minor"] for item in run.record["items"]) == 12850
+    finished(run)
+
+
 # === SC-110 steps 5 and 6: the product on the printed rate; the half-up boundary =============================================
 
 def test_sc110_the_product_checks_run_on_the_printed_quantity_and_rate_never_on_the_rounded_cents(pdf_store, local_model):

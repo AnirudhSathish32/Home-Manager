@@ -769,6 +769,24 @@ def test_sc106_a_debit_marker_is_a_charge_even_under_credits(reader):
     assert bill_tables.signed(token, "Account Credits") == Decimal("5.00")
 
 
+@pytest.mark.parametrize("title", ["Account Credits", "Discounts", "Adjustments"])
+def test_sl11_f2_an_explicit_plus_under_a_money_off_section_is_a_charge_in_the_row_the_sums_and_the_adapter(reader, title):
+    bills, row = phone_row(reader, discount="+5.00", credits=title)
+    [token] = row.amounts.values()
+    assert token.text == "+5.00" and token.value[1] == "plus" and row.section == title
+    assert bill_tables.signed(token, row.section) == Decimal("5.00")
+    assert bill_tables.money_off(row, bills.roles[0]) is False
+    assert [entry.money_off for entry in bills.adapted[0].rows if not entry.total] == [False] * 5
+
+
+@pytest.mark.parametrize("title", ["Account Credits", "Discounts", "Adjustments"])
+def test_sl11_f2_a_plus_row_under_a_money_off_section_counts_positive_so_the_sum_decides_the_column(reader, title):
+    rows = [("Service", (420, "10.00"), (520, "10.00")), ("Fee", (420, "5.00"), (520, "5.00")), (title,), ("Reversal", (420, "+4.00"), (520, "+5.00"))]
+    bills = bill_tables.read(reader(bf.role_pages(rows=rows, summary=[("New Charges", "20.00")])))  # 10 + 5 + 5 = 20, but 10 + 5 + 4 = 19.
+    assert list(bills.roles[0].roles.values()) == ["other", "charge"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
+    assert [row.money_off for row in bills.adapted[0].rows] == [False, False, False]
+
+
 # --- The adapter (plan P4): ids, line ids, wrapped label lines, title line ids ------------------------------------------------------
 
 def test_p4_the_adapter_makes_one_table_in_the_shape_record_reads_with_a_header_row_and_a_cell_per_column(reader):
