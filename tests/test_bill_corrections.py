@@ -4,6 +4,7 @@ A previous-version bill is made the way tests/test_bill_engine_record.py makes S
 lines are used, then the stored lines edited by SQL to what that reading left. The new reading is the real bill engine with the contract's stubs.
 """
 
+from decimal import ROUND_HALF_UP, Decimal
 import json
 
 import bill_engine_fixtures as bf
@@ -38,7 +39,7 @@ PHONE_V39 = ("Unlimited Plan", "Basic Plan", "International Pack (Canada and Mex
 
 def seed_v39(run, rows_of, fields, monkeypatch, classify):
     """What the previous version left: the engine fault double (the model's lines are used) with the version patched."""
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     run.stub_bill({}, fields, extra=rows_of, single_run=True, classify=classify)
     with monkeypatch.context() as patch:
@@ -356,6 +357,157 @@ def test_sc119_g4_a_correction_made_before_this_change_is_compared_with_the_amou
         record = ledger.record("receipt", receipt_id)
         only_reason(record, "line 2", "person: blair", "wasn't applied", "5.53", "5.35")
         assert len(held_reasons(record)) == 1 and [item["line_total_minor"] for item in record["items"]] == [6000, 553]
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+# --- Review round 1, finding 6 (SL-11): a fresh correction remembers the current reading's amount, not an earlier one's ---------------------------------
+
+def caught_up_tax(tmp_path):
+    """BL: the tax line misread 5.35, its price corrected to 5.53, then a reading that prints 5.53 itself (the reading caught up). Returns the books and a
+    `read(amount)` that publishes a reading of the same bill."""
+    store, ledger, docs = open_books(tmp_path / "managed")
+
+    def read(amount):
+        lines = [line("Energy", 6000, "utilities", "usage"), line("State Tax", amount, "utilities", "tax_fee")]
+        return bill(ledger, docs["phone.png"], "City Power", "2026-10-15", lines, status="needs_review")
+    receipt_id = read(535)
+    ledger.correct_item(receipt_id, 2, "5.53")
+    assert read(553) == receipt_id
+    record = ledger.record("receipt", receipt_id)
+    assert held_reasons(record) == [] and [item["line_total_minor"] for item in record["items"]] == [6000, 553]
+    return store, ledger, receipt_id, read
+
+
+def test_sl11_f6_a_code_set_after_the_reading_caught_up_with_the_price_correction_is_kept_on_an_unchanged_reread(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_item_fields(receipt_id, 2, {"product_code": "TAX-CODE"})
+        with store.connection() as db:
+            code_row = db.execute("SELECT max(id) FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field='product_code:2'",
+                                  (receipt_id,)).fetchone()[0]
+        assert line_state(store, receipt_id)["amounts"][str(code_row)] == 553  # The line as the current reading prints it, not the earlier 5.35.
+        assert read(553) == receipt_id  # An unchanged reread.
+        record = ledger.record("receipt", receipt_id)
+        assert held_reasons(record) == [] and record["items"][1]["product_code"] == "TAX-CODE"
+        assert line_state(store, receipt_id)["held"] == []
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f6_a_member_set_after_the_reading_caught_up_is_not_held_on_an_unchanged_reread(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_line(receipt_id, 2, "member", "blair", members=MEMBERS)
+        assert read(553) == receipt_id
+        record = ledger.record("receipt", receipt_id)
+        assert held_reasons(record) == [] and (record["items"][1]["member_id"], record["items"][1]["member_source"]) == ("blair", "user")
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f6_the_fresh_correction_is_held_for_a_shifted_line_that_happens_to_print_the_older_amount(tmp_path):
+    store, ledger, receipt_id, read = caught_up_tax(tmp_path)
+    try:
+        ledger.correct_item_fields(receipt_id, 2, {"product_code": "TAX-CODE"})
+        assert read(535) == receipt_id  # The line at position 2 now prints 5.35, the amount an earlier reading had: it is not the line the code was set on.
+        record = ledger.record("receipt", receipt_id)
+        only_reason(record, "line 2", "wasn't applied", "5.35", "5.53")
+        assert record["items"][1]["product_code"] is None
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+# --- Review round 1, findings 8 and 9 (SL-11): one effective-rate rule for the shown rate and the product check -------------------------------------
+
+def rate_books(tmp_path):
+    """A kinded bill with a fee line and an energy line (position 2: 100 units), and `read(rate, line)` that publishes a reading of it whose energy line prints
+    that rate (text, with its rounded cents) and that line total."""
+    store, ledger, docs = open_books(tmp_path / "managed")
+
+    def read(rate_text, line_minor):
+        cents = int((Decimal(rate_text) * 100).quantize(Decimal(1), ROUND_HALF_UP))
+        energy = {**line("Energy", line_minor, "utilities", "usage"), "quantity": "100", "unit_price_minor": cents,
+                  "details": {"unit_price": {"text": rate_text, "locator": {"line_ids": ["line-2"]}}}}
+        lines = [line("Fee", 500, "utilities"), energy]
+        total = sum(item["line_total_minor"] for item in lines)
+        return ledger.publish_bill({"provider": "City Power", "issue_date": None, "due_date": "2026-10-15", "period_start": None, "period_end": None,
+                                    "amount_due_minor": total, "total_minor": total, "currency": "USD", "issues": [], "locator": {"line_ids": ["line-1"]},
+                                    "items": lines, "category": None, "recurrence": "monthly", "last_four": None, "bill_kind": "general", "details": {}},
+                                   source_of(docs["phone.png"], "extraction:" + docs["phone.png"]["relative_path"]), "needs_review")["id"]
+    return store, ledger, read
+
+
+def shown_and_checked(store, ledger, receipt_id):
+    """(the rate the page shows for the energy line, the rate its product check is run with, the check's (computed, compared, passes))."""
+    from home_manager.finance.document_traces import bill_checks
+    shown = ledger.record("receipt", receipt_id)["items"][1]["display"]["unit_price_minor"]
+    with store.connection() as db:
+        row = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        [check] = [found for found in bill_checks(db, row) if found["name"] == "product:2"]
+    quantity, rate, line_minor = check["args"]
+    return shown, rate, check["check"](quantity, rate, line_minor, "USD")
+
+
+def test_sl11_f8_f9_an_applied_unit_price_correction_shows_and_checks_the_corrected_rate(tmp_path):
+    store, ledger, read = rate_books(tmp_path)
+    try:
+        receipt_id = read("0.1430", 1430)
+        assert shown_and_checked(store, ledger, receipt_id)[:2] == ("0.1430", "0.1430")  # Nothing corrected: the exact printed rate, not 0.14.
+        ledger.correct_item_fields(receipt_id, 2, {"unit_price": "0.15"})
+        shown, rate, result = shown_and_checked(store, ledger, receipt_id)
+        assert (shown, rate, result[:2]) == ("0.15 USD", "0.15", (1500, 1430))  # Applied: the correction wins in the display and in the check (100 x 0.15 = 15.00).
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f8_f9_a_held_unit_price_correction_shows_and_checks_the_current_printed_rate(tmp_path):
+    store, ledger, read = rate_books(tmp_path)
+    try:
+        receipt_id = read("0.1430", 1430)
+        ledger.correct_item_fields(receipt_id, 2, {"unit_price": "0.15"})
+        assert read("0.1435", 1435) == receipt_id  # The line now prints 14.35 at 0.1435: the correction was made on 14.30, so it is held.
+        only_reason(ledger.record("receipt", receipt_id), "line 2", "unit price: 0.15", "wasn't applied", "14.35", "14.30")
+        shown, rate, passes = shown_and_checked(store, ledger, receipt_id)
+        assert (shown, rate, passes) == ("0.1435", "0.1435", (1435, 1435, True))  # Not 0.14 USD, and the check runs on the rate the line prints (100 x 0.1435 = 14.35).
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f8_f9_a_unit_price_correction_undone_while_held_shows_and_checks_the_current_printed_rate(tmp_path):
+    store, ledger, read = rate_books(tmp_path)
+    try:
+        receipt_id = read("0.1430", 1430)
+        ledger.correct_item_fields(receipt_id, 2, {"unit_price": "0.15"})
+        read("0.1435", 1435)
+        with store.connection() as db:
+            held = db.execute("SELECT max(id) FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field='unit_price:2'",
+                              (receipt_id,)).fetchone()[0]
+        ledger.undo_corrections("receipt", receipt_id, [held])
+        assert shown_and_checked(store, ledger, receipt_id)[:2] == ("0.1435", "0.1435")
+        read("0.1435", 1435)  # An unchanged reading leaves the field alone.
+        assert shown_and_checked(store, ledger, receipt_id)[:2] == ("0.1435", "0.1435")
+        assert_ledger_healthy(store)
+    finally:
+        store.close()
+
+
+def test_sl11_f8_f9_a_held_unit_price_correction_that_fits_again_is_applied_and_shows_and_checks_the_corrected_rate(tmp_path):
+    store, ledger, read = rate_books(tmp_path)
+    try:
+        receipt_id = read("0.1430", 1430)
+        ledger.correct_item_fields(receipt_id, 2, {"unit_price": "0.15"})
+        read("0.1435", 1435)
+        assert shown_and_checked(store, ledger, receipt_id)[:2] == ("0.1435", "0.1435")
+        read("0.1430", 1430)  # Recovery: the line prints the amount the correction was made on again.
+        record = ledger.record("receipt", receipt_id)
+        assert held_reasons(record) == [] and shown_and_checked(store, ledger, receipt_id)[:2] == ("0.15 USD", "0.15")
         assert_ledger_healthy(store)
     finally:
         store.close()

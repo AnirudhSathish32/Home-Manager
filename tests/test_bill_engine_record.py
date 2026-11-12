@@ -37,6 +37,7 @@ from test_pdf import pdf_store  # noqa: F401
 ENGINE = bill_tables.read  # Kept here so a test that makes the engine fail still shapes the model double with the real one.
 V39 = "typed-extraction-v39-receipt-printed-signs"
 MONEY = {"status": "proposed"}
+BILL_FAILED_NOTE_TEXT = extraction.BILL_FAILED_NOTE
 
 # The summary fields BL-UTIL's stub answers right (printed in the cited line): value, the line it starts, the quote.
 UTIL_FIELDS = {"provider": ("CITY POWER & WATER", "CITY POWER & WATER", "CITY POWER & WATER"), "account_reference": ("9012", "Account Number", "1234-5678-9012"),
@@ -244,7 +245,7 @@ def test_sc110_every_amount_quantity_and_rate_is_its_printed_cell_although_the_m
     run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, **UTIL_WRONG_AMOUNTS})
     run.extract()
     expect_util(run)
-    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v47-bill-engine" != V39
+    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v50-bill-account-cells" != V39
     no_grid(run)
     planned_questions(run)
     finished(run, before)
@@ -571,6 +572,16 @@ def test_sc106_a_row_printed_as_money_off_is_a_credit(pdf_store, local_model, pr
     finished(run)
 
 
+@pytest.mark.parametrize("title", ["Account Credits", "Discounts", "Adjustments"])
+def test_sl11_f2_a_plus_five_under_a_money_off_section_is_stored_as_a_charge_of_five(pdf_store, local_model, title):
+    """FR-106 applies the section only to an UNSIGNED amount: `+5.00` is a charge even under `Account Credits`, the model's `service` stays."""
+    run = phone(pdf_store, local_model, rows=discount_stub("service"), pages=bf.phone_pages("+5.00", credits=title))
+    [item] = [item for item in run.record["items"] if item["description"] == "Autopay Discount"]
+    assert item["line_total_minor"] == 500 and (item["line_type"] or item["line_kind"]) != "credit"
+    assert sum(item["line_total_minor"] for item in run.record["items"]) == 12850
+    finished(run)
+
+
 # === SC-110 steps 5 and 6: the product on the printed rate; the half-up boundary =============================================
 
 def test_sc110_the_product_checks_run_on_the_printed_quantity_and_rate_never_on_the_rounded_cents(pdf_store, local_model):
@@ -796,7 +807,7 @@ def test_sc118_without_a_previous_balance_and_payments_todays_rule_stands(pdf_st
 
 def read_as_v39(run, rows_of, fields, monkeypatch):
     """The reading the previous version left: the engine fault double (the model's lines are used) with the version patched, left in To check by SQL."""
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     run.stub_bill({}, fields, extra=rows_of, single_run=True)
     with monkeypatch.context() as patch:
@@ -1037,7 +1048,7 @@ def test_sc115_when_the_engine_fails_the_bill_is_read_from_the_models_lines_with
             for key, cites in UTIL_CITES.items()]
     run.stub_bill({}, {**UTIL_FIELDS, "amount_due": ("97.55", "97.55", "97.55"), "new_charges": ("97.55", "97.55", "97.55")}, extra=rows, single_run=True)
 
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     monkeypatch.setattr(bill_tables, "read", fault)
     with caplog.at_level(logging.ERROR):
@@ -1218,3 +1229,78 @@ def test_invoice_a_text_pdf_invoice_is_read_again_on_todays_path_without_the_eng
     assert run.asked().count("BillSummary") == 2  # One extra summary question, for the text-PDF invoice only (R-E).
     assert not [table for request in run.requests("BillLines") for table in request.get("reported_tables", []) if table["table_id"] == "page-1-charges-1"]
     assert run.record["bill_kind"] == "general" and run.record["invoice"] is not None
+
+
+# === Review round 1, finding 3 (SL-11): an invoice with no engine charge table still takes the old path =====================
+
+def invoice_items(*, table=True):
+    """A text invoice whose Item / Qty / Unit price / Total table prints whole numbers only (100 and 200, no decimals): the bill engine finds no charge
+    table in it, while the reader's printed table (the old path's native columns) holds the cells. A printed invoice number makes it an invoice."""
+    items = [(40, 780 - 12 * number, text) for number, text in enumerate(("ACME SUPPLY CO", "Invoice Number INV-1001", "Due Date 10/15/2026", "Currency USD"))]
+    if table:
+        items += bf.heading(700, (330, "Qty"), (420, "Unit price"), (520, "Total")) + bf.left(700, "Item")
+        items += bf.amounts_at(684, "Widget", (330, "1"), (420, "100"), (520, "100"))
+        items += bf.amounts_at(668, "Gadget", (330, "1"), (420, "200"), (520, "200"))
+    items += bf.amounts_at(640, "Total Due", (520, "300"))
+    return items
+
+
+def invoice_run(pdf_store, local_model):
+    """The invoice read through the real services; the model answers each line's amount with its printed quantity (1), wrong on purpose."""
+    run = started(pdf_store, local_model, [bf.page_of(invoice_items())], name="invoice.pdf")
+    run.__class__ = BillRun
+    header = run.header({"provider": ("ACME SUPPLY CO", "ACME SUPPLY CO", "ACME SUPPLY CO"), "due_date": ("2026-10-15", "Due Date", "10/15/2026"),
+                         "currency": ("USD", "Currency", "USD")})
+    header["invoice_number"] = {"value": "INV-1001", "status": "proposed", "evidence": run.cite("Invoice Number", "INV-1001")}
+    entries = []
+    for label in ("Widget", "Gadget"):
+        line = run.line(label)
+        entries.append({"description": label, "amount": "1", "quantity": "1", "unit_price": None, "category": "other", "line_holder": None, "line_kind": "other",
+                        "evidence": [{"line_id": line.id, "quote": line.text}]})
+    run.local_model["by_schema"] = {"Classification": [{"document_type": "bill", "evidence": run.cite("ACME SUPPLY CO"), "issuer": header["provider"],
+                                                        "document_date": MISSING, "bill_kind": "general", "bill_kind_evidence": []}],
+                                    "BillSummary": [header, header], "BillLines": [{"line_items": entries}, {"line_items": entries}]}
+    run.before = len(run.local_model["requests"])
+    return run
+
+
+def invoice_amounts(run):
+    return [(item["description"], item["line_total_minor"], item) for item in run.record["items"]]
+
+
+def test_sl11_f3_an_invoice_with_no_engine_charge_table_is_read_again_on_todays_native_path(pdf_store, local_model):
+    run = invoice_run(pdf_store, local_model)
+    assert bill_tables.read(run.evidence).adapted == []  # The engine finds no charge table in whole numbers.
+    run.extract()
+    assert run.asked().count("BillSummary") == 2  # The engine path's question, then the invoice path's.
+    assert run.record["invoice"] is not None
+    amounts = invoice_amounts(run)
+    assert [(name, minor) for name, minor, _ in amounts] == [("Widget", 10000), ("Gadget", 20000)]
+    assert [item["cell_evidence"]["amount"]["quote"] for _, _, item in amounts] == ["100", "200"]  # Each amount is its printed cell, from the reader's table.
+    assert all(item["cell_evidence"]["amount"]["source"] == "pdf_text" for _, _, item in amounts)
+    assert BILL_FAILED_NOTE_TEXT not in [*run.notes, *(run.record.get("notes") or [])]
+
+
+def test_sl11_f3_an_invoice_read_after_the_engine_failed_is_read_again_on_todays_native_path(pdf_store, local_model, monkeypatch):
+    run = invoice_run(pdf_store, local_model)
+    monkeypatch.setattr(extraction.bill_tables, "read", lambda evidence, firsts=None: (_ for _ in ()).throw(RuntimeError("synthetic engine failure")))
+    run.extract()
+    assert run.asked().count("BillSummary") == 2
+    amounts = invoice_amounts(run)
+    assert [(name, minor) for name, minor, _ in amounts] == [("Widget", 10000), ("Gadget", 20000)]
+    assert [item["cell_evidence"]["amount"]["quote"] for _, _, item in amounts] == ["100", "200"]
+    assert BILL_FAILED_NOTE_TEXT not in [*run.notes, *(run.record.get("notes") or [])]
+
+
+# === Review round 1, finding 5 (SL-11): a bill's summary on another page decides the charge column ==========================
+
+def test_sl11_f5_a_two_page_headless_table_with_a_comparison_column_stores_the_charge_column_when_the_summary_is_on_page_two(pdf_store, local_model):
+    from test_bill_engine import other_page_summary_pages
+    fields = {"provider": UTIL_FIELDS["provider"], "due_date": ("2026-07-20", "Due Date", "07/20/2026"), "currency": UTIL_FIELDS["currency"],
+              "amount_due": ("30.00", "Amount Due", "30.00"), "new_charges": ("30.00", "New Charges", "30.00")}
+    rows = {"Service": ("Service", "service", "utilities", None, "999.00", None, None), "Fee": ("Fee", "tax_fee", "utilities", None, "999.00", None, None)}
+    run = bill_run(pdf_store, local_model, other_page_summary_pages(), rows, fields)
+    assert [(item["description"], item["line_total_minor"]) for item in run.record["items"]] == [("Service", 1000), ("Fee", 2000)]  # Not 10000 / 20000.
+    assert not [note for note in run.notes if "right-most" in note or "told apart" in note]
+    assert (run.record["total_minor"], run.record["amount_due_minor"]) == (3000, 3000)
+    finished(run)

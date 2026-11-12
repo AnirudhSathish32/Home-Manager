@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v47-bill-engine"
+EXTRACTION_VERSION = "typed-extraction-v50-bill-account-cells"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -4079,11 +4079,12 @@ class ExtractionService:
         with self.store.connection() as db:
             return [dict(row) for row in db.execute("SELECT id,status,document_type,created_at,error FROM extraction_runs WHERE parse_run_id=? ORDER BY created_at DESC", (parse_run_id,))]
 
-    def extract(self, config, work, lines, notes, classification=None, tables=(), requested_kind=None):
+    def extract(self, config, work, lines, notes, classification=None, tables=(), requested_kind=None, suppressed=False):
         """Classify and read summary fields from the whole document (its start and end if it is too long), then rows chunk by chunk.
         classification: already asked of these same lines. A receipt is read with its kind's form (receipt_kind; requested_kind:
         the kind this reading must use). A bill is read with its bill kind's form (bill_kind), and a rent bill whose form fails
-        is read again with the general form (specs/bill-kinds "Errors"). Returns (classification, header, rows, identity,
+        is read again with the general form (specs/bill-kinds "Errors"). suppressed: the bill engine took the reader's printed tables away from this
+        reading, whether or not it found a charge table (an invoice then raises InvoiceBill, FR-120). Returns (classification, header, rows, identity,
         receipt or bill kind, or None)."""
         summary_lines, summary_context = table_summary(lines, tables, notes) if tables else (whole(lines, notes), None)
         classification = classification or ask(config, work, Classification, CLASSIFY, summary_lines, 1024, notes=notes,
@@ -4097,15 +4098,15 @@ class ExtractionService:
         if chosen == "rent":
             before = len(notes)
             try:
-                return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context), chosen)
+                return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context, suppressed), chosen)
             except ValueError as exc:
                 # The rent form failed after its correction: never lost, read as a general bill with a note (review).
                 del notes[before:]
                 notes.append("Read as a general bill: " + str(exc).removesuffix(" Nothing from this document was published."))
                 chosen = "general"
-        return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context), chosen)
+        return (classification, *self.read_form(config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context, suppressed), chosen)
 
-    def read_form(self, config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context):
+    def read_form(self, config, work, lines, notes, tables, kind, chosen, summary_lines, summary_context, suppressed=False):
         """(header, rows, identity) of one document read with the form for its kind (chosen: its receipt or bill kind)."""
         known = ""
         if kind in ("paystub", "employment_document"):
@@ -4123,7 +4124,7 @@ class ExtractionService:
                      f"The lines are {scope}; rows are extracted separately.{labels.get(chosen, '')} " + known, summary_lines,
                      4096 if kind == "bill" else 2048, notes=notes, table_context=summary_context)
         engine_tables = {table.id for table in tables if getattr(table, "source", None) == "bill_engine"}
-        if kind == "bill" and engine_tables and invoice_header(header):
+        if kind == "bill" and suppressed and invoice_header(header):
             raise InvoiceBill()  # An invoice stays on today's path (D5, FR-120): the part is read again with the printed tables.
         identity = None
         if kind == "receipt":
@@ -4580,7 +4581,8 @@ class ExtractionService:
                 if classification.document_type == "bill" and hasattr(evidence, "pages") and any(page.method == "embedded_text" and page.layout is not None
                                                                                               for page in evidence.pages):
                     try:  # The bill engine reads the whole file once; any failure reads the bill like a photographed one with a note (FR-115).
-                        bills = bill_tables.read(evidence)
+                        ranges = self.user_split(run, parse, lines)[0]  # The user's own split scopes the bills' sections and signs, even inside a page (FR-130).
+                        bills = bill_tables.read(evidence, [lines[first].id for first, _ in ranges] if ranges else None)
                     except Exception as exc:
                         log_failure(log, "bill table read", exc, run=run_id)
                         bills = BILL_FAILED
@@ -4629,27 +4631,30 @@ class ExtractionService:
             if classification.document_type == "bill" and not confirmed:  # FR-129's reasons: a split you made or confirmed raises none.
                 for ordinal, reading in enumerate(readings):
                     reading["notes"] += [reason for reason in reasons.get(ordinal, []) if reason not in reading["notes"]]
-            outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
-                        for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
-            result, publication = outcomes[0]
-            if len(parts) > 1:
-                bounds = [{"ordinal": ordinal, "first_line": lines[first].id, "last_line": lines[last - 1].id} for ordinal, (first, last) in enumerate(parts)]
-                result = {**result, "segments": [{**bound, **outcome[0]} for bound, outcome in zip(bounds, outcomes)], "split_notes": split_notes}
-                publication = {**(publication or {}), "segments": [{**bound, **(outcome[1] or {})} for bound, outcome in zip(bounds, outcomes)],
-                               "split_confirmed": confirmed}
-            elif split_notes:
-                result["split_notes"] = split_notes
-            if len(parts) == 1 and classification.document_type == "bill" and not confirmed and outcomes[0][1] is not None and offers_split(reasons.get(0, [])):
-                # FR-131: a bill read as one with reason (a), (c) or (d) is offered Split here, in the shape of a split file's one segment. No row is saved for it.
-                publication = {**publication, "segments": [{"ordinal": 0, "first_line": lines[0].id, "last_line": lines[-1].id, **outcomes[0][1], "one": True}],
-                               "split_confirmed": False}
-            if pay is not None:
-                result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
-            self.save_segments(run, parse, lines, parts, confirmed)
-            self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
-            with self.store.connection() as db:
-                db.execute("UPDATE extraction_runs SET status='succeeded',document_type=?,result_json=?,publication_json=?,error=NULL,updated_at=? WHERE id=?",
-                           (result["classification"]["document_type"], json.dumps(result), json.dumps(publication), now(), run_id))
+            # Every part's publication, the retirement of parts the file no longer has, where the parts sit and the run's success are one transaction (FR-130,
+            # FR-132): a failure anywhere in them leaves the ledger, the split and the evidence as they were, and the run says nothing was published.
+            with self.store.transaction():
+                outcomes = [self.record(run, parse, reading, lines[first:last], home_currency, segment=ordinal, split=len(parts) > 1 and not confirmed)
+                            for ordinal, ((first, last), reading) in enumerate(zip(parts, readings))]
+                result, publication = outcomes[0]
+                if len(parts) > 1:
+                    bounds = [{"ordinal": ordinal, "first_line": lines[first].id, "last_line": lines[last - 1].id} for ordinal, (first, last) in enumerate(parts)]
+                    result = {**result, "segments": [{**bound, **outcome[0]} for bound, outcome in zip(bounds, outcomes)], "split_notes": split_notes}
+                    publication = {**(publication or {}), "segments": [{**bound, **(outcome[1] or {})} for bound, outcome in zip(bounds, outcomes)],
+                                   "split_confirmed": confirmed}
+                elif split_notes:
+                    result["split_notes"] = split_notes
+                if len(parts) == 1 and classification.document_type == "bill" and not confirmed and outcomes[0][1] is not None and offers_split(reasons.get(0, [])):
+                    # FR-131: a bill read as one with reason (a), (c) or (d) is offered Split here, in the shape of a split file's one segment. No row is saved for it.
+                    publication = {**publication, "segments": [{"ordinal": 0, "first_line": lines[0].id, "last_line": lines[-1].id, **outcomes[0][1], "one": True}],
+                                   "split_confirmed": False}
+                if pay is not None:
+                    result = {**result, "pay_tables": pay_tables_for_viewer(pay, readings)}
+                self.save_segments(run, parse, lines, parts, confirmed)
+                self.ledger.retire_segments(parse["blob_hash"], list(range(len(parts))))
+                with self.store.connection() as db:
+                    db.execute("UPDATE extraction_runs SET status='succeeded',document_type=?,result_json=?,publication_json=?,error=NULL,updated_at=? WHERE id=?",
+                               (result["classification"]["document_type"], json.dumps(result), json.dumps(publication), now(), run_id))
         except Cancelled as exc:
             with self.store.connection() as db:
                 db.execute("UPDATE extraction_runs SET status='cancelled',error=?,updated_at=? WHERE id=?", (str(exc), now(), run_id))
@@ -4700,15 +4705,17 @@ class ExtractionService:
         notes.extend(message for message in layout_notes if message not in notes)
         tables = reported_tables(evidence)
         part = None
+        suppressed = bill is BILL_FAILED or bill_part is not None  # The reader's printed tables are taken away, whether or not the engine found a charge table.
         if engine:
             part = paystub_tables.for_lines(engine, ids)
             tables = pay_tables_of(tables, engine, part, ids)
-        elif pay is PAY_FAILED or bill is BILL_FAILED or bill_part is not None:
+        elif pay is PAY_FAILED or suppressed:
             tables = bill_tables_of(tables, bill_part, ids) if from_columns else without_printed_tables(tables)
         try:
-            classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind)
+            classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, tables, requested_kind, suppressed)
         except InvoiceBill:  # D5: the engine's work is thrown away, and the part is read again as today (one more summary question).
             bill_part = from_columns = None
+            record_notes = [note for note in record_notes if note != BILL_FAILED_NOTE]
             notes.extend(issue.message for issue in evidence.issues if issue.code == "pdf_layout_review" and issue.message not in notes)
             classification, header, rows, identity, kind = self.extract(config, work, lines, notes, classification, reported_tables(evidence), requested_kind)
             tables = reported_tables(evidence)
@@ -4913,16 +4920,22 @@ class ExtractionService:
             record_notes.append(PAY_SPLIT_FAILED)
             return [(0, len(lines))], False
 
+    def user_split(self, run, parse, lines):
+        """(ranges, changed, stale) of the user's own split of a file: its index ranges when its lines still exist and cover the text in order, whether it
+        replaced the rule's split (changed), and whether one was saved that no longer matches (stale; ranges is then None)."""
+        saved = self.saved_segments(run, parse, source="user")
+        ranges = user_ranges(saved, lines) if saved else None
+        return ranges, bool(ranges) and any(row["extraction_run_id"] for row in saved), bool(saved) and not ranges
+
     def bill_parts(self, run, parse, lines, split_notes, bills=None):
         """([(first, last)], changed, reasons) for a bill file, as `pay_parts` for pay stubs: the user's own split wins (changed: it replaced the rule's, so each
         bill gets a split_changed guess, and it raises no FR-129 reason); otherwise the rule that reads the lines (bill_split.bill_parts). reasons is
         {part index: [FR-129's review reasons]}. A rule that raises, or finds more than 200 bills, reads the file as one bill with reason (d) (FR-129). `bills` is the
         bill engine's reading of a text PDF, whose anchors the rule also reads (an amount due printed apart from its label)."""
-        saved = self.saved_segments(run, parse, source="user")
-        if saved:
-            ranges = user_ranges(saved, lines)
-            if ranges:
-                return ranges, any(row["extraction_run_id"] for row in saved), {}
+        ranges, changed, stale = self.user_split(run, parse, lines)
+        if ranges:
+            return ranges, changed, {}
+        if stale:
             split_notes.append("How you split this file no longer matches its text, so it was split again.")
         try:
             found = bill_split.bill_parts(lines, bill_tables.split_anchors(bills) if isinstance(bills, bill_tables.BillTables) else None)

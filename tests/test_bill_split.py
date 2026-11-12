@@ -218,6 +218,139 @@ def test_sc126_an_account_masked_or_in_full_is_the_same_account():
     assert key_of("Account no. ****3456") == ("account", "3456")
 
 
+@pytest.mark.parametrize("text, last_four", [("Account Number 1234 5678 9012", "9012"), ("Account Number 1234 5678 3456", "3456"), ("Account: 1234 5678 9012 Due Date 10/15/2026", "9012"),
+                                             ("Account Number XXXX XXXX 9012", "9012"), ("Account Number 1234 5678 9012 Page 3 of 4", "9012"),
+                                             ("Account Number 9012 Due Date 10/15/2026 12345678", "9012")])
+def test_sl11_f7_an_account_is_the_last_four_of_its_whole_printed_value_up_to_a_following_text_field(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+def test_sl11_f7_accounts_that_differ_after_a_space_group_are_two_bills_even_with_every_date_and_amount_alike():
+    pages = [[f"Account Number 1234 5678 {tail}", "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for tail in ("9012", "3456")]
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("second", ["Account Number ****9012", "Account Number 1234-5678-9012", "Account Number XXXX XXXX 9012", "Account #: 5555 5555 9012"])
+def test_sl11_f7_the_same_account_in_another_format_continues_the_bill(second):
+    pages = [["Account Number 1234 5678 9012", "Due Date 10/15/2026", "Total Amount Due 30.00"], [second, "Due Date 10/15/2026", "Total Amount Due 30.00"]]
+    assert bill_split.bill_parts(lines_from(*pages)).parts == [(0, 6)]
+
+
+def test_sl12_r2_1_alphanumeric_accounts_that_differ_with_every_date_and_amount_alike_are_two_bills():
+    pages = [[f"Account Number AB1234-5678-{tail}", "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for tail in ("9012", "3456")]
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("second", ["Account Number AB1234 5678 9012", "Account Number AB1234-5678-9012", "Account Number AB1234-XXXX-9012", "Account Number ****9012",
+                                    "Account Number AB1234 **** 9012"])
+def test_sl12_r2_1_the_same_alphanumeric_account_in_an_equivalent_format_continues_the_bill(second):
+    pages = [["Account Number AB1234-5678-9012", "Due Date 10/15/2026", "Total Amount Due 30.00"], [second, "Due Date 10/15/2026", "Total Amount Due 30.00"]]
+    assert bill_split.bill_parts(lines_from(*pages)).parts == [(0, 6)]
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-9012", "9012"), ("Account Number AB1234 5678 3456", "3456"), ("Account # ACCT-77889900", "9900"),
+                                             ("Account Number 1234 5678 9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234-5678-9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234 5678 9012 Due Date 10/15/2026", "9012")])
+def test_sl12_r2_1_an_alphanumeric_account_keys_its_last_four_digits_and_stops_at_a_following_text_field(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("text", ["Account Number AB12", "Account Number Service 1234", "Account no. xxxx 345", "Account Number AB-CD"])
+def test_sl12_r2_1_fewer_than_four_digits_or_a_first_word_with_no_digit_gives_no_key(text):
+    assert key_of(text) is None
+
+
+def two_pages_of(first, second):
+    """Two four-line pages whose dates and amounts are alike: only their account lines differ."""
+    return [[account, "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for account in (first, second)]
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-CD9012", "9012"), ("Account Number AB1234 5678 CD9012", "9012"),
+                                             ("Account Number AB1234 CD5678 EF9012", "9012"), ("Account Number 1234 5678 CD9012", "9012"),
+                                             ("Account Number AB1234 5678 CD9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234 5678 CD9012 Due Date 10/15/2026", "9012")])
+def test_sl13_r3_1_a_digit_bearing_alphanumeric_group_counts_anywhere_in_the_account_value(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("second", ["Account Number AB1234-5678-CD9012", "Account Number AB1234 5678 CD9012", "Account Number ****9012",
+                                    "Account Number AB1234 XXXX CD9012", "Account Number AB1234-XXXX-CD9012"])
+def test_sl13_r3_1_the_same_account_with_a_later_alphanumeric_group_continues_the_bill_in_any_format(second):
+    for first in ("Account Number AB1234 5678 CD9012", "Account Number AB1234-5678-CD9012", "Account Number ****9012"):
+        split = bill_split.bill_parts(lines_from(*two_pages_of(first, second)))
+        assert split.parts == [(0, 8)] and split.reasons == {}, (first, second)
+
+
+@pytest.mark.parametrize("first, second", [("Account Number AB1234 5678 CD9012", "Account Number AB1234 5678 CD3456"),
+                                           ("Account Number AB1234-5678-CD9012", "Account Number AB1234-5678-CD3456")])
+def test_sl13_r3_1_accounts_with_the_same_prefix_and_another_tail_are_two_bills(first, second):
+    split = bill_split.bill_parts(lines_from(*two_pages_of(first, second)))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-9012 | 12 Main St", "9012"), ("Account Number AB1234-5678-9012 | 212-555-0123", "9012"),
+                                             ("Account Number AB1234-5678-3456 | 212-555-0123", "3456"), ("Account Number 1234 5678 9012 | 12 Main St", "9012"),
+                                             ("Account Number | AB1234-5678-9012 | 12 Main St", "9012"), ("Account # | 1234 5678 9012 | 212-555-0123", "9012"),
+                                             ("Account Number | ****9012 | 212-555-0123", "9012")])
+def test_sl13_r3_2_the_account_value_stops_at_the_next_cell(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("text", ["Account Number AB12 | 3456", "Account Number 123 | 4567 9012", "Account Number | 12 Main St", "Account Number | Service 1234"])
+def test_sl13_r3_2_digits_in_another_cell_never_complete_an_account(text):
+    assert key_of(text) is None
+
+
+def test_sl13_r3_2_a_repeated_account_beside_another_address_cell_continues_the_bill():
+    pages = two_pages_of("Account Number AB1234-5678-9012", "Account Number AB1234-5678-9012 | 12 Main St")
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 8)] and split.reasons == {}
+
+
+def test_sl13_r3_2_two_accounts_beside_the_same_phone_cell_are_two_bills():
+    pages = two_pages_of("Account Number AB1234-5678-9012 | 212-555-0123", "Account Number AB1234-5678-3456 | 212-555-0123")
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("text, expected", [("Account Number AB1234-5678-9012 Service Address 12 Main St", "9012"), ("Account Number 1234 5678 9012 Phone 212-555-0123", "9012"),
+                                            ("Account Number AB1234 5678 CD9012 Due Date 10/15/2026", "9012"), ("Account #: 1234 5678 9012", "9012"),
+                                            ("Account No. 1234 5678 9012", "9012"), ("Account # # 1234 5678 9012", "9012"), ("Account Number xxxx 345", None),
+                                            ("Account Number Service 1234", None)])
+def test_sl13_labelled_text_fields_still_end_the_value_and_the_older_forms_still_key(text, expected):
+    assert key_of(text) == (None if expected is None else ("account", expected))
+
+
+def test_sl13_dates_key_the_same_with_or_without_cell_separators():
+    assert key_of("Due Date | 10/15/2026 | 12 Main St") == key_of("Due Date 10/15/2026") == ("due_date", (10, 15, 2026))
+    assert key_of("Account Number | Due Date | 10/15/2026") is None
+
+
+def test_sl13_the_real_evidence_path_splits_and_continues_on_the_account_cells():
+    """evidence_lines -> key_of -> bill_parts on a PDFResult of vision pages (the cells are joined with ` | ` as the readers write them)."""
+    from home_manager.documents.pdf_reader import PDFPage, PDFResult
+    from home_manager.documents.receipt_schema import TextLine
+
+    def parts_of(first, second):
+        pages = [PDFPage(number=number, method="vision_model", lines=[TextLine(id=f"page-{number}-line-{index}", text=text, block_ids=[])
+                                                                      for index, text in enumerate(texts, 1)])
+                 for number, texts in enumerate(two_pages_of(first, second), 1)]
+        lines = evidence_lines(PDFResult(input_hash="0" * 64, pages=pages))
+        assert len(lines) == 8
+        return bill_split.bill_parts(lines)
+
+    for first, second, parts in [("Account Number AB1234-5678-9012", "Account Number AB1234-5678-9012 | 12 Main St", [(0, 8)]),
+                                 ("Account Number AB1234-5678-9012 | 212-555-0123", "Account Number AB1234-5678-3456 | 212-555-0123", [(0, 4), (4, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number AB1234-5678-CD9012", [(0, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number AB1234 5678 CD3456", [(0, 4), (4, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number ****9012", [(0, 8)])]:
+        split = parts_of(first, second)
+        assert split.parts == parts and split.reasons == {}, (first, second)
+
+
 def test_sc126_a_payment_due_line_with_dot_leaders_is_a_due_date_key():
     assert key_of("Payment Due ........ 10/15/2026") == ("due_date", (10, 15, 2026))
     assert key_of("Due Date | 07/20/2026") == key_of("Due Date 07/20/2026") == ("due_date", (7, 20, 2026))
@@ -714,6 +847,31 @@ def test_sc128_a_split_inside_a_table_gives_each_part_its_own_rows_and_every_lin
     assert labels(before) == ["Customer Charge"] and labels(after) == ["Energy Charge", "State Tax"]
 
 
+def test_sl11_f4_a_saved_split_scopes_the_credit_section_so_the_next_bills_charges_stay_charges(app, local_model):
+    """Review round 1, finding 4: page 1 ends in `Account Credits`; page 2 repeats the bill's keys, so the rule keeps one bill and its unsigned charges would be
+    read as money off. After the user splits at page 2 and the file is extracted again, page 2's bill keeps its charges as charges."""
+    client, manager = app
+    first = [*bf.mini_items(1), *bf.left(548, "Account Credits"), *bf.amounts_at(532, "Paperless Credit", (bf.CHARGE, "2.50"))]
+    run = started_in(manager, local_model, [bf.page_of(first), bf.page_of(bf.mini_items(1))])
+    run.answer([1])
+    extract_through_app(manager, run)
+    assert run.segments() == []  # The rule read the file as one bill.
+    [(_, _, one)] = run.bills()
+    assert sum(1 for item in one["items"] if item["line_total_minor"] < 0) == 4  # The credit and, as the one bill's, page 2's three charges: the start of the defect.
+    pages = run.pages()
+    run.answer([1, 1], parts=pages)
+    assert client.put(f"/api/documents/{run.doc['id']}/segments", json={"starts": [pages[0][0].id, pages[1][0].id]}).status_code == 202
+    manager.future.result(timeout=60)
+    assert [row[3:] for row in run.segments()] == [("confirmed", "user")] * 2
+    [(_, _, before), (_, _, after)] = run.bills()
+    assert lines_of(after) == bf.exp_mini(1)["lines"]  # +12.00, +56.xx, +tax: charges, not -12.00 / credit.
+    credit = [item for item in before["items"] if item["description"] == "Paperless Credit"]
+    assert [(item["line_total_minor"], item["line_type"] or item["line_kind"]) for item in credit] == [(-250, "credit")]
+    assert [item["line_total_minor"] for item in before["items"] if item["description"] != "Paperless Credit"] == [item[1] for item in bf.exp_mini(1)["lines"]]
+    for record in (before, after):
+        assert {item["line_holder"] for item in record["items"]} == {None}
+
+
 def bill_tables_read(run):
     from home_manager.finance import bill_tables
     return bill_tables.read(run.evidence)
@@ -832,6 +990,82 @@ def merge_bill_two(run):
     run.extract(force=True)
 
 
+LEDGER_TABLES = ("receipts", "receipt_items", "document_segments", "financial_evidence_links", "category_splits", "review_events", "record_corrections",
+                 "merchants", "record_shares")
+
+
+def ledger_state(run):
+    """Every row the ledger, the split and the evidence hold for the library, whole (the clock and run ids included): a rolled-back publication changes none."""
+    with run.store.connection() as db:
+        return {table: [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY 1")] for table in LEDGER_TABLES}
+
+
+def fail_after_first_publication(run, monkeypatch, force=False):
+    """The run, extracted with a fault injected after the first bill's real publication (the second `record` raises): (the run, its calls of `record`)."""
+    real, calls = ExtractionService.record, []
+
+    def flaky(self, *args, **kwargs):
+        if calls:
+            raise RuntimeError("injected fault after the first publication")
+        calls.append(1)
+        return real(self, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(ExtractionService, "record", flaky)
+        run_id, _ = run.extraction.enqueue(run.doc["id"], run.parse_id, run.config(), force=force)
+        run.extraction.run(run_id, Work.detached())
+    assert calls == [1]  # The first bill really was published, inside the run.
+    return run.extraction.get(run_id)
+
+
+def test_sl11_f1_a_failure_after_the_first_bill_was_published_leaves_nothing_behind_and_a_clean_retry_succeeds(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    before = ledger_state(run)
+    failed = fail_after_first_publication(run, monkeypatch)
+    assert failed["status"] == "failed" and failed["error"] == "Extraction failed; nothing was published."
+    assert ledger_state(run) == before  # No bill, no segment row, no evidence, not even a merchant: the run says nothing was published and it is true.
+    assert run.bills() == [] and run.segments() == [] and spending(run.store, "2026-07-01", "2026-09-30") == 0
+    run.answer([1, 2, 3])
+    run.extract()
+    segment_check(run, 3)
+    assert [record["due_date"] for _, _, record in run.bills()] == DUES and spending(run.store, "2026-07-01", "2026-09-30") == 24340
+    assert_ledger_healthy(run.store)
+
+
+def test_sl11_f1_a_failure_while_the_file_is_read_again_leaves_the_earlier_bills_and_split_unchanged_and_a_retry_succeeds(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    before, ids = ledger_state(run), bill_ids(run)
+    run.answer([1, 2, 3])
+    failed = fail_after_first_publication(run, monkeypatch, force=True)
+    assert failed["status"] == "failed"
+    assert ledger_state(run) == before and bill_ids(run) == ids  # Bill 1 was rewritten by the failed run; the rollback put it back with the rest.
+    run.answer([1, 2, 3])
+    run.extract(force=True)
+    assert bill_ids(run) == ids and [record["review_status"] for _, _, record in run.bills()] == ["verified"] * 3
+    assert_ledger_healthy(run.store)
+
+
+def test_sl11_f1_a_failure_while_the_file_is_split_again_keeps_the_obsolete_bill_counting_exactly_as_before(pdf_store, local_model, monkeypatch):
+    run = multi(pdf_store, local_model)
+    run.extract()
+    before, starts = ledger_state(run), run.starts()
+    pages = run.pages()
+    run.extraction.set_split(run.doc["id"], starts[:2])  # Merge with next on bill 2: three bills become two.
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    with run.store.connection() as db:
+        split_saved = [tuple(row) for row in db.execute("SELECT * FROM document_segments ORDER BY 1")]
+    failed = fail_after_first_publication(run, monkeypatch, force=True)
+    assert failed["status"] == "failed"
+    after = ledger_state(run)
+    assert {key: rows for key, rows in after.items() if key != "document_segments"} == {key: rows for key, rows in before.items() if key != "document_segments"}
+    assert after["document_segments"] == split_saved  # Only the user's own saved split (written before the run) differs from the first reading's.
+    assert [record["review_status"] for _, _, record in run.bills()] == ["verified"] * 3 and spending(run.store, "2026-09-20", "2026-09-20") == 7472
+    run.answer([1, 2], parts=[pages[0], pages[1] + pages[2]])
+    run.extract(force=True)
+    assert [record["review_status"] for _, _, record in run.bills()] == ["verified", "needs_review", "rejected"]  # The merged bill keeps its lines reason (G9).
+    assert_ledger_healthy(run.store)
+
+
 RETIRED = "The latest reading of this file no longer finds this bill; check how the file was split."
 
 
@@ -872,7 +1106,7 @@ def test_sc130_a_bill_you_decided_keeps_your_decision_and_gets_the_note(app, loc
 def test_sc115_b_when_the_engine_fails_every_bill_of_the_file_is_read_like_a_photographed_one_with_one_log_record(pdf_store, local_model, monkeypatch, caplog):
     from home_manager.finance import bill_tables
 
-    def broken(evidence):
+    def broken(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
 
     run = started_bills(pdf_store, local_model, bf.mini_pages(1, 2, 3))
@@ -1213,3 +1447,37 @@ def test_sc131_marking_never_overrides_your_decision_or_follows_a_rejected_origi
     assert ledger.mark_bill_duplicate(repeat, repeat) is False and ledger.mark_bill_duplicate(repeat + 100, original) is False
     assert status_of(copy.bills()[0][2]) == ("verified", "automatic")
     assert ledger.mark_bill_void(repeat) is True and status_of(copy.bills()[0][2]) == ("rejected", "automatic")
+
+
+# === Review round 1, finding 1: the transaction the publication runs in (library/storage.py `Store.transaction`) ============================================
+
+def test_sl11_f1_store_transaction_commits_together_rolls_back_together_and_keeps_a_failed_inner_step_alone(tmp_path):
+    from home_manager.library.storage import Store
+    store = Store(tmp_path / "managed")
+    try:
+        with store.connection() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS sl11_probe(v TEXT)")
+
+        def saved():
+            with store.connection() as db:
+                return [row[0] for row in db.execute("SELECT v FROM sl11_probe ORDER BY rowid")]
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('one')")
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('two')")
+                raise RuntimeError("after two inner steps")
+        assert saved() == []
+        with store.transaction():
+            with store.connection() as db:
+                db.execute("INSERT INTO sl11_probe VALUES('kept')")
+            with pytest.raises(RuntimeError):  # An inner step that fails and is caught takes only its own writes back.
+                with store.connection() as db:
+                    db.execute("INSERT INTO sl11_probe VALUES('lost')")
+                    raise RuntimeError("inner")
+            with store.connection() as db:
+                db.execute("INSERT INTO sl11_probe VALUES('also kept')")
+        assert saved() == ["kept", "also kept"]
+    finally:
+        store.close()

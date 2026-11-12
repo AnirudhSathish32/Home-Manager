@@ -112,7 +112,7 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
     counts amount due − previous balance + payments as its new charges, with the note "New charges aren't printed; worked out as amount
     due A − previous balance P + payments R = N."; the lines must add up to that value, and the carried check isn't run.
   - **A rate printed with more decimals than the currency allows** (`0.1430` a kWh) is kept as printed in the line's details and its
-    cents (14) are stored beside it; quantity × unit price is checked on the printed rate.
+    cents (14) are stored beside it; quantity × unit price is checked on the printed rate, or on your corrected unit price while that applies.
   - **A line under a holder title** (a phone bill's `Alex 555-201-1111`) takes the title's holder, so family routing finds the member
     by the number's last four digits.
   - **A VOID bill or an exact duplicate doesn't count.** A bill with a line that says only VOID, and a bill with the same provider,
@@ -534,12 +534,14 @@ one line by line:
 
 - **A bill line you corrected, after a bill is read again.** Each line's type, person, price, description, code, quantity and unit
   price you correct is kept by its printed position and is applied again after a new reading only when the line now at that position
-  prints the same amount as the line you corrected (its amount as read, before any price correction of yours), or, for a price you
+  prints the same amount as the line you corrected (its amount as read, before any price correction of yours; for a change you make after a later reading
+  has caught up with your price correction, the amount that reading prints), or, for a price you
   corrected, prints exactly your corrected price. Otherwise the correction is **held**: not applied, kept in the history, and the bill
   waits in Review with the reason "Your change to line N (what you changed) wasn't applied: that line now prints X, not Y. Check the
   bill's lines and make the change again on the right line." (a position that no longer has a line reads "the bill no longer has a line
   N"). A held correction applies again, and its reason goes, when a later reading prints the remembered amount at that position again;
-  making the same kind of change on that position again replaces it, and **Undo** removes it. Because the reading may add a line the
+  making the same kind of change on that position again replaces it, and **Undo** removes it. A unit price you corrected shows and is checked only while it applies;
+  held or undone while held, the line shows and checks the rate it prints now. Because the reading may add a line the
   model missed, a line that moves keeps your person and category by what the item is (its description and amount), not by its number.
   This guards every bill, text PDF, photographed, scanned or invoice, and never rewrites a bill you decided. Receipts are unchanged.
 

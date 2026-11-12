@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import uuid
 
 from ..core.categories import LEGACY_CATEGORIES, RECEIPT_CATEGORIES
@@ -214,6 +215,7 @@ RELEASED_PATH = "|released-d"
 
 class Store:
     def __init__(self, root: Path):
+        self.shared = threading.local()  # The connection of the transaction this thread is inside, if any (`transaction`).
         self.root = safe_path(root)
         marker = safe_path(root / ".home-manager-store")
         if root.exists() and any(root.iterdir()) and not marker.exists():
@@ -273,6 +275,22 @@ class Store:
 
     @contextmanager
     def connection(self):
+        joined = getattr(self.shared, "db", None)
+        if joined is not None:  # Inside `transaction`: the same connection, with its own all-or-nothing step inside the outer one.
+            self.shared.depth += 1
+            savepoint = f"step_{self.shared.depth}"
+            joined.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield joined
+            except BaseException:
+                joined.execute(f"ROLLBACK TO {savepoint}")
+                joined.execute(f"RELEASE {savepoint}")
+                raise
+            else:
+                joined.execute(f"RELEASE {savepoint}")
+            finally:
+                self.shared.depth -= 1
+            return
         safe_path(self.db_path)
         db = sqlite3.connect(self.db_path, timeout=15)
         db.row_factory = sqlite3.Row
@@ -281,6 +299,30 @@ class Store:
         try:
             with db:
                 yield db
+        finally:
+            db.close()
+
+    @contextmanager
+    def transaction(self):
+        """Everything this thread does through `connection()` inside the block is one transaction: it commits when the block ends and rolls back, leaving
+        the database as it was, when the block raises (a nested `connection()` shares the connection, and keeps its own steps all-or-nothing). Joins the
+        transaction already open on this thread. The write lock is taken first, so nothing else writes meanwhile."""
+        if getattr(self.shared, "db", None) is not None:
+            yield self.shared.db
+            return
+        safe_path(self.db_path)
+        db = sqlite3.connect(self.db_path, timeout=15)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA synchronous=FULL")
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self.shared.db, self.shared.depth = db, 0
+                try:
+                    yield db
+                finally:
+                    self.shared.db = None
         finally:
             db.close()
 
