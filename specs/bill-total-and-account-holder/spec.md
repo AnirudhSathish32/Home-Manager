@@ -226,6 +226,13 @@ skipped the test contract, plan and plan review; the change is built in slices a
 requirement, the full suite and an independent HIGH code review. OD-10 is unanswered: SC-132 (b)'s case (lines adding up to the
 due-now amount) stays a review case.
 
+**User clarification (2026-11-12), verbatim:** "Let me be clear, the paid line of the transaction table takes the 62 dollars
+when it should default take the total current charges." and "its a pdf download". So the binding requirement for part B: on a
+text PDF printing `Current Charges due 11/01/2026 $62.91` and `Total Current Charges $1,667.91`, what the bill **counts**
+(`total_minor`, the Transactions page's Paid) is 1,667.91 and its due date is 11/01/2026. A due-now amount never becomes what
+the bill counts, including through `publish_bill`'s fallback to the amount due and over the model's own new-charges answer.
+OD-1 stands (what counts is the new charges); this makes sure the new charges are the printed total.
+
 ## Out of scope / product decisions requiring approval
 **Open decisions** (recommended default first; the user can answer "defaults ok"):
 1. **OD-1 Which field the "total" becomes.** Default: the **amount due** only (the page's Amount due row, the split panel, the
