@@ -154,3 +154,70 @@ Requirement/scenario status:
 - **Skipped/blocked:** independent browser execution of SC-110 step 7, SC-111 step 3 and SC-129's page steps; running-app validation remains **BLOCKED** by missing `~/.agent-harness/environment.py`. No live household data, donated corpus or protected path was accessed. Real-bill accuracy and uncommon layouts remain unmeasured. The already documented one-column-heading/title limitation is a residual risk, not an additional finding here.
 
 Only this findings section was written; no source, tests, other docs, commits, pushes or merges were changed by the reviewer.
+
+## Code review (round 2)
+
+Reviewer: OpenAI / Codex `gpt-6.1-sol`, high reasoning effort, fresh independent review sub-agent; no helper subagents. Risk: **HIGH**. Independence: **model-family** (`slice-SL-11.md` identifies the fix worker as `model_family: anthropic`; the earlier implementation handoffs also identify anthropic). Reviewed only `git diff 4e31dc4 cab0922`, with surrounding code to trace the changed paths, at HEAD `cab092277d21bb65be492cf2766596334bd295fe` in `/home/anirudh/Documents/Projects/Home-Manager-bills`. Read round 1 in full, SL-11's handoff and progress dispositions, and the relevant approved FR/SC and plan contracts. All reproductions used synthetic data and temporary stores. No protected path was accessed.
+
+**Verdict: REQUEST CHANGES — 1 major and 1 minor introduced by the fixes; no blocker or nit.** Eight prior findings are resolved; finding 7 is partially resolved because its fix introduces R2-1 below.
+
+### Round-1 finding dispositions
+
+1. **Resolved — failed publication (FR-130, FR-132).** `documents/extraction.py:4636` wraps every `record`, automatic rejection, split persistence, retirement and success update in `Store.transaction()` (`library/storage.py:306`). Independently reran the three SL-11 service reproductions: failure after the first real publication leaves no new bills; failure on reread preserves the prior ledger/evidence/split rows; failure during re-splitting preserves the previously counting obsolete bill and the user's saved split. Clean retries succeed. The nested-connection savepoint test also passes. See the transaction audit below.
+2. **Resolved — explicit plus becomes credit (FR-106, FR-110, FR-113).** `finance/bill_tables.py:100` applies section-based negation only to an unsigned token. The targeted tests independently confirm `+5.00` remains a positive charge in Account Credits, Discounts and Adjustments, including role sums, adaptation and persisted `500` minor units.
+3. **Resolved — invoice native-column fallback (FR-120, FR-125).** `documents/extraction.py:4708` carries the fact that native tables were suppressed, and `read_form` at `:4127` restarts invoices on the native path even without an engine charge table. Both round-1-shaped synthetic invoice reproductions pass: no-charge-table and injected engine failure each persist `10000 / 20000`, cite the native `100 / 200` cells and ask two summary questions; the engine-failure note is discarded for the invoice.
+4. **Resolved — saved split section/sign ownership (FR-106, FR-130, FR-131).** `finance/bill_tables.py:364,383` uses effective line cuts for section ownership and the sum rule; `documents/extraction.py:4584` supplies the saved user's first lines before adaptation. The real API split and re-extraction reproduction passes: bill 1 keeps its `-250` credit while bill 2 keeps its positive printed charge lines and no leaked holder. The inside-page engine reproduction also passes. The PDF reader is still invoked once; line cuts are applied to the saved reading. Removing the saved-split credit-section limitation from `docs/open-work.md` is justified for this reviewed failure.
+5. **Resolved — summary on another page (FR-103, FR-105(b), FR-110).** `finance/bill_tables.py:208,221` scopes targets to the complete effective bill, while summing that table's own rows. Independent targeted reproductions select `charge, other` by `sum`, persist `1000 / 2000` instead of `10000 / 20000`, and produce no column guess. An anchor belonging to the next bill does not decide the first bill. **I agree with the orchestrator: plan.md:202's table-page restriction is a plan defect, not an approved contract change.** FR-103 explicitly allows another page and FR-105(b) names the bill's new charges; SC-105 pins no table-page-only restriction. Inverting the extra implementation test corrects its plan-derived assumption rather than changing a test-contract value.
+6. **Resolved — fresh correction remembers an older reading (FR-119, FR-122).** `finance/ledger.py:2874,2902` stores current raw reading amounts separately from each correction's historical amount. Reran the code/member/shifted-line regressions and approved G4 case. Also independently repeated `535 -> correct to 553 -> reread 553 -> set TAX-CODE -> reread 553`: the code remains `TAX-CODE`, on amount `553`. A fresh correction is held if the position later prints the older `535` instead.
+7. **Partially resolved — space-grouped account keys (FR-128).** The reported numeric-group failure is fixed: `1234 5678 9012` keys `9012`, and the new equal-date/different-account and equivalent-format continuation tests pass. However, the restrictive new `ACCOUNT_GROUP` rejects previously recognized alphanumeric account values, so the fix regresses the same account-boundary requirement; see R2-1.
+8. **Resolved — held rate display (FR-110, FR-119).** `finance/ledger.py:240,2034` checks whether the latest unit-price correction applies. Targeted tests and a separate ledger reproduction show `0.1435` while held and after undo while held, rather than `0.14 USD`; recovery applies and displays the corrected rate again.
+9. **Resolved — corrected product trace (FR-110, FR-113).** `finance/document_traces.py:112` shares the effective-rate rule. Independent ledger output for 100 units: printed `0.1430` computes/compares `(1430,1430,True)`; corrected `0.15` displays `0.15 USD` and checks `(1500,1430,False)`; held/undone-while-held `0.1435` checks `(1435,1435,True)`. The original mismatch between displayed and checked rate is fixed.
+
+### New findings
+
+**R2-1 — major — Alphanumeric account values no longer establish bill boundaries.** `src/home_manager/documents/bill_split.py:85` (`key_of`; restrictive `ACCOUNT_GROUP` at `:26`). Requirement: **FR-128**.
+
+The new full-token match accepts only digits, `x/X`, masking characters and hyphens. An account value containing another letter, such as `Account Number AB1234-5678-9012`, now returns no key; the base revision extracted `9012`. FR-128 requires comparison by the account's last four digits and does not exclude alphanumeric identifiers. This also loses an input the pre-fix parser already handled.
+
+Independent inline reproduction ran the real base and head `bill_split` modules on identical synthetic lines. For two four-line pages, each printing the same due date `10/15/2026`, new charges `30.00` and total amount due `30.00`, with account values `AB1234-5678-9012` and `AB1234-5678-3456` respectively:
+
+```text
+4e31dc4: keys 9012 / 3456; parts [(0,4),(4,8)]; reasons {}
+cab0922: keys None / None; parts [(0,8)]; reasons {}
+```
+
+Two distinct service accounts are silently treated as one bill. **Suggested fix:** preserve recognition of alphanumeric account tokens containing digits while accumulating space-separated numeric/masked groups; continue stopping at a following textual field such as `Due Date`. Add the different-account/same-date reproduction and an alphanumeric/full/masked equivalent-account continuation regression. Keep the numeric-group and following-field tests.
+
+**R2-2 — minor — The updated split documentation contradicts the new masked-account behavior.** `docs/documents.md:1152`. Requirement: **FR-126** (document the built behavior).
+
+The new text says `Account no. xxxx 3456` does not count, claiming fewer than four digits. It contains four digits and now returns `Key(kind='account', value='3456', printed='3456')`, independently reproduced. A user consulting the split documentation gets the wrong expectation for when that account can split a file. **Suggested fix:** say that this form counts, or remove the contradictory parenthetical; use an actual fewer-than-four-digit value if illustrating the minimum.
+
+### Transaction audit and remaining risks
+
+Traced `run -> record -> publish` for receipts, bills and pay stubs, including SQL evidence links, correction replay, payroll links, VOID/duplicate rejection, `save_segments` and `retire_segments`. No reachable own `sqlite3.connect`, explicit commit, `executescript`, DDL, model call, worker-thread dispatch or evidence/Library file write was found inside the new publication block. Evidence updates there are database rows; parsing/artifact creation and managed Library filing are outside this block.
+
+Additionally reran the three publication-failure tests with an in-memory wrapper around `Store.transaction`, a SQLite trace callback and Python audit hooks active during its body. Observed SQL verbs were DELETE/INSERT/RELEASE/SAVEPOINT/SELECT/UPDATE; observed **zero** separate SQLite connections, file opens for writing, filesystem mutations, premature commits or DDL. Successful three-bill publication spans in that probe were approximately 8–10 ms. This is evidence for those fixtures, not a bound for every file.
+
+A separate temporary-store/thread reproduction verified that an inner `connection()` exception caught by its caller rolls back only that savepoint; an outer exception then rolls back all outer writes; a connection on another thread sees no uncommitted rows and its subsequent write survives independently. Nested `transaction()` deliberately joins the outer transaction rather than creating another rollback boundary; no publication caller relies on a caught nested `transaction()` failure for isolation. Exceptions swallowed *inside* a `connection()` body do not reach its rollback handler, as with normal context managers; no new such publication path was identified.
+
+`BEGIN IMMEDIATE` holds the single writer lock throughout publication; another writer retains the existing 15-second timeout. No model/network work occurs in that span. Maximum-size 200-part contention and process-kill durability were not independently stress-tested. This is a residual verification limit, not an additional finding. The version bump to `typed-extraction-v48-bill-review-fixes` correctly invalidates pre-fix readings; its pin and documentation agree. No migration was introduced.
+
+### Independent verification and coverage
+
+Commands ran with `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src` in the specified worktree, without xdist or pytest cache:
+
+```text
+.venv/bin/python -m pytest tests/test_bill_engine.py tests/test_bill_engine_record.py tests/test_bill_corrections.py tests/test_bill_split.py -k 'sl11 or sc119_g4 or sc105_summary_amounts_on_another_page' -q -p no:cacheprovider
+40 passed, 390 deselected (21.27s)
+
+.venv/bin/python -m pytest tests/test_receipt_segments.py tests/test_paystub_split.py tests/test_paystub_engine_record.py -q -p no:cacheprovider
+79 passed (98.19s)
+```
+
+The audit wrapper invoked pytest on `tests/test_bill_split.py -k 'sl11_f1 and not store_transaction' -q -p no:cacheprovider`: **3 passed**, 76 deselected (6.81s); these repeat three of the 40 selected tests. Separate inline scripts used `PYTHONPATH=src:tests` for the account regression, correction/rate outputs and temporary-store concurrency probe. `git diff --check 4e31dc4 cab0922` passed.
+
+- **Verified for the reviewed fixes:** FR-103/105/106/110/113/119/122/130/131/132 edge cases above, SC-105/106/110/113/119 and publication/saved-split variants of SC-128–130; shared receipt/paystub regressions support FR-120/125 within the selected paths. The targeted v48 pin passes (FR-121).
+- **Failed/uncovered edge:** FR-128's alphanumeric-account variant (R2-1); FR-126's changed masked-account explanation is incorrect (R2-2). Existing numeric SC-126 examples pass but do not cover R2-1.
+- **Reported, not independently rerun here:** the orchestrator's 1089 passed / 1 skipped at f46e02e and 18 browser passes. No full suite or browser run was performed in round 2. The full-suite rerun remains the orchestrator's post-review step; real-data accuracy remains unmeasured.
+
+Only this round-2 section was appended. No source, test or other documentation edit, commit, push or merge was made.
