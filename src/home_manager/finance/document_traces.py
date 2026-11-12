@@ -125,7 +125,7 @@ def bill_checks(db, row):
                                  ("money", "line_total", "Line total", abs(item["line_total_minor"]), provenance(db, "receipt_item", row, f"price:{item['position']}", locator))],
                       "formula": "The printed quantity times the unit price as printed, rounded half-up to the cent, against the line total (within a cent)."})
     previous, payments = ((details.get(name) or {}).get("minor") for name in ("previous_balance", "payments_received"))
-    if None not in (previous, payments, new, due) and not worked:  # Worked-out new charges would make it hold by construction (FR-118).
+    if None not in (previous, payments, new, due) and not worked and not details.get("amount_due_worked_out"):  # Worked-out new charges or amount due hold by construction (FR-118, FR-142 b).
         found.append({"name": "carried", "label": "Previous balance, payments and new charges", "ref": ref("bill.carried", receipt_id=row["id"]),
                       "check": document_checks.bill_carried, "args": (previous, payments, new, due),
                       "inputs": [("money", "previous_balance", "Previous balance", previous, detail("previous_balance")),

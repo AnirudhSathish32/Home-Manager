@@ -72,11 +72,12 @@ class Bills(BillRun):
         except Exception:  # A scanned reading has no engine pages.
             return set()
 
-    def answer(self, stubs, parts=None, fail_summary_at=None, kinds=None, invoice_at=None, whole_invoice=False, flat=False):
+    def answer(self, stubs, parts=None, fail_summary_at=None, kinds=None, invoice_at=None, whole_invoice=False, flat=False, amount_label="Total Amount Due"):
         """The bills' answers. stubs: k (MINI-BILL's number), (k, account last four) or (k, account, j) per part, where j is the MINI-BILL whose statement date, period
         and due date the part prints (BL-ACCT); parts: the lines of each part (default: one per page, one part for one stub). kinds: {part index: classification}
         (bill by default; `rent` reads the part with the rent form); invoice_at: the part whose summary reads an invoice number; whole_invoice: the file is
-        read again as one document, so its summary is asked once more (twice for an invoice: D5)."""
+        read again as one document, so its summary is asked once more (twice for an invoice: D5). amount_label: the printed line the model's amount due cites
+        (MINI-DUE prints `Current Charges due` instead of `Total Amount Due`)."""
         lines = self.blank_free()
         parts = parts or (self.pages() if len(stubs) > 1 else [lines])
         covered = set() if flat else self.covered()  # flat: the engine failed, so each part is one question
@@ -96,7 +97,7 @@ class Bills(BillRun):
             fields = {"provider": field(CITY, CITY, CITY), "account_reference": field(account, "Account Number", f"1234-5678-{account}"),
                       "issue_date": field(iso(s), "Statement Date", s), "due_date": field(iso(d), "Due Date", d),
                       "period_start": field(iso(b[:10]), "Billing Period", b[:10]), "period_end": field(iso(b[13:]), "Billing Period", b[13:]),
-                      "amount_due": field(a, "Total Amount Due", a), "new_charges": field(n, "New Charges", n),
+                      "amount_due": field(a, amount_label, a), "new_charges": field(n, "New Charges", n),
                       "currency": field("USD", "This bill is for", "US dollars") if printed else field("USD", "Account Number", "Account Number")}
             header = self.header({}, **fields)
             if invoice_at == number:

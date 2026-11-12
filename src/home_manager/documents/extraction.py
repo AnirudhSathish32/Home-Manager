@@ -1654,7 +1654,7 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
         line = due_lines[0]
         figure, where = value_of(line.token), cited(line, DUE_NOW)
         if where is not None:
-            due_now = {"amount": format(figure, "f"), "date": line.date, "label": line.label, "worked": False,
+            due_now = {"amount": format(figure, "f"), "date": line.date, "label": line.label, "worked": None,
                        "locator": {"line_ids": [where[0]], "quotes": [where[1]]}}
             if "amount_due" not in chosen:  # (b): previous balance - payments + new charges, else the new charges, else the due-now amount.
                 if None not in (prev, pay, new):
@@ -1671,7 +1671,7 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
                     if len(pieces) == 1 and pieces[0][2] is not None:
                         references["amount_due"] = pieces[0][2]
                     if len(pieces) == 3:
-                        due_now["worked"] = True
+                        due_now["worked"] = {"previous_balance": format(prev, "f"), "payments": format(pay, "f"), "new_charges": format(new, "f")}
                         notes.append(f"The amount due is worked out as previous balance {format(prev, 'f')} \u2212 payments {format(pay, 'f')} + new charges {format(new, 'f')} "
                                      f"= {format(total, 'f')}.")
                     if total != figure:
@@ -3425,7 +3425,7 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
     if found is None or currency not in EXPONENTS:
         return None
     cite, line = found
-    result = {"amount": line["amount"], "date": line["date"], "label": line["label"], "worked": False,
+    result = {"amount": line["amount"], "date": line["date"], "label": line["label"], "worked": None,
               "locator": {"line_ids": [cite.line_id], "quotes": [line_text.get(cite.line_id) or cite.quote]}}
     charges = fields.get("new_charges")
     totals = [other for other in (charges.evidence if charges is not None and charges.status == "proposed" else ())
@@ -3439,8 +3439,9 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
                           else None for field in carried)
     total = held if previous is None or payments is None else previous - abs(payments) + held
     record["amount_due_minor"] = total
-    result["worked"] = previous is not None and payments is not None
-    if result["worked"]:
+    if previous is not None and payments is not None:
+        result["worked"] = {"previous_balance": as_decimal_text(previous, currency), "payments": as_decimal_text(abs(payments), currency),
+                            "new_charges": as_decimal_text(held, currency)}
         notes.append(f"The amount due is worked out as previous balance {as_decimal_text(previous, currency)} \u2212 payments {as_decimal_text(abs(payments), currency)} "
                      f"+ new charges {as_decimal_text(held, currency)} = {as_decimal_text(total, currency)}.")
     if total != to_minor(result["amount"], currency):
@@ -3449,7 +3450,7 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
 
 
 def due_now_settled(record, due_now, currency, issues, notes):
-    """The due-now line as the bill keeps it (FR-143, FR-144): {"minor", "date" (ISO or None), "label", "locator", "worked"}, and the bill's due date: the
+    """The due-now line as the bill keeps it (FR-143, FR-144): {"minor", "date" (ISO or None), "label", "locator", "worked" (the previous balance, payments and new charges in minor units the amount due was worked out from, or None)}, and the bill's due date: the
     model's answer kept by bill_dates stands (with a note when the line prints another day); when it is missing or was dropped, the line's date is the due
     date, cited to that line. None when the bill prints no due-now line or it is an invoice."""
     if not due_now or currency not in EXPONENTS:
@@ -3461,7 +3462,8 @@ def due_now_settled(record, due_now, currency, issues, notes):
                              "quotes": [*record["locator"]["quotes"], *due_now["locator"]["quotes"]][:40]}
     elif day is not None and record["due_date"] != day:
         notes.append(f"The bill also prints {due_now['label']}.")
-    return {"minor": to_minor(due_now["amount"], currency), "date": day, "label": due_now["label"], "locator": due_now["locator"], "worked": due_now["worked"]}
+    worked = {name: to_minor(text, currency) for name, text in due_now["worked"].items()} if due_now["worked"] else None
+    return {"minor": to_minor(due_now["amount"], currency), "date": day, "label": due_now["label"], "locator": due_now["locator"], "worked": worked}
 
 
 def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ()), engine_lines=None, worked_out=None,
@@ -3546,6 +3548,8 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             record["details"]["account_holder"] = account[0]
             if account[1]:
                 notes.append(account[1])
+        if due_now and due_now["worked"]:  # FR-142 (b): the amount due is previous balance - payments + new charges by construction, so the carried check isn't run on it.
+            record["details"]["amount_due_worked_out"] = due_now["worked"]
         if due_now and due_now["minor"] != record.get("amount_due_minor"):  # FR-143: shown below the amount due; no row of the sum that makes it up.
             record["details"]["due_now"] = {name: due_now[name] for name in ("minor", "date", "label", "locator")}
         if worked_out and currency in EXPONENTS:  # FR-118: the lines add up to these new charges, and they are what counts (G3's lines reason).

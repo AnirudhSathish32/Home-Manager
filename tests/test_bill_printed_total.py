@@ -8,6 +8,8 @@ The user's words: "the paid line of the transaction table takes the 62 dollars w
 tests assert what the Transactions page shows as Paid for the bill: 1,667.91 (`-total_minor` of the document row), never 62.91.
 """
 
+import json
+
 import pytest
 
 import bill_engine_fixtures as bf
@@ -116,9 +118,7 @@ def test_sc132_a_the_user_s_bill_counts_the_printed_total_and_the_transactions_p
     checks = {check["name"]: check["passes"] for check in record["checks"]}
     assert checks["lines"] is True and "carried" not in checks
     details = record["details"]
-    assert details["due_now"] == {"minor": 6291, "date": "2026-11-01", "label": DUE_NOW_LINE, "locator": {"line_ids": [run.line("Current Charges due").id],
-                                                                                                         "quotes": [run.line("Current Charges due").text]}, "display": details["due_now"]["display"]} \
-        or details["due_now"]["minor"] == 6291
+    assert details["due_now"]["minor"] == 6291
     assert details["due_now"]["date"] == "2026-11-01" and details["due_now"]["label"] == DUE_NOW_LINE
     assert details["due_now"]["locator"]["line_ids"] == [run.line("Current Charges due").id]
     assert details["new_charges"]["minor"] == 166791
@@ -133,7 +133,7 @@ def test_sc132_a_the_page_rows_end_with_the_amount_due_and_the_due_now_line_belo
     summary = run.record["bill_summary"]
     assert summary["amount_due"]["minor"] == 166791 and summary["gap"] is None and summary["earlier_balance"] is None
     assert summary["due_now"]["minor"] == 6291 and summary["due_now"]["label"] == DUE_NOW_LINE and summary["due_now"]["date"] == "2026-11-01"
-    assert summary["due_now"]["display"] == "62.91 USD" or "62.91" in summary["due_now"]["display"]
+    assert summary["due_now"]["display"] == "62.91 USD"
     assert summary["due_now"]["line_ids"] == [run.line("Current Charges due").id]
 
 
@@ -179,8 +179,9 @@ def test_sc132_b_lines_adding_up_to_the_due_now_amount_go_to_review_and_never_co
     assert "New charges: the lines add up to 62.91 USD, but the bill's new charges are 1,667.91 USD. A line may be missing or misread." in record["issues"]
     assert record["amount_due_minor"] == 166791
     assert run.bill_row()["total_minor"] == 166791  # What it counts once you confirm it: the printed total, never the 62.91 the lines add up to.
-    assert [amount for _, _, amount in paid(run.store)] in ([166791], [])
-    assert 6291 not in {amount for _, _, amount in paid(run.store)}
+    assert paid(run.store) == []  # In review it is not on the Transactions page; confirmed, it counts the printed total.
+    Ledger(run.store).review("receipt", run.run["publication"]["id"], "verified")
+    assert paid(run.store) == [("bill", "2026-11-01", 166791)]
     assert due_now_of_record(run)["minor"] == 6291
 
 
@@ -190,7 +191,10 @@ def test_sc132_c_with_no_due_date_from_the_model_the_due_now_line_gives_it_and_t
     run = total(pdf_store, local_model, fields=TOTAL_FIELDS)  # No due_date answer.
     record = run.record
     assert record["due_date"] == "2026-11-01" and run.bill_row()["purchase_date"] == "2026-11-01"
-    assert run.line("Current Charges due").id in record["locator"]["line_ids"]
+    with run.store.connection() as db:  # The bill's evidence: the due-now line is cited, as the due date's source.
+        cited = [line for found in db.execute("SELECT locator_json FROM financial_evidence_links WHERE record_type='receipt' AND record_id=?", (record["id"],))
+                 for line in json.loads(found["locator_json"])["line_ids"]]
+    assert run.line("Current Charges due").id in cited
     assert "Due date was not found in the document; add it with Edit details." not in record["issues"]
     assert paid(run.store) == [("bill", "2026-11-01", 166791)]
 
@@ -214,7 +218,7 @@ def test_sc132_d_a_printed_due_date_stands_and_the_bill_notes_the_due_now_line(p
 # === FR-142: which amount is the amount due ==================================================================================================
 
 def test_sc137_a_previous_balance_less_payments_plus_new_charges_is_worked_out_when_no_amount_due_is_printed(pdf_store, local_model):
-    fields = {**UTIL_FIELDS, "amount_due": ("62.91", "Current Charges due", "62.91"), "new_charges": ("62.91", "Current Charges due", "62.91")}
+    fields = {**UTIL_FIELDS, "amount_due": ("62.91", "62.91", "62.91"), "new_charges": ("62.91", "62.91", "62.91")}  # The model: the due-now amount, printed.
     run = bill_run(pdf_store, local_model, bf.due_carried_pages(), bf.STUB_UTIL_WRONG, fields)
     record = run.record
     assert record["amount_due_minor"] == 12755 and record["total_minor"] == 9755
@@ -226,18 +230,18 @@ def test_sc137_a_previous_balance_less_payments_plus_new_charges_is_worked_out_w
 
 
 def test_sc138_a_total_amount_due_that_already_holds_the_previous_balance_is_never_added_to_again(pdf_store, local_model):
-    fields = {**UTIL_FIELDS, "amount_due": ("97.55", "Current Charges due", "97.55"), "new_charges": ("97.55", "Total Current Charges", "97.55")}
+    fields = {**UTIL_FIELDS, "amount_due": ("97.55", "97.55", "97.55"), "new_charges": ("97.55", "97.55", "97.55")}  # The model: the due-now amount, printed.
     run = bill_run(pdf_store, local_model, bf.total_due_pages(), bf.STUB_UTIL_WRONG, fields)
     record = run.record
     assert record["amount_due_minor"] == 14755 and record["total_minor"] == 9755  # Not 245.10.
     assert {check["name"]: check["passes"] for check in record["checks"]}["carried"] is True
-    assert record["details"]["due_now"]["minor"] == 9755 and record["summary"] if False else record["details"]["due_now"]["minor"] == 9755
+    assert record["details"]["due_now"]["minor"] == 9755  # Equal to the new charges, different from the amount due: kept and shown.
     assert record["bill_summary"]["due_now"]["minor"] == 9755 and record["bill_summary"]["amount_due"]["minor"] == 14755
 
 
 def test_sc141_a_a_plain_amount_due_beside_the_total_keeps_the_amount_due_the_bill_prints(pdf_store, local_model):  # OD-2
     pages = [bf.page_of(bf.util_items(summary=[*bf.UTIL_SUMMARY[:2], ("New Charges", "97.55"), ("Amount Due", "62.91")], total_current="97.55", stub=False))]
-    fields = {**UTIL_FIELDS, "amount_due": ("62.91", "Amount Due", "62.91"), "new_charges": ("97.55", "New Charges", "97.55")}
+    fields = {**UTIL_FIELDS, "amount_due": ("62.91", "62.91", "62.91"), "new_charges": ("97.55", "97.55", "97.55")}
     run = bill_run(pdf_store, local_model, pages, bf.STUB_UTIL_WRONG, fields)
     assert run.record["amount_due_minor"] == 6291 and run.record["total_minor"] == 9755 and "due_now" not in (run.record["details"] or {})
 
@@ -247,7 +251,7 @@ def test_sc141_a_a_plain_amount_due_beside_the_total_keeps_the_amount_due_the_bi
 def test_sc142_each_bill_of_a_file_prints_a_due_now_line_as_its_own_amount_due(pdf_store, local_model):
     from test_bill_split import Bills, started_bills
     run = started_bills(pdf_store, local_model, bf.mini_due_pages(1, 2))
-    run.answer([1, 2])
+    run.answer([1, 2], amount_label="Current Charges due")
     run.extract()
     bills = run.bills()
     assert len(bills) == 2
@@ -289,9 +293,10 @@ def test_sc140_a_photographed_bill_whose_amount_due_cites_a_plain_amount_due_rea
 def test_sc132_the_model_s_new_charges_citing_the_due_now_line_is_dropped_on_a_photographed_bill_and_the_lines_count(pdf_store, local_model):
     run = scanned_total(pdf_store, local_model, bf.total_transcription(), WRONG)
     record = run.record
-    assert record["total_minor"] == 166791 and record["amount_due_minor"] != 166791 or record["amount_due_minor"] == 166791
-    assert 6291 not in {amount for _, _, amount in paid(run.store)}
-    assert 6291 != run.bill_row()["total_minor"]
+    assert record["total_minor"] == 166791 and record["amount_due_minor"] == 6291  # The lines count; FR-145 needs a `Total ...` new-charges line for the amount due.
+    assert record["review_status"] == "needs_review" and "New charges: the cited line \"Current Charges due 11/01/2026\" is a due-now line, not the bill's new charges; it was left out." in run.notes
+    Ledger(run.store).review("receipt", run.run["publication"]["id"], "verified")
+    assert paid(run.store) == [("bill", "2026-11-01", 166791)]
 
 
 def test_sc132_a_due_now_amount_is_never_what_a_bill_counts_even_when_nothing_else_is_read(pdf_store, local_model):
@@ -311,6 +316,8 @@ def test_sc132_a_bill_read_after_the_engine_failed_is_read_like_a_photographed_o
     run.extract()
     assert extraction.BILL_FAILED_NOTE in run.notes
     assert (run.record["amount_due_minor"], run.bill_row()["total_minor"]) == (166791, 166791)
+    assert run.record["review_status"] == "needs_review" and paid(run.store) == []  # The failure note sends it to review; it counts once confirmed.
+    Ledger(run.store).review("receipt", run.run["publication"]["id"], "verified")
     assert paid(run.store) == [("bill", "2026-11-01", 166791)]
 
 
@@ -337,6 +344,7 @@ def read_before(run, monkeypatch, fields=TOTAL_FIELDS):
         patch.setattr(extraction, "EXTRACTION_VERSION", "typed-extraction-v51-bill-account-holder")
         patch.setattr(charge_tables, "due_now_of", lambda label: None)
         patch.setattr(bill_split, "due_now_of", lambda label: None)
+        patch.setattr(extraction, "due_now_of", lambda label: None)
         run.extract()
     with run.store.connection() as db:
         db.execute("UPDATE receipts SET review_status='needs_review' WHERE id=?", (run.run["publication"]["id"],))
@@ -375,8 +383,7 @@ def test_sc143_a_correction_of_the_amount_due_made_before_the_re_read_wins_and_s
     read_again(run)
     assert run.record["amount_due_minor"] == 7000 and run.bill_row()["total_minor"] == 166791
     assert run.record["details"]["due_now"]["minor"] == 6291  # Still shown: 62.91 differs from the corrected 70.00.
-    history = ledger.record("receipt", receipt_id)["history"] if "history" in ledger.record("receipt", receipt_id) else None
-    assert history is None or any("70.00" in str(entry) for entry in history)
+    assert any(entry["field"] == "amount_due" for entry in ledger.record("receipt", receipt_id)["corrections"])
 
 
 def test_sc143_a_confirmed_bill_is_never_rewritten(pdf_store, local_model, monkeypatch):
