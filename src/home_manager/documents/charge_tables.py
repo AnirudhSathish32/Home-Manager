@@ -62,11 +62,17 @@ ANCHOR_WORDS = {
     "amount_due": ("amount due", "total amount due", "total due", "balance due", "amount to pay", "total amount to pay", "payment due"),
 }
 ANCHOR_KIND = {phrase: kind for kind, phrases in ANCHOR_WORDS.items() for phrase in phrases}
+DUE_NOW = "due_now"  # FR-141: a summary anchor of a new kind, `Current Charges due 11/01/2026 $62.91`.
 SENTENCE_EXTRA = 3  # A label holding a multi-word anchor phrase plus at least this many other words is a sentence (G7).
 
 DATE = (r"(?:\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2}|\d{1,2}[.-]\d{1,2}[.-]\d{2,4}"
         rf"|(?:{MONTH})\b\.? \d{{1,2}}(?:,? \d{{4}})?|\d{{1,2}} (?:{MONTH})\b\.?(?: \d{{4}})?)")
 _WHEN = rf"(?:by|on or before|as of|on)\s+{DATE}"
+# FR-141: a new-charges or amount-due phrase, then `due`, `due on`, `due by` or `payable by`, then a date, and nothing else (dot leaders, `$` and `:` removed).
+DUE_NOW_LINE = re.compile(
+    r"^(?P<phrase>" + "|".join(re.escape(phrase).replace(r"\ ", r"\s+") for phrase in sorted(
+        (phrase for kind in ("new_charges", "amount_due") for phrase in ANCHOR_WORDS[kind]), key=len, reverse=True))
+    + rf")\s+(?:due(?:\s+(?:on|by))?|payable\s+by)\s+(?P<date>{DATE})$", re.IGNORECASE)
 
 # FR-103 / bill-kinds FR-58: an amount that applies only later. A condition with a date, then one without (review pass 2, m3).
 LATE_WORDS = re.compile("|".join((
@@ -152,9 +158,11 @@ class Anchor:
     page: int
     line_id: str
     word_ids: list[str]
-    kind: str  # previous_balance, payments, new_charges or amount_due
+    kind: str  # previous_balance, payments, new_charges, amount_due or due_now (FR-141)
     token: Token
     order: int  # Reading order over the whole reading: 0, 1, 2 ... (FR-117 takes the first amount-due anchor on the first page).
+    label: str = ""  # The line's label as `clean_label` reads it (a due-now line's keeps `due`); its printed date is `due_now_of(...)`'s.
+    date: str | None = None  # A due-now line's printed date, as printed (FR-141, FR-144).
 
 
 @dataclass
@@ -205,6 +213,15 @@ def clean_label(text):
     text = re.sub(r"\.{2,}|…+|[$|:]", " ", text)
     text = re.sub(r"(?:^|\s)[–—-]+(?=\s|$)", " ", text)
     return " ".join(text.lower().split())
+
+
+def due_now_of(label):
+    """(the line's printed date as printed, the label without leaders) when the label before an amount is a due-now line (FR-141): a new-charges or amount-due
+    phrase followed by `due`, `due on`, `due by` or `payable by` and a date (`Current Charges due 11/01/2026`), else None. `Amount Due by 11/01/2026` has no
+    second `due`, so it stays the amount-due anchor `clean_label` makes of it."""
+    text = " ".join(re.sub(r"\.{2,}|…+|[$|:]", " ", label).split())
+    found = DUE_NOW_LINE.match(text)
+    return (found.group("date"), text) if found else None
 
 
 def anchor_kind(label):
@@ -366,7 +383,7 @@ def late(line, text):
 
 
 def classify(line):
-    """(class, data) of a line, first match wins (P3 steps 1 - 6): late, anchor (kind, token), key, sentence, total, row (label, word ids, cells) or text."""
+    """(class, data) of a line, first match wins (P3 steps 1 - 6): late, anchor (kind, token, label, date), key, sentence, total, row (label, word ids, cells) or text."""
     text = line_text(line)
     amounts = [token for token in line.all_tokens() if readable(token)]
     if amounts and LATE_WORDS.search(text):
@@ -377,9 +394,13 @@ def classify(line):
             if word.id == amounts[-1].word_ids[0]:
                 break
             before.append(word.text)
-        kind = anchor_kind(" ".join(before))
+        printed = " ".join(before)
+        due_now = due_now_of(printed)
+        if due_now:
+            return "anchor", (DUE_NOW, amounts[-1], due_now[1], due_now[0])
+        kind = anchor_kind(printed)
         if kind:
-            return "anchor", (kind, amounts[-1])
+            return "anchor", (kind, amounts[-1], clean_label(printed), None)
     if not amounts and key_kind(text):
         return "key", None
     found = shape(line)
@@ -662,7 +683,7 @@ def read_page(number, view, lines, previous, made, serial):
         cur.section = section
         cur.frame = {key: {align: median(edge_of(token.box, align) - shift for token, shift in members) for align in ALIGNMENTS}
                      for key, members in cur.members.items()}
-    ordered = [Anchor(number, line_id_of(line), [word.id for word in line.words], found[0], found[1], 0) for found, line in anchors]
+    ordered = [Anchor(number, line_id_of(line), [word.id for word in line.words], found[0], found[1], 0, found[2], found[3]) for found, line in anchors]
     return ([cur] if cur is not None else []), ordered, late_ids, unplaced
 
 

@@ -1498,6 +1498,8 @@ class Ledger:
                   "unit_price_minor": line.get("unit_price_minor"), "details": line.get("details"),
                   "locator": line.get("locator") or {}} for line in record.get("items", [])]
         total = record.get("total_minor", record.get("amount_due_minor"))
+        if "total_minor" not in record and total is not None and ((record.get("details") or {}).get("due_now") or {}).get("minor") == total:
+            total = None  # FR-143: a due-now amount is never what a bill counts, not even as the fallback to the amount due.
         # The bill's own category, for lines that have none: the category most of its money is in.
         spent: dict = {}
         for item in items:
@@ -2605,7 +2607,12 @@ class Ledger:
         due = row["amount_due_minor"]
         source = provenance(db, "receipt", row, "amount_due", result=reading(db, row))
         summary = {"carried": carried, "earlier_balance": None, "gap": None,
-                   "amount_due": {**(shown(due) if due is not None else {"minor": None, "display": None}), "line_ids": source.get("line_ids", [])}}
+                   "amount_due": {**(shown(due) if due is not None else {"minor": None, "display": None}), "line_ids": source.get("line_ids", [])},
+                   "due_now": None}
+        due_now = details.get("due_now") or {}
+        if due_now.get("minor") is not None:  # FR-143: the due-now line as printed, one row below the amount due; it is no part of the sum above.
+            summary["due_now"] = {**shown(due_now["minor"]), "label": due_now.get("label"), "date": due_now.get("date"),
+                                  "line_ids": (due_now.get("locator") or {}).get("line_ids", [])}
         amounts = [item["line_total_minor"] for item in items if item["review_status"] != "rejected"]
         if due is None or any(amount is None for amount in amounts):
             return summary

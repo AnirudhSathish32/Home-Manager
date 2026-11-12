@@ -436,12 +436,17 @@ class Reconciler:
         return created
 
     def bill_payment(self, db, bill, unlinked):
-        """The payment of a bill (docs/money.md "Bills and their lines"): money out of exactly its new charges or its amount
-        due, between its issue date and five days after its due date, from a line that names its provider or the bill's
+        """The payment of a bill (docs/money.md "Bills and their lines"): money out of exactly its new charges, its amount
+        due or the due-now amount it prints beside them (specs/bill-total-and-account-holder FR-143), between its issue date and five days after its due date, from a line that names its provider or the bill's
         account number. One such line is linked (proposed) and replaces the bill; several become a question."""
         due = bill["due_date"] or bill["purchase_date"]
         window = (bill["issue_date"] or shift(due, -BILL_ISSUED_BEFORE_DUE), shift(due, BILL_PAID_AFTER_DUE), bill["id"])
-        amounts = sorted({amount for amount in (bill["total_minor"], bill["amount_due_minor"]) if amount and amount > 0})
+        try:
+            by_kind = json.loads(bill["details_json"]) if bill["details_json"] and bill["bill_kind"] else {}  # Details are kept by the kind the bill is read as.
+            due_now = ((by_kind.get(bill["bill_kind"]) or {}).get("due_now") or {}).get("minor")
+        except (TypeError, ValueError, AttributeError):
+            due_now = None
+        amounts = sorted({amount for amount in (bill["total_minor"], bill["amount_due_minor"], due_now) if amount and amount > 0})  # FR-143: a due-now payment matches too.
         if bill["invoice_json"]:
             # Matching a remaining balance would hide the full invoice while earlier deposits still count separately.
             # Only a single payment for the full charge uses this existing one-payment replacement path.

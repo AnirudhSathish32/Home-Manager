@@ -39,7 +39,7 @@ from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
 from . import bill_split
-from .charge_tables import ChargeTotal, account_holder_of, key_kind
+from .charge_tables import DUE_NOW, ChargeTotal, account_holder_of, anchor_kind, clean_label, due_now_of, key_kind
 from .layout_context import evidence_lines, evidence_tables, native_page, project_page
 from .paystub_split import stub_parts
 from .pdf_reader import read_result
@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v51-bill-account-holder"
+EXTRACTION_VERSION = "typed-extraction-v52-bill-printed-total"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1630,9 +1630,11 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
                 amounts = []
             if amounts and len(amounts) == len(out):
                 pick = next((anchor for value, anchor in found if sum(amounts, Decimal(0)) == value), None)
-        if pick is None:
-            pick = found[0][1]
-            text = f"The amount due is printed as {listed(found)}; {pick.token.text}, the first on page {pick.page}, was used."
+        if pick is None:  # FR-142 (a): no check decides, so the first total-worded amount due (`Total Amount Due`), else the first on the first page.
+            totals = [anchor for _, anchor in found if anchor.label.startswith("total")]
+            pick = totals[0] if totals else found[0][1]
+            how = "the total" if totals else f"the first on page {pick.page}"
+            text = f"The amount due is printed as {listed(found)}; {pick.token.text}, {how}, was used."
             notes.append(text)
             guesses.append(asdict(bill_tables.Guess(bill_tables.AMOUNT_DUE, pick.page, None, text)))
         chosen["amount_due"] = pick
@@ -1646,6 +1648,34 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
         (updates if hasattr(header, name) else bill_fields)[name] = value
         if ref is not None:
             references[name] = ref
+    due_now = None
+    due_lines = sorted((anchor for anchor in part.reading.anchors if anchor.kind == DUE_NOW and anchor.token.value[0] is not None), key=lambda found: found.order)
+    if due_lines:  # FR-141 - FR-143: the first due-now line is kept; the amount due is the total unless an amount due is printed.
+        line = due_lines[0]
+        figure, where = value_of(line.token), cited(line, DUE_NOW)
+        if where is not None:
+            due_now = {"amount": format(figure, "f"), "date": line.date, "label": line.label, "worked": False,
+                       "locator": {"line_ids": [where[0]], "quotes": [where[1]]}}
+            if "amount_due" not in chosen:  # (b): previous balance - payments + new charges, else the new charges, else the due-now amount.
+                if None not in (prev, pay, new):
+                    basis, total, kinds = [chosen["previous_balance"], chosen["payments"], chosen["new_charges"]], prev - pay + new, ("previous_balance", "payments", "new_charges")
+                elif new is not None:
+                    basis, total, kinds = [chosen["new_charges"]], new, ("new_charges",)
+                else:
+                    basis, total, kinds = [], figure, ()
+                pieces = [cited(anchor, kind) for anchor, kind in zip(basis, kinds)]
+                if all(pieces):
+                    evidence = [EvidenceQuote(line_id=found[0], quote=found[1]) for found in pieces] if pieces else [EvidenceQuote(line_id=where[0], quote=where[1])]
+                    value = Value(value=format(total, "f"), status="proposed", evidence=evidence)
+                    (updates if hasattr(header, "amount_due") else bill_fields)["amount_due"] = value
+                    if len(pieces) == 1 and pieces[0][2] is not None:
+                        references["amount_due"] = pieces[0][2]
+                    if len(pieces) == 3:
+                        due_now["worked"] = True
+                        notes.append(f"The amount due is worked out as previous balance {format(prev, 'f')} \u2212 payments {format(pay, 'f')} + new charges {format(new, 'f')} "
+                                     f"= {format(total, 'f')}.")
+                    if total != figure:
+                        notes.append(f"The bill prints {line.label} {format(figure, 'f')} and a total of {format(total, 'f')}; the total is the amount due.")
     if worked and "amount_due" in chosen:  # FR-118: no new charges are printed, so they are worked out and the model's are not used.
         pieces = [(kind, cited(chosen[kind], kind)) for kind in ("amount_due", "previous_balance", "payments")]
         if all(found for _, found in pieces):
@@ -1656,7 +1686,7 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
                 updates["new_charges"] = Value(value=None, status="missing", evidence=[])
             references.pop("new_charges", None)
     return (header.model_copy(update=updates) if updates else header, [model for model, _, _ in out], [refs for _, refs, _ in out], references, bill_fields,
-            [line for _, _, line in out], notes, guesses, worked_out)
+            [line for _, _, line in out], notes, guesses, worked_out, due_now)
 
 
 # A pay stub's printed totals row, which may be lettered: "Total Earnings (A)", "Net Payment (A-B)".
@@ -2734,7 +2764,7 @@ def line_page(line_id):
 
 
 def normalize(kind, header, rows, currency, lines=None, details=True, receipt_kind=None, printed_columns=False, bill_kind=None, rebuild=None, engine_lines=None,
-              bill_fields=None, worked_out=None):
+              bill_fields=None, worked_out=None, due_now=None):
     """Deterministic Stage C. Returns (record, issues); amounts are exact integers in currency. lines: the transcription
     lines read, for checks of values cited outside the generic citation check (a pay amount's labels). details: False
     when the reading's new fields could not be read (FR-14), so none is stored. receipt_kind: the form a receipt was read with.
@@ -2742,7 +2772,8 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
     form a bill was read with (specs/bill-kinds), or None for a bill read without kinds. rebuild: a statement's rows rebuilt from its
     printed columns (finance/statement_tables.py), which replace the model's rows on their pages (specs/statement-accounts FR-20).
     engine_lines, bill_fields, worked_out: for a bill read from its printed columns, what anchor_bill decided beside each row, the summary fields the bill's
-    form lacks, and the new charges it worked out when none are printed (specs/pdf-table-engine-bills); None for any other bill."""
+    form lacks, and the new charges it worked out when none are printed (specs/pdf-table-engine-bills); None for any other bill. due_now: the engine's
+    due-now line (anchor_bill), else None; a bill not read from its columns gets it from the lines its amounts cite (due_now_cited; FR-145)."""
     issues, record = [], {"document_type": kind, "currency": currency, "cross_checks": 0}
     line_text = {line.id: line.text for line in lines or []}
     fields = {name: getattr(header, name) for name in HEADERS[kind]}
@@ -2961,8 +2992,12 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         kind_fields = {name: getattr(header, name) for name in BILL_KIND_FIELDS.get(bill_kind or "", ()) if hasattr(header, name)}
         notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
         header_period = bill_dates(record, fields, issues, notes)
+        invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
+        if not invoice and due_now is None:
+            due_now = due_now_cited(fields, kind_fields, line_text, record, currency, notes)
+        due_now = None if invoice else due_now_settled(record, due_now, currency, issues, notes)
         bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields, **(bill_fields or {})}, bill_kind, notes, header_period, engine_lines,
-                   worked_out, account_holder(lines or []))
+                   worked_out, account_holder(lines or []), due_now)
     elif kind == "paystub":
         paystub_lines(record, rows, money, issues, currency, total, {name: getattr(header, name) for name in type(header).model_fields}, line_text,
                       printed_columns)
@@ -3360,8 +3395,77 @@ def account_holder(lines):
     return {"text": first, "locator": {"line_ids": [line.id], "quotes": [line.text]}}, note
 
 
+DUE_NOW_AMOUNT = re.compile(r"^(?P<label>.*?)[\s|]*(?P<amount>[-(]?\$?\s?\d[\d,]*\.\d{2}\)?)\s*(?:CR|DR)?$", re.IGNORECASE)
+
+
+def due_now_line(text):
+    """{"label", "date", "amount"} when a transcribed line is a due-now line (FR-141: `Current Charges due 11/01/2026 $62.91`), else None; the same rule the
+    bill engine applies to text pages (charge_tables.due_now_of), for the lines a photographed bill's amounts cite (FR-145)."""
+    found = DUE_NOW_AMOUNT.match(" ".join((text or "").replace("|", " ").split()))
+    due = due_now_of(found.group("label")) if found else None
+    return {"label": due[1], "date": due[0], "amount": re.sub(r"[^\d.]", "", found.group("amount"))} if due else None
+
+
+def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
+    """The due-now line of a bill that was not read from its printed columns, from the lines its amount due or new charges cite (FR-141, FR-145); None when
+    neither cites one. A new-charges answer citing a due-now line is dropped, because a due-now amount is never what the bill counts. When the amount due
+    cites a due-now line and the new charges cite a different `Total ...` new-charges line, FR-142 (b) applies to those answers: the amount due is the new
+    charges, or previous balance - payments + new charges when both are read, with the notes of the engine's path."""
+    def line_of(field):
+        for cite in field.evidence if field is not None and field.status == "proposed" else ():
+            found = due_now_line(line_text.get(cite.line_id) or cite.quote)
+            if found:
+                return cite, found
+        return None
+    due, new = line_of(fields.get("amount_due")), line_of(fields.get("new_charges"))
+    if new is not None and record.get("new_charges_minor") is not None:
+        record["new_charges_minor"] = None
+        notes.append(f"New charges: the cited line \"{new[1]['label']}\" is a due-now line, not the bill's new charges; it was left out.")
+    found = due or new
+    if found is None or currency not in EXPONENTS:
+        return None
+    cite, line = found
+    result = {"amount": line["amount"], "date": line["date"], "label": line["label"], "worked": False,
+              "locator": {"line_ids": [cite.line_id], "quotes": [line_text.get(cite.line_id) or cite.quote]}}
+    charges = fields.get("new_charges")
+    totals = [other for other in (charges.evidence if charges is not None and charges.status == "proposed" else ())
+              if other.line_id != cite.line_id and (label := DUE_NOW_AMOUNT.match(" ".join((line_text.get(other.line_id) or other.quote).replace("|", " ").split())))
+              and anchor_kind(label.group("label")) == "new_charges" and clean_label(label.group("label")).startswith("total")]
+    if due is None or not totals or new is not None or record.get("new_charges_minor") is None or not amount_supported(charges.value, totals):
+        return result
+    held = record["new_charges_minor"]
+    carried = [kind_fields.get(name) for name in ("previous_balance", "payments_received")]
+    previous, payments = (to_minor(field.value.strip(), currency) if field is not None and field.status == "proposed" and amount_supported(field.value, field.evidence)
+                          else None for field in carried)
+    total = held if previous is None or payments is None else previous - abs(payments) + held
+    record["amount_due_minor"] = total
+    result["worked"] = previous is not None and payments is not None
+    if result["worked"]:
+        notes.append(f"The amount due is worked out as previous balance {as_decimal_text(previous, currency)} \u2212 payments {as_decimal_text(abs(payments), currency)} "
+                     f"+ new charges {as_decimal_text(held, currency)} = {as_decimal_text(total, currency)}.")
+    if total != to_minor(result["amount"], currency):
+        notes.append(f"The bill prints {line['label']} {line['amount']} and a total of {as_decimal_text(total, currency)}; the total is the amount due.")
+    return result
+
+
+def due_now_settled(record, due_now, currency, issues, notes):
+    """The due-now line as the bill keeps it (FR-143, FR-144): {"minor", "date" (ISO or None), "label", "locator", "worked"}, and the bill's due date: the
+    model's answer kept by bill_dates stands (with a note when the line prints another day); when it is missing or was dropped, the line's date is the due
+    date, cited to that line. None when the bill prints no due-now line or it is an invoice."""
+    if not due_now or currency not in EXPONENTS:
+        return None
+    day = next((value.isoformat() for value, form, _ in dates_in(due_now["date"]) if form not in ("yearless", "month")), None)
+    if day is not None and record.get("due_date") is None:
+        record["due_date"] = day
+        record["locator"] = {"line_ids": list(dict.fromkeys([*record["locator"]["line_ids"], *due_now["locator"]["line_ids"]])),
+                             "quotes": [*record["locator"]["quotes"], *due_now["locator"]["quotes"]][:40]}
+    elif day is not None and record["due_date"] != day:
+        notes.append(f"The bill also prints {due_now['label']}.")
+    return {"minor": to_minor(due_now["amount"], currency), "date": day, "label": due_now["label"], "locator": due_now["locator"], "worked": due_now["worked"]}
+
+
 def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_kind=None, notes=None, header_period=((), ()), engine_lines=None, worked_out=None,
-               account=(None, None)):
+               account=(None, None), due_now=None):
     """A bill's lines and the total it counts (docs/money.md "Bills and their lines"). A credit line is money off; the
     rest are charges, whatever sign was printed. The lines must add up to the new charges. The counted total is the new
     charges, never a past-due balance: the lines' sum when no new charges are printed, else the amount due, with a note.
@@ -3374,7 +3478,8 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
     copied from its cells has its quantity and unit price as printed, the rate kept as printed text when it is not a whole number of minor units
     (FR-110, D21, D25), and its product checked on the printed rate (FR-113). worked_out: the amount due, previous balance and payments (decimal text) and the new charges
     they give, when a bill printing no new charges has its previous balance and payments (FR-118); those new charges count and the carried check is not run.
-    account: account_holder's answer, kept in the details of a kinded bill that is not an invoice (FR-136)."""
+    account: account_holder's answer, kept in the details of a kinded bill that is not an invoice (FR-136). due_now: due_now_settled's answer (FR-143): kept in
+    the details when it differs from the amount due, never what the bill counts, and no carried check when the amount due was worked out from it."""
     invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
     rent = bill_kind == "rent" and not invoice
     due_date = record.get("due_date")
@@ -3441,6 +3546,8 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             record["details"]["account_holder"] = account[0]
             if account[1]:
                 notes.append(account[1])
+        if due_now and due_now["minor"] != record.get("amount_due_minor"):  # FR-143: shown below the amount due; no row of the sum that makes it up.
+            record["details"]["due_now"] = {name: due_now[name] for name in ("minor", "date", "label", "locator")}
         if worked_out and currency in EXPONENTS:  # FR-118: the lines add up to these new charges, and they are what counts (G3's lines reason).
             minors = {name: to_minor(text, currency) for name, text in worked_out.items() if name != "locator"}
             record["new_charges_minor"] = minors["new_charges"]
@@ -3498,11 +3605,16 @@ def bill_lines(record, rows, money, issues, currency, total, fields=None, bill_k
             issues.append(f"Amount due: the lines add up to {format_minor(lines, currency)}, but the amount due is {format_minor(due, currency)}. "
                           "A line may be missing or misread.")
     else:
-        record["total_minor"] = None if invoice else due
-        if due is not None and not invoice:
-            issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
+        if due_now and due == due_now["minor"]:  # FR-143: a due-now amount is never what the bill counts, so nothing is counted until the new charges are set.
+            record["total_minor"] = None
+            issues.append(f"New charges: the bill's new charges were not read, and its amount due is the due-now amount ({format_minor(due, currency)}), "
+                          "which is only a part of what it charges, so nothing is counted; set the new charges.")
+        else:
+            record["total_minor"] = None if invoice else due
+            if due is not None and not invoice:
+                issues.append("New charges: the bill's new charges were not read, so the amount due is counted; it may include a past-due balance.")
     carried = record.get("details") or {}
-    if not invoice and currency and not worked_out:  # Worked-out new charges would make the carried check hold by construction (FR-118).
+    if not invoice and currency and not worked_out and not (due_now and due_now["worked"]):  # Worked-out new charges or amount due make the carried check hold (FR-118, FR-142).
         # Previous balance − payments + new charges = amount due, when all are printed (FR-49).
         previous, payments = ((carried.get(name) or {}).get("minor") for name in ("previous_balance", "payments_received"))
         checked = document_checks.bill_carried(previous, payments, new, due, currency)
@@ -4423,7 +4535,7 @@ class ExtractionService:
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
                 receipt_kind=None, kind_change=False, printed_columns=False, evidence=None, engine_notes=None, guesses=None, engine_lines=None,
-                bill_fields=None, worked_out=None):
+                bill_fields=None, worked_out=None, due_now=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -4464,7 +4576,7 @@ class ExtractionService:
                 notes.append(REBUILD_FAILED)
         record, issues = normalize(kind, header, rows, currency, lines, details=DETAILS_FAILED not in notes,
                                    receipt_kind=receipt_kind if kind == "receipt" else None, printed_columns=printed_columns,
-                                   bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild, engine_lines=engine_lines, bill_fields=bill_fields, worked_out=worked_out)
+                                   bill_kind=receipt_kind if kind == "bill" else None, rebuild=rebuild, engine_lines=engine_lines, bill_fields=bill_fields, worked_out=worked_out, due_now=due_now)
         record_notes += record.pop("notes", [])
         record_notes += [note for note in engine_notes or [] if note not in record_notes]  # The pay or bill engine's guesses and page notes.
         if kind == "bill" and engine_notes and record.get("details") is not None:  # A bill keeps them with its own details, after its lines' notes (plan P7.6).
@@ -4755,7 +4867,7 @@ class ExtractionService:
                 log_failure(log, "statement row rebuild", exc)
                 rebuild_failed = True
                 notes.append(REBUILD_FAILED)
-        cell_references, summary_references, bill_fields, engine_lines, worked_out = [], {}, {}, None, None
+        cell_references, summary_references, bill_fields, engine_lines, worked_out, due_now = [], {}, {}, None, None, None
         # A pay stub with no validated table (a photo, a scan, a text PDF with no rebuilt table) is read like flat text:
         # the column checks run instead of cell anchoring (docs/money.md "Money in and paystubs").
         printed_columns = classification.document_type == "paystub" and not tables
@@ -4785,7 +4897,7 @@ class ExtractionService:
                             summary_references[name] = reference(found[1].cells[column])
             summary_references.update(extras.references)  # A summary field taken from the summary box cites its cell (FR-75).
         elif from_columns and classification.document_type == "bill" and header is not None:
-            header, rows, cell_references, summary_references, bill_fields, engine_lines, bill_notes, bill_guesses, worked_out = anchor_bill(
+            header, rows, cell_references, summary_references, bill_fields, engine_lines, bill_notes, bill_guesses, worked_out, due_now = anchor_bill(
                 header, rows, bill_part, evidence, lines, rent=kind == "rent")
             record_notes += [note for note in bill_notes if note not in record_notes]
             guesses = bill_guesses
@@ -4861,7 +4973,7 @@ class ExtractionService:
             guesses = [*(asdict(guess) for guess in bill_part.guesses), *guesses]
         return {"classification": classification, "header": header, "rows": rows, "identity": identity, "receipt_kind": kind, "description": description,
                 "record_notes": record_notes, "guesses": guesses, "bill_fields": bill_fields, "engine_lines": engine_lines, "worked_out": worked_out,
-                "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
+                "due_now": due_now, "category": category, "recurrence": recurrence, "item_categories": item_categories, "rewards": rewards,
                 "terms": terms, "term_notes": term_notes, "decision": checks, "notes": notes,
                 "cell_references": cell_references, "summary_references": summary_references, "printed_columns": printed_columns,
                 "evidence": evidence if statement_pdf and not rebuild_failed else None}
@@ -4898,7 +5010,8 @@ class ExtractionService:
                                                              reading.get("cell_references"), reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
                                                              reading.get("printed_columns", False), reading.get("evidence"),
-                                                             engine_notes, reading.get("guesses"), reading.get("engine_lines"), reading.get("bill_fields"), reading.get("worked_out"))
+                                                             engine_notes, reading.get("guesses"), reading.get("engine_lines"), reading.get("bill_fields"), reading.get("worked_out"),
+                                                             reading.get("due_now"))
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------

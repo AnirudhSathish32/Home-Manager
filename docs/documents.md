@@ -1015,7 +1015,7 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   still sends the bill to review. A photographed or scanned bill, and a bill with no text page, is read as before. **Invoices
   (`invoice_marker`, `invoice_number` or `invoice_total` read) keep today's path** (`anchor_rows`, `anchor_summary`): a text-PDF bill
   the model's summary reads as an invoice is read again with the printed tables, which costs one more summary question. Bills read
-  before extraction version `typed-extraction-v51-bill-account-holder` are read again on **Extract again**; a bill you confirmed or
+  before extraction version `typed-extraction-v52-bill-printed-total` are read again on **Extract again**; a bill you confirmed or
   rejected is not rewritten.
 - **Rows.** A row is a label at the left followed by an amount in an amount column, found by alignment alone; no date or heading is
   needed. A date printed on the line (`Rent 10/01/2026 - 10/31/2026 $1,450.00`) is label text, never an amount. A number followed in its own

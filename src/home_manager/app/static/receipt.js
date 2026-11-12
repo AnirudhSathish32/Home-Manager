@@ -186,6 +186,13 @@ function billSummaryRows(foot, record, find, correctField) {
     const button = element("button", "Correct", "link-button doc2-row-edit"); button.type = "button"; button.setAttribute("aria-label", "Correct amount due");
     button.addEventListener("click", () => correctField("amount_due")); actions.append(button);
   }
+  // The due-now line as printed (`Current Charges due 11/01/2026 62.91`), one row below the amount due: no part of the sum above it.
+  if (summary.due_now) {
+    const dueNow = row(summary.due_now.label || "Due now", summary.due_now, "bill-due-now");
+    if (summary.due_now.line_ids?.length) {
+      const button = sourceButton(summary.due_now.line_ids, find); button.setAttribute("aria-label", "Find the due-now line in the source"); dueNow.append(button);
+    }
+  }
 }
 // A bill's lines: each line's price, category, type and person, then its new charges and amount due. The person is chosen
 // from the family where its people are known (the family's inbox); elsewhere it shows who the line is for as printed.
