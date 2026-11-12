@@ -17,7 +17,7 @@ import json
 from ..core.money import money
 from ..core.trace import NULL, Recorder, build, figure, ref
 from . import document_checks
-from .ledger import kind_column
+from .ledger import kind_column, unit_price_correction_applies
 from .provenance import verification_of
 
 NOT_WORKED_OUT = "This isn't worked out for this record."
@@ -108,7 +108,9 @@ def bill_checks(db, row):
                           "The charge lines added up, credits as money off, against the printed new charges, or the amount due when no new charges are printed.")})
     for item in items:  # FR-113: the printed quantity times the printed rate, half up (the rate as printed when it isn't a whole number of cents).
         unit = (json.loads(item["details_json"] or "null") or {}).get("unit_price") if item["details_json"] else None
-        rate = unit["text"] if unit else decimal(item["unit_price_minor"], row["currency"]) if item["unit_price_minor"] is not None else None
+        # One rule with the shown rate (ledger.record): a unit price you corrected and that applies wins; else the exact printed rate wins over rounded cents.
+        printed = unit["text"] if unit and not unit_price_correction_applies(db, row["id"], item["position"]) else None
+        rate = printed or (decimal(item["unit_price_minor"], row["currency"]) if item["unit_price_minor"] is not None else None)
         if not item["quantity"] or rate is None or item["line_total_minor"] is None \
                 or document_checks.unit_line(item["quantity"], rate, abs(item["line_total_minor"]), row["currency"]) is None:
             continue

@@ -237,6 +237,22 @@ PAID_FIELDS = ("total", "direction", "document_kind", "receipt_kind")
 PAID_ISSUES = ("Gift card on a return", "Gift card deductions exceed", "Amount paid (")
 
 
+def unit_price_correction_applies(db, receipt_id, position):
+    """Whether a unit-price correction of yours shapes a bill line's rate now (FR-110, FR-119): the latest change to it is neither held (its line prints
+    another amount), undone while held, nor an undo back to what the line first printed. The one rule the shown rate and the product check share: an
+    applied correction wins, else the exact printed rate wins over rounded cents."""
+    changes = db.execute("SELECT id,value,previous,reason FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? ORDER BY id",
+                         (receipt_id, f"unit_price:{position}")).fetchall()
+    if not changes:
+        return False
+    latest = changes[-1]
+    row = db.execute("SELECT details_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+    state = (json.loads(row[0]) if row and row[0] else {}).get(LINE_CORRECTIONS) or {}
+    if str(latest["id"]) in (*(state.get("held") or []), *(state.get("undone") or [])):
+        return False
+    return not (latest["reason"] == UNDO_REASON and latest["value"] == changes[0]["previous"])
+
+
 def kind_column(row):
     """The column holding a receipts row's kind: bill_kind for a bill, receipt_kind otherwise (specs/bill-kinds P1).
     Its details are details_json[<that kind>]."""
@@ -2015,11 +2031,8 @@ class Ledger:
                                                 "value": money(abs(unit), row["currency"])["decimal"] if unit is not None else None},
                                                {**item["correctable"][0], "label": "Line total"}]
                     text = ((item["details"] or {}).get("unit_price") or {}).get("text") if bill else None
-                    if text:
-                        changes = db.execute("SELECT value,previous,reason FROM record_corrections WHERE record_type='receipt_item' AND record_id=? AND field=? "
-                                             "ORDER BY id", (record_id, f"unit_price:{item['position']}")).fetchall()
-                        if not changes or changes[-1]["reason"] == UNDO_REASON and changes[-1]["value"] == changes[0]["previous"]:
-                            printed_rates[item["position"]] = text
+                    if text and not unit_price_correction_applies(db, record_id, item["position"]):
+                        printed_rates[item["position"]] = text
                     if bill:  # A bill's lines: what each is and whose (docs/money.md "Bills and their lines").
                         # A rent bill's line takes a rent type (specs/bill-kinds FR-45), which sets its line kind.
                         kind = ({"field": "line_type", "label": "Type", "kind": "choice", "value": item["line_type"], "options": list(RENT_LINE_TYPES)}
