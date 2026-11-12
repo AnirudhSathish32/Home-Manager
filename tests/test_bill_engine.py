@@ -664,11 +664,14 @@ def test_sc105_a_late_amount_is_never_a_sum_target(reader):
     assert list(bills.roles[0].roles.values()) == ["charge", "other"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
 
 
-def test_sc105_only_summary_amounts_on_the_tables_own_pages_are_sum_targets(reader):
+def test_sc105_summary_amounts_on_another_page_of_the_same_bill_are_sum_targets(reader):
+    """FR-103 lets a summary be printed on another page, and FR-105 b judges the bill's new charges: page 2 (no key line of its own) continues the bill, so its
+    figure that r420 adds up to decides the column. (SL-11: this test pinned the plan's earlier restriction to the table's own pages; plan.md is not edited.)"""
     rows = [("Service", (420, "10.00"), (520, "11.00")), ("Fee", (420, "5.00"), (520, "7.00"))]
-    pages = [*bf.role_pages(rows=rows), bf.page_of(bf.amounts_at(700, "New Charges", (bf.CHARGE, "15.00")))]  # Page 2 prints a figure that r420 adds up to.
+    pages = [*bf.role_pages(rows=rows), bf.page_of(bf.amounts_at(700, "New Charges", (bf.CHARGE, "15.00")))]
     bills = bill_tables.read(reader(pages))
-    assert bills.reading.tables[0].pages == [1] and bills.roles[0].decided_by == "guess" and list(bills.roles[0].roles.values()) == ["other", "charge"]
+    assert bills.reading.tables[0].pages == [1] and bills.roles[0].decided_by == "sum" and list(bills.roles[0].roles.values()) == ["charge", "other"]
+    assert bills.guesses == []
 
 
 def test_sc105_a_quantity_column_of_whole_numbers_and_a_rate_with_the_charge_are_found_by_the_product(reader):
@@ -785,6 +788,32 @@ def test_sl11_f2_a_plus_row_under_a_money_off_section_counts_positive_so_the_sum
     bills = bill_tables.read(reader(bf.role_pages(rows=rows, summary=[("New Charges", "20.00")])))  # 10 + 5 + 5 = 20, but 10 + 5 + 4 = 19.
     assert list(bills.roles[0].roles.values()) == ["other", "charge"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
     assert [row.money_off for row in bills.adapted[0].rows] == [False, False, False]
+
+
+def other_page_summary_pages():
+    """One bill of two pages: page 1 holds a headless table with a charge column (r420: 10.00, 20.00) and a comparison column (r520: 100.00, 200.00); the
+    bill's New Charges and Amount Due are printed only on page 2 (FR-103 allows a summary on another page of the bill)."""
+    first = [*bf.left(780, "CITY POWER & WATER"), *bf.left(768, "Account Number 1234-5678-9012"), *bf.left(756, "Due Date 07/20/2026"),
+             *bf.amounts_at(600, "Service", (420, "10.00"), (520, "100.00")), *bf.amounts_at(584, "Fee", (420, "20.00"), (520, "200.00"))]
+    second = [*bf.left(780, "Summary of your bill"), *bf.amounts_at(700, "New Charges", (520, "30.00")), *bf.amounts_at(684, "Amount Due", (520, "30.00"))]
+    return [bf.page_of(first), bf.page_of(second)]
+
+
+def test_sl11_f5_a_bills_summary_on_another_page_decides_the_column_with_no_guess(reader):
+    bills = bill_tables.read(reader(other_page_summary_pages()))
+    [table] = bills.reading.tables
+    assert table.pages == [1] and {anchor.page for anchor in bills.reading.anchors} == {2}
+    assert list(bills.roles[0].roles.values()) == ["charge", "other"] and bills.roles[0].decided_by == "sum" and bills.guesses == []
+    assert [cell_texts(row)[1:] for row in bills.adapted[0].rows] == [["10.00", "100.00"], ["20.00", "200.00"]]
+
+
+def test_sl11_f5_a_summary_on_the_next_bills_page_does_not_decide_this_bills_column(reader):
+    """The other side: page 2 is another bill (another due date), so its New Charges are not the first bill's target and the columns stay a guess."""
+    pages = other_page_summary_pages()
+    pages[0]["items"] = [*pages[0]["items"], *bf.amounts_at(500, "Amount Due", (520, "7.00"))]  # Page 1 prints its own amount due, so it is a bill of its own.
+    pages[1]["items"] = [*bf.left(790, "Due Date 08/20/2026"), *pages[1]["items"]]
+    bills = bill_tables.read(reader(pages))
+    assert bills.roles[0].decided_by == "guess" and kinds_of(bills) == ["charge_column"]
 
 
 # --- The adapter (plan P4): ids, line ids, wrapped label lines, title line ids ------------------------------------------------------
@@ -1055,6 +1084,23 @@ def test_a_section_title_carries_onto_the_next_page_of_the_same_bill(reader):
     second = [row for row in table.rows if row.page == 2]
     assert table.pages == [1, 2] and [row.label for row in second] == ["Loyalty Credit", "Referral Credit"]
     assert [row.section for row in second] == ["Account Credits"] * 2 and all(bill_tables.money_off(row, bills.roles[0]) for row in second)
+
+
+def test_sl11_f4_a_users_cut_inside_a_page_ends_the_credits_section_for_the_bill_after_it(reader):
+    """Review round 1, finding 4, engine side: the user's boundary may be inside a page. Rows printed after it belong to the next bill, so the section title
+    above the cut does not make them money off, and the bill after the cut is judged by its own rows and anchors."""
+    items = [*bf.left(780, "CITY POWER & WATER"), *bf.left(768, "Account Number 1234-5678-9012"), *bf.left(756, "Due Date 07/20/2026"),
+             *bf.amounts_at(700, "Amount Due", (bf.CHARGE, "10.00")), *bf.amounts_at(620, "Service", (bf.CHARGE, "10.00")), *bf.left(604, "Account Credits"),
+             *bf.amounts_at(588, "Paperless Credit", (bf.CHARGE, "2.50")), *bf.left(540, "Due Date 08/20/2026"), *bf.amounts_at(524, "New Charges", (bf.CHARGE, "30.00")),
+             *bf.amounts_at(508, "Amount Due", (bf.CHARGE, "30.00")), *bf.amounts_at(492, "Extra Service", (bf.CHARGE, "30.00"))]
+    result = reader([bf.page_of(items)])
+    texts = evidence_texts(result)
+    cut = next(line for line, text in texts.items() if text.startswith("Due Date 08/20/2026"))
+    whole = bill_tables.read(result)
+    assert [(row.label, row.money_off) for row in whole.adapted[0].rows] == [("Service", False), ("Paperless Credit", True), ("Extra Service", True)]
+    split = bill_tables.read(result, [next(iter(texts)), cut])
+    assert [(row.label, row.money_off) for row in split.adapted[0].rows] == [("Service", False), ("Paperless Credit", True), ("Extra Service", False)]
+    assert [row.section for row in split.reading.tables[0].rows][-1] is None
 
 
 def lastyear_bill(due, rows, new_charges):

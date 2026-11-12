@@ -733,6 +733,31 @@ def test_sc128_a_split_inside_a_table_gives_each_part_its_own_rows_and_every_lin
     assert labels(before) == ["Customer Charge"] and labels(after) == ["Energy Charge", "State Tax"]
 
 
+def test_sl11_f4_a_saved_split_scopes_the_credit_section_so_the_next_bills_charges_stay_charges(app, local_model):
+    """Review round 1, finding 4: page 1 ends in `Account Credits`; page 2 repeats the bill's keys, so the rule keeps one bill and its unsigned charges would be
+    read as money off. After the user splits at page 2 and the file is extracted again, page 2's bill keeps its charges as charges."""
+    client, manager = app
+    first = [*bf.mini_items(1), *bf.left(548, "Account Credits"), *bf.amounts_at(532, "Paperless Credit", (bf.CHARGE, "2.50"))]
+    run = started_in(manager, local_model, [bf.page_of(first), bf.page_of(bf.mini_items(1))])
+    run.answer([1])
+    extract_through_app(manager, run)
+    assert run.segments() == []  # The rule read the file as one bill.
+    [(_, _, one)] = run.bills()
+    assert sum(1 for item in one["items"] if item["line_total_minor"] < 0) == 4  # The credit and, as the one bill's, page 2's three charges: the start of the defect.
+    pages = run.pages()
+    run.answer([1, 1], parts=pages)
+    assert client.put(f"/api/documents/{run.doc['id']}/segments", json={"starts": [pages[0][0].id, pages[1][0].id]}).status_code == 202
+    manager.future.result(timeout=60)
+    assert [row[3:] for row in run.segments()] == [("confirmed", "user")] * 2
+    [(_, _, before), (_, _, after)] = run.bills()
+    assert lines_of(after) == bf.exp_mini(1)["lines"]  # +12.00, +56.xx, +tax: charges, not -12.00 / credit.
+    credit = [item for item in before["items"] if item["description"] == "Paperless Credit"]
+    assert [(item["line_total_minor"], item["line_type"] or item["line_kind"]) for item in credit] == [(-250, "credit")]
+    assert [item["line_total_minor"] for item in before["items"] if item["description"] != "Paperless Credit"] == [item[1] for item in bf.exp_mini(1)["lines"]]
+    for record in (before, after):
+        assert {item["line_holder"] for item in record["items"]} == {None}
+
+
 def bill_tables_read(run):
     from home_manager.finance import bill_tables
     return bill_tables.read(run.evidence)
@@ -891,7 +916,7 @@ def test_sc130_a_bill_you_decided_keeps_your_decision_and_gets_the_note(app, loc
 def test_sc115_b_when_the_engine_fails_every_bill_of_the_file_is_read_like_a_photographed_one_with_one_log_record(pdf_store, local_model, monkeypatch, caplog):
     from home_manager.finance import bill_tables
 
-    def broken(evidence):
+    def broken(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
 
     run = started_bills(pdf_store, local_model, bf.mini_pages(1, 2, 3))

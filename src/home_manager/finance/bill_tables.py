@@ -205,11 +205,10 @@ def subtotals_hold(table, column):
     return bool(verdicts) and all(verdicts)
 
 
-def targets_of(table, anchors, pages=None):
-    """What the charge column should add up to (FR-105 b): every new-charges value printed on the table's pages (or those of `pages`, one bill's); else,
+def targets_of(anchors):
+    """What the charge column should add up to (FR-105 b): every new-charges value among the bill's anchors, whatever page of the bill prints it (FR-103); else,
     with a previous balance and payments there, the amount due less the previous balance plus the payments (FR-118); else every amount-due value."""
-    pages = table.pages if pages is None else pages
-    here = [anchor for anchor in anchors if anchor.page in pages and anchor.token.value[0] is not None]
+    here = [anchor for anchor in anchors if anchor.token.value[0] is not None]
     values = lambda kind: [value_of(anchor.token) for anchor in here if anchor.kind == kind]  # noqa: E731
     if values("new_charges"):
         return values("new_charges")
@@ -219,16 +218,16 @@ def targets_of(table, anchors, pages=None):
     return due
 
 
-def adds_up(table, column, anchors, starts=(1,)):
+def adds_up(table, column, anchors, cuts):
     """Whether a column's signed amounts add up to a target (FR-105 b), judged per bill when the table runs on over several bills of the file: each bill's
-    rows in the column against the targets on that bill's pages of the table."""
+    rows of this table in the column against the targets printed anywhere in that bill's lines, on whichever pages it has (FR-103)."""
     verdicts = []
-    for bill in sorted({bill_of(starts, page) for page in table.pages}):
-        values = [signed(row.amounts[column], row.section) for row in table.rows if column in row.amounts and bill_of(starts, row.page) == bill]
+    for bill in sorted({cuts.bill_of_row(row) for row in table.rows}):
+        values = [signed(row.amounts[column], row.section) for row in table.rows if column in row.amounts and cuts.bill_of_row(row) == bill]
         if None in values:
             return False
         if values:
-            verdicts.append(sum(values) in targets_of(table, anchors, [page for page in table.pages if bill_of(starts, page) == bill]))
+            verdicts.append(sum(values) in targets_of([anchor for anchor in anchors if cuts.bill_of(anchor.line_id, anchor.page) == bill]))
     return bool(verdicts) and all(verdicts)
 
 
@@ -243,9 +242,9 @@ def guess_for(table, text):
     return Guess(CHARGE_COLUMN, table.pages[0], table.id, f"Page {table.pages[0]}: {text}")
 
 
-def decide(table, anchors, starts=(1,)):
-    """The roles of one charge table (FR-105 in order) and its guesses; None when no column of it is a charge (then it is another table). `starts` is the
-    first page of each bill of the file (`bill_starts`): the sum rule is judged per bill."""
+def decide(table, anchors, cuts):
+    """The roles of one charge table (FR-105 in order) and its guesses; None when no column of it is a charge (then it is another table). `cuts` is the
+    first line of each bill of the file (`Cuts`): the sum rule is judged per bill."""
     columns = [column.id for column in table.columns]
     amount = [column.id for column in table.columns if column.kind == "amount"]
     if not amount:
@@ -262,8 +261,8 @@ def decide(table, anchors, starts=(1,)):
         return Roles(table.id, roles, by), guesses
 
     if len(amount) == 1:
-        return decided(amount[0], "sum" if adds_up(table, amount[0], anchors, starts) else "single")
-    by_sum = [column for column in amount if adds_up(table, column, anchors, starts)]
+        return decided(amount[0], "sum" if adds_up(table, amount[0], anchors, cuts) else "single")
+    by_sum = [column for column in amount if adds_up(table, column, anchors, cuts)]
     holding = [column for column in amount if column in by_sum or subtotals_hold(table, column)]
     if len(holding) == 1:
         return decided(holding[0], "sum" if holding[0] in by_sum else "subtotals")
@@ -341,38 +340,64 @@ def anchors_by_line(anchors, lines_of):
     return found
 
 
-def bill_starts(evidence, anchors, lines_of):
-    """The first page of each bill the split rule finds in the file ([1] for one bill, or when the rule raises: the caller words that, FR-129 d)."""
-    try:
-        lines = [line for line in evidence_lines(evidence) if line.text.strip()]
-        found = bill_split.bill_parts(lines, anchors_by_line(anchors, lines_of))
-        return [bill_split.page_of(lines[first]) for first, last in found.parts if last > first] or [1]
-    except Exception:
-        return [1]
+@dataclass
+class Cuts:
+    """Where the bills of the file start (FR-128, FR-130): the position of each bill's first line among the file's non-blank evidence lines. The user's own
+    split (which may cut inside a page) when there is one, else the rule's, which cuts between pages. Every decision that belongs to one bill (a section
+    title's reach, the sum rule's rows and anchors, money off) asks `bill_of`."""
+    firsts: list[int]
+    where: dict[str, int]  # An evidence line id to its position.
+    lines_of: dict[str, str]  # A layout line id to the evidence line id that holds its words.
+    page_first: dict[int, int]  # A page to the position of its first line.
+
+    def bill_of(self, line_id, page):
+        """The index of the bill a layout (or evidence) line is in; a line that holds no evidence line counts as its page's first."""
+        position = self.where.get(self.lines_of.get(line_id, line_id))
+        if position is None:
+            position = self.page_first.get(page, 0)
+        return max(bisect_right(self.firsts, position) - 1, 0)
+
+    def bill_of_row(self, row):
+        return self.bill_of(row.line_ids[0] if row.line_ids else "", row.page)
 
 
-def bill_of(starts, page):
-    """The index of the bill a page belongs to."""
-    return max(bisect_right(starts, page) - 1, 0)
+def cuts_of(evidence, anchors, lines_of, firsts=None):
+    """The `Cuts` of a file: at `firsts` (the evidence line ids that start the bills of the user's split), else at the pages the split rule starts bills
+    on ([the first page] for one bill, or when the rule raises: the caller words that, FR-129 d)."""
+    lines = [line for line in evidence_lines(evidence) if line.text.strip()]
+    where = {line.id: position for position, line in enumerate(lines)}
+    page_first = {}
+    for position, line in enumerate(lines):
+        page_first.setdefault(bill_split.page_of(line), position)
+    if firsts is not None:
+        starts = {where[line_id] for line_id in firsts if line_id in where}
+    else:
+        try:
+            found = bill_split.bill_parts(lines, anchors_by_line(anchors, lines_of))
+            starts = {first for first, last in found.parts if last > first}
+        except Exception:
+            starts = set()
+    return Cuts(sorted({0, *starts}), where, lines_of, page_first)
 
 
-def own_sections(table, starts):
+def own_sections(table, cuts):
     """The table with each row's section kept only when its title is printed in the row's own bill: a bill's last title (`Account Credits`) does not
-    carry into the next bill's rows (FR-102, FR-106)."""
-    rows = [row if row.title is None or bill_of(starts, row.title.page) == bill_of(starts, row.page) else replace(row, section=None, title=None)
+    carry into the next bill's rows (FR-102, FR-106), whether the bills start on a new page or inside one."""
+    rows = [row if row.title is None or cuts.bill_of(row.title.line_id, row.title.page) == cuts.bill_of_row(row) else replace(row, section=None, title=None)
             for row in table.rows]
     return replace(table, rows=rows)
 
 
 # --- Entry point ---------------------------------------------------------------------------------------------------------
 
-def read(evidence):
-    """Read a saved PDF reading (`PDFResult`) into charge tables, their column roles and Record's adapted tables."""
+def read(evidence, firsts=None):
+    """Read a saved PDF reading (`PDFResult`) into charge tables, their column roles and Record's adapted tables. `firsts`: the evidence line ids that start
+    the bills of the user's own split, which then replaces the rule's boundaries for every decision made per bill (FR-130, FR-131); the PDF is read once."""
     reading = charge_tables.read(evidence)
     lines_of, line_pages = evidence_index(evidence)
-    starts = bill_starts(evidence, reading.anchors, lines_of)
-    reading = replace(reading, tables=[own_sections(table, starts) for table in reading.tables])
-    decided = [(table, decide(table, reading.anchors, starts)) for table in reading.tables]
+    cuts = cuts_of(evidence, reading.anchors, lines_of, firsts)
+    reading = replace(reading, tables=[own_sections(table, cuts) for table in reading.tables])
+    decided = [(table, decide(table, reading.anchors, cuts)) for table in reading.tables]
     tables = [table for table, found in decided if found]
     moved = [table for table, found in decided if not found]
     roles = [found[0] for _, found in decided if found]

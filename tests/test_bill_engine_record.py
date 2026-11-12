@@ -807,7 +807,7 @@ def test_sc118_without_a_previous_balance_and_payments_todays_rule_stands(pdf_st
 
 def read_as_v39(run, rows_of, fields, monkeypatch):
     """The reading the previous version left: the engine fault double (the model's lines are used) with the version patched, left in To check by SQL."""
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     run.stub_bill({}, fields, extra=rows_of, single_run=True)
     with monkeypatch.context() as patch:
@@ -1048,7 +1048,7 @@ def test_sc115_when_the_engine_fails_the_bill_is_read_from_the_models_lines_with
             for key, cites in UTIL_CITES.items()]
     run.stub_bill({}, {**UTIL_FIELDS, "amount_due": ("97.55", "97.55", "97.55"), "new_charges": ("97.55", "97.55", "97.55")}, extra=rows, single_run=True)
 
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     monkeypatch.setattr(bill_tables, "read", fault)
     with caplog.at_level(logging.ERROR):
@@ -1283,10 +1283,24 @@ def test_sl11_f3_an_invoice_with_no_engine_charge_table_is_read_again_on_todays_
 
 def test_sl11_f3_an_invoice_read_after_the_engine_failed_is_read_again_on_todays_native_path(pdf_store, local_model, monkeypatch):
     run = invoice_run(pdf_store, local_model)
-    monkeypatch.setattr(extraction.bill_tables, "read", lambda evidence: (_ for _ in ()).throw(RuntimeError("synthetic engine failure")))
+    monkeypatch.setattr(extraction.bill_tables, "read", lambda evidence, firsts=None: (_ for _ in ()).throw(RuntimeError("synthetic engine failure")))
     run.extract()
     assert run.asked().count("BillSummary") == 2
     amounts = invoice_amounts(run)
     assert [(name, minor) for name, minor, _ in amounts] == [("Widget", 10000), ("Gadget", 20000)]
     assert [item["cell_evidence"]["amount"]["quote"] for _, _, item in amounts] == ["100", "200"]
     assert BILL_FAILED_NOTE_TEXT not in [*run.notes, *(run.record.get("notes") or [])]
+
+
+# === Review round 1, finding 5 (SL-11): a bill's summary on another page decides the charge column ==========================
+
+def test_sl11_f5_a_two_page_headless_table_with_a_comparison_column_stores_the_charge_column_when_the_summary_is_on_page_two(pdf_store, local_model):
+    from test_bill_engine import other_page_summary_pages
+    fields = {"provider": UTIL_FIELDS["provider"], "due_date": ("2026-07-20", "Due Date", "07/20/2026"), "currency": UTIL_FIELDS["currency"],
+              "amount_due": ("30.00", "Amount Due", "30.00"), "new_charges": ("30.00", "New Charges", "30.00")}
+    rows = {"Service": ("Service", "service", "utilities", None, "999.00", None, None), "Fee": ("Fee", "tax_fee", "utilities", None, "999.00", None, None)}
+    run = bill_run(pdf_store, local_model, other_page_summary_pages(), rows, fields)
+    assert [(item["description"], item["line_total_minor"]) for item in run.record["items"]] == [("Service", 1000), ("Fee", 2000)]  # Not 10000 / 20000.
+    assert not [note for note in run.notes if "right-most" in note or "told apart" in note]
+    assert (run.record["total_minor"], run.record["amount_due_minor"]) == (3000, 3000)
+    finished(run)

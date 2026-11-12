@@ -4581,7 +4581,8 @@ class ExtractionService:
                 if classification.document_type == "bill" and hasattr(evidence, "pages") and any(page.method == "embedded_text" and page.layout is not None
                                                                                               for page in evidence.pages):
                     try:  # The bill engine reads the whole file once; any failure reads the bill like a photographed one with a note (FR-115).
-                        bills = bill_tables.read(evidence)
+                        ranges = self.user_split(run, parse, lines)[0]  # The user's own split scopes the bills' sections and signs, even inside a page (FR-130).
+                        bills = bill_tables.read(evidence, [lines[first].id for first, _ in ranges] if ranges else None)
                     except Exception as exc:
                         log_failure(log, "bill table read", exc, run=run_id)
                         bills = BILL_FAILED
@@ -4916,16 +4917,22 @@ class ExtractionService:
             record_notes.append(PAY_SPLIT_FAILED)
             return [(0, len(lines))], False
 
+    def user_split(self, run, parse, lines):
+        """(ranges, changed, stale) of the user's own split of a file: its index ranges when its lines still exist and cover the text in order, whether it
+        replaced the rule's split (changed), and whether one was saved that no longer matches (stale; ranges is then None)."""
+        saved = self.saved_segments(run, parse, source="user")
+        ranges = user_ranges(saved, lines) if saved else None
+        return ranges, bool(ranges) and any(row["extraction_run_id"] for row in saved), bool(saved) and not ranges
+
     def bill_parts(self, run, parse, lines, split_notes, bills=None):
         """([(first, last)], changed, reasons) for a bill file, as `pay_parts` for pay stubs: the user's own split wins (changed: it replaced the rule's, so each
         bill gets a split_changed guess, and it raises no FR-129 reason); otherwise the rule that reads the lines (bill_split.bill_parts). reasons is
         {part index: [FR-129's review reasons]}. A rule that raises, or finds more than 200 bills, reads the file as one bill with reason (d) (FR-129). `bills` is the
         bill engine's reading of a text PDF, whose anchors the rule also reads (an amount due printed apart from its label)."""
-        saved = self.saved_segments(run, parse, source="user")
-        if saved:
-            ranges = user_ranges(saved, lines)
-            if ranges:
-                return ranges, any(row["extraction_run_id"] for row in saved), {}
+        ranges, changed, stale = self.user_split(run, parse, lines)
+        if ranges:
+            return ranges, changed, {}
+        if stale:
             split_notes.append("How you split this file no longer matches its text, so it was split again.")
         try:
             found = bill_split.bill_parts(lines, bill_tables.split_anchors(bills) if isinstance(bills, bill_tables.BillTables) else None)

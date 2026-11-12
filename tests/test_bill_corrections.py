@@ -38,7 +38,7 @@ PHONE_V39 = ("Unlimited Plan", "Basic Plan", "International Pack (Canada and Mex
 
 def seed_v39(run, rows_of, fields, monkeypatch, classify):
     """What the previous version left: the engine fault double (the model's lines are used) with the version patched."""
-    def fault(evidence):
+    def fault(evidence, firsts=None):
         raise RuntimeError("injected engine fault")
     run.stub_bill({}, fields, extra=rows_of, single_run=True, classify=classify)
     with monkeypatch.context() as patch:
