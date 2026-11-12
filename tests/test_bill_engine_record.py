@@ -37,6 +37,7 @@ from test_pdf import pdf_store  # noqa: F401
 ENGINE = bill_tables.read  # Kept here so a test that makes the engine fail still shapes the model double with the real one.
 V39 = "typed-extraction-v39-receipt-printed-signs"
 MONEY = {"status": "proposed"}
+BILL_FAILED_NOTE_TEXT = extraction.BILL_FAILED_NOTE
 
 # The summary fields BL-UTIL's stub answers right (printed in the cited line): value, the line it starts, the quote.
 UTIL_FIELDS = {"provider": ("CITY POWER & WATER", "CITY POWER & WATER", "CITY POWER & WATER"), "account_reference": ("9012", "Account Number", "1234-5678-9012"),
@@ -1218,3 +1219,64 @@ def test_invoice_a_text_pdf_invoice_is_read_again_on_todays_path_without_the_eng
     assert run.asked().count("BillSummary") == 2  # One extra summary question, for the text-PDF invoice only (R-E).
     assert not [table for request in run.requests("BillLines") for table in request.get("reported_tables", []) if table["table_id"] == "page-1-charges-1"]
     assert run.record["bill_kind"] == "general" and run.record["invoice"] is not None
+
+
+# === Review round 1, finding 3 (SL-11): an invoice with no engine charge table still takes the old path =====================
+
+def invoice_items(*, table=True):
+    """A text invoice whose Item / Qty / Unit price / Total table prints whole numbers only (100 and 200, no decimals): the bill engine finds no charge
+    table in it, while the reader's printed table (the old path's native columns) holds the cells. A printed invoice number makes it an invoice."""
+    items = [(40, 780 - 12 * number, text) for number, text in enumerate(("ACME SUPPLY CO", "Invoice Number INV-1001", "Due Date 10/15/2026", "Currency USD"))]
+    if table:
+        items += bf.heading(700, (330, "Qty"), (420, "Unit price"), (520, "Total")) + bf.left(700, "Item")
+        items += bf.amounts_at(684, "Widget", (330, "1"), (420, "100"), (520, "100"))
+        items += bf.amounts_at(668, "Gadget", (330, "1"), (420, "200"), (520, "200"))
+    items += bf.amounts_at(640, "Total Due", (520, "300"))
+    return items
+
+
+def invoice_run(pdf_store, local_model):
+    """The invoice read through the real services; the model answers each line's amount with its printed quantity (1), wrong on purpose."""
+    run = started(pdf_store, local_model, [bf.page_of(invoice_items())], name="invoice.pdf")
+    run.__class__ = BillRun
+    header = run.header({"provider": ("ACME SUPPLY CO", "ACME SUPPLY CO", "ACME SUPPLY CO"), "due_date": ("2026-10-15", "Due Date", "10/15/2026"),
+                         "currency": ("USD", "Currency", "USD")})
+    header["invoice_number"] = {"value": "INV-1001", "status": "proposed", "evidence": run.cite("Invoice Number", "INV-1001")}
+    entries = []
+    for label in ("Widget", "Gadget"):
+        line = run.line(label)
+        entries.append({"description": label, "amount": "1", "quantity": "1", "unit_price": None, "category": "other", "line_holder": None, "line_kind": "other",
+                        "evidence": [{"line_id": line.id, "quote": line.text}]})
+    run.local_model["by_schema"] = {"Classification": [{"document_type": "bill", "evidence": run.cite("ACME SUPPLY CO"), "issuer": header["provider"],
+                                                        "document_date": MISSING, "bill_kind": "general", "bill_kind_evidence": []}],
+                                    "BillSummary": [header, header], "BillLines": [{"line_items": entries}, {"line_items": entries}]}
+    run.before = len(run.local_model["requests"])
+    return run
+
+
+def invoice_amounts(run):
+    return [(item["description"], item["line_total_minor"], item) for item in run.record["items"]]
+
+
+def test_sl11_f3_an_invoice_with_no_engine_charge_table_is_read_again_on_todays_native_path(pdf_store, local_model):
+    run = invoice_run(pdf_store, local_model)
+    assert bill_tables.read(run.evidence).adapted == []  # The engine finds no charge table in whole numbers.
+    run.extract()
+    assert run.asked().count("BillSummary") == 2  # The engine path's question, then the invoice path's.
+    assert run.record["invoice"] is not None
+    amounts = invoice_amounts(run)
+    assert [(name, minor) for name, minor, _ in amounts] == [("Widget", 10000), ("Gadget", 20000)]
+    assert [item["cell_evidence"]["amount"]["quote"] for _, _, item in amounts] == ["100", "200"]  # Each amount is its printed cell, from the reader's table.
+    assert all(item["cell_evidence"]["amount"]["source"] == "pdf_text" for _, _, item in amounts)
+    assert BILL_FAILED_NOTE_TEXT not in [*run.notes, *(run.record.get("notes") or [])]
+
+
+def test_sl11_f3_an_invoice_read_after_the_engine_failed_is_read_again_on_todays_native_path(pdf_store, local_model, monkeypatch):
+    run = invoice_run(pdf_store, local_model)
+    monkeypatch.setattr(extraction.bill_tables, "read", lambda evidence: (_ for _ in ()).throw(RuntimeError("synthetic engine failure")))
+    run.extract()
+    assert run.asked().count("BillSummary") == 2
+    amounts = invoice_amounts(run)
+    assert [(name, minor) for name, minor, _ in amounts] == [("Widget", 10000), ("Gadget", 20000)]
+    assert [item["cell_evidence"]["amount"]["quote"] for _, _, item in amounts] == ["100", "200"]
+    assert BILL_FAILED_NOTE_TEXT not in [*run.notes, *(run.record.get("notes") or [])]
