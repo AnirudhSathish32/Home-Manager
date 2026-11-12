@@ -1015,7 +1015,7 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   still sends the bill to review. A photographed or scanned bill, and a bill with no text page, is read as before. **Invoices
   (`invoice_marker`, `invoice_number` or `invoice_total` read) keep today's path** (`anchor_rows`, `anchor_summary`): a text-PDF bill
   the model's summary reads as an invoice is read again with the printed tables, which costs one more summary question. Bills read
-  before extraction version `typed-extraction-v49-bill-account-keys` are read again on **Extract again**; a bill you confirmed or
+  before extraction version `typed-extraction-v50-bill-account-cells` are read again on **Extract again**; a bill you confirmed or
   rejected is not rewritten.
 - **Rows.** A row is a label at the left followed by an amount in an amount column, found by alignment alone; no date or heading is
   needed. A date printed on the line (`Rent 10/01/2026 - 10/31/2026 $1,450.00`) is label text, never an amount. A number followed in its own
@@ -1148,10 +1148,12 @@ splits exactly as before.
   scanned PDF and a combined-image document ([several images](#several-images-as-one-document)) all split the same way, each part of a
   scanned or combined-image file being read like a photographed bill; a single image is one page and is never split. A **key line**
   (the labels [above](#bill-lines-from-the-printed-columns)) gives its page's value of that key: dates are compared as dates and an account
-  by the last four digits of its whole printed value (`****9012` counts, and so do `1234 5678 9012`, `XXXX XXXX 9012` and an alphanumeric `AB1234-5678-9012`: the first
-  word (digits, hyphens, masking characters, or letters mixed with digits) and the digit, hyphen and masking groups after it, up to the first word that is none of those, so a
-  following field's digits (`Service Address 12 Main St`) are not part of it; `Account no. xxxx 3456` keys `3456`, while `Account no. xxxx 345` has fewer than four digits and is no key). A
-  **page starts a new bill** when one of its key lines prints a value that differs from the value the open bill already printed for that key
+  by the last four digits of its whole printed value (`****9012` counts, and so do `1234 5678 9012`, `XXXX XXXX 9012` and the alphanumeric `AB1234-5678-9012`,
+  `AB1234 5678 CD9012`: every word made of digits, hyphens and masking characters, or of letters mixed with digits, up to the first word that is none of those, so a
+  following field's digits (`Service Address 12 Main St`) are not part of it). The value also stops at the end of its table cell: a separator may sit between the
+  label and the value (`Account Number | AB1234-5678-9012`), but a cell after the value (`AB1234-5678-9012 | 12 Main St`, `... | 212-555-0123`) is another field and adds
+  nothing to it. `Account no. xxxx 3456` keys `3456`, while `Account no. xxxx 345` has fewer than four digits and is no key; a first word with no digit and no masking
+  (`Service 1234`) is no key. A **page starts a new bill** when one of its key lines prints a value that differs from the value the open bill already printed for that key
   (the first differing key in the order due date, statement date, account); a page that prints only equal values, keys the open bill
   hasn't printed or no keys continues the open bill (a remittance stub, a repeated header, a usage history page). A billing or service
   period is no key. The rule splits only between pages: two bills printed on one page stay one bill. On a text PDF the rule also reads

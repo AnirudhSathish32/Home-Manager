@@ -263,6 +263,94 @@ def test_sl12_r2_1_fewer_than_four_digits_or_a_first_word_with_no_digit_gives_no
     assert key_of(text) is None
 
 
+def two_pages_of(first, second):
+    """Two four-line pages whose dates and amounts are alike: only their account lines differ."""
+    return [[account, "Due Date 10/15/2026", "New Charges 30.00", "Total Amount Due 30.00"] for account in (first, second)]
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-CD9012", "9012"), ("Account Number AB1234 5678 CD9012", "9012"),
+                                             ("Account Number AB1234 CD5678 EF9012", "9012"), ("Account Number 1234 5678 CD9012", "9012"),
+                                             ("Account Number AB1234 5678 CD9012 Service Address 12 Main St", "9012"),
+                                             ("Account Number AB1234 5678 CD9012 Due Date 10/15/2026", "9012")])
+def test_sl13_r3_1_a_digit_bearing_alphanumeric_group_counts_anywhere_in_the_account_value(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("second", ["Account Number AB1234-5678-CD9012", "Account Number AB1234 5678 CD9012", "Account Number ****9012",
+                                    "Account Number AB1234 XXXX CD9012", "Account Number AB1234-XXXX-CD9012"])
+def test_sl13_r3_1_the_same_account_with_a_later_alphanumeric_group_continues_the_bill_in_any_format(second):
+    for first in ("Account Number AB1234 5678 CD9012", "Account Number AB1234-5678-CD9012", "Account Number ****9012"):
+        split = bill_split.bill_parts(lines_from(*two_pages_of(first, second)))
+        assert split.parts == [(0, 8)] and split.reasons == {}, (first, second)
+
+
+@pytest.mark.parametrize("first, second", [("Account Number AB1234 5678 CD9012", "Account Number AB1234 5678 CD3456"),
+                                           ("Account Number AB1234-5678-CD9012", "Account Number AB1234-5678-CD3456")])
+def test_sl13_r3_1_accounts_with_the_same_prefix_and_another_tail_are_two_bills(first, second):
+    split = bill_split.bill_parts(lines_from(*two_pages_of(first, second)))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("text, last_four", [("Account Number AB1234-5678-9012 | 12 Main St", "9012"), ("Account Number AB1234-5678-9012 | 212-555-0123", "9012"),
+                                             ("Account Number AB1234-5678-3456 | 212-555-0123", "3456"), ("Account Number 1234 5678 9012 | 12 Main St", "9012"),
+                                             ("Account Number | AB1234-5678-9012 | 12 Main St", "9012"), ("Account # | 1234 5678 9012 | 212-555-0123", "9012"),
+                                             ("Account Number | ****9012 | 212-555-0123", "9012")])
+def test_sl13_r3_2_the_account_value_stops_at_the_next_cell(text, last_four):
+    assert key_of(text) == ("account", last_four)
+
+
+@pytest.mark.parametrize("text", ["Account Number AB12 | 3456", "Account Number 123 | 4567 9012", "Account Number | 12 Main St", "Account Number | Service 1234"])
+def test_sl13_r3_2_digits_in_another_cell_never_complete_an_account(text):
+    assert key_of(text) is None
+
+
+def test_sl13_r3_2_a_repeated_account_beside_another_address_cell_continues_the_bill():
+    pages = two_pages_of("Account Number AB1234-5678-9012", "Account Number AB1234-5678-9012 | 12 Main St")
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 8)] and split.reasons == {}
+
+
+def test_sl13_r3_2_two_accounts_beside_the_same_phone_cell_are_two_bills():
+    pages = two_pages_of("Account Number AB1234-5678-9012 | 212-555-0123", "Account Number AB1234-5678-3456 | 212-555-0123")
+    split = bill_split.bill_parts(lines_from(*pages))
+    assert split.parts == [(0, 4), (4, 8)] and split.reasons == {}
+
+
+@pytest.mark.parametrize("text, expected", [("Account Number AB1234-5678-9012 Service Address 12 Main St", "9012"), ("Account Number 1234 5678 9012 Phone 212-555-0123", "9012"),
+                                            ("Account Number AB1234 5678 CD9012 Due Date 10/15/2026", "9012"), ("Account #: 1234 5678 9012", "9012"),
+                                            ("Account No. 1234 5678 9012", "9012"), ("Account # # 1234 5678 9012", "9012"), ("Account Number xxxx 345", None),
+                                            ("Account Number Service 1234", None)])
+def test_sl13_labelled_text_fields_still_end_the_value_and_the_older_forms_still_key(text, expected):
+    assert key_of(text) == (None if expected is None else ("account", expected))
+
+
+def test_sl13_dates_key_the_same_with_or_without_cell_separators():
+    assert key_of("Due Date | 10/15/2026 | 12 Main St") == key_of("Due Date 10/15/2026") == ("due_date", (10, 15, 2026))
+    assert key_of("Account Number | Due Date | 10/15/2026") is None
+
+
+def test_sl13_the_real_evidence_path_splits_and_continues_on_the_account_cells():
+    """evidence_lines -> key_of -> bill_parts on a PDFResult of vision pages (the cells are joined with ` | ` as the readers write them)."""
+    from home_manager.documents.pdf_reader import PDFPage, PDFResult
+    from home_manager.documents.receipt_schema import TextLine
+
+    def parts_of(first, second):
+        pages = [PDFPage(number=number, method="vision_model", lines=[TextLine(id=f"page-{number}-line-{index}", text=text, block_ids=[])
+                                                                      for index, text in enumerate(texts, 1)])
+                 for number, texts in enumerate(two_pages_of(first, second), 1)]
+        lines = evidence_lines(PDFResult(input_hash="0" * 64, pages=pages))
+        assert len(lines) == 8
+        return bill_split.bill_parts(lines)
+
+    for first, second, parts in [("Account Number AB1234-5678-9012", "Account Number AB1234-5678-9012 | 12 Main St", [(0, 8)]),
+                                 ("Account Number AB1234-5678-9012 | 212-555-0123", "Account Number AB1234-5678-3456 | 212-555-0123", [(0, 4), (4, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number AB1234-5678-CD9012", [(0, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number AB1234 5678 CD3456", [(0, 4), (4, 8)]),
+                                 ("Account Number AB1234 5678 CD9012", "Account Number ****9012", [(0, 8)])]:
+        split = parts_of(first, second)
+        assert split.parts == parts and split.reasons == {}, (first, second)
+
+
 def test_sc126_a_payment_due_line_with_dot_leaders_is_a_due_date_key():
     assert key_of("Payment Due ........ 10/15/2026") == ("due_date", (10, 15, 2026))
     assert key_of("Due Date | 07/20/2026") == key_of("Due Date 07/20/2026") == ("due_date", (7, 20, 2026))

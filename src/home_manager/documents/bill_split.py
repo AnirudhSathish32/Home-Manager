@@ -23,8 +23,7 @@ LABEL = re.compile(r"^(?:" + "|".join(re.escape(label) for label in sorted((labe
                    + r")(?![A-Za-z])", re.IGNORECASE)
 LABEL_KIND = {label: kind for kind, labels in KEY_LABELS.items() for label in labels}
 GAP = re.compile(r"^[\s.:#…]+")  # Dot leaders, a colon or a number sign between a label and its value.
-ACCOUNT_GROUP = re.compile(r"^[\dxX*•-]+$")  # A following group of an account: digits, hyphens and the masking characters.
-ACCOUNT_START = re.compile(r"^(?:[\dxX*•-]+|(?=[A-Za-z0-9*•-]*\d)[A-Za-z0-9*•-]+)$")  # The first group: that, or letters with digits (`AB1234-5678-9012`).
+ACCOUNT_GROUP = re.compile(r"^(?:[\dxX*•-]+|(?=[A-Za-z0-9*•-]*\d)[A-Za-z0-9*•-]+)$")  # A group of an account: digits, hyphens and masking characters, or letters with digits.
 
 # The review reasons of FR-129 (a), (b) and (c), as they read with their printed values taken out; `reason_of` tells whether an issue is one of them.
 REASONS = (re.compile(r"Page \d+ prints more than one .+, so it may hold more than one bill; check it and split it on the document's page\."),
@@ -58,6 +57,17 @@ def text_of(line):
     return " ".join(word for word in line.text.split() if word != "|")
 
 
+def cells_of(line):
+    """The cell each word of `text_of(line)` is in: the number of cell separators before it."""
+    cells, cell = [], 0
+    for word in line.text.split():
+        if word == "|":
+            cell += 1
+        else:
+            cells.append(cell)
+    return cells
+
+
 def date_of(token):
     """A date token as something comparable: (month, day, year). A slash date with a first number over 12 is day first."""
     first, second, year, form = token.value
@@ -68,10 +78,10 @@ def date_of(token):
 
 
 def key_of(line):
-    """The key a line prints (FR-128), else None: its text starts with a key label directly followed by its value. A due or statement date is the first date
-    (the value must start with it); an account is the last four digits of its whole printed value: its first word (digits, hyphens, masking characters, or
-    letters mixed with digits, `AB1234-5678-9012`) and the groups of digits, hyphens and masking characters after it (`1234 5678 9012`, `****9012`), up to
-    the first word that is none of those (a following field). The value must hold at least four digits."""
+    """The key a line prints (FR-128), else None: its text starts with a key label directly followed by its value (cell separators may sit between them). A due
+    or statement date is the first date (the value must start with it); an account is the last four digits of its whole printed value: its words made of digits,
+    hyphens and masking characters, or letters mixed with digits (`1234 5678 9012`, `AB1234 5678 CD9012`, `****9012`), up to the first word that is none of those
+    (a following field) or that sits in the next cell (`Account Number AB1234-5678-9012 | 12 Main St`). The value must hold at least four digits."""
     text = text_of(line)
     found = LABEL.match(text)
     if not found:
@@ -82,9 +92,10 @@ def key_of(line):
         return None
     words = rest.split()
     if kind == "account":
+        cells = cells_of(line)[-len(words):]  # The words of `rest` are the last words of the text.
         value = []
-        for word in words:
-            if not (ACCOUNT_GROUP if value else ACCOUNT_START).match(word):
+        for word, cell in zip(words, cells):
+            if not ACCOUNT_GROUP.match(word) or cell != cells[0]:
                 break
             value.append(word)
         digits = re.sub(r"\D", "", "".join(value))
