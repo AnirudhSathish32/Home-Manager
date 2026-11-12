@@ -191,3 +191,28 @@ def test_account_holder_the_person_cells_show_the_servers_text_and_account_holde
         assert set(record.locator("tbody tr td:nth-child(5)").all_inner_texts()) == {"Morgan Lee\nAccount name on the bill"}
         assert failures == [], failures
         browser.close()
+
+
+@browser_test
+def test_due_now_the_page_shows_the_printed_total_as_the_amount_due_and_the_due_now_line_below_it(tmp_path, local_model):
+    """specs/bill-total-and-account-holder FR-142, FR-143 (SC-132 a): BL-TOTAL's lines, then Amount due 1,667.91 (not 62.91), then the printed row
+    `Current Charges due 11/01/2026` 62.91 with its Find; the page loads no outside resource."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    token = "bill-due-now"
+    with served(tmp_path, token) as (manager, base), playwright.sync_playwright() as driver:
+        manager.configure(str(tmp_path / "managed"))
+        run = read_file(manager, local_model, bf.total_pages(), "total.pdf", BillRun)
+        fields = {"provider": ("LAKESIDE GAS & ELECTRIC",) * 3, "currency": UTIL_FIELDS["currency"], "amount_due": ("62.91", "Current Charges due", "$62.91"),
+                  "due_date": ("2026-11-01", "Current Charges due", "11/01/2026")}
+        run.stub_bill(bf.STUB_TOTAL, fields, classify="LAKESIDE GAS & ELECTRIC")
+        run.extract()
+        browser, page, failures = open_document(driver, base, token, run.doc, expect, "Delivery Charges")
+        rows = page.locator("#doc2-panel-record").locator("tfoot tr")
+        expect(rows).to_have_count(2)
+        assert rows.locator("th").all_text_contents() == ["Amount due", "Current Charges due 11/01/2026"]
+        expect(rows.nth(0)).to_contain_text("1,667.91")
+        expect(rows.nth(1)).to_contain_text("62.91")
+        expect(rows.nth(1).get_by_role("button", name="Find the due-now line in the source")).to_be_visible()
+        assert failures == [], failures
+        browser.close()
