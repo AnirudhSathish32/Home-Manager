@@ -207,9 +207,6 @@ What is not built:
     record, and the record-level corrections (due date, provider, amount due), of the bill that had its segment number before, as split
     receipts and pay stubs do. Line corrections are held per bill.
   - **Donating a file with several bills** isn't supported, as for receipts and pay stubs.
-  - **A split you saved can differ from the rule's.** The engine scopes sections and sums to the bills where the rule splits a table
-    (it can't read your saved split), so a section title or a sum can cross the boundary you drew; the bills you split are still read on
-    their own lines. A rare case.
   - **Phone numbers in a section title are matched narrowly** (plan G14, your decision H1): the last four digits must follow a group of
     exactly three, so a year range (`Charges 2025-2026`) and an account number (`Account 1234-5678-9012`) are not holders, and neither
     is an international number grouped like `20 7946 0958`. Widening it needs a spec amendment that still excludes year ranges.
