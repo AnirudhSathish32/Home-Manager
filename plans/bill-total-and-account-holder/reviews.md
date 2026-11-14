@@ -83,3 +83,64 @@ The full suite was not run, as instructed. The known date-dependent `test_sc48_a
 ### Verdict and summary
 
 **REQUEST CHANGES — 6 major and 2 minor findings; no blockers.** Fix the photographed due-now charge-row path, engine new-charges bypass, signed due-now parsing, photographed carried-total calculation, fallback date validation and separator normalization. Preserve distinct family identities and apply the specified hyphen normalization. Passing nominal tests do not resolve the independently reproduced money and date failures. Full-suite regression verification remains outstanding.
+
+## Code review (round 2)
+
+Reviewer: OpenAI Codex, `gpt-6.1-sol`, high reasoning effort; independent delegated reviewer, no helper subagents. Independence: fresh context and different model family from SL-03 (`model_family: anthropic`, `claude-sonnet-5-5`).
+
+Reviewed only `git diff ed49983 f0b0018` (SL-03, 10 files) and surrounding code needed to trace its effects, on branch `bill-total-and-account-holder`, HEAD `f0b001845ffc2c510bc99088833a71081743feca`, in `/home/anirudh/Documents/Projects/Home-Manager-billtotal`. Risk remains **HIGH**. The risk gate's expected **BLOCKED** result for the deliberately absent plan/test contract/approval remains a user-authorized process exception, not a code finding. The gate was not rerun by this read-only reviewer. The binding contract remains the feature spec, including Decisions taken and User clarification: Paid must count the printed new charges, and a due-now amount must never become what the bill counts.
+
+### Round-1 dispositions
+
+All eight original reproductions are covered by the independently rerun targeted tests. Their nominal fixes pass; the additional probes below distinguish a remaining sign failure from the original passing credit forms.
+
+| Round-1 finding | Status | Independent evidence |
+| --- | --- | --- |
+| 1 MAJOR: photographed due-now summary counted as a charge | **Resolved** | The original no-new-charges/one-summary-row reproduction now has no items, null total, needs review and empty Paid. With three genuine charge rows plus the summary row, only the genuine rows remain and Paid is 166791. An additional in-memory filter probe interleaved two removed summary rows with a genuine row, a row citing both a summary and a genuine charge, and an uncited row: the kept indices and `engine_lines` tags were both `[1, 2, 4]`. No genuine-row deletion or metadata misalignment was found in these cases. The filter requires every citation to identify a due-now summary. |
+| 2 MAJOR: engine metadata bypassed the new-charges safeguard | **Resolved** | The text PDF with no printed new-charges anchor and the model's new charges citing the due-now line now stores total 166791, not 6291. Amount due remains 6291 and the lines mismatch requires review; confirming counts 166791. The safeguard executes before the engine-metadata return. Printed engine anchors and FR-118 worked-out values remain covered by the engine-record tests. |
+| 3 MAJOR: photographed due-now credit became a payment candidate | **Partially resolved** | `-$62.91`, `($62.91)` and `$62.91 CR` now remain negative and do not match an outgoing 6291 payment; the positive control does. However, the newly supported `$-62.91` form combined with `CR` is negated twice, persists positive and matches that payment: R2-1 below. |
+| 4 MAJOR: photographed rent calculation omitted payments | **Resolved** | Both original rent variants now work through extraction/publication: previous balance 5000, payments 2000 or printed zero, new charges 166791 give amount due 169791 or 171791, with worked-out provenance and no carried-check failure. The merged map reads common-header payments and rent previous balance. A new failure when payments fail money validation is separately recorded as R2-2. |
+| 5 MAJOR: fallback due date bypassed date-order validation | **Resolved** | With issue date 2026-11-10 and fallback 2026-11-01, both record dates are null, the date-order review reason remains and the record needs review; the printed date remains in due-now details. `review_reasons` sees the existing `Due date:` prefix and suppresses a duplicate missing-date reason. A valid fallback remains 2026-11-01 and verifies. An unsupported model due date replaced by a valid fallback still retains its original review reason, as FR-48 requires. Additional inherited date tests pass. |
+| 6 MAJOR: separator-dash cleaning omitted | **Resolved** | Nine separator forms pass the shared recognition/split tests, including hyphen, en dash, em dash and a dash before the date. Three representable PDF forms pass engine/extraction tests: no fourth charge row, total and amount due 166791, verified. `clean_label` retains its previous non-date cleaning through the shared helper. |
+| 7 MINOR: same-named family members collapsed | **Resolved** | The Manager-boundary regression preserves both member IDs, leaves the printed name unmatched when both match, and retains the second member's name on an explicitly assigned line. Family matching candidates now deduplicate by member identity. |
+| 8 MINOR: hyphenated first name matched a different first name | **Resolved** | Both directions of Anne-Marie/Anne are false; Anne-Marie/AnneMarie and self-match are true. The changed normalization removes hyphens as punctuation, as FR-137 specifies. |
+
+### Remaining and new findings
+
+1. **R2-1 — MAJOR, residual round-1 finding 3: a currency-prefixed minus plus CR becomes positive.** `src/home_manager/documents/extraction.py:3418`, `due_now_line`. Requirements: **FR-141, FR-143, FR-145**, exact-money/sign invariant.
+
+   Synthetic failure scenario: photograph BL-TOTAL with `Current Charges due 11/01/2026 $-62.91 CR`, and let the model correctly supply amount due `-62.91` citing that line and new charges 1667.91 citing the total. The negative-marker check recognizes a leading minus/parenthesis or trailing minus, but misses the minus after `$`. It prepends another minus, producing `-$-62.91`; `to_minor` interprets the two signs as positive. Direct parser probes show `$-62.91` alone is correctly negative, while `$-62.91 CR` becomes positive 6291.
+
+   Independently observed through the real scan/extraction/publication/reconciliation path: total and amount due 166791, `details.due_now.minor=6291`, `review_status='verified'`, no issues. An outgoing provider payment of -6291 is linked (synthetic payment ID 1, linked IDs `[1]`). This retains the money-matching defect despite the original three credit forms passing.
+
+   Suggested fix: parse the captured signed amount once, then apply `CR` as negative magnitude (`-abs(parsed)`), or use the shared token sign semantics; do not prefix a second textual minus based on an incomplete sign regex. Add extraction/reconciliation coverage for `$-62.91 CR`, alongside `$-62.91` and the original sign forms.
+
+2. **R2-2 — MAJOR, new regression: merging rent payments exposes an uncaught money-validation error.** `src/home_manager/documents/extraction.py:3458`–`:3460`, `due_now_cited`. Requirements: **FR-142(b), FR-145, FR-148** (checked monetary inputs and preserved review/error handling).
+
+   Synthetic failure scenario: use the photographed rent reproduction from finding 4, but transcribe and cite `Payments Received 20.001` on a USD bill. The initial normalization already rejects that value through `money`, recording `Payments received: Amount has more precision than USD allows.` The new merged map then supplies the same payments field to a second, unguarded `to_minor`. `amount_supported` checks numeric citation support, not currency or allowed precision, so it does not prevent the exception.
+
+   Independently observed through the real scan/extraction service: extraction status `failed`, error `Amount has more precision than USD allows.`, publication null, receipt count zero. A direct normalizer probe also raises `MoneyError` for a cited payments value `20.00 EUR` under USD. For comparison, substituting only the `ed49983` version of `due_now_cited` in memory leaves the overprecision case normalized with total 166791 and the existing payments review issue instead of throwing. This confirms the regression introduced by consuming common-header payments in the changed calculation.
+
+   Suggested fix: use the already money-validated payments value after checking citation support, and parse the kind-specific previous balance with the same guarded validation. A rejected carried input must be unavailable to the worked-out calculation and retain its review issue, rather than abort publication. Add an end-to-end regression for invalid precision and a targeted currency-mismatch case.
+
+### Independent verification and coverage
+
+- `.venv/bin/python -m pytest tests/test_bill_printed_total.py tests/test_bill_account_holder.py tests/test_bill_engine_record.py tests/test_bill_split.py tests/test_reconcile_tools.py tests/test_family_routing.py -q -p no:cacheprovider` — **377 passed**, 289.02 seconds.
+- Targeted inherited-date/carried-check command using the same pytest flags, selecting `tests/test_bill_kinds.py` nodes `test_sc42_a_a_due_date_not_printed_where_cited_is_dropped`, `test_sc42_c_an_issued_date_after_the_due_date_drops_both`, `test_sc46b_dates_without_a_year_take_the_due_dates`, `test_sc46b_1_next_months_dates_take_the_due_dates_year`, `test_sc46b_2_a_due_date_without_a_year_is_dropped_and_lends_no_year`, and `test_sc46_carried_amounts_and_the_cross_check` — **7 passed**, 10.67 seconds.
+- **Independent targeted total: 384 passed.** Only the existing dependency deprecation warnings were emitted. The orchestrator's separately reported 341 passed / 1 skipped remains supplied evidence, not an additional independent run.
+- Additional in-memory probes checked row retention/engine metadata alignment, signed parser variants, and valid/invalid carried fields. The two reported defects were also exercised through real extraction services with synthetic PDFs, temporary libraries and the loopback model stub; the sign defect additionally exercised reconciliation.
+- `git diff --check ed49983 f0b0018` — passed.
+
+| Changed contract | Assessment |
+| --- | --- |
+| FR-137–FR-140 / SC-133, SC-135, SC-136 | Matching, candidate identity, display precedence and routing regressions pass; findings 7–8 resolved. |
+| FR-141–FR-146 / SC-132, SC-137–SC-142 | Original counting, engine safeguard, rent calculation, date and separator reproductions pass; signed due-now/payment behavior still fails R2-1, and invalid carried-input handling fails R2-2. |
+| FR-147 / SC-143 | v53 pin and correction/re-read tests pass. No migration or rewrite added in the scoped diff. |
+| FR-148 / SC-144 | Targeted determinism and inherited-date regressions pass; invalid carried-input regression remains. Full-suite behavior is not covered by this review. |
+| FR-149–FR-150 | Printed-total diagnose tests pass; the scoped doc/version changes were read. Unchanged generator/eval/browser paths were not rerun in round 2. |
+
+No protected financial directory or donated corpus was read, listed or opened. No source, test or other documentation file was edited; no commit, push or merge was performed. This appended, uncommitted review is the sole intended worktree change. Full-suite and browser verification were not run, per the targeted re-review scope.
+
+### Verdict and summary
+
+**REQUEST CHANGES — seven round-1 findings resolved, finding 3 partially resolved; two major findings remain (R2-1 residual, R2-2 new), no blockers or minor findings.** Make credit sign application idempotent and keep invalid carried payments on the review path instead of failing extraction. Independent targeted verification: **384 passed**. The expected process-gate BLOCKED exception and outstanding full-suite verification remain unchanged.
