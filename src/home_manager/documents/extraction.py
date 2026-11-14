@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v54-bill-total-signs"
+EXTRACTION_VERSION = "typed-extraction-v55-bill-total-sign-rule"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -1660,7 +1660,7 @@ def anchor_bill(header, rows, part, evidence, lines, rent=False):
     due_lines = sorted((anchor for anchor in part.reading.anchors if anchor.kind == DUE_NOW and anchor.token.value[0] is not None), key=lambda found: found.order)
     if due_lines:  # FR-141 - FR-143: the first due-now line is kept; the amount due is the total unless an amount due is printed.
         line = due_lines[0]
-        figure, where = value_of(line.token), cited(line, DUE_NOW)
+        figure, where = bill_tables.signed(line.token, None), cited(line, DUE_NOW)  # The same sign rule as a charge line: a minus or `CR` is money off (R3-1).
         if where is not None:
             due_now = {"amount": format(figure, "f"), "date": line.date, "label": line.label, "worked": None,
                        "locator": {"line_ids": [where[0]], "quotes": [where[1]]}}
@@ -3002,7 +3002,7 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         header_period = bill_dates(record, fields, issues, notes)
         invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
         if not invoice:
-            due_now = due_now_cited(fields, kind_fields, line_text, record, currency, notes, due_now)
+            due_now = due_now_cited(fields, kind_fields, line_text, record, currency, notes, due_now, issues)
             rows, engine_lines = without_due_now_rows(rows, engine_lines, line_text, notes)
         due_now = None if invoice else due_now_settled(record, due_now, currency, issues, notes)
         bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields, **(bill_fields or {})}, bill_kind, notes, header_period, engine_lines,
@@ -3404,19 +3404,37 @@ def account_holder(lines):
     return {"text": first, "locator": {"line_ids": [line.id], "quotes": [line.text]}}, note
 
 
-DUE_NOW_AMOUNT = re.compile(r"^(?P<label>.*?)[\s|]*(?P<amount>[-(]?\$?\s?-?\d[\d,]*\.\d{2}\)?-?)\s*(?P<marker>CR|DR)?$", re.IGNORECASE)
+CODE_WORDS = "|".join(sorted(EXPONENTS))
+# The amount as printed: any order of an opening parenthesis, a minus and a `$` before the digits (`$-62.91`, `($-62.91)`, `-$62.91`), a minus and a closing
+# parenthesis (`(62.91-)`, `(62.91)-`) after them, and an ISO code before or after; `due_now_minor` decides what it says.
+DUE_NOW_AMOUNT = re.compile(rf"^(?P<label>.*?)[\s|]*(?P<amount>(?:(?:{CODE_WORDS})\s)?\$?\s?\(?-?\$?\s?-?\d[\d,]*\.\d{{2}}-?\)?-?(?:\s(?:{CODE_WORDS}))?)\s*(?P<marker>CR|DR)?$",
+                            re.IGNORECASE)
 
 
 def due_now_line(text):
-    """{"label", "date", "amount" (as printed, signed)} when a transcribed line is a due-now line (FR-141: `Current Charges due 11/01/2026 $62.91`), else None; the same rule the
-    bill engine applies to text pages (charge_tables.due_now_of), for the lines a photographed bill's amounts cite (FR-145)."""
+    """{"label", "date", "amount" (as printed), "credit" (a `CR` marker)} when a transcribed line is a due-now line (FR-141: `Current Charges due 11/01/2026 $62.91`),
+    else None; the same rule the bill engine applies to text pages (charge_tables.due_now_of), for the lines a photographed bill's amounts cite (FR-145). The amount
+    keeps its marks: due_now_minor reads them."""
     found = DUE_NOW_AMOUNT.match(" ".join((text or "").replace("|", " ").split()))
     due = due_now_of(found.group("label")) if found else None
     if not due:
         return None
-    # The amount as printed, sign and all: core.money.to_minor reads it once (never stripped to digits), and a credit marker is money off on top of that, as on any
-    # charge line (bill_tables.signed), without a second minus: `$-62.91 CR` is -62.91, not +62.91.
     return {"label": due[1], "date": due[0], "amount": found.group("amount").strip(), "credit": (found.group("marker") or "").upper() == "CR"}
+
+
+def due_now_minor(line, currency):
+    """A due-now line's amount in minor units, with its sign by one rule (R3-1): negative when ANY negative mark is printed (a minus before or after the digits or
+    the `$`, parentheses, a trailing minus, `CR`), applied once, however many are printed (`(-62.91)`, `($-62.91)`, `62.91- CR` are all money off, never two minuses
+    cancelling); positive otherwise. The size is core.money.to_minor's (an ISO code or `$` must be the bill's currency, a valid number of decimals); MoneyError for
+    an amount that is none of those, or whose parentheses or `$` do not pair up. The bill engine's tokenizer (table_engine.amount_of) leaves such a mixture unread."""
+    text = line["amount"]
+    digits = re.search(r"\d[\d,]*\.\d{2}", text)[0]
+    marks = text.replace(digits, "", 1)
+    code = re.search(rf"\b({CODE_WORDS})\b", marks, re.IGNORECASE)
+    if text.count("(") != text.count(")") or marks.count("$") > 1:
+        raise MoneyError("The sign or currency marks around the amount do not make one amount.")
+    figure = abs(to_minor(("$" if "$" in marks else "") + digits + (f" {code[1]}" if code else ""), currency))
+    return -figure if line["credit"] or re.search(r"[-()]", re.sub(rf"\b(?:{CODE_WORDS})\b", "", marks, flags=re.IGNORECASE)) else figure
 
 
 def carried_minor(field, currency):
@@ -3430,7 +3448,7 @@ def carried_minor(field, currency):
         return None
 
 
-def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engine=None):
+def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engine=None, issues=None):
     """The due-now line of a bill that was not read from its printed columns, from the lines its amount due or new charges cite (FR-141, FR-145); None when
     neither cites one. A new-charges answer citing a due-now line is dropped, because a due-now amount is never what the bill counts, also when the engine
     found the due-now line (`engine`, anchor_bill's) but no new-charges line of its own to replace the answer, which is then returned as it is. When the amount due
@@ -3453,10 +3471,11 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engin
         return None
     cite, line = found
     try:
-        figure = to_minor(line["amount"], currency)
-    except MoneyError:
+        figure = due_now_minor(line, currency)
+    except MoneyError as exc:  # Never guessed: the line is left out of the details and the bill goes to review (R3-1).
+        if issues is not None:
+            issues.append(f"Due now: the printed amount \"{line['amount']}\" on \"{line['label']}\" is not valid {currency} money ({exc}); the due-now line was left out.")
         return None
-    figure = -abs(figure) if line["credit"] else figure
     result = {"amount": as_decimal_text(figure, currency), "date": line["date"], "label": line["label"], "worked": None,
               "locator": {"line_ids": [cite.line_id], "quotes": [line_text.get(cite.line_id) or cite.quote]}}
     charges = fields.get("new_charges")

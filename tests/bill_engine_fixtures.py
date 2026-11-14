@@ -229,15 +229,15 @@ TOTAL_HEADER = ("LAKESIDE GAS & ELECTRIC", "Account Name: Jordan A. Rivera", "Ac
 TOTAL_ROWS = [("Delivery Charges", "1,180.40"), ("Supply Charges", "412.26"), ("Taxes and Fees", "75.25")]
 
 
-def total_pages(header=TOTAL_HEADER, rows=TOTAL_ROWS, extra=(), due_label="Current Charges due 11/01/2026", total_label="Total Current Charges"):
+def total_pages(header=TOTAL_HEADER, rows=TOTAL_ROWS, extra=(), due_label="Current Charges due 11/01/2026", total_label="Total Current Charges", due_amount="$62.91"):
     """BL-TOTAL: the user's two lines word for word (`Current Charges due 11/01/2026 $62.91`, `Total Current Charges $1,667.91`) under three charge lines.
     `header` replaces the five header lines (a different or missing account-name line); BL-TOTAL-NOW passes rows adding up to 62.91; `extra` adds ready items
     (SC-132 (d): a `Due Date 11/15/2026` line). `due_label` is the due-now line's label (a separator form, review round 1), `total_label` the new-charges
-    line's, None to leave that line out."""
+    line's, None to leave that line out. `due_amount` is the due-now amount as printed (R3-1: a signed form)."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(header)]
     for number, (label, amount) in enumerate(rows):
         items += amounts_at(680 - 16 * number, label, (CHARGE, amount))
-    items += amounts_at(620, due_label, (CHARGE, "$62.91")) + (amounts_at(604, total_label, (CHARGE, "$1,667.91")) if total_label else [])
+    items += amounts_at(620, due_label, (CHARGE, due_amount)) + (amounts_at(604, total_label, (CHARGE, "$1,667.91")) if total_label else [])
     return [page_of([*items, *extra])]
 
 

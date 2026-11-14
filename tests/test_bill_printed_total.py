@@ -8,6 +8,7 @@ The user's words: "the paid line of the transaction table takes the 62 dollars w
 tests assert what the Transactions page shows as Paid for the bill: 1,667.91 (`-total_minor` of the document row), never 62.91.
 """
 
+import itertools
 import json
 from types import SimpleNamespace
 
@@ -363,7 +364,7 @@ def read_again(run, fields=TOTAL_FIELDS):
 
 
 def test_sc143_the_version_moved_an_undecided_bill_gains_its_total_and_its_due_now_line_on_extract_again(pdf_store, local_model, monkeypatch):
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v54-bill-total-signs"
+    assert extraction.EXTRACTION_VERSION == "typed-extraction-v55-bill-total-sign-rule"
     run = started(pdf_store, local_model, bf.total_pages())
     run.__class__ = BillRun
     read_before(run, monkeypatch)
@@ -470,6 +471,88 @@ def test_review1_a_photographed_due_now_credit_keeps_its_sign_and_is_no_payment_
     Reconciler(run.store).run()
     links = ledger.record("receipt", run.run["publication"]["id"])["links"]
     assert [link["counterpart"]["id"] for link in links] == ([payment] if held > 0 else [])  # A credit of 62.91 is not an outgoing 62.91.
+
+
+MARKERS = ("lead", "paren", "trail", "cr")
+
+
+def printed_amount(markers, dollar, code):
+    """62.91 as a bill prints it with the given negative markers ("lead" minus, "paren" parentheses, "trail" minus, "cr"), the `$` before everything
+    (`$-62.91`, `$(62.91)`), after the opening parenthesis (`($-62.91)`, `($62.91)`) or after the minus, right before the digits (`-$62.91`, `(-$62.91)`), and an ISO
+    code before or after the number."""
+    body = ("$" if dollar == "mid" else "") + ("-" if "lead" in markers else "") + ("$" if dollar == "inner" else "") + "62.91" + ("-" if "trail" in markers else "")
+    body = f"({body})" if "paren" in markers else body
+    body = f"${body}" if dollar == "outer" else body
+    body = f"USD {body}" if code == "before" else f"{body} USD" if code == "after" else body
+    return body + (" CR" if "cr" in markers else "")
+
+
+def sign_cases():
+    """Every combination of the four negative markers (none, each, each pair, each triple, all four) x no currency sign / `$` before / `$` after the parenthesis / `$` after the minus x
+    no code / a code before / a code after, each printed form once."""
+    seen, cases = set(), []
+    for size in range(len(MARKERS) + 1):
+        for markers in itertools.combinations(MARKERS, size):
+            for dollar in ("none", "outer", "mid", "inner"):
+                for code in ("none", "before", "after"):
+                    printed = printed_amount(markers, dollar, code)
+                    if printed not in seen:
+                        seen.add(printed)
+                        cases.append(pytest.param(printed, bool(markers), id=printed))
+    return cases
+
+
+SIGN_CASES = sign_cases()
+
+
+def test_review3_the_sign_matrix_has_every_combination_once():
+    assert len(SIGN_CASES) == len({case.id for case in SIGN_CASES}) > 100
+    assert {case.id for case in SIGN_CASES} >= {"(-62.91)", "($-62.91)", "($62.91)", "-62.91-", "-$62.91", "$-62.91", "$-62.91 CR", "-$62.91- CR", "$(-62.91-) CR",
+                                                "USD $62.91", "62.91 USD", "(-62.91) USD CR", "62.91", "$62.91", "USD 62.91"}
+
+
+@pytest.mark.parametrize("printed, negative", SIGN_CASES)
+def test_review3_a_due_now_amount_is_negative_when_any_negative_marker_is_printed_and_positive_with_none(printed, negative):  # R3-1, one rule, applied once
+    found = extraction.due_now_line(f"{DUE_NOW_LINE} {printed}")
+    assert found is not None and found["label"] == DUE_NOW_LINE and found["date"] == "11/01/2026"
+    assert extraction.due_now_minor(found, "USD") == (-6291 if negative else 6291)
+
+
+@pytest.mark.parametrize("printed, negative", SIGN_CASES)
+def test_review3_a_signed_due_now_amount_is_stored_with_its_sign_and_never_links_an_outgoing_payment(pdf_store, local_model, printed, negative):  # R3-1, FR-141/143/145
+    transcription = [*bf.total_transcription()[:-2], f"{DUE_NOW_LINE} {printed}", "Total Current Charges $1,667.91"]
+    fields = {**FIELDS, "amount_due": ("-62.91" if negative else "62.91", "Current Charges due", printed)}
+    run = scanned_total(pdf_store, local_model, transcription, fields)
+    record = run.record
+    assert (record["total_minor"], record["amount_due_minor"]) == (166791, 166791)
+    assert record["issues"] == [] and record["review_status"] == "verified"
+    assert due_now_of_record(run)["minor"] == (-6291 if negative else 6291)
+    ledger = Ledger(run.store)
+    checking = ledger.create_account("First Local Bank", "checking", "USD")
+    [payment] = add(run.store, ledger, checking, run.doc, [("2026-10-30", "LAKESIDE GAS & ELECTRIC ACH", -6291)])
+    Reconciler(run.store).run()
+    links = ledger.record("receipt", run.run["publication"]["id"])["links"]
+    assert [link["counterpart"]["id"] for link in links] == ([] if negative else [payment])  # A credit of 62.91 is never an outgoing 62.91.
+
+
+@pytest.mark.parametrize("printed", ["$62.91", "-$62.91", "$-62.91", "($62.91)", "(62.91)", "62.91-", "62.91 CR", "$62.91 CR", "-62.91 CR", "$-62.91 CR", "62.91 DR", "(-62.91)", "($-62.91)", "-62.91-", "(62.91) CR"])
+def test_review3_a_text_pdf_due_now_amount_has_the_same_sign_rule(pdf_store, local_model, printed):  # R3-1: the engine path
+    run = total(pdf_store, local_model, pages=bf.total_pages(due_amount=printed))
+    record = run.record
+    assert (record["total_minor"], record["amount_due_minor"]) == (166791, 166791)
+    negative = printed not in ("$62.91", "62.91 DR")
+    assert due_now_of_record(run)["minor"] == (-6291 if negative else 6291)
+
+
+@pytest.mark.parametrize("printed", ["(62.91", "62.91)", "62.91 EUR", "EUR 62.91", "62.91 GBP CR", "$$62.91"])
+def test_review3_an_unparseable_due_now_amount_is_left_out_with_a_review_issue_and_never_stored_positive(pdf_store, local_model, printed):  # R3-1
+    transcription = [*bf.total_transcription()[:-2], f"{DUE_NOW_LINE} {printed}", "Total Current Charges $1,667.91"]
+    fields = {**FIELDS, "amount_due": ("62.91", "Current Charges due", printed)}
+    run = scanned_total(pdf_store, local_model, transcription, fields)
+    record = run.record
+    assert (record["details"] or {}).get("due_now") is None
+    assert any(issue.startswith("Due now:") for issue in record["issues"]) and record["review_status"] == "needs_review"
+    assert [link for link in Ledger(run.store).record("receipt", run.run["publication"]["id"])["links"]] == []
 
 
 RENT_TRANSCRIPTION = ["SYNTH PROPERTY MANAGEMENT", "Resident Account ****4821", "Statement Date 10/10/2026", "Rent and Leasing Charges Due 10/01/2026",
