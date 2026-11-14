@@ -193,6 +193,10 @@ What is not built:
     two stubs' lines (a merge of two stubs by the user) reads them as one record; its values are not asserted.
   - **`tests/test_tax_engines.py` has 8 failures** that also fail at the commit before this feature (44f40b0); they are not this
     feature's.
+- **Doubly marked negative amounts read as positive** (found in the bill-total review, 2026-11-14): `core/money.to_minor`
+  toggles the sign once per mark, so `(-62.91)` and `-62.91-` become +62.91 wherever a model's amount goes through it
+  (receipts, bills, statements). A bill's due-now amount already uses one rule (any mark makes it negative, applied once,
+  `extraction.due_now_minor`); moving `to_minor` to the same rule needs a check of every caller.
 - **Bills (phase 4, `specs/pdf-table-engine-bills`): what is left.** A text-PDF bill's amounts come from the engine alone; the lines add
   up to the new charges (printed, or worked out), not the amount due as the phase 1 spec said
   ([documents](documents.md#bill-lines-from-the-printed-columns), [money](money.md#bills-and-their-lines)).
