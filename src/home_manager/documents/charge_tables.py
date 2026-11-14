@@ -210,16 +210,22 @@ def clean_label(text):
     """A label for the anchor list (P3.2): lower case, dates removed with a directly preceding `by`, `on or before`, `as of` or `on`, dot leaders, `$`, `:`,
     `|` and separating dashes removed, whitespace collapsed."""
     text = re.sub(rf"\b{_WHEN}|{DATE}", " ", text, flags=re.IGNORECASE)
+    return without_separators(text).lower()
+
+
+def without_separators(text):
+    """FR-103's non-date cleaning of a label: dot leaders, `$`, `:`, `|` and separating dashes (a hyphen, en or em dash standing alone between words)
+    removed, whitespace collapsed, the case kept."""
     text = re.sub(r"\.{2,}|…+|[$|:]", " ", text)
     text = re.sub(r"(?:^|\s)[–—-]+(?=\s|$)", " ", text)
-    return " ".join(text.lower().split())
+    return " ".join(text.split())
 
 
 def due_now_of(label):
     """(the line's printed date as printed, the label without leaders) when the label before an amount is a due-now line (FR-141): a new-charges or amount-due
     phrase followed by `due`, `due on`, `due by` or `payable by` and a date (`Current Charges due 11/01/2026`), else None. `Amount Due by 11/01/2026` has no
     second `due`, so it stays the amount-due anchor `clean_label` makes of it."""
-    text = " ".join(re.sub(r"\.{2,}|…+|[$|:]", " ", label).split())
+    text = without_separators(label)  # As clean_label does, so `Current Charges - due 11/01/2026` is the same line (FR-103); the date stays in it.
     found = DUE_NOW_LINE.match(text)
     return (found.group("date"), text) if found else None
 
