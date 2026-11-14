@@ -1015,7 +1015,7 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   still sends the bill to review. A photographed or scanned bill, and a bill with no text page, is read as before. **Invoices
   (`invoice_marker`, `invoice_number` or `invoice_total` read) keep today's path** (`anchor_rows`, `anchor_summary`): a text-PDF bill
   the model's summary reads as an invoice is read again with the printed tables, which costs one more summary question. Bills read
-  before extraction version `typed-extraction-v53-bill-total-review-fixes` are read again on **Extract again**; a bill you confirmed or
+  before extraction version `typed-extraction-v54-bill-total-signs` are read again on **Extract again**; a bill you confirmed or
   rejected is not rewritten.
 - **Rows.** A row is a label at the left followed by an amount in an amount column, found by alignment alone; no date or heading is
   needed. A date printed on the line (`Rent 10/01/2026 - 10/31/2026 $1,450.00`) is label text, never an amount. A number followed in its own
@@ -1115,7 +1115,8 @@ roles, guesses and evidence. What a bill counts and how it is checked: [money](m
   A photographed, scanned or engine-failed bill has no engine anchors: the same label rule is applied to the lines its amount due and
   new charges cite. A new-charges answer citing a due-now line is dropped with a note (also on a text page where the engine found the due-now
   line but no new-charges line); a charge row the model took from a due-now line is left out with a note; a due-now amount keeps its sign
-  (`-$62.91`, `($62.91)` and `62.91 CR` are credits and match no payment); an amount due citing one beside a new-charges
+  (`-$62.91`, `$-62.91`, `($62.91)`, `62.91-`, `62.91 CR` and `$-62.91 CR` are credits, the sign applied once, and match no payment); a previous balance or payments amount that is not valid
+  money is left out of that calculation with its usual review issue and never fails the reading; an amount due citing one beside a new-charges
   answer citing a `Total ...` line is replaced by the total as above; with nothing else read, a due-now amount counts nowhere (the bill
   goes to review with the reason "New charges: the bill's new charges were not read, and its amount due is the due-now amount …"). A
   bill that cites no due-now line reads exactly as before.

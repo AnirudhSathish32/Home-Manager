@@ -363,7 +363,7 @@ def read_again(run, fields=TOTAL_FIELDS):
 
 
 def test_sc143_the_version_moved_an_undecided_bill_gains_its_total_and_its_due_now_line_on_extract_again(pdf_store, local_model, monkeypatch):
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v53-bill-total-review-fixes"
+    assert extraction.EXTRACTION_VERSION == "typed-extraction-v54-bill-total-signs"
     run = started(pdf_store, local_model, bf.total_pages())
     run.__class__ = BillRun
     read_before(run, monkeypatch)
@@ -457,8 +457,9 @@ def test_review1_an_engine_found_due_now_line_with_no_new_charges_line_still_dro
     assert paid(run.store) == [("bill", "2026-11-01", 166791)]
 
 
-@pytest.mark.parametrize("printed, held", [("-$62.91", -6291), ("($62.91)", -6291), ("$62.91 CR", -6291), ("$62.91", 6291)])
-def test_review1_a_photographed_due_now_credit_keeps_its_sign_and_is_no_payment_candidate(pdf_store, local_model, printed, held):  # Finding 3
+@pytest.mark.parametrize("printed, held", [("-$62.91", -6291), ("$-62.91", -6291), ("($62.91)", -6291), ("(62.91)", -6291), ("62.91-", -6291), ("$62.91 CR", -6291),
+                                           ("62.91 CR", -6291), ("$-62.91 CR", -6291), ("-62.91 CR", -6291), ("$62.91", 6291)])
+def test_review1_a_photographed_due_now_credit_keeps_its_sign_and_is_no_payment_candidate(pdf_store, local_model, printed, held):  # Finding 3, round 2 R2-1: signs apply once
     transcription = [*bf.total_transcription()[:-2], f"Current Charges due 11/01/2026 {printed}", "Total Current Charges $1,667.91"]
     fields = {**FIELDS, "amount_due": ("-62.91" if held < 0 else "62.91", "Current Charges due", printed)}
     run = scanned_total(pdf_store, local_model, transcription, fields)
@@ -490,6 +491,22 @@ def test_review1_a_photographed_rent_bill_works_the_amount_due_out_with_its_paym
     assert record["amount_due_minor"] == due and record["total_minor"] == 166791
     assert f"The amount due is worked out as previous balance 50.00 − payments {payments} + new charges 1667.91 = {due / 100:.2f}." in run.notes
     assert not [issue for issue in record["issues"] if issue.startswith("Amount due:")]  # No carried-check failure.
+
+
+@pytest.mark.parametrize("payments, field", [("20.001", "20.001"), ("20.00 EUR", "20.00 EUR")])
+def test_review2_a_cited_payments_amount_that_is_not_valid_money_is_left_out_with_its_issue_and_extraction_still_succeeds(pdf_store, local_model, payments, field):  # R2-2
+    transcription = [line.replace("PAYMENTS", payments) for line in RENT_TRANSCRIPTION]
+    fields = {"provider": ("SYNTH PROPERTY MANAGEMENT", "SYNTH PROPERTY MANAGEMENT", "SYNTH PROPERTY MANAGEMENT"), "currency": ("USD", "Resident Account", "****4821"),
+              "new_charges": ("1,667.91", "Total Current Charges", "$1,667.91"), "amount_due": ("62.91", "Current Charges due", "$62.91"),
+              "previous_balance": ("50.00", "Previous Balance", "50.00"), "payments_received": (field, "Payments Received", payments)}
+    run = started_scanned(pdf_store, local_model, transcription)
+    run.stub_bill(RENT_ROWS, fields, kind="rent", classify="SYNTH PROPERTY", single_run=True)
+    run.extract()
+    record = run.record
+    assert run.run["status"] != "failed" and run.run["publication"] is not None
+    assert any(issue.startswith("Payments received:") for issue in record["issues"]) and record["review_status"] == "needs_review"
+    assert record["total_minor"] == 166791 and record["amount_due_minor"] == 166791  # The new charges alone: nothing is worked out from the bad payments.
+    assert not [note for note in run.notes if "worked out" in note] and (record["details"]["due_now"] or {}).get("worked") is None
 
 
 def test_review1_a_due_now_date_before_the_issue_date_is_no_fallback_due_date_both_dates_are_left_out(pdf_store, local_model):  # Finding 5

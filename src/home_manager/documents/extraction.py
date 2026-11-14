@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v53-bill-total-review-fixes"
+EXTRACTION_VERSION = "typed-extraction-v54-bill-total-signs"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -3414,10 +3414,20 @@ def due_now_line(text):
     due = due_now_of(found.group("label")) if found else None
     if not due:
         return None
-    amount = found.group("amount").strip()
-    if (found.group("marker") or "").upper() == "CR" and not re.search(r"^[-(]|-$", amount):  # A credit marker is money off, as on any charge line (bill_tables.signed).
-        amount = f"-{amount}"
-    return {"label": due[1], "date": due[0], "amount": amount}  # The amount as printed, sign and all: core.money.to_minor reads it (never stripped to digits).
+    # The amount as printed, sign and all: core.money.to_minor reads it once (never stripped to digits), and a credit marker is money off on top of that, as on any
+    # charge line (bill_tables.signed), without a second minus: `$-62.91 CR` is -62.91, not +62.91.
+    return {"label": due[1], "date": due[0], "amount": found.group("amount").strip(), "credit": (found.group("marker") or "").upper() == "CR"}
+
+
+def carried_minor(field, currency):
+    """A carried amount's minor units (previous balance, payments) when the model proposed it and its citations support it, else None; one that is not valid money
+    (more precision than the currency allows, another currency) is unavailable here, and normalize has already recorded its review issue (FR-148)."""
+    if field is None or field.status != "proposed" or not amount_supported(field.value, field.evidence):
+        return None
+    try:
+        return to_minor(field.value.strip(), currency)
+    except MoneyError:
+        return None
 
 
 def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engine=None):
@@ -3446,6 +3456,7 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engin
         figure = to_minor(line["amount"], currency)
     except MoneyError:
         return None
+    figure = -abs(figure) if line["credit"] else figure
     result = {"amount": as_decimal_text(figure, currency), "date": line["date"], "label": line["label"], "worked": None,
               "locator": {"line_ids": [cite.line_id], "quotes": [line_text.get(cite.line_id) or cite.quote]}}
     charges = fields.get("new_charges")
@@ -3456,8 +3467,7 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engin
         return result
     held = record["new_charges_minor"]
     carried = [{**fields, **kind_fields}.get(name) for name in ("previous_balance", "payments_received")]  # Payments are a common field, the previous balance a rent one.
-    previous, payments = (to_minor(field.value.strip(), currency) if field is not None and field.status == "proposed" and amount_supported(field.value, field.evidence)
-                          else None for field in carried)
+    previous, payments = (carried_minor(field, currency) for field in carried)
     total = held if previous is None or payments is None else previous - abs(payments) + held
     record["amount_due_minor"] = total
     if previous is not None and payments is not None:

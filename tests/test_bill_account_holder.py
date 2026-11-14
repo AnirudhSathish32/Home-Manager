@@ -308,7 +308,7 @@ def read_again(run):
 
 
 def test_sc143_the_version_moved_an_undecided_bill_gains_its_account_holder_on_extract_again(pdf_store, local_model, monkeypatch):
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v53-bill-total-review-fixes" != V50
+    assert extraction.EXTRACTION_VERSION == "typed-extraction-v54-bill-total-signs" != V50
     run = started(pdf_store, local_model, bf.total_pages())
     run.__class__ = BillRun
     read_as_v50(run, monkeypatch)
