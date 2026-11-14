@@ -30,7 +30,9 @@ def currency_code(value) -> str:
 
 
 def to_minor(text, currency) -> int:
-    """Parse a printed amount such as "-1,234.50", "(45.10)", "45.10-" or "25.00 USD"."""
+    """Parse a printed amount such as "-1,234.50", "(45.10)", "45.10-" or "25.00 USD". It is negative when ANY negative mark is printed (a minus
+    before the number or after the currency symbol, parentheses, a trailing minus), applied once, however many: `(-62.91)` and `-62.91-` are
+    money out, never two marks cancelling. A `+` does not undo a minus: `(+5)` is negative."""
     currency = currency_code(currency)
     if isinstance(text, bool) or not isinstance(text, (str, int)):
         raise MoneyError("Amounts must be text or integers, never floating point.")
@@ -39,9 +41,9 @@ def to_minor(text, currency) -> int:
     if value.startswith("(") and value.endswith(")"):
         negative, value = True, value[1:-1].strip()
     if value.endswith("-"):
-        negative, value = not negative, value[:-1].strip()
+        negative, value = True, value[:-1].strip()
     if value[:1] in ("+", "-"):
-        negative, value = negative != (value[0] == "-"), value[1:].strip()
+        negative, value = negative or value[0] == "-", value[1:].strip()
     code = re.fullmatch(r"(.*?)\s*([A-Za-z]{3})", value)
     if code:
         if code.group(2).upper() != currency:
@@ -53,7 +55,7 @@ def to_minor(text, currency) -> int:
                 raise MoneyError("The printed currency symbol differs from the declared currency.")
             value = value[len(symbol):].strip()
     if value[:1] in ("+", "-"):
-        negative, value = negative != (value[0] == "-"), value[1:].strip()
+        negative, value = negative or value[0] == "-", value[1:].strip()
     if not NUMBER.fullmatch(value):
         raise MoneyError("Amount is not an unambiguous number (use digits, optional thousands commas and a decimal point).")
     try:

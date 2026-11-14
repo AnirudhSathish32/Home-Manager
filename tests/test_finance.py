@@ -1,6 +1,7 @@
 """Phase 4: canonical finance storage with exact money, evidence links and review states."""
 
 from decimal import Decimal
+from itertools import combinations
 import sqlite3
 
 import pytest
@@ -25,6 +26,48 @@ def test_money_parses_exactly(text, currency, expected):
     ("$5", "XYZ"), ("", "USD"), ("abc", "USD"), ("1e3", "USD"), (19.99, "USD"), (True, "USD"), ("5", None),
 ])
 def test_money_rejects_ambiguous_or_lossy_values(text, currency):
+    with pytest.raises(MoneyError):
+        to_minor(text, currency)
+
+
+def _marked(marks, dollar, code):
+    """A printed 6291 with the given negative marks: `lead` (-62.91), `after` (a minus after the `$`), `paren` and `trail` (62.91-);
+    parentheses wrap the rest, and the currency code sits inside the marks, where to_minor reads it."""
+    text = ("-" if "lead" in marks else "") + ("$" if dollar else "") + ("-" if "after" in marks else "") + "62.91" + (" USD" if code else "")
+    text = text + "-" if "trail" in marks else text
+    return "(" + text + ")" if "paren" in marks else text
+
+
+MARKS = ("lead", "after", "paren", "trail")
+MARK_SETS = [set(marks) for size in range(len(MARKS) + 1) for marks in combinations(MARKS, size)]
+
+
+CASES = [(marks, dollar, code) for marks in MARK_SETS for dollar in (False, True) for code in (False, True) if dollar or "after" not in marks]
+
+
+@pytest.mark.parametrize("marks,dollar,code", CASES, ids=["+".join(sorted(marks)) + ("-$" if dollar else "") + ("-code" if code else "") for marks, dollar, code in CASES])
+def test_any_negative_mark_makes_an_amount_negative_once(marks, dollar, code):
+    """One sign rule (docs/money.md "Money rules"): negative when ANY mark is printed, applied once: `(-62.91)` and `-62.91-` are money out, never
+    two marks cancelling. A minus after the `$` needs a `$`."""
+    assert to_minor(_marked(marks, dollar, code), "USD") == (-6291 if marks else 6291)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("(-62.91)", -6291), ("-62.91-", -6291), ("(62.91-)", -6291), ("(+5)", -500), ("(+5.00-)", -500), ("$(-5)", None), ("+5", 500), ("(5)", -500),
+    ("-$62.91", -6291), ("-$-62.91", -6291), ("($-62.91-)", -6291), ("-(5)", None)
+])
+def test_marks_do_not_cancel_and_a_plus_never_cancels_a_minus(text, expected):
+    if expected is None:
+        with pytest.raises(MoneyError):
+            to_minor(text, "USD")
+    else:
+        assert to_minor(text, "USD") == expected
+
+
+@pytest.mark.parametrize("text,currency", [
+    ("(-1.234,56)", "EUR"), ("-1.5-", "JPY"), ("(-25.001)", "USD"), ("(-25.00 EUR)", "USD"), ("-€5-", "USD"), ("(-$5", "USD"), ("-62.91- USD", "USD"),
+])
+def test_money_stays_strict_with_negative_marks(text, currency):
     with pytest.raises(MoneyError):
         to_minor(text, currency)
 

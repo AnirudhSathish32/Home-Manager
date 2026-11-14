@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v55-bill-total-sign-rule"
+EXTRACTION_VERSION = "typed-extraction-v56-money-sign-rule"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -3425,16 +3425,16 @@ def due_now_line(text):
 def due_now_minor(line, currency):
     """A due-now line's amount in minor units, with its sign by one rule (R3-1): negative when ANY negative mark is printed (a minus before or after the digits or
     the `$`, parentheses, a trailing minus, `CR`), applied once, however many are printed (`(-62.91)`, `($-62.91)`, `62.91- CR` are all money off, never two minuses
-    cancelling); positive otherwise. The size is core.money.to_minor's (an ISO code or `$` must be the bill's currency, a valid number of decimals); MoneyError for
-    an amount that is none of those, or whose parentheses or `$` do not pair up. The bill engine's tokenizer (table_engine.amount_of) leaves such a mixture unread."""
+    cancelling); positive otherwise (core.money.to_minor has the same rule and is handed the one minus). The size is to_minor's (an ISO code or `$` must be the
+    bill's currency, a valid number of decimals); MoneyError for an amount that is none of those, or whose parentheses or `$` do not pair up. The bill engine's tokenizer (table_engine.amount_of) leaves such a mixture unread."""
     text = line["amount"]
     digits = re.search(r"\d[\d,]*\.\d{2}", text)[0]
     marks = text.replace(digits, "", 1)
     code = re.search(rf"\b({CODE_WORDS})\b", marks, re.IGNORECASE)
     if text.count("(") != text.count(")") or marks.count("$") > 1:
         raise MoneyError("The sign or currency marks around the amount do not make one amount.")
-    figure = abs(to_minor(("$" if "$" in marks else "") + digits + (f" {code[1]}" if code else ""), currency))
-    return -figure if line["credit"] or re.search(r"[-()]", re.sub(rf"\b(?:{CODE_WORDS})\b", "", marks, flags=re.IGNORECASE)) else figure
+    negative = line["credit"] or re.search(r"[-()]", re.sub(rf"\b(?:{CODE_WORDS})\b", "", marks, flags=re.IGNORECASE))
+    return to_minor(("-" if negative else "") + ("$" if "$" in marks else "") + digits + (f" {code[1]}" if code else ""), currency)
 
 
 def carried_minor(field, currency):

@@ -364,7 +364,7 @@ def read_again(run, fields=TOTAL_FIELDS):
 
 
 def test_sc143_the_version_moved_an_undecided_bill_gains_its_total_and_its_due_now_line_on_extract_again(pdf_store, local_model, monkeypatch):
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v55-bill-total-sign-rule"
+    assert extraction.EXTRACTION_VERSION == "typed-extraction-v56-money-sign-rule"
     run = started(pdf_store, local_model, bf.total_pages())
     run.__class__ = BillRun
     read_before(run, monkeypatch)
