@@ -2,15 +2,17 @@
 Spec sha256: the bundle hash (spec.md + this file) comes from the user's gate tooling (`$HOME/.agent-harness/gate.py`;
 there's no `scripts/gate.py` in this repository). It isn't copied here, because writing it in would change it.
 
-Written against `spec.md` round 2 (commit 2676e51). Every expected value comes from the spec, or is worked out by hand
-below from the synthetic breakfast receipt. None comes from running the code after the change. Two kinds of fixture are
-taken from today's code on purpose, because the spec defines them as "today's": the saved shape of an old reading, and
-the extraction request an old reading sends (FR-17, FR-19, FR-21 "byte-identical to today's"). Those are captured once
-at commit 2676e51, before any application change, and checked in (see "Baseline captures").
+Round 2 of this contract, written against `spec.md` round 3 (commit a8542d8, decisions D18 – D28). Every expected value
+comes from the spec, or is worked out by hand below from the synthetic breakfast receipt. None comes from running the
+code after the change. Two kinds of fixture are taken from today's code on purpose, because the spec defines them as
+"today's": the saved shape of an old reading, and the extraction request an old reading sends (FR-17, FR-19, FR-21,
+D28). Those are captured once from today's application code, before any application change, and checked in (see
+"Baseline captures"). `src/` is identical at 2676e51 and a8542d8 (only spec files changed), so either commit serves.
 
-Where the spec leaves an outcome open or contradicts itself, the test is written to the spec's words and the point is
-listed under "Gaps". Q1 is settled by the orchestrator as the spec's default (Edit details with the same category
-doesn't apply FR-10). Its test is X-Q1.
+The open questions take the spec's defaults, accepted by the user: Q1 (Edit details with the same category doesn't
+apply FR-10), tested by X-Q1; Q2 (a re-read that raises the total keeps the old charge link with no note, as today),
+tested as characterization in SC-09 step 6. Round 1's gaps G1 – G13 are settled (see "Resolved gaps"). New points are
+under "Gaps".
 
 ## Conventions for every scenario
 - **Environment.** A `tmp_path` library and database only. Nothing reads `P:\Finances`, `%LOCALAPPDATA%\HomeManager`
@@ -26,8 +28,9 @@ doesn't apply FR-10). Its test is X-Q1.
 - **Vision stub shape (FR-16).** A v7 vision answer is `{"lines": [{"text", "indent"}], "tables"?: […]}`. The fixture
   helper `vision_lines(texts, indents)` builds it. Every existing helper that stubs `{"full_text": …}` (the
   `model_server` default output, `test_extraction.transcribe`, `document_forms_fixtures.record_document`,
-  `test_vision_tables`) moves to `lines` with no indent key given, unless the test is about an old answer
-  shape. That is test infrastructure, not a behavior change. See G8 for an answer with no indent key.
+  `test_vision_tables`) moves to `lines` with indent 0 on every line, unless the test is about an old answer shape
+  or a missing indent. That is test infrastructure, not a behavior change. A line with no `indent` key is unknown (D25);
+  helpers for "no indent" readings omit the key on purpose.
 - **P-check.** Before a scenario's first real checkpoint, the test asserts that the stored receipt has the items,
   subtotal and tax the fixture says (items 4885, tax 391 where read). A failed P-check is a fixture problem, never a
   reason to change an expected value.
@@ -124,9 +127,15 @@ several-receipts question is asked (SC-19).
 - **B3 (printed wrong tip).** Line 24 reads "Tip: $5.00". Summary tip 5.00 citing line 24.
 - **B4 (customer copy).** Lines 1–22, then "Tip: $" (23) and "Total: $" (24). Summary as B0 (total 52.76, line 20).
   Variant B4e: line 24 reads "Total: $52.76".
-- **B5 (no line 23).** B0's lines without line 23 (lines 24–28 become 23–27). First summary answer: total 61.55
-  citing only "18.00% of sale: $8.79 Total $61.55". Second summary answer (in case the app asks again, G5): total 52.76
-  citing "Total: $52.76".
+- **B5 (no line 23).** B0's lines without line 23 (lines 24–28 become 23–27, so the table is lines 24–27 and
+  "18.00% of sale: $8.79 Total $61.55" is line-25). One summary answer only: total 61.55 citing only line-25. The model is
+  not asked again (D22), so the stub has no second answer; a second summary request fails the test.
+  Variant B5n (no pre-tip amount before the table): B5 without lines 6 ("Amount: $52.76"), 20 ("Total: $52.76") and 22
+  ("Bill: $52.76"). Line 6 is removed too so the variant doesn't depend on whether a card-terminal "Amount:" line is a
+  pre-tip amount (G15).
+- **B9 (pre-tip amounts disagree, D23).** B0 with line 22 reading "Bill: $50.00". The summary as B0 (total 52.76, line
+  20).
+- **B10 (no tip line, D19).** B0's lines without line 24 (lines 25–28 become 24–27). Summary as B0.
 - **B6 (side lines as items).** B0 with rows adding "No Allergies", "Fresh Berry Pancakes", "Veggie Sausage",
   "Jalapeno Cheese Grits" after Georgia Peach Stack, each `line_total` null, each citing its own line (11–14).
   `item_categories` gets four more entries (groceries). Variant B6z: the four with `line_total` 0.00.
@@ -158,20 +167,28 @@ by the changed code.
   rows 395, 395, 1495, 1870, 730 dining (fallback), no-item 391 dining.
 - **Receipt G** (grocery, verified). A small grocery receipt with two items under groceries and household supplies.
   The regression control: nothing about it changes in any scenario.
+- **Receipt H** (dining, `needs_review`, an old receipt whose category you changed to travel before the upgrade). The
+  lines of B8. Total 2600, subtotal 2000, tax 100, tip 300 (printed), receipt category travel. One item, Burger 2000,
+  category travel with `category_source` receipt. Receipt split as today's `allocate` makes it with fallback travel
+  (rules 4 and 5, `splits.py:185-191`): the tip row 300 **dining** with no item; the 200 difference spread over the items,
+  so the item row is 2000 + 100 tax + 200 = 2300 travel. C-sum 2600. FR-10 has not applied to it.
 - **Charge K52**: a card transaction −52.76 on 2026-11-12, unlinked. **Charge K61**: −61.55, same date, unlinked.
 
 Each scenario uses only the receipts it names (the builder takes a list).
 
-### Baseline captures (from today's code, at 2676e51, before any change)
+### Baseline captures (from today's code, before any application change)
 - **R6**: the stored result of a v6 image reading of the breakfast lines (the vision stub answering today's
   `{"full_text": …}`). Plus its PDF twin **P3** (a one-page scanned PDF read under `pdf-pages-v3-layout`) and its group
   twin **G2** (two images read as one document under `receipt-images-v2-tables`). Saved as files in the fixture
   module's data, byte for byte.
-- **Q56**: the full JSON body of every reasoning request that `extract` sends for R6 with stub B0 (the requests
-  `local_model["requests"]` records), in order. The test compares each request's `lines` payload byte for byte, and the
-  rest of the body byte for byte except the row instruction FR-22 changes (G13).
-- Captured by a one-off script the plan writes and runs at 2676e51. The script and the commit it ran at are recorded in
-  the fixture module's docstring. Once checked in, the captures are never regenerated by the changed code.
+- **Q56**: the full JSON body of every reasoning request that `extract` sends for R6, P3 and G2 with stub B0 (the
+  requests `local_model["requests"]` records), in order, plus today's receipt row instruction text
+  (`extraction.py:4383-4392`) as its own file. The test compares each request's `lines` payload byte for byte, and the
+  rest of the body byte for byte after masking the row instruction: today's text in the capture and the new FR-22 text
+  in the new request are each replaced by the same placeholder (D28). Nothing else may differ.
+- **Order (D28).** The plan's first slice captures these, before any application change. The script, and the commit it
+  ran at, are recorded in the fixture module's docstring. Review checks `git diff <that commit> a8542d8 -- src/` is
+  empty. Once checked in, the captures are never regenerated by the changed code.
 
 ## SC-01 — The breakfast receipt counts what was charged, all as dining
 Requirement IDs: FR-01, FR-02, FR-06, FR-07, FR-10 (and FR-11, FR-27 through the payload)
@@ -181,11 +198,12 @@ Actions/checkpoints:
 1. Capture the image and record it with B0 → the extraction run succeeded; 1 receipt. P-check: 5 items, sum 4885, tax
    391, subtotal 4885.
 2. Total → `total_minor` 6155. C-cites(total, [line-23]).
-3. Tip → `tip_minor` 879, marked worked out, C-cites(tip, [line-22, line-23]) (FR-02; see G6 for why line 22, not 20).
+3. Tip → `tip_minor` 879, marked worked out, C-cites(tip, [line-22, line-23]) (FR-02; line 22 is the nearest pre-tip
+   amount before line 23, D23. Line 20 also reads $52.76, so they agree).
 4. Dining check → passes. `cross_checks` counts it (4885 + 391 + 879 = 6155). The trace's Tip step (`finance/traces`
    for the dining check) names line-22 and line-23 and says the tip was worked out. No FR-03 issue.
 5. Review → C-review(`needs_review`, exactly ["Tip $8.79 was worked out from Total $61.55 less Bill $52.76, not
-   printed; check it."]) (FR-06, D4).
+   printed; check it."]) (FR-06, D4). The reason starts with "Tip", which today's correction rule needs (D26).
 6. Receipt split → C-sum(6155), C-cat(dining). By category reads "Dining $61.55". The item rows are dining although
    the stub said groceries for items 1 and 2 (FR-10). C-mem(0).
 7. Record payload → Tip shows the note "Worked out: Total $61.55 − Bill $52.76". C-col(hidden). The "Not matched to an
@@ -197,7 +215,8 @@ Expected final state:
   `needs_review`). `receipt_items` 5 rows (the B0 items, positions 1–5, no side lines). Receipt split: 5 item rows plus
   the tip row (879), all dining, sum 6155. Charge split all dining, sum 6155. 1 receipt link. `parse_runs`: 1 row,
   `receipt-vision-v7-indent`. `extraction_runs`: 1 row, `EXTRACTION_VERSION` (v57). `item_category_memory`: 0 rows.
-- Stored item categories: see G3 (not asserted until it is settled, except that nothing reads them for the split).
+- Stored item categories (D20): all 5 items `category` dining, `category_source` receipt (the model said groceries for
+  items 1 and 2 and dining for 3 – 5; all are model-categorised).
 Failure/retry/restart variants:
 - (a) B1 (the model already answers 61.55 citing line 23) → the same end state (FR-01's second criterion).
 - (b) Record the same document again (a second capture of the same file) → still 1 receipt, 6 receipt split rows, 1
@@ -222,8 +241,8 @@ Failure/retry/restart variants:
 Evidence: pytest.
 
 ## SC-03 — No tip is invented
-Requirement IDs: FR-04
-Nondeterministic components: B4
+Requirement IDs: FR-04, FR-01 (D19, D23)
+Nondeterministic components: B4, B10, B9
 Initial state: empty library.
 Actions/checkpoints:
 1. Record B4 → `total_minor` 5276 citing line 20, `tip_minor` NULL (not 0). No worked-out marker or note. No FR-06
@@ -232,24 +251,38 @@ Actions/checkpoints:
 Failure/retry/restart variants:
 - (a) B4e (the later Total equals the Bill) → total 5276, tip NULL.
 - (b) One printed total: B0's lines 1–20 only → total 5276, tip NULL.
-- (c) No tip line: B0 without line 24 → tip NULL, no worked-out marker (D12). The total is **blocked on G2**: FR-01
-  gives 6155 (line 23), FR-04's words give 5276. The test is written with the value the spec settles on.
+- (c) No tip line (B10, D19) → `total_minor` 6155, C-cites(total, [line-23]). `tip_minor` NULL, no worked-out marker
+  or note (D12), no FR-06 reason. The dining check fails as today (4885 + 391 = 5276 ≠ 6155) and adds today's check
+  issue; the receipt is `needs_review`. Receipt split by today's rule 5 on a dining receipt: item rows 5276 (items plus
+  tax), one no-item difference row 879, all dining, C-sum(6155). Record payload: "Not matched to an item" 879 (no tip
+  row to leave out, FR-27).
+- (d) Pre-tip amounts disagree (B9, D23) → `total_minor` 6155 citing line-23 (FR-01 still applies: 61.55 is larger than
+  the nearest pre-tip amount, line 22's $50.00). `tip_minor` NULL, no worked-out marker or note, no FR-06 reason. The
+  issue "The receipt prints different amounts before the tip ($52.76 and $50.00), so the tip wasn't worked out." is
+  present (amount order: G14; until settled the test accepts either order). The dining check uses the post-tip total
+  (FR-03) and fails as today. Receipt split C-sum(6155), C-cat(dining), with a no-item 879 row; "Not matched to an item"
+  879.
 Evidence: pytest.
 
 ## SC-04 — The suggested-tip table is never the source
 Requirement IDs: FR-05, FR-01
-Nondeterministic components: B5; and B1' (B0 with the total 61.55 citing only line 26)
+Nondeterministic components: B5, B5n; and B1' (B0 with the total 61.55 citing only line 26)
 Initial state: empty library.
 Actions/checkpoints:
 1. Record B1' (line 23 present) → `total_minor` 6155 citing line 23, from FR-01, not from line 26. Tip 879 worked out.
-2. Record B5 in a fresh library → `total_minor` 5276 citing the "Total: $52.76" line. `tip_minor` NULL. The note
-   "The total the reading took from the suggested-tip table was not used." is on the record.
+2. Record B5 in a fresh library → `total_minor` 5276, C-cites(total, [line-22]) (Bill: the nearest pre-tip amount
+   printed before the table, D22; not line 20). Exactly one summary request was sent (counted in
+   `local_model["requests"]` by schema name): the model is not asked again. `tip_minor` NULL, no worked-out marker
+   (FR-01 doesn't apply: no post-tip total outside the table). The note "The total the reading took from the
+   suggested-tip table was not used." is on the record.
 3. No stored amount of either receipt cites a line of the table ("Suggested Tip" and the three "% of sale" lines).
 Failure/retry/restart variants:
 - (a) A tip cited only to "18.00% of sale: $8.79 Total $61.55" on B0's lines (summary tip 8.79 citing that line) →
   that tip isn't used. FR-02 works out 879 from lines 22 and 23 instead, and the note "The tip the reading took from
   the suggested-tip table was not used." is present.
 - (b) A table without the "Suggested Tip" heading (line 25 removed) → the same outcomes as step 1 and step 2.
+- (c) B5n (no pre-tip amount before the table) → `total_minor` NULL (missing, as for a receipt with no readable total
+  today), the note present, one summary request. The record is handled as today's receipt with no total.
 Evidence: pytest.
 
 ## SC-05 — Old receipts stay until read again
@@ -268,7 +301,8 @@ Actions/checkpoints:
    receipt split rows equal the snapshot (FR-08, today's rule).
 5. Extract again on A → a new extraction run with `prompt_version` = `EXTRACTION_VERSION` (starts
    `typed-extraction-v57`), not a reuse of the v56 run (FR-24). A: total 6155, tip 879 worked out (lines 22, 23),
-   C-review(`needs_review`, [FR-06 reason]). Receipt split C-sum(6155), C-cat(dining).
+   C-review(`needs_review`, [FR-06 reason]). Receipt split C-sum(6155), C-cat(dining). A's 5 items store dining with
+   `category_source` receipt (D20: all were model-categorised).
 6. Run reconciliation again → A's receipt split is still all dining (FR-14: once applied, kept). G unchanged.
 Expected final state:
 - Database: A changed as in step 5. B and G exactly as in the snapshot. `extraction_runs`: the old v56 rows still
@@ -287,13 +321,18 @@ Initial state: SC-01 after step 7 (not reconciled).
 Actions/checkpoints:
 1. Correct Tip to 9.00 (`POST /api/finance/records/receipt/{id}/corrections`, changes {tip: "9.00"}) → `tip_minor`
    900, not marked worked out. The record payload has no worked-out note.
-2. Issues → the FR-03 issue "Tip ($9.00) and the bill ($52.76) don't make the total ($61.55)." is present. The FR-06
-   reason is absent (G9).
-3. Receipt split → C-sum(6155) (the total is unchanged).
-4. Extract again with B0 → `tip_minor` 900, not marked worked out. Total 6155.
+2. Issues → none. The FR-06 reason is resolved (it starts with "Tip", D26). No FR-03 issue is added: corrections
+   don't re-run checks, so no issue text starts with "Tip ($9.00)".
+3. Footer → the record payload's `totals_mismatch` is true (4885 + 391 + 900 = 6176, 21 more than 6155), so the page
+   shows today's "Doesn't add up" warning (D26; the amount in the warning: G16).
+4. Review → C-review(`verified`, []), `review_source` automatic (today's rule: waiting in Review, not reviewed by you,
+   no issue left).
+5. Receipt split → C-sum(6155) (the total is unchanged), C-cat(dining).
+6. Extract again with B0 → `tip_minor` 900, not marked worked out. Total 6155.
 Failure/retry/restart variants:
-- (a) Undo the tip correction → tip 879 and the worked-out marker are back; the FR-03 issue is gone. (Today's Undo
-  rule; the spec only asks that the correction "works as today".)
+- (a) Undo the tip correction → tip 879 and the worked-out marker are back. Review state and issues after Undo follow
+  today's Undo rule and are not asserted.
+- (b) Characterization: a printed tip corrected the same way on B2 → today's behavior, no worked-out marker involved.
 Evidence: pytest.
 
 ## SC-07 — One category on a dining receipt
@@ -308,14 +347,19 @@ Actions/checkpoints:
    receipt counts as the receipt's category; change it with Edit details." C-mem(0). The item's stored category and
    source, and the receipt split, are unchanged.
 3. Edit details → Categories → Travel (`POST …/corrections` {category: "travel"}) → receipt category travel. Receipt
-   split C-sum(6155). Per the spec, C-cat(travel) for every row; **blocked on G1**, since the tip row is dining by
-   today's `allocate`. Item rows are C-cat(travel) under either reading. C-col(hidden).
+   split C-sum(6155), C-cat(travel): the 5 item rows (5276) and the tip row (879) (D18). By category reads "Travel
+   $61.55", with no Dining line. The 5 items store travel with `category_source` receipt (D20). "Not matched to an
+   item" 0 (FR-27 leaves out the tip's row in the receipt's category). C-col(hidden).
 4. Repeat step 2 → still 400. C-mem(0).
-Expected final state: 1 receipt, category travel, 5 items, split sum 6155, no memory rows.
+5. Reconcile with K61 → exact link. Charge split C-cat(travel), C-sum(6155). A further reconciliation run keeps both
+   splits all travel (D18: once FR-10 has applied, later rebuilds keep it).
+Expected final state: 1 receipt, category travel, 5 items, receipt and charge splits all travel, sum 6155 each, no
+memory rows.
 Failure/retry/restart variants:
 - (a) A grocery receipt (G built through the ledger) → C-col(shown); its PUT → 200 and writes a memory row (today).
-- (b) A dining receipt with no total (B0 with the total missing and no line 23) → the payload still decides the
-  column: hidden, decided from the categories its split would use (FR-11).
+- (b) A dining receipt with no total (B5n) → the payload still decides the column: hidden, decided from the
+  categories its split would use (FR-11).
+- (c) Q1 counterpart: Edit details → Categories → Travel again on the travel receipt → no change to any split.
 Evidence: pytest, plus the browser test for step 1.
 
 ## SC-08 — Changing the kind away from dining and back
@@ -354,12 +398,15 @@ Actions/checkpoints:
    "Gacha's Breakfast Bar", item "Coffee", groceries. Receipt and charge splits: items 1–3 groceries, C-sum(5276) each.
 5. Extract again from the v6 reading with B0 → total 6155, tip 879 worked out, `needs_review` with the FR-06 reason.
    Receipt split C-cat(dining), C-sum(6155). C-col(hidden). Items 1 and 3 still hold groceries with `category_source`
-   user (FR-10: your choice stays stored). Item 2's stored value: G3. C-mem(1) (unchanged; FR-12's "never read"
-   means it didn't change the split).
-6. The link to K52: **blocked on G4.** If the link remains, the charge split is C-cat(dining) and C-sum(5276).
+   user (FR-10: your choice stays stored, D20). Items 2, 4 and 5 store dining with `category_source` receipt (D20).
+   C-mem(1) (unchanged; FR-12's "never read" means it didn't change the split).
+6. The link to K52 (D21, Q2 default; characterization of today's rule) → the receipt link row is unchanged (same id,
+   still live). The charge split: C-cat(dining), C-sum(5276) (divided to the charge's amount). No note about the total
+   no longer equalling the charge on the receipt, the link or the charge (that note is for gift-card receipts only). No
+   near-match question exists.
 7. `POST /api/finance/reconcile` again → receipt split still C-cat(dining), C-sum(6155).
 Failure/retry/restart variants:
-- (a) Restart between steps 5 and 7 → the same as step 7.
+- (a) Restart between steps 5 and 7 → the same as step 7, and the link to K52 still there.
 - (b) Steps 1–4 with a link review (approve the link) and an unlink and re-link in place of step 3 → after each, the
   groceries rows stay groceries and each split sums to its target (D8; also X-D8).
 Evidence: pytest.
@@ -386,7 +433,7 @@ Expected final state: 1 parse run (v7, succeeded), its stored result holding the
 SC-01.
 Failure/retry/restart variants:
 - (a) Indent values "1" (string), 1.5, −1, null → that line's indent unknown; the reading kept (FR-17).
-- (b) A line entry with no indent key → unknown (G8).
+- (b) A line entry with no indent key → unknown, the reading kept (D25).
 - (c) Every line blank or whitespace → the run fails with "Model response was blank." No reading is published.
 - (d) Tables: a stub table with `line_index` rows 7–10 → validates against the same indexes as a `full_text` reading
   of the same text would (FR-16).
@@ -397,7 +444,8 @@ Requirement IDs: FR-18
 Nondeterministic components: vision `outputs` sequences
 Initial state: an image already read once under v7 with V0 (the clean breakfast lines). Hash its parse folder.
 Actions/checkpoints:
-1. Read again (force) with outputs [old-shape answer `{"full_text": …}`, valid `lines` with indent] → 2 vision
+1. Read again (force) with outputs [old-shape answer `{"full_text": …}` (invalid against the new schema, D25), valid
+   `lines` with indent] → 2 vision
    requests. The second asks for a schema whose only property is `lines` (items {text, indent}), with no `tables`, and
    its prompt states FR-15's rules. The new reading: 28 lines with indent, issue code `vision_table_invalid`.
 2. Read again (force) with outputs [{"wrong": "shape"}, {"also": "wrong"}] → that parse run fails (status failed, an
@@ -415,13 +463,15 @@ Initial state: one image document with an R6 run (`receipt-vision-v6-tables`), o
 recorded (a v56 extraction run). Hash every old parse folder.
 Actions/checkpoints:
 1. Version values → `VISION_VERSION` == "receipt-vision-v7-indent". `PDF_VERSION` != "pdf-pages-v3-layout" and the
-   old value is still readable (in `PDF_VERSIONS`). `GROUP_VERSION` != "receipt-images-v2-tables" and the old value is
-   still readable (G7).
+   old value is still readable (in `PDF_VERSIONS`). `GROUP_VERSION` != "receipt-images-v2-tables", and the set of group
+   versions that open (`GROUP_VERSIONS` or the plan's name) holds both the new value and "receipt-images-v2-tables"
+   (D24).
 2. Open each old run (`GET /api/documents/{id}/receipt-runs/…`) → it loads. Line ids, texts, `block_ids`, `model_text`
    and `extracted_text` equal the capture's. Every line's indent is unknown.
-3. Extract again from the R6 run with B0 → in every reasoning request, the `lines` payload equals Q56's byte for byte
-   (FR-21: an old reading sends exactly today's payload). The rest of each body equals Q56 too, except the receipt row
-   instruction FR-22 changes (G13). Same for the P3 and G2 runs: no request carries an `indent` key.
+3. Extract again from the R6 run with B0 → the same number of reasoning requests as Q56, in the same order. In each,
+   the `lines` payload equals Q56's byte for byte (FR-21). The rest of each body equals Q56's byte for byte once the row
+   instruction is masked in both (D28; see "Baseline captures"). Same for the P3 and G2 runs: no request carries an
+   `indent` key.
 4. Read the image again (no force) → exactly one new parse run under v7 (not a reuse of the v6 run). Its lines carry
    indent.
 5. Read the scanned PDF again → exactly one new parse run under the new `PDF_VERSION`, not one per page. Its lines
@@ -461,8 +511,8 @@ Evidence: pytest `tests/test_receipt_side_lines.py`.
 
 ## SC-14 — No indent, no backstop
 Requirement IDs: FR-23
-Nondeterministic components: B6 over a reading with no indent (vision answer lines without indent keys, G8; and the
-R6 old reading)
+Nondeterministic components: B6 over a reading with no indent (vision answer lines without indent keys, unknown per
+D25; and the R6 old reading)
 Initial state: empty library; and separately an old library with an R6 run.
 Actions/checkpoints:
 1. Record → 9 items, as today: the 5 B0 items plus the 4 side lines. No drop notes.
@@ -487,11 +537,13 @@ Nondeterministic components: B0 for Read again
 Initial state: old library with receipt D (approved by you, item 1 groceries by you).
 Actions/checkpoints:
 1. Extract again with B0 → D's `receipts`, `receipt_items` and receipt split equal the snapshot (approved). C-col(shown).
-2. Edit details → Categories → Travel → receipt category travel. Item 1 keeps groceries (`category_source` user, as
-   today). Receipt split: every row travel (with no tip row, the 391 difference is spread over the items once the
-   fallback isn't dining: splits.py:188-191), C-sum(5276). C-col(hidden).
+2. Edit details → Categories → Travel → receipt category travel. Item 1 keeps groceries stored (`category_source`
+   user, as today); items 2 – 5 store travel with `category_source` receipt (D20). Receipt split: item rows 395, 395,
+   1495, 1870, 730 travel, and the 391 difference as one no-item row, travel (D18: once FR-10 applies the difference is
+   an amount no item carries, under the receipt's category, not spread as today's rule 5 does for a category other
+   than dining). C-sum(5276). "Not matched to an item" 391. C-col(hidden).
 3. `PUT …/items/2/category` {groceries} → 400, the FR-12 message. C-mem(0).
-4. Run reconciliation → the split is still all travel.
+4. Run reconciliation → the split is still all travel, the no-item 391 row included.
 Evidence: pytest.
 
 ## SC-17 — The backfill on an old dining receipt
@@ -506,9 +558,14 @@ Actions/checkpoints:
 3. Receipt split → C-snap. C-col(hidden).
 4. Run the backfill again → E isn't pending; nothing changes.
 Failure/retry/restart variants:
-- (a) A dining receipt with an item under a retired (legacy) category → the backfill gives that item the receipt's
-  category; its split moves to dining (FR-14's words: "an item it would categorise takes the receipt's category").
+- (a) Receipt E with item 1 under a retired category (one the app's category list marks retired, picked by the fixture
+  from that list) → the backfill gives item 1 dining with `category_source` receipt; its receipt split row (395) moves
+  from the retired category to dining (D27). Every other row, the no-item 391 row included, equals the snapshot.
+  C-sum(5276). Nothing else about the split changes: the backfill applies no D18 rule.
 - (b) A grocery receipt with items with no category → categorised as today (memory, then the model).
+- (c) Receipt H with its item's category set to null (backfill pending) → the item takes travel (the receipt's
+  category), source receipt. Receipt split C-snap: the tip row stays dining and the difference stays spread (today's
+  rules 4 and 5; the backfill isn't an FR-14 event, D27).
 Evidence: pytest.
 
 ## SC-18 — "Not matched to an item" leaves out the tip
@@ -560,13 +617,24 @@ Expected after each: items 1 and 2's rows (receipt split, and charge split where
 split C-sum to its target (the receipt's total, or the charge). C-col(shown). C-mem(0).
 
 Mirror case (after FR-10 has applied): SC-01 after step 7, then each event above → the receipt split stays all
-dining (FR-14: once applied, kept), and each split sums to its target.
+dining (FR-14: once applied, kept), and each split sums to its target. Second mirror: SC-07 after step 3 (travel) →
+every row stays travel, the tip row included (D18 kept through rebuilds).
+
+Old-rules case (D18 scope): a fresh old library with receipt H and a charge of −26.00 on its date. For each event above
+that applies to H (upgrade and restart, reconciliation run, link and link review, unlink, correct an amount, correct
+an item, other Edit details fields) → H's receipt split equals its fixture rows: tip row 300 dining, item row 2300
+travel (the difference spread), C-sum(2600); where linked, the charge split has the same categories, C-sum(2600).
+For H the amount correction is {tax: "1.50"}: total and tip are unchanged, so the item row is still 2600 − 300 = 2300
+travel (the 150 difference spread) and the tip row 300 dining.
+Contrast (FR-14 (c) applies FR-10): Edit details → Categories → Groceries on H → item row 2100 groceries, tip row 300
+groceries, difference row 200 groceries with no item, C-sum(2600); "Not matched to an item" 200.
 
 ## X-Q1 — Edit details with the same category doesn't apply FR-10
-Requirement IDs: FR-14 (c), Q1 (default kept)
+Requirement IDs: FR-14 (c), Q1 (spec default, accepted)
 Initial state: old library with receipt D (dining, item 1 groceries by you).
 Actions/checkpoints:
 1. Edit details → Categories → Dining (the category it already has) → item 1's split stays groceries; C-col(shown).
+2. The item dropdown still works (D7): `PUT …/items/1/category` {dining} → 200, as today.
 Evidence: pytest.
 
 ## X-UPG — The upgrade rewrites nothing (only if the plan adds a migration)
@@ -592,23 +660,23 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 ## Traceability
 | FR | Scenarios / tests | Test file |
 |---|---|---|
-| FR-01 | SC-01, SC-04, SC-19, SC-03 (c) | test_dining_receipts.py |
-| FR-02 | SC-01, SC-04 (a) | test_dining_receipts.py |
-| FR-03 | SC-02, SC-06 | test_dining_receipts.py |
+| FR-01 | SC-01, SC-03 (c, d), SC-04, SC-19 | test_dining_receipts.py |
+| FR-02 | SC-01, SC-03 (d), SC-04 (a) | test_dining_receipts.py |
+| FR-03 | SC-02, SC-03 (d), SC-06 (no new issue) | test_dining_receipts.py |
 | FR-04 | SC-03 | test_dining_receipts.py |
 | FR-05 | SC-04 | test_dining_receipts.py |
 | FR-06 | SC-01, SC-05, SC-09 | test_dining_receipts.py |
-| FR-07 | SC-01 step 8 | test_dining_receipts.py |
+| FR-07 | SC-01 step 8, SC-07 step 5, X-D8 old-rules case | test_dining_receipts.py |
 | FR-08 | SC-05, SC-09, SC-16, X-D8, X-UPG | test_dining_receipts.py, test_migrations.py |
 | FR-09 | SC-06 | test_dining_receipts.py |
-| FR-10 | SC-01, SC-07, SC-09 | test_dining_receipts.py |
+| FR-10 | SC-01, SC-05, SC-07, SC-09, SC-16, X-D8 | test_dining_receipts.py |
 | FR-11 | SC-07, SC-09, SC-16, SC-17 | test_dining_receipts.py, test_receipt_items_browser.py |
 | FR-12 | SC-07, SC-09, SC-16 | test_dining_receipts.py |
-| FR-13 | SC-08 | test_dining_receipts.py |
-| FR-14 | SC-05, SC-09, SC-16, SC-17, X-D8, X-Q1 | test_dining_receipts.py |
+| FR-13 | SC-08, X-D8 old-rules case (tip dining before FR-10) | test_dining_receipts.py |
+| FR-14 | SC-05, SC-07 (c), SC-09, SC-16, SC-17, X-D8, X-Q1 | test_dining_receipts.py |
 | FR-15 | SC-10, SC-11 | test_vision_indent.py |
 | FR-16 | SC-10 | test_vision_indent.py |
-| FR-17 | SC-10, SC-12 | test_vision_indent.py |
+| FR-17 | SC-10, SC-11, SC-12, SC-14 | test_vision_indent.py |
 | FR-18 | SC-11 | test_vision_indent.py, test_vision_tables.py |
 | FR-19 | SC-12 | test_vision_indent.py |
 | FR-20 | SC-12 | test_vision_indent.py, test_pdf_reader.py, test_document_groups.py |
@@ -618,17 +686,17 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | FR-24 | SC-05 | test_dining_receipts.py |
 | FR-25 | review | — |
 | FR-26 | SC-15 | test_document_v2_browser.py |
-| FR-27 | SC-01 step 7, SC-18 | test_dining_receipts.py, test_receipt_items_browser.py |
+| FR-27 | SC-01 step 7, SC-03 (c, d), SC-07 step 3, SC-16, SC-18, X-D8 | test_dining_receipts.py, test_receipt_items_browser.py |
 
 | SC | Test |
 |---|---|
 | SC-01 | test_dining_receipts.py::test_sc01_breakfast_counts_what_was_charged (+ variants a–d) |
 | SC-02 | test_dining_receipts.py::test_sc02_printed_tip_is_kept (+ a) |
-| SC-03 | test_dining_receipts.py::test_sc03_no_tip_is_invented (+ a, b; c blocked on G2) |
-| SC-04 | test_dining_receipts.py::test_sc04_suggested_tip_table_is_never_the_source (+ a, b) |
+| SC-03 | test_dining_receipts.py::test_sc03_no_tip_is_invented (+ a–d) |
+| SC-04 | test_dining_receipts.py::test_sc04_suggested_tip_table_is_never_the_source (+ a–c) |
 | SC-05 | test_dining_receipts.py::test_sc05_old_receipts_stay_until_read_again |
-| SC-06 | test_dining_receipts.py::test_sc06_your_tip_correction_wins (+ a) |
-| SC-07 | test_dining_receipts.py::test_sc07_one_category_on_a_dining_receipt (+ a, b); browser step 1 |
+| SC-06 | test_dining_receipts.py::test_sc06_your_tip_correction_wins (+ a, b) |
+| SC-07 | test_dining_receipts.py::test_sc07_one_category_on_a_dining_receipt (+ a–c); browser step 1 |
 | SC-08 | test_dining_receipts.py::test_sc08_kind_change_and_undo (+ a, b) |
 | SC-09 | test_dining_receipts.py::test_sc09_old_receipt_keeps_categories_until_read_again (+ a, b) |
 | SC-10 | test_vision_indent.py::test_sc10_lines_with_indent (+ a–d) |
@@ -638,7 +706,7 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | SC-14 | test_receipt_side_lines.py::test_sc14_no_indent_no_backstop |
 | SC-15 | test_document_v2_browser.py::test_sc15_text_view_indentation |
 | SC-16 | test_dining_receipts.py::test_sc16_approved_old_receipt_then_categories |
-| SC-17 | test_dining_receipts.py::test_sc17_backfill_on_old_dining_receipt (+ a, b) |
+| SC-17 | test_dining_receipts.py::test_sc17_backfill_on_old_dining_receipt (+ a–c) |
 | SC-18 | test_dining_receipts.py::test_sc18_not_matched_leaves_out_the_tip (+ a); browser (b) |
 | SC-19 | test_dining_receipts.py::test_sc19_several_totals_one_receipt |
 
@@ -646,55 +714,43 @@ Commands: `python -m pytest tests/test_dining_receipts.py tests/test_vision_inde
 then the whole suite (`python -m pytest`) for the existing tests the stub-shape change touches. Browser:
 `RUN_BROWSER_TESTS=1 python -m pytest tests/test_receipt_items_browser.py tests/test_document_v2_browser.py`.
 
-## Gaps
-Listed for the spec author. The spec is not edited here. Tests marked "blocked" are written once the gap is settled.
+## Resolved gaps (round 1 → spec round 3)
+| Gap | Decision | Where the contract now tests it |
+|---|---|---|
+| G1 tip row on a recategorised dining receipt | D18 | SC-07 step 3, SC-16 step 2, X-D8 mirror and old-rules case, SC-17 (c) |
+| G2 no tip line, later larger total | D19 | SC-03 (c) |
+| G3 stored item categories once FR-10 applies | D20 | SC-01, SC-05, SC-07, SC-09, SC-16 |
+| G4 charge link after a re-read changes the total | D21 (Q2 default) | SC-09 step 6 |
+| G5 fallback after a rejected table total | D22 | SC-04 step 2, (c); B5 has one summary answer |
+| G6 nearest pre-tip amount; disagreeing amounts | D23 | SC-01 step 3, SC-03 (d) |
+| G7 old group version readable | D24 | SC-12 step 1 |
+| G8 missing indent key; `{full_text}` answer | D25 | SC-10 (b), SC-11 step 1, SC-14 |
+| G9, G10 FR-06 reason and review after Correct Tip | D26 | SC-06 steps 2 – 4 |
+| G11 backfill and retired categories | D27 | SC-17 (a), (c) |
+| G12, G13 old-reading request and its capture | D28 | "Baseline captures", SC-12 step 3 |
 
-- **G1 (contradiction) SC-07 and FR-10 vs the tip row.** SC-07 expects "All splits travel, sum 6155" after Edit
-  details → Travel. But the tip's split row is always dining (`splits.py:185-186`), FR-10 speaks only of items, and
-  FR-27 says `category_splits` are unchanged by this feature. Recommended fix: SC-07 reads "every item split travel
-  (5276), the tip row dining (879)"; By category "Travel $52.76 · Dining $8.79". The alternative (a dining receipt's
-  tip follows the receipt's category) is a rule change and needs a decision. **Needs a human decision.**
-- **G2 (contradiction) FR-04 "with no tip line … the total is read as today" vs FR-01.** FR-01 applies whenever a larger
-  total follows a pre-tip amount, with no condition on a tip line. D12 only stops the tip being worked out. Recommended
-  fix: FR-04 limits "the total is read as today" to the one-total and equal-totals cases. With no tip line, the total
-  is the charged 6155, the tip stays missing, and the 879 shows as "Not matched to an item" (dining, money rule 5).
-  **Needs a human decision** (SC-03 (c) is blocked on it).
-- **G3 (gap) The stored item category on a dining receipt once FR-10 applies.** The spec says what the split uses and
-  that your own choice stays stored. It doesn't say what `receipt_items.category`/`category_source` hold for items the
-  model or memory categorised (SC-01, SC-09 item 2). Recommended fix: non-user items store the receipt's category with
-  source `receipt`, as Edit details and the backfill (FR-14) already do; user items keep theirs. Tests on stored item
-  categories (other than user ones) wait for this.
-- **G4 (gap) SC-09: the link to the $52.76 charge after Read again raises the total to $61.55.** Neither the spec nor
-  `docs/money.md` says whether an app-made link survives when a re-reading changes the receipt's total so it no longer
-  equals the charge. Recommended fix: SC-09 states the outcome. If the link stays, the charge split is all dining and
-  sums to 5276.
-- **G5 (gap) FR-05: where 5276 comes from once a table-cited total is rejected.** The model is asked again, or a
-  deterministic fallback is used (the latest printed total before the table)? Recommended fix: say which. B5 provides
-  a second answer so the test holds either way, but the note's presence after a successful second answer should be
-  confirmed.
-- **G6 (gap) Which pre-tip amount when several precede the post-tip total.** Lines 20 (Total) and 22 (Bill) are both
-  52.76. FR-02 and FR-06 cite line 22 (Bill), which implies the nearest preceding one. Recommended fix: FR-01 says "the
-  nearest preceding pre-tip amount", and says what happens when the earlier candidates disagree.
-- **G7 (gap) The old `GROUP_VERSION` must stay readable.** `ReceiptService.publish` accepts `(*PDF_VERSIONS,
-  GROUP_VERSION, "receipt-images-v1")` (`receipt_service.py:118`). Raising `GROUP_VERSION` without keeping
-  `receipt-images-v2-tables` in that list would stop old combined readings opening. FR-19 names only `PDF_VERSIONS`.
-  Recommended fix: FR-19 says the old group value is kept readable too (a `GROUP_VERSIONS` tuple). SC-12 tests it.
-- **G8 (gap) A v7 vision answer line with no `indent` key, and an old-shape `{full_text}` answer.** FR-17 covers values
-  out of range and non-integers. Recommended fix: a missing key is unknown, like a bad value, and a `full_text`-only
-  answer is invalid (the rescue runs). SC-10 (b) and SC-11 step 1 test these.
-- **G9 (gap) The FR-06 reason after you correct the tip.** Correct Tip clears the worked-out marker (FR-09). The spec
-  doesn't say the FR-06 Review reason goes with it. Recommended fix: it goes, since the tip is then yours. SC-06 step 2
-  asserts that.
-- **G10 (gap) Review state after the FR-06 reason goes.** Correcting doesn't approve. SC-06 doesn't assert
-  `review_status`. No fix needed unless the spec wants one.
-- **G11 (note) SC-17 (a).** A legacy-category item on a dining receipt moves its split to dining under the backfill.
-  That follows FR-14's words but contradicts "leaves the split unchanged", which the spec states only for items with
-  none. Recommended fix: confirm in FR-14.
-- **G12 (note) Byte-identity needs a baseline capture.** FR-21 and the orchestrator's brief define the old-reading
-  request as "exactly today's". The only faithful expected value is a capture from today's code (Q56, at 2676e51). The
-  plan must schedule that capture before the first application change.
-- **G13 (note) The prompt version inside the request.** If any request body carries `EXTRACTION_VERSION` or a prompt
-  text that FR-22 changes, a byte-identical old-reading request is impossible: FR-22 changes every receipt form's row
-  instruction for all readings. Recommended fix: FR-21 says the *lines payload* (the `lines` array) is byte-identical
-  for an old reading, not the whole request. Q56 is compared on the lines payload exactly, and on the rest except the
-  row instruction FR-22 changes.
+## Gaps
+Listed for the spec author. The spec is not edited here. None blocks a test: each test is written as stated beside it.
+
+- **G14 (gap) The order of the two amounts in D23's issue.** FR-01's text "($X and $Y)" doesn't say which is which.
+  Recommended fix: FR-01 says reading order, earlier first ("($52.76 and $50.00)" for B9). SC-03 (d) accepts either
+  order until then.
+- **G15 (gap) Is a card-terminal "Amount: $52.76" line a pre-tip amount?** FR-01 lists Total, Grand Total, Bill, Amount
+  due and Balance due. Line 6 "Amount:" is none of them, but a plan could read "Amount" loosely. It matters for D22's
+  fallback (with no Bill or Total line, line 6 would become the total) and for D23 (it could disagree). Recommended fix:
+  FR-01 says only the listed labels count, so "Amount:" alone is not a pre-tip amount. B5n removes line 6 so SC-04 (c)
+  holds either way; one more variant (B5n with line 6 kept → total missing) is added once this is settled.
+- **G16 (wording) "The footer calls out the $0.21 difference" (FR-09, SC-06).** Today the footer's warning names no
+  amount: "Doesn't add up: subtotal + tax + tip differs from total by more than one cent." (`receipt.js:423`, from
+  `totals_mismatch`, `ledger.py:2077-2078`). D26 says this works as today. Recommended fix: FR-09 and SC-06 read "the
+  footer shows today's 'Doesn't add up' warning (the difference is $0.21)". SC-06 step 3 asserts `totals_mismatch` and
+  today's warning, not "$0.21" on the page.
+- **G17 (note) A second exact `GROUP_VERSION` check.** Besides `receipt_service.py:118`, `publish` branches on
+  `run["parser_version"] == GROUP_VERSION` (`receipt_service.py:192`) to transcribe a combined document page by page.
+  If anything publishes a run stored under the old group value, that branch must accept it too. Recommended fix: FR-19
+  (or the plan) names both places. SC-12 step 2 covers opening; the plan should say whether old group runs are ever
+  re-published.
+- **G18 (note) D28 forbids any other change to an old reading's extraction requests.** Every reasoning request for an
+  old reading must match today's apart from FR-22's row instruction, so the plan can't change any other extraction
+  prompt (the dining summary prompt included) or put `EXTRACTION_VERSION` into a request body. The spec asks for no such
+  change, so this is a constraint on the plan, not a conflict. Recommended fix: none, or one line in FR-21 saying so.
