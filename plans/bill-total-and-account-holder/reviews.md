@@ -144,3 +144,55 @@ No protected financial directory or donated corpus was read, listed or opened. N
 ### Verdict and summary
 
 **REQUEST CHANGES — seven round-1 findings resolved, finding 3 partially resolved; two major findings remain (R2-1 residual, R2-2 new), no blockers or minor findings.** Make credit sign application idempotent and keep invalid carried payments on the review path instead of failing extraction. Independent targeted verification: **384 passed**. The expected process-gate BLOCKED exception and outstanding full-suite verification remain unchanged.
+
+## Code review (round 3)
+
+Reviewer: OpenAI Codex, `gpt-6.1-sol`, high reasoning effort; independent delegated reviewer, no helper subagents. Independence: fresh review context and different model family from SL-04 (`model_family: anthropic`, `claude-sonnet-5-5`).
+
+Reviewed **only `git diff 74878e4 8e55201`**, six files, plus surrounding code and synthetic fixtures needed to trace those changes. Branch `bill-total-and-account-holder`, HEAD `8e55201d31f0773fd3b57db785a331971ef26e33`, worktree `/home/anirudh/Documents/Projects/Home-Manager-billtotal`. Risk remains **HIGH**. The expected risk-gate **BLOCKED** result for the deliberately absent plan remains the authorized process exception described in the spec's Decisions taken; this reviewer did not rerun the orchestrator's gate or invent missing artifacts. The binding User clarification still forbids a due-now amount from becoming what a bill counts.
+
+Routing audit: `route_task.py --skill review-code --risk HIGH --implementer-families anthropic --feature bill-total-and-account-holder` returned exit 3, `CODEX_BUDGET_EXHAUSTED: 3/3`. The existing delegation log already includes the explicitly authorized current `review-code-r3` dispatch as its third Codex review. This report completes that dispatch; no fourth dispatch or substitute reviewer was started.
+
+### Prior findings
+
+| Finding | Status | Independent evidence at HEAD |
+| --- | --- | --- |
+| R2-1: `$-62.91 CR` becomes positive and matches an outgoing payment | **Resolved for the reported reproduction** | Real synthetic scan → extraction → publication → reconciliation now stores `due_now.minor=-6291`, total and amount due 166791, no issues, and no link to the outgoing -6291 payment. Parsing the signed amount once and then using `-abs` for CR fixes this case. |
+| R2-2: invalid cited payments abort extraction | **Resolved** | Both end-to-end regression variants, `20.001` and `20.00 EUR` on USD, pass independently: publication exists, total and amount due are 166791, the payments validation issue remains, and there is no worked-out result/note. Additional normalizer probes reject invalid previous balance independently of valid payments, with the corresponding previous-balance issue and the same fallback. |
+| Round-1 #3: due-now credits become debit payment candidates | **Partially resolved** | All ten committed sign/positive-control regression cases pass. The expanded mixed-marker probes still persist positive payment candidates: R3-1 below. |
+
+### Finding
+
+**R3-1 — MAJOR: multiple printed negative markers still cancel into a positive due-now payment candidate.** `src/home_manager/documents/extraction.py:3456`–`:3459`, `due_now_cited`, consuming `due_now_line` at `:3419`. Requirements: **FR-141, FR-143, FR-145**, exact-money/sign invariant. This is a newly identified residual of round-1 #3, **not a newly introduced regression**: the baseline comparison below reproduces it at both scoped revisions.
+
+Synthetic failure scenario: photograph BL-TOTAL with `Current Charges due 11/01/2026 (-62.91)`, `($-62.91)`, or `-62.91-`; supply the correctly negative model amount-due answer `-62.91` citing that line, and new charges 1667.91 citing the total. `DUE_NOW_AMOUNT` accepts the markers, but `to_minor` toggles its negative flag for each marker. Two negative markers yield +6291. The added CR correction is conditional on CR, so these forms remain positive.
+
+Independently observed through real synthetic extraction/publication/reconciliation for **each** of those three forms: `total_minor=166791`, `amount_due_minor=166791`, `details.due_now.minor=6291`, `review_status='verified'`, `issues=[]`; the outgoing provider payment -6291 is linked. This preserves the original credit-to-debit matching failure. A direct probe also finds `-$-62.91` positive. Adding CR makes the result negative, showing that the new sign handling only makes the CR combination idempotent.
+
+Suggested fix: make negative-marker handling idempotent across the recognized leading/trailing minus and parentheses forms before storing due-now money, or reject conflicting/multiple markers with an explicit review issue. Never allow multiple negative markers to silently create a positive payment candidate. Keep this correction local to bill parsing unless a separately reviewed shared-money contract change is intended. Add extraction/reconciliation regressions for the three reproduced forms. The engine's token parser already rejects multiple sign markers rather than turning them into a positive charge.
+
+### Verification, limits and docs
+
+- `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_bill_printed_total.py tests/test_bill_engine_record.py -q -p no:cacheprovider` — **167 passed**, 181.31 seconds, two existing dependency deprecation warnings. No xdist or full suite.
+- Additional stdin-only synthetic probes used the worktree's `src` and `tests` explicitly. No probe script or test file was written. Seven real scan/publication/reconciliation probes exercised the exact R2-1 reproduction, three residual mixed-negative forms, trailing-minus plus CR, positive DR and a currency-code suffix.
+- Plain leading minus, currency-prefixed minus, parentheses, trailing minus, CR, mixed minus/CR and parentheses/CR remain negative. Unsigned DR remains positive and matches the outgoing-payment control. Mixed negative markers without CR fail R3-1.
+- Direct baseline/current comparison using the baseline's `due_now_line` confirms `$-62.91 CR` changes from +6291 to -6291. `(-62.91)`, `($-62.91)` and `-62.91-` remain +6291 at both revisions.
+- **Unchanged recognition limitation, outside the added fix:** `62.91 USD` and `€62.91` are not recognized by `DUE_NOW_AMOUNT` at either revision. The real `62.91 USD` scan retains total 166791 but amount due 6291, no due-now details, verified with no issues. This is not attributed to `carried_minor` or counted as a new scoped regression; it remains an unresolved FR-141/FR-145 limitation. The regex still supports only `$` and exactly two printed decimal places. Currency-code and non-dollar due-now recognition were not fixed in SL-04.
+- **Carried inputs:** no valid-amount loss was found in the added helper. Thousands-separated 1250.00 / 1020.00 produce amount due 189791; negative and parenthesized payments produce 169791. A model payment `-20.00` citing printed `20.00 CR` also produces 169791 with no issues. Matching EUR codes/symbols and GBP symbols preserve the calculation; BHD three-decimal and JPY integer carried inputs preserve their currency exponents when the due-now/total lines use the existing recognized syntax.
+- With **only previous balance invalid**, or **only payments invalid**, overprecision and currency-mismatch probes each produce amount due equal to new charges, no partial carried calculation, no worked-out provenance, and the original validation issue. The valid other input is retained in details through the existing path. R2-2's recovery claim is accurate.
+- **Version/docs:** v54 is set in production and all three scoped test pins; the docs agree. Searching `src`, `tests`, `docs`, `scripts`, `evals` and `specs` finds no stale v53 pin. The v54 bump is warranted because the exact R2-1 persisted result changes. All six explicitly documented credit forms work; the handoff's broader claim that any combination of markers is negative is too broad because of R3-1. The documented invalid-carried-input behavior is accurate.
+- `git diff --check 74878e4 8e55201` — passed. The supplied SL-04 broader test results were read as implementation evidence, not counted as independent runs here.
+
+| Changed contract | Assessment |
+| --- | --- |
+| FR-141 / FR-143 / FR-145; SC-132 / SC-140 | Exact R2-1 and committed sign regressions verified; broader mixed-negative safety still fails R3-1. Currency-code limitation unchanged. |
+| FR-142(b) / FR-145 / FR-148; SC-137 / SC-140 / SC-144 | Invalid-payment recovery, single-invalid-input fallback, valid carried amounts and targeted engine regressions verified. No newly introduced carried-input defect found. |
+| FR-147 / SC-143 | v54 and existing targeted re-read/correction regressions pass. No migration added in this diff. |
+| FR-150 | Scoped documentation and version claims checked, with the mixed-marker qualification above. |
+| Other contracts | Outside this final fix-diff review; full suite and browser verification not rerun. |
+
+No protected financial directory or donated corpus was read, listed or opened. No source, test or other doc edit, commit, push or merge was performed. This appended, uncommitted review is the sole worktree change.
+
+### Verdict and summary
+
+**REQUEST CHANGES — R2-1 and R2-2 are resolved for their reported reproductions; round-1 #3 remains partially resolved. One MAJOR residual (R3-1) remains: mixed negative markers can persist a positive due-now amount and link an outgoing payment. No newly introduced defect was found in the scoped diff. Independent targeted tests: 167 passed.** This is the last allowed review round; the remaining major finding requires the orchestrator's human handoff, not a fourth delegated review. Full-suite verification remains outstanding.
