@@ -36,7 +36,7 @@ PAY_COUNTS = ("documents", "stubs", "values", "exact", "left_out", "checkable", 
 BILL_READERS = ("engine",)  # The bill comparison is the engine alone (specs/pdf-table-engine-bills FR-124).
 READER_NAMES_BILL = {"engine": "Bill engine"}
 BILL_COUNTS = ("documents", "lines", "exact", "left_out", "checkable", "checks_held", "to_review", "unplaced", "failed", "files_split", "split_right",
-               "split_review")
+               "split_review", "account_holder_read", "due_now", "amount_due_total")
 GUESS_COUNTS = ("made", "right")
 LABEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,80}")
 PATHLIKE = re.compile(r"^(?:[A-Za-z]:|/|\\)|\\|\.\.")
@@ -147,6 +147,8 @@ def aggregate(lines):
             counts["documents"] += 1
             for key in ("lines", "exact", "left_out", "checkable", "checks_held", "files_split", "split_right", "split_review", "failed"):
                 counts[key] += counted[key]
+            for key in ("account_holder_read", "due_now", "amount_due_total"):  # A run from before FR-149 holds none of them.
+                counts[key] += counted.get(key, 0)
             counts["unplaced"] += counted["unplaced"] or 0
             counts["to_review"] += counted.get("to_review") or 0
         for kind, counted in (details.get("guesses") or {}).items():
@@ -347,7 +349,7 @@ def allowed_keys():
             "consistent", "attempts", "calls", "follow_ups", "truncated", "tag", "table_readers", "legacy", "engine", "recorded", "exact",
             "reconcilable", "reconciled", "dropped", "unplaced", "failed", "exact_share", "reconciled_share", "pay_readers", "stubs", "values",
             "left_out", "checkable", "checks_held", "to_review", "split_right", "checks_share", "guesses", "made", "right", "bill_readers", "lines", "files_split",
-            "split_review"}
+            "split_review", "account_holder_read", "due_now", "amount_due_total"}
     keys |= set(STATUSES) | set(SOURCE_KINDS) | set(PAGE_BUCKETS) | set(ROW_COUNTS) | set(DOCUMENT_TYPES) | set(FIELD_ERRORS) | CASE_LISTS
     keys |= set(FAILURE_KINDS) | set(TAGS) | set(GUESS_KINDS) | set(BILL_GUESS_KINDS)
     keys |= {field for fields in CRITICAL.values() for field in fields}

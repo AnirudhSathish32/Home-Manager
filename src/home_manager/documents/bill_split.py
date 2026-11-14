@@ -13,7 +13,7 @@ words, because the charge reader needs `key_kind` too and this module imports `a
 from dataclasses import dataclass, field
 import re
 
-from .charge_tables import KEY_LABELS, LATE_WORDS, anchor_kind
+from .charge_tables import DUE_NOW, KEY_LABELS, LATE_WORDS, anchor_kind, due_now_of
 from .table_engine import read_tokens
 
 PAGE = re.compile(r"page-(\d+)-")
@@ -117,7 +117,8 @@ def anchor_of(line):
         return None
     words = text.split()
     last = amounts[-1]
-    kind = anchor_kind(" ".join(words[:int(last.word_ids[0].removeprefix("word-"))]))
+    label = " ".join(words[:int(last.word_ids[0].removeprefix("word-"))])
+    kind = DUE_NOW if due_now_of(label) else anchor_kind(label)
     return (kind, last.value[0]) if kind else None
 
 
@@ -196,7 +197,7 @@ def bill_parts(lines, anchors=None):
     parts = list(zip(bounds, bounds[1:]))
 
     def has_due(first, last):
-        return any(kind == "amount_due" for line in lines[first:last] for kind, _ in anchors_of(line))
+        return any(kind in ("amount_due", DUE_NOW) for line in lines[first:last] for kind, _ in anchors_of(line))  # FR-146: a due-now line is a part's own.
 
     # (b) Each bill prints an amount due of its own: a part without one joins the part before it; the first, without one, joins the next.
     groups = []  # [first, last, [(start of a part joined in, the direction)]]

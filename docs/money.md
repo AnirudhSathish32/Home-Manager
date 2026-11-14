@@ -97,6 +97,32 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
   read per line holder. Add-ons such as Apple TV+ or Apple Music are `subscription` lines. Taxes and fees are lines of
   their own. A holder must be printed where its line is cited (a word of the name, or the number's last four digits);
   otherwise it is left out.
+- **The account holder and the Person column.** A bill that prints whose account it is (`Account Name: Jordan A. Rivera`; the labels
+  `account name`, `account holder`, `account holder name`, `customer name`, `name on account`) keeps that name as its **account holder**
+  in the bill's details (`account_holder`, with its source line), read from the transcribed lines by code on every bill that isn't an
+  invoice: a text PDF, a photographed or a scanned one. It is never a line's `line_holder`. The page shows each line's **Person** as the
+  server decides (`finance/account_holder.py`, `Manager.record_view`): the member set on the line (by hand or by Who has what), else the
+  line's own printed holder (a section title such as `Alex 555-201-1111`), else the bill's account holder, else **Shared**. The name is
+  matched when the record is shown, against the profile's name and the spouse named on the latest tax return (in a family, the members'
+  names): first and last words equal, a middle name ignored or matched by its initial, `Last, First`, titles (Mr, Dr) and suffixes
+  (Jr, III) handled, joint names (`Jordan & Casey`) and a first-name initial matching nobody, a one-word name matching a first name when it
+  is the only candidate that does. A match shows the person's name (and `Account holder` reads `… (you)`); no match shows the name as
+  printed, so renaming a profile changes what is shown with no re-read, and the profile's name is never stored in the library. A bill
+  shared by line in the family leaves lines nobody is named on at **Shared**, because they are shared out with the taxes and fees.
+  **Account holder** is correctable like the bill's other details (cleared means none); a correction is re-applied after every reading,
+  and a confirmed or rejected bill isn't rewritten, so one read before this existed shows Shared until you set it.
+- **The amount due is the total the bill prints** (specs/bill-total-and-account-holder). A bill that prints `Current Charges due 11/01/2026
+  $62.91` and `Total Current Charges $1,667.91` has the amount due 1,667.91, not the "due now" 62.91: a due-now line is never a charge
+  row, the new charges or an amount due ([documents](documents.md#bill-lines-from-the-printed-columns)); with no amount due printed the
+  amount due is previous balance − payments + new charges when all three print, else the new charges, else the due-now amount, and the
+  bill notes it. The due-now amount is kept in the details (`due_now`), shown one row below **Amount due** (printed label, date and
+  amount, with its Find; no part of the sum above), and a payment of exactly it is proposed as the bill's match like a payment of the
+  amount due or the new charges (a payment plan that pays only the part). When the bill's due date is missing or dropped, the due-now
+  line's date is the due date. A bill with a plain `Amount Due 62.91` and `Total Current Charges 1,667.91` keeps 62.91: the bill itself says
+  what is owed. **A due-now amount is never what the bill counts**, however the model answered: on the Transactions page the bill's Paid
+  is the new charges. An amount due you corrected wins over the new total after Extract again; a bill you confirmed or rejected isn't
+  rewritten. The Bills page and the forecast follow the new charges, as before, so they can still differ from the amount due on a bill
+  with a previous balance.
 - **What counts is the new charges** (`total_minor`). The amount due (`amount_due_minor`) can include a past-due
   balance and is kept beside it. The lines must add up to the new charges; that is the bill's arithmetic cross-check. With
   no new charges printed, the lines' sum counts, else the amount due, with a note; a text-PDF bill that prints its previous
@@ -124,7 +150,8 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
   is printed), by its lines' categories, until its payment replaces it, like any receipt. A line with no category counts
   under the bill's own, which is the category most of its money is in. Taxes and fees with no category of their own
   count that way too.
-- **Its payment** (`Reconciler.bill_payment`) is money out of exactly the new charges or the amount due, posted between the
+- **Its payment** (`Reconciler.bill_payment`) is money out of exactly the new charges, the amount due or the due-now amount it prints beside
+  them, posted between the
   issue date (a month before the due date when none is printed) and five days after the due date, from a line that names
   the provider or carries the bill's account number. One such line is proposed as its match and replaces the bill; it takes
   the bill's line categories. Several become a question in To check. A line that names neither is never taken for it.
@@ -366,6 +393,8 @@ reading the document again.
 - **Pay stub lines:** `PATCH /api/paystubs/{id}/lines/{position}` with `changes.current` or `changes.ytd` and an optional
   `reason` corrects the amount in that column. Corrections follow the line's group, description and occurrence across
   later readings and appear in the pay stub's history with Undo. Correcting a line clears its notes; Undo puts them back.
+- **A bill's account holder:** `detail:account_holder` (text of at most 80 characters, cleared with an empty value) on a bill read with a
+  kind that is not an invoice, including one that printed none ([Bills and their lines](#bills-and-their-lines)).
 - **Receipt details:** the same `PATCH` with `detail:<name>` (fuel volume, price per unit, pump, fuel amount, gratuity,
   party size, savings total) or `detail:tenders.<n>.amount` (n from 1) corrects a printed detail of the receipt's
   current kind ([documents](documents.md#receipt-kinds)). A gift card correction works the amount paid out again

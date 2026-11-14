@@ -245,7 +245,7 @@ def test_sc110_every_amount_quantity_and_rate_is_its_printed_cell_although_the_m
     run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, **UTIL_WRONG_AMOUNTS})
     run.extract()
     expect_util(run)
-    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v50-bill-account-cells" != V39
+    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v55-bill-total-sign-rule" != V39
     no_grid(run)
     planned_questions(run)
     finished(run, before)
@@ -722,11 +722,11 @@ def test_sc117_b_the_lines_check_picks_97_55_when_no_new_charges_are_printed(pdf
     finished(run)
 
 
-def test_sc117_c_nothing_decides_so_the_first_on_page_one_is_used_with_a_guess_note(pdf_store, local_model):
+def test_sc117_c_nothing_decides_so_the_total_is_used_with_a_guess_note(pdf_store, local_model):
     run = r1_run(pdf_store, local_model, "c")
     record = run.record
-    assert record["amount_due_minor"] == 5000 and record["total_minor"] == 9755
-    noted(run, "The amount due is printed as 50.00 and 147.55; 50.00, the first on page 1, was used.")
+    assert record["amount_due_minor"] == 14755 and record["total_minor"] == 9755  # FR-142 (a): the total-worded one (was 5000, the first printed).
+    noted(run, "The amount due is printed as 50.00 and 147.55; 147.55, the total, was used.")
     assert [(guess["kind"], guess["page"]) for guess in guesses_of(run)] == [("amount_due", 1)]
     assert [check["name"] for check in record["checks"] if check["name"] == "carried"] == []  # No check involves the amount due.
     auto(record)
@@ -738,7 +738,7 @@ def test_sc117_a_late_payment_amount_is_never_the_amount_due(pdf_store, local_mo
     first = bf.amounts_at(720, "Balance Due", (bf.CHARGE, "50.00"))
     page = bf.page_of(bf.util_items(summary=[bf.UTIL_SUMMARY[2], ("Total Amount Due", "147.55")], stub_amount="147.55", above=first, extra=late))
     run = r1_run(pdf_store, local_model, "c", pages=[page])
-    assert run.record["amount_due_minor"] == 5000
+    assert run.record["amount_due_minor"] == 14755  # BL-UTIL-R1 (c)'s tie: the total-worded one (was 5000), FR-142 (a); the late 102.55 is still never the amount due.
     assert not [text for text in [*run.notes, *run.record["issues"], *(guess["text"] for guess in guesses_of(run))] if "102.55" in text]
     finished(run)
 

@@ -193,6 +193,10 @@ What is not built:
     two stubs' lines (a merge of two stubs by the user) reads them as one record; its values are not asserted.
   - **`tests/test_tax_engines.py` has 8 failures** that also fail at the commit before this feature (44f40b0); they are not this
     feature's.
+- **Doubly marked negative amounts read as positive** (found in the bill-total review, 2026-11-14): `core/money.to_minor`
+  toggles the sign once per mark, so `(-62.91)` and `-62.91-` become +62.91 wherever a model's amount goes through it
+  (receipts, bills, statements). A bill's due-now amount already uses one rule (any mark makes it negative, applied once,
+  `extraction.due_now_minor`); moving `to_minor` to the same rule needs a check of every caller.
 - **Bills (phase 4, `specs/pdf-table-engine-bills`): what is left.** A text-PDF bill's amounts come from the engine alone; the lines add
   up to the new charges (printed, or worked out), not the amount due as the phase 1 spec said
   ([documents](documents.md#bill-lines-from-the-printed-columns), [money](money.md#bills-and-their-lines)).
@@ -258,6 +262,18 @@ What is not built:
 - **Index backfill time.** `pdf_import.backfill` now runs the engine on every saved reading (`ANALYZER_VERSION = 3`), so
   the first start after the upgrade re-indexes every PDF reading. The time per reading on a large library was not
   measured; the backfill resumes after a restart.
+
+- **Account holder and printed total, what is left** (`specs/bill-total-and-account-holder`; built: [money](money.md#bills-and-their-lines),
+  [documents](documents.md#bill-lines-from-the-printed-columns), [family](family.md#family-inbox), [evals](evals.md)). An invoice's `bill_to`
+  is not an account holder, a bill printing only a bare `Name:` or `Customer:` label still says Shared (OD-5), and a bill you confirmed or
+  rejected before this existed shows Shared and keeps its old amount due until you set **Account holder** and the amount due by Correct (OD-8).
+  A business or landlord printed as `Customer Name` shows its printed name instead of Shared (it matches nobody); Correct can clear it.
+  The due-now line: a numeric date that could be read either way (`11/01/2026`) is read month first when it gives the due date (the model's
+  due date, checked against its cited line, is preferred); only the first due-now line of a bill is kept; a photographed or scanned bill is
+  helped only when the model cites a due-now line for the amount due (a bill whose model cites nothing of the kind reads as before); and
+  a due-now line is not matched across a file of several bills except through each part's own lines. The Bills page and the forecast
+  still follow the new charges (OD-1), so on a bill with a previous balance they differ from the page's Amount due. The user's
+  own bill was never read (OD-10): if its charge lines add up to 62.91 rather than 1,667.91 it still goes to review.
 
 ## Planning and investments
 

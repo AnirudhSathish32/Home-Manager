@@ -257,6 +257,14 @@ no model, no network) measure it alone, and its file split is the rule Record us
   `files_split` (files that hold several bills, by the answers, or that the rule cut into several), `split_right` (of those, files cut
   into exactly the answer's bills, each part holding its bill's amount due) and `split_review` (files where the rule raised an FR-129
   review reason on any part), with `exact_share` and `checks_share`. A file of one bill left whole counts in none of the split counts.
+  Three more counts are bills, never values (specs/bill-total-and-account-holder FR-149): `account_holder_read` (bills with an
+  account-name line, so an account holder is read), `due_now` (bills printing a due-now line) and `amount_due_total` (of those, bills
+  whose answer's amount due is the total the reading settles on, not the due-now part: a printed amount due, else previous balance −
+  payments + new charges, else the new charges). A run from before them counts 0; they pass the `summary.json` allowlist. The synthetic
+  corpus closes with a sixth bill file (an account-name line and a due-now line where the amount due would be, with a previous balance and
+  payments), after the others, so no id or answer changes. The bill generator (`evals/bill_layouts.py`) draws `account_line` (each label
+  form, alone or before an account number on the same line) and `due_now` (none, beside an amount due, or alone where it would be);
+  the five fixed corpus files draw neither.
   Fewer than 3 bill files are suppressed like any other cell. **report.md** shows the engine's row in a table of its own.
 - **Split files.** A bill file holding several bills is graded per bill, in order, against the case's `stubs` (the answers' `stubs.json`, one
   answer file per bill); a count that differs from the answer's is a split miss. A one-bill file is graded as one record.

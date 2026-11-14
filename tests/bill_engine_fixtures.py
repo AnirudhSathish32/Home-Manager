@@ -51,11 +51,12 @@ UTIL_HISTORY = [("Sep 2025", "590", "30"), ("Oct 2025", "610", "31"), ("Nov 2025
 UTIL_STUB = (("Account Number 1234-5678-9012"), ("Due Date 10/15/2026"))
 
 
-def util_items(summary=None, heading_lines="std", energy=None, total_current="97.55", stub_amount="97.55", history=True, stub=True, extra=(), above=()):
+def util_items(summary=None, heading_lines="std", energy=None, total_current="97.55", stub_amount="97.55", history=True, stub=True, extra=(), above=(), account=None):
     """BL-UTIL's items. `summary` replaces the four box lines (None keeps them; a line is (label, amount) from y 692 down, 16 apart); `heading_lines` is
     "std", "2l", "odd", None (no heading) or a list of ready items; `total_current` None leaves the `Total Current Charges` line out; `history` and `stub`
     leave the usage history and the remittance stub out when False."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(UTIL_HEADER)]
+    items += left(720, account) if account else []  # BL-UTIL-AH: `Account Name: Blair Sample` between the header and the summary box.
     items += left(708, "Account Summary")
     for number, (label, amount) in enumerate(UTIL_SUMMARY if summary is None else summary):
         items += amounts_at(692 - 16 * number, label, (CHARGE, amount))
@@ -193,9 +194,11 @@ def util_r2_pages(variant="r2"):
 PHONE_HEADER = ("METRO WIRELESS", "Account Number 555-0100-7788", "Due Date 10/12/2026")
 
 
-def phone_pages(discount="-5.00", credits="Account Credits"):
-    """BL-PHONE. SC-106's variants print the discount differently (`(5.00)`, `5.00 CR`, unsigned `5.00`) or under another section title."""
+def phone_pages(discount="-5.00", credits="Account Credits", account=None):
+    """BL-PHONE. SC-106's variants print the discount differently (`(5.00)`, `5.00 CR`, unsigned `5.00`) or under another section title. `account` prints
+    an account-name line under the header (BL-PHONE-AH: `Account Name: Alex Sample`)."""
     items = [(40, 780 - 12 * number, text) for number, text in enumerate(PHONE_HEADER)]
+    items += left(744, account) if account else []
     for y, label, amount in ((732, "Previous Balance", "120.00"), (716, "Payments", "-120.00"), (700, "New Charges", "118.50"), (684, "Amount Due", "118.50")):
         items += amounts_at(y, label, (CHARGE, amount))
     items += left(660, "Alex 555-201-1111")
@@ -217,6 +220,54 @@ def role_pages(heads=(), rows=(), summary=(), extra=()):
     for number, (label, *cells) in enumerate(rows):
         items += amounts_at(600 - 16 * number, label, *cells)
     return [page_of([*items, *extra])]
+
+
+# --- BL-TOTAL: the account holder and the due-now line (specs/bill-total-and-account-holder), with a synthetic provider and name ------------
+
+TOTAL_HEADER = ("LAKESIDE GAS & ELECTRIC", "Account Name: Jordan A. Rivera", "Account Number 4455-6677-8899", "Statement Date 10/10/2026",
+                "Billing Period 09/01/2026 - 09/30/2026")
+TOTAL_ROWS = [("Delivery Charges", "1,180.40"), ("Supply Charges", "412.26"), ("Taxes and Fees", "75.25")]
+
+
+def total_pages(header=TOTAL_HEADER, rows=TOTAL_ROWS, extra=(), due_label="Current Charges due 11/01/2026", total_label="Total Current Charges", due_amount="$62.91"):
+    """BL-TOTAL: the user's two lines word for word (`Current Charges due 11/01/2026 $62.91`, `Total Current Charges $1,667.91`) under three charge lines.
+    `header` replaces the five header lines (a different or missing account-name line); BL-TOTAL-NOW passes rows adding up to 62.91; `extra` adds ready items
+    (SC-132 (d): a `Due Date 11/15/2026` line). `due_label` is the due-now line's label (a separator form, review round 1), `total_label` the new-charges
+    line's, None to leave that line out. `due_amount` is the due-now amount as printed (R3-1: a signed form)."""
+    items = [(40, 780 - 12 * number, text) for number, text in enumerate(header)]
+    for number, (label, amount) in enumerate(rows):
+        items += amounts_at(680 - 16 * number, label, (CHARGE, amount))
+    items += amounts_at(620, due_label, (CHARGE, due_amount)) + (amounts_at(604, total_label, (CHARGE, "$1,667.91")) if total_label else [])
+    return [page_of([*items, *extra])]
+
+
+TOTAL_NOW_ROWS = [("Monthly Plan", "58.00"), ("Taxes", "4.91")]  # BL-TOTAL-NOW: the lines add up to the due-now amount, 62.91.
+STUB_TOTAL_NOW = {"Monthly Plan": ("Monthly Plan", "service", "utilities", None, "58.00", None, None), "Taxes": ("Taxes", "tax_fee", "utilities", None, "4.91", None, None)}
+
+
+def total_transcription():
+    """BL-TOTAL as the vision stub transcribes it (SC-140): one line per printed line."""
+    return [*TOTAL_HEADER, *(f"{label} {amount}" for label, amount in TOTAL_ROWS), "Current Charges due 11/01/2026 $62.91", "Total Current Charges $1,667.91"]
+
+
+def due_carried_pages():
+    """BL-DUE-CARRIED (SC-137): BL-UTIL's lines (97.55) with Previous Balance 50.00, Payment Received -20.00, `Current Charges due 11/01/2026 62.91` and
+    `Total Current Charges 97.55`; no amount-due line, no stub."""
+    summary = [("Previous Balance", "50.00"), ("Payment Received", "-20.00"), ("Current Charges due 11/01/2026", "62.91"), ("Total Current Charges", "97.55")]
+    return [page_of(util_items(summary=summary, total_current=None, stub=False))]
+
+
+def total_due_pages():
+    """BL-TOTAL-DUE (SC-138): BL-UTIL's lines with Previous Balance 50.00, Payments 0.00, Total Current Charges 97.55, Total Amount Due 147.55 and
+    `Current Charges due 10/15/2026 97.55`."""
+    summary = [("Previous Balance", "50.00"), ("Payments", "0.00"), ("Total Current Charges", "97.55"), ("Total Amount Due", "147.55"),
+               ("Current Charges due 10/15/2026", "97.55")]
+    return [page_of(util_items(summary=summary, total_current=None, stub=False))]
+
+
+STUB_TOTAL = {"Delivery Charges": ("Delivery Charges", "service", "utilities", None, "1,180.40", None, None),
+              "Supply Charges": ("Supply Charges", "usage", "utilities", None, "412.26", None, None),
+              "Taxes and Fees": ("Taxes and Fees", "tax_fee", "utilities", None, "75.25", None, None)}
 
 
 # --- BL-RENT: the rent bill as a text PDF -----------------------------------------------------------------------------------------
@@ -247,15 +298,18 @@ MINI = {1: ("07/02/2026", "06/01/2026 - 06/30/2026", "07/20/2026", "80.00", "-80
         3: ("09/02/2026", "08/01/2026 - 08/31/2026", "09/20/2026", "87.26", "-50.00", "58.50", "4.22", "74.72", "111.98")}
 
 
-def mini_items(k, top=780, account="1234-5678-9012", omit=(), compact=False, dates_of=None):
+def mini_items(k, top=780, account="1234-5678-9012", omit=(), compact=False, dates_of=None, due_now=False):
     """MINI-BILL(k)'s fifteen lines. `top` moves the first line (compact: 12 pt apart from `top`, BL-TWOONPAGE); `omit` leaves out the lines whose label starts with
     one of its prefixes (BL-NOKEY: no Account Number, Statement Date or Due Date line, the stub's included; BL-JOIN: no Total Amount Due nor stub Amount Due);
-    `dates_of` prints another bill's statement date, period and due date (BL-ACCT)."""
+    `dates_of` prints another bill's statement date, period and due date (BL-ACCT); `due_now` replaces the Total Amount Due and stub Amount Due lines by
+    `Current Charges due D N` (MINI-DUE(k), SC-142)."""
     s, b, d, p, r, e, t, n, a = MINI[k]
     s, b, d = MINI[dates_of or k][:3]
     spec = [("CITY POWER & WATER", None), (f"Account Number {account}", None), (f"Statement Date {s}", None), (f"Billing Period {b}", None), (f"Due Date {d}", None),
             ("Previous Balance", p), ("Payment Received", r), ("New Charges", n), ("Total Amount Due", a), ("Customer Charge", "12.00"), ("Energy Charge", e),
             ("State Tax", t), ("Total Current Charges", n), (f"Due Date {d}", None), ("Amount Due", a)]
+    if due_now:
+        spec[8], spec[14] = (f"Current Charges due {d}", n), (f"Current Charges due {d}", n)
     if compact:
         ys = [top - 12 * number for number in range(len(spec))]
     else:
@@ -269,6 +323,11 @@ def mini_items(k, top=780, account="1234-5678-9012", omit=(), compact=False, dat
 
 def mini_pages(*numbers):
     return [page_of(mini_items(k)) for k in numbers]
+
+
+def mini_due_pages(*numbers):
+    """MINI-DUE(k): MINI-BILL(k) with `Current Charges due D N` for its Total Amount Due and stub Amount Due lines."""
+    return [page_of(mini_items(k, due_now=True)) for k in numbers]
 
 
 def remit_pages():
@@ -364,7 +423,9 @@ FIXTURES = {
     "UTIL-STRAY": util_stray_pages, "UTIL-SENTENCE": util_sentence_pages, "UTIL-MISNC": util_misnc_pages, "UTIL-2P": util_2p_pages,
     "UTIL-R1-A": util_r1_pages, "UTIL-R1-B": lambda: util_r1_pages("b"), "UTIL-R1-C": lambda: util_r1_pages("c"),
     "UTIL-R2": util_r2_pages, "UTIL-R2-BAD": lambda: util_r2_pages("bad"), "UTIL-R2-NOPREV": lambda: util_r2_pages("noprev"),
-    "BL-PHONE": phone_pages, "BL-RENT": rent_pages, "PAYMENT-RECEIVED": payment_received_page,
+    "BL-PHONE": phone_pages, "BL-PHONE-AH": lambda: phone_pages(account="Account Name: Alex Sample"),
+    "BL-UTIL-AH": lambda: util_pages(account="Account Name: Blair Sample"), "BL-TOTAL": total_pages, "BL-TOTAL-NOW": lambda: total_pages(rows=TOTAL_NOW_ROWS), "BL-DUE-CARRIED": due_carried_pages, "BL-TOTAL-DUE": total_due_pages,
+    "MINI-DUE": lambda: mini_due_pages(1, 2), "BL-RENT": rent_pages, "PAYMENT-RECEIVED": payment_received_page,
     "MINI-1": lambda: mini_pages(1), "MINI-2-ALONE": lambda: mini_pages(2), "BL-MULTI": lambda: mini_pages(1, 2, 3), "BL-REMIT": remit_pages, "BL-ACCT": acct_pages,
     "BL-JOIN": join_pages, "BL-TWOONPAGE": two_on_page_pages, "BL-NOKEY": nokey_pages, "BL-MULTI-VOID": multi_void_pages,
     "BL-MULTI-VOIDWORD": lambda: multi_void_pages(True), "BL-MULTI-INV": multi_inv_pages,

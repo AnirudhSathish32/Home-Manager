@@ -1,4 +1,4 @@
-"""A synthetic corpus: 58 invented receipts, bank and card statements, pay stubs and bills with known answers.
+"""A synthetic corpus: 59 invented receipts, bank and card statements, pay stubs and bills with known answers.
 
   python -m evals.synthetic OUT_FOLDER
 
@@ -16,7 +16,8 @@ blocks with a summary box; two-line headings with a year-to-date-only row; a fil
 three-stub file's case also carries stubs.json, one answer file per stub in file order (corpus.Case.stubs). Last come five text-PDF bill files in aligned columns
 (tag aligned: a utility bill with Usage, Rate and Charge and a summary box; a phone bill with holder sections, subtotals and a credit; a rent bill with line periods,
 a previous balance and payments; a two-page bill with no headings and a remittance stub on its own page; a file of three monthly bills), drawn by
-evals/bill_layouts.py. The three-bill file's case also carries stubs.json, one answer file per bill in file order.
+evals/bill_layouts.py. The three-bill file's case also carries stubs.json, one answer file per bill in file order. A sixth bill file closes the corpus: an
+account-name line and a due-now line where the amount due would be, so the amount due is the printed total (specs/bill-total-and-account-holder).
 Every answer is consistent with the printed text: items add up to the subtotal, subtotal, tax and tip to the total,
 transactions to the closing balance, pay lines to gross and net pay, and bill lines to the new charges.
 """
@@ -58,7 +59,8 @@ PAYSTUB_FILES = (
 # draws is fixed here (a bill's own `settle` rules still apply); the index only picks which drawn labels and words print.
 BILL_BASE = dict(kind="utility", bills=1, sections="sections", heading="known1", columns="plain", credit="minus", summary="above", prev_printed=True,
                  new_printed=True, due_diff=False, stub="none", stub_line="amount_due", cut="none", repeat=False, late="none", late_row=False, sentence="none",
-                 wrapped=False, history=False, dots=False, acct_same_dates=False, rate_kind="whole_2dp", due_label=0, swap=False, holder_forms=(), holder_modes=())
+                 wrapped=False, history=False, dots=False, acct_same_dates=False, rate_kind="whole_2dp", due_label=0, swap=False, holder_forms=(), holder_modes=(),
+                 account_line="none", due_now="none")
 BILL_FILES = (
     (0, {**BILL_BASE, "columns": "qr", "summary": "both", "rate_kind": "frac_4dp"}),
     (1, {**BILL_BASE, "kind": "phone", "credit": "paren", "summary": "below", "holder_forms": ("full", "paren"), "holder_modes": ("first_row", "first_row")}),
@@ -66,6 +68,9 @@ BILL_FILES = (
     (3, {**BILL_BASE, "heading": "none", "stub": "own_page"}),
     (4, {**BILL_BASE, "bills": 3, "columns": "qr", "summary": "both", "rate_kind": "whole_4dp"}),
 )
+# specs/bill-total-and-account-holder FR-149: a sixth bill file, after the five (and after every other document, so no id or answer changes): an account-name line and a
+# due-now line printed where the amount due would be, with a previous balance and payments, so the amount due is the worked-out total (FR-142 b).
+TOTAL_BILL_FILES = ((5, {**BILL_BASE, "account_line": "name", "due_now": "alone"}),)
 SHOPS = [  # Printed name, the name a person would type, the kind of things it sells.
     ("CORNER COFFEE", "Corner Coffee", "cafe"), ("HILLSIDE HARDWARE", "Hillside Hardware", "hardware"),
     ("GREEN LEAF GROCERY", "Green Leaf Grocery", "grocery"), ("NORTHSIDE PHARMACY", "Northside Pharmacy", "pharmacy"),
@@ -365,6 +370,7 @@ def documents():
     out += [aligned_paystub(index, **choices) for index, choices in PAYSTUB_FILES]
     # Text-PDF bills in aligned columns (BILL_FILES), after everything above so that no other document changes: a test pins the first 53.
     out += [aligned_bill(index, **choices) for index, choices in BILL_FILES]
+    out += [aligned_bill(index, **choices) for index, choices in TOTAL_BILL_FILES]
     for document in out:
         assert all(set(row) == set(ROWS[document["document_type"]][1]) for row in document["rows"])
     return out
