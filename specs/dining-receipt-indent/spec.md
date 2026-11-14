@@ -18,6 +18,42 @@ and splits", and the code cited below.
 - **D3 Text stays unindented.** Indent is data beside the text, never leading spaces added to it. Exact-quote
   citations, `count_lines`, regexes and table-cell substring checks see the same text as today.
 
+Round 2 (user, 2026-11-14; not to be re-asked). The round-1 open decisions and risk candidates, decided:
+- **D4 Worked-out tip goes to Review (OD-1, default accepted).** A receipt with a worked-out tip always goes to Review
+  with FR-06's reason, even when the check passes. It is a money figure that isn't printed.
+- **D5 Only new readings (OD-2, alternative chosen).** Existing dining receipts are not rebuilt at upgrade, and no
+  migration rewrites splits. FR-10 applies only on the events in FR-14. The round-1 upgrade rebuild (old FR-14) and its
+  scenario (old SC-09) are removed.
+- **D6 Keep the Category column until FR-10 has applied (user, consequence of D5).** A dining receipt hides the column
+  only when every item's split counts under the receipt's category. An old dining receipt with any item under another
+  category keeps the column, as today, so nothing wrong is hidden (FR-11).
+- **D7 One item's category can be changed while the column shows (spec decision, round 2).** FR-12's refusal applies
+  exactly when the column is hidden. On an old dining receipt still showing the column, the dropdown works as today
+  (memory written). Rationale: a visible control that always answers 400 is a dead control. The dropdown is also the
+  user's way to fix an old receipt one item at a time without reading it again. Once every item is under the
+  receipt's category, the column hides and the refusal starts, so the two never disagree.
+- **D8 Incidental rebuilds don't apply FR-10 (spec decision, round 2).** Splits are rebuilt from the items' stored
+  categories on many events that aren't about categories. Reconciliation rebuilds every receipt's splits on every run
+  (`finance/reconcile.py:214`, `refresh_splits(db)`), and also on each link and link review (`reconcile.py:330`,
+  `:797`). If those rebuilds applied FR-10, the first reconciliation after the upgrade would rewrite every old dining
+  receipt, which is the rebuild D5 rejected. So FR-10 applies only on the events in FR-14, and every other rebuild uses
+  the categories as stored. Once FR-10 has applied to a receipt, later rebuilds keep it, until the kind changes away
+  from dining.
+- **D9 The rescue asks for lines with indent (OD-3, default accepted).** FR-18.
+- **D10 All three reading versions change (OD-4, accepted).** `VISION_VERSION`, `PDF_VERSION` and `GROUP_VERSION`
+  (FR-19).
+- **D11 Indentation shows in the Text view (OD-5, accepted).** FR-26.
+- **D12 A tip is worked out only when a tip line is printed (OD-6, accepted).** FR-02, FR-04.
+- **D13 The footer doesn't list the tip twice (R1, accepted as FR-27).**
+- **D14 Several total lines (R2).** A characterization test only (SC-19): a stubbed "one receipt" answer keeps the
+  breakfast receipt whole. No rule change. If it splits in practice, it goes to open-work.
+- **D15 A blank Total line filled from the suggested-tip table (R3).** Covered by D4 (Review) and a matched card
+  charge. No extra rule.
+- **D16 Tax printed among other amounts on one line (R4).** Out of scope, with a `docs/open-work.md` entry beside D2's
+  digit checks (FR-25).
+- **D17 Priced indented lines stay items (R5).** A priced line indented under an item stays its own item (FR-22). Only
+  unpriced ones are backstopped (FR-23).
+
 Background (user report, 2026-11-14). A phone photo of a restaurant receipt was read as below (shape kept, details
 made up). The side lines (Fresh Berry Pancakes, Veggie Sausage, Jalapeno Cheese Grits, No Allergies) are printed
 indented under their main item, but the transcription lost the indentation:
@@ -65,13 +101,14 @@ category totals, budgets, Home, reconciliation with card charges, family shares.
 
 **In scope.** The dining total and tip (FR-01 – FR-09). Dining categories (FR-10 – FR-14). Indentation in the vision
 prompts and structured lines (FR-15 – FR-20). Indent in receipt extraction (FR-21 – FR-24). Docs (FR-25). Indentation
-in the Text view (FR-26, OD-5).
+in the Text view (FR-26, D11). The footer's "Not matched to an item" without the tip (FR-27, D13).
 
 **Non-goals.**
 - D2's items.
 - Bills, statements, pay stubs, investment documents and tax forms: their prompts may see indent in their line JSON
   (FR-21), but no rule of theirs uses it.
 - Images read before this change, until they are read again (FR-19).
+- Rewriting existing dining receipts' splits at upgrade, or by any migration (D5).
 - Two copies of one dining receipt (already in `docs/open-work.md`).
 
 ## Existing behavior (verified)
@@ -103,17 +140,30 @@ in the Text view (FR-26, OD-5).
   subtotal over the items. The remaining difference (2.91) on a receipt whose category is dining becomes an amount no
   item carries (`finance/splits.py:185-189`). The page lists amounts no item carries as "Not matched to an item"
   (`finance/ledger.py:2074`, `app/static/receipt.js:401`). **A tip is also such an amount** (`splits.py:185-186`), so
-  a printed tip appears both as Tip and as "Not matched to an item" (from the code; not run; see R1).
+  a printed tip appears both as Tip and as "Not matched to an item" (`ledger.py:2074-2075` sums every no-item row; not run; FR-27).
 - **Several totals.** `looks_like_several` treats more than one total line with a digit as a sign that the file may
   hold several receipts. That asks the model where each receipt starts (`extraction.py:2104-2106`, `:5102`). The
   breakfast receipt has five total lines.
+- **Splits are rebuilt from stored categories.** `Ledger.refresh_splits` (`finance/ledger.py:1151-1166`) deletes and
+  rebuilds a receipt's `category_splits` from `split_inputs`, whose items carry their stored `category`. `allocate`
+  uses `item.get("category") or fallback`, and the fallback is the receipt's category (`splits.py:194`,
+  `ledger.py:1212-1216`). Callers include recording a reading, item deletion (`ledger.py:1131`), the per-item PUT
+  (`:1238`), Edit details (`:2586`), every reconciliation run for all receipts (`finance/reconcile.py:214`), each
+  receipt link and link review (`reconcile.py:330`, `:797`), family routing (`finance/family_routing.py:135`, `:390`)
+  and the item-category backfill (`finance/item_categories.py:82`).
 - **Item categories.** The description model gives `item_categories` (`extraction.py:664-672`, applied at `:4673-4674`).
   At recording, the seller's remembered choice in `item_category_memory` wins, then the model's. A matched item's own
   choice outlives a new reading (`ledger.py:1079-1093`). The item dropdown (`receipt.js:125-140`) calls
   `PUT /api/receipts/{id}/items/{position}/category` (`ledger.py:1224-1239`), which also writes memory. Edit details →
   Categories sets every item not categorised by you (`ledger.py:2580-2583`). The Category column is always shown on a
   receipt (`receipt.js:305-306`, `:356`). The backfill `finance/item_categories.py` categorises older receipts' items
-  with the same model question.
+  with the same model question: receipts whose items have no category, or a retired one (`item_categories.py:28-35`),
+  from memory, then the model (`:60-73`). Today it would give a dining receipt's items categories of their own.
+- **The footer's "Not matched to an item"** is `unmatched_minor`, the sum of the receipt's own split rows
+  (`transaction_id IS NULL`) that carry no item (`ledger.py:2074-2075`). Those rows are every amount `allocate` puts in
+  `extra`: the tip as its own dining row (`splits.py:185-186`), a positive difference on a dining receipt
+  (`:188-189`), and any amount whose weights give no proportion (`:170-172`). The page shows the row when the value
+  isn't zero (`receipt.js:401-402`).
 - **Reading again** never rewrites a record you approved or rejected (`docs/money.md` "Reading a statement or receipt
   again"). A kind change re-reads from the saved transcription; on a reviewed receipt the amounts, items and review
   state stay (`docs/documents.md` "Receipt kinds", `app/manager.py:1567`).
@@ -123,41 +173,46 @@ in the Text view (FR-26, OD-5).
 - `EXTRACTION_VERSION = "typed-extraction-v56-money-sign-rule"` (`extraction.py:52`). Extract again never reuses a run
   of an older version (`docs/documents.md:765`).
 - **Unknowns.** How often vision models get indentation right on phone photos. Whether the real transcription printed
-  Subtotal/Tax/Total on one line or three. How many existing dining receipts carry a per-item category you chose (OD-2).
+  Subtotal/Tax/Total on one line or three. How many existing dining receipts carry an item under another category
+  (they keep the Category column until FR-14 applies, D6).
 
 ## Functional requirements
 | ID | Observable requirement | Acceptance criterion |
 |---|---|---|
 | FR-01 | On a dining receipt, a **post-tip total** is a printed total line that comes after a **pre-tip amount** (an earlier printed total, or a printed Bill, Amount due or Balance due line) and is larger than it. The latest such line in reading order counts, never a line of a suggested-tip table (FR-05). When there is one, the receipt's total is its amount, cited to its line. Otherwise the total is read as today. | Breakfast receipt, with the model answering total 52.76: the stored total is 6155, citing line 23. With the model answering 61.55 citing line 23: the same. |
-| FR-02 | When FR-01 applies, the tip line is printed, and the tip is missing or not used (blank, unreadable or failing its checks), the tip is **worked out** as post-tip total − pre-tip amount. It is stored as the tip, marked worked out (not printed), and cites both lines. The page shows Tip with "Worked out: Total $61.55 − Bill $52.76". The dining check's trace shows the tip as worked out from those two lines. | Breakfast receipt: `tip_minor` 879, marked worked out, citing lines 22 and 23. Footer Tip $8.79 with the worked-out note. The trace's Tip step names both lines. |
+| FR-02 | When FR-01 applies, the tip line is printed (D12), and the tip is missing or not used (blank, unreadable or failing its checks), the tip is **worked out** as post-tip total − pre-tip amount. It is stored as the tip, marked worked out (not printed), and cites both lines. The page shows Tip with "Worked out: Total $61.55 − Bill $52.76". The dining check's trace shows the tip as worked out from those two lines. | Breakfast receipt: `tip_minor` 879, marked worked out, citing lines 22 and 23. Footer Tip $8.79 with the worked-out note. The trace's Tip step names both lines. |
 | FR-03 | When a tip is printed and read, it is kept as today. With a post-tip total, the dining check uses that total. Tip + pre-tip amount ≠ post-tip total adds the issue "Tip ($X) and the bill ($Y) don't make the total ($Z)." | Printed Tip: $8.79: tip 879, total 6155, no issue. Printed Tip: $5.00: tip 500 and the issue. |
 | FR-04 | A tip is never invented: with one printed total, with no tip line, or when the later total equals the pre-tip amount, the tip stays missing (never 0) and the total is read as today. | Customer copy (Bill $52.76, Tip: $, Total: $ blank): total 5276, tip missing. Later total equal to bill: tip missing. |
 | FR-05 | A **suggested-tip table** is a block of lines offering tip percentages ("18.00% of sale: $8.79 Total $61.55"), with or without a "Suggested Tip" or "Tip Guide" heading. It is never the source of the total or the tip. A total or tip the model cites only to such lines is not used, with the note "The {total or tip} the reading took from the suggested-tip table was not used." | The model answers total 61.55 citing line 26 only: FR-01 still records 6155 from line 23. Without line 23, the total is 5276 and the note is added. |
-| FR-06 | A worked-out tip enters the subtotal + tax + tip (+ gratuity) = total check like a printed one, and a passing check counts as a cross-check. A receipt with a worked-out tip goes to Review with "Tip $8.79 was worked out from Total $61.55 less Bill $52.76, not printed; check it." (OD-1). | Breakfast receipt: 4885 + 391 + 879 = 6155 passes. `review_status` is `needs_review` with that reason only. |
+| FR-06 | A worked-out tip enters the subtotal + tax + tip (+ gratuity) = total check like a printed one, and a passing check counts as a cross-check. A receipt with a worked-out tip goes to Review with "Tip $8.79 was worked out from Total $61.55 less Bill $52.76, not printed; check it." (D4). | Breakfast receipt: 4885 + 391 + 879 = 6155 passes. `review_status` is `needs_review` with that reason only. |
 | FR-07 | Reconciliation uses the stored total: a card charge equal to the post-tip total links by exact amount. Money rule 5 (a difference between charge and receipt counts as dining on a dining receipt) is unchanged. Splits add up exactly to each charge. | Breakfast receipt and a $61.55 card charge: an exact link, no near-match question. Splits sum to 6155: all dining. |
-| FR-08 | Receipts already recorded keep their total, tip, tax and splits until read again (Extract again, a kind change, a new reading). A record you approved or rejected is never rewritten by a reading (today's rule). | After the upgrade, existing receipts' `total_minor`, `tip_minor` and `category_splits` are unchanged (except FR-14). |
+| FR-08 | Receipts already recorded keep their total, tip, tax and splits until read again (Extract again, a kind change, a new reading) or changed by one of FR-14's events (D5). A record you approved or rejected is never rewritten by a reading (today's rule). No migration rewrites splits. | After the upgrade and a reconciliation run, existing receipts' `total_minor`, `tip_minor` and `category_splits` are unchanged. |
 | FR-09 | Correcting Tip or Total with Correct… works as today, and a corrected tip replaces the worked-out tip and its marker. Later readings keep your correction. | Correct Tip to $9.00: tip 900, not marked worked out. Extract again keeps 900. |
-| FR-10 | On a dining receipt, every item counts under the **receipt's category**. Whatever the model, `item_category_memory` or an earlier reading said about an item is not used. The receipt's category is dining when recorded, unless you corrected it (then yours wins, as today). | Breakfast receipt with the stub giving item_categories Groceries for three rows: every item split is dining. The "By category" line reads "Dining $61.55". |
-| FR-11 | A dining receipt's item table has no **Category** column, and the footer spans match the remaining columns. The receipt's category is changed with Edit details → Categories, and every item follows it. Other kinds keep the column. | Dining receipt: header Item, Qty, Unit price, Line total, Paid. After Edit details → Categories → Travel, every split is travel. A grocery receipt still shows Category. |
-| FR-12 | Changing one item's category on a dining receipt is refused (400, "Every item on a dining receipt counts as the receipt's category; change it with Edit details."). Nothing is written to `item_category_memory`, and memory is never read for a dining receipt's items. | `PUT …/items/1/category` on a dining receipt → 400; no memory row. |
+| FR-10 | When it applies (FR-14), every item of a dining receipt counts under the **receipt's category**. Whatever the model, `item_category_memory`, an earlier reading or your per-item choice said about an item is not used for its split. Your per-item choice stays stored and is used again if the kind changes away from dining (FR-13). The receipt's category is dining when recorded, unless you corrected it (then yours wins, as today). | Breakfast receipt with the stub giving item_categories Groceries for three rows: every item split is dining. The "By category" line reads "Dining $61.55". |
+| FR-11 | A dining receipt's item table has no **Category** column, and the footer spans match the remaining columns, **only when every item's split counts under the receipt's category** (D6). The server decides and sends it with the receipt; the page only reads it (`docs/ui.md` "Screen rules"). The test is on the receipt's own split (`category_splits` rows with no charge, one per item): hidden when the receipt is dining and every such item row has the receipt's category. A receipt with no split yet (no total) is decided from the categories its split would use. An old dining receipt with any item under another category shows the column as today, with the dropdown. Other kinds keep the column. The receipt's category is changed with Edit details → Categories, and every item follows it (FR-14). | Breakfast receipt recorded under v57: header Item, Qty, Unit price, Line total, Paid. A v56 dining receipt with a Groceries item: the column shows. After Read again, or after Edit details → Categories → Travel, it doesn't. A grocery receipt still shows Category. |
+| FR-12 | When FR-11 hides the column, changing one item's category is refused (400, "Every item on a dining receipt counts as the receipt's category; change it with Edit details."), and nothing is written to `item_category_memory`. While the column shows (an old dining receipt FR-10 hasn't applied to), the PUT works as today, memory included (D7). Memory is never read for a dining receipt's items when FR-10 applies. | `PUT …/items/1/category` on the breakfast receipt → 400, no memory row. On a v56 dining receipt showing the column → 200, the item and memory updated as today. |
 | FR-13 | After a kind change away from dining, the items get categories as on any receipt (memory, the model, an item's own earlier choice). A kind change to dining applies FR-10 at once, on a reviewed receipt too (the change is yours, with Undo). | Dining → grocery: items take model or memory categories. Grocery → dining on a verified receipt: splits all in the receipt's category. Undo restores the earlier splits. |
-| FR-14 | Existing dining receipts' splits are rebuilt once at upgrade under FR-10. Each charge's split still sums to the same amount. A per-item category you chose earlier is kept, not deleted, and is used again if the kind changes away from dining (OD-2). | Upgrade on a fixture with a dining receipt holding a Groceries item: after it, all splits are dining, sums unchanged, the item's stored choice is still there. |
+| FR-14 | **When FR-10 applies** (D5, D8). It applies to a dining receipt when: (a) a reading of it is recorded (a new file, Extract again or Try again, a family-sent receipt), where the reading may rewrite the record (not one you approved or rejected); (b) its kind changes to dining (FR-13); (c) Edit details changes its Categories. Once applied, every later rebuild keeps it until the kind changes away from dining. It does not apply on the upgrade, or on rebuilds that aren't about categories: reconciliation runs, linking, unlinking or reviewing a charge, item deletion, Correct… on an amount or an item, other Edit details fields, family shares. Those rebuild from the items' stored categories, as today. The item-category backfill never gives an item of a dining receipt a category of its own: an item it would categorise takes the receipt's category (source "From the receipt's category"), which leaves the split unchanged for an item with none. | v56 dining receipt with a Groceries item: upgrade and reconcile, then link a card charge: the item's splits are still Groceries, each split sums to its charge. Read again: all dining. A later reconciliation run keeps all dining. A dining receipt with uncategorised items: the backfill leaves its splits unchanged. |
 | FR-15 | Both vision prompts (the main one and the rescue) ask for each line with an **indent** of 0, 1 or 2. 0 is a line starting at the main left edge. 1 is a line printed further right, under the line above it (sides, modifiers, notes under an item). 2 is deeper. Centered headings and footers are 0. Indent is never for any other reason. Text has no leading spaces. | The prompt texts contain these rules (asserted on the request a stub receives). |
-| FR-16 | The vision output schema replaces `full_text` with **`lines`: [{text, indent}]** (OD-3 covers the rescue). The app builds the full text by joining the lines' text with line breaks. Line ids (`line-N`, `page-P-line-N`), table `line_index`, `model_text`, `extracted_text`, search, citations and the Tables view keep today's forms. | A stub returning 28 lines gives `line-1`…`line-28` with the texts above, `model_text` equal to the joined text, and tables validating against the same indexes. |
+| FR-16 | The vision output schema replaces `full_text` with **`lines`: [{text, indent}]** (D9 covers the rescue). The app builds the full text by joining the lines' text with line breaks. Line ids (`line-N`, `page-P-line-N`), table `line_index`, `model_text`, `extracted_text`, search, citations and the Tables view keep today's forms. | A stub returning 28 lines gives `line-1`…`line-28` with the texts above, `model_text` equal to the joined text, and tables validating against the same indexes. |
 | FR-17 | Each line keeps its indent with the reading. Lines from OCR, embedded-text PDF pages and readings saved before this change have no indent (unknown), are still read, and behave as today. An indent outside 0–2, or one that isn't an integer, is stored as unknown for that line, and the reading is kept. A line text holding a line break becomes several lines with the same indent. All-blank lines fail as "Model response was blank." | An old `result.json` without indent loads. A stub with indent 5 on one line stores that line's indent as unknown. A stub line "A\nB" with indent 1 gives two lines, both indent 1. |
-| FR-18 | The rescue call asks for `lines` [{text, indent}] with FR-15's rules and no tables (OD-3). If it also fails, the reading fails as today, without publishing or replacing an earlier reading. | Main stub invalid, rescue stub valid: the reading is kept with indent and the `vision_table_invalid` issue. Both invalid: the run fails, and the earlier reading stays. |
-| FR-19 | `VISION_VERSION` becomes a new value (`receipt-vision-v7-indent`), and so do the PDF and combined-image reading versions (OD-4). Earlier readings stay readable and selectable under History. A new reading is never served from a parse run of an older version. | Reading an image read under v6 again creates a new parse run under v7. A v6 run still opens and extracts. |
+| FR-18 | The rescue call asks for `lines` [{text, indent}] with FR-15's rules and no tables (D9). If it also fails, the reading fails as today, without publishing or replacing an earlier reading. | Main stub invalid, rescue stub valid: the reading is kept with indent and the `vision_table_invalid` issue. Both invalid: the run fails, and the earlier reading stays. |
+| FR-19 | `VISION_VERSION` becomes a new value (`receipt-vision-v7-indent`), and so do the PDF and combined-image reading versions (`PDF_VERSION`, `GROUP_VERSION`; D10), the old values kept readable (`PDF_VERSIONS`, `receipt_service.py:118`). Earlier readings stay readable and selectable under History. A new reading is never served from a parse run of an older version. | Reading an image read under v6 again creates a new parse run under v7. A v6 run still opens and extracts. |
 | FR-20 | Scanned (vision) PDF pages and the pages of a combined document keep each line's indent. Embedded-text pages have none. | A two-image combined document and a scanned PDF page from stubs carry indent on `page-1-line-N`. |
 | FR-21 | The lines the extraction model receives carry `indent` beside `line_id` and `text`, only for lines whose indent is known. A reading without indent sends exactly today's payload. | Request JSON for the breakfast receipt has `"indent": 1` on lines 11–14 and 16. For an old reading it is byte-identical to today's. |
 | FR-22 | Every receipt form's row instruction says: a line indented under an item with no price of its own belongs to that item (cite it with the item) and is never an item. A priced indented line keeps today's rules (a count line belongs to its item; any other priced line is its own row). | The instruction text contains the rule (asserted on the request). |
 | FR-23 | **Backstop.** On a receipt, an item whose cited lines all have indent ≥ 1, none printing an amount, and that has an item before it, is dropped. Its lines join the previous item's citation, with the note "“Fresh Berry Pancakes” is printed under “Georgia Peach Stack” with no price of its own, so it was kept with that item, not as an item." (one note per dropped line, at most three, then "and N more"). Not applied when the cited lines' indent is unknown. Bills and other kinds are unaffected. | Stub publishing the four side lines as $0/null items: 5 items stored (sum 4885). Georgia Peach Stack cites lines 10–14, and the notes are present. The same stub with no indent data: as today. |
 | FR-24 | `EXTRACTION_VERSION` becomes v57. Extract again re-reads under it. | Extract again after the upgrade creates a new extraction run. |
-| FR-25 | `docs/documents.md` "Images (vision transcription)" (lines and indent), "PDFs" (vision pages) and "Receipt kinds" (dining total, worked-out tip, suggested-tip table, side lines) describe the built behavior. `docs/money.md` "Item categories and splits" says a dining receipt's items count as its category, with no Category column. `docs/open-work.md` lists D2's items and any rejected risk. | The doc sections match the built behavior; open-work has the entries. |
-| FR-26 | (OD-5) The source viewer's Text view shows each line indented by its level. The text itself is unchanged, so copying and Find stay exact. | Text view of the breakfast receipt: lines 11–14 and 16 render one step in. Their text content equals the stored text. |
+| FR-25 | `docs/documents.md` "Images (vision transcription)" (lines, indent, the Text view's indentation), "PDFs" (vision pages), "Several images as one document" (indent kept) and "Receipt kinds" (dining total, worked-out tip and Review, suggested-tip table, side lines) describe the built behavior. `docs/money.md` "Item categories and splits" says when a dining receipt's items count as its category (FR-14), that older ones keep their categories and the Category column until then, when the item dropdown is refused, and that "Not matched to an item" leaves out the tip (FR-27). `docs/open-work.md` lists D2's items and D16 (tax among other amounts on one line). | The doc sections match the built behavior; open-work has the entries. |
+| FR-26 | (D11) The source viewer's Text view shows each line indented by its level. The text itself is unchanged, so copying and Find stay exact. | Text view of the breakfast receipt: lines 11–14 and 16 render one step in. Their text content equals the stored text. |
+| FR-27 | (D13) The footer's "Not matched to an item" leaves out the tip; the Tip row shows it. The server sends the shown amount: the sum of the receipt's own split rows that carry no item (today's `unmatched_minor`), less the tip's own row in that split (the row `allocate` adds for the tip, `splits.py:185-186`). That row is exactly `tip_minor` when the split is divided at the receipt's total, since `rounded` never moves a whole-unit value (`splits.py:39-45`); with a gift card or a family share it is the tip's resized share. The row is hidden when the result is zero. Display only: `category_splits`, "By category", every total and every stored amount are unchanged. | Breakfast receipt (items 4885, tax 391, tip 879, total 6155): no "Not matched to an item" row; By category "Dining $61.55". A printed-tip receipt with a $2.00 difference left over: "Not matched to an item $2.00", Tip shown on its own row. A v56 dining receipt with tax missed (total 5276, subtotal 4885, no tip): "Not matched to an item $3.91" as today. |
 
 ## Invariants, privacy, security and data retention
 - Per-category shares of a receipt or a charge add up exactly to it (`splits.py`). The page calculates nothing: the
-  worked-out tip, its note and the splits come from the server ("money from the server", `docs/ui.md` "Screen rules").
+  worked-out tip, its note, the splits, whether the Category column shows (FR-11) and the "Not matched to an item"
+  amount (FR-27) come from the server ("money from the server", `docs/ui.md` "Screen rules").
+- No migration and no upgrade step rewrites `category_splits` (D5). Only FR-14's events change which category a dining
+  receipt's items count under.
 - Every stored amount cites its source lines. A worked-out tip cites both totals ("source beside the record").
 - The model proposes, the code decides. The post-tip total, the worked-out tip, the suggested-tip exclusion and the
   side-line backstop are deterministic rules over the transcription.
@@ -174,8 +229,8 @@ in the Text view (FR-26, OD-5).
 - A failed extraction leaves the earlier record, its tip and splits as they were.
 - Reading the same image twice under the same version reuses the parse run as today. A new version makes one new run,
   not one per page or call.
-- Splits rebuild on every change, as today, so a restart changes nothing. The FR-14 upgrade rebuild runs once and is
-  safe to run again (it gives the same rows).
+- Splits rebuild on every change, as today, so a restart changes nothing. Nothing runs at upgrade (D5). Whether FR-10
+  has applied to a receipt survives restarts and later rebuilds (FR-14), so a reconciliation run never undoes it.
 
 ## Nondeterministic outputs and how they are verified
 - Every FR is tested with fixed stub responses: the vision stub returns `lines` with indent, and the extraction stub
@@ -192,55 +247,34 @@ in the Text view (FR-26, OD-5).
 | SC-02 | FR-03 | The SC-01 stub with "Tip: $8.79" printed and read | Record | tip 879 printed (not worked out), total 6155, no tip issue, verified automatically |
 | SC-03 | FR-04 | Customer copy: lines 1–22 and "Tip: $", "Total: $" (blank) | Record | total 5276, tip missing (not 0), no worked-out note |
 | SC-04 | FR-05 | SC-01 without line 23; the model's total cites line 26 | Record | total 5276, tip missing, suggested-table note |
-| SC-05 | FR-08, FR-24 | A library with dining receipts recorded under v56 (total 5276), one approved by the user | Upgrade; Extract again on both | The approved one is unchanged. The other becomes total 6155 and tip 879, under a v57 extraction run |
+| SC-05 | FR-08, FR-14, FR-24 | A library with dining receipts recorded under v56 (total 5276), one approved by the user | Upgrade; run reconciliation; Extract again on both | After upgrade and reconciliation, every `category_splits` row is unchanged. After Extract again, the approved one is unchanged. The other becomes total 6155 and tip 879, under a v57 extraction run, with all splits dining |
 | SC-06 | FR-09 | SC-01 recorded | Correct Tip to $9.00; Extract again | tip 900, not worked out. The check issue names the gap. Extract again keeps 900 |
-| SC-07 | FR-10, FR-11, FR-12 | SC-01 recorded | Open the document page; PUT an item category; Edit details → Categories → Travel | No Category column. PUT → 400, no memory row. All splits travel, sum 6155 |
+| SC-07 | FR-10, FR-11, FR-12 | SC-01 recorded | Open the document page; PUT an item category; Edit details → Categories → Travel | No Category column (the payload says so). PUT → 400, no memory row. All splits travel, sum 6155, still no column |
 | SC-08 | FR-13 | SC-01 recorded and approved | Change kind to grocery; Undo; change to dining again | Grocery: items take memory or model categories. Each change rebuilds splits; Undo restores them; sums constant |
-| SC-09 | FR-14 | A v56 library: a dining receipt with one item set to Groceries by the user and one by the model | Upgrade | All splits dining, per-charge sums unchanged, the user's stored item choice kept |
+| SC-09 | FR-08, FR-11, FR-12, FR-14 | A v56 library: a dining receipt waiting in Review (total 5276), one item set to Groceries by the user and one by the model, linked to no charge; a $52.76 card charge | Upgrade; open the page; reconcile (links the charge); PUT a third item to Groceries; Read again | Before Read again: the Category column shows; the two Groceries items' splits stay Groceries on the receipt and on the charge, each sum unchanged; the PUT → 200 and writes memory as today. After Read again: no column, every split dining, the user's stored item choices still there. A further reconciliation run keeps every split dining |
 | SC-10 | FR-15, FR-16, FR-17, FR-21 | Vision stub with 28 lines, indents as in the table, one indent 5, one line containing a line break | Read the image; record | Line ids continuous, the broken line split, the indent-5 line unknown. The extraction request carries indent where known |
 | SC-11 | FR-18 | Main vision stub invalid; rescue stub returns lines with indent | Read the image | Reading kept with indent and `vision_table_invalid`. With both invalid, the run fails and the earlier reading stays |
 | SC-12 | FR-19, FR-20 | Image and scanned-PDF readings under the old versions | Read both again | New parse runs under the new versions with indent; old runs still open and extract (no indent, today's payload) |
 | SC-13 | FR-22, FR-23 | The SC-01 stub, but rows publish the four side lines as null-price items | Record | 5 items, sum 4885. Georgia Peach Stack cites lines 10–14. Notes for the dropped lines |
 | SC-14 | FR-23 | SC-13's rows over a reading with no indent | Record | 9 items, as today, no drop notes |
 | SC-15 | FR-26 | SC-01 recorded | Open the Text view | Lines 11–14 and 16 indented one level; text unchanged |
+| SC-16 | FR-11, FR-12, FR-14 | A v56 dining receipt you approved, with one item under Groceries | Read again; open the page; Edit details → Categories → Travel; PUT an item category | After Read again: unchanged (approved), the column still shows. After Categories → Travel: every split travel, no column, the PUT → 400 |
+| SC-17 | FR-14 | A v56 dining receipt whose items have no category (backfill pending) and a model stub that would answer Groceries | Run the item-category backfill | Items take the receipt's category, source "receipt"; `category_splits` unchanged; no column |
+| SC-18 | FR-27 | SC-01 recorded; a printed-tip receipt with $2.00 left over; a v56 dining receipt with tax missed | Open each document page | Breakfast: no "Not matched to an item" row. Printed tip: Tip and "Not matched to an item $2.00". v56: "Not matched to an item $3.91". `category_splits` identical before and after the change |
+| SC-19 | FR-01 (D14) | The breakfast receipt; the several-receipts stub answers "one receipt" | Record | One receipt, total 6155. Characterization only: no rule change |
 
-`design-tests` is recommended before approval. SC-01, SC-05, SC-08, SC-09 and SC-12 are stateful: they cover stored
-splits, review state, parse and extraction runs, and the upgrade.
+`design-tests` is recommended before approval. SC-01, SC-05, SC-08, SC-09, SC-12, SC-16 and SC-17 are stateful: they
+cover stored splits, review state, parse and extraction runs, the upgrade, reconciliation rebuilds and the backfill.
+
+Trace (FR → SC): FR-01 SC-01, SC-04, SC-19 · FR-02 SC-01 · FR-03 SC-02 · FR-04 SC-03 · FR-05 SC-04 · FR-06 SC-01 ·
+FR-07 SC-01 · FR-08 SC-05, SC-09 · FR-09 SC-06 · FR-10 SC-01, SC-07 · FR-11 SC-07, SC-09, SC-16 · FR-12 SC-07, SC-09,
+SC-16 · FR-13 SC-08 · FR-14 SC-05, SC-09, SC-16, SC-17 · FR-15–FR-17 SC-10 · FR-18 SC-11 · FR-19, FR-20 SC-12 ·
+FR-21 SC-10 · FR-22 SC-13 · FR-23 SC-13, SC-14 · FR-24 SC-05 · FR-25 doc review · FR-26 SC-15 · FR-27 SC-18.
 
 ## Out of scope / product decisions requiring approval
-Open decisions, each with a recommended default:
-- **OD-1 Worked-out tip and Review.** Default: a receipt with a worked-out tip always goes to Review with the FR-06
-  reason. It is a money figure that isn't printed, and the vision model may have copied the 18% row into a blank
-  Total line (R3). Alternative: count it automatically when the check passes.
-- **OD-2 Existing dining receipts.** Default: rebuild their splits once at upgrade (FR-14), approved ones included.
-  Categories are derived, the user asked that no item on a dining receipt get another category, and per-item choices
-  stay stored so a kind change brings them back. Alternative: apply only on the next reading or change.
-- **OD-3 The rescue call's shape.** Default: the rescue asks for `lines` [{text, indent}] (a flat array, simpler than
-  tables), which keeps indent on the fallback path the user asked for. Risk: a model that can't produce nested JSON
-  now fails instead of giving plain text. Alternative: the rescue stays `{full_text}` and its lines have unknown
-  indent.
-- **OD-4 Version bumps beyond VISION_VERSION.** Default: also bump `PDF_VERSION` and `GROUP_VERSION`, keeping the old
-  values readable (`PDFResult.parser_version`, `PDF_VERSIONS`, `receipt_service.py:118`). Otherwise a scanned PDF or
-  combined document read again reuses its old parse run and never gets indent. Cost: the next reading of any PDF makes
-  a new parse run, and embedded-text pages give the same text.
-- **OD-5 Show indentation in the Text view** (FR-26). Default: yes, a small CSS change that makes the model's indent
-  claims checkable against the image. Alternative: drop FR-26 and list it in open-work.
-- **OD-6 Requiring a printed tip line for FR-02.** Default: yes. The tip line is what makes the later total a tip slip.
-  Without it, a later larger total may be something else (a total with a surcharge).
+All round-1 open decisions (OD-1 – OD-6) and risk candidates (R1 – R5) are decided: D4 – D17 above.
 
-Domain risk pass. These are candidates, not in the FRs until accepted:
-- **R1 The tip shows twice in the footer.** From the code (not run): a tip is an amount no item carries, so the footer
-  lists Tip $8.79 and "Not matched to an item $8.79" above Total. Consequence: the receipt looks like it adds the tip
-  twice, which gets worse once FR-02 fills in tips. Default: accept as FR-27, where "Not matched to an item" leaves out
-  the tip's share (the Tip row shows it).
-- **R2 Several total lines trigger the several-receipts question** (`looks_like_several`). Consequence: the model may
-  split one dining receipt at the tip slip, giving a $52.76 receipt and a separate slip. Default: a characterization
-  test that a stubbed "one receipt" answer keeps it whole. No rule change; open-work if it splits in practice.
-- **R3 A blank Total line filled in from the suggested-tip table by the vision model.** Consequence: a tip recorded
-  that wasn't given. Default: covered by OD-1 (Review), and a matched card charge confirms it. No extra rule.
-- **R4 Tax printed among other amounts on one line** ("Subtotal: $48.85 Total Tax: $3.91 Total: $52.76").
-  `unprinted_amounts` reads only a line's last amount, so a tax the model missed isn't recovered. Default: out of
-  scope, with an open-work entry beside D2's digit checks.
-- **R5 Priced modifiers indented under an item** ("Add bacon $2.00"). Consequence: if folded into the parent, the items
-  stop adding up to the subtotal. Default: a priced indented line stays its own item (FR-22). Only unpriced ones are
-  backstopped (FR-23).
+Still open (small, with recommended defaults; none blocks planning):
+- **Q1 Edit details with the same category.** FR-14 (c) applies FR-10 when Categories *changes*. An old dining receipt
+  whose category is already dining gets FR-10 only by Read again, a kind change, or setting each item through the
+  dropdown (D7). Default: leave it so. Read again is the documented way, and the dropdown covers an approved receipt.
