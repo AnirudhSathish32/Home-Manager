@@ -19,6 +19,11 @@ The rules every money figure follows. They are tested with fixtures, and the led
   ambiguous symbol.
 - **Signs.** Each importer normalizes signs: positive is money in, negative is money out. The original fields are
   kept.
+- **A printed amount has one sign rule** (`core/money.to_minor`, which typed and read amounts go through): it is
+  negative when ANY negative mark is printed (a minus before the number or after the `$`, parentheses, a trailing minus),
+  applied once however many there are, and positive with none. `(-62.91)`, `-62.91-` and `($-62.91-)` are all money out,
+  never two marks cancelling; a `+` never undoes a minus (`(+5)` is negative). The size stays strict: an ISO code or symbol
+  must be the declared currency, more precision than the currency allows and ambiguous separators (`1.234,56`) are refused.
 - **Spending.** Spending counts posted transactions and approved receipts. It leaves out matched internal transfers
   and card payments, and treats refunds as reductions. Pending entries stay visible but are not counted.
 - **Dates.** Queries use half-open intervals `[start, end)`. Date-only transaction dates are never given an invented
