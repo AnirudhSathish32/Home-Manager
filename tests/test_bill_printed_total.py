@@ -9,6 +9,7 @@ tests assert what the Transactions page shows as Paid for the bill: 1,667.91 (`-
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -362,7 +363,7 @@ def read_again(run, fields=TOTAL_FIELDS):
 
 
 def test_sc143_the_version_moved_an_undecided_bill_gains_its_total_and_its_due_now_line_on_extract_again(pdf_store, local_model, monkeypatch):
-    assert extraction.EXTRACTION_VERSION == "typed-extraction-v52-bill-printed-total"
+    assert extraction.EXTRACTION_VERSION == "typed-extraction-v53-bill-total-review-fixes"
     run = started(pdf_store, local_model, bf.total_pages())
     run.__class__ = BillRun
     read_before(run, monkeypatch)
@@ -419,3 +420,116 @@ def test_sc145_diagnose_counts_due_now_lines_per_page_and_prints_nothing_of_them
     assert "due-now lines: 1" in named.stdout and "due-now lines: 0" in plain.stdout
     for text in ("Current Charges", "62.91", "1,667.91", "11/01/2026", "LAKESIDE"):
         assert text not in named.stdout, text
+
+
+# === Code review round 1 (plans/bill-total-and-account-holder/reviews.md): the cases that counted 62.91, lost a sign or passed an impossible date ===========
+
+DUE_ROW = {"Current Charges due": ("Current Charges due", "service", "utilities", None, "62.91", None, None)}
+NO_NEW_CHARGES = {name: found for name, found in FIELDS.items() if name != "new_charges"}
+
+
+def test_review1_a_photographed_bill_whose_model_returns_the_due_now_summary_as_a_charge_row_counts_nothing_instead_of_62_91(pdf_store, local_model):  # Finding 1
+    run = scanned_total(pdf_store, local_model, bf.total_transcription(), NO_NEW_CHARGES, rows=DUE_ROW)
+    record = run.record
+    assert record["items"] == [] and record["total_minor"] is None and run.bill_row()["total_minor"] is None  # The due-now line is no charge.
+    assert record["review_status"] == "needs_review" and paid(run.store) == []
+    assert any(note.startswith("The charge line \"Current Charges due\" cites the due-now line") and note.endswith("it was left out.") for note in run.notes)
+    assert any(issue.startswith("New charges: the bill's new charges were not read, and its amount due is the due-now amount") for issue in record["issues"])
+
+
+def test_review1_a_due_now_row_among_real_charge_rows_is_left_out_and_the_rows_still_add_up_to_the_printed_total(pdf_store, local_model):  # Finding 1
+    run = scanned_total(pdf_store, local_model, bf.total_transcription(), FIELDS, rows={**bf.STUB_TOTAL, **DUE_ROW})
+    record = run.record
+    assert [item["line_total_minor"] for item in record["items"]] == [118040, 41226, 7525]
+    assert (record["total_minor"], record["amount_due_minor"]) == (166791, 166791)
+    assert record["review_status"] == "verified" and paid(run.store) == [("bill", "2026-11-01", 166791)]
+
+
+def test_review1_an_engine_found_due_now_line_with_no_new_charges_line_still_drops_the_models_new_charges_that_cite_it(pdf_store, local_model):  # Finding 2
+    pages = bf.total_pages(total_label=None)
+    run = total(pdf_store, local_model, fields=WRONG, pages=pages)
+    record = run.record
+    assert record["total_minor"] == 166791 and run.bill_row()["total_minor"] == 166791  # The charge rows' sum, never the due-now 62.91.
+    assert "New charges: the cited line \"Current Charges due 11/01/2026\" is a due-now line, not the bill's new charges; it was left out." in run.notes
+    assert record["amount_due_minor"] == 6291 and record["review_status"] == "needs_review"  # The engine's due-now amount, the only amount printed: the lines disagree.
+    assert any(issue.startswith("Amount due: the lines add up to 1,667.91 USD, but the amount due is 62.91 USD") for issue in record["issues"])
+    Ledger(run.store).review("receipt", run.run["publication"]["id"], "verified")
+    assert paid(run.store) == [("bill", "2026-11-01", 166791)]
+
+
+@pytest.mark.parametrize("printed, held", [("-$62.91", -6291), ("($62.91)", -6291), ("$62.91 CR", -6291), ("$62.91", 6291)])
+def test_review1_a_photographed_due_now_credit_keeps_its_sign_and_is_no_payment_candidate(pdf_store, local_model, printed, held):  # Finding 3
+    transcription = [*bf.total_transcription()[:-2], f"Current Charges due 11/01/2026 {printed}", "Total Current Charges $1,667.91"]
+    fields = {**FIELDS, "amount_due": ("-62.91" if held < 0 else "62.91", "Current Charges due", printed)}
+    run = scanned_total(pdf_store, local_model, transcription, fields)
+    assert due_now_of_record(run)["minor"] == held
+    ledger = Ledger(run.store)
+    checking = ledger.create_account("First Local Bank", "checking", "USD")
+    [payment] = add(run.store, ledger, checking, run.doc, [("2026-10-30", "LAKESIDE GAS & ELECTRIC ACH", -6291)])
+    Reconciler(run.store).run()
+    links = ledger.record("receipt", run.run["publication"]["id"])["links"]
+    assert [link["counterpart"]["id"] for link in links] == ([payment] if held > 0 else [])  # A credit of 62.91 is not an outgoing 62.91.
+
+
+RENT_TRANSCRIPTION = ["SYNTH PROPERTY MANAGEMENT", "Resident Account ****4821", "Statement Date 10/10/2026", "Rent and Leasing Charges Due 10/01/2026",
+                      "Rent 10/01/2026 - 10/31/2026 1,650.00", "Water Usage 17.91", "Previous Balance 50.00", "Payments Received PAYMENTS",
+                      "Current Charges due 11/01/2026 $62.91", "Total Current Charges $1,667.91"]
+RENT_ROWS = {"Rent 10/01": ("Rent", "rent", "housing", None, "1,650.00", None, None), "Water Usage": ("Water", "utility", "utilities", None, "17.91", None, None)}
+
+
+@pytest.mark.parametrize("payments, due", [("20.00", 169791), ("0.00", 171791)])
+def test_review1_a_photographed_rent_bill_works_the_amount_due_out_with_its_payments(pdf_store, local_model, payments, due):  # Finding 4
+    transcription = [line.replace("PAYMENTS", payments) for line in RENT_TRANSCRIPTION]
+    fields = {"provider": ("SYNTH PROPERTY MANAGEMENT", "SYNTH PROPERTY MANAGEMENT", "SYNTH PROPERTY MANAGEMENT"), "currency": ("USD", "Resident Account", "****4821"),
+              "new_charges": ("1,667.91", "Total Current Charges", "$1,667.91"), "amount_due": ("62.91", "Current Charges due", "$62.91"),
+              "previous_balance": ("50.00", "Previous Balance", "50.00"), "payments_received": (payments, "Payments Received", payments)}
+    run = started_scanned(pdf_store, local_model, transcription)
+    run.stub_bill(RENT_ROWS, fields, kind="rent", classify="SYNTH PROPERTY", single_run=True)
+    run.extract()
+    record = run.record
+    assert record["amount_due_minor"] == due and record["total_minor"] == 166791
+    assert f"The amount due is worked out as previous balance 50.00 − payments {payments} + new charges 1667.91 = {due / 100:.2f}." in run.notes
+    assert not [issue for issue in record["issues"] if issue.startswith("Amount due:")]  # No carried-check failure.
+
+
+def test_review1_a_due_now_date_before_the_issue_date_is_no_fallback_due_date_both_dates_are_left_out(pdf_store, local_model):  # Finding 5
+    header = ("LAKESIDE GAS & ELECTRIC", "Account Name: Jordan A. Rivera", "Account Number 4455-6677-8899", "Statement Date 11/10/2026", "Billing Period 09/01/2026 - 09/30/2026")
+    fields = {**TOTAL_FIELDS, "issue_date": ("2026-11-10", "Statement Date", "11/10/2026")}  # No due date from the model: the due-now line (11/01) would be it.
+    run = total(pdf_store, local_model, fields=fields, pages=bf.total_pages(header=header))
+    record = run.record
+    assert record["issue_date"] is None and record["due_date"] is None
+    assert "Due date: the issued date (2026-11-10) is after the due date; both were left out." in record["issues"]
+    assert record["review_status"] == "needs_review" and (run.bill_row()["due_date"], run.bill_row()["purchase_date"]) != ("2026-11-01", "2026-11-01")
+    assert due_now_of_record(run)["date"] == "2026-11-01"  # Still shown as printed.
+
+
+def test_review1_a_due_now_date_after_the_issue_date_is_still_the_fallback_due_date(pdf_store, local_model):  # Finding 5, the month-first fallback unchanged
+    run = total(pdf_store, local_model, fields=TOTAL_FIELDS)
+    assert run.record["due_date"] == "2026-11-01" and run.record["issue_date"] == "2026-10-10" and run.record["review_status"] == "verified"
+
+
+SEPARATED = [("Current Charges - due 11/01/2026", "dash"), ("Current Charges – due 11/01/2026", "en dash"), ("Current Charges — due 11/01/2026", "em dash"),
+             ("Current Charges: due 11/01/2026", "colon"), ("Current Charges ..... due 11/01/2026", "dot leaders"), ("Current Charges | due 11/01/2026", "pipe"),
+             ("Current Charges due - 11/01/2026", "dash before the date"), ("Current Charges – due by – 11/01/2026", "two en dashes"), ("$ Current Charges due 11/01/2026", "dollar")]
+
+
+@pytest.mark.parametrize("label, what", SEPARATED)
+def test_review1_a_separator_in_a_due_now_label_is_cleaned_as_fr103_cleans_it(label, what):  # Finding 6: the rule, the anchor and the split rule
+    found = due_now_of(label)
+    assert found is not None and found[0] == "11/01/2026", what
+    assert anchor_kind(label) is None
+    line = SimpleNamespace(id="page-1-layout-line-1", text=f"{label} $62.91")  # FR-146: the split rule's own recognition.
+    assert bill_split.anchor_of(line) == (DUE_NOW, bill_split.anchor_of(line)[1])
+
+
+@pytest.mark.parametrize("label", ["Current Charges - due 11/01/2026", "Current Charges: due 11/01/2026", "Current Charges ..... due 11/01/2026"])  # (the PDF font has no en dash)
+def test_review1_the_engine_reads_a_separated_due_now_label_as_the_due_now_line_and_never_as_a_charge_row(pdf_store, local_model, label):  # Finding 6
+    pages = bf.total_pages(due_label=label)
+    run = started(pdf_store, local_model, pages)
+    reading = bill_tables.read(run.evidence).reading
+    assert [(anchor.kind, anchor.token.text) for anchor in reading.anchors] == [(DUE_NOW, "$62.91"), ("new_charges", "$1,667.91")]
+    assert [row.label for table in reading.tables for row in table.rows] == ["Delivery Charges", "Supply Charges", "Taxes and Fees"] and reading.unplaced == []
+    fields = {**FIELDS, "amount_due": ("62.91", "Current Charges", "$62.91"), "due_date": ("2026-11-01", "Current Charges", "11/01/2026")}
+    done = total(pdf_store, local_model, fields=fields, pages=pages, name="separated.pdf")
+    assert (done.record["amount_due_minor"], done.record["total_minor"], len(done.record["items"])) == (166791, 166791, 3)
+    assert done.record["review_status"] == "verified" and due_now_of_record(done)["minor"] == 6291

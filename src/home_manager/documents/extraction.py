@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v52-bill-printed-total"
+EXTRACTION_VERSION = "typed-extraction-v53-bill-total-review-fixes"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -906,6 +906,17 @@ def due_labelled(value, evidence):
     return bool(labels) and all(label == "due" for label in labels)
 
 
+def drop_unordered(record, issues):
+    """Specs/bill-kinds FR-48: an issued date after the due date leaves both out and sends the bill to review. True when it did. Run on the model's dates
+    (bill_dates) and again on a due date the due-now line gave (due_now_settled; FR-144)."""
+    if record.get("issue_date") and record.get("due_date") and record["issue_date"] > record["due_date"]:
+        # Starts with "Due date", so review_reasons adds no "Due date was not found" beside it (plan R2-m5).
+        issues.append(f"Due date: the issued date ({record['issue_date']}) is after the due date; both were left out.")
+        record["issue_date"] = record["due_date"] = None
+        return True
+    return False
+
+
 def bill_dates(record, fields, issues, notes):
     """A bill's header dates must be printed where they are cited, and in order (docs/money.md "Bills and their lines";
     specs/bill-kinds FR-46, FR-48, FR-55), on
@@ -951,10 +962,7 @@ def bill_dates(record, fields, issues, notes):
         period_issues.append("Period: the printed period starts after it ends; it was left out.")
         record["period_start"] = record["period_end"] = None
         years.discard("Period")
-    if record.get("issue_date") and record.get("due_date") and record["issue_date"] > record["due_date"]:
-        # Starts with "Due date", so review_reasons adds no "Due date was not found" beside it (plan R2-m5).
-        issues.append(f"Due date: the issued date ({record['issue_date']}) is after the due date; both were left out.")
-        record["issue_date"] = record["due_date"] = None
+    if drop_unordered(record, issues):
         years.discard("Issued")
     if "Issued" in years:
         notes.append("Issued: year taken from the due date.")
@@ -2993,8 +3001,9 @@ def normalize(kind, header, rows, currency, lines=None, details=True, receipt_ki
         notes: list[str] = []  # What the spec calls "a note only": kept in the bill's details, never a review reason (plan P9).
         header_period = bill_dates(record, fields, issues, notes)
         invoice = bool(record.get("invoice_marker") or record.get("invoice_number") or record.get("invoice_total_minor") is not None)
-        if not invoice and due_now is None:
-            due_now = due_now_cited(fields, kind_fields, line_text, record, currency, notes)
+        if not invoice:
+            due_now = due_now_cited(fields, kind_fields, line_text, record, currency, notes, due_now)
+            rows, engine_lines = without_due_now_rows(rows, engine_lines, line_text, notes)
         due_now = None if invoice else due_now_settled(record, due_now, currency, issues, notes)
         bill_lines(record, rows, money, issues, currency, total, {**fields, **kind_fields, **(bill_fields or {})}, bill_kind, notes, header_period, engine_lines,
                    worked_out, account_holder(lines or []), due_now)
@@ -3395,20 +3404,26 @@ def account_holder(lines):
     return {"text": first, "locator": {"line_ids": [line.id], "quotes": [line.text]}}, note
 
 
-DUE_NOW_AMOUNT = re.compile(r"^(?P<label>.*?)[\s|]*(?P<amount>[-(]?\$?\s?\d[\d,]*\.\d{2}\)?)\s*(?:CR|DR)?$", re.IGNORECASE)
+DUE_NOW_AMOUNT = re.compile(r"^(?P<label>.*?)[\s|]*(?P<amount>[-(]?\$?\s?-?\d[\d,]*\.\d{2}\)?-?)\s*(?P<marker>CR|DR)?$", re.IGNORECASE)
 
 
 def due_now_line(text):
-    """{"label", "date", "amount"} when a transcribed line is a due-now line (FR-141: `Current Charges due 11/01/2026 $62.91`), else None; the same rule the
+    """{"label", "date", "amount" (as printed, signed)} when a transcribed line is a due-now line (FR-141: `Current Charges due 11/01/2026 $62.91`), else None; the same rule the
     bill engine applies to text pages (charge_tables.due_now_of), for the lines a photographed bill's amounts cite (FR-145)."""
     found = DUE_NOW_AMOUNT.match(" ".join((text or "").replace("|", " ").split()))
     due = due_now_of(found.group("label")) if found else None
-    return {"label": due[1], "date": due[0], "amount": re.sub(r"[^\d.]", "", found.group("amount"))} if due else None
+    if not due:
+        return None
+    amount = found.group("amount").strip()
+    if (found.group("marker") or "").upper() == "CR" and not re.search(r"^[-(]|-$", amount):  # A credit marker is money off, as on any charge line (bill_tables.signed).
+        amount = f"-{amount}"
+    return {"label": due[1], "date": due[0], "amount": amount}  # The amount as printed, sign and all: core.money.to_minor reads it (never stripped to digits).
 
 
-def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
+def due_now_cited(fields, kind_fields, line_text, record, currency, notes, engine=None):
     """The due-now line of a bill that was not read from its printed columns, from the lines its amount due or new charges cite (FR-141, FR-145); None when
-    neither cites one. A new-charges answer citing a due-now line is dropped, because a due-now amount is never what the bill counts. When the amount due
+    neither cites one. A new-charges answer citing a due-now line is dropped, because a due-now amount is never what the bill counts, also when the engine
+    found the due-now line (`engine`, anchor_bill's) but no new-charges line of its own to replace the answer, which is then returned as it is. When the amount due
     cites a due-now line and the new charges cite a different `Total ...` new-charges line, FR-142 (b) applies to those answers: the amount due is the new
     charges, or previous balance - payments + new charges when both are read, with the notes of the engine's path."""
     def line_of(field):
@@ -3421,11 +3436,17 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
     if new is not None and record.get("new_charges_minor") is not None:
         record["new_charges_minor"] = None
         notes.append(f"New charges: the cited line \"{new[1]['label']}\" is a due-now line, not the bill's new charges; it was left out.")
+    if engine is not None:
+        return engine
     found = due or new
     if found is None or currency not in EXPONENTS:
         return None
     cite, line = found
-    result = {"amount": line["amount"], "date": line["date"], "label": line["label"], "worked": None,
+    try:
+        figure = to_minor(line["amount"], currency)
+    except MoneyError:
+        return None
+    result = {"amount": as_decimal_text(figure, currency), "date": line["date"], "label": line["label"], "worked": None,
               "locator": {"line_ids": [cite.line_id], "quotes": [line_text.get(cite.line_id) or cite.quote]}}
     charges = fields.get("new_charges")
     totals = [other for other in (charges.evidence if charges is not None and charges.status == "proposed" else ())
@@ -3434,7 +3455,7 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
     if due is None or not totals or new is not None or record.get("new_charges_minor") is None or not amount_supported(charges.value, totals):
         return result
     held = record["new_charges_minor"]
-    carried = [kind_fields.get(name) for name in ("previous_balance", "payments_received")]
+    carried = [{**fields, **kind_fields}.get(name) for name in ("previous_balance", "payments_received")]  # Payments are a common field, the previous balance a rent one.
     previous, payments = (to_minor(field.value.strip(), currency) if field is not None and field.status == "proposed" and amount_supported(field.value, field.evidence)
                           else None for field in carried)
     total = held if previous is None or payments is None else previous - abs(payments) + held
@@ -3444,9 +3465,24 @@ def due_now_cited(fields, kind_fields, line_text, record, currency, notes):
                             "new_charges": as_decimal_text(held, currency)}
         notes.append(f"The amount due is worked out as previous balance {as_decimal_text(previous, currency)} \u2212 payments {as_decimal_text(abs(payments), currency)} "
                      f"+ new charges {as_decimal_text(held, currency)} = {as_decimal_text(total, currency)}.")
-    if total != to_minor(result["amount"], currency):
-        notes.append(f"The bill prints {line['label']} {line['amount']} and a total of {as_decimal_text(total, currency)}; the total is the amount due.")
+    if total != figure:
+        notes.append(f"The bill prints {line['label']} {result['amount']} and a total of {as_decimal_text(total, currency)}; the total is the amount due.")
     return result
+
+
+def without_due_now_rows(rows, engine_lines, line_text, notes):
+    """(rows, engine_lines) without the charge rows whose citations are all due-now lines (FR-141): the due-now line is a summary, never a charge, so a model row
+    taken from it (`Current Charges due 11/01/2026 62.91` as a service line) is left out of what adds up to the new charges, with a note for each."""
+    kept = []
+    for index, row in enumerate(rows):
+        found = [due_now_line(line_text.get(cite.line_id) or cite.quote) for cite in row.evidence]
+        if found and all(found):
+            notes.append(f"The charge line \"{' '.join(row.description.split())}\" cites the due-now line \"{found[0]['label']}\", which is no charge; it was left out.")
+        else:
+            kept.append(index)
+    if len(kept) == len(rows):
+        return rows, engine_lines
+    return [rows[index] for index in kept], [engine_lines[index] for index in kept] if engine_lines else engine_lines
 
 
 def due_now_settled(record, due_now, currency, issues, notes):
@@ -3458,8 +3494,9 @@ def due_now_settled(record, due_now, currency, issues, notes):
     day = next((value.isoformat() for value, form, _ in dates_in(due_now["date"]) if form not in ("yearless", "month")), None)
     if day is not None and record.get("due_date") is None:
         record["due_date"] = day
-        record["locator"] = {"line_ids": list(dict.fromkeys([*record["locator"]["line_ids"], *due_now["locator"]["line_ids"]])),
-                             "quotes": [*record["locator"]["quotes"], *due_now["locator"]["quotes"]][:40]}
+        if not drop_unordered(record, issues):  # FR-48 holds for this date too: one printed before the issue date is left out with the issue date.
+            record["locator"] = {"line_ids": list(dict.fromkeys([*record["locator"]["line_ids"], *due_now["locator"]["line_ids"]])),
+                                 "quotes": [*record["locator"]["quotes"], *due_now["locator"]["quotes"]][:40]}
     elif day is not None and record["due_date"] != day:
         notes.append(f"The bill also prints {due_now['label']}.")
     worked = {name: to_minor(text, currency) for name, text in due_now["worked"].items()} if due_now["worked"] else None

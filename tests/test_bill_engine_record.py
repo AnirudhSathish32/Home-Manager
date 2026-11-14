@@ -245,7 +245,7 @@ def test_sc110_every_amount_quantity_and_rate_is_its_printed_cell_although_the_m
     run.stub_bill(bf.STUB_UTIL_WRONG, {**UTIL_FIELDS, **UTIL_WRONG_AMOUNTS})
     run.extract()
     expect_util(run)
-    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v52-bill-printed-total" != V39
+    assert run.run["prompt_version"] == extraction.EXTRACTION_VERSION == "typed-extraction-v53-bill-total-review-fixes" != V39
     no_grid(run)
     planned_questions(run)
     finished(run, before)
