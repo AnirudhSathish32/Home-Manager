@@ -331,7 +331,9 @@ class Manager:
             found = []
         first = {}
         for person in found:
-            first.setdefault(person["name"].casefold(), person)  # The same name twice (a spouse named like the profile) is one person.
+            # The same name twice in a person's library (a spouse named like the profile) is one person; in a family two members are two people however they are
+            # named, so a printed name matching both matches nobody (FR-137) and a line's member keeps its own name (FR-138).
+            first.setdefault(person["member_id"] if "member_id" in person else person["name"].casefold(), person)
         return list(first.values())
 
     def settings(self):

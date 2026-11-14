@@ -27,7 +27,7 @@ def words_of(name):
     if text.count(",") == 1:
         last, first = (part.strip() for part in text.split(","))
         text = f"{first} {last}" if first and last else text
-    text = re.sub(r"[^\w\s]|_", "", text.replace("-", " "))  # A hyphen separates words (Mary-Jane); any other punctuation goes (O'Brien, J.).
+    text = re.sub(r"[^\w\s]|_", "", text)  # Punctuation goes, a hyphen too (FR-137): `Anne-Marie` is one word, `annemarie`, never `Anne` (O'Brien, J.).
     return [word for word in text.split() if word not in TITLES and word not in SUFFIXES]
 
 

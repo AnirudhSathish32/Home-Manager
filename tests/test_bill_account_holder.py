@@ -155,7 +155,9 @@ def test_fr136_each_part_of_a_file_of_several_bills_reads_only_its_own_lines(pdf
     ("J. Rivera", "Jordan Rivera", False), ("Jordan Riviera", "Jordan Rivera", False), ("Jordan & Casey Rivera", "Jordan Rivera", False),
     ("Jordan and Casey Rivera", "Jordan Rivera", False), ("Jordan / Casey Rivera", "Jordan Rivera", False),
     ("Jordan A Rivera", "Jordan B Rivera", False), ("Jordan Rivera", "My profile", False), ("My profile", "My profile", False),
-    ("4455-6677", "Jordan Rivera", False), ("J", "J", False)])
+    ("4455-6677", "Jordan Rivera", False), ("J", "J", False),
+    ("Anne-Marie Smith", "Anne Smith", False), ("Anne Smith", "Anne-Marie Smith", False),  # Review round 1, finding 8: a hyphen is punctuation, removed.
+    ("Anne-Marie Smith", "AnneMarie Smith", True), ("Anne-Marie Smith", "Anne-Marie Smith", True)])
 def test_sc133_matching_table(printed, candidate, matches):
     assert names_match(printed, candidate) is matches
 
@@ -220,6 +222,21 @@ def test_fr138_the_manager_decides_the_people_and_sends_the_text_with_the_record
     assert {item["person"]["text"] for item in view["items"]} == {"Jordan A. Rivera"}  # "My profile" never matches: the printed name.
     household = SimpleNamespace(family=object(), profile={"name": "The Samples"}, store=store, family_people=lambda: FAMILY)
     assert Manager.account_people(household) == FAMILY
+
+
+def test_fr137_two_family_members_with_the_same_name_stay_two_people_so_the_printed_name_matches_nobody_and_a_line_keeps_its_member(pdf_store, local_model):
+    run = total(pdf_store, local_model)
+    twins = [{"name": "Jordan Rivera", "member_id": "first"}, {"name": "Jordan Rivera", "member_id": "second"}]  # Family membership doesn't enforce unique names.
+    household = SimpleNamespace(family=object(), profile={"name": "The Rivera family"}, store=run.store, ledger=Ledger(run.store), family_people=lambda: twins)
+    household.account_people = lambda: Manager.account_people(household)
+    assert household.account_people() == twins
+    record = run.record
+    record["items"][0]["member_id"] = "second"
+    view = Manager.record_view(household, "receipt", run.run["publication"]["id"])
+    assert view["account_holder_view"]["name"] is None and view["account_holder_view"]["display"] == "Jordan A. Rivera"  # Two match: no match.
+    assert {item["person"]["source"] for item in view["items"]} == {"account"}
+    assert annotate(record, twins)["items"][0]["person"] == {"text": "Jordan Rivera", "source": "member", "title": "Set for this line"}  # Not "Someone in the family".
+    assert annotate(run.record, [twins[1]])["account_holder_view"]["name"] == "Jordan Rivera"
 
 
 # === FR-139: the account holder on the page, correctable ==================================================================================
