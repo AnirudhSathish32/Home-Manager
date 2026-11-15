@@ -26,7 +26,7 @@ import pytest
 from home_manager.app.api import create_app
 from home_manager.core import sandbox
 from home_manager.library.scanner import ScanLimits
-from model_server import start_model_server
+from model_server import start_model_server, vision_answer
 import seed_household
 from seed_household import STEPS, SeedStepFailed, seed
 from test_agent_guards import no_egress  # noqa: F401  (a fixture)
@@ -693,7 +693,7 @@ def grocery_outputs():
     lines = documents()[2]["lines"]
     items = [(5, "RICE 2LB", "3.49"), (6, "WHOLE MILK 1GAL", "3.89"), (7, "EGGS DOZEN", "4.59"), (8, "TOMATO SAUCE", "2.89"), (9, "PASTA", "1.99")]
     shown = "Green Leaf Grocery"
-    return [{"full_text": "\n".join(lines)},
+    return [vision_answer("\n".join(lines)),
             {"document_type": "receipt", "evidence": cite(1, lines[0]), "issuer": value(shown, 1, lines[0]), "document_date": value(lines[1], 2)},
             {"merchant": value(shown, 1, lines[0]), "purchase_date": value(lines[1], 2), "currency": value("USD", 3, lines[2]),
              "subtotal": value("16.85", 10, lines[9]), "tax": value("1.39", 11, lines[10]), "tip": MISSING, "total": value("18.24", 12, lines[11])},

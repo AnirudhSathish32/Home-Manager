@@ -5,6 +5,7 @@ import pytest
 
 from conftest import inbox_scan
 from home_manager.documents.reasoning import ReasoningConfig
+from model_server import vision_answer
 from seed_documents import document_server
 from test_document_v2_browser import open_document
 from test_planned_bugfixes import bill_reading, income
@@ -86,7 +87,7 @@ def test_idle_badge_read_filter_and_record_selected(tmp_path, local_model):
         expect(page.locator('#rc2-table tbody tr')).to_have_count(2)
         manager.configure_vision(local_model['config'])
         manager.configure_reasoning(ReasoningConfig(base_url=local_model['config'].base_url, model='synthetic-reasoning'))
-        local_model['outputs'] = [{'full_text': 'CORNER CAFE\nAmount due USD 4.50'}]
+        local_model['outputs'] = [vision_answer('CORNER CAFE\nAmount due USD 4.50')]
         page.get_by_role('button', name='Read unread.png', exact=True).click()
         row = page.locator('#rc2-table tbody tr', has=page.get_by_role('link', name='unread.png', exact=True))
         expect(row.get_by_role('button', name='Record unread.png', exact=True)).to_be_visible(timeout=15000)
@@ -97,7 +98,7 @@ def test_idle_badge_read_filter_and_record_selected(tmp_path, local_model):
         page.goto(f'{base}/#/documents?folder=Inbox')
         expect(page.locator('#rc2-table tbody tr')).to_have_count(2)
         # Both are bills (docs/money.md "Bills and their lines"): recorded, filed to Bills, and waiting for review (no new charges printed).
-        local_model['outputs'] = [{'full_text': 'CITY BILL\nAmount due USD 25.00'}, *bill_reading('CORNER CAFE', '4.50'), *bill_reading('CITY BILL', '25.00')]
+        local_model['outputs'] = [vision_answer('CITY BILL\nAmount due USD 25.00'), *bill_reading('CORNER CAFE', '4.50'), *bill_reading('CITY BILL', '25.00')]
         for checkbox in page.locator('#rc2-table tbody input[type=checkbox]').all():
             checkbox.check()
         with page.expect_request(lambda req: req.method == 'POST' and req.url.endswith('/api/receipt-batches')) as sent:

@@ -27,6 +27,7 @@ from home_manager.finance.ledger import COUNTABLE
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.vision import VisionConfig
+from model_server import vision_answer
 import pdf_import_fixtures as fx
 from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
 
@@ -309,7 +310,7 @@ def test_pcheck_m_page_methods_are_embedded_then_vision_and_the_scan_is_read_onc
     source, store = pdf_store
     make_pdf(source / "m.pdf", fx.m_pages())
     doc = capture(source, store)
-    local_model["output"] = {"full_text": "SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00")
     service = ReceiptService(store)
     run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(run_id, Work("inference", "transcription", "PDF", sink=store.record_model_run))
@@ -664,7 +665,7 @@ def read_with_scan(pdf_store, local_model, name, pages):
     source, store = pdf_store
     make_pdf(source / name, pages)
     doc = capture(source, store)
-    local_model["output"] = {"full_text": "SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00")
     service = ReceiptService(store)
     run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(run_id, Work("inference", "transcription", "PDF", sink=store.record_model_run))
@@ -1434,7 +1435,7 @@ def test_unticking_a_row_never_renumbers_another_rows_identity(env):
 
 def test_sc09_a_scanned_page_is_reported_and_contributes_no_row(env, local_model):
     a = env.account("A")
-    local_model["output"] = {"full_text": "SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE TWO\n08/04/2026 SCANNED CAFE 7.00")
     doc = env.add("m.pdf", fx.m_pages(), config=local_model["config"])
     requests = len(local_model["requests"])
     assert requests == 1
@@ -1449,7 +1450,7 @@ def test_sc09_a_scanned_page_is_reported_and_contributes_no_row(env, local_model
 
 def test_sc09_9a_an_all_scanned_pdf_previews_no_rows_and_importing_it_writes_nothing(env, local_model):
     a = env.account("A")
-    local_model["output"] = {"full_text": "SCANNED PAGE ONE\n08/04/2026 SCANNED CAFE 7.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE ONE\n08/04/2026 SCANNED CAFE 7.00")
     doc = env.add("scan.pdf", [None], config=local_model["config"])
     preview = env.ok_preview(doc, account_id=a)
     assert preview["rows"] == [] and preview["tables"] == [] and [issue["message"] for issue in preview["issues"]] == [

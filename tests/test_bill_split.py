@@ -23,12 +23,14 @@ from home_manager.app.api import create_app
 from home_manager.core.jobs import Work
 from home_manager.documents import bill_split, extraction
 from home_manager.documents.extraction import BILL_SPLIT_CHANGED, BILL_SPLIT_FAILED, BILL_SPLIT_NOTE, BILL_VOID_NOTE, ExtractionService, evidence_lines
+from home_manager.documents.pdf_reader import GROUP_VERSION
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance import bill_tables
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.reconcile import Reconciler
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 import pdf_import_fixtures as fx
 from test_bill_engine_record import ENGINE, BillRun, auto, finished, lines_of, reasons  # noqa: F401
 from test_extraction import MISSING
@@ -479,7 +481,7 @@ def started_scan(pdf_store, local_model, transcriptions, name="scan.pdf"):
     make_pdf(inbox / name, [None] * len(transcriptions))
     inbox_scan(store)
     doc = next(item for item in store.documents()["items"] if item["relative_path"].endswith(name))
-    local_model["outputs"] = [{"full_text": "\n".join(texts)} for texts in transcriptions]
+    local_model["outputs"] = [vision_answer("\n".join(texts)) for texts in transcriptions]
     service = ReceiptService(store)
     parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(parse_id, Work.detached())
@@ -530,12 +532,12 @@ def combined_images(tmp_path, local_model, transcriptions):
     manager.future.result(timeout=30)
     [group] = manager.suggested_groups()
     manager.configure_vision(local_model["config"])
-    local_model["outputs"] = [{"full_text": "\n".join(texts)} for texts in transcriptions]
+    local_model["outputs"] = [vision_answer("\n".join(texts)) for texts in transcriptions]
     manager.change_group(group["id"], "confirmed")
     manager.future.result(timeout=60)
     lead = group["pages"][0]["document_id"]
     doc = next(item for item in manager.store.documents()["items"] if item["id"] == lead)
-    parse_id = next(row["id"] for row in manager.receipts.history(lead) if row["parser_version"] == "receipt-images-v2-tables")
+    parse_id = next(row["id"] for row in manager.receipts.history(lead) if row["parser_version"] == GROUP_VERSION)
     assert manager.receipts.get(parse_id)["status"] == "succeeded"
     return manager, Bills(manager.store, manager.receipts, local_model, parse_id, doc)
 

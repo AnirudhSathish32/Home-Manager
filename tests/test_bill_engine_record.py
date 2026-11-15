@@ -29,6 +29,7 @@ from home_manager.finance import bill_tables
 from home_manager.finance.family_routing import FamilyRouting
 from home_manager.finance.ledger import Ledger
 import home_manager.library
+from model_server import vision_answer
 from test_bills_ledger import WHO
 from test_extraction import MISSING
 from test_paystub_engine_record import Run, no_network, started  # noqa: F401  (no_network is autouse: C-net)
@@ -1152,7 +1153,7 @@ def started_scanned(pdf_store, local_model, transcription):
     make_pdf(inbox / "scan.pdf", [None])
     inbox_scan(store)
     doc = next(item for item in store.documents()["items"] if item["relative_path"].endswith("scan.pdf"))
-    local_model["output"] = {"full_text": "\n".join(transcription)}
+    local_model["output"] = vision_answer("\n".join(transcription))
     service = ReceiptService(store)
     parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(parse_id, Work.detached())

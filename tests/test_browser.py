@@ -16,6 +16,7 @@ except ImportError:  # Browser tests are optional (.[browser-test]).
 
 from home_manager.app.api import create_app
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 
 
 def row_action(page, name, row_text=None):
@@ -74,7 +75,7 @@ def wait_for_batch(page, text, timeout):
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
 def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_model):
-    local_model["output"]["full_text"] += "\nLATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00"
+    local_model["output"]["lines"] += vision_answer("LATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00")["lines"]
     playwright = pytest.importorskip("playwright.sync_api")
     month = tmp_path / "managed" / "Library" / "Inbox"  # Created when the library folder is saved.
     document = month / "sample.csv"
@@ -125,7 +126,7 @@ def test_real_browser_configures_scans_and_inspects_versions(tmp_path, local_mod
             assert page.locator("#versions-content code").count() == 2
             page.locator("#close-versions").click()
             from test_receipts import make_receipt
-            payload = make_receipt(month / "receipt.png", local_model["output"]["full_text"].splitlines())
+            payload = make_receipt(month / "receipt.png", [line["text"] for line in local_model["output"]["lines"]])
             receipt_bytes = (month / "receipt.png").read_bytes()  # Filing later moves the Inbox file.
             requests = []
             page.on("request", lambda request: requests.append(request.url))
@@ -505,7 +506,7 @@ def test_real_browser_shows_and_confirms_a_split_file(tmp_path, local_model):
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
         make_receipt(manager.store.library.inbox / "pile.png")
-        local_model["output"] = {"full_text": "\n".join(LINES)}
+        local_model["output"] = vision_answer("\n".join(LINES))
         manager.configure_vision(local_model["config"])
         manager.start_inbox()
         manager.future.result(timeout=30)
@@ -565,7 +566,7 @@ def test_real_browser_combines_suggested_images(tmp_path, local_model):
         manager.start_inbox()
         manager.future.result(timeout=30)
         manager.configure_vision(local_model["config"])
-        local_model["outputs"] = [{"full_text": "SHOP\nITEM 1.00"}, {"full_text": "Total 1.00"}]
+        local_model["outputs"] = [vision_answer("SHOP\nITEM 1.00"), vision_answer("Total 1.00")]
         with playwright.sync_playwright() as driver:
             browser = driver.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page(viewport={"width": 1366, "height": 768})

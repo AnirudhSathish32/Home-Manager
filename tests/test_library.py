@@ -11,7 +11,7 @@ from test_receipts import make_receipt
 def test_vision_rejects_interpretation_fields():
     for extra in ({"folder": "Receipts"}, {"title": "Receipt"}, {"total": "25.00"}):
         with pytest.raises(ValidationError):
-            VisionText(full_text="USD 25.00", **extra)
+            VisionText(lines=[("USD 25.00", None)], **extra)
 
 
 def test_scan_transcribes_trash_is_confirmed_and_persistent(tmp_path, local_model):

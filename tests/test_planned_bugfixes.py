@@ -1,6 +1,7 @@
 """Planned October fixes, using only synthetic documents and local model responses."""
 from conftest import inbox_scan
 from home_manager.finance import family_corrections
+from model_server import vision_answer
 from test_correction_preview import app_client, itemised_receipt  # noqa: F401
 from test_extraction import MISSING, cite, extract, transcribe, value
 from test_receipts import make_receipt
@@ -171,7 +172,7 @@ def test_record_selected_reuses_readings_and_records_sequentially(tmp_path, loca
         make_receipt(manager.store.library.inbox / 'second.png', ['SECOND BILL', 'Amount due USD 30.00'])
         inbox_scan(manager.store)
         second = next(row for row in manager.store.documents()['items'] if row['relative_path'] == 'second.png')
-        local_model['outputs'] = [{'full_text': 'SECOND BILL\nAmount due USD 30.00'}]
+        local_model['outputs'] = [vision_answer('SECOND BILL\nAmount due USD 30.00')]
         manager.start_receipt_batch(document_ids=[first['id'], second['id']])
         manager.future.result(timeout=30)
         assert all(row['folder'] == 'Inbox' and row['ledger_status'] is None for row in manager.store.documents()['items'])

@@ -18,7 +18,7 @@ from home_manager.household.items import ItemLedger, ResolutionFields
 from home_manager.household.tax_tables import TaxTables
 from home_manager.household.warranty import Warranties
 from home_manager.library.scanner import ScanLimits
-from model_server import start_model_server
+from model_server import start_model_server, vision_answer
 from test_extraction import MISSING, cite, value
 from test_receipts import make_receipt
 
@@ -27,7 +27,7 @@ def _read_and_record(manager, model, name, lines, outputs):
     """Draw lines into Library/Inbox/name, then capture it: the fake vision model reads it and, with a reasoning model
     set, it is recorded from outputs. Returns the document's id."""
     make_receipt(manager.store.library.inbox / name, lines)
-    model["outputs"] = [{"full_text": "\n".join(lines)}, *outputs]
+    model["outputs"] = [vision_answer("\n".join(lines)), *outputs]
     manager.start_inbox()
     manager.future.result(timeout=60)
     return next(doc["id"] for doc in manager.store.documents()["items"] if doc["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] == name)

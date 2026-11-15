@@ -11,6 +11,7 @@ from home_manager.library.managed_library import LIBRARY_FOLDERS, filename
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import MIGRATIONS, Store
 from home_manager.library.trash import empty
+from model_server import vision_answer
 from test_reasoning import proposal
 from test_receipts import make_receipt
 
@@ -420,7 +421,7 @@ def test_inbox_analysis_files_supported_receipt_and_preserves_manual_override(tm
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     try:
         manager.configure(str(tmp_path / "managed"))
-        local_model["output"]["full_text"] += "\nLATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00"
+        local_model["output"]["lines"] += vision_answer("LATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00")["lines"]
         image = manager.store.library.inbox / "random.png"
         make_receipt(image)
         original = image.read_bytes()

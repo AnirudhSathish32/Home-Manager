@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from home_manager.app.api import create_app
 from home_manager.app.manager import Manager
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 from test_reasoning import prepared, proposal  # noqa: F401 (fixture)
 from test_receipts import make_receipt
 
@@ -53,7 +54,7 @@ def test_changed_weights_or_unknown_identity_never_reuse_results(prepared, local
     manager.future.result(timeout=10)
     assert not third["reused"]
     assert manager.reasoning.get(third["run_id"])["status"] == "succeeded"
-    local_model["output"] = {"full_text": "LOCAL TEST CAFE\nTotal 25.00", "tables": []}
+    local_model["output"] = vision_answer("LOCAL TEST CAFE\nTotal 25.00", tables=[])
     requests = len(local_model["requests"])
     batch = manager.start_receipt_batch()["batch_id"]
     manager.future.result(timeout=30)

@@ -11,6 +11,15 @@ from home_manager.models.http_server import GracefulHTTPServer
 from home_manager.models.vision import VisionConfig
 
 
+def vision_answer(text, indents=None, tables=None):
+    """A v7 vision answer (FR-16): {"lines": [{"text", "indent"}], "tables"?}. text is one string (split on line breaks) or a
+    list of lines; indents gives one indent per line (default 0 on every line)."""
+    texts = text.split("\n") if isinstance(text, str) else list(text)
+    indents = [0] * len(texts) if indents is None else indents
+    return {"lines": [{"text": line, "indent": indent} for line, indent in zip(texts, indents)],
+            **({"tables": tables} if tables is not None else {})}
+
+
 class ModelServer(GracefulHTTPServer):
     """Waits for each client to close before closing (docs/development.md, "Windows loopback resets")."""
 
@@ -22,7 +31,7 @@ def start_model_server(port=0):
              # Served by GET /v1/models; changing model_meta simulates different weights under one ID.
              "models": ["synthetic-vision", "synthetic-reasoning", "test-reasoning", "reasoner"],
              "model_meta": {"size": 4_000_000_000, "n_params": 9_000_000_000},
-             "output": {"full_text": "LOCAL TEST CAFE\n2026-09-22\nUSD\nSubtotal 20.00\nTax 2.00\nTip 3.00\nTotal 25.00\nReturns within 14 days"}}
+             "output": vision_answer("LOCAL TEST CAFE\n2026-09-22\nUSD\nSubtotal 20.00\nTax 2.00\nTip 3.00\nTotal 25.00\nReturns within 14 days")}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):

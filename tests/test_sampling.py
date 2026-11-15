@@ -10,7 +10,7 @@ from home_manager.models.model_client import recording, request_completion
 from home_manager.models.vision import VisionConfig
 from test_extraction import RECEIPT, classification, extract, receipt_summary, transcribe, value
 
-SCHEMA = {"type": "object", "properties": {"full_text": {"type": "string"}}, "required": ["full_text"], "additionalProperties": False}
+SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False}
 
 
 def ask(config, system="Read it."):

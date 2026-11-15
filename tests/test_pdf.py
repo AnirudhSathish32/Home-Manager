@@ -7,11 +7,13 @@ import pytest
 from conftest import inbox_scan
 from home_manager.app.manager import Manager
 from home_manager.core.jobs import Work
+from home_manager.documents.pdf_reader import PDF_VERSION
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
 from home_manager.models.vision import VisionConfig
+from model_server import vision_answer
 
 
 def make_pdf(path, pages, unicode_map=None, type3_scale=None):
@@ -116,7 +118,7 @@ def test_mixed_pdf_uses_embedded_text_and_vision_only_for_scanned_pages(pdf_stor
     source, store = pdf_store
     make_pdf(source / "statement.pdf", [STATEMENT, None, "Transactions continued\n2026-08-03 GROCERY MART -45.10\n2026-08-09 PAYROLL DEPOSIT +2,000.00"])
     doc = capture(source, store)
-    local_model["output"] = {"full_text": "SCANNED PAGE TWO\nHandwritten note 12.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE TWO\nHandwritten note 12.00")
     service = ReceiptService(store)
     run_id, created = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(run_id, Work("inference", "transcription", "PDF", sink=store.record_model_run))
@@ -134,7 +136,7 @@ def test_mixed_pdf_uses_embedded_text_and_vision_only_for_scanned_pages(pdf_stor
     assert [line["id"] for line in result["lines"]] == [line["id"] for page in result["pages"] for line in page["lines"]]
     assert store.blob_path(doc["current_hash"]).read_bytes() == (source / "statement.pdf").read_bytes()
     [telemetry] = store.model_runs(run_id)
-    assert telemetry["task"] == "transcription" and telemetry["prompt_version"] == "pdf-pages-v3-layout"
+    assert telemetry["task"] == "transcription" and telemetry["prompt_version"] == PDF_VERSION
 
 
 def test_embedded_pdf_explicit_table_rows_are_preserved(pdf_store):

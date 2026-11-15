@@ -23,7 +23,7 @@ from ..models.model_client import resolve_identity
 from ..models.vision import VISION_VERSION, VisionConfig, transcribe_preview
 from .grouping import Groups
 from .pdf_layout import PDF_EVIDENCE_BYTES, PDF_PREVIEW_BYTES, PDF_RUN_RESERVATION
-from .pdf_reader import GROUP_VERSION, PDF_VERSION, PDF_VERSIONS, PDFResult, combine_pages, complete_pdf, read_result
+from .pdf_reader import GROUP_VERSION, GROUP_VERSIONS, LAYOUT_PDF_VERSIONS, PDF_VERSION, PDF_VERSIONS, PDFResult, combine_pages, complete_pdf, read_result
 from .receipt_schema import ReceiptResult
 
 log = logging.getLogger(__name__)
@@ -115,15 +115,15 @@ class ReceiptService:
     def publish(self, run_id):
         run = self.get(run_id)
         folder = self.folder(run_id)
-        if run["parser_version"] in (*PDF_VERSIONS, GROUP_VERSION, "receipt-images-v1"):
+        if run["parser_version"] in (*PDF_VERSIONS, *GROUP_VERSIONS):
             path = safe_path(folder / "result.json")
-            if path.stat().st_size > (PDF_EVIDENCE_BYTES if run["parser_version"] == PDF_VERSION else 4 * 1024**2):
+            if path.stat().st_size > (PDF_EVIDENCE_BYTES if run["parser_version"] in LAYOUT_PDF_VERSIONS else 4 * 1024**2):
                 raise ValueError("PDF evidence exceeds storage limits.")
             result = PDFResult.model_validate_json(path.read_bytes())
             if result.input_hash != run["blob_hash"] or result.parser_version != run["parser_version"] \
                     or (result.page_hashes or None) != run["options"].get("pages"):
                 raise ValueError("Page evidence does not match preserved bytes.")
-            if run["parser_version"] == PDF_VERSION:
+            if run["parser_version"] in LAYOUT_PDF_VERSIONS:
                 from PIL import Image
 
                 preview_bytes = 0
@@ -189,7 +189,7 @@ class ReceiptService:
                 with self.store.connection() as db:
                     db.execute("UPDATE parse_runs SET model_identity=? WHERE id=?", (identity, run_id))
             rotation = str(run["options"]["clockwise_rotation"])
-            if run["parser_version"] == GROUP_VERSION:
+            if run["parser_version"] in GROUP_VERSIONS:
                 # A combined document: each page image is prepared by its own bounded child, then transcribed.
                 readings = []
                 for number, digest in enumerate(run["options"]["pages"], 1):

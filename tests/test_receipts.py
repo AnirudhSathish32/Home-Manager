@@ -10,6 +10,7 @@ import zxingcpp
 from conftest import inbox_scan
 from home_manager.documents.receipt_service import ReceiptService
 from home_manager.library.storage import MIGRATIONS, Store
+from model_server import vision_answer
 
 
 def make_receipt(path, texts=None):
@@ -138,7 +139,7 @@ def test_missing_model_does_not_queue_ocr(receipt_store):
 @pytest.mark.parametrize("text", ["Total [unreadable]", "[no visible text]"])
 def test_unreadable_transcription_is_partial(receipt_store, local_model, text):
     _, store, doc, _ = receipt_store
-    local_model["output"] = {"full_text": text}
+    local_model["output"] = vision_answer(text)
     service = ReceiptService(store)
     run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(run_id)

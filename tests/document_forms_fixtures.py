@@ -6,6 +6,7 @@ transcription's line ids are (line-1, line-2, …).
 """
 
 from home_manager.core.identifiers import mask
+from model_server import vision_answer
 
 MISSING = {"value": None, "status": "missing", "evidence": []}
 AMBIGUOUS = {"value": None, "status": "ambiguous", "evidence": []}
@@ -405,7 +406,7 @@ def record_document(manager, model, name, lines, replies, tables=None):
     keyed by schema name. Returns (document, parse run id, extraction run)."""
     from test_receipts import make_receipt
     make_receipt(manager.store.library.inbox / name, lines)
-    model["outputs"] = [{"full_text": "\n".join(lines), **({"tables": tables} if tables is not None else {})}]
+    model["outputs"] = [vision_answer(lines, tables=tables)]
     model["by_schema"] = replies
     manager.start_inbox()
     manager.future.result(timeout=60)

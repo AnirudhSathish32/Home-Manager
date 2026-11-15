@@ -14,6 +14,7 @@ from home_manager.documents.extraction import ExtractionService, PayLines, ask
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 from test_receipts import make_receipt
 
 RECEIPT = ["LOCAL TEST CAFE", "2026-09-22", "USD", "Subtotal 20.00", "Tax 2.00", "Tip 3.00", "Total 25.00",
@@ -62,7 +63,7 @@ def test_structured_paystub_cells_override_wrong_column_model_values(tmp_path, l
     try:
         manager.configure(str(tmp_path / "managed"))
         make_receipt(manager.store.library.inbox / "stub.png")
-        local_model["output"] = {"full_text": "\n".join(lines), "tables": tables}
+        local_model["output"] = vision_answer(lines, tables=tables)
         manager.configure_vision(local_model["config"])
         manager.start_inbox(); manager.future.result(timeout=30)
         manager.configure_reasoning(ReasoningConfig(base_url=local_model["config"].base_url, model="synthetic-reasoning"))
@@ -132,7 +133,7 @@ def transcribe(tmp_path, local_model, lines, tables=None, file_name="document.pn
     manager.configure(str(tmp_path / "managed"))
     month = manager.store.library.inbox
     make_receipt(month / file_name)
-    local_model["output"] = {"full_text": "\n".join(lines), **({"tables": tables} if tables is not None else {})}
+    local_model["output"] = vision_answer(lines, tables=tables)
     manager.configure_vision(local_model["config"])
     manager.start_inbox()
     manager.future.result(timeout=30)

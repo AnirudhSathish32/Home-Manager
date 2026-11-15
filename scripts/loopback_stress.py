@@ -65,7 +65,7 @@ def main():
     state, stop = start_model_server()
     state["forget_requests"] = True
     if args.response_bytes:
-        state["output"] = {"full_text": "y" * args.response_bytes}
+        state["output"] = {"lines": [{"text": "y" * args.response_bytes, "indent": 0}]}
     body = json.dumps({"messages": [{"role": "user", "content": "x" * args.body_bytes}]}).encode()
     send = raw_request if args.mode == "raw" else app_request
     failures, durations, lock, counter = [], [], threading.Lock(), iter(range(args.requests))

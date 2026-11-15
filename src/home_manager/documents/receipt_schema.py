@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from ..core.folders import HistoricalFolder
 
@@ -26,6 +26,17 @@ class TextLine(StrictModel):
     id: str
     text: str = Field(max_length=32768)
     block_ids: list[str]
+    # How far in the vision model printed the line: 0 main left edge, 1 under the line above, 2 deeper. None = unknown
+    # (OCR, embedded PDF text, readings saved before indent existed); docs/documents.md "Images (vision transcription)".
+    indent: int | None = Field(default=None, ge=0, le=2)
+
+    @model_serializer(mode="wrap")
+    def omit_unknown_indent(self, handler):
+        # An unknown indent is left out of every dump, so a line read before indent existed serializes byte for byte as it did.
+        data = handler(self)
+        if data.get("indent") is None:
+            data.pop("indent", None)
+        return data
 
 
 class VisionCell(StrictModel):

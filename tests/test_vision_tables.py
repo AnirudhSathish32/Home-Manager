@@ -9,6 +9,7 @@ from home_manager.documents.reasoning import EvidenceQuote, ReasoningConfig
 from home_manager.documents.receipt_schema import TextLine
 from home_manager.documents.vision_tables import embedded_tables, restore_text_tables, validate_tables, verify_saved_tables
 from home_manager.models.vision import transcribe
+from model_server import vision_answer
 from test_receipts import make_receipt
 
 
@@ -107,11 +108,11 @@ def test_vision_response_discards_invalid_table_but_keeps_full_text(tmp_path, lo
     make_receipt(image)
     lines, raw = sample()
     full_text = "\n".join(line.text for line in lines)
-    local_model["output"] = {"full_text": full_text, "tables": raw}
+    local_model["output"] = vision_answer(full_text, tables=raw)
     reading = transcribe(local_model["config"], image)
     assert reading.full_text == full_text and reading.tables == raw and not reading.table_issue
     bad = [{**raw[0], "rows": [{"line_index": 1, "cells": ["Regular pay", "52000.00", "2000.00"]}]}]
-    local_model["output"] = {"full_text": full_text, "tables": bad}
+    local_model["output"] = vision_answer(full_text, tables=bad)
     reading = transcribe(local_model["config"], image)
     assert reading.full_text == full_text and reading.tables == [] and reading.table_issue
 
@@ -119,11 +120,11 @@ def test_vision_response_discards_invalid_table_but_keeps_full_text(tmp_path, lo
 def test_malformed_structured_response_gets_one_text_only_retry(tmp_path, local_model):
     image = tmp_path / "document.png"
     make_receipt(image)
-    local_model["outputs"] = [{"wrong": "shape"}, {"full_text": "Regular pay | 2000.00 | 52000.00"}]
+    local_model["outputs"] = [{"wrong": "shape"}, vision_answer("Regular pay | 2000.00 | 52000.00")]
     reading = transcribe(local_model["config"], image)
     assert reading.table_issue and reading.full_text.startswith("Regular pay")
     assert len(local_model["requests"]) == 2
-    assert set(local_model["requests"][1]["response_format"]["json_schema"]["schema"]["properties"]) == {"full_text"}
+    assert set(local_model["requests"][1]["response_format"]["json_schema"]["schema"]["properties"]) == {"lines"}
 
 
 def test_paystub_classification_request_contains_named_cells(local_model):

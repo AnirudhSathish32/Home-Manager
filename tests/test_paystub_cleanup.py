@@ -22,6 +22,7 @@ from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance import paystub_tables
 from home_manager.finance.ledger import Ledger
+from model_server import vision_answer
 import paystub_engine_fixtures as pf
 import pdf_import_fixtures as fx
 from table_engine_fixtures import row_items, width
@@ -862,7 +863,7 @@ def test_a_scanned_page_of_a_text_pdf_stub_keeps_its_vision_tables_beside_the_en
     inbox, store = pdf_store
     make_pdf(inbox / "mixed.pdf", [{"items": MINI_13}, None])
     doc = capture(inbox, store)
-    local_model["output"] = {"full_text": "Other earnings\nDescription | Current | YTD\nBonus | 100.00 | 500.00"}
+    local_model["output"] = vision_answer("Other earnings\nDescription | Current | YTD\nBonus | 100.00 | 500.00")
     service = ReceiptService(store)
     parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(parse_id, Work.detached())

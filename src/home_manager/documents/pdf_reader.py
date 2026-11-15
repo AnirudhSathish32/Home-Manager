@@ -11,10 +11,13 @@ from .pdf_layout import MAX_DOCUMENT_CHARACTERS, PDF_EVIDENCE_BYTES, PDF_PREVIEW
 from .receipt_schema import Issue, ReceiptResult, Region, StrictModel, TextLine, VisionTables
 from .vision_tables import embedded_tables, restore_text_tables, validate_tables, verify_saved_tables
 
-PDF_VERSION = "pdf-pages-v3-layout"
-PDF_VERSIONS = ("pdf-pages-v1", "pdf-pages-v2-tables", PDF_VERSION)
+PDF_VERSION = "pdf-pages-v4-indent"
+PDF_VERSIONS = ("pdf-pages-v1", "pdf-pages-v2-tables", "pdf-pages-v3-layout", PDF_VERSION)
+# Versions whose result carries a native layout capture (and so the larger evidence limit and the preview check).
+LAYOUT_PDF_VERSIONS = ("pdf-pages-v3-layout", PDF_VERSION)
 # Several images read as one document's pages (documents/grouping.py), in the same page-aware shape as a PDF.
-GROUP_VERSION = "receipt-images-v2-tables"
+GROUP_VERSION = "receipt-images-v3-indent"
+GROUP_VERSIONS = ("receipt-images-v1", "receipt-images-v2-tables", GROUP_VERSION)
 
 
 class PDFPage(StrictModel):
@@ -28,7 +31,8 @@ class PDFPage(StrictModel):
 
 
 class PDFResult(StrictModel):
-    parser_version: Literal["pdf-pages-v1", "receipt-images-v1", "pdf-pages-v2-tables", "receipt-images-v2-tables", "pdf-pages-v3-layout"] = PDF_VERSION
+    parser_version: Literal["pdf-pages-v1", "receipt-images-v1", "pdf-pages-v2-tables", "receipt-images-v2-tables", "pdf-pages-v3-layout",
+                            "pdf-pages-v4-indent", "receipt-images-v3-indent"] = PDF_VERSION
     input_hash: str
     # A combined document: each page's preserved image hash, in page order (input_hash is the first).
     page_hashes: list[str] = Field(default_factory=list, max_length=20)
@@ -89,9 +93,10 @@ def complete_pdf(folder, config, digest, work=None):
         tables = []
         for region, reading in zip(regions or [None], texts):
             start = len(lines)
-            text = reading.full_text if entry["method"] == "vision_model" else reading
-            parts = text.split("\n") if entry["method"] == "vision_model" else text.splitlines()
-            lines += [TextLine(id=f"page-{number}-line-{start + index}", text=line, block_ids=[]) for index, line in enumerate(parts, 1)]
+            # A scanned page keeps the indent the vision model gave each line; embedded text has none (FR-20).
+            parts = reading.lines if entry["method"] == "vision_model" else [(line, None) for line in reading.splitlines()]
+            lines += [TextLine(id=f"page-{number}-line-{start + index}", text=line, block_ids=[], indent=indent)
+                      for index, (line, indent) in enumerate(parts, 1)]
             if entry["method"] == "vision_model" and reading.tables:
                 tables.extend(validate_tables(reading.tables, lines, prefix=f"page-{number}-", index_offset=start,
                                               table_start=len(tables) + 1).tables)
@@ -114,7 +119,7 @@ def combine_pages(folder, digests, readings):
     pages = []
     for number, reading in enumerate(readings, 1):
         ids = {line.id: f"page-{number}-line-{index}" for index, line in enumerate(reading.lines, 1)}
-        lines = [TextLine(id=ids[line.id], text=line.text, block_ids=[]) for line in reading.lines]
+        lines = [TextLine(id=ids[line.id], text=line.text, block_ids=[], indent=line.indent) for line in reading.lines]
         regions = [region.model_copy(update={"first_line": ids.get(region.first_line or ""), "last_line": ids.get(region.last_line or "")})
                    for region in reading.regions]
         tables = []

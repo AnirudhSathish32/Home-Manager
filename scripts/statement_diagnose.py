@@ -60,7 +60,7 @@ VISION_STUB = "(not transcribed: this page needs the vision model)"
 def no_vision(config, image_path, work=None):
     """A page the reader sends to the vision model (no trustworthy text layer) gets a placeholder line: the script calls no model.
     The table engine reads no rows from such a page; Record leaves it to the model's reading."""
-    return vision.VisionText(full_text=VISION_STUB)
+    return vision.VisionText(lines=[(VISION_STUB, None)])
 
 
 vision.transcribe = no_vision  # complete_pdf imports it when it runs.

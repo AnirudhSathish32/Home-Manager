@@ -17,6 +17,7 @@ from home_manager.household.tax_tables import TaxTables
 from home_manager.library.managed_library import clean_label, employer_folder, spelled
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.trash import empty
+from model_server import vision_answer
 from test_extraction import MISSING, cite, extract, transcribe, value
 from test_receipts import make_receipt
 
@@ -238,7 +239,7 @@ def test_browser_shows_jobs_and_how_a_stubs_taxes_were_figured(tmp_path, local_m
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
         make_receipt(manager.store.library.inbox / "stub.png")
-        local_model["output"] = {"full_text": "\n".join(PAYSTUB)}
+        local_model["output"] = vision_answer("\n".join(PAYSTUB))
         manager.configure_vision(local_model["config"])
         manager.start_inbox()
         manager.future.result(timeout=30)

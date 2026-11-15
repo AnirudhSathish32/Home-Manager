@@ -14,6 +14,7 @@ from home_manager.documents.extraction import DETAILS_FAILED, EXTRACTION_VERSION
 from home_manager.finance.ledger import Ledger, rate_display
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.storage import Store
+from model_server import vision_answer
 from receipt_item_fixtures import (
     D_LINES,
     D_SHARES,
@@ -506,7 +507,7 @@ def r1_replies(lines):
 def read_other_text(manager, local_model, lines):
     """A new transcription of the same document with other printed text; returns what to extract again from."""
     doc = manager.store.documents()["items"][0]
-    local_model["output"] = {"full_text": "\n".join(lines)}
+    local_model["output"] = vision_answer("\n".join(lines))
     manager.start_receipt(doc["id"], force=True)
     manager.future.result(timeout=30)
     return doc, manager.receipts.history(doc["id"])[0]["id"]

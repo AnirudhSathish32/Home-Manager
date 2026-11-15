@@ -43,6 +43,7 @@ from home_manager.finance.health import check_ledger
 from home_manager.finance.ledger import HouseholdConfig
 from home_manager.finance.tools import FinanceTools, PeriodInput
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 from test_extraction import RECEIPT, classification, extract, identity, receipt_items, receipt_summary, transcribe
 from test_receipts import make_receipt
 
@@ -664,7 +665,7 @@ def app_session(tmp_path, local_model, lines=None):
         if lines is not None:
             manager.configure(str(tmp_path / "managed"))
             make_receipt(manager.store.library.inbox / "document.png", lines)
-            local_model["output"] = {"full_text": "\n".join(lines)}
+            local_model["output"] = vision_answer("\n".join(lines))
             manager.configure_vision(local_model["config"])
             manager.start_inbox()
             manager.future.result(timeout=30)

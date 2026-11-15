@@ -9,6 +9,7 @@ from home_manager.app.manager import Manager
 from home_manager.documents.reasoning import ReasoningConfig
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.model_client import request_completion
+from model_server import vision_answer
 from test_receipts import make_receipt
 
 
@@ -55,11 +56,11 @@ def test_reasoning_model_falls_back_when_server_rejects_json_schema(local_model)
 
 @pytest.fixture
 def prepared(tmp_path, local_model):
-    local_model["output"]["full_text"] += "\nLATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00"
+    local_model["output"]["lines"] += vision_answer("LATTE 1 @ 5.00 5.00\nLATTE 1 @ 5.00 5.00\nSANDWICH 1 @ 10.00 10.00")["lines"]
     manager = Manager(tmp_path / "control", ScanLimits(stability_seconds=0))
     manager.configure(str(tmp_path / "managed"))
     month = manager.store.library.inbox
-    make_receipt(month / "receipt.png", local_model["output"]["full_text"].splitlines())
+    make_receipt(month / "receipt.png", [line["text"] for line in local_model["output"]["lines"]])
     manager.configure_vision(local_model["config"])
     manager.start_inbox()
     manager.future.result(timeout=30)

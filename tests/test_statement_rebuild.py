@@ -18,6 +18,7 @@ from home_manager.documents.receipt_service import ReceiptService
 from home_manager.finance import pdf_import, statement_rows, statement_tables
 from home_manager.finance.ledger import Ledger
 from home_manager.finance.statement_rows import NO_LAYOUT_NOTE, rebuild, rebuilt_pages
+from model_server import vision_answer
 import pdf_import_fixtures as fx
 import statement_account_fixtures as sf
 from test_pdf import capture, make_pdf, pdf_store  # noqa: F401
@@ -202,7 +203,7 @@ def test_pcheck_m_page_one_is_s_native_and_page_two_is_read_once_by_the_vision_s
     source, store = pdf_store
     make_pdf(source / "m.pdf", sf.m_pages())
     doc = capture(source, store)
-    local_model["output"] = {"full_text": "SCANNED PAGE\n09/27 SCANNED CAFE 7.00"}
+    local_model["output"] = vision_answer("SCANNED PAGE\n09/27 SCANNED CAFE 7.00")
     service = ReceiptService(store)
     run_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(run_id, Work("inference", "transcription", "PDF", sink=store.record_model_run))
@@ -550,7 +551,7 @@ def stored(pdf_store, local_model, pages, scanned=None):
     make_pdf(inbox / "statement.pdf", pages)
     doc = capture(inbox, store)
     if scanned:
-        local_model["output"] = {"full_text": scanned}
+        local_model["output"] = vision_answer(scanned)
     service = ReceiptService(store)
     parse_id, _ = service.enqueue(doc["id"], vision=local_model["config"])
     service.run(parse_id, Work.detached())

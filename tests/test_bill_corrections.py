@@ -13,6 +13,7 @@ from conftest import assert_ledger_healthy
 from home_manager.documents import extraction
 from home_manager.finance import bill_tables
 from home_manager.finance.ledger import LINE_CORRECTIONS, Ledger
+from model_server import vision_answer
 from test_bill_engine_record import (  # noqa: F401  (no_network is autouse: C-net)
     PHONE_FIELDS,
     UTIL_FIELDS,
@@ -286,7 +287,7 @@ def test_sc119_c_a_photographed_bill_holds_a_member_when_a_line_is_added_above_i
         doc = manager.store.documents()["items"][0]
 
         def read_again(lines, replies):
-            local_model["output"] = {"full_text": "\n".join(lines)}
+            local_model["output"] = vision_answer("\n".join(lines))
             manager.start_receipt(doc["id"], force=True)
             manager.future.result(timeout=30)
             parse_id = manager.receipts.history(doc["id"])[0]["id"]

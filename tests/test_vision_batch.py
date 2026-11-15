@@ -8,6 +8,7 @@ from home_manager.app.api import create_app
 from home_manager.app.manager import Manager
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.vision import VisionConfig, transcribe
+from model_server import vision_answer
 from test_receipts import make_receipt
 
 
@@ -22,14 +23,15 @@ def test_real_http_image_payload_and_invalid_responses(tmp_path, local_model):
     image = tmp_path / "receipt.png"
     make_receipt(image)
     output = transcribe(local_model["config"], image)
-    assert output.full_text == local_model["output"]["full_text"]
+    assert output.full_text == "\n".join(line["text"] for line in local_model["output"]["lines"])
     request = local_model["requests"][0]
     assert local_model["path"] == "/v1/chat/completions"
     assert request["model"] == "synthetic-vision"
     assert request["response_format"]["type"] == "json_schema"
     schema = request["response_format"]["json_schema"]["schema"]
-    assert schema["required"] == ["full_text", "tables"]
-    assert set(schema["properties"]) == {"full_text", "tables"}
+    assert schema["required"] == ["lines", "tables"]
+    assert set(schema["properties"]) == {"lines", "tables"}
+    assert schema["properties"]["lines"]["items"]["required"] == ["text", "indent"]
     assert set(schema["properties"]["tables"]["items"]["properties"]) == {"header_rows", "rows"}
     assert schema["additionalProperties"] is False
     payload = request["messages"][1]["content"][1]["image_url"]["url"]
@@ -38,7 +40,7 @@ def test_real_http_image_payload_and_invalid_responses(tmp_path, local_model):
     with pytest.raises(ValueError, match="truncated"):
         transcribe(local_model["config"], image)
     local_model["finish_reason"] = "stop"
-    local_model["output"] = {"title": "", "full_text": "invented"}
+    local_model["output"] = {"title": "", **vision_answer("invented")}
     with pytest.raises(ValueError, match="valid full text"):
         transcribe(local_model["config"], image)
     local_model["status"] = 302
@@ -97,7 +99,7 @@ def test_batch_versions_duplicates_failures_reuse_and_restart(tmp_path, local_mo
         run = manager.receipts.history(receipt["id"])[0]
         result = manager.receipts.get(run["id"])["result"]
         assert result["transcription_method"] == "vision_model"
-        assert result["model_text"] == local_model["output"]["full_text"]
+        assert result["model_text"] == "\n".join(line["text"] for line in local_model["output"]["lines"])
         assert qr in result["extracted_text"]
         assert result["fields"] is None
         assert not result["blocks"]  # Never fabricate spatial evidence for generated text.

@@ -12,6 +12,7 @@ import uvicorn
 
 from home_manager.app.api import create_app
 from home_manager.library.scanner import ScanLimits
+from model_server import vision_answer
 
 
 @pytest.mark.skipif(os.environ.get("RUN_BROWSER_TESTS") != "1", reason="Opt-in local browser test")
@@ -38,7 +39,7 @@ def test_real_browser_checks_and_donates_a_receipt(tmp_path, local_model):
         manager = app.state.manager
         manager.configure(str(tmp_path / "managed"))
         make_receipt(manager.store.library.inbox / "cafe.png")
-        local_model["output"] = {"full_text": "\n".join(RECEIPT)}
+        local_model["output"] = vision_answer("\n".join(RECEIPT))
         manager.configure_vision(local_model["config"])
         manager.start_inbox()
         manager.future.result(timeout=30)

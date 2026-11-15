@@ -43,6 +43,7 @@ from home_manager.documents.layout_context import evidence_lines
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker
 from home_manager.finance.statement_dates import Rebuild
 from home_manager.library.storage import digest_file
+from model_server import vision_answer
 from test_donations import DESCRIBE, extracted  # noqa: F401
 from test_extraction import MISSING, RECEIPT, classification, identity, receipt, receipt_items, receipt_summary  # noqa: F401
 
@@ -255,7 +256,7 @@ def config_for(local_model):
 
 
 def scripted(summary):
-    return [{"full_text": "\n".join(RECEIPT)}, classification(), summary, identity(), receipt_items(), DESCRIBE, {"rewards": []}]
+    return [vision_answer("\n".join(RECEIPT)), classification(), summary, identity(), receipt_items(), DESCRIBE, {"rewards": []}]
 
 
 def test_a_run_reads_each_case_through_the_real_pipeline_grades_it_and_reports_regressions(extracted, local_model, tmp_path):  # noqa: F811
@@ -277,7 +278,7 @@ def test_a_run_reads_each_case_through_the_real_pipeline_grades_it_and_reports_r
     # --keep-outputs: each answer's text, in a private file of its own.
     [kept] = [json.loads(text) for text in (first / "outputs.jsonl").read_text(encoding="utf-8").splitlines()]
     assert kept["case_id"] == case_id and [attempt["task"] for attempt in kept["attempts"]] == ["transcription"] + ["extraction"] * 6
-    assert json.loads(kept["attempts"][0]["text"]) == {"full_text": "\n".join(RECEIPT)}
+    assert json.loads(kept["attempts"][0]["text"]) == vision_answer("\n".join(RECEIPT))
     report = (first / "report.md").read_text(encoding="utf-8")
     assert "## Leaderboard" in report and "| synthetic | 1 of 1 | 100.0% | 0 of 7 | 3 of 3 | 1 of 1 |" in report
     assert "**synthetic is the only candidate that passes the gate.**" in report
@@ -304,7 +305,7 @@ def test_a_run_reads_each_case_through_the_real_pipeline_grades_it_and_reports_r
     assert not (second / "outputs.jsonl").exists()  # Only kept when asked for.
     # An invented total fails the app's evidence check twice: a validator failure after one correction turn.
     invented = receipt_summary(total={"value": "26.00", "status": "proposed", "evidence": [{"line_id": "line-7", "quote": "Total 25.00"}]})
-    local_model["outputs"] = [{"full_text": "\n".join(RECEIPT)}, classification(), invented, invented]
+    local_model["outputs"] = [vision_answer("\n".join(RECEIPT)), classification(), invented, invented]
     third = run(corpus, config_for(local_model), network_guard=False, echo=lambda _: None)
     [line] = [json.loads(text) for text in (third / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     assert line["status"] == "extract_failed" and line["details"]["failure"] == "validator_fail" and line["details"]["first_try_valid"] is False
