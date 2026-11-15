@@ -404,7 +404,7 @@ Failure/retry/restart variants:
 Evidence: pytest, plus the browser test for step 1.
 
 ## SC-08 — Changing the kind away from dining and back
-Requirement IDs: FR-13
+Requirement IDs: FR-13 (D42)
 Nondeterministic components: B0, then B7 for the grocery re-read, then B0's dining form
 Initial state: SC-01 after step 7, approved (review action "approve", `review_source` user). One memory row
 inserted as fixture state: seller "Gacha's Breakfast Bar", item "Coffee" → groceries.
@@ -421,9 +421,14 @@ Actions/checkpoints:
 Expected final state: kind dining, `verified`, split all dining, sum 6155 throughout. Memory: the one fixture row only
 (a kind change writes no memory).
 Failure/retry/restart variants:
-- (a) Grocery → dining on a verified grocery receipt (the dining stub answers for the same lines) → split all in the
-  receipt's category at once.
+- (a) Grocery → dining on a verified grocery receipt (the dining stub answers for the same lines; receipt category
+  groceries) → the receipt's category becomes dining and the split is C-cat(dining) at once, C-sum unchanged, C-col(hidden)
+  (D42). Undo of that kind change → category groceries, the receipt split C-snap of its state before the change.
 - (b) A kind change while a reading of the file is running → refused as today; split unchanged.
+- (c) As (a), but Edit details → Categories → Travel was applied before the kind change → after the change to dining the
+  category stays travel and the split is all travel (your correction stands, D42); Undo → category travel, earlier split.
+- (d) As (a), then Edit details → Categories → Travel after the change; Undo of the kind change → category stays travel
+  (corrected since), the items and flag go back as the snapshot says.
 Evidence: pytest.
 
 ## SC-09 — An old dining receipt keeps its categories until read again
