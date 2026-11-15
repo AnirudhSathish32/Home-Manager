@@ -7,13 +7,14 @@ X-Q1) is checked beside them, and a kind change with its Undo and the item-categ
 Test functions of later slices are added to this file by those slices."""
 
 from decimal import Decimal
+import hashlib
 import json
 import sqlite3
 from typing import get_origin
 
 import pytest
 
-from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, grocery_re_read_stub, insert_old_receipts
+from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, find, grocery_re_read_stub, image_id, insert_old_receipts, proposed
 from home_manager.app.manager import Manager
 from home_manager.core.categories import LEGACY_CATEGORIES
 from home_manager.core.money import amount_text
@@ -21,9 +22,11 @@ from home_manager.documents import dining_total
 from home_manager.documents.extraction import looks_like_several
 from home_manager.documents.receipt_schema import TextLine
 from home_manager.finance.item_categories import ItemCategorizer
+from home_manager.finance.family_routing import apply_delivery, record_payload
 from home_manager.finance.ledger import CATEGORY_REFUSED, normalize_name
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import ScanLimits
+from home_manager.library.storage import Store
 from test_dining_baseline_capture import start_reasoning
 from test_migrations import MIGRATIONS
 from test_receipt_kinds import app_session, check_named, inputs_by_key, trace_of
@@ -1333,6 +1336,68 @@ def test_a_kind_change_that_rewrites_the_receipt_stores_the_snapshot_and_undo_pu
         manager.close()
 
 
+def same_amounts_grocery_stub():
+    """B7 with the summary's total and tip the dining reading's own (61.55 and 8.79, from the table line), so the two readings differ in kind and category only."""
+    texts, indents, replies = grocery_re_read_stub()
+    table = find(texts, "18.00% of sale: $8.79 Total $61.55")
+    summary = replies["ReceiptGrocerySummary"][0]
+    summary["total"], summary["tip"] = proposed(texts, table, image_id, "61.55", "$61.55"), proposed(texts, table, image_id, "8.79", "$8.79")
+    return replies
+
+
+def category_of(manager, receipt_id):
+    with manager.store.connection() as db:
+        return db.execute("SELECT category FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
+
+
+def test_undo_of_a_kind_change_on_an_unreviewed_receipt_gives_back_the_whole_split_both_ways(tmp_path, local_model):
+    """The reading a kind change starts rewrites the receipt's category (dining for a dining reading, the model's otherwise); Undo puts it back
+    with the flag and the item categories, so the splits are what they were: dining to grocery and back, then grocery to dining and back."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        before_split, before_items = splits_of(manager), stored_categories(manager, receipt_id)
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("dining", 1)
+        kind_change(manager, local_model, receipt_id, "grocery", same_amounts_grocery_stub())
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("groceries", 0)
+        undo_kind(manager, receipt_id)
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("dining", 1)
+        assert splits_of(manager) == before_split and stored_categories(manager, receipt_id) == before_items
+        assert_split(manager, receipt_id, 6155)
+        # The other way: the grocery reading, then dining, then Undo.
+        kind_change(manager, local_model, receipt_id, "grocery", same_amounts_grocery_stub())
+        grocery_split, grocery_items = splits_of(manager), stored_categories(manager, receipt_id)
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("dining", 1)
+        undo_kind(manager, receipt_id)
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("groceries", 0)
+        assert splits_of(manager) == grocery_split and stored_categories(manager, receipt_id) == grocery_items
+    finally:
+        manager.close()
+
+
+def test_undo_of_a_kind_change_keeps_a_category_you_corrected_since_and_a_snapshot_without_one_leaves_it(tmp_path, local_model):
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        kind_change(manager, local_model, receipt_id, "grocery", same_amounts_grocery_stub())
+        manager.ledger.correct("receipt", receipt_id, {"category": "travel"})
+        undo_kind(manager, receipt_id)
+        assert (category_of(manager, receipt_id), one_category_flag(manager, receipt_id)) == ("travel", 1)
+        assert_split(manager, receipt_id, 6155, "travel")
+        # A snapshot taken before it held the category (key absent) leaves the category as the reading set it.
+        undo_kind(manager, receipt_id)  # The Undo undone: grocery again, with the category you chose.
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        with manager.store.connection() as db:
+            db.execute("UPDATE record_corrections SET item_categories_json=json_remove(item_categories_json,'$.category') "
+                       "WHERE id=(SELECT max(id) FROM record_corrections WHERE field='receipt_kind')")
+            db.execute("UPDATE receipts SET category='lodging' WHERE id=?", (receipt_id,))
+        undo_kind(manager, receipt_id)
+        assert category_of(manager, receipt_id) == "lodging"
+    finally:
+        manager.close()
+
+
 def test_undo_of_a_kind_change_on_an_old_dining_receipt_gives_back_its_own_categories_and_an_unset_flag(tmp_path, local_model):
     """Receipt D (approved, FR-10 never applied, one item the user's choice): away from dining and Undo, nothing is applied by the Undo."""
     manager, ids = old_manager(tmp_path, local_model, ["D"])
@@ -1671,4 +1736,35 @@ def test_sc20c_the_documents_of_a_removed_link_no_longer_show_each_other_as_the_
         with manager.store.connection() as db:
             assert db.execute("SELECT count(*) FROM occurrence_links WHERE status='rejected'").fetchone()[0] == 0
     finally:
+        manager.close()
+
+
+def test_a_dining_receipt_delivered_by_the_family_counts_wholly_under_its_category(tmp_path, local_model):
+    """FR-14 (a) lists a family-sent receipt: the copy in a person's library is a dining receipt, so FR-10 applies there whatever its items
+    carried in the family's library and whatever that person's own item memory says."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    person = Store(tmp_path / "person")
+    try:
+        receipt_id = run["publication"]["id"]
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET category='travel' WHERE id=?", (receipt_id,))
+            db.execute("UPDATE receipt_items SET category='groceries',category_source='model' WHERE receipt_id=? AND position=1", (receipt_id,))
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert (record["receipt_kind"], record["category"]) == ("dining", "travel") and record["tip_minor"] == 879
+        document = manager.store.blob_path(row["blob_hash"]).read_bytes()
+        with person.connection() as db:
+            db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,'groceries','t')", COFFEE_MEMORY[0][:2])
+        delivery = {"key": "family-dining-1", "action": "record", "record_type": "receipt", "record": record, "name": "breakfast.png",
+                    "blob_hash": hashlib.sha256(document).hexdigest(), "share": 3000, "people": ["dad", "mom"]}
+        [kind, copy_id] = apply_delivery(person, delivery, document)["record"]
+        with person.connection() as db:
+            copy = dict(db.execute("SELECT * FROM receipts WHERE id=?", (copy_id,)).fetchone())
+            items = [tuple(item) for item in db.execute("SELECT category,category_source FROM receipt_items WHERE receipt_id=? ORDER BY position", (copy_id,))]
+            split = [(item[0], item[1]) for item in db.execute("SELECT category,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL", (copy_id,))]
+        assert (copy["receipt_kind"], copy["one_category"], copy["total_minor"], copy["tip_minor"]) == ("dining", 1, 6155, 879)
+        assert items == [("travel", "receipt")] * 5
+        # Items, the tip and the difference all count under the receipt's category, and the person's part of the total is all of it.
+        assert {category for category, _ in split} == {"travel"} and sum(amount for _, amount in split) == 3000
+    finally:
+        person.close()
         manager.close()

@@ -1183,8 +1183,9 @@ class Ledger:
     @staticmethod
     def category_snapshot(db, receipt_id):
         """The state a kind change (or its Undo) is about to leave, as JSON for record_corrections.item_categories_json: whether FR-10 had
-        applied, and each item's category and where it came from."""
-        return json.dumps({"one_category": db.execute("SELECT one_category FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0],
+        applied, the receipt's own category (the reading that follows rewrites it) and each item's category and where it came from."""
+        flag, category = db.execute("SELECT one_category,category FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        return json.dumps({"one_category": flag, "category": category,
                            "items": [[item["id"], item["category"], item["category_source"]] for item in db.execute(
                                "SELECT id,category,category_source FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))]})
 
@@ -1195,6 +1196,11 @@ class Ledger:
         if row["item_categories_json"]:
             snapshot = json.loads(row["item_categories_json"])
             db.execute("UPDATE receipts SET one_category=? WHERE id=?", (snapshot["one_category"], receipt_id))
+            # The kind's reading rewrote the receipt's category: it goes back too, unless you corrected it since (a snapshot from before this
+            # key was kept leaves it as it is).
+            if "category" in snapshot and not db.execute("SELECT 1 FROM record_corrections WHERE record_type='receipt' AND record_id=? AND field='category' AND id>?",
+                                                         (receipt_id, row["id"])).fetchone():
+                db.execute("UPDATE receipts SET category=? WHERE id=?", (snapshot["category"], receipt_id))
             db.executemany("UPDATE receipt_items SET category=?,category_source=?,updated_at=? WHERE id=? AND receipt_id=?",
                            [(category, category_source, now(), item_id, receipt_id) for item_id, category, category_source in snapshot["items"]])
         elif row["previous"] == "dining":
