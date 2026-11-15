@@ -134,4 +134,68 @@ slices:
       Orchestrator check 2026-11-15: diff touches docs/ only (documents.md, money.md, open-work.md, evals.md transcription shape);
       src/tests/specs/approvals/plan.md unchanged; plan hash matches. 356 doc citations in src, 3 unresolved, all present
       at 66e97d5 (docs/ui.md "Source viewer" x2, docs/documents.md "Known limits"), none added by this feature. No Q2 entry in open-work.
+  SL-10:
+    status: done
+    title: fixes for code review round 1
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: ce84cb6
+    end_head: fe6d547  # a150f9c, 9037ef3, 38d7d78, f9303e5; handoff fe6d547 (worked in worktree Home-Manager-dining-fix1, branch dining-receipt-indent-fix1)
+    verification: >-
+      Orchestrator rerun 2026-11-15 in fix1: test_dining_receipts, test_receipt_side_lines, test_reread_links, test_vision_indent: 188 passed.
+      src diff read (record_payload kind, category_snapshot/_undo_categories category, problems_in side_lines, unlink_documents r.document_id).
+  SL-10b:
+    status: done
+    title: test_paystub_split 076 take-back drops the 081 columns (same class as fix-081-replay)
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: fe6d547
+    end_head: 72a9634  # 83a904a, handoff 72a9634
+    verification: >-
+      Found by the SL-10 worker and the first full run (test_sc75 x2, the only failures beyond baseline). Orchestrator rerun:
+      tests/test_paystub_split.py 37 passed. Test-only, 3 lines.
+  SL-11:
+    status: done
+    title: fixes for code review round 2
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 72a9634
+    end_head: 0935cac  # 6746b8a, handoff 0935cac
+    verification: >-
+      record_payload sends only receipt_kind (no bill_kind, no details) and Ledger.worked_out_tip. Orchestrator rerun of delivery/gift tests: 8 passed.
+  SL-12:
+    status: done
+    title: code review round 3 minor (dining gratuity on delivery)
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 0935cac
+    end_head: 6a640b3  # cefd114, handoff 6a640b3
+    verification: >-
+      A dining receipt also sends its details without tenders. Orchestrator rerun in fix1: test_dining_receipts, test_receipt_side_lines,
+      test_reread_links, test_vision_indent, test_paystub_split, test_family_routing: 237 passed; ruff only the 2 pre-existing findings.
+      fix1 fast-forwarded into dining-receipt-indent at 6a640b3.
+code_review:
+  risk: HIGH  # risk-gate --base reorganize-packages: approved_plan_high_risk, changed_files/lines over limit, sensitive_operation, migration 081
+  reviewer: codex gpt-6.1-sol (reasoningEffort high), independence model-family (implementers anthropic claude-sonnet-5-5)
+  rounds:
+    - round: 1
+      revision: ce84cb6
+      findings:
+        - {severity: MAJOR, what: family delivery omitted receipt_kind so FR-10 not applied (FR-14 a), disposition: confirmed, fixed SL-10}
+        - {severity: MAJOR, what: Undo of a kind change kept the replacement reading's receipts.category (FR-13), disposition: confirmed, fixed SL-10}
+        - {severity: MAJOR, what: B6z 0.00 side rows rejected by row validation before attach_side_lines (FR-23 SC-13 a), disposition: confirmed, fixed SL-10}
+        - {severity: MINOR, what: unlink_documents ignored other receipts of the same document (D41), disposition: confirmed, fixed SL-10}
+      known_items: "(a) difference category not None (fallback uncategorized); (b) FR-13 reviewed grocery->dining counts under groceries per spec; (c) tip note footer only per plan"
+    - round: 2
+      revision: 72a9634
+      prior: all 4 resolved
+      findings:
+        - {severity: MAJOR, what: SL-10 payload details re-deducted gift-card tenders from an already-paid total, disposition: confirmed, fixed SL-11}
+        - {severity: MINOR, what: raw tip_worked_out_json resurrected a corrected tip's marker on the copy, disposition: confirmed, fixed SL-11}
+    - round: 3
+      revision: 0935cac
+      prior: both resolved; no BLOCKER/MAJOR
+      findings:
+        - {severity: MINOR, what: dining copy lost gratuity (details) so its arithmetic check failed, disposition: confirmed, fixed SL-12 (orchestrator-verified; no further review round, budget 3/3)}
+  result: no BLOCKER/MAJOR open after round 3
 final_verification: null
