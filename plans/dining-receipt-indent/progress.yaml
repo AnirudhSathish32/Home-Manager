@@ -124,5 +124,14 @@ slices:
     notes: >-
       Synthetic B0 prints Bottled Water on two lines, shown as two qty-1 rows (faithful to the print). The document page's own
       Tip field (document_v2.js) does not show the note; only the footer does, as the plan says.
-  SL-09: {status: todo}
+  SL-09:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: ab82408
+    end_head: da1fcba  # docs 68a217c, handoff da1fcba
+    verification: >-
+      Orchestrator check 2026-11-15: diff touches docs/ only (documents.md, money.md, open-work.md, evals.md transcription shape);
+      src/tests/specs/approvals/plan.md unchanged; plan hash matches. 356 doc citations in src, 3 unresolved, all present
+      at 66e97d5 (docs/ui.md "Source viewer" x2, docs/documents.md "Known limits"), none added by this feature. No Q2 entry in open-work.
 final_verification: null
