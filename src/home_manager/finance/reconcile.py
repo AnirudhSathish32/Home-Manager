@@ -15,6 +15,7 @@ import json
 
 from ..core import actor
 from ..core.categories import FREQUENCIES, FREQUENCY_MONTHS, RECURRING_KINDS, suggested_kind
+from ..core.money import amount_text
 from ..core.trace import NULL
 from ..household.items import ItemLedger
 from ..library.storage import now
@@ -807,6 +808,75 @@ class Reconciler:
                 from .tax_tags import TaxTags  # tax_tags imports this module.
                 TaxTags(self.ledger.store).apply_rules(db, [link["transaction_id"]])
         return {"kind": kind, "id": link_id, "review_status": status}
+
+    def link_holds(self, db, receipt, link):
+        """Whether a live link between a receipt and a charge still holds for the receipt's counted total (docs/money.md
+        "Reading a statement or receipt again"): the test reconciliation uses to make that kind of link, applied to the new total."""
+        total = receipt["total_minor"]
+        if total is None:
+            return False
+        paid = -link["amount_minor"]
+        if link["currency"] == receipt["currency"]:
+            # A proposed link is only ever made at the exact amount; a link you confirmed also holds for a tip (charge up to 30% above).
+            return paid == total or (link["link_status"] == "verified" and total > 0 and paid > total and paid * 100 <= total * NEAR_PERCENT)
+        estimate = None
+        try:
+            if link["estimate_rate_id"]:  # The rate the link was made at; else the one reconciliation would look up now.
+                estimate = self.rates.resolve(link["estimate_rate_id"], db).convert(total)
+            else:
+                found = self.estimate(db, receipt, link["currency"])
+                estimate = found[1] if found else None
+        except FxError:
+            estimate = None
+        low, high = CROSS_RANGE
+        return estimate is not None and estimate * low <= paid * 100 <= estimate * high
+
+    def drop_stale_links(self, db, receipt_id, before):
+        """A reading was just recorded for this receipt and changed its counted total: remove each live charge link the new total no
+        longer supports, with a note on the receipt (docs/money.md "Reading a statement or receipt again"; FR-28 – FR-30).
+        before: {"total_minor", "merchant_id"} as the receipt had them before the reading. A removed link is deleted, not rejected
+        (a rejected one is a decision about the pair; this is not), so the pair can link again when it matches again. Called
+        inside the publication's transaction. Returns the number removed."""
+        receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        links = db.execute("SELECT l.id AS link_id,l.review_status AS link_status,l.estimate_rate_id,t.* FROM transaction_receipt_links l JOIN transactions t ON t.id=l.transaction_id "
+                           "WHERE l.receipt_id=? AND l.review_status<>'rejected' ORDER BY l.id", (receipt_id,)).fetchall()
+        stale = [link for link in links if not self.link_holds(db, receipt, link)]
+        if not stale:
+            return 0
+        notes, charges = [], []
+        for link in stale:
+            on = link["transaction_date"] or link["posted_date"]
+            reason = (f"this reading's total ({amount_text(receipt['total_minor'], receipt['currency'])}) no longer matches it."
+                      if receipt["total_minor"] is not None else "this reading has no total.")
+            notes.append(f"The match{' you confirmed' if link['link_status'] == 'verified' else ''} to the "
+                         f"{amount_text(link['amount_minor'], link['currency'])} charge on {on} was removed: {reason}")
+            db.execute("DELETE FROM transaction_receipt_links WHERE id=?", (link["link_id"],))
+            if before["merchant_id"]:  # The charge took the merchant's name from the receipt; rules decide again without it.
+                db.execute("UPDATE transactions SET merchant_id=NULL,updated_at=? WHERE id=? AND merchant_id=?", (now(), link["id"], before["merchant_id"]))
+            charges.append(link["id"])
+        self.ledger.apply_rules(db, charges)
+        from .tax_tags import TaxTags  # tax_tags imports this module.
+        TaxTags(self.ledger.store).apply_rules(db, charges)
+        for charge in charges:
+            self.unlink_documents(db, charge, receipt_id, receipt["document_id"])
+        # Each removal is a note on the receipt, which waits in Review until you review it or a later reading replaces its issues.
+        issues = [*json.loads(receipt["validation_json"]), *notes]
+        db.execute("UPDATE receipts SET validation_json=?,review_status='needs_review',review_source=NULL,updated_at=? WHERE id=?", (json.dumps(issues), now(), receipt_id))
+        self.ledger.refresh_paid(db, receipt_id)  # A removed link gets no "Amount paid (" note (docs/money.md "Gift cards").
+        self.ledger.refresh_splits(db, receipt_id)  # The charge's shares for this receipt go.
+        return len(stale)
+
+    @staticmethod
+    def unlink_documents(db, transaction_id, receipt_id, receipt_document):
+        """The two documents of a removed link no longer show each other as the same purchase, unless another live link of this
+        receipt still joins a charge read from that document. Removes verified same_record links only; nothing is marked rejected."""
+        for row in db.execute("SELECT DISTINCT document_id FROM financial_evidence_links WHERE record_type='transaction' AND record_id=? "
+                              "AND document_id IS NOT NULL AND document_id<>?", (transaction_id, receipt_document)).fetchall():
+            if db.execute("SELECT 1 FROM transaction_receipt_links l JOIN financial_evidence_links e ON e.record_type='transaction' AND e.record_id=l.transaction_id "
+                          "WHERE l.receipt_id=? AND l.review_status<>'rejected' AND e.document_id=?", (receipt_id, row["document_id"])).fetchone():
+                continue
+            first, second = sorted((receipt_document, row["document_id"]))
+            db.execute("DELETE FROM occurrence_links WHERE occurrence_id=? AND other_occurrence_id=? AND reason='same_record' AND status='verified'", (first, second))
 
     def link_documents(self, db, transaction_id, receipt_id, status):
         """A person matched a receipt to a charge read from another document (a statement or a CSV): the two documents

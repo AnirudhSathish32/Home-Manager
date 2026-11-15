@@ -747,8 +747,12 @@ def test_sc05_old_receipts_stay_until_read_again(tmp_path, local_model):
         assert (row["total_minor"], row["tip_minor"], shown["tip_worked_out"]) == (6155, 879, True) and cited(run_a, "tip") == ["line-22", "line-23"]
         assert_split(manager, ids["A"], 6155)
         assert stored_categories(manager, ids["A"]) == [("dining", "receipt")] * 5 and WORKED_OUT in shown["issues"] and row["review_status"] == "needs_review"
-        if holder == "B":  # A held no link: its reasons are the FR-06 reason alone (the removal of A's own link is SC-05 step 5's other branch, SL-07).
+        if holder == "B":  # A held no link: its reasons are the FR-06 reason alone; B's link is unchanged (a reading never rewrites what you approved, D39).
             assert link_of(manager, ids["A"]) is None and shown["issues"] == [WORKED_OUT] and link_of(manager, ids["B"])[1:] == (k52, "proposed")
+        else:  # A held the link (proposed; 6155 is not 5276, FR-28): removed with the note, and the reconciliation after the reading links K52 to B (FR-29).
+            assert links_of(manager, ids["A"]) == [] and shown["issues"] == [WORKED_OUT, REMOVED_52] and row["review_status"] == "needs_review"
+            assert charge_rows_of(manager, k52, ids["A"]) == 0 and link_of(manager, ids["B"])[1:] == (k52, "proposed")
+            assert charge_split(manager, k52)[:2] == [("groceries", 395), ("groceries", 395)] and sum(amount for _, amount in charge_split(manager, k52)) == 5276
         # (a) A second Extract again on A with the same stub: the same state, nothing doubled.
         after = table_rows(manager, ids["A"])[2]
         read_again_of(manager, local_model, ids["A"], breakfast_stub("B0")[2])
@@ -865,6 +869,7 @@ def test_sc09_an_old_dining_receipt_keeps_its_categories_until_it_is_read_again(
         assert table_rows(manager, receipt_id) == before
         assert manager.ledger.record("receipt", receipt_id)["category_column"] is True and manager.ledger.record("receipt", receipt_id)["unmatched_minor"] == 391
         # 3. C links to K52 exactly; both splits keep items 1 and 2 under groceries.
+        snapshot = charge_state(manager, k52)
         reconcile(manager)
         assert link_of(manager, receipt_id)[1:] == (k52, "proposed")
         expected = [("groceries", 395), ("groceries", 395), ("dining", 1495), ("dining", 1870), ("dining", 730), ("dining", 391)]
@@ -882,6 +887,15 @@ def test_sc09_an_old_dining_receipt_keeps_its_categories_until_it_is_read_again(
         assert shown["category_column"] is False
         assert stored_categories(manager, receipt_id) == [("groceries", "user"), ("dining", "receipt"), ("groceries", "user"), ("dining", "receipt"), ("dining", "receipt")]
         assert memory_rows(manager) == COFFEE_MEMORY
+        # 6. The link to K52 was proposed and 5276 is not the new total: removed, not rejected (FR-28, FR-29, D37), with the note (FR-30). The reconciliation
+        #    after the reading links nothing and asks nothing: K52 is smaller than the total.
+        assert_unlinked_after_reread(manager, receipt_id, k52, REMOVED_52, snapshot=snapshot)
+        # 7. A further reconciliation changes nothing: still dining, still unlinked, the note still there.
+        reconcile(manager)
+        assert_split(manager, receipt_id, 6155)
+        assert_unlinked_after_reread(manager, receipt_id, k52, REMOVED_52, snapshot=snapshot)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM transaction_receipt_links").fetchone()[0] == 0
     finally:
         manager.close()
 
@@ -1435,5 +1449,226 @@ def test_sc17c_the_backfill_leaves_the_tip_and_the_difference_under_todays_rules
         assert stored_categories(manager, receipt_id) == [("travel", "receipt")]
         assert splits_of(manager) == before and one_category_flag(manager, receipt_id) == 0
         assert ("dining", 300, False) in receipt_split(manager, receipt_id)  # The tip row stays dining.
+    finally:
+        manager.close()
+
+
+# SL-07: a reading that changes the total removes the charge links it no longer supports (FR-28 – FR-30, D34 – D41) --------------------------------------
+
+def note(charge_text, total_text, confirmed=False):
+    """FR-30's note as the contract writes it."""
+    return f"The match{' you confirmed' if confirmed else ''} to the {charge_text} charge on 2026-11-12 was removed: {total_text}"
+
+
+REMOVED_52 = note("$52.76", "this reading's total ($61.55) no longer matches it.")
+CONFIRMED_52 = note("$52.76", "this reading's total ($61.55) no longer matches it.", confirmed=True)
+
+
+def links_of(manager, receipt_id):
+    """[(transaction id, review_status)] of every link row of the receipt, of every status (C-links)."""
+    with manager.store.connection() as db:
+        return [tuple(row) for row in db.execute("SELECT transaction_id,review_status FROM transaction_receipt_links WHERE receipt_id=? ORDER BY id", (receipt_id,))]
+
+
+def link_rows(manager, receipt_id):
+    """The receipt's link rows with every column but the timestamps, to compare "unchanged" (same id, status, score and method)."""
+    with manager.store.connection() as db:
+        return [tuple(row) for row in db.execute("SELECT id,transaction_id,review_status,match_score,match_method,estimate_rate_id,estimate_minor "
+                                                 "FROM transaction_receipt_links WHERE receipt_id=? ORDER BY id", (receipt_id,))]
+
+
+def charge_rows_of(manager, transaction_id, receipt_id=None):
+    """How many category_splits rows a charge has (for one receipt when given): C-nosplit needs 0."""
+    with manager.store.connection() as db:
+        return db.execute("SELECT count(*) FROM category_splits WHERE transaction_id=?" + (" AND receipt_id=?" if receipt_id else ""),
+                          (transaction_id, receipt_id) if receipt_id else (transaction_id,)).fetchone()[0]
+
+
+def charge_state(manager, transaction_id):
+    """(category, merchant_id) of a charge: what its own rules give it, and the merchant a link may have given it."""
+    with manager.store.connection() as db:
+        return tuple(db.execute("SELECT category,merchant_id FROM transactions WHERE id=?", (transaction_id,)).fetchone())
+
+
+def removal_notes(manager, receipt_id):
+    """C-note: the receipt's issues that start "The match"."""
+    return [issue for issue in manager.ledger.record("receipt", receipt_id)["issues"] if issue.startswith("The match")]
+
+
+def open_questions(manager):
+    with manager.store.connection() as db:
+        return db.execute("SELECT count(*) FROM reconciliation_issues WHERE status='open'").fetchone()[0]
+
+
+def assert_unlinked_after_reread(manager, receipt_id, transaction_id, text, snapshot=None):
+    """C-links(receipt, []), C-nosplit(charge), C-note(receipt, text), C-review(needs_review, [FR-06 reason, text]) and no question: SC-09 step 6."""
+    assert links_of(manager, receipt_id) == [] and charge_rows_of(manager, transaction_id) == 0
+    shown = manager.ledger.record("receipt", receipt_id)
+    assert removal_notes(manager, receipt_id) == [text] and shown["issues"] == [WORKED_OUT, text] and shown["review_status"] == "needs_review"
+    assert not [issue for issue in shown["issues"] if issue.startswith("Amount paid (")] and open_questions(manager) == 0
+    if snapshot:  # The charge decides its category and merchant again, as before the link (FR-29).
+        assert charge_state(manager, transaction_id) == snapshot
+
+
+def sc09_through_step5(tmp_path, local_model, approve=False):
+    """SC-09 steps 1 – 5 on the old receipt C and K52 (with the link approved after step 3 when approve): (manager, receipt id, K52, K52's state before step 3)."""
+    manager, ids = old_manager(tmp_path, local_model, ["C"])
+    receipt_id = ids["C"]
+    k52 = charge(manager, {"publication": {"id": receipt_id}}, 5276)
+    snapshot = charge_state(manager, k52)
+    reconcile(manager)
+    assert link_of(manager, receipt_id)[1:] == (k52, "proposed")
+    if approve:
+        manager.reconciler.review_link("receipt", link_of(manager, receipt_id)[0], "verified")
+        assert links_of(manager, receipt_id) == [(k52, "verified")]
+    read_again_of(manager, local_model, receipt_id, breakfast_stub("B0")[2])
+    return manager, receipt_id, k52, snapshot
+
+
+def test_sc09a_a_restart_between_the_reading_and_the_next_reconciliation_changes_nothing(tmp_path, local_model):
+    manager, receipt_id, k52, snapshot = sc09_through_step5(tmp_path, local_model)
+    try:
+        manager = reopen(tmp_path, local_model, manager)
+        assert_unlinked_after_reread(manager, receipt_id, k52, REMOVED_52, snapshot=snapshot)
+        reconcile(manager)
+        assert_split(manager, receipt_id, 6155)
+        assert_unlinked_after_reread(manager, receipt_id, k52, REMOVED_52, snapshot=snapshot)
+    finally:
+        manager.close()
+
+
+def test_sc09b_a_link_review_and_an_unlink_and_relink_keep_the_groceries_rows_and_the_sums(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["C"])
+    receipt_id = ids["C"]
+    try:
+        k52 = charge(manager, {"publication": {"id": receipt_id}}, 5276)
+        reconcile(manager)
+        [(link_id, _, _)] = [link_of(manager, receipt_id)]
+
+        def check(linked):
+            rows = receipt_split(manager, receipt_id)
+            assert [category for category, _, has_item in rows if has_item][:2] == ["groceries", "groceries"] and sum(amount for _, amount, _ in rows) == 5276
+            if linked:
+                assert [category for category, _ in charge_split(manager, k52)][:2] == ["groceries", "groceries"]
+                assert sum(amount for _, amount in charge_split(manager, k52)) == 5276
+            else:
+                assert charge_split(manager, k52) == []
+        manager.reconciler.review_link("receipt", link_id, "verified")
+        check(True)
+        manager.reconciler.review_link("receipt", link_id, "rejected")  # Unlink,
+        check(False)
+        manager.reconciler.review_link("receipt", link_id, "verified")  # and link it again in place.
+        check(True)
+    finally:
+        manager.close()
+
+
+def test_sc09c_a_link_you_approved_is_removed_with_the_note_that_says_so(tmp_path, local_model):
+    manager, receipt_id, k52, snapshot = sc09_through_step5(tmp_path, local_model, approve=True)
+    try:
+        assert_unlinked_after_reread(manager, receipt_id, k52, CONFIRMED_52, snapshot=snapshot)
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM transaction_receipt_links").fetchone()[0] == 0
+    finally:
+        manager.close()
+
+
+# SC-20 ------------------------------------------------------------------------------------------------------------------------------
+
+def reject_link(manager, receipt_id, transaction_id):
+    """The fixture K60 has: a rejected link row to the receipt (method near_amount, score 30). Returns the row."""
+    with manager.store.connection() as db:
+        db.execute("INSERT INTO transaction_receipt_links(transaction_id,receipt_id,match_score,match_method,review_status,created_at,updated_at) "
+                   "VALUES(?,?,30,'near_amount','rejected','t','t')", (transaction_id, receipt_id))
+    return link_rows(manager, receipt_id)[-1]
+
+
+def sc20_library(tmp_path, local_model, k61=True):
+    """Old receipt C with K52, K60 (a rejected link to C) and (k61) K61: (manager, receipt id, {name: transaction id}, K60's link row)."""
+    manager, ids = old_manager(tmp_path, local_model, ["C"])
+    receipt_id = ids["C"]
+    run = {"publication": {"id": receipt_id}}
+    found = {"K52": charge(manager, run, 5276)}
+    if k61:
+        found["K61"] = charge(manager, run, 6155)
+    found["K60"] = charge(manager, run, 6000)
+    return manager, receipt_id, found, reject_link(manager, receipt_id, found["K60"])
+
+
+def test_sc20_a_link_you_confirmed_is_removed_and_the_matching_charge_links(tmp_path, local_model):
+    manager, receipt_id, charges, k60_row = sc20_library(tmp_path, local_model)
+    k52, k61, k60 = charges["K52"], charges["K61"], charges["K60"]
+    try:
+        # 1. Upgrade changes nothing: K60's row as the fixture left it.
+        before = table_rows(manager, receipt_id)
+        manager = reopen(tmp_path, local_model, manager)
+        assert table_rows(manager, receipt_id) == before and link_rows(manager, receipt_id) == [k60_row]
+        # 2. Reconcile: K52 exactly (K61 isn't considered while an exact charge exists), K60 stays rejected.
+        reconcile(manager)
+        assert links_of(manager, receipt_id) == [(k60, "rejected"), (k52, "proposed")] and link_rows(manager, receipt_id)[0] == k60_row
+        # 3. Approve that link: verified; the charge split sums to 5276.
+        manager.reconciler.review_link("receipt", link_of(manager, receipt_id)[0], "verified")
+        assert links_of(manager, receipt_id) == [(k60, "rejected"), (k52, "verified")] and sum(amount for _, amount in charge_split(manager, k52)) == 5276
+        # 4. Extract again from the v6 reading with B0: the confirmed link is removed (not rejected), with the note; the reconciliation after the
+        #    reading links K61 exactly, all dining; K60's row is as it was and no question is open.
+        run = read_again_of(manager, local_model, receipt_id, breakfast_stub("B0")[2])
+        row, shown = receipt_of(manager, run)
+        assert (row["total_minor"], row["tip_minor"]) == (6155, 879)
+        assert links_of(manager, receipt_id) == [(k60, "rejected"), (k61, "proposed")] and link_rows(manager, receipt_id)[0] == k60_row
+        assert charge_rows_of(manager, k52) == 0 and charge_state(manager, k52)[1] is None
+        assert shown["issues"] == [WORKED_OUT, CONFIRMED_52] and row["review_status"] == "needs_review" and removal_notes(manager, receipt_id) == [CONFIRMED_52]
+        assert "amount" in link_rows(manager, receipt_id)[1][4]
+        assert {category for category, _ in charge_split(manager, k61)} == {"dining"} and sum(amount for _, amount in charge_split(manager, k61)) == 6155
+        assert open_questions(manager) == 0 and memory_rows(manager) == []
+        # 5. A further reconciliation changes nothing.
+        after = (links_of(manager, receipt_id), charge_split(manager, k61), receipt_split(manager, receipt_id))
+        reconcile(manager)
+        assert (links_of(manager, receipt_id), charge_split(manager, k61), receipt_split(manager, receipt_id)) == after
+        # (b) A restart between steps 4 and 5 ends the same.
+        manager = reopen(tmp_path, local_model, manager)
+        assert (links_of(manager, receipt_id), charge_split(manager, k61), receipt_split(manager, receipt_id)) == after
+        reconcile(manager)
+        assert (links_of(manager, receipt_id), charge_split(manager, k61), receipt_split(manager, receipt_id)) == after
+    finally:
+        manager.close()
+
+
+def test_sc20a_a_removed_link_is_not_a_rejection_so_the_pair_links_again_when_it_matches_again(tmp_path, local_model):
+    manager, receipt_id, charges, k60_row = sc20_library(tmp_path, local_model, k61=False)
+    k52, k60 = charges["K52"], charges["K60"]
+    try:
+        reconcile(manager)
+        manager.reconciler.review_link("receipt", link_of(manager, receipt_id)[0], "verified")
+        read_again_of(manager, local_model, receipt_id, breakfast_stub("B0")[2])
+        # No K61: after the reading the receipt is linked to nothing (K52 is smaller than 6155), the only row is K60's rejected one, and no question exists.
+        assert links_of(manager, receipt_id) == [(k60, "rejected")] and link_rows(manager, receipt_id) == [k60_row] and open_questions(manager) == 0
+        assert charge_rows_of(manager, k52) == 0
+        # Correct Total to 52.76 (which reconciles after it): K52 links again, exactly, proposed. The removal note stays: it doesn't start with "Total".
+        manager.correct_record("receipt", receipt_id, {"total": "52.76"})
+        assert links_of(manager, receipt_id) == [(k60, "rejected"), (k52, "proposed")] and link_rows(manager, receipt_id)[0] == k60_row
+        assert removal_notes(manager, receipt_id) == [CONFIRMED_52]
+    finally:
+        manager.close()
+
+
+def test_sc20c_the_documents_of_a_removed_link_no_longer_show_each_other_as_the_same_purchase(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["C"])
+    receipt_id = ids["C"]
+    try:
+        # K52 was read from another document (a statement or CSV), so it has evidence and a verified link joins the two documents.
+        with manager.store.connection() as db:
+            own = db.execute("SELECT document_id FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
+            other = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                               "SELECT source_root,'export.csv','export.csv',current_hash,'t','t',last_job FROM occurrences WHERE id=?", (own,)).lastrowid
+        k52 = charge(manager, {"publication": {"id": receipt_id}}, 5276)
+        with manager.store.connection() as db:
+            db.execute("UPDATE financial_evidence_links SET document_id=? WHERE record_type='transaction' AND record_id=?", (other, k52))
+        reconcile(manager)
+        manager.reconciler.review_link("receipt", link_of(manager, receipt_id)[0], "verified")
+        assert [(link["reason"], link["status"], link["document_id"]) for link in manager.store.linked_documents(own)] == [("same_record", "verified", other)]
+        read_again_of(manager, local_model, receipt_id, breakfast_stub("B0")[2])
+        assert manager.store.linked_documents(own) == []
+        with manager.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM occurrence_links WHERE status='rejected'").fetchone()[0] == 0
     finally:
         manager.close()

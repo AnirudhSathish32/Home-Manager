@@ -759,7 +759,7 @@ class Ledger:
             column = kind_column({"document_kind": record.get("document_kind", "receipt")})
             kind = record.get(column)
             dining = column == "receipt_kind" and kind == "dining"
-            before = db.execute(f"SELECT id,{column} FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            before = db.execute(f"SELECT id,{column},total_minor,merchant_id FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
             # What Undo of a receipt's kind change puts back (docs/money.md "Item categories and splits"): taken before this reading changes anything.
             snapshot = self.category_snapshot(db, before["id"]) if source.get("kind_change") and column == "receipt_kind" and before else None
             receipt_id, written = self._upsert(db, "receipts", source, {
@@ -818,6 +818,12 @@ class Ledger:
                 if dining:  # A reading of a dining receipt is one of FR-14's events (docs/money.md "Item categories and splits").
                     self.apply_one_category(db, receipt_id)
                 self.refresh_paid(db, receipt_id)
+                # A reading that changed the counted total removes the charge links it no longer supports (FR-28; docs/money.md
+                # "Reading a statement or receipt again"). A bill's payment links, a pay stub's deposit links and Correct… on a total are unchanged.
+                now_row = db.execute("SELECT total_minor,document_kind FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+                if before and now_row["document_kind"] != "bill" and now_row["total_minor"] != before["total_minor"]:
+                    from .reconcile import Reconciler  # reconcile.py imports this module.
+                    Reconciler(self.store).drop_stale_links(db, receipt_id, {"total_minor": before["total_minor"], "merchant_id": before["merchant_id"]})
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
                                "VALUES(?,?,?,?,?,?,?,?,?,?)",
