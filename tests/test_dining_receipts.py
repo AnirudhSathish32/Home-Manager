@@ -15,16 +15,17 @@ from typing import get_origin
 import pytest
 
 from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, find, grocery_re_read_stub, image_id, insert_old_receipts, proposed
-from document_forms_fixtures import amount_on, cite, item, library, receipt_replies, record_document, value
+from document_forms_fixtures import DINING, amount_on, cite, dining_replies, item, library, receipt_replies, record_document, value
 from home_manager.app.manager import Manager
 from home_manager.core.categories import LEGACY_CATEGORIES
 from home_manager.core.money import amount_text
 from home_manager.documents import dining_total
 from home_manager.documents.extraction import looks_like_several
 from home_manager.documents.receipt_schema import TextLine
+from home_manager.finance import traces
 from home_manager.finance.family_routing import apply_delivery, record_payload
 from home_manager.finance.item_categories import ItemCategorizer
-from home_manager.finance.ledger import CATEGORY_REFUSED, normalize_name
+from home_manager.finance.ledger import CATEGORY_REFUSED, Ledger, normalize_name
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import ScanLimits
 from home_manager.library.storage import Store
@@ -1807,6 +1808,54 @@ def test_a_receipt_delivered_by_the_family_is_not_paid_for_twice_with_a_gift_car
         copy, split = delivered(person, record, row, manager, "family-gift-1", 8000)
         assert (copy["total_minor"], copy["printed_total_minor"], copy["receipt_kind"]) == (8000, None, "grocery")
         assert json.loads(copy["validation_json"]) == [] and sum(amount for _, amount in split) == 8000
+    finally:
+        person.close()
+        manager.close()
+
+
+def test_a_dining_receipt_delivered_by_the_family_keeps_its_gratuity_and_its_arithmetic_check(tmp_path, local_model):
+    """A dining receipt's gratuity lives only in its details, so the copy needs them for $50 + $4 + $9 = $63 to hold there as it does at the source."""
+    manager = library(tmp_path, local_model)
+    person = Store(tmp_path / "person")
+    try:
+        _, _, run = record_document(manager, local_model, "bistro.png", DINING, dining_replies())
+        receipt_id = run["publication"]["id"]
+        source = manager.ledger.record("receipt", receipt_id)
+        assert (source["subtotal_minor"], source["tax_minor"], source["total_minor"]) == (5000, 400, 6300)
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert record["receipt_kind"] == "dining" and record["details"]["gratuity"]["minor"] == 900 and "tenders" not in record["details"]
+        copy, _ = delivered(person, record, row, manager, "family-gratuity-1", 6300)
+        shown = Ledger(person).record("receipt", copy["id"])
+        assert json.loads(copy["details_json"])["dining"]["gratuity"]["minor"] == 900
+        for ledger_record, store in ((manager.ledger.record("receipt", receipt_id), manager.store), (shown, person)):
+            trace = traces.trace(store, check_named(ledger_record, "dining")["figure"]["trace"])
+            assert (trace["result"]["decimal"], trace["compared_with"]["decimal"], trace["reconciles"]) == ("63.00", "63.00", True)
+            assert inputs_by_key(trace)["gratuity"]["value"]["minor"] == 900
+    finally:
+        person.close()
+        manager.close()
+
+
+def test_a_dining_receipt_with_a_gift_card_delivered_by_the_family_is_not_paid_for_twice(tmp_path, local_model):
+    """Its details travel for the gratuity but not the gift-card tender: the paid total counts as sent, every split is in the receipt's category."""
+    manager = library(tmp_path, local_model)
+    person = Store(tmp_path / "person")
+    try:
+        _, _, run = record_document(manager, local_model, "bistro.png", DINING, dining_replies())
+        receipt_id = run["publication"]["id"]
+        with manager.store.connection() as db:  # As test_sc18a: the dining form reads no tenders itself.
+            details = json.loads(db.execute("SELECT details_json FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0])
+            details["dining"]["tenders"] = [{"tender_type": "gift_card", "minor": 1000, "last_four": None, "locator": {"line_ids": ["line-9"]}}]
+            db.execute("UPDATE receipts SET details_json=? WHERE id=?", (json.dumps(details), receipt_id))
+            manager.ledger.refresh_paid(db, receipt_id)
+            source = dict(db.execute("SELECT total_minor,printed_total_minor FROM receipts WHERE id=?", (receipt_id,)).fetchone())
+        assert source == {"total_minor": 5300, "printed_total_minor": 6300}
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert (record["total_minor"], record["details"]["gratuity"]["minor"]) == (5300, 900) and "tenders" not in record["details"]
+        copy, split = delivered(person, record, row, manager, "family-gratuity-gift-1", 5300)
+        assert (copy["total_minor"], copy["printed_total_minor"], copy["one_category"]) == (5300, None, 1)
+        assert "tenders" not in json.loads(copy["details_json"])["dining"] and json.loads(copy["details_json"])["dining"]["gratuity"]["minor"] == 900
+        assert {category for category, _ in split} == {record["category"]} and sum(amount for _, amount in split) == 5300
     finally:
         person.close()
         manager.close()

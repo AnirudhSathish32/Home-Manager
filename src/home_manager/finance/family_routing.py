@@ -284,11 +284,14 @@ def record_payload(store, record_type, record_id):
                       "return_policy_quote": row["return_policy_quote"], "document_kind": row["document_kind"], "issue_date": row["issue_date"],
                       "due_date": row["due_date"], "period_start": row["period_start"], "period_end": row["period_end"],
                       "amount_due_minor": row["amount_due_minor"], "account_last_four": row["account_last_four"]}
-            # A receipt's kind, so the copy is published as that kind: a dining receipt counts under its one category (FR-14 (a)). Not the kind's
-            # details (their gift-card tenders would come off a total that is already what was paid) nor a bill's kind, as before. The worked-out
+            # A receipt's kind, so the copy is published as that kind: a dining receipt counts under its one category (FR-14 (a)). A dining receipt
+            # also sends its details but for their tenders: its gratuity lives only there and the copy's arithmetic check needs it, while a gift-card
+            # tender would come off a total that is already what was paid. No other kind's details go, nor a bill's kind, as before. The worked-out
             # tip as the record shows it, hidden while a correction of yours stands, which the copy has no history of.
             if row["document_kind"] != "bill":
                 record["receipt_kind"] = row["receipt_kind"]
+                if row["receipt_kind"] == "dining":
+                    record["details"] = {name: found for name, found in Ledger.current_details(row).items() if name != "tenders"}
             record["tip_worked_out"] = Ledger.worked_out_tip(db, row)
         elif record_type == "statement":
             account = dict(db.execute("SELECT * FROM accounts WHERE id=?", (row["account_id"],)).fetchone())
