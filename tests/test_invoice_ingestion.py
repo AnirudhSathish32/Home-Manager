@@ -63,6 +63,32 @@ def test_invoice_total_survives_payments_and_balance(tmp_path, local_model, paid
         manager.close()
 
 
+def test_invoice_unusable_payment_status_is_dropped_not_the_bill(tmp_path, local_model):
+    """A printed paid/unpaid word the model can't answer validly, even after its correction, is left blank with a note."""
+    text = ["EXAMPLE REPAIRS", "Invoice INV-105", "Issued 2026-09-10", "Due 2026-09-28", "USD", "Parts 100.00", "Balance due 100.00", "Unpaid"]
+    manager, doc, parse_id = transcribe(tmp_path, local_model, text)
+    header = {name: MISSING for name in HEADERS["bill"]}
+    header.update(provider=value("EXAMPLE REPAIRS", 1), invoice_marker=value("Invoice", 2), invoice_number=value("INV-105", 2),
+                  issue_date=value("2026-09-10", 3), due_date=value("2026-09-28", 4), currency=value("USD", 5),
+                  amount_due=value("100.00", 7), balance_due=value("100.00", 7),
+                  payment_status={"value": "Unpaid", "status": "ambiguous", "evidence": []})  # A value with a non-proposed status.
+    rows = [{"description": "Parts", "amount": "100.00", "category": "utilities", "line_kind": "other", "line_holder": None,
+             "evidence": cite(6, text[5])}]
+    local_model["by_schema"] = {"BillSummary": [header, header]}
+    local_model["outputs"] = [{"document_type": "bill", "evidence": cite(2, text[1]), "issuer": value("EXAMPLE REPAIRS", 1),
+                               "document_date": value("2026-09-10", 3)}, {"line_items": rows}]
+    try:
+        run = extract(manager, doc, parse_id)
+        assert run["status"] == "succeeded", run["error"]
+        assert run["publication"]["review_status"] == "needs_review"
+        record = manager.ledger.record("receipt", run["publication"]["id"])
+        assert record["amount_due_minor"] == 10000
+        assert record["invoice"]["number"] == "INV-105"
+        assert record["invoice"]["payment_status"] is None
+    finally:
+        manager.close()
+
+
 def test_invoice_missing_total_never_uses_zero_balance_as_purchase():
     header = {name: MISSING for name in HEADERS["bill"]}
     header.update(invoice_marker=value("Invoice", 1), amount_due=value("0.00", 2))

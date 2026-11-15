@@ -127,7 +127,7 @@ DATES = {"purchase_date", "period_start", "period_end", "due_date", "issue_date"
 NAMES = {"merchant", "institution", "issuer", "provider", "payer_or_employer", "employer"}
 # Identifying fields that may be dropped (with a review note) rather than fail a document.
 DROPPABLE = NAMES | DATES | {"document_date", "currency", "account_reference", "card_last_four", "document_name", "pay_frequency", "work_state",
-                             "return_marker"}
+                             "return_marker", "invoice_number", "bill_to", "payment_status"}
 EMPLOYER_RULE = ("the employer is the company that employs the person, never a payroll provider (ADP, Paychex, Gusto, Workday, "
                  "Paylocity, Rippling), a bank or a benefits administrator")
 LABELS = {"receipt": "receipt (card_last_four: the payment card's printed digits, such as VISA ****1234 or ACCT XXXX1234; "
@@ -2426,8 +2426,8 @@ def describe(exc):
 def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None, notes=None, table_context=None, receipt=False):
     """One bounded call; one correction of this call only if validation fails.
 
-    If the correction still fails only on identifying fields (names, dates, currency, account
-    reference), those fields become missing with a review note instead of failing the
+    If the correction still fails only on identifying fields (DROPPABLE: names, dates, currency, account
+    reference, a bill's invoice number and payment status), by a check or the schema, those fields become missing with a review note instead of failing the
     document. Amount and row problems always fail: money is never dropped silently.
     """
     line_map = {line.id: line.text for line in lines}
@@ -2465,6 +2465,13 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
             return verify(output, line_map, amount_field, side_lines)
         except (ValidationError, ValueError) as exc:
             message = describe(exc)
+            if attempt and notes is not None and isinstance(exc, ValidationError):
+                dropped = without_invalid(schema, raw, exc, line_map, cell_lines, amount_field, side_lines)
+                if dropped is not None:
+                    output, names = dropped
+                    notes.extend(f"{name.replace('_', ' ').capitalize()} was not used: the reading of it was not valid. "
+                                 "Check it against the document." for name in names)
+                    return output
             if attempt or len(raw.encode()) > 128 * 1024:
                 # Only the fields document forms added failed: the answer without them, and a note (FR-14).
                 base = base_answer(schema, raw, line_map, amount_field, side_lines) if attempt and notes is not None else None
@@ -2482,6 +2489,22 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
             payload["messages"].extend([{"role": "assistant", "content": raw}, {"role": "user", "content":
                 "The previous JSON failed validation: " + message + shown + " Return the complete corrected JSON for these lines only. "
                 "Keep every row, cite exact quotes, and use ambiguous or missing with null values instead of guessing."}])
+
+
+def without_invalid(schema, raw, exc, lines, cell_lines, amount_field, side_lines):
+    """(the answer with its invalid identifying fields made missing, their names) when only DROPPABLE summary fields
+    broke the schema and the rest passes every check; otherwise None. Amounts and rows still fail."""
+    names = {error["loc"][0] for error in exc.errors(include_input=False, include_url=False) if error["loc"]}
+    if not names or any(error["type"] == "json_invalid" or not error["loc"] or error["loc"][0] not in DROPPABLE
+                        for error in exc.errors(include_input=False, include_url=False)):
+        return None
+    try:
+        data = json.loads(raw)
+        output = repair_quotes(schema.model_validate({**data, **{name: Value(value=None, status="missing", evidence=[]).model_dump()
+                                                                 for name in names}}), lines, cell_lines)
+    except (ValidationError, ValueError, TypeError):
+        return None
+    return None if problems_in(output, lines, amount_field, side_lines) else (output, sorted(names))
 
 
 def without(data, names):

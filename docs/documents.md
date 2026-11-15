@@ -515,6 +515,10 @@ Code: `documents/extraction.py`, `finance/ledger.py`.
   - the currency is explicit, or taken from a known account for statements;
   - document arithmetic reconciles: receipt totals, item sums, statement opening and closing balances, pay stubs, and
     a bill's lines against its new charges.
+- **Identifying fields that still fail after the correction** (names, dates, currency, account reference, a bill's
+  invoice number, bill-to and printed paid/unpaid status) are left missing with a "… was not used" note, whether
+  they failed a check or the schema itself (such as a value with an ambiguous status). The record goes to Review
+  instead of the whole document failing. Amounts and rows still fail it.
 - **Problems** mark the record `needs_review`. A missing currency blocks publication. Records you already reviewed are
   never overwritten. How a second reading replaces the first is in
   [money](money.md#reading-a-statement-or-receipt-again).
