@@ -23,7 +23,7 @@ from ..core import actor
 from ..core.money import money
 from ..library.storage import now
 from .account_holder import holder_of, person_of
-from .ledger import CONFIRMED, Ledger, kind_column, normalize_name
+from .ledger import CONFIRMED, Ledger, normalize_name
 from .splits import equal_shares, line_shares
 
 ROUTED = ("receipt", "statement", "income_record")
@@ -284,11 +284,12 @@ def record_payload(store, record_type, record_id):
                       "return_policy_quote": row["return_policy_quote"], "document_kind": row["document_kind"], "issue_date": row["issue_date"],
                       "due_date": row["due_date"], "period_start": row["period_start"], "period_end": row["period_end"],
                       "amount_due_minor": row["amount_due_minor"], "account_last_four": row["account_last_four"]}
-            # The kind it was read with, so the copy is published as that kind: a dining receipt counts under its one category (FR-14).
-            column = kind_column(row)
-            record[column] = row[column]
-            record["details"] = (json.loads(row["details_json"] or "null") or {}).get(row[column]) if row[column] else None
-            record["tip_worked_out"] = json.loads(row["tip_worked_out_json"]) if row["tip_worked_out_json"] else None
+            # A receipt's kind, so the copy is published as that kind: a dining receipt counts under its one category (FR-14 (a)). Not the kind's
+            # details (their gift-card tenders would come off a total that is already what was paid) nor a bill's kind, as before. The worked-out
+            # tip as the record shows it, hidden while a correction of yours stands, which the copy has no history of.
+            if row["document_kind"] != "bill":
+                record["receipt_kind"] = row["receipt_kind"]
+            record["tip_worked_out"] = Ledger.worked_out_tip(db, row)
         elif record_type == "statement":
             account = dict(db.execute("SELECT * FROM accounts WHERE id=?", (row["account_id"],)).fetchone())
             transactions = [{"posted_date": item["posted_date"], "transaction_date": item["transaction_date"], "description": item["description_raw"],

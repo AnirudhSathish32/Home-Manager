@@ -15,6 +15,7 @@ from typing import get_origin
 import pytest
 
 from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, find, grocery_re_read_stub, image_id, insert_old_receipts, proposed
+from document_forms_fixtures import amount_on, cite, item, library, receipt_replies, record_document, value
 from home_manager.app.manager import Manager
 from home_manager.core.categories import LEGACY_CATEGORIES
 from home_manager.core.money import amount_text
@@ -1767,6 +1768,82 @@ def test_a_dining_receipt_delivered_by_the_family_counts_wholly_under_its_catego
         assert {category for category, _ in split} == {"travel"} and sum(amount for _, amount in split) == 3000
     finally:
         person.close()
+        manager.close()
+
+
+def delivered(person, record, row, manager, key, share):
+    """The record_payload → apply_delivery roundtrip into `person`: (the copy's row, its category splits as (category, amount))."""
+    document = manager.store.blob_path(row["blob_hash"]).read_bytes()
+    delivery = {"key": key, "action": "record", "record_type": "receipt", "record": record, "name": "receipt.png",
+                "blob_hash": hashlib.sha256(document).hexdigest(), "share": share, "people": ["dad", "mom"]}
+    [_, copy_id] = apply_delivery(person, delivery, document)["record"]
+    with person.connection() as db:
+        copy = dict(db.execute("SELECT * FROM receipts WHERE id=?", (copy_id,)).fetchone())
+        split = [(item[0], item[1]) for item in db.execute("SELECT category,amount_minor FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL", (copy_id,))]
+    return copy, split
+
+
+def test_a_receipt_delivered_by_the_family_is_not_paid_for_twice_with_a_gift_card(tmp_path, local_model):
+    """The record's total is already what was paid after gift cards, so the copy, which has no gift-card tender of its own, counts it as sent:
+    $100 printed, $20 gift card, $80 counted stays $80 in the person's library, and their shares are of $80."""
+    lines = ["SYNTH MARKET", "2026-10-03", "GROCERIES 100.00", "SUBTOTAL 100.00", "TAX 0.00", "TOTAL 100.00", "GIFT CARD ****5555 -20.00", "VISA ****4242 80.00"]
+    visa = lines[-1]
+    tenders = [{"tender_type": "gift_card", "amount": "20.00", "last_four": "5555", "evidence": cite(lines, lines[6])},
+               {"tender_type": "card", "amount": "80.00", "last_four": "4242", "evidence": cite(lines, visa)}]
+    summary = {"subtotal": amount_on(lines, "SUBTOTAL"), "tax": amount_on(lines, "TAX "), "total": amount_on(lines, "TOTAL "),
+               "card_last_four": value(lines, "4242", visa, "4242"), "tenders": tenders}
+    replies = receipt_replies(lines, "grocery", "Synth Market", "SYNTH MARKET", "2026-10-03", summary,
+                              [item(lines, "GROCERIES", "GROCERIES 100.00", "100.00")], category="groceries", kind_evidence=cite(lines, "GROCERIES"))
+    manager = library(tmp_path, local_model)
+    person = Store(tmp_path / "person")
+    try:
+        _, _, run = record_document(manager, local_model, "receipt.png", lines, replies)
+        receipt_id = run["publication"]["id"]
+        with manager.store.connection() as db:
+            source = dict(db.execute("SELECT total_minor,printed_total_minor,receipt_kind FROM receipts WHERE id=?", (receipt_id,)).fetchone())
+        assert source == {"total_minor": 8000, "printed_total_minor": 10000, "receipt_kind": "grocery"}
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert (record["total_minor"], record["receipt_kind"]) == (8000, "grocery")
+        copy, split = delivered(person, record, row, manager, "family-gift-1", 8000)
+        assert (copy["total_minor"], copy["printed_total_minor"], copy["receipt_kind"]) == (8000, None, "grocery")
+        assert json.loads(copy["validation_json"]) == [] and sum(amount for _, amount in split) == 8000
+    finally:
+        person.close()
+        manager.close()
+
+
+def test_a_worked_out_tip_is_delivered_only_while_no_correction_of_yours_stands(tmp_path, local_model):
+    """The source hides "Worked out: …" beside a tip you corrected; the copy has no correction history, so the record carries the marker only
+    when the source shows it, and Undo of the correction brings it into the next copy."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    corrected, undone = Store(tmp_path / "corrected"), Store(tmp_path / "undone")
+    try:
+        receipt_id = run["publication"]["id"]
+        ids = manager.ledger.correct("receipt", receipt_id, {"tip": "9.00"})["correction_ids"]
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert record["tip_minor"] == 900 and record["tip_worked_out"] is None
+        copy, _ = delivered(corrected, record, row, manager, "family-tip-1", 3000)
+        assert (copy["tip_minor"], copy["tip_worked_out_json"], copy["receipt_kind"]) == (900, None, "dining")
+        manager.ledger.undo_corrections("receipt", receipt_id, ids)
+        record, row = record_payload(manager.store, "receipt", receipt_id)
+        assert record["tip_minor"] == 879 and record["tip_worked_out"] is not None
+        copy, _ = delivered(undone, record, row, manager, "family-tip-2", 3000)
+        assert (copy["tip_minor"], json.loads(copy["tip_worked_out_json"])) == (879, json.loads(row["tip_worked_out_json"]))
+    finally:
+        undone.close()
+        corrected.close()
+        manager.close()
+
+
+def test_a_bill_delivered_by_the_family_carries_no_kind_as_before(tmp_path, local_model):
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipts SET document_kind='bill',receipt_kind=NULL,bill_kind='general' WHERE id=?", (receipt_id,))
+        record, _ = record_payload(manager.store, "receipt", receipt_id)
+        assert record["document_kind"] == "bill" and not {"receipt_kind", "bill_kind", "details"} & set(record)
+    finally:
         manager.close()
 
 
