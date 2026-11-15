@@ -2,17 +2,18 @@
 Spec sha256: the bundle hash (spec.md + this file) comes from the user's gate tooling (`$HOME/.agent-harness/gate.py`;
 there's no `scripts/gate.py` in this repository). It isn't copied here, because writing it in would change it.
 
-Round 3 of this contract, written against `spec.md` round 4 (decisions D18 – D33; round 4 changed only the spec's
-text, not `src/`). Every expected value
+Round 4 of this contract, written against `spec.md` round 5 (decisions D18 – D41; rounds 4 and 5 changed only the
+spec's text, not `src/`). Every expected value
 comes from the spec, or is worked out by hand below from the synthetic breakfast receipt. None comes from running the
 code after the change. Two kinds of fixture are taken from today's code on purpose, because the spec defines them as
 "today's": the saved shape of an old reading, and the extraction request an old reading sends (FR-17, FR-19, FR-21,
 D28). Those are captured once from today's application code, before any application change, and checked in (see
 "Baseline captures"). `src/` is identical at 2676e51 and a8542d8 (only spec files changed), so either commit serves.
 
-The open questions take the spec's defaults, accepted by the user: Q1 (Edit details with the same category doesn't
-apply FR-10), tested by X-Q1; Q2 (a re-read that raises the total keeps the old charge link with no note, as today),
-tested as characterization in SC-09 step 6. Every gap, G1 – G18, is settled (see "Resolved gaps"); none is open.
+Q1 takes the spec's default, accepted by the user (Edit details with the same category doesn't apply FR-10), tested by
+X-Q1. Q2 was reversed by the user in round 5 (spec D34): a re-read whose new total no longer supports a charge link
+removes the link, with a note (FR-28 – FR-30). SC-09 step 6 now tests the removal (it was a characterization of today's
+rule), and SC-20 – SC-22 cover the rest. Every gap, G1 – G18, is settled (see "Resolved gaps"); none is open.
 
 ## Conventions for every scenario
 - **Environment.** A `tmp_path` library and database only. Nothing reads `P:\Finances`, `%LOCALAPPDATA%\HomeManager`
@@ -46,6 +47,14 @@ tested as characterization in SC-09 step 6. Every gap, G1 – G18, is settled (s
   - **C-mem(n):** `item_category_memory` has n rows.
   - **C-review(status, reasons):** `receipts.review_status` and the receipt's issues/reasons equal these exactly.
   - **C-cites(field, line ids):** the stored amount's evidence lists exactly these line ids.
+  - **C-links(receipt, rows):** the receipt's `transaction_receipt_links` rows, of every status, are exactly these
+    (charge, `review_status`) pairs. "Unchanged" means the same row id, status, score and method as before the step.
+  - **C-nosplit(charge):** no `category_splits` row has the charge's `transaction_id`.
+  - **C-note(receipt, text):** the receipt's issues hold exactly one removal note (an issue starting "The match"), equal
+    to text. **C-nonote(receipt):** none.
+- **Re-reads go through the app's job path.** Extract again, Read again and Try again run through the manager's
+  extraction job (the API, or `Manager` the way `tests/test_receipt_kinds.py` drives kind changes), so the
+  reconciliation that follows a published reading (`app/manager.py` `extract_and_file`) runs as it does in the app.
 - **Doubles**
 
 | Component | Real or double | Specification |
@@ -55,14 +64,17 @@ tested as characterization in SC-09 step 6. Every gap, G1 – G18, is settled (s
 | Image file | Real synthetic image (`tests/test_receipts.py` `make_receipt`) | Content is irrelevant: the stub returns the lines. |
 | Scanned PDF | Synthetic image-only PDF as in `tests/test_pdf_reader.py` | Pages are read through the vision stub. |
 | Old library (v56/v6) | Fixture | See "Old library". |
-| Card charge | Ledger fixture | A USD card transaction, −61.55 or −52.76, on 2026-11-12, merchant text "GACHAS BREAKFAST BAR". |
+| Card charge | Ledger fixture | A USD card transaction, −61.55 or −52.76, on 2026-11-12, merchant text "GACHAS BREAKFAST BAR". SC-20 adds K60; SC-21 and SC-22 add the SYNTH MART charges (see "Charges for the link scenarios"). |
+| ECB rates (SC-21 (d)) | Cached-rate fixture | Rows in the rates cache the way `tests/test_fx.py` seeds them; no network. |
 | Clock | Real | No assertion depends on today's date. |
 | Live vision model | User-run only | "Evals". Not part of pytest. |
 
 - **Test files**
   - `tests/dining_receipt_fixtures.py` (new): the breakfast lines and indents, `vision_lines`, the stubs B0–B8 below,
     the old-library builder, and the baseline captures.
-  - `tests/test_dining_receipts.py` (new): SC-01 – SC-09, SC-16 – SC-19, X-D8, X-Q1 and the FR-01 – FR-06 variants.
+  - `tests/test_dining_receipts.py` (new): SC-01 – SC-09, SC-16 – SC-20, X-D8, X-Q1 and the FR-01 – FR-06 variants.
+  - `tests/test_reread_links.py` (new): SC-21, SC-22 (FR-28 – FR-30 on other receipt kinds, bills and the cases the rule
+    leaves alone).
   - `tests/test_vision_indent.py` (new): SC-10 – SC-12, FR-15 – FR-21 checks, the version checks.
   - `tests/test_receipt_side_lines.py` (new): SC-13, SC-14 and FR-22/FR-23 variants.
   - `tests/test_receipt_items_browser.py` (extended): the Category column, the worked-out Tip note and the footer
@@ -144,6 +156,23 @@ several-receipts question is asked (SC-19).
 - **B8 (printed tip, $2.00 left over).** Lines "SYNTH DINER", "2026-11-10", "SERVER: JO", "BURGER 20.00",
   "SUBTOTAL 20.00", "TAX 1.00", "TIP 3.00", "TOTAL 26.00". Kind dining. Summary subtotal 20.00, tax 1.00, tip 3.00,
   total 26.00, each citing its line. One item, Burger 20.00. Category dining.
+
+- **B11 (a grocery receipt, SC-21, SC-22).** Lines: 1 "SYNTH MART", 2 "2026-11-12", 3 "MILK 4.00", 4 "BREAD 5.00",
+  5 "SUBTOTAL 9.00", 6 "TAX 1.00", 7 "TOTAL 10.00", 8 "CHANGE 7.00", 9 "SAVED 7.70", 10 "SAVED 7.69", all indent 0.
+  Classification receipt, kind grocery. `ReceiptGrocerySummary`: merchant "SYNTH MART" (line 1), date 2026-11-12 (line
+  2), subtotal 9.00 (line 5), tax 1.00 (line 6), total 10.00 (line 7). Items Milk 4.00 (line 3), Bread 5.00 (line 4),
+  category groceries. Each variant changes only the summary's total and its citation, the model misreading on purpose:
+  **B11b** total 9.00 (line 5), **B11c** 7.00 (line 8), **B11d** 7.70 (line 9), **B11e** 7.69 (line 10), **B11n** total
+  missing. The grocery check may add its own issues on the variants; only the removal note is asserted (C-note).
+  **B11g** (gift card): B11 plus line 11 "GIFT CARD -1.00" and a gift-card tender of 1.00 citing it, read the way
+  `tests/test_receipt_kinds.py` reads gift-card tenders (printed 10.00, paid 9.00); **B11g'** the same with total 9.00
+  (line 5), so paid 8.00.
+
+### Charges for the link scenarios
+- **K60**: −60.00 on 2026-11-12, "GACHAS BREAKFAST BAR", with a fixture `transaction_receipt_links` row to receipt C,
+  `review_status` rejected, method "near_amount", score 30 (SC-20). Snapshot the row.
+- **K10**: −10.00 on 2026-11-12, "SYNTH MART". **K9**: −9.00, same date and text (SC-21 (d)). **K8**: −8.00, same
+  date and text (SC-22 (f)).
 
 ### Old library (v56 / v6)
 Built the way `tests/test_migrations.py` `pre_document_forms` and `pre_bill_kinds` do. Apply every migration below this
@@ -297,18 +326,26 @@ Actions/checkpoints:
 2. Upgrade: open the library with the changed code (migrations run if there are any), then restart once → C-snap; the
    `receipts` and `receipt_items` rows equal the snapshot in every pre-existing column. No job is queued and no model
    request is made (`local_model["requests"]` is empty).
-3. `POST /api/finance/reconcile` → A or B may link to K52 (exact amount, today's rules). The receipt splits of A, B
-   and G are unchanged from the snapshot, and the groceries rows of items 1 and 2 stay groceries. If a link was made,
-   that charge split has the item rows' categories (2 groceries rows), C-sum(5276).
+3. `POST /api/finance/reconcile` → exactly one of A and B links to K52 (exact amount, proposed, today's rules); record
+   which. The receipt splits of A, B and G are unchanged from the snapshot, and the groceries rows of items 1 and 2 stay
+   groceries. That charge split has the item rows' categories (2 groceries rows), C-sum(5276).
 4. Extract again on B (approved by you) → a new extraction run under v57 exists. B's `receipts`, `receipt_items` and
-   receipt split rows equal the snapshot (FR-08, today's rule).
+   receipt split rows equal the snapshot (FR-08, today's rule). If B holds the link, it is unchanged and C-nonote(B)
+   (D39: a reading never rewrites a record you approved).
 5. Extract again on A → a new extraction run with `prompt_version` = `EXTRACTION_VERSION` (starts
-   `typed-extraction-v57`), not a reuse of the v56 run (FR-24). A: total 6155, tip 879 worked out (lines 22, 23),
-   C-review(`needs_review`, [FR-06 reason]). Receipt split C-sum(6155), C-cat(dining). A's 5 items store dining with
-   `category_source` receipt (D20: all were model-categorised).
+   `typed-extraction-v57`), not a reuse of the v56 run (FR-24). A: total 6155, tip 879 worked out (lines 22, 23).
+   Receipt split C-sum(6155), C-cat(dining). A's 5 items store dining with `category_source` receipt (D20: all were
+   model-categorised). Review and the link, by step 3's branch:
+   - B held the link → C-links(A, []), C-review(`needs_review`, [FR-06 reason]); B's link unchanged.
+   - A held the link (proposed; 6155 ≠ 5276, FR-28) → C-links(A, []), C-nosplit(K52) as A's charge, C-review(
+     `needs_review`, [FR-06 reason, "The match to the $52.76 charge on 2026-11-12 was removed: this reading's total
+     ($61.55) no longer matches it."]). The reconciliation after the reading links K52 to B (exact, proposed; FR-29),
+     and that charge split follows B's item categories (2 groceries rows), C-sum(5276).
 6. Run reconciliation again → A's receipt split is still all dining (FR-14: once applied, kept). G unchanged.
 Expected final state:
-- Database: A changed as in step 5. B and G exactly as in the snapshot. `extraction_runs`: the old v56 rows still
+- Database: A changed as in step 5. B and G exactly as in the snapshot (B's `receipts`, `receipt_items` and receipt
+  split rows; B may hold K52's link and its charge split, by step 5's branch). No `transaction_receipt_links` row is
+  rejected. `extraction_runs`: the old v56 rows still
   there and succeeded, plus one new v57 row each for A and B. `parse_runs`: unchanged (Extract again reuses the v6
   reading; no new image reading). `item_category_memory`: 0 rows.
 - Filesystem: the v6 parse runs' stored results are byte-identical to R6.
@@ -390,7 +427,7 @@ Failure/retry/restart variants:
 Evidence: pytest.
 
 ## SC-09 — An old dining receipt keeps its categories until read again
-Requirement IDs: FR-08, FR-11, FR-12, FR-14 (D6, D7, D8)
+Requirement IDs: FR-08, FR-11, FR-12, FR-14 (D6, D7, D8), FR-28, FR-29, FR-30 (D34)
 Nondeterministic components: B0 for Read again
 Initial state: old library with receipt C and charge K52.
 Actions/checkpoints:
@@ -404,15 +441,22 @@ Actions/checkpoints:
    Receipt split C-cat(dining), C-sum(6155). C-col(hidden). Items 1 and 3 still hold groceries with `category_source`
    user (FR-10: your choice stays stored, D20). Items 2, 4 and 5 store dining with `category_source` receipt (D20).
    C-mem(1) (unchanged; FR-12's "never read" means it didn't change the split).
-6. The link to K52 (D21, Q2 default; characterization of today's rule) → the receipt link row is unchanged (same id,
-   still live). The charge split: C-cat(dining), C-sum(5276) (divided to the charge's amount). No note about the total
-   no longer equalling the charge on the receipt, the link or the charge (that note is for gift-card receipts only). No
-   near-match question exists.
-7. `POST /api/finance/reconcile` again → receipt split still C-cat(dining), C-sum(6155).
+6. The link to K52 (D34; it was proposed, and K52's 5276 isn't the new total 6155, FR-28) → removed: C-links(C, [])
+   (no row, and none rejected; FR-29, D37). C-nosplit(K52): K52's category is what its own rules give it, equal to its category
+   snapshotted before step 3, and its `merchant_id` is NULL again, as before step 3 (FR-29). C-review(`needs_review`, exactly
+   [the FR-06 reason, "The match to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer
+   matches it."]) (FR-30). The reconciliation after the reading links nothing and opens no question (no charge of
+   6155; K52 is smaller than the total, so no near match). No "Amount paid (" note (no gift card).
+7. `POST /api/finance/reconcile` again → receipt split still C-cat(dining), C-sum(6155). C-links(C, []), C-nosplit(K52).
+   The note is still there (FR-30: until you review or a later reading replaces the issues).
+Expected final state: C as after step 5, unlinked, with the two reasons above. K52 unlinked, no split rows. C-mem(1).
+No `transaction_receipt_links` row at all.
 Failure/retry/restart variants:
-- (a) Restart between steps 5 and 7 → the same as step 7, and the link to K52 still there.
+- (a) Restart between steps 5 and 7 → the same as step 7: still no link to K52, the note still there.
 - (b) Steps 1–4 with a link review (approve the link) and an unlink and re-link in place of step 3 → after each, the
   groceries rows stay groceries and each split sums to its target (D8; also X-D8).
+- (c) Steps 1–5 with the link approved after step 3 → step 6 as above, except the note is "The match you confirmed to
+  the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it." (D36).
 Evidence: pytest.
 
 ## SC-10 — Lines with indent from the vision reading
@@ -609,6 +653,94 @@ Actions/checkpoints:
 2. One receipt, total 6155, no document segments split it.
 Evidence: pytest. Characterization only: if it fails in practice, an open-work entry, not a rule change.
 
+## SC-20 — A link you confirmed is removed, and the matching charge links
+Requirement IDs: FR-28, FR-29, FR-30 (D34, D36, D37, D41)
+Nondeterministic components: B0 for Read again
+Initial state: old library with receipt C and charges K52, K61 and K60 (K60's rejected link row to C as fixture state).
+Actions/checkpoints:
+1. Upgrade (as SC-05 step 2) → C-snap. Snapshot K60's link row.
+2. `POST /api/finance/reconcile` → C links K52 (exact, proposed; K61 isn't considered while an exact charge exists).
+   C-links(C, [(K52, proposed), (K60, rejected)]).
+3. Approve that link (the link review, verified) → C-links(C, [(K52, verified), (K60, rejected)]). Charge split
+   C-sum(5276).
+4. Extract again from the v6 reading with B0 → total 6155, tip 879 worked out. Then:
+   - The link to K52 is removed, not rejected (FR-29, D37). C-nosplit(K52). K52's `merchant_id` is NULL again.
+   - C-note(C, "The match you confirmed to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55)
+     no longer matches it.") and C-review(`needs_review`, [the FR-06 reason, that note]) (FR-30, D36).
+   - The reconciliation after the reading links K61 (exact, proposed; signals include `amount`). C-links(C, [(K61,
+     proposed), (K60, rejected)]). Charge split for K61: C-cat(dining), C-sum(6155).
+   - K60's row equals its snapshot. No open `ambiguous_receipt_match` question for C.
+5. `POST /api/finance/reconcile` again → nothing changes: C-links as after step 4, both splits as after step 4.
+Expected final state: C linked to K61 only (proposed); K52 with no link row and no split rows; K60's rejected row as at
+the start; C waiting in Review with the FR-06 reason and the note. C-mem(0).
+Failure/retry/restart variants:
+- (a) Not a rejection (D37): without K61 in the library, after step 4 C-links(C, [(K60, rejected)]) and no question
+  (K52 is smaller than 6155). Then Correct Total to 52.76 (`POST …/corrections` {total: "52.76"}, which reconciles
+  after it) → C links K52 again, exact, proposed: C-links(C, [(K52, proposed), (K60, rejected)]). The removal note is
+  still present (it doesn't start with "Total", so the correction doesn't resolve it).
+- (b) Restart between steps 4 and 5 → the same end state.
+- (c) K52 read from a document (imported from a synthetic CSV, as the import tests do, so it has evidence): after step
+  3 the two documents show each other as the same purchase (an `occurrence_links` row, reason `same_record`, status
+  verified). After step 4 they no longer do, and no `occurrence_links` row between them is `rejected` (D41).
+Evidence: pytest `tests/test_dining_receipts.py`.
+
+## SC-21 — Which links hold after a re-read (every receipt kind)
+Requirement IDs: FR-28, FR-29, FR-30 (D35, D36, D38)
+Nondeterministic components: B11 and its variants
+Initial state: empty library; charge K10.
+Actions/checkpoints:
+1. Record B11; `POST /api/finance/reconcile` → total 1000; C-links(receipt, [(K10, proposed)]). Remember the row.
+2. Extract again with B11 (same total) → the link row unchanged; C-nonote (D39: an unchanged total tests nothing).
+3. Extract again with B11b (900) → the proposed link is removed: reconciliation never links a charge larger than the
+   total by itself (D35). C-links(receipt, []), C-nosplit(K10), C-note(receipt, "The match to the $10.00 charge on
+   2026-11-12 was removed: this reading's total ($9.00) no longer matches it."), `needs_review`. The reconciliation
+   after the reading opens an `ambiguous_receipt_match` question for the receipt with candidates exactly [K10] (a
+   same-merchant charge at most 30% larger; the removed pair isn't rejected, D37).
+4. Answer the question with K10 → C-links(receipt, [(K10, verified)]), method containing `near_amount` and
+   `user_choice`. Charge split C-sum(1000); receipt split C-sum(900).
+5. Extract again with B11 (1000) → the link you chose holds at the exact amount: unchanged, C-nonote.
+6. Extract again with B11b (900) → it holds within the allowance (1000 × 100 ≤ 900 × 130): unchanged, C-nonote. Charge
+   split C-sum(1000).
+7. Extract again with B11c (700) → 1000 × 100 > 700 × 130, so it's removed: C-links(receipt, []), C-nosplit(K10),
+   C-note(receipt, "The match you confirmed to the $10.00 charge on 2026-11-12 was removed: this reading's total ($7.00)
+   no longer matches it."). The reconciliation after the reading opens no question (K10 is more than 30% larger).
+Expected final state: the receipt (kind grocery) total 700, unlinked, `needs_review` with the note; K10 unlinked with no
+split rows; no `transaction_receipt_links` row (none rejected); no open question.
+Failure/retry/restart variants:
+- (a) The allowance boundary, from step 6's state (verified link, total 900): Extract again with B11d (770) → holds
+  (100000 ≤ 100100), C-nonote. Then with B11e (769) → removed (100000 > 99970), with the "you confirmed" note naming
+  $7.69.
+- (b) No total, from step 6's state: Extract again with B11n → removed, C-note(receipt, "The match you confirmed to the
+  $10.00 charge on 2026-11-12 was removed: this reading has no total.").
+- (c) Gift card (D40), fresh library with K9: record B11g (paid 900) and reconcile → linked to K9, proposed. Extract
+  again with B11g' (paid 800) → removed. C-note(receipt, "The match to the $9.00 charge on 2026-11-12 was removed: this
+  reading's total ($8.00) no longer matches it."). No issue starts with "Amount paid (". The reconciliation after the
+  reading asks the near-match question with candidates [K9] (900 ≤ 800 × 1.3).
+- (d) A foreign receipt (D35), built through the ledger as `tests/test_fx.py` builds one: EUR total 100.00, a cached
+  EUR→USD rate of 1.10 on its date, a USD charge of −112.00 from the merchant, linked by choosing it in the
+  cross-currency question (verified, `estimate_rate_id` stored). Extract again with total 102.00 (estimate 112.20;
+  112.00 is 99.8% of it) → holds, C-nonote. Extract again with 90.00 (estimate 99.00; 112.00 is 113%) → removed, with
+  the "you confirmed" note naming $112.00 and the total as FR-01's issue writes a EUR amount. Variant: the cached rate
+  removed after linking → the stored rate still decides (same outcomes). Variant: a link with no stored rate and no
+  cached rate → removed on any change of total.
+Evidence: pytest `tests/test_reread_links.py`.
+
+## SC-22 — What the rule leaves alone
+Requirement IDs: FR-28 (D38, D39)
+Parametrized; each case independent and from a fresh library.
+
+| Case | Initial state | Action | Expected |
+|---|---|---|---|
+| (a) A receipt you approved | Old library with receipt B and K52; reconcile (B links K52) | Extract again with B0 | B as in the snapshot; the link unchanged; C-nonote(B) |
+| (b) A failed reading | SC-09 after step 3 | Try again with the summary failing validation twice | The run fails; the link unchanged; C's issues unchanged; C-nonote |
+| (c) A bill | A synthetic bill from the bill tests' fixtures (`tests/bill_kinds_fixtures.py`), linked to its payment by reconciliation | Read it again with a stub answering a different total | The link unchanged; no removal note (bills unchanged, D38) |
+| (d) A kind change on a reviewed receipt | SC-01 after step 8 (linked to K61), approved | Change the kind to grocery (B7) | Amounts stay; the link unchanged; C-nonote |
+| (e) Correct… on a linked receipt's total | SC-01 after step 8 | Correct Total to 60.00 | The link unchanged (today's rule); C-nonote |
+| (f) Unchanged total, link that wouldn't pass D35 | B11 recorded (unlinked), then a fixture link to K8, verified | Extract again with B11 (1000) | The link to K8 unchanged; C-nonote (D39) |
+
+Pay stubs: checked by review (`publish_income` touches no link; the suite's pay-stub tests keep their expectations).
+Evidence: pytest `tests/test_reread_links.py`.
+
 ## X-D8 — Rebuilds that aren't about categories don't apply FR-10
 Requirement IDs: FR-08, FR-14 (D5, D8)
 Parametrized integration test; each case independent, from a fresh old library with receipt C (items 1 and 2
@@ -659,8 +791,10 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 
 ## Other FR checks (no journey)
 - **FR-15, FR-18, FR-22 prompt texts:** asserted on the requests the stubs receive (SC-10, SC-11, SC-13).
-- **FR-25:** checked by review, not by a test: the `docs/documents.md` and `docs/money.md` sections and the three
-  `docs/open-work.md` entries (D2's items, D16, Q2).
+- **FR-25:** checked by review, not by a test: the `docs/documents.md` and `docs/money.md` sections (including "Reading
+  a statement or receipt again" and "Near matches and foreign receipts" for FR-28 – FR-30) and the `docs/open-work.md`
+  entries (D2's items, D16, stale links on bills and pay stubs, a link after Correct… on a total, a re-read that changes
+  only the date or merchant, a lasting history entry for a removed link). No Q2 entry.
 - **Version reuse summary** (SC-12): same version + same options + same identity → reused; a new version → exactly one
   new run per document, never one per page or call; `force` → a new run, as today.
 
@@ -680,7 +814,7 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | FR-05 | SC-04 (+ c, d) | test_dining_receipts.py |
 | FR-06 | SC-01, SC-05, SC-09 | test_dining_receipts.py |
 | FR-07 | SC-01 step 8, SC-07 step 5, X-D8 old-rules case | test_dining_receipts.py |
-| FR-08 | SC-05, SC-09, SC-16, X-D8, X-UPG | test_dining_receipts.py, test_migrations.py |
+| FR-08 | SC-05, SC-09, SC-16, SC-22 (a), X-D8, X-UPG | test_dining_receipts.py, test_migrations.py, test_reread_links.py |
 | FR-09 | SC-06 | test_dining_receipts.py |
 | FR-10 | SC-01, SC-05, SC-07, SC-09, SC-16, X-D8 | test_dining_receipts.py |
 | FR-11 | SC-07, SC-09, SC-16, SC-17 | test_dining_receipts.py, test_receipt_items_browser.py |
@@ -700,6 +834,9 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | FR-25 | review | — |
 | FR-26 | SC-15 | test_document_v2_browser.py |
 | FR-27 | SC-01 step 7, SC-03 (c, d), SC-07 step 3, SC-16, SC-18, X-D8 | test_dining_receipts.py, test_receipt_items_browser.py |
+| FR-28 | SC-05 step 5, SC-09 step 6, SC-20, SC-21 (+ a–d), SC-22 | test_dining_receipts.py, test_reread_links.py |
+| FR-29 | SC-05 step 5, SC-09 step 6, SC-20 (+ a, c), SC-21 steps 3, 7 | test_dining_receipts.py, test_reread_links.py |
+| FR-30 | SC-05 step 5, SC-09 step 6 (+ c), SC-20 step 4, SC-21 (+ b, c) | test_dining_receipts.py, test_reread_links.py |
 
 | SC | Test |
 |---|---|
@@ -711,7 +848,7 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | SC-06 | test_dining_receipts.py::test_sc06_your_tip_correction_wins (+ a, b) |
 | SC-07 | test_dining_receipts.py::test_sc07_one_category_on_a_dining_receipt (+ a–c); browser step 1 |
 | SC-08 | test_dining_receipts.py::test_sc08_kind_change_and_undo (+ a, b) |
-| SC-09 | test_dining_receipts.py::test_sc09_old_receipt_keeps_categories_until_read_again (+ a, b) |
+| SC-09 | test_dining_receipts.py::test_sc09_old_receipt_keeps_categories_until_read_again (+ a–c) |
 | SC-10 | test_vision_indent.py::test_sc10_lines_with_indent (+ a–d) |
 | SC-11 | test_vision_indent.py::test_sc11_rescue_asks_for_lines |
 | SC-12 | test_vision_indent.py::test_sc12_new_versions_old_readings_readable (+ a–c, e; d by review) |
@@ -722,8 +859,12 @@ columns hold their "not applied / not worked out" value. `check_ledger` reports 
 | SC-17 | test_dining_receipts.py::test_sc17_backfill_on_old_dining_receipt (+ a–c) |
 | SC-18 | test_dining_receipts.py::test_sc18_not_matched_leaves_out_the_tip (+ a); browser (b) |
 | SC-19 | test_dining_receipts.py::test_sc19_several_totals_one_receipt |
+| SC-20 | test_dining_receipts.py::test_sc20_confirmed_link_removed_matching_charge_links (+ a–c) |
+| SC-21 | test_reread_links.py::test_sc21_which_links_hold_after_a_reread (+ a–d) |
+| SC-22 | test_reread_links.py::test_sc22_what_the_rule_leaves_alone[a–f] |
 
-Commands: `python -m pytest tests/test_dining_receipts.py tests/test_vision_indent.py tests/test_receipt_side_lines.py`,
+Commands: `python -m pytest tests/test_dining_receipts.py tests/test_vision_indent.py tests/test_receipt_side_lines.py
+tests/test_reread_links.py`,
 then the whole suite (`python -m pytest`) for the existing tests the stub-shape change touches. Browser:
 `RUN_BROWSER_TESTS=1 python -m pytest tests/test_receipt_items_browser.py tests/test_document_v2_browser.py`.
 
@@ -733,7 +874,7 @@ then the whole suite (`python -m pytest`) for the existing tests the stub-shape 
 | G1 tip row on a recategorised dining receipt | D18 | SC-07 step 3, SC-16 step 2, X-D8 mirror and old-rules case, SC-17 (c) |
 | G2 no tip line, later larger total | D19 | SC-03 (c) |
 | G3 stored item categories once FR-10 applies | D20 | SC-01, SC-05, SC-07, SC-09, SC-16 |
-| G4 charge link after a re-read changes the total | D21 (Q2 default) | SC-09 step 6 |
+| G4 charge link after a re-read changes the total | D21 (Q2 default), superseded by D34 – D41 in round 5 | SC-05 step 5, SC-09 step 6 (+ c), SC-20 – SC-22 |
 | G5 fallback after a rejected table total | D22 | SC-04 step 2, (c); B5 has one summary answer |
 | G6 nearest pre-tip amount; disagreeing amounts | D23 | SC-01 step 3, SC-03 (d) |
 | G7 old group version readable | D24 | SC-12 step 1 |
@@ -748,4 +889,5 @@ then the whole suite (`python -m pytest`) for the existing tests the stub-shape 
 | G18 no other change to old readings' requests | D33 | SC-12 step 3, (e) |
 
 ## Gaps
-None open. G14 – G18 are settled by the spec's D29 – D33 (see "Resolved gaps").
+None open. G14 – G18 are settled by the spec's D29 – D33 (see "Resolved gaps"). Round 5 (Q2 reversed) opened no gap:
+every expected value in SC-09 step 6 and SC-20 – SC-22 comes from FR-28 – FR-30 and D34 – D41.

@@ -77,7 +77,8 @@ Round 3 (user, 2026-11-14; not to be re-asked). The test contract's gaps (`test-
 - **D20 Stored item categories once FR-10 applies (G3, accepted).** Items the model or memory categorised store the
   receipt's category with source `receipt`, as Edit details (`ledger.py:2580-2583`) and the backfill already do. Your
   own per-item choices (source `user`) stay stored. FR-10, SC-01, SC-09.
-- **D21 The charge link after a re-read changes the total (G4, accepted).** The link follows today's rule
+- **D21 The charge link after a re-read changes the total (G4, accepted). Superseded by D34 (round 5): the user
+  reversed it; kept here as the record of the earlier decision.** The link follows today's rule
   (`docs/money.md` "Reading a statement or receipt again"): reading again replaces the record's lines and amounts but
   keeps the record and what is attached to it. `publish_receipt` never touches `transaction_receipt_links`
   (`ledger.py:752-811`), and reconciliation only links receipts that have no live link (`reconcile.py:405-407`). So the
@@ -130,6 +131,69 @@ G18), the contract's recommended fixes accepted:
 - **D32 Both exact group-version checks accept the old value (G17).** FR-19.
 - **D33 Old readings' extraction requests change nowhere else (G18).** FR-21.
 
+Round 5 (user, 2026-11-14; not to be re-asked). The user reversed Q2 and D21: "i want q2 to be fixed in this session i
+dont want the link to remain". D34 is the user's decision; D35 – D41 are the spec's decisions that make it precise, each
+with its rationale, and approval of the spec covers them.
+- **D34 A re-read removes a charge link its new total no longer supports (user; supersedes D21 and Q2's default).**
+  When reading a receipt again changes its total so that its link to a charge no longer holds (D35), the link is
+  removed: the charge and the receipt are both unlinked, and the reconciliation that follows every published reading
+  (`app/manager.py:1621-1625`, `extract_and_file`) may link a matching charge or leave the receipt open. SC-09's old
+  $52.76 link after Read again gives $61.55 is the case the user named. This is now in scope. FR-28 – FR-30, SC-09,
+  SC-20 – SC-22.
+- **D35 When a link still holds (spec decision).** The test is the one reconciliation uses to make that kind of link,
+  applied to the receipt's new counted total (`total_minor`: the amount paid after gift cards, with your corrections,
+  `refresh_paid`, `ledger.py:903-942`), and to the charge's amount:
+  - **A link the app made** (`review_status` proposed) holds only at the **exact amount**, in the same currency.
+    Reconciliation links automatically only at the exact amount (`reconcile.py:415-421`); a charge up to 30% larger is
+    only ever a question (`:424-432`). So a proposed link whose charge is now larger than the total by a plausible tip is
+    removed, and the near-match question can offer that charge again (D37).
+  - **A link you confirmed or chose** (`review_status` verified: you approved a proposed link, `review_link`
+    `reconcile.py:778`, or picked the charge in a question, `link_choice` `:271-277`) holds at the exact amount, or within
+    the **near-match allowance**: same currency, a total above zero, and a charge larger than the total by at most 30%
+    (`NEAR_PERCENT` 130, `reconcile.py:33`, `:429`: charge × 100 ≤ total × 130). A charge smaller than the total is never
+    a tip, so it never holds. Rationale: a tip added after signing is the case the allowance exists for, and you had
+    accepted such a pairing.
+  - **A charge in another currency** (always a link you chose, `docs/money.md` "A foreign receipt and its USD card
+    charge") holds when the charge is within 97 – 106% (`CROSS_RANGE`, `reconcile.py:36`) of the new total's estimate,
+    at the rate stored on the link (`estimate_rate_id`), else at the rate reconciliation would look up now (`estimate`,
+    `reconcile.py:310-319`). With no rate it doesn't hold: reconciliation can't make such a link without one (`:471-473`).
+  - **No total** (the new reading has none): no link holds.
+  - **Not re-tested:** the merchant and the posting window. Rationale: the user's concern is the total; the merchant test
+    only narrows which charges a question offers, and a reading that changes the date or merchant is a different change
+    (a `docs/open-work.md` entry, FR-25).
+- **D36 Links you confirmed are removed too, with a note that says so (spec decision, the recommended default).** The
+  user doesn't want the link to remain, and a link you confirmed was confirmed for the old total. So nothing disappears
+  silently: the receipt goes to Review with a note naming the charge, its date, its amount and the new total, and saying
+  the match was one you confirmed (FR-30).
+- **D37 A removed link is not a rejection (spec decision, the recommended default).** It was removed because the receipt
+  changed, not because you said the pair was wrong. The link's row is removed, not marked rejected, so the pair can be
+  linked again when it matches again (exactly, or as a near-match question). Rejected links are rows of
+  `transaction_receipt_links` with `review_status` rejected (there is no separate table); they are untouched, and only
+  they keep a pair from being proposed again (`reconcile.py:408-409`). A question you answered "leave unmatched" stays
+  answered (today's rule, `reconcile.py:237-241`).
+- **D38 Every receipt kind; not bills, pay stubs or corrections (spec decision, the recommended default).** A stale link
+  is wrong for any receipt, so FR-28 applies to every record recorded as a receipt, whatever its kind. Risk: a grocery or
+  other receipt whose re-read misreads its total loses a link that was right; the note, Review and D37 (the pair is
+  offered again once the total is fixed) contain it. Records recorded as bills (`document_kind` bill, which publish
+  through the same `publish_receipt`, `ledger.py:1491-1518`) and pay stubs (`publish_income`, which touches no link) are
+  unchanged; their payment and deposit links can go stale the same way, a `docs/open-work.md` entry. Correct… on a
+  receipt's total is unchanged too (your own change; the gift-card note stays as today), also an open-work entry.
+- **D39 Only when a reading rewrites the record and changes its total (spec decision).** A reading never rewrites a
+  record you approved or rejected (`_upsert`, `ledger.py:731-743`), so its links stay; a kind change on a reviewed
+  receipt keeps its amounts (`ledger.py:784-787`), so its links stay. FR-28 compares the counted total before and after
+  the reading. When it is unchanged, nothing is tested, even for a link that wouldn't pass D35 (this reading didn't make
+  it stale).
+- **D40 The note lives with the receipt's issues (spec decision).** It stays until you review the receipt or a later
+  reading replaces the issues, like every issue today. A lasting history entry for the removal is not built (an
+  open-work entry). A removed link never gets the gift-card note "Amount paid (…) no longer equals the linked charge
+  (…)" (`ledger.py:930-935`); that note stays for a link that still holds.
+- **D41 After the removal (spec decision).** The charge's split rows for that receipt go, so the charge counts under its
+  own category (`TRANSACTION_CATEGORY`, `ledger.py:85-94`, falls back from a linked receipt's category). A merchant the
+  charge took from the receipt goes and its category and tax rules decide again, as when you reject a link
+  (`reconcile.py:793-809`). The two documents no longer show each other as the same purchase (`link_documents`,
+  `reconcile.py:811-821`), without that being marked rejected, unless another live link still joins them. The receipt's
+  own split follows FR-10 and D18 as on any reading.
+
 Background (user report, 2026-11-14). A phone photo of a restaurant receipt was read as below (shape kept, details
 made up). The side lines (Fresh Berry Pancakes, Veggie Sausage, Jalapeno Cheese Grits, No Allergies) are printed
 indented under their main item, but the transcription lost the indentation:
@@ -178,7 +242,8 @@ category totals, budgets, Home, reconciliation with card charges, family shares.
 
 **In scope.** The dining total and tip (FR-01 – FR-09). Dining categories (FR-10 – FR-14). Indentation in the vision
 prompts and structured lines (FR-15 – FR-20). Indent in receipt extraction (FR-21 – FR-24). Docs (FR-25). Indentation
-in the Text view (FR-26, D11). The footer's "Not matched to an item" without the tip (FR-27, D13).
+in the Text view (FR-26, D11). The footer's "Not matched to an item" without the tip (FR-27, D13). A re-read removes a
+charge link its new total no longer supports, on every receipt kind (FR-28 – FR-30, D34 – D41).
 
 **Non-goals.**
 - D2's items.
@@ -187,6 +252,8 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
 - Images read before this change, until they are read again (FR-19).
 - Rewriting existing dining receipts' splits at upgrade, or by any migration (D5).
 - Two copies of one dining receipt (already in `docs/open-work.md`).
+- Stale links on bills and pay stubs, links after Correct… on a total, and a re-read that changes only the date or the
+  merchant (D35, D38; open-work entries, FR-25).
 
 ## Existing behavior (verified)
 - **The vision reading** returns `{full_text, tables}` (`models/vision.py:130-162`). The prompt asks for line breaks
@@ -248,12 +315,22 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
   (`:188-189`), and any amount whose weights give no proportion (`:170-172`). The page shows the row when the value
   isn't zero (`receipt.js:401-402`).
 - **Reading again** never rewrites a record you approved or rejected (`docs/money.md` "Reading a statement or receipt
-  again"). It keeps the record and its charge links (`publish_receipt` doesn't touch `transaction_receipt_links`,
-  `ledger.py:752-811`), and reconciliation links only receipts with no live link (`reconcile.py:405-407`). A kind
-  change re-reads from the saved transcription; on a reviewed receipt the amounts, items and review state stay (`docs/documents.md` "Receipt kinds", `app/manager.py:1567`).
-- **Matching.** A receipt is linked to a card charge of its exact total. A charge up to 30% larger becomes a near-match
-  question (`docs/money.md` "Near matches and foreign receipts"). Today the breakfast receipt ($52.76) against a
-  $61.55 charge is such a question.
+  again", `_upsert` `ledger.py:731-743`). It keeps the record and its charge links (`publish_receipt` doesn't touch
+  `transaction_receipt_links`, `ledger.py:752-811`), and reconciliation links only receipts with no live link
+  (`reconcile.py:405-407`). A kind change re-reads from the saved transcription; on a reviewed receipt the amounts,
+  items and review state stay (`docs/documents.md` "Receipt kinds", `app/manager.py:1567`). Bills publish through the
+  same `publish_receipt` (`ledger.py:1491-1518`). After a published reading, reconciliation runs (`app/manager.py:1621-1625`).
+  Only a gift-card receipt gets a note when its amount paid no longer equals the linked charge (`refresh_paid`,
+  `ledger.py:927-934`). This round changes the link part (D34, FR-28).
+- **Matching** (`reconcile.py:401-436`). A receipt is linked automatically (`proposed`) to a charge of its exact total,
+  same currency, within the posting window (`RECEIPT_POSTING_DAYS`, 5 days), when it is the only candidate or clearly the
+  best. With no exact charge, a same-merchant charge up to 30% larger (`NEAR_PERCENT` 130) becomes a near-match question,
+  never a link; choosing it links the two as `verified` (`link_choice`, `:271-277`). A foreign receipt's USD charge
+  within 97 – 106% of the ECB estimate is also only a question (`cross_currency`, `:467-482`). Approving a proposed link
+  makes it `verified`; rejecting it keeps its row as `rejected`, takes away the merchant the charge got from the
+  receipt and re-runs the charge's rules (`review_link`, `:778-809`), and a rejected pair is never proposed again
+  (`:408-409`). A charge's category falls back to its linked receipt's (`TRANSACTION_CATEGORY`, `ledger.py:85-94`).
+  Today the breakfast receipt ($52.76) against a $61.55 charge is a near-match question.
 - `EXTRACTION_VERSION = "typed-extraction-v56-money-sign-rule"` (`extraction.py:52`). Extract again never reuses a run
   of an older version (`docs/documents.md:765`).
 - **Unknowns.** How often vision models get indentation right on phone photos. Whether the real transcription printed
@@ -287,9 +364,12 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
 | FR-22 | Every receipt form's row instruction says: a line indented under an item with no price of its own belongs to that item (cite it with the item) and is never an item. A priced indented line keeps today's rules (a count line belongs to its item; any other priced line is its own row). | The instruction text contains the rule (asserted on the request). |
 | FR-23 | **Backstop.** On a receipt, an item whose cited lines all have indent ≥ 1, none printing an amount, and that has an item before it, is dropped. Its lines join the previous item's citation, with the note "“Fresh Berry Pancakes” is printed under “Georgia Peach Stack” with no price of its own, so it was kept with that item, not as an item." (one note per dropped line, at most three, then "and N more"). Not applied when the cited lines' indent is unknown. Bills and other kinds are unaffected. | Stub publishing the four side lines as $0/null items: 5 items stored (sum 4885). Georgia Peach Stack cites lines 10–14, and the notes are present. The same stub with no indent data: as today. |
 | FR-24 | `EXTRACTION_VERSION` becomes v57. Extract again re-reads under it. | Extract again after the upgrade creates a new extraction run. |
-| FR-25 | `docs/documents.md` "Images (vision transcription)" (lines, indent, the Text view's indentation), "PDFs" (vision pages), "Several images as one document" (indent kept) and "Receipt kinds" (dining total, worked-out tip and Review, suggested-tip table, side lines) describe the built behavior. `docs/money.md` "Item categories and splits" says when a dining receipt's items count as its category (FR-14), that older ones keep their categories and the Category column until then, when the item dropdown is refused, that "Not matched to an item" leaves out the tip (FR-27), and amends rules 4 and 5: on a dining receipt FR-10 has applied to, the tip and the difference count under the receipt's category (D18). "Receipt kinds" also covers the nearest pre-tip amount, which labels make a pre-tip amount, and the fallback after a rejected table total (D22, D23, D30). `docs/open-work.md` lists D2's items, D16 (tax among other amounts on one line) and Q2 (a note when a re-read total no longer equals the linked charge). | The doc sections match the built behavior; open-work has the entries. |
+| FR-25 | `docs/documents.md` "Images (vision transcription)" (lines, indent, the Text view's indentation), "PDFs" (vision pages), "Several images as one document" (indent kept) and "Receipt kinds" (dining total, worked-out tip and Review, suggested-tip table, side lines) describe the built behavior. `docs/money.md` "Item categories and splits" says when a dining receipt's items count as its category (FR-14), that older ones keep their categories and the Category column until then, when the item dropdown is refused, that "Not matched to an item" leaves out the tip (FR-27), and amends rules 4 and 5: on a dining receipt FR-10 has applied to, the tip and the difference count under the receipt's category (D18). "Receipt kinds" also covers the nearest pre-tip amount, which labels make a pre-tip amount, and the fallback after a rejected table total (D22, D23, D30). `docs/money.md` "Reading a statement or receipt again" and "Near matches and foreign receipts" describe FR-28 – FR-30 (when a re-read removes a link, the note, that it isn't a rejection). `docs/open-work.md` lists D2's items, D16 (tax among other amounts on one line), and from D35, D38 and D40: stale payment links on bills and deposit links on pay stubs after a re-read, a link after Correct… on a receipt's total, a re-read that changes only the date or merchant, and a lasting history entry for a removed link. The Q2 entry from round 4 is not added (Q2 is reversed, D34). | The doc sections match the built behavior; open-work has the entries and no Q2 entry. |
 | FR-26 | (D11) The source viewer's Text view shows each line indented by its level. The text itself is unchanged, so copying and Find stay exact. | Text view of the breakfast receipt: lines 11–14 and 16 render one step in. Their text content equals the stored text. |
 | FR-27 | (D13) The footer's "Not matched to an item" leaves out the tip; the Tip row shows it. The server sends the shown amount: the sum of the receipt's own split rows that carry no item (today's `unmatched_minor`), less the tip's own row in that split (the row `allocate` adds for the tip, `splits.py:185-186`). Its category is dining, or the receipt's category once FR-10 has applied (D18). That row is exactly `tip_minor` when the split is divided at the receipt's total, since `rounded` never moves a whole-unit value (`splits.py:39-45`); with a gift card or a family share it is the tip's resized share. The row is hidden when the result is zero. Display only: FR-27 itself changes no `category_splits` row, "By category", total or stored amount. | Breakfast receipt (items 4885, tax 391, tip 879, total 6155): no "Not matched to an item" row; By category "Dining $61.55". A printed-tip receipt with a $2.00 difference left over: "Not matched to an item $2.00", Tip shown on its own row. A v56 dining receipt with tax missed (total 5276, subtotal 4885, no tip): "Not matched to an item $3.91" as today. |
+| FR-28 | (D34, D35, D38, D39) **A re-read removes a stale charge link.** When a reading of a receipt is recorded and rewrites the record (not one you approved or rejected; a new file, Extract again, Try again, a kind change on a receipt you haven't reviewed, a family-sent receipt), and its counted total (`total_minor`, after gift cards and your corrections) differs from before the reading, each live link (`proposed` or `verified`) between the receipt and a charge is tested against the new total. It holds: a proposed link only at the exact amount in the same currency; a verified link at the exact amount or when the charge is larger than a positive total by at most 30% (charge × 100 ≤ total × 130), same currency; a link to a charge in another currency when the charge is within 97 – 106% of the new total's estimate at the link's stored rate, else at the rate reconciliation would look up now, and never with no rate. With no total, nothing holds. A link that doesn't hold is removed (FR-29). The merchant and posting window aren't re-tested. Unchanged total, a record you reviewed, a record recorded as a bill, a pay stub, a failed reading and Correct… on a total remove nothing. Applies to every receipt kind. | SC-09: the proposed link to the $52.76 charge is removed after Read again gives 6155. A verified $10.00 link holds when a re-read gives $9.00 and is removed when it gives $7.00; a proposed $10.00 link is removed when it gives $9.00. Extract again with the same total keeps the link row (same id and status). An approved receipt, a bill and a failed reading keep their links. |
+| FR-29 | (D37, D41) **What removing a link does.** The link's row is removed, not marked rejected; every rejected row stays as it was. The charge's split rows for the receipt go, so the charge counts under its own category. A merchant the charge took from the receipt goes, and its category and tax rules decide again, as on rejecting a link. The two documents no longer show each other as the same purchase (not marked rejected). The receipt's own split follows FR-10 and D18. All of this is part of the publication that records the new total. The reconciliation after the reading then runs as usual: it may link a charge of the new total, ask a near-match question (the removed charge included when it fits), or leave the receipt open; a question you answered "leave unmatched" stays answered. A removed pair can be linked again whenever it matches again. | SC-20: after Read again the receipt links the $61.55 charge exactly; the $52.76 charge has no link row and no split rows; the rejected row to the $60.00 charge is unchanged. Correct Total back to $52.76 (without the $61.55 charge) links the $52.76 charge again. |
+| FR-30 | (D36, D40) **The note.** Each removed link adds one issue to the receipt, and the receipt waits in Review (`needs_review`): "The match to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it." For a link you confirmed or chose: "The match you confirmed to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it." With no total: "… was removed: this reading has no total." The charge's amount and the counted total are magnitudes, written as FR-01's issue writes amounts; the date is the charge's transaction date, else its posted date, as YYYY-MM-DD. The note stays until you review the receipt or a later reading replaces the issues. A removed link gets no gift-card "Amount paid (…) no longer equals the linked charge (…)" note. | SC-09: C's reasons are exactly the FR-06 reason and the first note. SC-20: the "you confirmed" note. SC-21 (d): the gift-card receipt has the note naming $8.00 and no "Amount paid (" note. |
 
 ## Invariants, privacy, security and data retention
 - Per-category shares of a receipt or a charge add up exactly to it (`splits.py`). The page calculates nothing: the
@@ -297,6 +377,8 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
   amount (FR-27) come from the server ("money from the server", `docs/ui.md` "Screen rules").
 - No migration and no upgrade step rewrites `category_splits` (D5). Only FR-14's events change which category a dining
   receipt's items count under.
+- A charge link is never removed silently: each removal adds FR-30's note and puts the receipt in Review. A removal is
+  never recorded as a rejection, and no rejected link is changed (D37).
 - Every stored amount cites its source lines. A worked-out tip cites both totals ("source beside the record").
 - The model proposes, the code decides. The post-tip total, the worked-out tip, the suggested-tip exclusion and the
   side-line backstop are deterministic rules over the transcription.
@@ -310,7 +392,8 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
 - Vision output that fails validation gets the one rescue call, then fails as today (FR-18). A bad indent never fails
   a reading (FR-17).
 - An unreadable post-tip total (no amount on the line) means FR-01 doesn't apply, and today's behavior holds.
-- A failed extraction leaves the earlier record, its tip and splits as they were.
+- A failed extraction leaves the earlier record, its tip, splits and charge links as they were. A link is removed only
+  in the same publication that records the new total (FR-28), so a crash before it commits leaves both as they were.
 - Reading the same image twice under the same version reuses the parse run as today. A new version makes one new run,
   not one per page or call.
 - Splits rebuild on every change, as today, so a restart changes nothing. Nothing runs at upgrade (D5). Whether FR-10
@@ -331,11 +414,11 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
 | SC-02 | FR-03 | The SC-01 stub with "Tip: $8.79" printed and read | Record | tip 879 printed (not worked out), total 6155, no tip issue, verified automatically |
 | SC-03 | FR-04, FR-01 | Customer copy: lines 1–22 and "Tip: $", "Total: $" (blank). Variant: the breakfast receipt without line 24 (no tip line). Variant: line 22 reads "Bill: $50.00" | Record each | Customer copy: total 5276, tip missing (not 0), no worked-out note. No tip line: total 6155 citing line 23, tip missing, no worked-out note, the dining check's gap issue as today, "Not matched to an item $8.79" (D19). Bill $50.00: total 6155, tip missing, the issue "The receipt prints different amounts before the tip ($52.76 and $50.00), so the tip wasn't worked out." (D23, D29) |
 | SC-04 | FR-05, FR-01 | SC-01 without line 23; the model's total cites line 26. Variant: also without lines 20 and 22 (line 6 "Amount: $52.76" kept) | Record each | total 5276 citing line 22 (Bill), no second model call, tip missing, suggested-table note (D22). Variant: total missing (line 6 is not a pre-tip amount, D30), the note |
-| SC-05 | FR-08, FR-14, FR-24 | A library with dining receipts recorded under v56 (total 5276), one approved by the user | Upgrade; run reconciliation; Extract again on both | After upgrade and reconciliation, every `category_splits` row is unchanged. After Extract again, the approved one is unchanged. The other becomes total 6155 and tip 879, under a v57 extraction run, with all splits dining |
+| SC-05 | FR-08, FR-14, FR-24, FR-28 | A library with dining receipts recorded under v56 (total 5276), one approved by the user, and a $52.76 card charge | Upgrade; run reconciliation; Extract again on both | After upgrade and reconciliation, every `category_splits` row is unchanged. After Extract again, the approved one is unchanged, its link included. The other becomes total 6155 and tip 879, under a v57 extraction run, with all splits dining; if it held the link to the charge, that link is removed with FR-30's note |
 | SC-06 | FR-09 | SC-01 recorded | Correct Tip to $9.00; Extract again | tip 900, not worked out. The FR-06 reason is gone; no new issue (checks aren't re-run); the footer shows today's "Doesn't add up" warning (the difference is $0.21) (D31); verified automatically (D26). Extract again keeps 900 |
 | SC-07 | FR-10, FR-11, FR-12 | SC-01 recorded | Open the document page; PUT an item category; Edit details → Categories → Travel | No Category column (the payload says so). PUT → 400, no memory row. All splits travel, the tip row included (D18), sum 6155; By category "Travel $61.55"; still no column |
 | SC-08 | FR-13 | SC-01 recorded and approved | Change kind to grocery; Undo; change to dining again | Grocery: items take memory or model categories. Each change rebuilds splits; Undo restores them; sums constant |
-| SC-09 | FR-08, FR-11, FR-12, FR-14 | A v56 library: a dining receipt waiting in Review (total 5276), one item set to Groceries by the user and one by the model, linked to no charge; a $52.76 card charge | Upgrade; open the page; reconcile (links the charge); PUT a third item to Groceries; Read again | Before Read again: the Category column shows; the two Groceries items' splits stay Groceries on the receipt and on the charge, each sum unchanged; the PUT → 200 and writes memory as today. After Read again: no column, every split dining, the user's stored item choices still there, the model's item stores dining with source `receipt` (D20). The link to the $52.76 charge stays (D21); the charge's split is all dining, sum 5276, with no note and no near-match question. A further reconciliation run keeps every split dining |
+| SC-09 | FR-08, FR-11, FR-12, FR-14, FR-28, FR-29, FR-30 | A v56 library: a dining receipt waiting in Review (total 5276), one item set to Groceries by the user and one by the model, linked to no charge; a $52.76 card charge | Upgrade; open the page; reconcile (links the charge); PUT a third item to Groceries; Read again | Before Read again: the Category column shows; the two Groceries items' splits stay Groceries on the receipt and on the charge, each sum unchanged; the PUT → 200 and writes memory as today. After Read again: no column, every split dining, the user's stored item choices still there, the model's item stores dining with source `receipt` (D20). The link to the $52.76 charge is removed (D34; it was proposed and 6155 ≠ 5276): no link row joins them, none is rejected, the charge has no split rows, and the receipt's reasons are the FR-06 reason and "The match to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it." The reconciliation after the reading links nothing and asks nothing (the charge is smaller than the total). A further reconciliation run keeps every split dining and the receipt unlinked |
 | SC-10 | FR-15, FR-16, FR-17, FR-21 | Vision stub with 28 lines, indents as in the table, one indent 5, one line containing a line break | Read the image; record | Line ids continuous, the broken line split, the indent-5 line unknown. The extraction request carries indent where known |
 | SC-11 | FR-18 | Main vision stub invalid; rescue stub returns lines with indent | Read the image | Reading kept with indent and `vision_table_invalid`. With both invalid, the run fails and the earlier reading stays |
 | SC-12 | FR-19, FR-20, FR-21 | Image, scanned-PDF and combined-image readings under the old versions, and today's extraction requests for them captured before any change (D28) | Read each again | New parse runs under the new versions with indent; old runs, the old combined one included (D24), still open and extract, with `lines` byte-identical to the capture and the rest identical apart from FR-22's instruction |
@@ -346,25 +429,38 @@ in the Text view (FR-26, D11). The footer's "Not matched to an item" without the
 | SC-17 | FR-14 | A v56 dining receipt whose items have no category (backfill pending) and a model stub that would answer Groceries | Run the item-category backfill | Items take the receipt's category, source `receipt`; `category_splits` unchanged; no column. Variant: an item under a retired category moves to the receipt's category, its split with it (D27) |
 | SC-18 | FR-27 | SC-01 recorded; a printed-tip receipt with $2.00 left over; a v56 dining receipt with tax missed | Open each document page | Breakfast: no "Not matched to an item" row. Printed tip: Tip and "Not matched to an item $2.00". v56: "Not matched to an item $3.91". `category_splits` identical before and after FR-27 |
 | SC-19 | FR-01 (D14) | The breakfast receipt; the several-receipts stub answers "one receipt" | Record | One receipt, total 6155. Characterization only: no rule change |
+| SC-20 | FR-28, FR-29, FR-30 | SC-09's v56 library with a $52.76 charge, a $61.55 charge, and a $60.00 charge whose link to the receipt you rejected | Reconcile (links the $52.76 charge); approve that link; Read again | The link you confirmed is removed with "The match you confirmed to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it."; the reconciliation after the reading links the $61.55 charge exactly (proposed), its split all dining, sum 6155; the $52.76 charge has no link row and no split rows; the rejected row to the $60.00 charge is unchanged. Variant without the $61.55 charge: Correct Total to $52.76 → the $52.76 charge is linked again (not a rejection, D37) |
+| SC-21 | FR-28, FR-29, FR-30 | A grocery receipt (SYNTH MART, total $10.00) and a $10.00 card charge from SYNTH MART | Record and reconcile (exact, proposed); Extract again with the same total; Extract again reading $9.00; choose the charge in the near-match question; Extract again reading $10.00, then $9.00, then $7.00 | Same total: the link row unchanged, no note. $9.00 with the proposed link: removed with the note, then a near-match question offering the $10.00 charge. After you choose it: $10.00 and $9.00 keep the link you chose (exact; within the 30% allowance), no note. $7.00: removed with the "you confirmed" note (10.00 is more than 30% above 7.00), no question. Variants: a gift-card receipt (removal note names the amount paid, no "Amount paid (" note); a foreign receipt linked to a USD charge (kept within 97 – 106% of the estimate at the stored rate, removed outside it) |
+| SC-22 | FR-28 (D38, D39) | Each independent: an approved dining receipt linked to a $52.76 charge; SC-09 after the link; a bill linked to its payment; a reviewed receipt linked to a charge | Extract again; Try again that fails; read the bill again with a different amount; change the reviewed receipt's kind; Correct… the total of a linked receipt | Every link row unchanged (same id and status), no removal note, no charge split changed by the rule |
 
-`design-tests` is recommended before approval. SC-01, SC-05, SC-08, SC-09, SC-12, SC-16 and SC-17 are stateful: they
-cover stored splits, review state, parse and extraction runs, the upgrade, reconciliation rebuilds and the backfill.
+`design-tests` is recommended before approval. SC-01, SC-05, SC-08, SC-09, SC-12, SC-16, SC-17, SC-20 and SC-21 are
+stateful: they cover stored splits, review state, parse and extraction runs, the upgrade, reconciliation rebuilds, the
+backfill and charge links across re-reads.
 
 Trace (FR → SC): FR-01 SC-01, SC-03, SC-04, SC-19 · FR-02 SC-01 · FR-03 SC-02 · FR-04 SC-03 · FR-05 SC-04 · FR-06 SC-01 ·
 FR-07 SC-01 · FR-08 SC-05, SC-09 · FR-09 SC-06 · FR-10 SC-01, SC-07, SC-09 · FR-11 SC-07, SC-09, SC-16 · FR-12 SC-07, SC-09,
 SC-16 · FR-13 SC-08 · FR-14 SC-05, SC-09, SC-16, SC-17 · FR-15–FR-17 SC-10 · FR-18 SC-11 · FR-19, FR-20 SC-12 ·
-FR-21 SC-10, SC-12 · FR-22 SC-13 · FR-23 SC-13, SC-14 · FR-24 SC-05 · FR-25 doc review · FR-26 SC-15 · FR-27 SC-18.
+FR-21 SC-10, SC-12 · FR-22 SC-13 · FR-23 SC-13, SC-14 · FR-24 SC-05 · FR-25 doc review · FR-26 SC-15 · FR-27 SC-18 ·
+FR-28 SC-05, SC-09, SC-20, SC-21, SC-22 · FR-29 SC-09, SC-20, SC-21 · FR-30 SC-09, SC-20, SC-21.
 
 ## Out of scope / product decisions requiring approval
 All round-1 open decisions (OD-1 – OD-6) and risk candidates (R1 – R5) are decided: D4 – D17 above. The test
-contract's gaps G1 – G13 are decided: D18 – D28, and G14 – G18: D29 – D33.
+contract's gaps G1 – G13 are decided: D18 – D28, and G14 – G18: D29 – D33. Round 5's reversal of Q2 is decided:
+D34 – D41.
 
-Q1 and Q2 take their recommended defaults, accepted by the user (recorded in `test-contract.md`, which tests them in
-X-Q1 and SC-09 step 6). Nothing in this spec is open.
+Q1 takes its recommended default, accepted by the user (tested in `test-contract.md` X-Q1). Q2's default was accepted
+in round 4 and reversed by the user in round 5 (D34): it is now in scope as FR-28 – FR-30. Nothing in this spec is open.
 - **Q1 Edit details with the same category (default accepted).** FR-14 (c) applies FR-10 when Categories *changes*. An old dining receipt
   whose category is already dining gets FR-10 only by Read again, a kind change, or setting each item through the
   dropdown (D7). Decided: leave it so. Read again is the documented way, and the dropdown covers an approved receipt.
-- **Q2 A note when a re-read total no longer equals the linked charge (from D21; default accepted).** Today a link stays when reading
-  again changes the total, with no note unless the receipt has a gift card. On the breakfast receipt this happens when
-  an old $52.76 link meets the new $61.55 total (SC-09). Decided: leave it as today (the charge's split still sums to
-  the charge) and add a `docs/open-work.md` entry for such a note on every receipt, not only dining ones.
+- **Q2 A note when a re-read total no longer equals the linked charge (from D21). Reversed in round 5 (D34).** Round 4
+  accepted the default (keep the link as today, with an open-work entry). The user reversed it: the link must not
+  remain. FR-28 – FR-30 replace it, and no open-work entry for Q2 is added (FR-25).
+
+Round 5 risk pass (FR-28 – FR-30). Each candidate is settled by a decision above, so none is open:
+- **R6 A misread re-read drops a right link** (a grocery total misread on Try again). Contained by the note and Review
+  (D36), and by D37: the pair is offered again once the total is right. Accepted risk (D38).
+- **R7 A link you confirmed disappears.** Removed per the user's words, never silently (D36, FR-30).
+- **R8 The same staleness on bills, pay stubs and Correct… on a total.** Out of scope, open-work entries (D38, FR-25).
+- **R9 A re-read that moves the date or merchant out of the match.** Not re-tested, open-work entry (D35).
+- **R10 The note lost on a later reading.** Accepted (D40); a lasting history entry is an open-work entry.
