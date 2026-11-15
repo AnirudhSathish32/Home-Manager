@@ -92,7 +92,24 @@ slices:
     notes: >-
       Per FR-13 as written, a reviewed grocery receipt changed to dining counts wholly under the receipt's own category
       (groceries), not dining. Faithful to the approved spec; raise with the human as a possible spec follow-up.
-  SL-07: {status: todo}
+  SL-07:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 3ad658d
+    end_head: 703010a  # SL-07 code f65c1ed, handoff 768f2b4; fix worker d3e151b + handoff 703010a
+    verification: >-
+      Orchestrator rerun 2026-11-15: the plan's SL-07 command plus tests/test_document_split.py: 288 passed, 2 skipped, exit 0.
+      link_holds / drop_stale_links reviewed against D35-D41. src/ unchanged by the fix; specs/, approvals/, plan.md,
+      tests/dining_receipt_data unchanged; plan hash matches.
+    notes: >-
+      The SL-07 worker's run failed tests/test_statement_accounts.py::test_sc07_the_upgrade_sorts_… (duplicate column one_category):
+      an SL-04 omission, not SL-07's. Its take_back to 072 drops what later migrations add (075/076 precedent) but had nothing for 081;
+      tests/test_document_split.py merged_library (back to 079) failed 17 tests the same way. Fix worker (task
+      dining-receipt-indent-fix-081-replay, claude-sonnet-5-5) added the three DROP COLUMN lines to both helpers and a
+      without_081_columns filter for test_sc13's schema-dump comparison (rows and other tables still compared exactly).
+      SC-21 (d) built through the ledger plus Reconciler.run as the contract says; the "cached rate removed after linking" variant
+      cannot be built (rates are immutable) and is covered by four stored-rate tests.
   SL-08: {status: todo}
   SL-09: {status: todo}
 final_verification: null
