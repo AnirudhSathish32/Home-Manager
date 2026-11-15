@@ -1,0 +1,19 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: dining-receipt-indent
+plan_sha256: 6768d72d9e083a84f360067329360cdd5057fea3ca7ae32255aa816852c87890
+session_plan_hash: 6768d72d9e083a84f360067329360cdd5057fea3ca7ae32255aa816852c87890
+spec_sha256: 0f8ed366305f320d7ab4bee1eb45f1b115770e30910a65d658ea63b54bbbc224
+checkout: /home/anirudh/Documents/Projects/Home-Manager-dining  # git worktree, branch dining-receipt-indent (.venv symlinked to the main checkout's; pytest pythonpath puts this tree's src first)
+start_head: 19c0475
+baseline_failures: plans/dining-receipt-indent/baseline-failures.txt  # 66e97d5, 54 failed + 20 errors; src/ and tests/ unchanged since
+slices:
+  SL-01: {status: todo}
+  SL-02: {status: todo}
+  SL-03: {status: todo}
+  SL-04: {status: todo}
+  SL-05: {status: todo}
+  SL-06: {status: todo}
+  SL-07: {status: todo}
+  SL-08: {status: todo}
+  SL-09: {status: todo}
+final_verification: null
