@@ -110,6 +110,19 @@ slices:
       without_081_columns filter for test_sc13's schema-dump comparison (rows and other tables still compared exactly).
       SC-21 (d) built through the ledger plus Reconciler.run as the contract says; the "cached rate removed after linking" variant
       cannot be built (rates are immutable) and is covered by four stored-rate tests.
-  SL-08: {status: todo}
+  SL-08:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 4fa0f04
+    end_head: 3bc5c88  # code 7ed5fc5, c0cc970; handoff 3bc5c88 (retry after a rate-limit failure; first retry's turn ended mid-run, then resumed)
+    verification: >-
+      Orchestrator rerun 2026-11-15: RUN_BROWSER_TESTS=1 test_receipt_items_browser.py + test_document_v2_browser.py: 21 passed, exit 0.
+      src/ diff reviewed (receipt.js category_column filter + tip_note, trace.js data-indent, style.css); page calculates nothing.
+      ruff I001 in test_document_v2_browser.py exists at 66e97d5 (pre-existing). tests/dining_receipt_data unchanged.
+      Looked at dining-b0-text-1440: sides indented, no Category column, Tip note in footer, total 61.55.
+    notes: >-
+      Synthetic B0 prints Bottled Water on two lines, shown as two qty-1 rows (faithful to the print). The document page's own
+      Tip field (document_v2.js) does not show the note; only the footer does, as the plan says.
   SL-09: {status: todo}
 final_verification: null
