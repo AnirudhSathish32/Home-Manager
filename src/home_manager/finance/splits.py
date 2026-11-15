@@ -155,11 +155,15 @@ def record(recorder, values, target, labels, currency):
                    note="Each share is exact until the end, then rounded down; the cents left go one each to the largest remainders.")
 
 
-def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currency=None, tax_parts=None):
+def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currency=None, tax_parts=None, one_category=False, tip_category=None):
     """[(item index or None, category, minor units)] summing to target.
     items: dicts with line_total_minor, discount_minor, taxed and category (None falls back to fallback), and a
     description for a live recorder's step labels. tax_parts: a TaxPlan's parts, each spread over its own weights; None
-    spreads tax over tax_basis(items)."""
+    spreads tax over tax_basis(items). one_category: the receipt counts wholly under fallback, its category (a dining receipt
+    once FR-10 has applied, docs/money.md "Item categories and splits"): every item takes it whatever the item says, the tip
+    row takes it too (dining when the receipt has none), and a positive difference is one row no item carries, never spread.
+    tip_category, when given, replaces the tip row's category alone (the footer finds that row by it, FR-27)."""
+    receipt_category = fallback
     fallback = fallback or "uncategorized"
     amounts = [Fraction(item_amount(item)) for item in items]
     extra = []  # (category, amount) that no item carries.
@@ -183,15 +187,15 @@ def allocate(items, subtotal, tax, tip, target, fallback, recorder=NULL, currenc
     elif tax:
         spread(tax, tax_basis(items))
     if tip:
-        extra.append((DINING, Fraction(tip)))
+        extra.append((tip_category or (receipt_category or DINING if one_category else DINING), Fraction(tip)))
     difference = target - sum(amounts) - sum(amount for _, amount in extra)
-    if difference > 0 and fallback == DINING:
-        extra.append((DINING, difference))
+    if difference > 0 and (one_category or fallback == DINING):
+        extra.append((fallback if one_category else DINING, difference))
     else:
         spread(difference, [max(amount, 0) for amount in amounts] if any(amount > 0 for amount in amounts) else amounts)
     values = [*amounts, *(amount for _, amount in extra)]
     whole = rounded(values, target)
-    rows = [(index, item.get("category") or fallback, whole[index]) for index, item in enumerate(items)]
+    rows = [(index, fallback if one_category else item.get("category") or fallback, whole[index]) for index, item in enumerate(items)]
     rows += [(None, category, whole[len(items) + index]) for index, (category, _) in enumerate(extra)]
     if recorder.live:
         record(recorder, values, target, [label(items, index, category) for index, category, _ in rows], currency)

@@ -43,7 +43,7 @@ from ..finance import bill_tables, document_checks, paystub_tables, statement_ta
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
 from ..finance.reconcile import Reconciler, due_after
-from ..finance.splits import discount_off, printed_code
+from ..finance.splits import DINING, discount_off, printed_code
 from ..household.items import printed_return_days
 from ..library.managed_library import iso_date
 from ..library.storage import now
@@ -4751,6 +4751,8 @@ class ExtractionService:
                                 value["locator"]["cells"] = cells
         # A bill's category comes from its lines (bill_lines); a receipt's from the model's description of it.
         record["description"], record["category"], record["recurrence"] = description, category or record.get("category"), recurrence or record.get("recurrence")
+        if kind == "receipt" and receipt_kind == "dining":  # A dining receipt's category is dining when recorded; yours replaces it (docs/money.md "Item categories and splits").
+            record["category"] = DINING
         for item, item_category in zip(record.get("items", []) if item_categories else [], item_categories or []):
             item["category"] = item_category
         for item in record.get("items", []):

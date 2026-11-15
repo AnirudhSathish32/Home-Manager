@@ -24,6 +24,8 @@ the new code's output with these files.
 import json
 from pathlib import Path
 
+from home_manager.finance.ledger import normalize_name
+
 DATA = Path(__file__).parent / "dining_receipt_data"
 CAPTURES = {
     "result": {"R6": DATA / "r6_result.json", "P3": DATA / "p3_result.json", "G2": DATA / "g2_result.json"},
@@ -254,9 +256,9 @@ OLD_RECEIPTS = {
 }
 
 
-def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H")):
+def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H"), memory=True):
     """Insert the old receipts called names (A – E, G, H of the contract) with their items, receipt splits, a v6 parse run holding the R6 capture and a
-    v56 extraction run each, and one item category memory row. Returns {name: receipt id}. Money is in minor units; every statement is plain SQL."""
+    v56 extraction run each, and (memory) one item category memory row. Returns {name: receipt id}. Money is in minor units; every statement is plain SQL."""
     result = CAPTURES["result"]["R6"].read_text()
     ids = {}
     for number, name in enumerate(names, 1):
@@ -265,6 +267,7 @@ def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H")):
         db.execute("INSERT OR IGNORE INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
         document = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
                               "VALUES('root',?,?,?,'t','t','job')", (f"{name}.png", f"{name}.png", digest)).lastrowid
+        db.execute("INSERT INTO versions(occurrence_id,hash,captured_at,source_mtime_ns) VALUES(?,?,'t',0)", (document, digest))
         parse = f"parse-{name}"
         db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at,result_json) "
                    "VALUES(?,?,'receipt-vision-v6-tables','{}','succeeded','t','t',?)", (parse, digest, result))
@@ -274,7 +277,7 @@ def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H")):
             receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,extraction_run_id,purchase_date,subtotal_minor,tax_minor,total_minor,currency,"
                                  "review_status,review_source,category,receipt_kind,created_at,updated_at) VALUES(?,?,?,'2026-11-01',900,100,1000,'USD',"
                                  "'verified','user','groceries','grocery','t','t')", (document, digest, f"extraction-{name}")).lastrowid
-            items = [("Milk", 400, "groceries", 400), ("Soap", 500, "household supplies", 600)]
+            items = [("Milk", 400, "groceries", 444), ("Soap", 500, "household supplies", 556)]  # 900 + 100 tax shared by amount (allocate)
             tail = []
         elif name == "H":  # Dining, category travel before the upgrade: tip dining, the difference spread (rules 4 and 5).
             receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,extraction_run_id,purchase_date,subtotal_minor,tax_minor,tip_minor,total_minor,"
@@ -298,5 +301,7 @@ def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H")):
         for category, amount in tail:
             db.execute("INSERT INTO category_splits(receipt_id,category,amount_minor) VALUES(?,?,?)", (receipt, category, amount))
         ids[name] = receipt
-    db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES('gachas breakfast bar','coffee','groceries','t')")
+    if memory:
+        db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,'groceries','t')",
+                   (normalize_name("Gacha's Breakfast Bar"), normalize_name("Coffee")))  # The keys as the ledger writes them.
     return ids

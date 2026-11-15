@@ -218,6 +218,10 @@ TRANSACTION_LABELS = {"posted_date": "Date", "amount": "Amount", "direction": "M
 # The review note when a correction clears a record's last issue; with no actor, the history shows it as automatic.
 AUTO_VERIFIED_NOTE = "Every automatic check passes after your correction."
 UNDO_REASON = "Undid a change"
+# What the item dropdown answers (400) while the Category column is hidden (FR-12, docs/money.md "Item categories and splits").
+CATEGORY_REFUSED = "Every item on a dining receipt counts as the receipt's category; change it with Edit details."
+# Stands in for the tip row's category while the footer looks for that row (FR-27); no real category is spelled like it.
+TIP_MARK = "\0tip"
 # A bill's line corrections are kept by printed position, so a reading that moves the lines must not move them too (FR-119). The
 # reserved key beside a bill's kind entries in receipts.details_json remembers each correction's line amount, which corrections are held
 # (not applied: their line prints another amount now) and which held ones were undone. Nothing else reads it.
@@ -754,6 +758,7 @@ class Ledger:
             # A bill's kind is in bill_kind, a receipt's in receipt_kind (kind_column); the other stays empty.
             column = kind_column({"document_kind": record.get("document_kind", "receipt")})
             kind = record.get(column)
+            dining = column == "receipt_kind" and kind == "dining"
             before = db.execute(f"SELECT {column} FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
             receipt_id, written = self._upsert(db, "receipts", source, {
                 # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
@@ -776,7 +781,9 @@ class Ledger:
                 # Which tax rule this reading set up; None for a record published without one (docs/money.md "Item categories and splits").
                 "tax_source": record.get("tax_source"),
                 # The two printed lines a dining receipt's tip was worked out from; NULL when it is printed or missing (docs/documents.md "Receipt kinds").
-                "tip_worked_out_json": json.dumps(record["tip_worked_out"]) if record.get("tip_worked_out") else None})
+                "tip_worked_out_json": json.dumps(record["tip_worked_out"]) if record.get("tip_worked_out") else None,
+                # Whether the receipt counts wholly under its category (FR-10); set below for a dining receipt, so a record read as another kind clears it.
+                "one_category": 0})
             kept = 0
             if source.get("kind_change") and kind:
                 # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
@@ -792,13 +799,15 @@ class Ledger:
                 # A bill's lines as stored before this reading, for the line corrections made before FR-119 remembered amounts.
                 stored = {row[0]: row[1] for row in db.execute("SELECT position,line_total_minor FROM receipt_items WHERE receipt_id=?", (receipt_id,))} \
                     if record.get("document_kind") == "bill" else None
-                kept = self._replace_items(db, receipt_id, record, source, status)
+                kept = self._replace_items(db, receipt_id, record, source, status, dining)
                 if kept:
                     issues = [*record["issues"], f"This reading no longer finds {kept} item{'s' if kept > 1 else ''} you worked on; "
                               "they were kept at the end of the list. Check them against the receipt."]
                     db.execute("UPDATE receipts SET review_status='needs_review',review_source=NULL,validation_json=? WHERE id=?", (json.dumps(issues), receipt_id))
                 # After the items: a sale-or-return correction signs them as well as the totals.
                 self.apply_corrections(db, "receipt", receipt_id, stored)
+                if dining:  # A reading of a dining receipt is one of FR-14's events (docs/money.md "Item categories and splits").
+                    self.apply_one_category(db, receipt_id)
                 self.refresh_paid(db, receipt_id)
                 db.execute("DELETE FROM receipt_rewards WHERE receipt_id=?", (receipt_id,))
                 db.executemany("INSERT INTO receipt_rewards(receipt_id,position,kind,description,amount_text,expires_on,link,locator_json,created_at,updated_at) "
@@ -1045,10 +1054,11 @@ class Ledger:
             yield (*key, seen[key])
             seen[key] += 1
 
-    def _replace_items(self, db, receipt_id, record, source, status):
+    def _replace_items(self, db, receipt_id, record, source, status, dining=False):
         """Write this reading's items. An item it finds again keeps its id, so its identification, write-off tags, household
         lot and the user's category stay; it takes the new text and position. One it no longer finds is removed, unless the
-        user worked on it: then it is kept after the new items. Returns how many were kept that way."""
+        user worked on it: then it is kept after the new items. Returns how many were kept that way. dining: the item
+        category memory isn't read (docs/money.md "Item categories and splits": a dining receipt counts as one category)."""
         earlier = [dict(row) for row in db.execute("SELECT * FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))]
         removed = {(row["description_key"], row["ordinal"]) for row in db.execute(
             "SELECT description_key,ordinal FROM deleted_receipt_items WHERE receipt_id=?", (receipt_id,))}
@@ -1078,7 +1088,7 @@ class Ledger:
             db.executemany(f"UPDATE {table} SET position=? WHERE receipt_id=? AND position=?", [(new, receipt_id, -old) for old, new in moves.items()])
         # A lot whose line had already gone (a reading before this change replaced every line) keeps its product, not a position.
         db.execute("UPDATE inventory_lots SET position=NULL WHERE receipt_id=? AND position<0", (receipt_id,))
-        remembered = self.remembered_categories(db, record["merchant"])
+        remembered = {} if dining else self.remembered_categories(db, record["merchant"])
         for position, item in incoming:
             category, category_source = remembered.get(normalize_name(item["description"])), "memory"
             if category is None:
@@ -1150,6 +1160,39 @@ class Ledger:
         """{item key: category} the user chose before for items from this seller."""
         return dict(db.execute("SELECT item_key,category FROM item_category_memory WHERE merchant_key=?", (normalize_name(merchant),)).fetchall())
 
+    @staticmethod
+    def one_category(receipt):
+        """Whether a receipt (a row or the dict split_inputs makes) counts wholly under its own category: a dining receipt FR-10 has
+        applied to (docs/money.md "Item categories and splits"). Every rebuild reads this and none sets it (D8)."""
+        return bool(receipt["one_category"]) and receipt["receipt_kind"] == "dining" and receipt["document_kind"] == "receipt"
+
+    @staticmethod
+    def apply_one_category(db, receipt_id):
+        """FR-10 for a dining receipt: it counts wholly under its category from now on, and every item not categorised by the user
+        stores that category with source receipt (D20). The caller rebuilds the splits. Called on FR-14's events only: a reading of
+        the receipt, a kind change to dining, and Edit details changing its category (docs/money.md "Item categories and splits")."""
+        row = db.execute("SELECT category,receipt_kind,document_kind FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        if row is None or row["receipt_kind"] != "dining" or row["document_kind"] != "receipt":
+            return
+        db.execute("UPDATE receipts SET one_category=1 WHERE id=?", (receipt_id,))
+        if row["category"]:
+            db.execute("UPDATE receipt_items SET category=?,category_source='receipt',updated_at=? WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
+                       (row["category"], now(), receipt_id))
+
+    @staticmethod
+    def category_column(db, row):
+        """Whether the receipt's item table shows its Category column (FR-11). Hidden only for a dining receipt whose every item's share counts
+        under the receipt's category: from the receipt's own split (item rows with no charge) when it has one, else from the categories the
+        split would use. Every other kind keeps it."""
+        if row["document_kind"] != "receipt" or row["receipt_kind"] != "dining":
+            return True
+        fallback = row["category"] or "uncategorized"
+        found = [item[0] for item in db.execute("SELECT category FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL AND receipt_item_id IS NOT NULL",
+                                                 (row["id"],))]
+        if not found and not Ledger.one_category(row):
+            found = [item[0] or fallback for item in db.execute("SELECT category FROM receipt_items WHERE receipt_id=? AND review_status<>'rejected'", (row["id"],))]
+        return any(category != fallback for category in found)
+
     def refresh_splits(self, db, receipt_id=None):
         """Rebuild the category shares of one receipt (or every receipt) and of each charge linked to it."""
         if receipt_id is None:
@@ -1202,20 +1245,22 @@ class Ledger:
                                               else receipt["total_minor"])
 
     @staticmethod
-    def shares(receipt, items, target, currency, shared, recorder=NULL):
+    def shares(receipt, items, target, currency, shared, recorder=NULL, tip_category=None):
         """One charge's (or the receipt's own) division by item category, summing to target. A live recorder gets the
-        last pass: the one whose rounding gives the stored shares (finance/traces.py split)."""
+        last pass: the one whose rounding gives the stored shares (finance/traces.py split). tip_category marks the tip's own
+        row (finance/ledger.py record: FR-27) and changes nothing else."""
         args = (items, Ledger.net_subtotal(receipt), receipt["tax_minor"], receipt["tip_minor"])
         parts = Ledger.tax_plan(receipt, items).parts
+        wholly = {"one_category": Ledger.one_category(receipt), "tip_category": tip_category}
         last = lambda final: recorder if final else NULL
         printed = receipt["printed_total_minor"] if "printed_total_minor" in receipt.keys() else None
         if currency == receipt["currency"] and printed is not None:
             # Paid partly by gift card: divided as printed, then resized to the amount paid, each category keeping its proportion.
-            shares = splits.scale(splits.allocate(*args, printed, receipt["category"], tax_parts=parts), target, last(not shared), items, currency)
+            shares = splits.scale(splits.allocate(*args, printed, receipt["category"], tax_parts=parts, **wholly), target, last(not shared), items, currency)
         elif currency == receipt["currency"]:
-            shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency, parts)
+            shares = splits.allocate(*args, target, receipt["category"], last(not shared), currency, parts, **wholly)
         else:  # A card charge in another currency: share the receipt in its own currency, then resize to the charge.
-            shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"], tax_parts=parts), target, last(not shared), items, currency)
+            shares = splits.scale(splits.allocate(*args, receipt["total_minor"], receipt["category"], tax_parts=parts, **wholly), target, last(not shared), items, currency)
         if shared and shared["member_id"]:  # Shared by line: this person's own lines and their part of the rest (docs/family.md).
             shares = splits.scale(splits.by_line(shares, items, shared["member_id"]), charge_share(target, shared["share_minor"], shared["total_minor"]),
                                   recorder, items, currency)
@@ -1233,6 +1278,8 @@ class Ledger:
                               "LEFT JOIN merchants m ON m.id=r.merchant_id WHERE i.receipt_id=? AND i.position=?", (receipt_id, position)).fetchone()
             if item is None:
                 raise ValueError("Receipt item not found.")
+            if not self.category_column(db, db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()):  # FR-12: nothing is written.
+                raise ValueError(CATEGORY_REFUSED)
             db.execute("UPDATE receipt_items SET category=?,category_source='user',updated_at=? WHERE id=?", (category, now(), item["id"]))
             db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,?,?) "
                        "ON CONFLICT(merchant_key,item_key) DO UPDATE SET category=excluded.category,updated_at=excluded.updated_at",
@@ -2002,6 +2049,20 @@ class Ledger:
                        (record_type, record_id, row["review_status"], status, note[:1000], now(), actor.current()))
         return {"record_type": record_type, "id": record_id, "review_status": status}
 
+    def unmatched_minor(self, db, row):
+        """The footer's "Not matched to an item" (FR-27): the receipt's own split rows that carry no item, less the tip's own row, which the
+        Tip row shows. That row is found by dividing the receipt once more with the tip's category marked; no stored row changes."""
+        found = db.execute("SELECT sum(amount_minor) FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL AND receipt_item_id IS NULL",
+                           (row["id"],)).fetchone()[0]
+        if not found or not row["tip_minor"]:
+            return found
+        inputs = self.split_inputs(db, row["id"])
+        if inputs is None:
+            return found
+        receipt, items, _, shared = inputs
+        marked = self.shares(receipt, items, receipt["total_minor"], receipt["currency"], shared, tip_category=TIP_MARK)
+        return found - sum(amount for index, category, amount in marked if index is None and category == TIP_MARK)
+
     @staticmethod
     def worked_out_tip(db, row):
         """The two printed lines and amounts a receipt's tip was worked out from, while the tip is still that: None when it was printed or is
@@ -2092,8 +2153,8 @@ class Ledger:
                     holders = {item["line_holder"] for item in value["items"] if item["line_holder"]}
                     # Lines for more than one person: the family can share it by line (docs/family.md "Sharing a bill by line").
                     value["shareable_by_line"] = len(holders) > 1 or len({item["member_id"] for item in value["items"] if item["member_id"]}) > 1
-                value["unmatched_minor"] = db.execute("SELECT sum(amount_minor) FROM category_splits WHERE receipt_id=? AND transaction_id IS NULL "
-                                                      "AND receipt_item_id IS NULL", (record_id,)).fetchone()[0]
+                value["unmatched_minor"] = self.unmatched_minor(db, row)
+                value["category_column"] = self.category_column(db, row)
                 printed_total = row["printed_total_minor"] if row["printed_total_minor"] is not None else row["total_minor"]  # Before gift cards.
                 value["totals_mismatch"] = (row["subtotal_minor"] is not None and printed_total is not None
                                              and abs(self.net_subtotal(row) + (row["tax_minor"] or 0) + (row["tip_minor"] or 0) - printed_total) > 1)
@@ -2602,6 +2663,8 @@ class Ledger:
             # The whole receipt's category is a shortcut for every item the user has not categorised one by one.
             db.execute("UPDATE receipt_items SET category=?,category_source='receipt' WHERE receipt_id=? AND coalesce(category_source,'')<>'user'",
                        (receipt_category(changes["category"]), record_id))
+            if receipt_category(changes["category"]) != row["category"]:  # FR-14 (c): a different category; the same one changes nothing (Q1).
+                self.apply_one_category(db, record_id)
         if record_type == "receipt":
             self.bill_counts_on_due_date(db, record_id)
             self.refresh_splits(db, record_id)

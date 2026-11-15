@@ -209,7 +209,9 @@ def split(store, ref_text, params, charge):
     what = "The charge" if charge else "The receipt"
     return build(ref_text, f"{what} by item category", sum(amount for _, _, amount in shares), target[1],
                  f"{what}'s amount shared out by item: each item's own amount, with the order-wide discount and the tax shared by amount"
-                 + (" within each tax code" if by_code else "") + ", a tip as dining, and any difference from what was charged shared the same way"
+                 + (" within each tax code" if by_code else "")
+                 + (", a tip and any difference under the receipt's category" if ledger.one_category(receipt)
+                    else ", a tip as dining, and any difference from what was charged shared the same way")
                  + (", then this person's part of a shared receipt" if shared else "")
                  + ". Shares are exact until the end; the cents left by rounding go to the largest remainders.", recorder)
 
