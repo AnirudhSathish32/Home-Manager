@@ -21,8 +21,7 @@ from dining_receipt_fixtures import (
     side_line_stub,
     vision_lines,
 )
-from home_manager.documents.extraction import SIDE_LINES_RULE, Item, attach_side_lines
-from home_manager.documents.receipt_schema import TextLine
+from home_manager.documents.extraction import SIDE_LINES_RULE
 from test_dining_baseline_capture import record, start_reasoning
 from test_extraction import cite
 from test_vision_indent import image_document, line_payloads, old_library
@@ -78,39 +77,64 @@ def test_sc13_step1_the_rows_instruction_names_the_rule_for_every_receipt_form(t
             manager.close()
 
 
+def assert_side_lines_stay_with_their_item(manager, run, requests):
+    """SC-13 steps 2–4: the five B0 items, the evidence, the categories and the notes."""
+    # 2. The five B0 items, sum 4885; no item is named after a side line.
+    items = stored_items(manager, run)
+    assert items == B0_ITEMS and sum(total for _, total in items) == 4885
+    assert [name for name, _ in SIDE_LINES if name in [item for item, _ in items]] == []
+    # 3. Georgia Peach Stack cites lines 10 to 14, and the others cite their own.
+    assert evidence_lines(run, 3) == ["line-10", "line-11", "line-12", "line-13", "line-14"]
+    assert [len(run["result"]["rows"][position]["evidence"]) for position in (0, 1, 2, 4)] == [1, 1, 1, 1]
+    # The categories follow the kept rows (B0's), and the request was the indented reading's.
+    assert run["result"]["item_categories"] == ["groceries", "groceries", "dining", "dining", "dining"]
+    assert len(run["result"]["rows"]) == 5 and all(entry["indent"] == 1 for entry in dict(line_payloads(requests))["Items"][10:14])
+    # 4. The notes, in order, and nothing more.
+    assert drop_notes(manager, run) == three_dropped()
+    assert run["result"]["notes"][-4:] == three_dropped()
+
+
 def test_sc13_side_lines_stay_with_their_item(tmp_path, local_model):
     texts, indents, replies = side_line_stub()
     manager, run, requests = read(tmp_path, local_model, texts, indents, replies)
     try:
-        # 2. The five B0 items, sum 4885; no item is named after a side line.
-        items = stored_items(manager, run)
-        assert items == B0_ITEMS and sum(total for _, total in items) == 4885
-        assert [name for name, _ in SIDE_LINES if name in [item for item, _ in items]] == []
-        # 3. Georgia Peach Stack cites lines 10 to 14, and the others cite their own.
-        assert evidence_lines(run, 3) == ["line-10", "line-11", "line-12", "line-13", "line-14"]
-        assert [len(run["result"]["rows"][position]["evidence"]) for position in (0, 1, 2, 4)] == [1, 1, 1, 1]
-        # The categories follow the kept rows (B0's), and the request was the indented reading's.
-        assert run["result"]["item_categories"] == ["groceries", "groceries", "dining", "dining", "dining"]
-        assert len(run["result"]["rows"]) == 5 and all(entry["indent"] == 1 for entry in dict(line_payloads(requests))["Items"][10:14])
-        # 4. The notes, in order, and nothing more.
-        assert drop_notes(manager, run) == three_dropped()
-        assert run["result"]["notes"][-4:] == three_dropped()
+        assert_side_lines_stay_with_their_item(manager, run, requests)
     finally:
         manager.close()
 
 
-def test_sc13a_side_lines_published_as_zero_dollar_items_are_dropped_too():
-    """B6z: the four rows carry line_total 0.00. The extraction model's answer can't carry that through a whole reading, because an amount
-    must be printed in its cited lines (problems_in) and a side line prints none, so the rule is checked on the rows themselves."""
+def test_sc13a_side_lines_published_as_zero_dollar_items_are_dropped_too(tmp_path, local_model):
+    """B6z: the four rows carry line_total 0.00 and cite only their unpriced indented line. The row check lets such a row through (it prints no amount
+    to support), so the backstop drops it exactly as in steps 2–4."""
     texts, indents, replies = side_line_stub(zero=True)
-    lines = [TextLine(id=image_id(number), text=text, block_ids=[], indent=indent) for number, (text, indent) in enumerate(zip(texts, indents), 1)]
-    rows = [Item.model_validate(entry) for entry in replies["Items"][0]["items"]]
-    categories = replies["PurchaseDescription"][0]["item_categories"]
-    kept, kept_categories, references, notes = attach_side_lines(rows, lines, categories, [[number] for number in range(len(rows))])
-    assert [(item.description, item.line_total) for item in kept] == [(name, total) for name, _, _, total in BREAKFAST_ROWS]
-    assert [cite.line_id for cite in kept[3].evidence] == ["line-10", "line-11", "line-12", "line-13", "line-14"]
-    assert kept_categories == ["groceries", "groceries", "dining", "dining", "dining"] and references == [[0], [1], [2], [3], [8]]
-    assert notes == three_dropped()
+    assert [entry["line_total"] for entry in replies["Items"][0]["items"][4:8]] == ["0.00"] * 4
+    manager, run, requests = read(tmp_path, local_model, texts, indents, replies)
+    try:
+        assert_side_lines_stay_with_their_item(manager, run, requests)
+    finally:
+        manager.close()
+
+
+def test_sc13a_a_zero_dollar_row_citing_an_unindented_or_unknown_line_is_still_refused(tmp_path, local_model):
+    """Only a row whose every cited line is indented and unpriced skips the amount check: a 0.00 row citing an indent-0 line, or a line whose indent
+    is unknown, fails as before, after the one correction, and nothing is published."""
+    for name, indent_of_line_11 in (("indent-0", 0), ("unknown", None)):
+        texts, indents, replies = side_line_stub(zero=True)
+        indents[10] = indent_of_line_11
+        replies["Items"] = [replies["Items"][0], replies["Items"][0]]  # The correction is answered the same.
+        manager, doc_id, run_id = image_document(tmp_path / name, local_model, vision_lines(texts, indents))
+        start_reasoning(manager, local_model)
+        try:
+            local_model["requests"].clear()
+            local_model["by_schema"] = {key: list(reply) for key, reply in replies.items()}
+            local_model.pop("outputs", None)
+            extraction = manager.start_extraction(doc_id, run_id, False)["run_id"]
+            manager.future.result(timeout=60)
+            run = manager.extractions.get(extraction)
+            assert run["status"] == "failed" and "the amount is not printed in its cited evidence" in run["error"], (name, run["status"], run["error"])
+            assert "Nothing from this document was published" in run["error"]
+        finally:
+            manager.close()
 
 
 def test_sc13b_a_side_line_with_no_item_before_it_stays_an_item(tmp_path, local_model):

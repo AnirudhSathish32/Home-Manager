@@ -2354,16 +2354,19 @@ def name_supported(name, evidence):
     return any(token in words or (len(token) >= 4 and token in joined) for token in normalize_name(name).split())
 
 
-def problems_in(output, lines, amount_field=None):
+def problems_in(output, lines, amount_field=None, side_lines=frozenset()):
     """Deterministic checks as (field, message): citations exist verbatim, amounts are printed
-    (or exactly summed) in their evidence, and names appear in theirs."""
+    (or exactly summed) in their evidence, and names appear in theirs. side_lines: the ids of a receipt's lines printed indented
+    with no price (side_line_ids); a row of 0.00 citing only those prints no amount there and passes, for attach_side_lines to drop (FR-23)."""
     problems = []
 
-    def check(path, evidence, amount=None, name=None):
+    def check(path, evidence, amount=None, name=None, item_row=False):
         if any(cite.line_id not in lines for cite in evidence):
             problems.append((path, "a citation names a line id that isn't in these lines"))
         elif any(not cite.quote.strip() or cite.quote not in lines[cite.line_id] for cite in evidence):
             problems.append((path, "a citation is not an exact quote of an existing line"))
+        elif item_row and amount is not None and printed_decimal(amount) == 0 and all(cite.line_id in side_lines for cite in evidence):
+            pass
         elif amount is not None and not amount_supported(amount, evidence):
             problems.append((path, "the amount is not printed in its cited evidence"))
         elif name is not None and not name_supported(name, evidence):
@@ -2395,12 +2398,17 @@ def problems_in(output, lines, amount_field=None):
                 before = len(problems)
                 for amount in [value for value in amounts if value is not None] or [None]:
                     if len(problems) == before:
-                        check(f"{name}.{index}", row.evidence, amount)
+                        check(f"{name}.{index}", row.evidence, amount, item_row=True)
     return problems
 
 
-def verify(output, lines, amount_field=None):
-    problems = problems_in(output, lines, amount_field)
+def side_line_ids(lines):
+    """The ids of the lines printed indented under an item with no amount of their own: what attach_side_lines joins to the item before them."""
+    return frozenset(line.id for line in lines if (line.indent or 0) >= 1 and line_amount(line.text) is None)
+
+
+def verify(output, lines, amount_field=None, side_lines=frozenset()):
+    problems = problems_in(output, lines, amount_field, side_lines)
     if problems:
         raise ValueError("Extraction failed validation: " + "; ".join(f"{path}: {message}" for path, message in problems[:8]) + ".")
     return output
@@ -2415,7 +2423,7 @@ def describe(exc):
     return "Extraction output failed validation: " + "; ".join(issues) + "."
 
 
-def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None, notes=None, table_context=None):
+def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None, notes=None, table_context=None, receipt=False):
     """One bounded call; one correction of this call only if validation fails.
 
     If the correction still fails only on identifying fields (names, dates, currency, account
@@ -2423,6 +2431,7 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
     document. Amount and row problems always fail: money is never dropped silently.
     """
     line_map = {line.id: line.text for line in lines}
+    side_lines = side_line_ids(lines) if receipt else frozenset()  # Only a receipt's rows: a bill's unpriced indented row stays a line.
     # Each reported table cell's row line, for a model that cites a cell id as the line (repair_quotes).
     cell_lines = {cell["cell_id"]: row.get("line_id", row["row_id"]) for table in table_context or []
                   for row in [*table["header_rows"], *table["rows"]] for cell in row["cells"]}
@@ -2435,7 +2444,7 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
         output = None
         try:
             output = repair_quotes(schema.model_validate_json(raw), line_map, cell_lines)
-            problems = problems_in(output, line_map, amount_field)
+            problems = problems_in(output, line_map, amount_field, side_lines)
             if problems and attempt and schema is PayLines and notes is not None and all(
                     path.startswith("lines.") and message == "the amount is not printed in its cited evidence" for path, message in problems):
                 repaired = []
@@ -2448,17 +2457,17 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
                             notes.append(f"Pay line {index} {label} amount was not supported by its cited text; correct it from the original stub.")
                     repaired.append(row.model_copy(update=changes) if changes else row)
                 output = output.model_copy(update={"lines": repaired})
-                return verify(output, line_map, amount_field)
+                return verify(output, line_map, amount_field, side_lines)
             if problems and attempt and notes is not None and all(path in DROPPABLE for path, _ in problems):
                 for path, message in problems:
                     notes.append(f"{path.replace('_', ' ').capitalize()} was not used: {message}. Check it against the document.")
                 return output.model_copy(update={path: Value(value=None, status="missing", evidence=[]) for path, _ in problems})
-            return verify(output, line_map, amount_field)
+            return verify(output, line_map, amount_field, side_lines)
         except (ValidationError, ValueError) as exc:
             message = describe(exc)
             if attempt or len(raw.encode()) > 128 * 1024:
                 # Only the fields document forms added failed: the answer without them, and a note (FR-14).
-                base = base_answer(schema, raw, line_map, amount_field) if attempt and notes is not None else None
+                base = base_answer(schema, raw, line_map, amount_field, side_lines) if attempt and notes is not None else None
                 if base is not None:
                     if DETAILS_FAILED not in notes:
                         notes.append(DETAILS_FAILED)
@@ -2484,7 +2493,7 @@ def without(data, names):
     return data
 
 
-def base_answer(schema, raw, lines, amount_field):
+def base_answer(schema, raw, lines, amount_field, side_lines=frozenset()):
     """The same answer with only the fields document forms added left out (NEW_FIELDS), when that passes every check;
     otherwise None, and the answer fails as before (FR-14)."""
     names = NEW_FIELDS.get(schema.__name__)
@@ -2494,7 +2503,7 @@ def base_answer(schema, raw, lines, amount_field):
         output = repair_quotes(schema.model_validate(without(json.loads(raw), names)), lines)
     except (ValidationError, ValueError):
         return None
-    return None if problems_in(output, lines, amount_field) else output
+    return None if problems_in(output, lines, amount_field, side_lines) else output
 
 
 def scrubbed(result):
@@ -4493,7 +4502,7 @@ class ExtractionService:
                                         + ("The reported_tables include stable row and cell IDs and repeat their headings; "
                                            "classify each earning, deduction, tax, or employer contribution row. "
                                            "The application copies money from the reported cells; cite the exact source line. " if classified_cells else ""),
-                                        part, 8192, None if classified_cells or copied_cells else amount_field, notes, context)
+                                        part, 8192, None if classified_cells or copied_cells else amount_field, notes, context, kind == "receipt")
                 if classified_cells:
                     rows.extend(PayLine(description=row.description, group=row.group, category=row.category,
                                         current=None, ytd=None, evidence=row.evidence, hours=row.hours, rate=row.rate) for row in answer.lines)
