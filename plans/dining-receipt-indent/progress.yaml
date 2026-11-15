@@ -80,7 +80,18 @@ slices:
       For code review: in allocate, with one_category set and no receipt category, the tip row falls back to dining but the
       difference row would get category None (a dining receipt is always recorded with a category, so likely unreachable).
       SC-09 steps 6-7 and SC-05's link branch are SL-07's.
-  SL-06: {status: todo}
+  SL-06:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 74127d4
+    end_head: cfc2469  # code 01ceea7, handoff cfc2469
+    verification: >-
+      Orchestrator rerun 2026-11-15 (after the worker's ruff --fix): the plan's SL-06 command 184 passed, exit 0.
+      specs/, approvals/, plan.md, tests/dining_receipt_data unchanged; plan hash matches.
+    notes: >-
+      Per FR-13 as written, a reviewed grocery receipt changed to dining counts wholly under the receipt's own category
+      (groceries), not dining. Faithful to the approved spec; raise with the human as a possible spec follow-up.
   SL-07: {status: todo}
   SL-08: {status: todo}
   SL-09: {status: todo}
