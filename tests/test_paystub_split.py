@@ -86,6 +86,9 @@ def library_at_076(root):
     assert "segment" not in create
     db = sqlite3.connect(root / "inventory.sqlite3")  # Foreign keys are off on this connection: the rebuild keeps the lines.
     try:
+        # And what 081 added (dining receipts), so opening the library runs that step again on a real 076 shape.
+        db.executescript("ALTER TABLE receipts DROP COLUMN one_category;\nALTER TABLE receipts DROP COLUMN tip_worked_out_json;\n"
+                         "ALTER TABLE record_corrections DROP COLUMN item_categories_json;")
         db.executescript(re.sub(r'^CREATE TABLE\s+"?income_records"?', "CREATE TABLE income_records_old", create) + ";\n"
                          f"INSERT INTO income_records_old({','.join(STUB_COLUMNS)}, created_at, updated_at) "
                          f"SELECT {','.join(STUB_COLUMNS)}, created_at, updated_at FROM income_records;\n"
