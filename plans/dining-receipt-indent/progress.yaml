@@ -50,7 +50,20 @@ slices:
       First worker (task dining-receipt-indent-SL-03) hit the provider rate limit with uncommitted work; backup at
       /tmp/claude-dining/sl03-partial.patch; the retry worker (dining-receipt-indent-SL-03-retry1) reviewed, finished and committed it.
       SC-13 step 5 (split C-sum/C-cat) is left to SL-04/SL-05.
-  SL-04: {status: todo}
+  SL-04:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 045bb57
+    end_head: 7a63a2a  # code 39aba82, handoff 7a63a2a
+    verification: >-
+      Orchestrator rerun 2026-11-15: the plan's SL-04 command plus test_bill_engine_record.py::test_sc121_no_migration_is_added_by_this_feature:
+      153 passed, 3 failed (exit 1); all 3 failures are tests/test_traces.py ids listed in baseline-failures.txt. Migration 081 read:
+      three ALTER TABLE … ADD COLUMN and PRAGMA user_version=81 only (D5). specs/, approvals/, plan.md, tests/dining_receipt_data unchanged;
+      plan hash matches.
+    notes: >-
+      Accepted deviation: test_sc121_no_migration_is_added_by_this_feature (an earlier feature's test asserting 80 migrations) now expects
+      081_dining_receipts.sql last; a new migration necessarily changes it. one_category and item_categories_json are unused until SL-05/SL-06.
   SL-05: {status: todo}
   SL-06: {status: todo}
   SL-07: {status: todo}
