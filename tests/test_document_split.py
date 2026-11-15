@@ -325,6 +325,10 @@ def merged_library(tmp_path, plan):
                 db.execute("CREATE TRIGGER test_fault BEFORE INSERT ON occurrences WHEN (SELECT count(*) FROM occurrences) >= 2 "
                            "BEGIN SELECT RAISE(ABORT, 'test fault'); END")
             db.execute("DROP TABLE document_splits")  # The latest schema holds it; a library at 079 does not.
+            # And what 081 added (dining receipts), so opening the library runs that step again on a real 079 shape.
+            db.execute("ALTER TABLE receipts DROP COLUMN one_category")
+            db.execute("ALTER TABLE receipts DROP COLUMN tip_worked_out_json")
+            db.execute("ALTER TABLE record_corrections DROP COLUMN item_categories_json")
             db.execute(f"PRAGMA user_version={SPLIT_STEP - 1}")
     finally:
         db.close()
@@ -741,6 +745,10 @@ def test_cr1_2_a_same_bytes_link_with_no_shared_file_left_is_dropped(tmp_path):
 
 # --- SC-13, SC-14: once, and the Inbox path ---------------------------------------------------------------------------------------
 
+def without_081_columns(lines):
+    return [line for line in lines if not line.startswith(('CREATE TABLE "receipts"', 'CREATE TABLE "record_corrections"'))]
+
+
 def test_sc13_the_repair_runs_once_and_changes_nothing_in_a_library_that_never_merged(tmp_path):
     merged = merged_library(tmp_path, standard())
     with reopened(merged.root):
@@ -759,7 +767,8 @@ def test_sc13_the_repair_runs_once_and_changes_nothing_in_a_library_that_never_m
     with sqlite3.connect(apart.root / "inventory.sqlite3") as db:  # The step alone: opening the store also runs the startup recovery.
         storage.apply_migrations(db, SPLIT_STEP - 1)
     assert user_version(apart.root) == len(storage.MIGRATIONS)
-    assert dump(apart.root, without=("document_splits",)) == before
+    # Step 081, which runs after it, adds columns to these two tables and nothing else; their CREATE text is the one thing it changes.
+    assert without_081_columns(dump(apart.root, without=("document_splits",))) == without_081_columns(before)
 
 
 def test_sc14_the_newest_file_still_in_the_inbox_keeps_the_inbox_path(tmp_path):

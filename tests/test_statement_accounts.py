@@ -328,6 +328,10 @@ class Old:
             # And what 076 added (order discounts and order numbers).
             db.execute("ALTER TABLE receipts DROP COLUMN discount_minor")
             db.execute("ALTER TABLE receipts DROP COLUMN order_number")
+            # And what 081 added (dining receipts: one category, the worked-out tip, the categories a kind change replaced).
+            db.execute("ALTER TABLE receipts DROP COLUMN one_category")
+            db.execute("ALTER TABLE receipts DROP COLUMN tip_worked_out_json")
+            db.execute("ALTER TABLE record_corrections DROP COLUMN item_categories_json")
             db.execute("PRAGMA user_version=72")
             db.commit()
         finally:
