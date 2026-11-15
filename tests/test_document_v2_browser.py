@@ -4,6 +4,8 @@ view, the URL, Esc, every width, and its figures against their traces and the re
 from contextlib import contextmanager
 from datetime import date, timedelta
 import json
+import os
+from pathlib import Path
 import re
 import socket
 import threading
@@ -13,6 +15,7 @@ from urllib.parse import quote
 import pytest
 import uvicorn
 
+from dining_receipt_fixtures import BREAKFAST_INDENTS, BREAKFAST_TEXTS, b11_stub, dining_seed, record_dining
 from home_manager.app.api import create_app
 from home_manager.library.scanner import ScanLimits
 from seed_documents import document_server
@@ -523,5 +526,74 @@ def test_split_documents_open_without_an_earlier_version_banner(tmp_path):
         expect(page.locator("#doc2-version-banner")).not_to_contain_text(BANNER)
         expect(page.locator("#doc2-panel")).to_contain_text(merged.hashes[0][:12])
         assert page.locator("#doc2-version-banner").inner_text().strip() == ""
+        assert failures == [], failures
+        browser.close()
+
+
+def text_view_seed(manager, model):
+    """The breakfast receipt and B8 (indents read as 0), and a grocery receipt read the way a model that gave no indent does: the line
+    keys left out (FR-17), which is also how a reading saved before indents stored its lines."""
+    found = dining_seed(manager, model)
+    texts, _, replies = b11_stub()
+    found["plain_doc"], found["plain_record"] = record_dining(manager, model, "plain-grocery.png", texts, [None] * len(texts), replies)
+    return found
+
+
+def open_text_view(page, base, doc_id):
+    open_document(page, base, doc_id)
+    source = page.locator("#doc2-viewer")
+    source.get_by_role("tab", name="Text", exact=True).click()
+    page.wait_for_selector("#doc2-viewer .sv-line")
+    return source
+
+
+def line_indents(page):
+    """[(line id, data-indent or None, its text, its computed inline-start padding in px)] of the Text view, in order."""
+    return page.locator("#doc2-viewer .sv-line").evaluate_all(
+        "items => items.map(item => [item.dataset.lineId, item.getAttribute('data-indent'), item.textContent, parseFloat(getComputedStyle(item).paddingInlineStart)])")
+
+
+@browser_test
+def test_sc15_text_view_indentation(tmp_path):
+    """SC-15 (FR-26): lines 11 - 14 and 16 of the breakfast receipt render one step in, the rest at the edge; the text is unchanged and
+    Find-by-text finds both "No Allergies" lines; a reading with no indents shows none."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=text_view_seed) as (base, ids, _), playwright.sync_playwright() as driver:
+        browser = driver.chromium.launch(channel="msedge", headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        failures = watch_errors(page)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        for attempt in ("opened", "reloaded"):  # 4. Reloading shows the same.
+            if attempt == "reloaded":
+                page.reload(); page.wait_for_load_state("networkidle")
+                page.wait_for_selector("#doc2-panel:not([hidden]) #doc2-steps li")
+                page.locator("#doc2-viewer").get_by_role("tab", name="Text", exact=True).click()
+                page.wait_for_selector("#doc2-viewer .sv-line")
+            else:
+                open_text_view(page, base, ids["b0_doc"])
+            rows = line_indents(page)
+            # 1. One step in for lines 11 - 14 and 16 (indent 1); every other line at the edge, with less padding than an indented one.
+            assert [(row[0], row[1]) for row in rows if row[1]] == [(f"line-{number}", "1") for number in (11, 12, 13, 14, 16)]
+            edge = {row[3] for row in rows if not row[1]}
+            assert len(edge) == 1 and all(row[3] > min(edge) for row in rows if row[1])
+            # 2. Each line's text is exactly what was read: no leading spaces.
+            assert [row[2] for row in rows] == BREAKFAST_TEXTS and len(BREAKFAST_INDENTS) == len(rows)
+            # 3. Find "No Allergies": line 11 and line 16, and nothing else.
+            found = page.locator("#doc2-viewer .sv-line", has_text="No Allergies")
+            assert [item.get_attribute("data-line-id") for item in found.all()] == ["line-11", "line-16"]
+        shot_dir = os.environ.get("UI_SHOTS_DIR")
+        if shot_dir:
+            Path(shot_dir).mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(Path(shot_dir) / "dining-b0-text-1440.png"), full_page=True)
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.screenshot(path=str(Path(shot_dir) / "dining-b0-text-390.png"), full_page=True)
+            page.set_viewport_size({"width": 1440, "height": 900})
+        # A reading with no indents (or all 0): no line is indented, and the Text view is otherwise as before.
+        for key in ("plain_doc", "b8_doc"):
+            open_text_view(page, base, ids[key])
+            rows = line_indents(page)
+            assert rows and all(row[1] is None for row in rows) and len({row[3] for row in rows}) == 1
         assert failures == [], failures
         browser.close()

@@ -353,7 +353,9 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
   // A statement row read from its printed columns carries the balance the statement prints after it, as the server formats it.
   const balances = Boolean(!record.items && rows.some(row => row.display.balance_minor));
   // One list of receipt columns, in order: the header, the cells, the numeric alignment and the footer spans all read it.
-  const receiptColumns = record.items ? RECEIPT_COLUMNS.filter(([key]) => (key !== "code" || codes) && (key !== "paid" || shares)) : [];
+  // Category is left out when the server says every item takes the receipt's one category (record.category_column, a dining receipt).
+  const categoryColumn = record.category_column !== false;
+  const receiptColumns = record.items ? RECEIPT_COLUMNS.filter(([key]) => (key !== "code" || codes) && (key !== "paid" || shares) && (key !== "category" || categoryColumn)) : [];
   const columns = ["Posted", "Description", "Amount", "Balance", ""];
   const shown = index => index !== 3 || balances;
   const head = document.createElement("tr");
@@ -403,6 +405,8 @@ function ledgerRows(record, categories, onSaved, find, correctField = null) {
       if (field === "discount" && !record.discount_minor) continue;  // Shown only when the receipt prints an order-wide discount.
       if (field === "tip" && !showsTip(record)) continue;
       const tr = element("tr"), name = element("th", label); name.scope = "row"; name.colSpan = before;
+      // A tip the receipt doesn't print is worked out from its two printed lines; the server writes the sentence (record.tip_note).
+      if (field === "tip" && record.tip_note) name.append(element("small", record.tip_note, "tip-note muted"));
       // A receipt paid partly by gift card: its printed total here, what was paid in its Paid line (document_v2.js doc2Paid).
       const shown = field === "total" && record.paid_summary ? record.printed_total?.display
         : field === "discount" ? record.display.discount_shown_minor : record.display[`${field}_minor`];

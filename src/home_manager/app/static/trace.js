@@ -321,6 +321,7 @@ function sourceViewer(doc, reading, {runId = null, digest = null} = {}) {
     lines.replaceChildren();
     textLines().forEach((line, index) => {
       const item = element("li", line.text || " ", "sv-line"); item.dataset.lineId = line.id; item.tabIndex = index ? -1 : 0;
+      if (line.indent) item.dataset.indent = String(line.indent);  // One step in per level the vision reading saw; unknown or 0 stays at the edge.
       lines.append(item);
     });
   }

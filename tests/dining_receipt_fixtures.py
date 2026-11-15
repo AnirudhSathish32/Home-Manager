@@ -305,3 +305,34 @@ def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H"), memory=True)
         db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,'groceries','t')",
                    (normalize_name("Gacha's Breakfast Bar"), normalize_name("Coffee")))  # The keys as the ledger writes them.
     return ids
+
+
+# A document_server seed (the browser tests): the breakfast receipt and B8, each read with its indents and recorded with its stub.
+def record_dining(manager, model, name, texts, indents, replies):
+    """Draw texts into the Inbox as name, read it with the fake vision model (answering lines with indents) and record it with replies:
+    (document id, record id)."""
+    from test_receipts import make_receipt
+    make_receipt(manager.store.library.inbox / name, texts)
+    model["outputs"] = [vision_lines(texts, indents)]
+    model["by_schema"] = {key: list(reply) for key, reply in replies.items()}
+    manager.start_inbox()
+    manager.future.result(timeout=60)
+    doc = next(doc for doc in manager.store.documents()["items"] if doc["relative_path"].replace("\\", "/").rsplit("/", 1)[-1] == name)
+    run = manager.extractions.get(manager.extractions.history(manager.receipts.history(doc["id"])[0]["id"])[0]["id"])
+    assert run["status"] == "succeeded", run["error"]
+    return doc["id"], run["publication"]["id"]
+
+
+def dining_seed(manager, model):
+    """Household currency USD; the breakfast receipt (SC-01: Tip worked out, no left-over) and B8 (a printed tip with $2.00 left over).
+    Returns {"b0_doc", "b0_record", "b8_doc", "b8_record"}."""
+    from home_manager.documents.extraction import looks_like_several
+    from home_manager.documents.receipt_schema import TextLine
+    manager.configure_household(manager.household.model_copy(update={"home_currency": "USD", "auto_identify_items": False}))
+    found = {}
+    for key, stub in (("b0", breakfast_stub), ("b8", b8_stub)):
+        texts, indents, replies = stub()
+        if not looks_like_several([TextLine(id=f"line-{number}", text=text, block_ids=[]) for number, text in enumerate(texts, 1)]):
+            replies.pop("ReceiptStarts", None)
+        found[f"{key}_doc"], found[f"{key}_record"] = record_dining(manager, model, f"{key}-dining.png", texts, indents, replies)
+    return found

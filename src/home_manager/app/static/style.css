@@ -1097,6 +1097,7 @@ kbd { font-family: var(--font-mono); font-size: var(--text-xs); padding: 0 4px; 
 .ledger-rows { margin-top: var(--space-3); }
 .ledger-rows td { padding: 6px var(--space-2); }
 .ledger-rows select { min-width: 140px; }
+.ledger-rows .tip-note { display: block; font-weight: 400; font-size: var(--text-sm); }
 .ledger-record-heading { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .ledger-record-heading strong { font-size: var(--text-lg); margin-right: var(--space-2); }
 /* A file holding several receipts: which one is shown, and the split's actions. */
@@ -1133,6 +1134,8 @@ button.source-link { min-height: 22px; padding: 0 6px; font-size: var(--text-xs)
 .sv-lines { position: relative; list-style: none; margin: 0; padding: var(--space-2) 0; max-height: 64vh; overflow: auto; background: var(--surface-sunken);
   border-radius: var(--radius-sm); font: 11.5px/1.6 var(--font-mono); color: var(--text); }
 .sv-line { padding: 2px var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; outline-offset: -2px; cursor: pointer; }
+.sv-line[data-indent="1"] { padding-inline-start: calc(var(--space-2) + var(--space-4)); }
+.sv-line[data-indent="2"] { padding-inline-start: calc(var(--space-2) + var(--space-4) * 2); }
 .sv-line.selected { background: var(--warning-subtle); outline: 1px solid var(--warning); outline-offset: -1px; }
 .sv-line:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sv-empty { padding: var(--space-3); font-family: var(--font); font-size: var(--text-sm); }

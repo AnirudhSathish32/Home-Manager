@@ -3,8 +3,12 @@ SC-12, SC-17, SC-20): its columns, Qty and Unit price, Line total and Paid, the 
 without the counts. specs/receipt-tax-codes adds the tax-code note and the footer's tax lines (FR-19, FR-26; SC-19, SC-15 step 3).
 Synthetic receipts (tests/receipt_item_fixtures.py) read and recorded through the real path. Each scenario
 checks the stored receipt and its shares by SQL against the contract's hand-worked values before it looks at the page."""
+import os
+from pathlib import Path
+
 import pytest
 
+from dining_receipt_fixtures import dining_seed
 from document_forms_fixtures import amount_on, cite, record_document
 from receipt_item_fixtures import (
     D_AMOUNTS,
@@ -405,4 +409,73 @@ def test_an_order_discount_shows_under_subtotal_and_the_order_number_as_the_code
         expect(page.locator(".item-warning", has_text="Doesn't add up")).to_have_count(0)
         assert_footer_under_line_total(page)
         assert not failures
+        browser.close()
+
+
+def shot(page, name):
+    """Saves the page as UI_SHOTS_DIR/name.png when that is set (synthetic data only; the ui-redesign skill's before/after shots)."""
+    if os.environ.get("UI_SHOTS_DIR"):
+        folder = Path(os.environ["UI_SHOTS_DIR"]); folder.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(folder / f"{name}.png"), full_page=True)
+
+
+@browser_test
+def test_sc07_sc18_a_dining_receipt_has_no_category_column_and_its_footer_leaves_out_the_tip(tmp_path):
+    """SC-07 step 1, SC-18 (b) and FR-02's page note (specs/dining-receipt-indent FR-11, FR-27): the breakfast receipt's table is Item, Qty,
+    Unit price, Line total, Paid with the footer lined up under them; its Tip says how it was worked out and no "Not matched to an item" row
+    shows. B8 (a printed tip with $2.00 left over) shows both rows and no note."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=dining_seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        for key in ("b0", "b8"):
+            assert manager.ledger.record("receipt", ids[f"{key}_record"])["category_column"] is False
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        # SC-07 step 1 and SC-18 step 1: no Category column, no Code column (no codes printed), the footer's amounts under Line total.
+        open_document(page, base, ids["b0_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(5)
+        assert titles(page) == ["Item", "Qty", "Unit price", "Line total", "Paid"]
+        expect(page.locator(".ledger-rows select")).to_have_count(0)
+        assert_footer_under_line_total(page)
+        foot = {" ".join(row.locator("th").inner_text().split()): " ".join(row.locator("td[data-col=line_total]").inner_text().split())
+                for row in page.locator(".ledger-rows tfoot tr").all()}
+        assert foot == {"Subtotal": "$48.85", "Tax": "$3.91", "Tip Worked out: Total $61.55 − Bill $52.76": "$8.79", "Total": "$61.55"}, foot
+        expect(page.locator(".ledger-rows tfoot")).not_to_contain_text("Not matched to an item")
+        expect(page.locator(".receipt-splits")).to_contain_text("Dining 61.55 USD")
+        shot(page, "dining-b0-page-1440")
+        page.set_viewport_size({"width": 390, "height": 844})
+        open_document(page, base, ids["b0_doc"])
+        assert page.evaluate(NO_OVERFLOW)
+        shot(page, "dining-b0-page-390")
+        # SC-18 (b): B8's footer lists the printed tip and the $2.00 no item carries, and it has no worked-out note.
+        page.set_viewport_size({"width": 1440, "height": 900})
+        open_document(page, base, ids["b8_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(1)
+        assert titles(page) == ["Item", "Qty", "Unit price", "Line total", "Paid"]
+        assert_footer_under_line_total(page)
+        foot = {" ".join(row.locator("th").inner_text().split()): " ".join(row.locator("td[data-col=line_total]").inner_text().split())
+                for row in page.locator(".ledger-rows tfoot tr").all()}
+        assert foot == {"Subtotal": "$20.00", "Tax": "$1.00", "Tip": "$3.00", "Not matched to an item": "$2.00", "Total": "$26.00"}, foot
+        expect(page.locator(".ledger-rows .tip-note")).to_have_count(0)
+        shot(page, "dining-b8-page-1440")
+        assert failures == [], failures
+        browser.close()
+
+
+@browser_test
+def test_sc07_a_grocery_receipt_keeps_its_category_column(tmp_path):
+    """SC-07 (a) on the page: only a dining receipt whose items all take its category hides the column (FR-11)."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    with document_server(tmp_path, TOKEN, seed=seed) as (base, ids, manager), playwright.sync_playwright() as driver:
+        assert manager.ledger.record("receipt", ids["r_record"])["category_column"] is True
+        browser, page, failures = launch(driver)
+        page.goto(f"{base}/#token={TOKEN}")
+        page.wait_for_load_state("networkidle")
+        open_document(page, base, ids["r_doc"])
+        expect(page.locator(".ledger-rows tbody tr")).to_have_count(3)
+        assert "Category" in titles(page)
+        expect(page.locator(".ledger-rows select").first).to_be_visible()
+        assert failures == [], failures
         browser.close()
