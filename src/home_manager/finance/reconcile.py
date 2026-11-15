@@ -869,11 +869,13 @@ class Reconciler:
     @staticmethod
     def unlink_documents(db, transaction_id, receipt_id, receipt_document):
         """The two documents of a removed link no longer show each other as the same purchase, unless another live link of this
-        receipt still joins a charge read from that document. Removes verified same_record links only; nothing is marked rejected."""
+        receipt, or of another receipt read from the same document (a file of several receipts), still joins a charge read from that
+        document. Removes verified same_record links only; nothing is marked rejected."""
         for row in db.execute("SELECT DISTINCT document_id FROM financial_evidence_links WHERE record_type='transaction' AND record_id=? "
                               "AND document_id IS NOT NULL AND document_id<>?", (transaction_id, receipt_document)).fetchall():
-            if db.execute("SELECT 1 FROM transaction_receipt_links l JOIN financial_evidence_links e ON e.record_type='transaction' AND e.record_id=l.transaction_id "
-                          "WHERE l.receipt_id=? AND l.review_status<>'rejected' AND e.document_id=?", (receipt_id, row["document_id"])).fetchone():
+            if db.execute("SELECT 1 FROM transaction_receipt_links l JOIN receipts r ON r.id=l.receipt_id "
+                          "JOIN financial_evidence_links e ON e.record_type='transaction' AND e.record_id=l.transaction_id "
+                          "WHERE r.document_id=? AND l.review_status<>'rejected' AND e.document_id=?", (receipt_document, row["document_id"])).fetchone():
                 continue
             first, second = sorted((receipt_document, row["document_id"]))
             db.execute("DELETE FROM occurrence_links WHERE occurrence_id=? AND other_occurrence_id=? AND reason='same_record' AND status='verified'", (first, second))

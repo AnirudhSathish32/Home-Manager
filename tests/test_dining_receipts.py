@@ -1768,3 +1768,30 @@ def test_a_dining_receipt_delivered_by_the_family_counts_wholly_under_its_catego
     finally:
         person.close()
         manager.close()
+
+
+def test_sc20c_a_second_receipt_of_the_document_still_joined_keeps_the_documents_shown_as_the_same_purchase(tmp_path, local_model):
+    """A file of two receipts (segments 0 and 1): a reread of the first removes its stale link, but the second receipt's link still joins a charge read
+    from the same other document, so the two documents keep showing each other."""
+    manager, ids = old_manager(tmp_path, local_model, ["C"])
+    first = ids["C"]
+    try:
+        with manager.store.connection() as db:
+            own = db.execute("SELECT document_id FROM receipts WHERE id=?", (first,)).fetchone()[0]
+            other = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                               "SELECT source_root,'export.csv','export.csv',current_hash,'t','t',last_job FROM occurrences WHERE id=?", (own,)).lastrowid
+            second = db.execute("INSERT INTO receipts(blob_hash,segment,document_id,merchant_id,purchase_date,total_minor,currency,review_status,validation_json,"
+                                "created_at,updated_at) SELECT blob_hash,1,document_id,merchant_id,purchase_date,3000,currency,'proposed','[]',created_at,updated_at "
+                                "FROM receipts WHERE id=?", (first,)).lastrowid
+        k52, k30 = charge(manager, {"publication": {"id": first}}, 5276), charge(manager, {"publication": {"id": first}}, 3000, "GACHAS BREAKFAST BAR 2")
+        with manager.store.connection() as db:
+            db.execute("UPDATE financial_evidence_links SET document_id=? WHERE record_type='transaction' AND record_id IN (?,?)", (other, k52, k30))
+        reconcile(manager)
+        assert link_of(manager, first)[1] == k52 and link_of(manager, second)[1] == k30
+        manager.reconciler.review_link("receipt", link_of(manager, first)[0], "verified")
+        assert [(link["reason"], link["document_id"]) for link in manager.store.linked_documents(own)] == [("same_record", other)]
+        read_again_of(manager, local_model, first, breakfast_stub("B0")[2])
+        assert link_of(manager, first) is None and link_of(manager, second)[1] == k30  # The first's link went; the second's holds.
+        assert [(link["reason"], link["document_id"]) for link in manager.store.linked_documents(own)] == [("same_record", other)]
+    finally:
+        manager.close()
