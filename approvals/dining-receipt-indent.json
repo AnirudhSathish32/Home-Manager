@@ -1,18 +1,18 @@
 {
   "feature": "dining-receipt-indent",
   "spec": {
-    "sha256": "0f8ed366305f320d7ab4bee1eb45f1b115770e30910a65d658ea63b54bbbc224",
+    "sha256": "28182c7a24ad443d65770ee97f10625225800f37b33229d6ae14a4e5649294f7",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-11-14T19:19:09-05:00",
+    "approved_at": "2026-11-15T14:18:31-05:00",
     "approved_via": "agent",
-    "permission": "i want q2 to be fixed in this session i dont want the link to remain approve the spec after fixing this then go to plan"
+    "permission": "Approve spec and plan"
   },
   "plan": {
-    "sha256": "6768d72d9e083a84f360067329360cdd5057fea3ca7ae32255aa816852c87890",
+    "sha256": "0e31d3ebeda4441b1a4d12e2d6bbed091e0ee6c01eb404267f445eb7f6911f44",
     "approved_by": "Anirudh Sathish",
-    "approved_at": "2026-11-14T23:41:43-05:00",
+    "approved_at": "2026-11-15T14:18:31-05:00",
     "approved_via": "agent",
-    "permission": "approve the plan and implement slices",
-    "spec_sha256": "0f8ed366305f320d7ab4bee1eb45f1b115770e30910a65d658ea63b54bbbc224"
+    "permission": "Approve spec and plan",
+    "spec_sha256": "28182c7a24ad443d65770ee97f10625225800f37b33229d6ae14a4e5649294f7"
   }
 }
