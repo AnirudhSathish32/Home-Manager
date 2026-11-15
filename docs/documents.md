@@ -207,20 +207,37 @@ Every reading, from any reader, keeps the same evidence:
 
 Code: `documents/receipt_service.py`, `documents/receipt_worker.py`, `models/vision.py`.
 
-- **Text and reported tables.** The vision model returns `full_text` and table header/row cells with zero-based source
-  line indexes. The app accepts cells only when they match exact, ordered substrings of their lines and rectangular
-  header widths. Invalid tables are discarded with a review issue while the full text remains available. The model
-  does not choose titles, folders, dates, currencies or totals.
+- **Lines and reported tables.** The vision model returns `lines`, each `{text, indent}`, and table header/row cells
+  with zero-based source line indexes. The app joins the lines' texts with line breaks to make the full text, so line
+  ids (`line-N`), `model_text`, search, citations and the Tables view are the same as before. A text with a line break
+  inside becomes several lines with the same indent, and the table indexes count the final lines. The app accepts cells
+  only when they match exact, ordered substrings of their lines and rectangular header widths. Invalid tables are
+  discarded with a review issue while the full text remains available. The model does not choose titles, folders,
+  dates, currencies or totals.
+- **Indent.** Both prompts (the main one and the one rescue call) ask for each line's indent: 0 for a line at the main
+  left edge (centered headings and footers too), 1 for a line printed further right under the line above it (the sides,
+  modifiers and notes under a menu item), 2 for deeper. The indent is data beside the text, never leading spaces, so
+  quotes, `count_lines`, regexes and table-cell checks see the same text. An indent that isn't a whole number from 0 to
+  2, or a line with no `indent` key, is stored as unknown for that line and the reading is kept. An answer in the old
+  `{full_text}` shape is invalid and gets the rescue call, which asks for `lines` and no tables. A blank answer fails
+  with "Model response was blank." Lines from OCR, embedded PDF text and readings saved before this change have no
+  indent (unknown) and behave as before.
+- **Reading versions.** Images are read under `receipt-vision-v7-indent`. A new reading is never served from an
+  older version's run, so **Read again** on an image read before creates a run under the new one; the old reading
+  stays under History.
 - **Server requirements.** It needs a server with streaming chat completions, image input and JSON-schema output. The
   app doesn't download or load weights.
 - **Codes.** QR codes and barcodes are decoded independently, and their payloads are added as inert text with their
   exact bytes and polygons. Links are never followed.
 - **What is kept.** Each result keeps the source hash, dimensions, rotation, preview, full text, line ids, validated
-  `vision_tables` version 1, endpoint, model id and prompt version. Each cell has a stable ID, exact quote and source
-  line ID. These are model reports, not independently located image regions; no coordinates or confidence scores are
-  invented.
+  `vision_tables` version 1, endpoint, model id and prompt version. Each line keeps its indent when it has one. Each
+  cell has a stable ID, exact quote and source line ID. These are model reports, not independently located image
+  regions; no coordinates or confidence scores are invented.
 - **Rotating.** The document page compares the transcription with the preserved image. You can rotate the image and
   create a new reading under **History**.
+- **Text view.** Each line is shown indented one step per level (the source viewer sets `data-indent` from the line's
+  indent, 1 or 2, and CSS pads it). The text itself is not changed, so copying and Find stay exact. Lines with no
+  indent or an unknown one sit at the left edge.
 - **Tables view.** The source viewer offers Image, Text and Tables. Tables show copied headings, blank cells, page
   labels and links to the original text lines. Missing or rejected table structures have an explanatory state.
   Saved text with explicit pipe separators and recognizable headings can supply the same validated table view and
@@ -244,8 +261,10 @@ check the plumbing and evidence, not model accuracy.
 
 `documents/pdf_reader.py` reads page by page:
 - a page with a usable text layer uses its embedded text;
-- new `pdf-pages-v3-layout` reads also retain native character indexes, words, geometry, ordered blocks and conservative tables in `page.layout`, before document classification;
-- scanned or near-empty pages are transcribed by the vision model;
+- `pdf-pages-v3-layout` and newer reads also retain native character indexes, words, geometry, ordered blocks and conservative tables in `page.layout`, before document classification;
+- scanned or near-empty pages are transcribed by the vision model, and each line keeps its indent ([Images](#images-vision-transcription));
+  embedded-text pages have none. New reads are `pdf-pages-v4-indent`; a `pdf-pages-v3-layout` reading still opens,
+  extracts and shows its layout;
 - explicit pipe-delimited rows in embedded text are retained as cells when their header and width agree;
 - evidence ids are `page-N-line-M`;
 - native layout IDs are separate, so existing text citations remain stable; new native and scanned pages both have rendered previews with saved coordinate transforms;
@@ -454,9 +473,10 @@ are those images (`documents/grouping.py`, migration 055).
   document**, with **Combine** or **Keep separate**. A dismissed suggestion is never made again.
 - **Combining directly.** In the library, select 2 to 20 PNG or JPEG images and choose **Combine as pages**. Pages go in
   file-name order.
-- **Reading.** A confirmed group is read under its first page, the lead, with parser version `receipt-images-v2-tables`.
+- **Reading.** A confirmed group is read under its first page, the lead, with parser version `receipt-images-v3-indent`. A group read under `receipt-images-v2-tables` stays readable (it
+  is never run again, only published when an interrupted run is recovered).
   - Each page is prepared by its own bounded worker child and transcribed.
-  - The result has the PDF's page-aware shape (`pages`, line ids `page-N-line-I`).
+  - The result has the PDF's page-aware shape (`pages`, line ids `page-N-line-I`), and each line keeps its indent.
   - `page_hashes` names each page's bytes. `options_json` holds them in order, so reordering creates a new reading.
   - Codes decoded from the pages are not carried into the combined result.
 - **Records.** The lead carries the reading and the records. Later pages are hidden from lists and counts, and a later
@@ -531,8 +551,8 @@ rewriting a record.
 
 ### Receipt kinds
 
-Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_details`), `finance/ledger.py`,
-`app/manager.py` `change_kind`. Spec: `specs/document-forms`.
+Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_details`), `documents/dining_total.py`,
+`finance/ledger.py`, `app/manager.py` `change_kind`. Specs: `specs/document-forms`, `specs/dining-receipt-indent`.
 
 - **Four kinds.** `fuel`, `dining`, `grocery` or `general`. The kind isn't shown on the document page; it is decided
   from three signals (`receipt_kind`), and each receipt of a file split into several gets its own kind:
@@ -558,14 +578,55 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
     item, in `transportation`; a row that cites only the pump line is left out, with a note. Check: volume × price,
     rounded half-up to the cent, equals the fuel amount within a cent (skipped when the unit isn't printed).
   - dining: the included gratuity's words and amount, party size, server, table. The check is subtotal + tax + tip +
-    included gratuity = total. A blank tip line stays missing, never 0.
+    included gratuity = total. A blank tip line stays missing, never 0. The total and the tip are decided by code from
+    the printed lines (`dining_total.decide`, run when the reading is recorded; the model proposes, the code decides):
+    - **The charged total.** A **pre-tip amount** is a printed Total or Grand Total line (never Subtotal, Total Tax,
+      Total Item Count or Total Savings) or a printed Bill, Amount due or Balance due line. Only these labels count: a
+      card terminal's "Amount: $52.76" is never one. A **post-tip total** is a printed total line larger than the
+      nearest pre-tip amount before it, in reading order. The latest one is the receipt's total, cited to its whole
+      line, whether or not a tip line is printed (a receipt printing Bill $52.76 and then Total $61.55 counts $61.55).
+      With one printed total, or a later total equal to the pre-tip amount, the total is read as before. When an
+      earlier pre-tip amount disagrees with the nearest, the total still follows the rule, but no tip is worked out,
+      with the issue "The receipt prints different amounts before the tip ($52.76 and $50.00), so the tip wasn't
+      worked out." (the earlier amount first).
+    - **The tip.** A printed tip is kept. When the post-tip total and the pre-tip amounts agree, a tip line is printed
+      and the tip is missing or unusable (blank, unreadable, cited only to a suggested-tip table, or failing its
+      checks), the tip is **worked out** as the post-tip total less the nearest pre-tip amount. It is stored, marked
+      worked out and citing both lines; the footer's Tip row shows "Worked out: Total $61.55 − Bill $52.76" and the
+      dining check's trace names both lines ("Tip (worked out)"). It passes into the subtotal + tax + tip = total check
+      like a printed one, and the receipt always goes to Review with "Tip $8.79 was worked out from Total $61.55 less
+      Bill $52.76, not printed; check it." A printed tip that, with the bill, doesn't make the total adds "Tip ($X) and
+      the bill ($Y) don't make the total ($Z)." With no tip line printed the tip stays missing, never invented; the
+      gap is the footer's "Not matched to an item".
+    - **Suggested-tip table.** A block of lines offering tip percentages ("18.00% of sale: $8.79 Total $61.55"), with or
+      without a "Suggested Tip" or "Tip Guide" heading, is never the source of the total or the tip. A total or tip the
+      model cited only to such lines is not used, with the note "The total the reading took from the suggested-tip
+      table was not used." (or "tip"). The model is not asked again: a rejected total becomes the post-tip total when
+      there is one, else the nearest pre-tip amount printed before the table, else it is missing; a rejected tip is
+      missing, so it may be worked out.
+    - **Correcting.** **Correct…** on Tip or Total works as always: a corrected tip replaces the worked-out one and its
+      marker, its Review reason goes (it starts with "Tip", like every issue the correction clears), the checks are not
+      re-run, and later readings keep your correction. A difference over a cent shows the footer's "Doesn't add up".
+    - **Receipts read before this** keep their total, tip and splits until read again. **Extract again** (extraction
+      version `typed-extraction-v57-dining-indent`) applies the rules; no migration rewrites a receipt.
   - grocery: per item, weight, unit and price per weight; a line sold as several units checks count × unit price
     against its line total. Deposits, bag fees and member savings are rows of their own; the savings total is kept.
     Tenders (gift card, EBT, card, cash) are kept with their amounts and last four digits only, never as items. A gift
     card lowers what the receipt counts ([money](money.md#gift-cards)).
   - general: today's form.
+- **Lines printed under an item.** Each line the extraction model gets carries its `indent` beside `line_id` and `text`
+  when it is known; a reading without indent sends today's payload. Every receipt form's row instruction says a line
+  indented under an item with no price of its own belongs to that item (cited with it) and is never an item; a priced
+  indented line keeps the old rules (a count line belongs to its item, any other priced line is its own row). The code
+  backs this up on receipts only: a row whose cited lines all have a known indent of 1 or more, none printing an amount,
+  with a kept row before it, is dropped, its lines join the previous item's citation, and each drop adds a note ("“Fresh
+  Berry Pancakes” is printed under “Georgia Peach Stack” with no price of its own, so it was kept with that item, not
+  as an item."; at most three, then "and N more"). A line whose indent is unknown is never dropped, and bills and other
+  kinds are unaffected.
 - **Stored** in `receipts.receipt_kind` and `details_json` (one entry per kind read, so an undo of a kind change brings
-  the earlier kind's details back), and `receipt_items.details_json` (migration 070). Decimals that aren't money keep
+  the earlier kind's details back), and `receipt_items.details_json` (migration 070). A worked-out tip is marked in
+  `receipts.tip_worked_out_json` (migration 081: the two lines' amounts), and a kind change keeps the items'
+  categories it needs for Undo in `record_corrections.item_categories_json`. Decimals that aren't money keep
   their printed text; amounts are integer minor units. Receipts read before migration 070 have no kind until read again.
 - **Changing the kind** (the document page's **Correct…** form, `PATCH /api/receipts/{id}/kind`) reads that receipt again from its saved
   transcription with the new kind's form, never the image. The change is a correction with Undo, written with the

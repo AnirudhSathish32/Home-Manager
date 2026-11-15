@@ -30,7 +30,7 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 
 | # | Task | Code | Output | App-side checks | Eval |
 |---|---|---|---|---|---|
-| 1 | Transcribe an image or scanned PDF page (vision) | `models/vision.py` `transcribe`, `documents/pdf_reader.py` | `{full_text, tables}` | non-blank text; reported cells must match their source line and header width; invalid tables are discarded for review | `transcription` |
+| 1 | Transcribe an image or scanned PDF page (vision) | `models/vision.py` `transcribe`, `documents/pdf_reader.py` | `{lines: [{text, indent}], tables}` | non-blank text; reported cells must match their source line and header width; invalid tables are discarded for review | `transcription` |
 | 2 | Classify the document | `documents/extraction.py` (classify step) | `Classification` (enum) | Pydantic, one correction turn; the decision model's shadow opinion | documents suite |
 | 3–4 | Header fields and rows (items, transactions, pay lines, trades, tax boxes) | `documents/extraction.py` | `HEADER_MODELS[kind]`, `ROWS[kind]` | `verify`: exact citations, amounts and names supported; a receipt's `return_marker` and `returned` lines set its signs in code (`sign_return`) | documents suite |
 | 5 | Seller and location | `extraction.identify` | `ReceiptIdentity` | `name_supported`, seller shape | `identify` |

@@ -37,6 +37,16 @@ and link here for what isn't. When an item is built, remove it from this list an
   - combined statements (several accounts or cardholders): the summary check may compare one account's totals with
     another's;
   - negative or retro pay lines have no rule of their own (the year-to-date comparison uses magnitudes).
+- **Dining receipts and indentation, still open** (`specs/dining-receipt-indent` D2, D16; built:
+  [documents](documents.md#receipt-kinds), [money](money.md#a-dining-receipt)):
+  - Image readings take indent from the vision model alone: no OCR engine or word positions, so how often it gets
+    indentation right on phone photos is unmeasured.
+  - A repeated line (Bottled Water printed twice) read as one item of quantity 1 isn't handled.
+  - No arithmetic cross-check catches a misread digit (a suggested-tip percentage × the subtotal; a subtotal read as
+    $49.85 for $48.85). The check only compares what was read.
+  - The printed "Total Item Count" isn't checked against the items.
+  - Tax printed among other amounts on one line (a line with the subtotal, tax and total together) isn't separated into
+    its figures, so the tax isn't read from it.
 - **Document-forms follow-ups:** pay stub and statement details can't be corrected with Edit details (receipt details
   can); a reviewed receipt's new kind proposes summary details only, never item details (weights); a family member's
   copy of a gift-card receipt shows the amount paid, not the printed total; a full account number quoted inside an item
@@ -136,6 +146,16 @@ and link here for what isn't. When an item is built, remove it from this list an
   code, rate, taxable amount or amount, and an item's tax code, have no Correct control of their own. When a line is
   wrong, the lines no longer add up to the tax, the receipt falls back to sharing tax across the taxed items, and the
   issue says why.
+- **Stale links a re-read doesn't remove** (`specs/dining-receipt-indent` D35, D38, D40; the receipt case is built:
+  [money](money.md#reading-a-statement-or-receipt-again)):
+  - A bill's payment link and a pay stub's deposit link go stale the same way when a re-read changes the amount; only
+    receipts' links are tested and removed.
+  - **Correct…** on a receipt's total leaves its links as they are (it is your own change; a gift-card receipt gets
+    its "Amount paid" note as before), so a link can stay after you correct the total to something it no longer matches.
+  - A re-read that changes only the date or the merchant isn't tested: the link's merchant and posting window aren't
+    checked again, only the total.
+  - The note about a removed link lives with the receipt's issues, so it is gone once you review the receipt or a later
+    reading replaces them. No lasting history entry records the removal.
 - **Family corrections.** Records corrected in the family library after they were sent need **Send** again.
 - **Returns** ([money](money.md#returns)):
   - A credit smaller than its return receipt (a restocking fee kept) isn't matched automatically. The user links it by

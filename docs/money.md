@@ -326,7 +326,9 @@ and Paid opens its trace (`receipt.paid`).
   return isn't handled: the signed total counts, with a note.
 - Correcting the gift card amount, the total or sale or return works the amount paid out again. When it no longer equals
   the linked charge, the receipt goes to review with "Amount paid (…) no longer equals the linked charge (…)"; when they
-  match again the note goes. It never verifies a receipt by itself.
+  match again the note goes. It never verifies a receipt by itself. A link removed by a re-read (see
+  [Reading a statement or receipt again](#reading-a-statement-or-receipt-again)) never gets this note; it stays for a
+  link that still holds.
 - A receipt with no gift card counts its total, exactly as before. A receipt you reviewed before its gift card was read
   keeps counting its total; Apply details doesn't change that, and the page says so.
 - Not built: showing the printed total on a family member's copy, which carries the amount paid only.
@@ -579,6 +581,28 @@ one line by line:
   model missed, a line that moves keeps your person and category by what the item is (its description and amount), not by its number.
   This guards every bill, text PDF, photographed, scanned or invoice, and never rewrites a bill you decided. Receipts are unchanged.
 
+- **A charge link the new total no longer supports.** When a reading rewrites a receipt (not one you approved or
+  rejected, nor a bill or pay stub) and changes its counted total (the amount paid, after gift cards and your
+  corrections), each live link between the receipt and a card or bank charge is tested against the new total
+  (`Reconciler.drop_stale_links`, from `publish_receipt`, in the same publication). The rule is the one reconciliation
+  uses to make the link:
+  - a link the app proposed holds only at the exact amount, in the same currency;
+  - a link you confirmed or chose also holds when the charge is larger than a positive total by at most 30% (a tip added
+    after signing); a smaller charge never holds;
+  - a charge in another currency holds when it is within 97 – 106% of the new total's estimate, at the rate stored on
+    the link, else at today's rate; with no rate it doesn't hold;
+  - with no total nothing holds. The merchant and the posting window aren't tested again.
+
+  A link that doesn't hold is removed: the link row goes (it is not marked rejected, and a rejected row is never
+  touched), the charge's split rows for the receipt go so the charge counts under its own category, a merchant the charge
+  took from the receipt goes and its category and tax rules decide again, and the two documents stop showing each other
+  as the same purchase unless another live link joins them. The receipt goes to Review with one note per removed link:
+  "The match to the $52.76 charge on 2026-11-12 was removed: this reading's total ($61.55) no longer matches it." ("The
+  match you confirmed to …" for a confirmed link; "… was removed: this reading has no total." with no total). The note
+  stays until you review the receipt or a later reading replaces the issues. The reconciliation after the reading then
+  runs as usual and may link a charge of the new total, ask a near-match question, or leave the receipt open. An
+  unchanged total tests nothing, whatever the link.
+
 A statement PDF read again takes its rows from the printed columns ([documents](documents.md#statement-rows-from-the-printed-columns))
 when it has a text layer, so the same reading gives the same rows. A row is the same line when its posted date, amount and
 currency match (as above), so an older statement whose rows came from the model keeps what you did to a row that is still
@@ -601,6 +625,12 @@ receipt's exact total, a charge from the same merchant up to 30% larger, within 
 (`RECEIPT_POSTING_DAYS`, 5 days), becomes an "ambiguous receipt match" question in Review instead of a link. Choosing it
 links the two (signal `near_amount`). How a receipt in another currency is matched is covered in
 [A foreign receipt and its USD card charge](#a-foreign-receipt-and-its-usd-card-charge).
+
+A link removed because a re-read changed the receipt's total ([Reading a statement or receipt
+again](#reading-a-statement-or-receipt-again)) is not a rejection: only a link you rejected keeps its pair from being
+proposed again. The removed pair is linked again when it matches again, exactly or as a near-match question (the removed
+charge included when it fits), unless you answered that question "leave unmatched". A foreign receipt's link removed this
+way is tested against the cached rate stored on the link first.
 
 ## Categories
 
@@ -642,7 +672,8 @@ receipts (migration 032, `finance/splits.py`).
 
 On the document, a receipt's items are a table with these columns, left to right: **Item**, **Code**, **Qty**,
 **Unit price**, **Category**, **Line total**, **Paid** and the source button. Everything shown is stored or worked out on
-the server. The page calculates nothing.
+the server. The page calculates nothing. A dining receipt has no Category column once every item counts as the
+receipt's category ([A dining receipt](#a-dining-receipt)), and the footer's spans follow the columns that show.
 
 - **Code** is the printed product code. The column is hidden when no item has one, as on a restaurant receipt. An item
   without a code in a table that has the column shows "—".
@@ -664,7 +695,10 @@ the server. The page calculates nothing.
   No column is added for it.
 
 Subtotal, Tax, Tip and Total appear below the items, under Line total, with Correct controls, along with any amount
-**Not matched to an item**. When tax lines set the shares, each is listed under Tax, in the order the receipt prints them, with its code, rate and taxable
+**Not matched to an item**. That amount leaves out the tip, which the Tip row shows (the server sends it: the receipt's
+own split rows that carry no item, less the tip's own row), so a printed tip isn't listed twice; the row is hidden at
+zero. A tip worked out from two printed lines shows its note under the Tip label ("Worked out: Total $61.55 − Bill
+$52.76", [documents](documents.md#receipt-kinds)). When tax lines set the shares, each is listed under Tax, in the order the receipt prints them, with its code, rate and taxable
 amount ("B · 7.75% on $46.19") and its amount, with a Find button for its line. A difference over one cent between subtotal + tax + tip and total is called out. Under
 Printed details a receipt shows its payments and savings but no per-item lines, because the weight and count are in the
 table. This display does not change how the ledger allocates shares.
@@ -680,6 +714,7 @@ whole charge's category in its drawer asks before replacing the item split. Read
 - A category you chose for an item earlier takes precedence over the model's answer. Your choices are remembered per
   seller and item text in `item_category_memory`.
 - An item with no category takes the receipt's own category.
+- A dining receipt is the exception: see [A dining receipt](#a-dining-receipt).
 - **Changing one item** (the dropdown in the item table, `PUT /api/receipts/{id}/items/{position}/category`) changes
   only that item, and remembers the choice.
 - **Changing the whole receipt's category** (Edit details) sets every item you haven't categorised yourself.
@@ -693,9 +728,12 @@ stored in `category_splits` and rebuilt whenever items, categories or receipt li
 3. Tax is shared out in proportion to amount across the items the receipt marks as taxed. If no item is marked, it is
    shared across every item. A receipt that prints a tax line for each tax code shares each line's amount across the
    items with that code instead ([Tax codes and tax lines](#tax-codes-and-tax-lines)).
-4. A tip counts as dining.
+4. A tip counts as dining. On a dining receipt whose items count as its category ([A dining receipt](#a-dining-receipt)),
+   it counts under the receipt's category.
 5. If the charge differs from the receipt (a tip added after signing, or an accepted near match), the difference counts
-   as dining on a dining receipt. Otherwise it is shared out in proportion to amount.
+   as dining on a dining receipt. Otherwise it is shared out in proportion to amount. On a dining receipt whose items count
+   as its category, a positive difference is one amount no item carries, under the receipt's category, never spread over
+   the items; a negative difference is shared out as before.
 6. Shares stay exact fractions until the end. Largest-remainder rounding keeps the sum exact.
 
 | Item | Price | Taxed | Counts as |
@@ -738,7 +776,48 @@ the receipt total are the two figures that can be checked against each other. Ev
 
 **Receipts recorded before item categories existed** have items with no categories. The Items view offers **Categorise
 their items**, a one-time job (`finance/item_categories.py`) that asks the model about the stored item names; nothing is
-transcribed again. Tax codes can't be recovered this way, so tax on those receipts is shared across all items.
+transcribed again. Tax codes can't be recovered this way, so tax on those receipts is shared across all items. On a
+dining receipt it gives every item it would categorise the receipt's category ([A dining receipt](#a-dining-receipt)).
+
+### A dining receipt
+
+Every item on a dining receipt counts as one category, the **receipt's category**: dining when the receipt is recorded,
+unless you changed it. Whatever the model, the seller's remembered choice (`item_category_memory`) or an earlier reading
+said about an item isn't used for its split. Code: `finance/ledger.py` (`apply_one_category`, `category_column`),
+`finance/splits.py` (`allocate`), `finance/item_categories.py`. Spec: `specs/dining-receipt-indent`.
+
+- **When it applies.** Once, on these events, and every later rebuild keeps it until the kind changes away from
+  dining (`receipts.one_category`, migration 081):
+  - a reading of the receipt is recorded (a new file, Extract again or Try again, a family-sent receipt), when it may
+    rewrite the record: a record you approved or rejected is never rewritten;
+  - its kind changes to dining, on a receipt you reviewed too (the change is yours, with Undo);
+  - Edit details changes its Categories to a different value (the same value does nothing).
+  The upgrade doesn't rewrite any receipt's splits, and neither does a rebuild that isn't about categories:
+  reconciliation runs, linking, unlinking or reviewing a charge, deleting an item, Correct… on an amount or an item,
+  other Edit details fields, family shares. They use the items' stored categories, as before.
+- **What it does.** Items the model or memory categorised store the receipt's category with source `receipt`; your own
+  per-item choices (source `user`) stay stored, and count again if the kind changes away from dining. The tip, and
+  a positive difference between the amount divided and what the items and tip carry, count under the receipt's category
+  too (rules 4 and 5), so the whole receipt counts under it: Edit details → Categories → Travel makes every split row,
+  the tip's included, Travel. With no receipt category the tip counts as dining as before. The split trace says "a tip
+  and any difference under the receipt's category" then, and "a tip as dining" otherwise.
+- **The Category column** is hidden only when the receipt is dining and every item row of its own split counts under the
+  receipt's category (the server decides, `category_column`, so a receipt with no split yet is decided from the
+  categories its split would use). A dining receipt this hasn't applied to keeps the column, and any item under another
+  category keeps its dropdown, which works as before, memory included, until every item is under the receipt's category.
+  Other kinds always show the column.
+- **The item dropdown** (`PUT /api/receipts/{id}/items/{position}/category`) is refused with 400 "Every item on a dining
+  receipt counts as the receipt's category; change it with Edit details." exactly when the column is hidden. Nothing is
+  written to memory, and memory is never read for a dining receipt.
+- **Receipts recorded before this** keep their categories, splits and Category column until one of the events above, or
+  until you set each item with the dropdown. **Categorise their items** (the backfill, below) gives a dining receipt's
+  items the receipt's category instead of memory's or the model's answer, after replacing a retired receipt category;
+  it isn't one of the events, so the tip and the difference keep the old rules 4 and 5 there.
+- **Changing the kind.** Away from dining, items get categories as on any receipt (memory, the model, an item's own earlier
+  choice), and the tip and difference follow rules 4 and 5 as before; **Undo** restores the categories and the flag the
+  change replaced (a snapshot kept with the correction, `record_corrections.item_categories_json`), the split is
+  rebuilt at once, and a kind correction made before migration 081 is undone from the reading. A change to dining
+  applies the rule at once.
 
 ### Order discounts and order numbers
 
