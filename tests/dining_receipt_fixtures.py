@@ -123,6 +123,8 @@ def stub_replies(texts, id_of, *, summary, rows, categories, kind="dining", merc
                   "issuer": proposed(texts, merchant_line, id_of, merchant, texts[merchant_line - 1]),
                   "document_date": proposed(texts, date_line, id_of, date, date_quote),
                   "receipt_kind": kind, "receipt_kind_evidence": cites(texts, kind_line, id_of)}
+    if form == "ReceiptGrocerySummary":
+        head = {**head, "savings_total": MISSING, "tenders": []}  # The grocery form asks for both.
     return {"Classification": [classified], form: [{**head, **summary}],
             "ReceiptIdentity": [{"seller": proposed(texts, merchant_line, id_of, merchant, texts[merchant_line - 1]),
                                  "seller_basis": "printed", "location": MISSING}],
@@ -191,7 +193,7 @@ def side_line_stub(zero=False, id_of=image_id):
     texts, indents, replies = breakfast_stub("B0", id_of)
     extra = [row(texts, number, id_of, description, "0.00" if zero else None) for description, number in SIDE_LINES]
     replies["Items"][0]["items"][4:4] = extra  # The side lines follow Georgia Peach Stack, as printed.
-    replies["PurchaseDescription"][0]["item_categories"] += ["groceries"] * 4
+    replies["PurchaseDescription"][0]["item_categories"][4:4] = ["groceries"] * 4  # Beside their rows, so the categories stay aligned.
     return texts, indents, replies
 
 
@@ -199,7 +201,8 @@ def grocery_re_read_stub(id_of=image_id):
     """B7: B0's reading answered with the grocery form and the groceries category (SC-08)."""
     texts, indents, replies = breakfast_stub("B0", id_of)
     summary = replies.pop("ReceiptDiningSummary")[0]
-    replies["ReceiptGrocerySummary"] = [{**{key: summary[key] for key in ("merchant", "purchase_date", "currency", "subtotal", "tax", "tip", "total")}}]
+    replies["ReceiptGrocerySummary"] = [{**{key: summary[key] for key in ("merchant", "purchase_date", "currency", "subtotal", "tax", "tip", "total")},
+                                         "savings_total": MISSING, "tenders": []}]
     replies["GroceryItems"] = replies.pop("Items")
     replies["Classification"][0]["receipt_kind"] = "grocery"
     replies["PurchaseDescription"][0]["category"] = "groceries"
@@ -234,4 +237,5 @@ def b11_stub(variant="B11", id_of=image_id):
         summary["tenders"] = [{"tender_type": "gift_card", "amount": "1.00", "last_four": None, "evidence": cites(texts, 11, id_of)}]
     replies = stub_replies(texts, id_of, kind="grocery", summary=summary, rows=rows, categories=["groceries", "groceries", "groceries"],
                            merchant="SYNTH MART", date="2026-11-12", date_quote="2026-11-12", date_line=2, kind_line=3, rows_schema="GroceryItems")
+    replies.pop("ReceiptStarts")  # Nothing asks where a receipt starts in ten lines with one total.
     return texts, [0] * len(texts), replies

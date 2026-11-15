@@ -1,6 +1,6 @@
 """SC-10 – SC-12 of specs/dining-receipt-indent: the vision reading's lines carry an indent, the rescue asks for the same,
 and the new reading versions leave old readings readable (FR-15 – FR-20). Step 4 of SC-10 and step 3 and (e) of SC-12
-(the extraction request) come with FR-21 in tests/test_vision_indent.py's later sections.
+are the extraction request (FR-21, FR-22, D28, D33).
 
 Old readings are the SL-01 captures (tests/dining_receipt_data/, D28), laid over a fresh reading's run, never output of the
 code under test. Synthetic data and the local model stub only."""
@@ -11,18 +11,22 @@ import json
 import pytest
 
 from dining_receipt_fixtures import (
+    B8_TEXTS,
     BREAKFAST,
     BREAKFAST_INDENTS,
     BREAKFAST_TEXTS,
     CAPTURES,
     GROUP_SPLIT,
+    b8_stub,
     breakfast_stub,
+    dump_requests,
     group_id,
     image_id,
     pdf_id,
     vision_lines,
 )
 from home_manager.app.manager import Manager
+from home_manager.documents.extraction import EXTRACTION_VERSION, KIND_ROWS, SIDE_LINES_RULE
 from home_manager.documents.pdf_reader import GROUP_VERSION, GROUP_VERSIONS, LAYOUT_PDF_VERSIONS, PDF_VERSION, PDF_VERSIONS
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.vision import VISION_VERSION
@@ -71,6 +75,17 @@ def reading(manager, run_id):
     run = manager.receipts.get(run_id)
     assert run["status"] == "succeeded", run["error"]
     return run["result"]
+
+
+def line_payloads(requests):
+    """Every `lines` payload of dict entries a reasoning request carries: [(schema name, [entry, …])]. (The purchase description
+    question sends plain strings, which FR-21 leaves alone.)"""
+    found = []
+    for request in requests:
+        content = json.loads(request["messages"][-1]["content"])
+        if content.get("lines") and isinstance(content["lines"][0], dict):
+            found.append((request["response_format"]["json_schema"]["name"], content["lines"]))
+    return found
 
 
 def folder_hash(manager, run_id):
@@ -124,8 +139,22 @@ def test_sc10_lines_with_indent(tmp_path, local_model):
         assert [line["id"] for line in result["lines"] if "Fresh Berry Pancakes" in line["text"]] == ["line-12"]
         start_reasoning(manager, local_model)
         _, _, replies = breakfast_stub("B0", image_id)
-        run, _ = record(manager, local_model, doc_id, run_id, replies)  # Every whole-line quote of B0 validates; publication succeeded.
+        run, requests = record(manager, local_model, doc_id, run_id, replies)  # Every whole-line quote of B0 validates; publication succeeded.
         assert run["status"] == "succeeded"
+        # 4. The extraction request's lines carry indent: 1 on line-11 … line-14 (and 12–13 from the split entry), 0 on the known-0 lines,
+        # no key on line-16.
+        payloads = line_payloads(requests)
+        assert {name for name, _ in payloads} >= {"Classification", "ReceiptDiningSummary", "Items", "Rewards"}
+        for name, entries in payloads:
+            for entry in entries:
+                number = int(entry["line_id"].removeprefix("line-")) if entry["line_id"].startswith("line-") else None
+                if number is None:
+                    assert set(entry) == {"line_id", "text"}, entry  # A decoded code is no part of the reading's lines.
+                elif number == 16:
+                    assert entry == {"line_id": "line-16", "text": "No Allergies"}, (name, entry)
+                else:
+                    assert entry == {"line_id": entry["line_id"], "text": BREAKFAST_TEXTS[number - 1], "indent": BREAKFAST_INDENTS[number - 1]}, (name, entry)
+        assert [entry["indent"] for entry in dict(payloads)["Items"][10:14]] == [1, 1, 1, 1]
         # Expected final state: one succeeded v7 run, its stored result holding the lines with indent.
         [run] = manager.receipts.history(doc_id)
         assert (run["id"], run["status"], run["parser_version"]) == (run_id, "succeeded", VISION_VERSION)
@@ -359,6 +388,71 @@ def test_sc12_old_runs_open_and_a_new_reading_is_one_new_run_per_version(tmp_pat
             assert folder_hash(manager, old_id) == frozen
         finally:
             manager.close()
+
+
+def masked(requests, old_text, new_text):
+    """The request bodies with the receipt row instruction replaced by one placeholder (D28): `old_text` in a capture, `new_text` in a new request."""
+    placeholder = "<<receipt row instruction>>"
+    text = dump_requests(requests)
+    for what in (old_text, new_text):
+        text = text.replace(json.dumps(what, ensure_ascii=False)[1:-1], placeholder)
+    return json.loads(text)
+
+
+def test_sc12_step3_and_e_an_old_reading_sends_today_s_requests_but_for_the_row_instruction(tmp_path, local_model):
+    """D28, D33: Extract again from the R6, P3 and G2 runs with B0 sends the same requests as the SL-01 capture (made by v56): the
+    `lines` payloads byte for byte, the rest byte for byte once the row instruction (today's text; the new text) is masked."""
+    ids = {"R6": image_id, "P3": pdf_id, "G2": group_id}
+    old_text = CAPTURES["row_instruction"].read_text(encoding="utf-8")
+    assert old_text.startswith(" Missing fields are null; never assume a quantity of one.") and old_text.endswith(KIND_ROWS["dining"])
+    new_text = old_text[:-len(KIND_ROWS["dining"])] + SIDE_LINES_RULE + KIND_ROWS["dining"]  # FR-22's sentence closes the common part.
+    for kind in ("R6", "P3", "G2"):
+        manager, doc_id, old_id = old_library(tmp_path / kind, local_model, kind)
+        try:
+            start_reasoning(manager, local_model)
+            _, replies = breakfast_stub("B0", ids[kind])[1:]
+            run, requests = record(manager, local_model, doc_id, old_id, replies)
+            capture = json.loads(CAPTURES["requests"][kind].read_text(encoding="utf-8"))
+            assert run["prompt_version"] == EXTRACTION_VERSION and EXTRACTION_VERSION == "typed-extraction-v57-dining-indent"
+            # Same number of requests, in the same order.
+            names = [request["response_format"]["json_schema"]["name"] for request in requests]
+            assert names == [request["response_format"]["json_schema"]["name"] for request in capture] and len(names) == 7
+            # The lines payloads: byte for byte, and no entry carries an indent (the reading has none).
+            for request, old in zip(requests, capture):
+                now, then = json.loads(request["messages"][-1]["content"]), json.loads(old["messages"][-1]["content"])
+                assert json.dumps(now["lines"], ensure_ascii=False) == json.dumps(then["lines"], ensure_ascii=False)
+                assert request["messages"][-1]["content"] == old["messages"][-1]["content"]
+                assert not any(isinstance(line, dict) and "indent" in line for line in now["lines"])
+            # The rest of each body, with the row instruction masked: only the rows request carried it, and it is the only difference.
+            assert masked(requests, old_text, new_text) == masked(capture, old_text, new_text)
+            assert [name for name, request, old in zip(names, requests, capture) if request != old] == ["Items"]
+            [rows] = [request for request in requests if request["response_format"]["json_schema"]["name"] == "Items"]
+            assert new_text in rows["messages"][0]["content"] and old_text not in rows["messages"][0]["content"]
+            # (e) D33: no body holds the extraction version, and every prompt but the masked instruction equals the capture's.
+            assert EXTRACTION_VERSION not in dump_requests(requests) and "v56" not in dump_requests(requests)
+            assert [request["messages"][0]["content"] for request in requests if request is not rows] == \
+                [old["messages"][0]["content"] for old in capture if old["response_format"]["json_schema"]["name"] != "Items"]
+        finally:
+            manager.close()
+
+
+def test_sc12a_an_embedded_text_page_sends_no_indent_to_the_extraction_model(tmp_path, local_model):
+    manager = manager_for(tmp_path, local_model, read=False)
+    try:
+        make_pdf(manager.store.library.inbox / "digital.pdf", ["\n".join(B8_TEXTS)])
+        manager.start_inbox()
+        wait(manager)
+        [doc] = manager.store.documents()["items"]
+        [parse] = manager.receipts.history(doc["id"])
+        start_reasoning(manager, local_model)
+        _, _, replies = b8_stub(lambda number: f"page-1-layout-line-{number}")  # An embedded-text page is sent as its native layout lines.
+        replies.pop("ReceiptStarts")  # One short page: nothing asks where a receipt starts.
+        _, requests = record(manager, local_model, doc["id"], parse["id"], replies)
+        payloads = line_payloads(requests)
+        assert payloads and all(set(entry) == {"line_id", "text"} for _, entries in payloads for entry in entries)
+        assert not any(isinstance(line, dict) and "indent" in line for _, entries in payloads for line in entries)
+    finally:
+        manager.close()
 
 
 def test_sc12_step5_a_scanned_pdf_read_again_is_one_run_not_one_per_page(tmp_path, local_model):

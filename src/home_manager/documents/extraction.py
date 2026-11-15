@@ -49,7 +49,7 @@ from .table_engine import value_of
 
 log = logging.getLogger(__name__)
 
-EXTRACTION_VERSION = "typed-extraction-v56-money-sign-rule"
+EXTRACTION_VERSION = "typed-extraction-v57-dining-indent"
 DOCUMENT_TYPES = ("receipt", "bank_statement", "credit_card_statement", "bill", "paystub", "employment_document", "investment_statement",
                   "investment_confirmation", "investment_tax_form", "loan_document", "insurance_document", "housing_document", "tax_document", "unknown")
 LINES_PER_CALL, BYTES_PER_CALL = 80, 24 * 1024
@@ -541,6 +541,10 @@ KIND_LABELS = {
               "when that line is blank; party_size: the printed number of guests; server and table: as printed.",
     "grocery": " This is a grocery receipt. savings_total: the printed member or loyalty savings total; tenders: each way it was paid "
                "(gift_card, ebt for EBT or SNAP, card, cash, other) with its printed amount and the card's last four digits only."}
+# Every receipt form's row instruction (FR-22): a line printed further right under an item, with no price, is part of that item.
+SIDE_LINES_RULE = (" A line indented under an item (its indent is greater than 0) with no price of its own belongs to that item: cite it "
+                   "with the item, and never make it an item. An indented line that prints its own price keeps the rules above: a count "
+                   "line belongs to its item, and any other priced line is its own row.")
 KIND_ROWS = {
     "fuel": " The fuel sale is one item: its grade as description, the fuel amount as line_total, citing its volume and amount lines. "
             "Never list the pump number, the volume or the price per gallon as items of their own. A car wash or store goods are their own items.",
@@ -969,10 +973,17 @@ def bill_dates(record, fields, issues, notes):
     return period_issues, ["Period: year taken from the due date."] if "Period" in years else []
 
 
+def line_payload(line):
+    """What the extraction model is sent for a transcription line: its id and text, and its indent when the reading knows it.
+    One helper for every byte budget and the request, so they agree (docs/documents.md "Images (vision transcription)")."""
+    indent = getattr(line, "indent", None)
+    return {"line_id": line.id, "text": line.text, **({} if indent is None else {"indent": indent})}
+
+
 def chunks(lines, limit=LINES_PER_CALL):
     current, size = [], 0
     for line in lines:
-        amount = len(json.dumps({"line_id": line.id, "text": line.text}, ensure_ascii=False).encode())
+        amount = len(json.dumps(line_payload(line), ensure_ascii=False).encode())
         if amount > BYTES_PER_CALL:
             raise ValueError("One transcription line exceeds the extraction input limit; it was not truncated.")
         if current and (size + amount > BYTES_PER_CALL or len(current) >= limit):
@@ -1223,7 +1234,7 @@ def paystub_chunks(lines, tables, split_covered=False):
     for line in lines:
         candidate = [*current, line]
         context = paystub_table_context(tables, candidate)
-        size = len(json.dumps({"lines": [{"line_id": item.id, "text": item.text} for item in candidate],
+        size = len(json.dumps({"lines": [line_payload(item) for item in candidate],
                                "reported_tables": context}, ensure_ascii=False).encode())
         if current and (len(candidate) > LINES_PER_CALL or size > BYTES_PER_CALL
                         or (split_covered and (line.id in covered) != (current[-1].id in covered))):
@@ -1231,7 +1242,7 @@ def paystub_chunks(lines, tables, split_covered=False):
             current = [line]
         else:
             current = candidate
-        if len(json.dumps({"lines": [{"line_id": item.id, "text": item.text} for item in current],
+        if len(json.dumps({"lines": [line_payload(item) for item in current],
                            "reported_tables": paystub_table_context(tables, current)}, ensure_ascii=False).encode()) > BYTES_PER_CALL:
             raise ValueError("One reported table row exceeds the extraction input limit; it was not truncated.")
     if current:
@@ -1246,7 +1257,7 @@ def table_summary(lines, tables, notes):
 
     def measure(selected):
         context = paystub_table_context(tables, selected)
-        size = len(json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in selected],
+        size = len(json.dumps({"lines": [line_payload(line) for line in selected],
                                "reported_tables": context}, ensure_ascii=False).encode())
         return size, context
 
@@ -2006,7 +2017,7 @@ def anchor_paystub(header, rows, tables, notes, source_lines=None, flat=(), extr
 def whole(lines, notes=None):
     """Every line when the document fits one call (WHOLE_BYTES), which any receipt does. A longer document,
     such as a long statement, is read as its start and end, and a note says so."""
-    size = sum(len(json.dumps({"line_id": line.id, "text": line.text}, ensure_ascii=False).encode()) for line in lines)
+    size = sum(len(json.dumps(line_payload(line), ensure_ascii=False).encode()) for line in lines)
     if size <= WHOLE_BYTES:
         return list(lines)
     parts = list(chunks(lines, LINES_PER_CALL // 2))
@@ -2171,6 +2182,37 @@ def line_amount(quote):
     """The amount a printed line ends with, e.g. 0.34 in "T = GA TAX 3.75000 on $8.99 $0.34"."""
     numbers = NUMBER.findall(quote)
     return Decimal(numbers[-1].replace(",", "")) if numbers else None
+
+
+def attach_side_lines(rows, lines, item_categories, cell_references):
+    """(rows, item_categories, cell_references, notes) of a receipt with each row dropped that only cites lines printed indented under
+    an item with no price of their own, its lines joining the previous kept row's evidence (FR-23, docs/documents.md "Receipt kinds").
+    A line whose indent is unknown (no reading of it, or the model gave none) never counts, so a reading without indent changes nothing.
+    item_categories and cell_references follow the rows by position."""
+    by_id = {line.id: line for line in lines}
+    kept, dropped = [], []  # Positions of the rows kept, and (the row, the kept row it joins) of those dropped.
+    evidence = {}
+    for position, row in enumerate(rows):
+        cited = [by_id.get(cite.line_id) for cite in row.evidence]
+        side = (kept and cited and all(line is not None and (line.indent or 0) >= 1 and line_amount(line.text) is None for line in cited))
+        if side:
+            join = kept[-1]
+            evidence[join] = [*evidence.get(join, rows[join].evidence), *row.evidence]
+            dropped.append((position, row, join))
+        else:
+            kept.append(position)
+    if not dropped:
+        return rows, item_categories, cell_references, []
+    notes = [f"“{by_id[row.evidence[0].line_id].text}” is printed under “{rows[join].description}” with no price of its own, "
+             "so it was kept with that item, not as an item." for _, row, join in dropped[:3]]
+    if len(dropped) > 3:
+        notes.append(f"and {len(dropped) - 3} more")
+
+    def remaining(values):
+        return [value for position, value in enumerate(values) if position not in {gone for gone, _, _ in dropped}]
+    kept_rows = [rows[position].model_copy(update={"evidence": evidence[position]}) if position in evidence else rows[position] for position in kept]
+    return (kept_rows, remaining(item_categories) if item_categories else item_categories,
+            remaining(cell_references) if cell_references else cell_references, notes)
 
 
 def amount_supported(value, evidence):
@@ -2346,7 +2388,7 @@ def ask(config, work, schema, instruction, lines, max_tokens, amount_field=None,
     # Each reported table cell's row line, for a model that cites a cell id as the line (repair_quotes).
     cell_lines = {cell["cell_id"]: row.get("line_id", row["row_id"]) for table in table_context or []
                   for row in [*table["header_rows"], *table["rows"]] for cell in row["cells"]}
-    content = json.dumps({"lines": [{"line_id": line.id, "text": line.text} for line in lines],
+    content = json.dumps({"lines": [line_payload(line) for line in lines],
                           **({"reported_tables": table_context} if table_context else {})}, ensure_ascii=False)
     payload = {"max_tokens": max_tokens, "messages": [{"role": "system", "content": instruction + RULES}, {"role": "user", "content": content}],
                "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}}}
@@ -4389,7 +4431,8 @@ class ExtractionService:
                          "many receipts print a tax code beside each price (such as BF, T, A, N); copy it exactly as printed, or null when none "
                          f"is printed. taxed: {TAXED_RULE} "
                          "returned: true for an item brought back for a refund on a return or exchange receipt (marked RETURN, REFUND or "
-                         "printed negative), false for an item bought. Copy its line_total as printed." + KIND_ROWS.get(chosen, ""))
+                         "printed negative), false for an item bought. Copy its line_total as printed."
+                         + (SIDE_LINES_RULE if kind == "receipt" else "") + KIND_ROWS.get(chosen, ""))
             if kind == "bill":
                 direction += (" For invoices, include goods and service lines, shipping, tax and discounts once each. "
                               "amount is the extended line total, never the unit price. Copy quantity and unit_price when printed. "
@@ -5053,16 +5096,20 @@ class ExtractionService:
         classification, header, rows, identity = reading["classification"], reading["header"], reading["rows"], reading["identity"]
         paystub, bill = classification.document_type == "paystub", classification.document_type == "bill"
         notes = reading["notes"] + ([SPLIT_NOTE] if split and not paystub and not bill else [])  # A split pay stub or bill carries its note as a record note (FR-82, FR-131).
+        item_categories, cell_references = reading["item_categories"], reading.get("cell_references")
+        if classification.document_type == "receipt":
+            rows, item_categories, cell_references, side_notes = attach_side_lines(rows, lines, item_categories, cell_references)
+            notes += side_notes
         engine_notes = (reading.get("record_notes") or []) + ([PAY_SPLIT_NOTE] if split and paystub else [BILL_SPLIT_NOTE] if split and bill else [])
         result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
                   "rows": [row.model_dump() for row in rows], "description": reading["description"], "category": reading["category"],
-                  "recurrence": reading["recurrence"], "item_categories": reading["item_categories"], "rewards": reading["rewards"],
+                  "recurrence": reading["recurrence"], "item_categories": item_categories, "rewards": reading["rewards"],
                   "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
                   "normalized": None, "notes": notes}
         if reading.get("summary_references"):
             result["summary_cell_evidence"] = reading["summary_references"]
-        if reading.get("cell_references"):
-            for row, reference in zip(result["rows"], reading["cell_references"]):
+        if cell_references:
+            for row, reference in zip(result["rows"], cell_references):
                 row["cell_evidence"] = reference
         if classification.document_type in TERM_KINDS:
             records = self.term_records(classification.document_type, reading["terms"], lines, home_currency, reading["term_notes"])
@@ -5076,8 +5123,8 @@ class ExtractionService:
         if header is not None:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
-                                                             reading["recurrence"], reading["item_categories"], reading["rewards"], segment,
-                                                             reading.get("cell_references"), reading.get("summary_references"),
+                                                             reading["recurrence"], item_categories, reading["rewards"], segment,
+                                                             cell_references, reading.get("summary_references"),
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
                                                              reading.get("printed_columns", False), reading.get("evidence"),
                                                              engine_notes, reading.get("guesses"), reading.get("engine_lines"), reading.get("bill_fields"), reading.get("worked_out"),
