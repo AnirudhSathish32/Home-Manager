@@ -5,7 +5,8 @@ The local model is asked the same question new receipts get (ExtractionService.d
 names already stored: nothing is transcribed again. Tax flags cannot be recovered this way, so tax on receipts
 categorised here for the first time is shared across all items. An item the user categorised under a current
 category is never changed; when the user corrected the whole receipt's category, that is each new item's category
-unless the model names another. A retired receipt category the user chose is replaced by an audited correction.
+unless the model names another. A retired receipt category the user chose is replaced by an audited correction. On a dining receipt every item it categorises takes the
+receipt's category (source receipt), whatever memory and the model say.
 """
 
 from types import SimpleNamespace
@@ -58,6 +59,10 @@ class ItemCategorizer:
             first_time = not any(row["category"] for row in rows)
             # The whole receipt's category the user chose is each new item's starting point, unless it has been retired.
             fallback = correction["value"] if correction and correction["value"] not in LEGACY_CATEGORIES else None
+            # A dining receipt's items take the receipt's category (after a retired one is replaced), not the model's or memory's answer
+            # (docs/money.md "Item categories and splits"); the backfill is not one of FR-10's events, so nothing else about its split changes.
+            dining = receipt["receipt_kind"] == "dining" and receipt["document_kind"] == "receipt"
+            own = (receipt_answer or "other") if receipt["category"] in LEGACY_CATEGORIES else receipt["category"]
             with self.store.connection() as db:
                 remembered = self.ledger.remembered_categories(db, receipt["merchant"])
                 for row, category in zip(rows, categories):
@@ -70,6 +75,8 @@ class ItemCategorizer:
                         source, value = ("memory", chosen) if chosen else ("model", category or "other")
                     else:
                         continue
+                    if dining and own:
+                        source, value = "receipt", own
                     db.execute("UPDATE receipt_items SET category=?,category_source=?,updated_at=? WHERE id=?", (value, source, now(), row["id"]))
                     items += 1
                 if receipt["category"] in LEGACY_CATEGORIES:

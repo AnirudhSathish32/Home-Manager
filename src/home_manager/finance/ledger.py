@@ -759,7 +759,9 @@ class Ledger:
             column = kind_column({"document_kind": record.get("document_kind", "receipt")})
             kind = record.get(column)
             dining = column == "receipt_kind" and kind == "dining"
-            before = db.execute(f"SELECT {column} FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            before = db.execute(f"SELECT id,{column} FROM receipts WHERE blob_hash=? AND segment=?", (source["blob_hash"], source.get("segment", 0))).fetchone()
+            # What Undo of a receipt's kind change puts back (docs/money.md "Item categories and splits"): taken before this reading changes anything.
+            snapshot = self.category_snapshot(db, before["id"]) if source.get("kind_change") and column == "receipt_kind" and before else None
             receipt_id, written = self._upsert(db, "receipts", source, {
                 # The kind it was read with and that kind's details, beside any other kind's (docs/documents.md "Receipt kinds").
                 # The printed total is written as the total; refresh_paid then counts what was paid after gift cards.
@@ -787,13 +789,20 @@ class Ledger:
             kept = 0
             if source.get("kind_change") and kind:
                 # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
-                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,actor,created_at) "
-                           f"VALUES('receipt',?,'{column}',?,?,'[]',?,?)", (receipt_id, kind, before[column] if before else None,
-                                                                             actor.current(), now()))
+                db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,actor,item_categories_json,created_at) "
+                           f"VALUES('receipt',?,'{column}',?,?,'[]',?,?,?)", (receipt_id, kind, before[column] if before else None,
+                                                                               actor.current(), snapshot, now()))
                 if not written:  # Reviewed: amounts, items and review state stay; the kind's details wait for Apply details.
                     db.execute(f"UPDATE receipts SET {column}=?,pending_details_json=?,updated_at=? WHERE id=?",
                                (kind, json.dumps({"kind": kind, "details": record.get("details") or {}, "run_id": source["run_id"], "proposed_at": now()}),
                                 now(), receipt_id))
+                    if column == "receipt_kind":  # FR-13: the change is yours, so the split follows it now, on a reviewed receipt too.
+                        if dining:
+                            self.apply_one_category(db, receipt_id)
+                        else:
+                            db.execute("UPDATE receipts SET one_category=0 WHERE id=?", (receipt_id,))
+                            self.recategorise_items(db, receipt_id, record["items"], record["merchant"])
+                        self.refresh_splits(db, receipt_id)
             if written:
                 self.add_evidence(db, "receipt", receipt_id, source, record["locator"])
                 # A bill's lines as stored before this reading, for the line corrections made before FR-119 remembered amounts.
@@ -883,11 +892,16 @@ class Ledger:
         receipt = db.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
         if row["field"] in ("receipt_kind", "bill_kind"):
             column = row["field"]
-            db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,created_at) "
-                       f"VALUES('receipt',?,'{column}',?,?,'[]',?,?,?)", (receipt_id, row["previous"], row["value"], UNDO_REASON, actor.current(), now()))
+            # The Undo is a correction too, holding the state just before it, so undoing the Undo is exact.
+            db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,resolved_issues_json,reason,actor,item_categories_json,created_at) "
+                       f"VALUES('receipt',?,'{column}',?,?,'[]',?,?,?,?)", (receipt_id, row["previous"], row["value"], UNDO_REASON, actor.current(),
+                                                                          self.category_snapshot(db, receipt_id) if column == "receipt_kind" else None, now()))
             db.execute(f"UPDATE receipts SET {column}=?,pending_details_json=NULL,updated_at=? WHERE id=?", (row["previous"], now(), receipt_id))
             if column == "bill_kind" and row["previous"] != "rent":
                 db.execute("UPDATE receipt_items SET line_type=NULL,updated_at=? WHERE receipt_id=? AND line_type IS NOT NULL", (now(), receipt_id))
+            if column == "receipt_kind":
+                self._undo_categories(db, receipt_id, row)
+                self.refresh_splits(db, receipt_id)
             return
         if row["value"] is None:
             raise ValueError("Those details were already put back to wait; apply them again instead.")
@@ -1159,6 +1173,55 @@ class Ledger:
     def remembered_categories(db, merchant):
         """{item key: category} the user chose before for items from this seller."""
         return dict(db.execute("SELECT item_key,category FROM item_category_memory WHERE merchant_key=?", (normalize_name(merchant),)).fetchall())
+
+    @staticmethod
+    def category_snapshot(db, receipt_id):
+        """The state a kind change (or its Undo) is about to leave, as JSON for record_corrections.item_categories_json: whether FR-10 had
+        applied, and each item's category and where it came from."""
+        return json.dumps({"one_category": db.execute("SELECT one_category FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0],
+                           "items": [[item["id"], item["category"], item["category_source"]] for item in db.execute(
+                               "SELECT id,category,category_source FROM receipt_items WHERE receipt_id=? ORDER BY position", (receipt_id,))]})
+
+    def _undo_categories(self, db, receipt_id, row):
+        """Undo of a receipt kind change, for the categories (FR-13). With the snapshot taken when the kind changed: the flag and each item
+        still there get back what they held, and nothing else is applied. A correction from before the snapshots has none: the kind put back
+        applies FR-10 (dining), or gives the items their categories as a reading would (any other kind), from the latest reading."""
+        if row["item_categories_json"]:
+            snapshot = json.loads(row["item_categories_json"])
+            db.execute("UPDATE receipts SET one_category=? WHERE id=?", (snapshot["one_category"], receipt_id))
+            db.executemany("UPDATE receipt_items SET category=?,category_source=?,updated_at=? WHERE id=? AND receipt_id=?",
+                           [(category, category_source, now(), item_id, receipt_id) for item_id, category, category_source in snapshot["items"]])
+        elif row["previous"] == "dining":
+            self.apply_one_category(db, receipt_id)
+        else:
+            db.execute("UPDATE receipts SET one_category=0 WHERE id=?", (receipt_id,))
+            latest = db.execute("SELECT x.result_json FROM extraction_runs x JOIN receipts r ON r.document_id=x.document_id WHERE r.id=? AND x.status='succeeded' "
+                                "ORDER BY x.created_at DESC,x.id DESC LIMIT 1", (receipt_id,)).fetchone()
+            normalized = (json.loads(latest[0]).get("normalized") or {}) if latest and latest[0] else {}
+            merchant = db.execute("SELECT m.canonical_name FROM receipts r LEFT JOIN merchants m ON m.id=r.merchant_id WHERE r.id=?", (receipt_id,)).fetchone()[0]
+            self.recategorise_items(db, receipt_id, normalized.get("items") or [], merchant)
+
+    def recategorise_items(self, db, receipt_id, rows, merchant):
+        """A receipt leaves dining with its items kept (FR-13): each item that isn't the user's takes the category memory holds for it, else the
+        reading's (rows: the items of a reading, found by item_keys) as on any receipt. An item the reading doesn't list keeps its category
+        unless memory has one. The caller clears one_category and rebuilds the splits."""
+        remembered = self.remembered_categories(db, merchant) if merchant else {}
+        answers = dict(zip(self.item_keys(rows), rows))
+        stored = [dict(item) for item in db.execute("SELECT id,description,line_total_minor,category_source FROM receipt_items WHERE receipt_id=? ORDER BY position",
+                                                    (receipt_id,))]
+        for item, key in zip(stored, self.item_keys(stored)):
+            answer = answers.pop(key, None)
+            if item["category_source"] == "user":
+                continue
+            category = remembered.get(normalize_name(item["description"]))
+            if category:
+                choice = (category, "memory")
+            elif answer is not None:
+                category = receipt_category(answer.get("category"), legacy=True)
+                choice = (category, "model" if category else None)
+            else:
+                continue
+            db.execute("UPDATE receipt_items SET category=?,category_source=?,updated_at=? WHERE id=?", (*choice, now(), item["id"]))
 
     @staticmethod
     def one_category(receipt):

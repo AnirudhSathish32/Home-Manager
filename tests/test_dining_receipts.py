@@ -3,7 +3,8 @@ a later, larger total is what was charged, a tip not printed is worked out from 
 either. Synthetic breakfast receipt (tests/dining_receipt_fixtures.py) and the local model stub only.
 
 One category per dining receipt (FR-10 – FR-12, FR-14 (a, c), FR-27, D18, D20: SC-01 steps 6 – 8, SC-05, SC-07, SC-09 steps 1 – 5, SC-16, SC-18, X-D8,
-X-Q1) is checked beside them. Test functions of later slices are added to this file by those slices."""
+X-Q1) is checked beside them, and a kind change with its Undo and the item-category backfill on a dining receipt (FR-13, FR-14 (b), D27: SC-08, SC-17).
+Test functions of later slices are added to this file by those slices."""
 
 from decimal import Decimal
 import json
@@ -12,12 +13,14 @@ from typing import get_origin
 
 import pytest
 
-from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, insert_old_receipts
+from dining_receipt_fixtures import b8_stub, b11_stub, breakfast_stub, grocery_re_read_stub, insert_old_receipts
 from home_manager.app.manager import Manager
+from home_manager.core.categories import LEGACY_CATEGORIES
 from home_manager.core.money import amount_text
 from home_manager.documents import dining_total
 from home_manager.documents.extraction import looks_like_several
 from home_manager.documents.receipt_schema import TextLine
+from home_manager.finance.item_categories import ItemCategorizer
 from home_manager.finance.ledger import CATEGORY_REFUSED, normalize_name
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import ScanLimits
@@ -1181,5 +1184,256 @@ def test_a_category_you_corrected_wins_when_the_receipt_is_read_again(tmp_path, 
         assert row["category"] == "travel" and row["one_category"] == 1 and by_category(shown) == [("travel", 6155)]
         assert_split(manager, receipt_id, 6155, "travel")
         assert stored_categories(manager, receipt_id) == [("travel", "receipt")] * 5
+    finally:
+        manager.close()
+
+
+# SC-08, FR-13: the kind changes away from dining and back --------------------------------------------------------------------------
+
+def kind_change(manager, local_model, receipt_id, kind, replies):
+    """PATCH the kind as the app does (Manager.change_kind) and wait for the reading it starts."""
+    local_model["requests"].clear()
+    local_model["by_schema"] = {name: list(reply) for name, reply in replies.items()}
+    local_model.pop("outputs", None)
+    assert manager.change_kind(receipt_id, kind)["run_id"]
+    manager.future.result(timeout=60)
+
+
+def kind_corrections(manager, receipt_id):
+    """The receipt's kind corrections as (id, value, previous, snapshot or None), oldest first."""
+    with manager.store.connection() as db:
+        return [(row["id"], row["value"], row["previous"], json.loads(row["item_categories_json"]) if row["item_categories_json"] else None)
+                for row in db.execute("SELECT * FROM record_corrections WHERE record_type='receipt' AND record_id=? AND field='receipt_kind' ORDER BY id", (receipt_id,))]
+
+
+def undo_kind(manager, receipt_id):
+    """Undo the latest kind correction, the way the page's Undo does."""
+    return manager.ledger.undo_corrections("receipt", receipt_id, [kind_corrections(manager, receipt_id)[-1][0]])
+
+
+def one_category_flag(manager, receipt_id):
+    with manager.store.connection() as db:
+        return db.execute("SELECT one_category FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
+
+
+def test_sc08_kind_change_and_undo(tmp_path, local_model):
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        with manager.store.connection() as db:
+            db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,'groceries','t')", COFFEE_MEMORY[0][:2])
+        # 1. The receipt split S0: all dining, 6155.
+        s0 = splits_of(manager)
+        assert_split(manager, receipt_id, 6155)
+        # 2. To grocery: the items take memory or the model's category, the tip row stays dining, the split adds up, the Category column shows.
+        kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+        row, shown = receipt_of(manager, run)
+        assert (row["receipt_kind"], row["total_minor"], row["tip_minor"], row["review_status"], row["review_source"]) == ("grocery", 6155, 879, "verified", "user")
+        assert stored_categories(manager, receipt_id) == [("groceries", "model"), ("groceries", "model"), ("groceries", "memory"), ("dining", "model"), ("dining", "model")]
+        rows = receipt_split(manager, receipt_id)
+        assert sum(amount for _, amount, _ in rows) == 6155 and [category for category, _ in item_rows(rows)] == ["groceries"] * 3 + ["dining"] * 2
+        assert no_item_rows(rows) == [("dining", 879)] and one_category_flag(manager, receipt_id) == 0 and shown["category_column"] is True
+        after_change = splits_of(manager)
+        # 3. Undo: dining again and the split is S0 (the snapshot taken before the change).
+        undone = undo_kind(manager, receipt_id)
+        assert undone["receipt_kind"] == "dining" and undone["review_status"] == "verified"
+        assert splits_of(manager) == s0 and stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5 and one_category_flag(manager, receipt_id) == 1
+        assert receipt_of(manager, run)[1]["category_column"] is False
+        # Undoing the Undo is exact too: the grocery split comes back.
+        undo_kind(manager, receipt_id)
+        assert receipt_of(manager, run)[0]["receipt_kind"] == "grocery" and splits_of(manager) == after_change and one_category_flag(manager, receipt_id) == 0
+        undo_kind(manager, receipt_id)
+        assert splits_of(manager) == s0
+        # 4. To grocery and back to dining: the approved receipt counts wholly under dining at once (FR-13).
+        kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+        assert splits_of(manager) == after_change
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        row, shown = receipt_of(manager, run)
+        assert (row["receipt_kind"], row["review_status"], row["one_category"]) == ("dining", "verified", 1)
+        assert_split(manager, receipt_id, 6155) and shown["category_column"] is False
+        assert stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5
+        assert memory_rows(manager) == COFFEE_MEMORY  # A kind change writes no memory.
+    finally:
+        manager.close()
+
+
+def grocery_receipt(tmp_path, local_model):
+    """The breakfast file read, changed to grocery (B7; nobody had decided it, so the reading is written) and then approved: (manager, run, receipt id)."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    receipt_id = run["publication"]["id"]
+    kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+    manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+    return manager, run, receipt_id
+
+
+def test_sc08a_a_verified_grocery_receipt_changed_to_dining_counts_under_its_category_at_once(tmp_path, local_model):
+    manager, run, receipt_id = grocery_receipt(tmp_path, local_model)
+    try:
+        row = receipt_of(manager, run)[0]
+        assert (row["receipt_kind"], row["category"], row["one_category"], row["review_status"]) == ("grocery", "groceries", 0, "verified")
+        before_split, before_items, total = splits_of(manager), stored_categories(manager, receipt_id), row["total_minor"]
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        row, shown = receipt_of(manager, run)
+        assert (row["receipt_kind"], row["review_status"], row["one_category"], row["total_minor"]) == ("dining", "verified", 1, total)
+        assert_split(manager, receipt_id, total, "groceries") and shown["category_column"] is False
+        assert stored_categories(manager, receipt_id) == [("groceries", "receipt")] * 5
+        # The snapshot taken before the change (C-snap): Undo gives back that receipt split, those categories and an unset flag.
+        assert kind_corrections(manager, receipt_id)[-1][3]["one_category"] == 0
+        undo_kind(manager, receipt_id)
+        assert splits_of(manager) == before_split and stored_categories(manager, receipt_id) == before_items and one_category_flag(manager, receipt_id) == 0
+        assert receipt_of(manager, run)[0]["receipt_kind"] == "grocery"
+    finally:
+        manager.close()
+
+
+def test_sc08b_a_kind_change_while_a_reading_runs_is_refused_and_changes_nothing(tmp_path, local_model):
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        before, corrections = table_rows(manager, receipt_id), kind_corrections(manager, receipt_id)
+        with manager.store.connection() as db:
+            [parse] = [row[0] for row in db.execute("SELECT parse_run_id FROM extraction_runs WHERE id=?", (run["id"],))]
+            db.execute("INSERT INTO extraction_runs(id,document_id,parse_run_id,config_json,prompt_version,status,created_at,updated_at) "
+                       "SELECT 'busy',document_id,parse_run_id,'{}','x','running','t','t' FROM extraction_runs WHERE id=?", (run["id"],))
+        with pytest.raises(RuntimeError, match="A reading is in progress"):
+            manager.change_kind(receipt_id, "grocery")
+        assert table_rows(manager, receipt_id) == before and kind_corrections(manager, receipt_id) == corrections
+    finally:
+        manager.close()
+
+
+def test_a_kind_change_that_rewrites_the_receipt_stores_the_snapshot_and_undo_puts_the_flag_and_categories_back(tmp_path, local_model):
+    """The written branch (a receipt nobody has decided): the snapshot is taken before the reading changes anything, and the flag follows the kind."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+        [(_, value, previous, snapshot)] = kind_corrections(manager, receipt_id)
+        assert (value, previous) == ("grocery", "dining") and snapshot["one_category"] == 1 and [item[1:] for item in snapshot["items"]] == [["dining", "receipt"]] * 5
+        assert one_category_flag(manager, receipt_id) == 0 and receipt_of(manager, run)[1]["category_column"] is True
+        undo_kind(manager, receipt_id)
+        assert one_category_flag(manager, receipt_id) == 1 and stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5
+    finally:
+        manager.close()
+
+
+def test_undo_of_a_kind_change_on_an_old_dining_receipt_gives_back_its_own_categories_and_an_unset_flag(tmp_path, local_model):
+    """Receipt D (approved, FR-10 never applied, one item the user's choice): away from dining and Undo, nothing is applied by the Undo."""
+    manager, ids = old_manager(tmp_path, local_model, ["D"])
+    try:
+        receipt_id = ids["D"]
+        before_split, before_items = splits_of(manager), stored_categories(manager, receipt_id)
+        kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+        assert stored_categories(manager, receipt_id)[0] == ("groceries", "user") and one_category_flag(manager, receipt_id) == 0
+        undo_kind(manager, receipt_id)
+        assert splits_of(manager) == before_split and stored_categories(manager, receipt_id) == before_items and one_category_flag(manager, receipt_id) == 0
+        assert manager.ledger.record("receipt", receipt_id)["category_column"] is True
+    finally:
+        manager.close()
+
+
+def test_undo_of_a_kind_change_made_before_snapshots_applies_the_kind_put_back(tmp_path, local_model):
+    """A kind correction with no snapshot (recorded before migration 081): back to dining applies FR-10; back to another kind re-sorts the items
+    from the latest reading, and a category you chose stays."""
+    manager, run, _ = breakfast(tmp_path, local_model)
+    try:
+        receipt_id = run["publication"]["id"]
+        manager.ledger.review("receipt", receipt_id, "verified", "Checked.")
+        kind_change(manager, local_model, receipt_id, "grocery", grocery_re_read_stub()[2])
+        with manager.store.connection() as db:
+            db.execute("UPDATE record_corrections SET item_categories_json=NULL WHERE field='receipt_kind'")
+            db.execute("UPDATE receipt_items SET category='travel',category_source='receipt' WHERE position=1")  # Something the snapshot would have undone.
+        undo_kind(manager, receipt_id)
+        assert one_category_flag(manager, receipt_id) == 1 and stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5
+        assert_split(manager, receipt_id, 6155)
+        # The Undo's own correction has a snapshot; the earlier one is dropped to model a second old correction, then Undo away from dining.
+        with manager.store.connection() as db:
+            db.execute("UPDATE record_corrections SET item_categories_json=NULL WHERE field='receipt_kind'")
+            db.execute("UPDATE receipt_items SET category='travel',category_source='user' WHERE position=2")
+        undo_kind(manager, receipt_id)  # The Undo itself undone: the kind put back is grocery, from the latest reading (B7's categories).
+        row = receipt_of(manager, run)[0]
+        assert row["receipt_kind"] == "grocery" and row["one_category"] == 0
+        assert stored_categories(manager, receipt_id) == [("groceries", "model"), ("travel", "user"), ("dining", "model"), ("dining", "model"), ("dining", "model")]
+        assert sum(amount for _, amount, _ in receipt_split(manager, receipt_id)) == 6155
+    finally:
+        manager.close()
+
+
+# SC-17, FR-14 (b backfill), D27: the item-category backfill on a dining receipt ------------------------------------------------------------
+
+def backfill(manager, local_model, categories, category="groceries"):
+    """Run the item-category backfill with a description stub answering every item with `categories`: its result."""
+    local_model["outputs"] = [{"description": "Meal", "category": category, "recurrence": None, "item_categories": categories}]
+    return ItemCategorizer(manager.store).run(manager.reasoning_config)
+
+
+def test_sc17_the_backfill_gives_a_dining_receipts_items_its_category(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["E"], memory=True)
+    try:
+        receipt_id = ids["E"]
+        before = splits_of(manager)
+        assert ItemCategorizer(manager.store).pending() == [receipt_id]
+        # 2. Every item, Coffee too (memory says groceries, the model says groceries), takes dining with source receipt.
+        assert backfill(manager, local_model, ["groceries"] * 5) == {"receipts": 1, "items": 5}
+        assert stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5
+        # 3. The split is unchanged; the column is hidden; the backfill isn't an FR-14 event.
+        assert splits_of(manager) == before and one_category_flag(manager, receipt_id) == 0
+        assert manager.ledger.record("receipt", receipt_id)["category_column"] is False
+        # 4. Again: nothing is pending and nothing changes.
+        assert ItemCategorizer(manager.store).pending() == [] and backfill(manager, local_model, ["groceries"] * 5) == {"receipts": 0, "items": 0}
+        assert splits_of(manager) == before
+    finally:
+        manager.close()
+
+
+def test_sc17a_an_item_under_a_retired_category_moves_to_the_receipts_category_with_its_split(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["E"], memory=True)
+    try:
+        receipt_id, retired = ids["E"], LEGACY_CATEGORIES[0]
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipt_items SET category=?,category_source='legacy' WHERE receipt_id=? AND position=1", (retired, receipt_id))
+            db.execute("UPDATE category_splits SET category=? WHERE receipt_id=? AND receipt_item_id=(SELECT id FROM receipt_items WHERE receipt_id=? AND position=1)",
+                       (retired, receipt_id, receipt_id))
+        before = splits_of(manager)
+        assert ItemCategorizer(manager.store).pending() == [receipt_id]
+        assert backfill(manager, local_model, ["groceries"] * 5) == {"receipts": 1, "items": 1}
+        assert stored_categories(manager, receipt_id) == [("dining", "receipt")] + [(None, None)] * 4
+        moved = [tuple(row if row[3] != retired else (*row[:3], "dining", row[4])) for row in before]
+        assert splits_of(manager) == sorted(moved) and sum(amount for *_, amount in splits_of(manager)) == 5276
+        assert sum(amount for category, amount, _ in receipt_split(manager, receipt_id) if category == "dining") == 5276
+        assert one_category_flag(manager, receipt_id) == 0
+    finally:
+        manager.close()
+
+
+def test_sc17b_a_grocery_receipt_is_categorised_as_today_by_memory_then_the_model(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["G"])
+    try:
+        receipt_id = ids["G"]
+        with manager.store.connection() as db:
+            merchant = manager.ledger.merchant(db, "Synth Mart")
+            db.execute("UPDATE receipts SET merchant_id=? WHERE id=?", (merchant, receipt_id))
+            db.execute("UPDATE receipt_items SET category=NULL,category_source=NULL WHERE receipt_id=?", (receipt_id,))
+            db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES(?,?,'household supplies','t')",
+                       (normalize_name("Synth Mart"), normalize_name("Milk")))
+        assert backfill(manager, local_model, ["dining", "entertainment"], "groceries") == {"receipts": 1, "items": 2}
+        assert stored_categories(manager, receipt_id) == [("household supplies", "memory"), ("entertainment", "model")]
+    finally:
+        manager.close()
+
+
+def test_sc17c_the_backfill_leaves_the_tip_and_the_difference_under_todays_rules(tmp_path, local_model):
+    manager, ids = old_manager(tmp_path, local_model, ["H"])
+    try:
+        receipt_id = ids["H"]
+        with manager.store.connection() as db:
+            db.execute("UPDATE receipt_items SET category=NULL,category_source=NULL WHERE receipt_id=?", (receipt_id,))
+        before = splits_of(manager)
+        assert backfill(manager, local_model, ["groceries"]) == {"receipts": 1, "items": 1}
+        assert stored_categories(manager, receipt_id) == [("travel", "receipt")]
+        assert splits_of(manager) == before and one_category_flag(manager, receipt_id) == 0
+        assert ("dining", 300, False) in receipt_split(manager, receipt_id)  # The tip row stays dining.
     finally:
         manager.close()
