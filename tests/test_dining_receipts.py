@@ -21,8 +21,8 @@ from home_manager.core.money import amount_text
 from home_manager.documents import dining_total
 from home_manager.documents.extraction import looks_like_several
 from home_manager.documents.receipt_schema import TextLine
-from home_manager.finance.item_categories import ItemCategorizer
 from home_manager.finance.family_routing import apply_delivery, record_payload
+from home_manager.finance.item_categories import ItemCategorizer
 from home_manager.finance.ledger import CATEGORY_REFUSED, normalize_name
 from home_manager.finance.reconcile import Reconciler
 from home_manager.library.scanner import ScanLimits

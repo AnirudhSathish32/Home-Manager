@@ -12,7 +12,6 @@ import pytest
 from bill_kinds_fixtures import RENT, general_replies, general_rows
 from dining_receipt_fixtures import (
     BREAKFAST_INDENTS,
-    BREAKFAST_ROWS,
     SIDE_LINES,
     b11_stub,
     breakfast_stub,
