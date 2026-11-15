@@ -1,8 +1,8 @@
 # plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
 feature: dining-receipt-indent
-plan_sha256: 6768d72d9e083a84f360067329360cdd5057fea3ca7ae32255aa816852c87890
-session_plan_hash: 6768d72d9e083a84f360067329360cdd5057fea3ca7ae32255aa816852c87890
-spec_sha256: 0f8ed366305f320d7ab4bee1eb45f1b115770e30910a65d658ea63b54bbbc224
+plan_sha256: 0e31d3ebeda4441b1a4d12e2d6bbed091e0ee6c01eb404267f445eb7f6911f44  # re-approved 2026-11-15 after D42 (was 6768d72d9e08)
+session_plan_hash: 0e31d3ebeda4441b1a4d12e2d6bbed091e0ee6c01eb404267f445eb7f6911f44
+spec_sha256: 28182c7a24ad443d65770ee97f10625225800f37b33229d6ae14a4e5649294f7  # D42 amendment (was 0f8ed366305f)
 checkout: /home/anirudh/Documents/Projects/Home-Manager-dining  # git worktree, branch dining-receipt-indent (.venv symlinked to the main checkout's; pytest pythonpath puts this tree's src first)
 start_head: 19c0475
 baseline_failures: plans/dining-receipt-indent/baseline-failures.txt  # 66e97d5, 54 failed + 20 errors; src/ and tests/ unchanged since
@@ -174,6 +174,7 @@ slices:
       A dining receipt also sends its details without tenders. Orchestrator rerun in fix1: test_dining_receipts, test_receipt_side_lines,
       test_reread_links, test_vision_indent, test_paystub_split, test_family_routing: 237 passed; ruff only the 2 pre-existing findings.
       fix1 fast-forwarded into dining-receipt-indent at 6a640b3.
+  SL-13: {status: todo}
 code_review:
   risk: HIGH  # risk-gate --base reorganize-packages: approved_plan_high_risk, changed_files/lines over limit, sensitive_operation, migration 081
   reviewer: codex gpt-6.1-sol (reasoningEffort high), independence model-family (implementers anthropic claude-sonnet-5-5)
