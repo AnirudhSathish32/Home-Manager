@@ -26,7 +26,19 @@ from ..core.categories import CATEGORY_GUIDE, FREQUENCIES, LINE_KINDS, RECEIPT_C
 from ..core.identifiers import last_four, mask, scrub
 from ..core.jobs import Cancelled, Work
 from ..core.logs import log_failure
-from ..core.money import EXPONENTS, NUMBER, SYMBOLS, MoneyError, as_decimal_text, currency_code, decimals_in, format_minor, printed_decimal, to_minor
+from ..core.money import (
+    EXPONENTS,
+    NUMBER,
+    SYMBOLS,
+    MoneyError,
+    amount_text,
+    as_decimal_text,
+    currency_code,
+    decimals_in,
+    format_minor,
+    printed_decimal,
+    to_minor,
+)
 from ..finance import bill_tables, document_checks, paystub_tables, statement_tables
 from ..finance.investments import ACTIVITY_TYPES, CONTRIBUTION_SOURCES, INSTRUMENT_CLASSES, TAX_FORMS, TERM_CLASSES, Investments, add_months, printed_kind
 from ..finance.ledger import Ledger, normalize_name, says_return, statement_types
@@ -38,8 +50,9 @@ from ..library.storage import now
 from ..models import decisions
 from ..models.decisions import DECISION_VERSION, SUPPORT_THRESHOLD, DecisionConfig
 from ..models.model_client import request_completion, resolve_identity
-from . import bill_split
+from . import bill_split, dining_total
 from .charge_tables import DUE_NOW, ChargeTotal, account_holder_of, anchor_kind, clean_label, due_now_of, key_kind
+from .dining_total import decide as decide_dining
 from .layout_context import evidence_lines, evidence_tables, native_page, project_page
 from .paystub_split import stub_parts
 from .pdf_reader import read_result
@@ -2182,6 +2195,31 @@ def line_amount(quote):
     """The amount a printed line ends with, e.g. 0.34 in "T = GA TAX 3.75000 on $8.99 $0.34"."""
     numbers = NUMBER.findall(quote)
     return Decimal(numbers[-1].replace(",", "")) if numbers else None
+
+
+def dining_issue_texts(dining, currency):
+    """The decision's issues as text, each amount written with the receipt's currency (amount_text). None without a currency: nothing publishes then."""
+    def written(amount):
+        try:
+            return amount_text(to_minor(format(amount, "f"), currency), currency)
+        except MoneyError:
+            return format(amount, "f")
+    return [issue.template.format(*(written(amount) for amount in issue.amounts)) for issue in dining.issues] if currency else []
+
+
+def worked_out_tip(dining, record, currency):
+    """[FR-06's reason] for a tip worked out from two printed lines, and record["tip_worked_out"] for the ledger to keep: the two lines and their
+    amounts in minor units (docs/documents.md "Receipt kinds"). The reason starts with "Tip", so correcting the tip clears it (docs/money.md "Corrections")."""
+    basis = dining.tip_basis
+    if not basis or record.get("tip_minor") is None or not currency:
+        return []
+    try:
+        total, bill = (to_minor(format(dining_total.printed_amount(basis[name]["text"]), "f"), currency) for name in ("total", "bill"))
+    except (MoneyError, TypeError):
+        return []
+    record["tip_worked_out"] = {**basis, "total_minor": total, "bill_minor": bill}
+    return [f"Tip {amount_text(record['tip_minor'], currency)} was worked out from {basis['total']['label']} {amount_text(total, currency)} less "
+            f"{basis['bill']['label']} {amount_text(bill, currency)}, not printed; check it."]
 
 
 def attach_side_lines(rows, lines, item_categories, cell_references):
@@ -4648,7 +4686,7 @@ class ExtractionService:
     def publish(self, run, parse, kind, header, rows, lines, home_currency, notes, classification, description=None, decision=None, identity=None,
                 category=None, recurrence=None, item_categories=None, rewards=None, segment=0, cell_references=None, summary_references=None,
                 receipt_kind=None, kind_change=False, printed_columns=False, evidence=None, engine_notes=None, guesses=None, engine_lines=None,
-                bill_fields=None, worked_out=None, due_now=None):
+                bill_fields=None, worked_out=None, due_now=None, dining=None):
         record_notes = []
         if DETAILS_FAILED in notes:  # One of its new fields failed: none of them is kept, in the summary or the rows (FR-14).
             header, rows = plain(header), [plain(row) for row in rows]
@@ -4729,8 +4767,12 @@ class ExtractionService:
             record["rewards"] = rewards or []
             if record.get("sale_type") == "sale" and any(TOTAL_LINE.search(line.text) and says_return(line.text) for line in lines):
                 issues.append("Sale or return: a total line says refund or return, so this may be a return; check the total's sign.")
+        if dining is not None and kind == "receipt":  # What the dining decision found, with its amounts in the receipt's currency (P4).
+            notes.extend(dining_issue_texts(dining, currency))
         issues.extend(notes)  # Dropped identifying fields need a person to check them.
         issues.extend(review_reasons(kind, record, decision, issues))
+        if dining is not None and kind == "receipt":
+            issues += worked_out_tip(dining, record, currency)
         source = {"document_id": run["document_id"], "blob_hash": parse["blob_hash"], "parse_run_id": parse["id"],
                   "source_key": "extraction:" + run["id"], "run_id": run["id"], "segment": segment, "kind_change": kind_change}
         void, twin = False, None
@@ -5100,14 +5142,24 @@ class ExtractionService:
         if classification.document_type == "receipt":
             rows, item_categories, cell_references, side_notes = attach_side_lines(rows, lines, item_categories, cell_references)
             notes += side_notes
+        summary_references, dining = reading.get("summary_references"), None
+        if classification.document_type == "receipt" and reading.get("receipt_kind") == "dining" and header is not None:
+            # The charged total and the tip, decided from the printed lines before the result is saved, so its citations are the decided ones.
+            dining = decide_dining(header, lines)
+            header = dining.header
+            if summary_references and (dining.total_changed or dining.tip_changed):  # A table cell cites the amount the model took, not the decided one.
+                summary_references = {name: found for name, found in summary_references.items()
+                                      if not (name == "total" and dining.total_changed or name == "tip" and dining.tip_changed)}
         engine_notes = (reading.get("record_notes") or []) + ([PAY_SPLIT_NOTE] if split and paystub else [BILL_SPLIT_NOTE] if split and bill else [])
         result = {"classification": classification.model_dump(), "header": header.model_dump() if header else None,
                   "rows": [row.model_dump() for row in rows], "description": reading["description"], "category": reading["category"],
                   "recurrence": reading["recurrence"], "item_categories": item_categories, "rewards": reading["rewards"],
                   "identity": {"location": identity["location"], "seller_inferred_from": identity["inferred_from"]} if identity else None,
                   "normalized": None, "notes": notes}
-        if reading.get("summary_references"):
-            result["summary_cell_evidence"] = reading["summary_references"]
+        if summary_references:
+            result["summary_cell_evidence"] = summary_references
+        if dining is not None:
+            result["dining"] = dining.dump()
         if cell_references:
             for row, reference in zip(result["rows"], cell_references):
                 row["cell_evidence"] = reference
@@ -5124,11 +5176,11 @@ class ExtractionService:
             result["normalized"], publication = self.publish(run, parse, classification.document_type, header, rows, lines, home_currency, notes,
                                                              classification, reading["description"], reading["decision"], identity, reading["category"],
                                                              reading["recurrence"], item_categories, reading["rewards"], segment,
-                                                             cell_references, reading.get("summary_references"),
+                                                             cell_references, summary_references,
                                                              reading.get("receipt_kind"), reading.get("kind_change", False),
                                                              reading.get("printed_columns", False), reading.get("evidence"),
                                                              engine_notes, reading.get("guesses"), reading.get("engine_lines"), reading.get("bill_fields"), reading.get("worked_out"),
-                                                             reading.get("due_now"))
+                                                             reading.get("due_now"), dining)
         return scrubbed(result), publication
 
     # Several receipts in one file ------------------------------------------------

@@ -867,10 +867,11 @@ def test_sc121_a_decided_bill_keeps_its_receipt_and_item_rows_byte_for_byte(pdf_
 
 
 def test_sc121_no_migration_is_added_by_this_feature():
-    """The `library/migrations/` listing is START_HEAD's: 001 to 080, with 080_split_merged_documents the last: this feature adds none."""
+    """The `library/migrations/` listing is this feature's START_HEAD's, 001 to 080, and then the one 081_dining_receipts that specs/dining-receipt-indent
+    adds: the bill engine itself added none."""
     names = sorted(path.name for path in (Path(home_manager.library.__file__).parent / "migrations").iterdir() if path.suffix == ".sql")
-    assert len(names) == 80 and names[0].startswith("001_") and names[-1] == "080_split_merged_documents.sql"
-    assert [int(name[:3]) for name in names] == list(range(1, 81))
+    assert len(names) == 81 and names[0].startswith("001_") and names[79] == "080_split_merged_documents.sql" and names[-1] == "081_dining_receipts.sql"
+    assert [int(name[:3]) for name in names] == list(range(1, 82))
 
 
 # === SC-112: matching model lines to engine rows ============================================================================

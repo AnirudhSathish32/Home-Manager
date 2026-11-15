@@ -239,3 +239,64 @@ def b11_stub(variant="B11", id_of=image_id):
                            merchant="SYNTH MART", date="2026-11-12", date_quote="2026-11-12", date_line=2, kind_line=3, rows_schema="GroceryItems")
     replies.pop("ReceiptStarts")  # Nothing asks where a receipt starts in ten lines with one total.
     return texts, [0] * len(texts), replies
+
+
+# The old library (contract "Old library (v56 / v6)"): receipts as the code before this feature stored them. Plain SQL on a database at the
+# last schema version before the feature's migration, so nothing in it is produced by the changed code.
+OLD_ITEMS = [("Bottled Water", 395), ("Bottled Water", 395), ("Coffee", 1495), ("Georgia Peach Stack", 1870), ("Better Than No Y'all Biscuits", 730)]
+OLD_RECEIPTS = {
+    # name: (review_source, item categories as (category, category_source) in order, total, subtotal, tax, tip, receipt category, kind)
+    "A": ("automatic", [("groceries", "model"), ("groceries", "model"), ("dining", "model"), ("dining", "model"), ("dining", "model")], 5276, 4885, None, None, "dining"),
+    "B": ("user", [("groceries", "model"), ("groceries", "model"), ("dining", "model"), ("dining", "model"), ("dining", "model")], 5276, 4885, None, None, "dining"),
+    "C": (None, [("groceries", "user"), ("groceries", "model"), ("dining", "model"), ("dining", "model"), ("dining", "model")], 5276, 4885, None, None, "dining"),
+    "D": ("user", [("groceries", "user"), ("dining", "model"), ("dining", "model"), ("dining", "model"), ("dining", "model")], 5276, 4885, None, None, "dining"),
+    "E": (None, [(None, None)] * 5, 5276, 4885, None, None, "dining"),
+}
+
+
+def insert_old_receipts(db, names=tuple(OLD_RECEIPTS) + ("G", "H")):
+    """Insert the old receipts called names (A – E, G, H of the contract) with their items, receipt splits, a v6 parse run holding the R6 capture and a
+    v56 extraction run each, and one item category memory row. Returns {name: receipt id}. Money is in minor units; every statement is plain SQL."""
+    result = CAPTURES["result"]["R6"].read_text()
+    ids = {}
+    for number, name in enumerate(names, 1):
+        digest = f"{number:x}" * 64
+        db.execute("INSERT INTO blobs(hash,size,created_at) VALUES(?,1,'t')", (digest,))
+        db.execute("INSERT OR IGNORE INTO jobs(id,source_root,status,created_at,updated_at) VALUES('job','root','completed','t','t')")
+        document = db.execute("INSERT INTO occurrences(source_root,path_key,relative_path,current_hash,first_seen,last_seen,last_job) "
+                              "VALUES('root',?,?,?,'t','t','job')", (f"{name}.png", f"{name}.png", digest)).lastrowid
+        parse = f"parse-{name}"
+        db.execute("INSERT INTO parse_runs(id,blob_hash,parser_version,options_json,status,created_at,updated_at,result_json) "
+                   "VALUES(?,?,'receipt-vision-v6-tables','{}','succeeded','t','t',?)", (parse, digest, result))
+        db.execute("INSERT INTO extraction_runs(id,document_id,parse_run_id,config_json,prompt_version,status,created_at,updated_at) "
+                   "VALUES(?,?,?,'{}','typed-extraction-v56-money-sign-rule','succeeded','t','t')", (f"extraction-{name}", document, parse))
+        if name == "G":  # A small grocery receipt: the regression control.
+            receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,extraction_run_id,purchase_date,subtotal_minor,tax_minor,total_minor,currency,"
+                                 "review_status,review_source,category,receipt_kind,created_at,updated_at) VALUES(?,?,?,'2026-11-01',900,100,1000,'USD',"
+                                 "'verified','user','groceries','grocery','t','t')", (document, digest, f"extraction-{name}")).lastrowid
+            items = [("Milk", 400, "groceries", 400), ("Soap", 500, "household supplies", 600)]
+            tail = []
+        elif name == "H":  # Dining, category travel before the upgrade: tip dining, the difference spread (rules 4 and 5).
+            receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,extraction_run_id,purchase_date,subtotal_minor,tax_minor,tip_minor,total_minor,"
+                                 "currency,review_status,category,receipt_kind,created_at,updated_at) VALUES(?,?,?,'2026-11-10',2000,100,300,2600,'USD',"
+                                 "'needs_review','travel','dining','t','t')", (document, digest, f"extraction-{name}")).lastrowid
+            items = [("Burger", 2000, "travel", 2300)]
+            tail = [("dining", 300)]
+        else:
+            source, categories, total, subtotal, tax, tip, category = OLD_RECEIPTS[name]
+            receipt = db.execute("INSERT INTO receipts(document_id,blob_hash,extraction_run_id,purchase_date,subtotal_minor,tax_minor,tip_minor,total_minor,"
+                                 "currency,review_status,review_source,category,receipt_kind,created_at,updated_at) VALUES(?,?,?,'2026-11-12',?,?,?,?,'USD',"
+                                 "?,?,?,'dining','t','t')", (document, digest, f"extraction-{name}", subtotal, tax, tip, total,
+                                                             "verified" if source else "needs_review", source, category)).lastrowid
+            items = [(description, amount, kind[0], amount) for (description, amount), kind in zip(OLD_ITEMS, categories)]
+            tail = [("dining", 391)]  # The tax today's rule 5 leaves as a no-item row when the dining receipt printed none.
+        for position, (description, amount, category, share) in enumerate(items, 1):
+            source = (OLD_RECEIPTS[name][1][position - 1][1] if name in OLD_RECEIPTS else "receipt" if name == "H" else "model")
+            item = db.execute("INSERT INTO receipt_items(receipt_id,position,description,line_total_minor,category,category_source,review_status) "
+                              "VALUES(?,?,?,?,?,?,'proposed')", (receipt, position, description, amount, category, source)).lastrowid
+            db.execute("INSERT INTO category_splits(receipt_id,receipt_item_id,category,amount_minor) VALUES(?,?,?,?)", (receipt, item, category or "dining", share))
+        for category, amount in tail:
+            db.execute("INSERT INTO category_splits(receipt_id,category,amount_minor) VALUES(?,?,?)", (receipt, category, amount))
+        ids[name] = receipt
+    db.execute("INSERT INTO item_category_memory(merchant_key,item_key,category,updated_at) VALUES('gachas breakfast bar','coffee','groceries','t')")
+    return ids

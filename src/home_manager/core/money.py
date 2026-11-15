@@ -91,6 +91,18 @@ def format_minor(amount: int, currency) -> str:
     return f"{Decimal(amount).scaleb(-exponent):,.{exponent}f} {currency_code(currency)}"
 
 
+# The symbol an issue writes before an amount (amount_text); every other currency is written with its code.
+AMOUNT_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£"}
+
+
+def amount_text(amount: int, currency) -> str:
+    """An amount's magnitude as an issue writes it: "$61.55" for USD (€ and £ likewise), "61.55 CAD" for any other currency
+    (docs/documents.md "Receipt kinds"). Always the magnitude: the sign is the caller's to say."""
+    code = currency_code(currency)
+    symbol = AMOUNT_SYMBOLS.get(code)
+    return f"{symbol}{format_minor(abs(amount), code).rsplit(' ', 1)[0]}" if symbol else format_minor(abs(amount), code)
+
+
 def convert_minor(amount: int, from_currency, rate: Decimal, to_currency) -> int:
     """amount (minor units of from_currency) times rate (to_currency per one from_currency), rounded half-even."""
     if not isinstance(rate, Decimal) or not rate.is_finite() or rate <= 0:

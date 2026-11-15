@@ -803,3 +803,50 @@ def test_075_adds_tax_codes_and_lines_and_changes_no_existing_receipt():
         assert db.execute("SELECT count(*) FROM receipt_tax_lines").fetchone()[0] == 0
     finally:
         db.close()
+
+
+def test_081_dining_receipts_adds_three_columns_and_changes_nothing_else():
+    """X-UPG (specs/dining-receipt-indent D5, FR-08): receipts recorded before the feature keep every column of every row, and the new columns say
+    "FR-10 has not applied, no worked-out tip, no kind-change snapshot". The migration is three ALTER TABLE statements."""
+    from dining_receipt_fixtures import insert_old_receipts
+    from home_manager.finance.health import check_ledger
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    try:
+        for number, script in MIGRATIONS:
+            if number < 81:
+                db.executescript(script.read_text())
+        ids = insert_old_receipts(db)
+        assert sorted(ids) == ["A", "B", "C", "D", "E", "G", "H"]
+        db.execute("INSERT INTO record_corrections(record_type,record_id,field,value,previous,created_at) VALUES('receipt',?,'tip','9.00','8.79','t')", (ids["A"],))
+        db.commit()
+        tables = ("receipts", "receipt_items", "category_splits", "item_category_memory", "parse_runs", "extraction_runs", "record_corrections")
+        before = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")] for table in tables}
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 80
+        storage.apply_migrations(db, 80)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == LATEST
+        for table, rows in before.items():
+            after = [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+            assert [{key: row[key] for key in old} for row, old in zip(after, rows)] == rows and len(after) == len(rows), table
+        assert {row["one_category"] for row in db.execute("SELECT one_category FROM receipts")} == {0}
+        assert {row["tip_worked_out_json"] for row in db.execute("SELECT tip_worked_out_json FROM receipts")} == {None}
+        assert {row["item_categories_json"] for row in db.execute("SELECT item_categories_json FROM record_corrections")} == {None}
+        assert [problem for problem in check_ledger(db) if problem.severity == "error"] == []
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE receipts SET one_category=2")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE receipts SET one_category='yes'")
+        # Only the three columns were added: every table's column list is its old one plus them.
+        added = {"receipts": ["one_category", "tip_worked_out_json"], "record_corrections": ["item_categories_json"]}
+        for table in ("receipts", "record_corrections"):
+            assert [row["name"] for row in db.execute(f"PRAGMA table_info({table})")][-len(added[table]):] == added[table]
+    finally:
+        db.close()
+
+
+def test_081_the_migration_file_holds_only_alter_table_add_column():
+    """C-SL04: no UPDATE, INSERT, DELETE, DROP, CREATE or REPLACE, so no stored money changes at upgrade."""
+    script = next(path for number, path in MIGRATIONS if number == 81).read_text()
+    code = [line.strip() for line in script.splitlines() if line.strip() and not line.strip().startswith("--")]
+    assert [line for line in code if not line.upper().startswith(("ALTER TABLE", "PRAGMA USER_VERSION"))] == []
+    assert sum(1 for line in code if line.upper().startswith("ALTER TABLE")) == 3 and all(" ADD COLUMN " in line.upper() for line in code[:-1])

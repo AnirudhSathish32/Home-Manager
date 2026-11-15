@@ -22,7 +22,7 @@ from ..core import actor
 from ..core.categories import LINE_KINDS, RECEIPT_CATEGORIES, RENT_LINE_KINDS, RENT_LINE_TYPES, receipt_category
 from ..core.formats import TABLES, extension
 from ..core.logs import log_failure
-from ..core.money import currency_code, format_minor, money, to_minor
+from ..core.money import amount_text, currency_code, format_minor, money, to_minor
 from ..core.paths import safe_path
 from ..core.trace import NULL
 from ..documents.pdf_layout import PDF_EVIDENCE_BYTES
@@ -774,7 +774,9 @@ class Ledger:
                 "amount_due_minor": record.get("amount_due_minor"), "account_last_four": record.get("account_last_four"),
                 "invoice_json": json.dumps(record["invoice"]) if record.get("invoice") else None,
                 # Which tax rule this reading set up; None for a record published without one (docs/money.md "Item categories and splits").
-                "tax_source": record.get("tax_source")})
+                "tax_source": record.get("tax_source"),
+                # The two printed lines a dining receipt's tip was worked out from; NULL when it is printed or missing (docs/documents.md "Receipt kinds").
+                "tip_worked_out_json": json.dumps(record["tip_worked_out"]) if record.get("tip_worked_out") else None})
             kept = 0
             if source.get("kind_change") and kind:
                 # The user's kind change (docs/documents.md "Receipt kinds"), recorded with the reading it asked for.
@@ -2000,6 +2002,19 @@ class Ledger:
                        (record_type, record_id, row["review_status"], status, note[:1000], now(), actor.current()))
         return {"record_type": record_type, "id": record_id, "review_status": status}
 
+    @staticmethod
+    def worked_out_tip(db, row):
+        """The two printed lines and amounts a receipt's tip was worked out from, while the tip is still that: None when it was printed or is
+        missing, or a correction of yours stands (the latest correction of the tip that isn't an undo back to the first value; docs/money.md
+        "Corrections"), so Undo shows it again and a later reading keeps it hidden while the correction stands."""
+        if not row["tip_worked_out_json"]:
+            return None
+        corrections = db.execute("SELECT previous,value,reason FROM record_corrections WHERE record_type='receipt' AND record_id=? AND field='tip' ORDER BY id",
+                                 (row["id"],)).fetchall()
+        if corrections and not (corrections[-1]["reason"] == UNDO_REASON and corrections[-1]["value"] == corrections[0]["previous"]):
+            return None
+        return json.loads(row["tip_worked_out_json"])
+
     def record(self, record_type, record_id):
         """One canonical record with its rows, evidence and review history."""
         if record_type not in RECORD_TABLES:
@@ -2010,6 +2025,12 @@ class Ledger:
             if row is None:
                 raise ValueError("Financial record not found.")
             value = dict(row)
+            if record_type == "receipt":
+                worked = self.worked_out_tip(db, row)
+                value.pop("tip_worked_out_json", None)
+                value["tip_worked_out"] = worked is not None
+                value["tip_note"] = (f"Worked out: {worked['total']['label']} {amount_text(worked['total_minor'], row['currency'])} "
+                                     f"\u2212 {worked['bill']['label']} {amount_text(worked['bill_minor'], row['currency'])}") if worked else None
             if "validation_json" in value:
                 value["issues"] = json.loads(value.pop("validation_json"))
             if "details_json" in value:  # Printed details (docs/documents.md "Typed extraction"): a receipt's for the kind it is read as now.

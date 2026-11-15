@@ -17,7 +17,7 @@ import json
 from ..core.money import money
 from ..core.trace import NULL, Recorder, build, figure, ref
 from . import document_checks
-from .ledger import kind_column, unit_price_correction_applies
+from .ledger import Ledger, kind_column, unit_price_correction_applies
 from .provenance import verification_of
 
 NOT_WORKED_OUT = "This isn't worked out for this record."
@@ -160,7 +160,9 @@ def receipt_checks(db, row):
         inputs = [("money", name, label, row[f"{name}_minor"], provenance(db, "receipt", row, name, result=result))
                   for name, label in (("subtotal", "Subtotal"), ("tax", "Tax"), ("total", "Total")) if row[f"{name}_minor"] is not None]
         if row["tip_minor"] is not None:
-            inputs.append(("money", "tip", "Tip", row["tip_minor"], provenance(db, "receipt", row, "tip", result=result)))
+            # A tip worked out from two printed lines says so; its provenance cites both (docs/documents.md "Receipt kinds").
+            inputs.append(("money", "tip", "Tip (worked out)" if Ledger.worked_out_tip(db, row) else "Tip", row["tip_minor"],
+                           provenance(db, "receipt", row, "tip", result=result)))
         if gratuity is not None:
             inputs.append(("money", "gratuity", "Gratuity", gratuity, detail("gratuity")))
         found.append({"name": "dining", "label": "Subtotal, tax, gratuity and tip", "ref": ref("receipt.dining", receipt_id=row["id"]),
