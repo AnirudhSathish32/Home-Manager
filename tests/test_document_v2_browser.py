@@ -558,7 +558,6 @@ def test_sc15_text_view_indentation(tmp_path):
     """SC-15 (FR-26): lines 11 - 14 and 16 of the breakfast receipt render one step in, the rest at the edge; the text is unchanged and
     Find-by-text finds both "No Allergies" lines; a reading with no indents shows none."""
     playwright = pytest.importorskip("playwright.sync_api")
-    expect = playwright.expect
     with document_server(tmp_path, TOKEN, seed=text_view_seed) as (base, ids, _), playwright.sync_playwright() as driver:
         browser = driver.chromium.launch(channel="msedge", headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 900})
