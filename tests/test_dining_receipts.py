@@ -1286,7 +1286,7 @@ def grocery_receipt(tmp_path, local_model):
     return manager, run, receipt_id
 
 
-def test_sc08a_a_verified_grocery_receipt_changed_to_dining_counts_under_its_category_at_once(tmp_path, local_model):
+def test_sc08a_a_verified_grocery_receipt_changed_to_dining_takes_the_category_dining_and_undo_gives_groceries_back(tmp_path, local_model):
     manager, run, receipt_id = grocery_receipt(tmp_path, local_model)
     try:
         row = receipt_of(manager, run)[0]
@@ -1294,14 +1294,73 @@ def test_sc08a_a_verified_grocery_receipt_changed_to_dining_counts_under_its_cat
         before_split, before_items, total = splits_of(manager), stored_categories(manager, receipt_id), row["total_minor"]
         kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
         row, shown = receipt_of(manager, run)
-        assert (row["receipt_kind"], row["review_status"], row["one_category"], row["total_minor"]) == ("dining", "verified", 1, total)
-        assert_split(manager, receipt_id, total, "groceries") and shown["category_column"] is False
-        assert stored_categories(manager, receipt_id) == [("groceries", "receipt")] * 5
-        # The snapshot taken before the change (C-snap): Undo gives back that receipt split, those categories and an unset flag.
-        assert kind_corrections(manager, receipt_id)[-1][3]["one_category"] == 0
+        # D42: the reviewed receipt's category becomes dining and the split follows it, C-sum unchanged, the column hidden.
+        assert (row["receipt_kind"], row["review_status"], row["one_category"], row["total_minor"], row["category"]) == ("dining", "verified", 1, total, "dining")
+        assert_split(manager, receipt_id, total, "dining") and shown["category_column"] is False
+        assert stored_categories(manager, receipt_id) == [("dining", "receipt")] * 5
+        # The snapshot taken before the change (C-snap): Undo gives back the category, that receipt split, those categories and an unset flag.
+        assert kind_corrections(manager, receipt_id)[-1][3]["one_category"] == 0 and kind_corrections(manager, receipt_id)[-1][3]["category"] == "groceries"
         undo_kind(manager, receipt_id)
+        row = receipt_of(manager, run)[0]
+        assert row["receipt_kind"] == "grocery" and row["category"] == "groceries"
         assert splits_of(manager) == before_split and stored_categories(manager, receipt_id) == before_items and one_category_flag(manager, receipt_id) == 0
-        assert receipt_of(manager, run)[0]["receipt_kind"] == "grocery"
+        # Undoing the Undo is exact: dining again, with the split of the change.
+        undo_kind(manager, receipt_id)
+        assert receipt_of(manager, run)[0]["category"] == "dining" and one_category_flag(manager, receipt_id) == 1
+        assert_split(manager, receipt_id, total, "dining")
+    finally:
+        manager.close()
+
+
+def test_sc08c_a_category_you_corrected_before_the_change_to_dining_stays_and_undo_keeps_it(tmp_path, local_model):
+    manager, run, receipt_id = grocery_receipt(tmp_path, local_model)
+    try:
+        manager.ledger.correct("receipt", receipt_id, {"category": "travel"})
+        row = receipt_of(manager, run)[0]
+        assert (row["category"], row["receipt_kind"], row["one_category"]) == ("travel", "grocery", 0)
+        before_split, before_items, total = splits_of(manager), stored_categories(manager, receipt_id), row["total_minor"]
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        row, shown = receipt_of(manager, run)
+        assert (row["receipt_kind"], row["review_status"], row["one_category"], row["category"]) == ("dining", "verified", 1, "travel")
+        assert_split(manager, receipt_id, total, "travel") and shown["category_column"] is False
+        assert stored_categories(manager, receipt_id) == [("travel", "receipt")] * 5
+        undo_kind(manager, receipt_id)
+        row = receipt_of(manager, run)[0]
+        assert (row["receipt_kind"], row["category"], row["one_category"]) == ("grocery", "travel", 0)
+        assert splits_of(manager) == before_split and stored_categories(manager, receipt_id) == before_items
+    finally:
+        manager.close()
+
+
+def test_sc08c_a_category_correction_you_undid_does_not_stand(tmp_path, local_model):
+    manager, run, receipt_id = grocery_receipt(tmp_path, local_model)
+    try:
+        [correction] = manager.ledger.correct("receipt", receipt_id, {"category": "travel"})["correction_ids"]
+        manager.ledger.undo_corrections("receipt", receipt_id, [correction])
+        assert receipt_of(manager, run)[0]["category"] == "groceries"
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        row = receipt_of(manager, run)[0]
+        assert (row["category"], row["one_category"]) == ("dining", 1)
+        assert_split(manager, receipt_id, row["total_minor"], "dining")
+    finally:
+        manager.close()
+
+
+def test_sc08d_a_category_you_corrected_after_the_change_to_dining_stays_when_the_kind_change_is_undone(tmp_path, local_model):
+    manager, run, receipt_id = grocery_receipt(tmp_path, local_model)
+    try:
+        before_items = stored_categories(manager, receipt_id)
+        kind_change(manager, local_model, receipt_id, "dining", breakfast_stub("B0")[2])
+        assert receipt_of(manager, run)[0]["category"] == "dining"
+        manager.ledger.correct("receipt", receipt_id, {"category": "travel"})
+        row = receipt_of(manager, run)[0]
+        assert (row["category"], row["one_category"]) == ("travel", 1)
+        assert_split(manager, receipt_id, row["total_minor"], "travel")
+        undo_kind(manager, receipt_id)
+        row = receipt_of(manager, run)[0]
+        # Corrected since: the category stays; the items and the flag go back as the snapshot says.
+        assert (row["receipt_kind"], row["category"], row["one_category"]) == ("grocery", "travel", 0)
+        assert stored_categories(manager, receipt_id) == before_items
     finally:
         manager.close()
 

@@ -790,7 +790,8 @@ said about an item isn't used for its split. Code: `finance/ledger.py` (`apply_o
   dining (`receipts.one_category`, migration 081):
   - a reading of the receipt is recorded (a new file, Extract again or Try again, a family-sent receipt), when it may
     rewrite the record: a record you approved or rejected is never rewritten;
-  - its kind changes to dining, on a receipt you reviewed too (the change is yours, with Undo);
+  - its kind changes to dining, on a receipt you reviewed too (the change is yours, with Undo); the change first makes
+    the receipt's category dining, unless a category correction of yours stands (see **Changing the kind**);
   - Edit details changes its Categories to a different value (the same value does nothing).
   The upgrade doesn't rewrite any receipt's splits, and neither does a rebuild that isn't about categories:
   reconciliation runs, linking, unlinking or reviewing a charge, deleting an item, Correct… on an amount or an item,
@@ -817,7 +818,13 @@ said about an item isn't used for its split. Code: `finance/ledger.py` (`apply_o
   choice), and the tip and difference follow rules 4 and 5 as before; **Undo** restores the categories and the flag the
   change replaced (a snapshot kept with the correction, `record_corrections.item_categories_json`), the split is
   rebuilt at once, and a kind correction made before migration 081 is undone from the reading. A change to dining
-  applies the rule at once.
+  applies the rule at once, and first sets the receipt's category to dining, on a reviewed receipt too (the reading a
+  kind change starts doesn't rewrite a reviewed record, so the change writes the category itself): a reviewed grocery
+  receipt changed to dining counts wholly under dining, not groceries. A category correction of yours stands over it: if
+  Edit details → Categories set one that you haven't undone back, the category stays yours and every split row follows
+  it. The snapshot holds the receipt's category too, so **Undo** of the change gives groceries (or whatever it was)
+  back, unless you corrected the category after the change, when yours stays and only the items and the flag go back.
+  A change away from dining leaves the receipt's category as it is.
 
 ### Order discounts and order numbers
 

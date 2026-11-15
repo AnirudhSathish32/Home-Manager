@@ -798,6 +798,9 @@ class Ledger:
                                 now(), receipt_id))
                     if column == "receipt_kind":  # FR-13: the change is yours, so the split follows it now, on a reviewed receipt too.
                         if dining:
+                            # D42: the change makes the receipt's category dining, as the reading of a dining receipt does, unless yours stands.
+                            if not self.category_corrected(db, receipt_id):
+                                db.execute("UPDATE receipts SET category=? WHERE id=?", (splits.DINING, receipt_id))
                             self.apply_one_category(db, receipt_id)
                         else:
                             db.execute("UPDATE receipts SET one_category=0 WHERE id=?", (receipt_id,))
@@ -1240,6 +1243,14 @@ class Ledger:
         """Whether a receipt (a row or the dict split_inputs makes) counts wholly under its own category: a dining receipt FR-10 has
         applied to (docs/money.md "Item categories and splits"). Every rebuild reads this and none sets it (D8)."""
         return bool(receipt["one_category"]) and receipt["receipt_kind"] == "dining" and receipt["document_kind"] == "receipt"
+
+    @staticmethod
+    def category_corrected(db, receipt_id):
+        """Whether a category correction of yours stands for the receipt: the latest correction of its category isn't an undo back to the
+        first one's earlier value (as worked_out_tip reads the tip's). A kind change to dining leaves a category that stands (D42)."""
+        corrections = db.execute("SELECT previous,value,reason FROM record_corrections WHERE record_type='receipt' AND record_id=? AND field='category' ORDER BY id",
+                                 (receipt_id,)).fetchall()
+        return bool(corrections) and not (corrections[-1]["reason"] == UNDO_REASON and corrections[-1]["value"] == corrections[0]["previous"])
 
     @staticmethod
     def apply_one_category(db, receipt_id):
