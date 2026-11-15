@@ -7,7 +7,19 @@ checkout: /home/anirudh/Documents/Projects/Home-Manager-dining  # git worktree, 
 start_head: 19c0475
 baseline_failures: plans/dining-receipt-indent/baseline-failures.txt  # 66e97d5, 54 failed + 20 errors; src/ and tests/ unchanged since
 slices:
-  SL-01: {status: todo}
+  SL-01:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 7980943
+    end_head: e9e9732  # code ec90f2d, handoff e9e9732
+    verification: >-
+      Orchestrator rerun 2026-11-15: CAPTURE_DINING_BASELINE=1 pytest tests/test_dining_baseline_capture.py (29 passed, exit 0),
+      then git diff --exit-code tests/dining_receipt_data clean (byte-identical to the committed capture); self-test 28 passed
+      1 skipped; tests/test_receipts.py 9 passed (model_server port argument). src/, specs/, approvals/, plan.md unchanged; plan hash matches.
+    notes: >-
+      Accepted deviation: the capture pins the stub server to port 18734 (start_model_server(port=...)) because r6_result.json
+      stores engine.base_url; later slices treat http://127.0.0.1:18734/v1 in the captures as fixed. No masking.
   SL-02: {status: todo}
   SL-03: {status: todo}
   SL-04: {status: todo}
