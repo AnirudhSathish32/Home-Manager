@@ -20,7 +20,22 @@ slices:
     notes: >-
       Accepted deviation: the capture pins the stub server to port 18734 (start_model_server(port=...)) because r6_result.json
       stores engine.base_url; later slices treat http://127.0.0.1:18734/v1 in the captures as fixed. No masking.
-  SL-02: {status: todo}
+  SL-02:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: f2572f3
+    end_head: d907253  # code 3128497, handoff d907253
+    verification: >-
+      Orchestrator rerun 2026-11-15: the plan's SL-02 command (12 files) 269 passed, exit 0. Versions verified in code:
+      receipt-vision-v7-indent, pdf-pages-v4-indent (PDF_VERSIONS keeps v1-v3, LAYOUT_PDF_VERSIONS v3+v4),
+      receipt-images-v3-indent (GROUP_VERSIONS keeps v1, v2). specs/, approvals/, plan.md, tests/dining_receipt_data unchanged;
+      plan hash matches.
+    notes: >-
+      Worker's wider run had one non-baseline failure, test_agent_instance.py::test_seed_fills_the_open_library_and_returns_a_manifest,
+      which passed alone in the worker's and the orchestrator's reruns (load flake; watch it in the final run).
+      Schema names document_transcription / document_text_fallback unchanged, so tests/test_browser.py:299's counts should hold;
+      browser tests run in final verification. Blank vision answers now fail with "Model response was blank." (FR-17, SC-10 c).
   SL-03: {status: todo}
   SL-04: {status: todo}
   SL-05: {status: todo}
