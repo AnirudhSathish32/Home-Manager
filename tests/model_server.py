@@ -15,8 +15,9 @@ class ModelServer(GracefulHTTPServer):
     """Waits for each client to close before closing (docs/development.md, "Windows loopback resets")."""
 
 
-def start_model_server():
-    """(state, stop). state holds what the server answers and what it was asked; see conftest.local_model."""
+def start_model_server(port=0):
+    """(state, stop). state holds what the server answers and what it was asked; see conftest.local_model. port: 0 picks a free one;
+    the dining-receipt baseline capture pins it, because the port is stored in an image reading's engine (tests/dining_receipt_fixtures.py)."""
     state = {"requests": [], "finish_reason": "stop", "status": 200,
              # Served by GET /v1/models; changing model_meta simulates different weights under one ID.
              "models": ["synthetic-vision", "synthetic-reasoning", "test-reasoning", "reasoner"],
@@ -110,7 +111,7 @@ def start_model_server():
     # Residency state is process-wide; a reused port must not inherit an earlier "no native API" verdict.
     residency._unsupported.clear()
     residency.configure(True)
-    server = ModelServer(("127.0.0.1", 0), Handler)
+    server = ModelServer(("127.0.0.1", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     state["config"] = VisionConfig(base_url=f"http://127.0.0.1:{server.server_port}/v1", model="synthetic-vision")
