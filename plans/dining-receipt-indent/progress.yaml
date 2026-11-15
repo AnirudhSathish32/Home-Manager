@@ -211,4 +211,23 @@ code_review:
       findings:
         - {severity: MINOR, what: dining copy lost gratuity (details) so its arithmetic check failed, disposition: confirmed, fixed SL-12 (orchestrator-verified; no further review round, budget 3/3)}
   result: no BLOCKER/MAJOR open after round 3
-final_verification: null
+final_verification:
+  revision: 62cb234
+  date: 2026-11-15
+  full_suite:
+    command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
+    exit_code: 1
+    result: 54 failed, 4592 passed, 125 skipped, 1 deselected, 20 errors (51m45s)
+    vs_baseline: every failing and erroring id is in baseline-failures.txt (54 failed + 20 errors at 66e97d5); no new failure
+  browser:
+    command: RUN_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_receipt_items_browser.py tests/test_document_v2_browser.py tests/test_browser.py tests/test_planned_bugfixes_browser.py -q
+    exit_code: 1
+    result: 25 passed, 3 failed
+    vs_baseline: >-
+      The 3 (test_browser.py::test_real_browser_configures_scans_and_inspects_versions, test_planned_bugfixes_browser.py::
+      test_receipt_money_item_price_undo_and_pay_period, ::test_idle_badge_read_filter_and_record_selected) fail identically at 19c0475
+      (rerun in a temporary checkout): pre-existing, not this feature. Both feature browser files pass.
+  ruff: only test_document_v2_browser.py I001 and test_receipt_kinds.py F402, both present at 66e97d5
+  captures: git diff ec90f2d HEAD -- tests/dining_receipt_data empty
+  review_checks: receipt_service.py :118 and :192 use the same GROUP_VERSIONS; FR-25 docs checked in SL-09 and SL-13
+
