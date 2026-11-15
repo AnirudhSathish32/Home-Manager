@@ -214,6 +214,9 @@ Code: `documents/receipt_service.py`, `documents/receipt_worker.py`, `models/vis
   only when they match exact, ordered substrings of their lines and rectangular header widths. Invalid tables are
   discarded with a review issue while the full text remains available. The model does not choose titles, folders,
   dates, currencies or totals.
+- **One line per printed row.** Both prompts say a visual line spans the page: an item and its price, or a label and
+  its amount, are one text ("Coffee $14.95", "Total: $52.76"). A list of lines otherwise tempts a model to give the
+  price at the right edge an entry of its own, and then no item has a price and no total line has an amount.
 - **Indent.** Both prompts (the main one and the one rescue call) ask for each line's indent: 0 for a line at the main
   left edge (centered headings and footers too), 1 for a line printed further right under the line above it (the sides,
   modifiers and notes under a menu item), 2 for deeper. The indent is data beside the text, never leading spaces, so
@@ -601,7 +604,9 @@ Code: `documents/extraction.py` (`receipt_kind`, `RECEIPT_FORMS`, `receipt_detai
       like a printed one, and the receipt always goes to Review with "Tip $8.79 was worked out from Total $61.55 less
       Bill $52.76, not printed; check it." A printed tip that, with the bill, doesn't make the total adds "Tip ($X) and
       the bill ($Y) don't make the total ($Z)." With no tip line printed the tip stays missing, never invented; the
-      gap is the footer's "Not matched to an item".
+      gap is the footer's "Not matched to an item". A tip the reading took that is not less than the total (a "Tip: $"
+      line read with the total under it) is never used: it would leave nothing for the items. It is missing, with "The tip
+      the reading took ($X) is not less than the total ($Y), so it was not used."
     - **Suggested-tip table.** A block of lines offering tip percentages ("18.00% of sale: $8.79 Total $61.55"), with or
       without a "Suggested Tip" or "Tip Guide" heading, is never the source of the total or the tip. A total or tip the
       model cited only to such lines is not used, with the note "The total the reading took from the suggested-tip

@@ -25,6 +25,7 @@ HEADING = re.compile(r"^\s*(?:suggested\s+tips?|tip\s+guide|tip\s+suggestions?)\
 TABLE_NOTE = "The {what} the reading took from the suggested-tip table was not used."
 DIFFERENT = "The receipt prints different amounts before the tip ({0} and {1}), so the tip wasn't worked out."
 TIP_AND_BILL = "Tip ({0}) and the bill ({1}) don't make the total ({2})."
+TIP_TOO_LARGE = "The tip the reading took ({0}) is not less than the total ({1}), so it was not used."
 
 
 @dataclass
@@ -142,6 +143,11 @@ def decide(header, lines):
             new_tip = proposed(tip, format(amount - bill[2], "f"), bill[1], line)
             decision.tip_basis = {"total": {"label": label_of(line.text), "line_id": line.id, "text": line.text},
                                   "bill": {"label": label_of(bill[1].text), "line_id": bill[1].id, "text": bill[1].text}}
+    # A tip as large as the total leaves nothing for the items (a split "Tip: $" line read with the total under it): never used.
+    tip_amount, total_amount = (printed_amount_of(value) if value.status == "proposed" else None for value in (new_tip, new_total))
+    if tip_amount is not None and total_amount is not None and 0 < total_amount <= tip_amount:
+        decision.issues.append(Issue(TIP_TOO_LARGE, (tip_amount, total_amount)))
+        new_tip, decision.tip_basis = missing(new_tip), None
     decision.total_changed, decision.tip_changed = new_total != total, new_tip != tip
     decision.header = header.model_copy(update={"total": new_total, "tip": new_tip}) if decision.total_changed or decision.tip_changed else header
     return decision

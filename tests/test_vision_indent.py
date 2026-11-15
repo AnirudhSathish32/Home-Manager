@@ -36,7 +36,9 @@ from test_receipts import make_receipt
 
 OLD = {"R6": "receipt-vision-v6-tables", "P3": "pdf-pages-v3-layout", "G2": "receipt-images-v2-tables"}
 KEY_PHRASES = ["indent of 0, 1 or 2", "0 for a line at the main left edge", "1 for a line printed further right, under the line above it",
-               "2 for a line printed deeper", "Centered headings and footers are 0", "indent for no other reason", "without leading spaces"]
+               "2 for a line printed deeper", "Centered headings and footers are 0", "indent for no other reason", "without leading spaces",
+               # An item and its price stay on one line: a list of lines must not cost the receipt its rows.
+               "everything printed at the same height across the page", "an item and its price, or a label and its amount, are one text"]
 
 
 def manager_for(tmp_path, local_model, read=True):

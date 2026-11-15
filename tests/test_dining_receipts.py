@@ -473,6 +473,15 @@ def test_decide_other_labels_are_never_a_pre_tip_amount(text):
     assert decision.header.total.status == "missing"  # No pre-tip amount to be larger than: not a post-tip total either.
 
 
+def test_decide_a_tip_as_large_as_the_total_is_not_used():
+    """The split reading of the breakfast receipt: "Tip:" and "$" on their own lines, then the post-tip total, read as the tip."""
+    texts = ["Total:", "$52.76", "Bill:", "$52.76", "Tip:", "$", "61.55", "Total:", "$", "61.55"]
+    decision = decided(texts, total=("61.55", [10], ["61.55"]), tip=("61.55", [7], ["61.55"]))
+    assert amount_of(decision.header.tip) is None and decision.tip_basis is None and decision.tip_changed
+    assert amount_of(decision.header.total) == "61.55"
+    assert [issue.template for issue in decision.issues] == [dining_total.TIP_TOO_LARGE]
+
+
 def test_decide_a_total_line_with_no_amount_is_not_a_candidate():
     decision = decided(["Bill: $20.00", "Tip: $", "Total: $"])
     assert decision.tip_basis is None and decision.header.total.status == "missing"
