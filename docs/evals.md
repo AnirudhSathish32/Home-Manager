@@ -351,6 +351,8 @@ What it counts, each against its denominator ("3 split rows of 412 rows"):
     read as `$` and `$3.95` is split, not whole with an extra line. For a merge (several rows, one line) a tie is a missing
     row, which fails just as a merged row does, and keeps a deleted heading ("Tea" before "Tea with lemon $3.95") missing.
     An extra line that cannot be a piece of the row, because it lies out of order against it, is still just an extra line.
+    A row inside a run of equal rows and lines follows the same rule: the lines right beside it are looked at as its pieces, so a
+    repeated cell next to it is a split too.
 
   A misread one- or two-character cell of a split row is not evidence, so that row is read whole with an extra line.
 - **Money.** Each printed amount: read exactly anywhere, and read on its own row's line. Wrong digits are counted apart

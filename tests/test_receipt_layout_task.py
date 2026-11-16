@@ -7,7 +7,7 @@ import random
 
 import pytest
 
-from evals.layout_grading import Aligner, grade_reading, normalize, parse_amounts, split_cells
+from evals.layout_grading import HELD, Aligner, grade_reading, normalize, parse_amounts, split_cells
 from evals.tasks import TASKS
 from evals.tasks.runner import run_one
 from home_manager.documents.vision_layout import build_rows
@@ -466,6 +466,97 @@ def test_a_short_edge_cell_read_alone_and_again_in_a_noisy_row_never_passes(case
             assert not passed and (counts["split"] >= 1 or counts["missing"] >= 1), (case["input"], at, pieces, counts)
             seen += 1
     assert seen or case["input"]["family"] not in ("itemized", "fuel")   # Itemized rows start with a quantity, fuel rows end in a pump number.
+
+
+COUNTS = ("whole", "split", "merged", "missing", "extra")
+
+
+def insertions(case):
+    """Every (row, side, inserted line, lines of the reading): a duplicate of one of the row's cells as a line of its own right before, or
+    right after, the row's line in the exact reading."""
+    rows = case["expected"]["rows"]
+    lines = texts(rows)
+    for at, row in enumerate(rows):
+        for cell in row["cells"]:
+            if not normalize(cell["text"]):
+                continue
+            yield at, "before", cell["text"], lines[:at] + [cell["text"]] + lines[at:]
+            yield at, "after", cell["text"], lines[:at + 1] + [cell["text"]] + lines[at + 1:]
+
+
+def reading_counts(rows, lines):
+    counts = grade_reading({"rows": rows}, {"format": "v6-text", "lines": [[line, None] for line in lines]})
+    return {name: counts[name] for name in COUNTS}
+
+
+def is_a_tie(row, cell, side):
+    """Whether the row alone with the cell beside it is a split by the rule the grader uses for one row and k lines: close enough to the
+    joined pieces, in order, and supported with a tie."""
+    pieces = [normalize(cell), normalize(row)] if side == "before" else [normalize(row), normalize(cell)]
+    aligner = Aligner()
+    return aligner.near(normalize(row), " ".join(pieces)) <= HELD and aligner.in_order(pieces, normalize(row)) and aligner.supported(normalize(row), pieces, tie=True)
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_a_cell_repeated_as_a_line_beside_its_anchored_row_counts_exactly_as_it_does_alone(case):
+    """R5-1 sweep, in every case, row, cell and side: a tie between a split and a whole row beside an extra line is a split wherever the
+    row sits, also inside a run of equal rows and lines. Where the row alone would read as a split (the cell then the row, or the row then the
+    cell, close, in order and supported with ties), the case's counts are the exact reading's with that one row split and no extra line, and
+    the case fails; any other repeated cell stays one extra line. Each is the same as grading the row alone with the inserted line, whatever
+    its neighbours, except that the line is also beside the next or the previous row, and a cell that is a tie for either of those (a price
+    that reads like the one above it, or a row that reads like the one before) is a split of that row, as the same lines would be alone."""
+    rows = case["expected"]["rows"]
+    exact_lines = texts(rows)
+    exact_counts = reading_counts(rows, exact_lines)
+    assert exact_counts == {"whole": len(rows), "split": 0, "merged": 0, "missing": 0, "extra": 0}
+    for at, side, cell, lines in insertions(case):
+        own = is_a_tie(exact_lines[at], cell, side)
+        alone = reading_counts([rows[at]], [cell, exact_lines[at]] if side == "before" else [exact_lines[at], cell])
+        assert alone == ({"whole": 0, "split": 1, "merged": 0, "missing": 0, "extra": 0} if own else {"whole": 1, "split": 0, "merged": 0, "missing": 0, "extra": 1}), (case["input"], at, side, cell)
+        place = at if side == "before" else at + 1   # The inserted line's place among the exact lines: its neighbours are rows place - 1 and place.
+        neighbour = (place > 0 and is_a_tie(exact_lines[place - 1], cell, "after")) or (place < len(rows) and is_a_tie(exact_lines[place], cell, "before"))
+        counts = reading_counts(rows, lines)
+        if own or neighbour:
+            assert counts == {**exact_counts, "whole": len(rows) - 1, "split": 1}, (case["input"], at, side, cell)
+            assert not passes_the_grading(case, [[line, 0] for line in lines])[0]
+        else:
+            assert counts == {**exact_counts, "extra": 1}, (case["input"], at, side, cell)
+
+
+def test_the_sweep_has_every_tie_in_it():
+    """R5-1: the reviewer's 399 insertions that passed (an insertion that is a tie for its own row), over the 24 drawn cases."""
+    ties = sum(is_a_tie(texts(case["expected"]["rows"])[at], cell, side) for case in CASES for at, side, cell, _ in insertions(case))
+    assert ties == 399
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_an_unrelated_line_beside_any_row_stays_one_extra_line(case):
+    rows = case["expected"]["rows"]
+    exact_lines = texts(rows)
+    for at in range(len(rows)):
+        for unrelated in ("Xylophone Quartz", "qq"):
+            for lines in (exact_lines[:at] + [unrelated] + exact_lines[at:], exact_lines[:at + 1] + [unrelated] + exact_lines[at + 1:]):
+                counts = reading_counts(rows, lines)
+                assert counts == {"whole": len(rows), "split": 0, "merged": 0, "missing": 0, "extra": 1}, (case["input"], at, unrelated)
+
+
+def test_a_split_row_inside_a_run_of_equal_rows_is_split_and_a_merge_tie_there_stays_missing():
+    """R5-1: the reproduction (a duplicate before an anchored row), the row before and after the repeat, and the merge side at an anchor."""
+    rows = [row_of("Tea with lemon $3.95"), row_of("Orange juice"), row_of("End of receipt")]
+    assert graded_lines(rows, ["Tea", "Tea with lemon $3.95", "Orange juice", "End of receipt"]) == (2, 1, 0, 0, 0)
+    assert graded_lines(rows, ["Tea with lemon $3.95", "Orange juice", "End of receipt"]) == (3, 0, 0, 0, 0)
+    assert graded_lines(rows, ["Tea with lemon $3.95", "Orange juice", "Orange", "End of receipt"]) == (3, 0, 0, 0, 1)   # not in order: just extra
+    deleted = [row_of("Tea"), row_of("Tea with lemon $3.95"), row_of("Orange juice"), row_of("End of receipt")]
+    assert graded_lines(deleted, ["Tea with lemon $3.95", "Orange juice", "End of receipt"]) == (3, 0, 0, 1, 0)   # a tie on a merge: missing
+    assert graded_lines(deleted, ["Tea with lemon $3.95", "Orange juice", "Tea", "End of receipt"]) == (4, 0, 0, 0, 0)
+
+
+def test_a_part_that_is_empty_ends_where_it_starts():
+    """R5-2: in_order skips an empty part, so the earliest end of one is the start, and the text may be empty or the start at its end."""
+    aligner = Aligner()
+    assert [aligner.earliest_end("", "a", start) for start in (0, 1)] == [0, 1]
+    assert aligner.earliest_end("", "", 0) == 0
+    assert aligner.in_order(["", "a", ""], "a") and aligner.earliest_end("a", "a", 0) == 1
 
 
 def prefix_pairs(case):

@@ -125,6 +125,8 @@ class Aligner:
     def earliest_end(self, part, text, start):
         """The smallest end of any stretch of text that begins at or after start and is within the part's budget, or None. One semi-global
         edit distance: the stretch may begin at any column from start (a free start), and the last row says which columns it can end at."""
+        if not part:  # Nothing to find: it ends where it starts, as in_order skips an empty part.
+            return start
         key = ("earliest", part, text, start)
         if key not in self.cache:
             self.evaluations += 1
@@ -177,12 +179,38 @@ class Aligner:
         matcher = SequenceMatcher(None, rows, lines, autojunk=False)
         # Only runs of at least two equal rows are anchors: a lone equal row may be the left half of a split row that repeats an item's name.
         anchors = [(a + k, b + k) for a, b, size in matcher.get_matching_blocks() if size >= ANCHOR_RUN for k in range(size)]
-        groups, row_start, line_start = [], 0, 0
+        groups, anchored, row_start, line_start = [], [], 0, 0
         for i, j in anchors:
             groups += self.gap(rows, lines, row_start, i, line_start, j, most)
+            anchored.append(len(groups))
             groups.append(((i,), (j,)))
             row_start, line_start = i + 1, j + 1
-        return groups + self.gap(rows, lines, row_start, len(rows), line_start, len(lines), most)
+        groups += self.gap(rows, lines, row_start, len(rows), line_start, len(lines), most)
+        self.split_anchored(rows, lines, groups, anchored, most)
+        return groups
+
+    def split_anchored(self, rows, lines, groups, anchored, most):
+        """An anchored row is paired with its equal line without looking at its neighbours, so a split is looked for here, with the rule the gap
+        applies (ordered, supported, and a tie is a split): the unpaired lines right before or after the row, together with its line, read
+        as its pieces. A merge needs no such look: the anchored line is the whole row, so the pieces of a merge (together
+        no better than the row alone) never beat it and a neighbouring unpaired row stays missing, as a tie does."""
+        paired = {j for _, group_lines in groups for j in group_lines}
+        found = []
+        for index in anchored:
+            (i,), (j,) = groups[index]
+            for k in range(2, most + 1):
+                for first in range(max(0, j - k + 1), min(j, len(lines) - k) + 1):
+                    if any(line != j and line in paired for line in range(first, first + k)):
+                        continue
+                    pieces = lines[first:first + k]
+                    step = self.near(rows[i], " ".join(pieces))
+                    if step <= HELD and self.in_order(pieces, rows[i]) and self.supported(rows[i], pieces, tie=True):
+                        found.append((step + EXTRA_PIECE * (k - 1), index, first, k))
+        for _, index, first, k in sorted(found):  # A line next to two anchored rows goes to the one it fits best.
+            (i,), (j,) = groups[index]
+            if groups[index][1] == (j,) and not any(line != j and line in paired for line in range(first, first + k)):
+                groups[index] = ((i,), tuple(range(first, first + k)))
+                paired.update(groups[index][1])
 
     def gap(self, rows, lines, row0, row1, line0, line1, most=MOST_PIECES):
         n, m = row1 - row0, line1 - line0
