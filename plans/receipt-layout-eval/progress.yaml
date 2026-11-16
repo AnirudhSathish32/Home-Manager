@@ -20,8 +20,22 @@ slices:
     notes: >-
       No regions are found in the synthetic inputs, so one vision request per page. The PDF request capture hashes pdfium's
       rendering of scan.pdf (pinned pypdfium2), identical across runs here.
-  SL-02: {status: in_progress}
-  SL-03: {status: todo}
+  SL-02:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: bb81cf2
+    end_head: 94a9b1a  # code c810496, handoff 94a9b1a (attempt 1 stopped on a provider rate limit with no changes; retried once)
+    verification: >-
+      Orchestrator rerun 2026-11-16: the plan's SL-02 command (14 files) 233 passed, 1 skipped (env-gated capture), exit 0;
+      git diff --exit-code 6f009e1 HEAD -- tests/reading_format_data clean; ruff clean on changed files; only vision.py
+      contains reading_format(; the one removed line in vision.py is engine prompt_version (default value unchanged).
+    notes: >-
+      Accepted deviations (within the spec, recorded in the handoff): row-slope search uses a 0.25 tolerance, includes
+      handwritten pieces, admits only near-level slopes or ones sharing the margin slope's sign, and treats fewer than 6
+      usable pieces as level; margin-slope bands more than 4 character widths right of the median are dropped; spans rescue
+      schema name document_text_spans_fallback. SL-04's 24-drawn-case test is the check of these.
+  SL-03: {status: in_progress}
   SL-04: {status: todo}
   SL-05: {status: todo}
 final_verification: null
