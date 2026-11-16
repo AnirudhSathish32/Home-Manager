@@ -1,0 +1,1 @@
+{"clockwise_rotation": 0, "pages": ["a0446c714fef3c7db5de457a5c76c11a42546cc0faa4070060d3c66bc8a55f83", "f012abd85ebe4d6a8f39c42ff75e79ea4ceb8162c10d7a2b36fcb9cb86e37648"], "vision": {"base_url": "http://127.0.0.1:PORT/v1", "model": "synthetic-vision", "organize_after_scan": true}}

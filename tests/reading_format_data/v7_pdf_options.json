@@ -1,0 +1,1 @@
+{"clockwise_rotation": 0, "vision": {"base_url": "http://127.0.0.1:PORT/v1", "model": "synthetic-vision", "organize_after_scan": true}}
