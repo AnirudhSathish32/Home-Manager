@@ -55,6 +55,7 @@ class Aligner:
 
     def __init__(self):
         self.evaluations = 0
+        self.cells = 0  # Table cells filled by the search for a piece in order, the part of the cost that grows with the text.
         self.cache = {}
 
     def lev(self, a, b, limit=None):
@@ -116,51 +117,58 @@ class Aligner:
             self.cache[key] = min(previous) <= limit
         return self.cache[key]
 
-    def stretches(self, part, text):
-        """Every (start, end) of text within the part's budget: exact for one or two characters, at least one edit from three on."""
-        key = ("stretches", part, text)
+    @staticmethod
+    def budget(part):
+        """The edits a split or merged piece may differ by: none for one or two characters, at least one from three on."""
+        return 0 if len(part) <= SHORT_PIECE else max(1, floor(HELD * len(part)))
+
+    def earliest_end(self, part, text, start):
+        """The smallest end of any stretch of text that begins at or after start and is within the part's budget, or None. One semi-global
+        edit distance: the stretch may begin at any column from start (a free start), and the last row says which columns it can end at."""
+        key = ("earliest", part, text, start)
         if key not in self.cache:
             self.evaluations += 1
-            allowed = 0 if len(part) <= SHORT_PIECE else max(1, floor(HELD * len(part)))
-            found = []
-            for start in range(len(text)):
-                previous = list(range(min(len(text) - start, len(part) + allowed) + 1))  # The stretch begins at start; its length is j.
-                for i, x in enumerate(part, 1):
-                    current = [i]
-                    for j in range(1, len(previous)):
-                        current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != text[start + j - 1])))
-                    previous = current
-                    if min(previous) > allowed:
-                        break
-                else:
-                    found += [(start, start + j) for j, distance in enumerate(previous) if distance <= allowed and j]
-            self.cache[key] = found
+            allowed = self.budget(part)
+            self.cells += len(part) * (len(text) - start)
+            previous = [0] * (len(text) - start + 1)  # Column c is the text from start to start + c; a stretch may begin at any of them.
+            for i, x in enumerate(part, 1):
+                current = [i]
+                for c in range(1, len(previous)):
+                    current.append(min(previous[c] + 1, current[c - 1] + 1, previous[c - 1] + (x != text[start + c - 1])))
+                previous = current
+                if min(previous) > allowed:
+                    previous = None
+                    break
+            self.cache[key] = None if previous is None else next((start + c for c, distance in enumerate(previous) if distance <= allowed and c), None)
         return self.cache[key]
 
     def in_order(self, parts, text):
         """Whether the parts can be found in the text one after the other, each after the end of the one before: a character is evidence once.
-        A search, not a first match: every stretch within a part's budget is a candidate, and as only the end of the one before matters to the
+        A search, not a first match: any stretch within a part's budget is a candidate, and as only the end of the one before matters to the
         next, the earliest end of each leaves the most room for the rest. So a repeated word, or a misread piece that also reads exactly
         further on, cannot make a row's parts look out of order."""
         end = 0
         for part in parts:
             if not part:
                 continue
-            ends = [stop for start, stop in self.stretches(part, text) if start >= end]
-            if not ends:
+            end = self.earliest_end(part, text, end)
+            if end is None:
                 return False
-            end = min(ends)
         return True
 
-    def supported(self, whole, parts):
+    def supported(self, whole, parts, tie=False):
         """Whether pieces and whole explain each other better than pairing the whole with any one piece alone, as the grader's own distance
         would charge that: the other pieces left missing (or extra) cost their length. A merge or a split must rest on characters the
         1:1 pairing cannot explain, so a row deleted before one that repeats its words is missing, not merged. Spaces do not count, so a
-        lost separator is no evidence."""
+        lost separator is no evidence.
+        A tie is ambiguous, and an ambiguous reading must never pass: it is resolved toward the reading that fails the case. A case needs no
+        split, merged or missing row, but not "no extra line", so for a split (tie=True) the tie is a split, and the alternative, one whole
+        row beside an extra line, could pass; for a merge a tie is a missing row (the 1:1 pairing), which fails as a merge would."""
         whole = whole.replace(" ", "")
         parts = [part.replace(" ", "") for part in parts]
         together = self.lev(whole, "".join(parts))
-        return together < min(self.lev(whole, part) + sum(map(len, parts)) - len(part) for part in parts)
+        alone = min(self.lev(whole, part) + sum(map(len, parts)) - len(part) for part in parts)
+        return together <= alone if tie else together < alone
 
     def align(self, rows, lines, most=MOST_PIECES):
         """Groups (row indexes, line indexes) in order: 1:1, 1:k (split) or k:1 (merged), k up to most. Anything unpaired is missing or extra.
@@ -199,7 +207,7 @@ class Aligner:
                     if j - k >= 0 and (i - 1, j - k) in cost:
                         row, pieces = rows[row0 + i - 1], lines[line0 + j - k:line0 + j]
                         step = self.near(row, " ".join(pieces))
-                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(pieces, row) and self.supported(row, pieces):
+                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(pieces, row) and self.supported(row, pieces, tie=True):
                             best = (cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1), (i - 1, j - k))
                     if i - k >= 0 and (i - k, j - 1) in cost:
                         parts, line = rows[row0 + i - k:row0 + i], lines[line0 + j - 1]

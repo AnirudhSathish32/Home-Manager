@@ -16,6 +16,7 @@ from model_server import layout_text_answer, spans_answer, v6_answer, vision_ans
 from test_eval_tasks import oracle
 
 MODULE = TASKS["receipt_layout"]
+SHORT_CELL = 2
 FORMATS = ["v7-lines", "v6-text", "layout-text", "spans"]
 CASES = MODULE.cases()
 
@@ -418,10 +419,53 @@ def test_a_row_deleted_before_a_row_that_repeats_it_is_missing_in_every_position
         assert graded_lines([heading, row_of(*second)], [f"Tea {line}"]) == (0, 0, 1, 0, 0), second   # both really there on one line: merged
 
 
-def test_a_line_deleted_after_a_split_pieces_that_repeats_it_is_extra_not_a_split():
-    """The mirror: a row of two cells, and a line that repeats its first cell with nothing of the second."""
-    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea with lemon $3.95", "Tea"]) == (1, 0, 0, 0, 1)
-    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea", "Tea with lemon $3.95"]) == (1, 0, 0, 0, 1)
+def test_a_line_that_repeats_a_split_pieces_is_a_split_because_a_tie_must_fail_the_case():
+    """The mirror: a line that repeats the first piece beside the whole row. "Tea" explains the row as well as the whole line does, so the
+    reading is a tie, and a tie counts as split by policy: one whole row and an extra line would pass (an extra line is not required to be
+    absent), a split fails. (Before the tie rule this was whole 1 + extra 1; the row's order, "Tea" first, is the only one that is in order.)"""
+    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea", "Tea with lemon $3.95"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea with lemon $3.95", "Tea"]) == (1, 0, 0, 0, 1)   # not in order: nothing to tie
+
+
+def test_a_noisy_short_piece_never_passes_as_one_whole_row_with_an_extra_line():
+    """R4-1: a tie between a split and a whole row beside an extra line goes to the split, which fails the case; a tie between a merge and
+    a missing row goes to the missing row, which fails it too."""
+    split = graded_lines([row_of("$", "3.95")], ["$", "$3.95"])
+    assert split == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Baguette"), row_of("e")], ["Baguett e"]) == (1, 0, 0, 1, 0)
+    assert graded_lines([row_of("Tea"), row_of("Tea with lemon $3.95")], ["Tea with lemon $3.95"]) == (1, 0, 0, 1, 0)   # R3-2's deleted heading
+
+
+def passes_the_grading(case, lines):
+    """Whether the case's required counts hold for a reading made of these lines (with the case's indents): no split, merged or missing row."""
+    counts = grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+    return counts["split"] == 0 and counts["merged"] == 0 and counts["missing"] == 0, counts
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_a_short_edge_cell_read_alone_and_again_in_a_noisy_row_never_passes(case):
+    """R4-1 sweep: for each multi-cell row whose first or last cell is one or two characters, that cell alone on its own line beside the
+    row's full text with one substituted character in a longer piece is ambiguous, so the case must not pass (split or missing)."""
+    rows = case["expected"]["rows"]
+    seen = 0
+    for at, row in enumerate(rows):
+        cells = [cell["text"] for cell in row["cells"]]
+        longest = max(range(len(cells)), key=lambda k: len(cells[k]))
+        if len(cells) < 2 or len(cells[longest]) <= SHORT_CELL:
+            continue
+        noisy = " ".join(miswritten(cell) if k == longest else cell for k, cell in enumerate(cells))
+        for edge, order in ((0, "first"), (len(cells) - 1, "last")):
+            if len(cells[edge]) > SHORT_CELL or edge == longest:
+                continue
+            # A last cell comes after the full text, and a full text that ended with it would put the cell out of order (a plain extra line):
+            # the mirror of the first cell's reading keeps its last character off, as in "Pump 1" then "11".
+            pieces = [cells[edge], noisy] if order == "first" else [noisy[:-1], cells[edge]]
+            lines = [[text, other["indent"]] for text, other in zip(texts(rows), rows)]
+            lines[at:at + 1] = [[piece, row["indent"]] for piece in pieces]
+            passed, counts = passes_the_grading(case, lines)
+            assert not passed and (counts["split"] >= 1 or counts["missing"] >= 1), (case["input"], at, pieces, counts)
+            seen += 1
+    assert seen or case["input"]["family"] not in ("itemized", "fuel")   # Itemized rows start with a quantity, fuel rows end in a pump number.
 
 
 def prefix_pairs(case):
@@ -455,6 +499,87 @@ def test_a_row_of_four_cells_split_into_its_four_cells_is_one_split_row():
     assert len(cells) == 4
     counts = grade(v7(lines=texts(ROWS)[:at] + cells + texts(ROWS)[at + 1:], indents=[row["indent"] for row in ROWS[:at]] + [0] * 4 + [row["indent"] for row in ROWS[at + 1:]]))
     assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0)
+
+
+def edit_distance(a, b):
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        current = [i]
+        for j, y in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        previous = current
+    return previous[-1]
+
+
+def earliest_end_by_brute_force(part, text, start):
+    """The earliest end of any stretch beginning at or after start within the part's budget, found by trying every (begin, end)."""
+    allowed = 0 if len(part) <= 2 else max(1, int(0.3 * len(part)))
+    ends = [stop for begin in range(start, len(text)) for stop in range(begin + 1, len(text) + 1) if edit_distance(part, text[begin:stop]) <= allowed]
+    return min(ends, default=None)
+
+
+def test_the_earliest_end_of_a_stretch_is_what_trying_every_stretch_finds():
+    """R4-2: one semi-global edit distance per call, the same answer as the brute force over (begin, end), on seeded strings with repeats
+    and near duplicates of the part inside the text."""
+    rng = random.Random(9)
+    found = 0
+    for _ in range(3000):
+        part = "".join(rng.choice("abc $.5") for _ in range(rng.randint(1, 8)))
+        pieces = []
+        for _ in range(rng.randint(1, 4)):
+            copy_of = list(part)
+            for _ in range(rng.choice((0, 0, 1, 2))):  # Exact repeats and copies with edits.
+                at = rng.randrange(len(copy_of) + 1)
+                action = rng.choice(("sub", "del", "ins"))
+                if action == "ins" or not copy_of or at == len(copy_of):
+                    copy_of.insert(at, rng.choice("abc $.5"))
+                elif action == "del":
+                    del copy_of[at]
+                else:
+                    copy_of[at] = rng.choice("abc $.5")
+            pieces.append("".join(copy_of))
+            if rng.random() < 0.5:
+                pieces.append("".join(rng.choice("abc $.5") for _ in range(rng.randint(0, 4))))
+        text = " ".join(pieces)[:24]
+        start = rng.randint(0, len(text))
+        expected = earliest_end_by_brute_force(part, text, start)
+        assert Aligner().earliest_end(part, text, start) == expected, (part, text, start)
+        found += expected is not None
+    assert 500 < found < 2900   # Both outcomes are well covered.
+
+
+def merged_near_duplicates(size, count=150):
+    """A synthetic receipt of count rows whose labels are size characters and differ only in their last digits, and a reading that puts
+    adjacent pairs of them on one line."""
+    stem = "Organic wholegrain sourdough bread loaf variant seeded"
+    labels = [(stem[:size - 3] + f"{k:03d}")[:size] for k in range(count)]
+    rows = [{"cells": [{"text": label}], "indent": 0, "align": "left"} for label in labels]
+    return {"rows": rows}, {"format": "v6-text", "lines": [[f"{a} {b}", None] for a, b in zip(labels[::2], labels[1::2])]}
+
+
+def test_merging_adjacent_near_duplicate_rows_of_long_labels_costs_a_bounded_amount_of_work():
+    """R4-2: 150 rows with 48-character labels, adjacent pairs merged. The search for a piece in order fills a table per (piece, line,
+    start), not per begin and end of every stretch: bounded in cells (31 million measured), with a generous clock only as a second guard
+    (48 s before, 10 s after, on the machine this was written on)."""
+    import time
+    expected, output = merged_near_duplicates(48)
+    seen = []
+    original = Aligner.__init__
+
+    def keep(self):
+        original(self)
+        seen.append(self)
+
+    Aligner.__init__ = keep
+    try:
+        began = time.perf_counter()
+        counts = grade_reading(expected, output)
+        took = time.perf_counter() - began
+    finally:
+        Aligner.__init__ = original
+    assert (counts["merged"], counts["missing"], counts["extra"], counts["split"]) == (75, 0, 0, 0)
+    assert seen[0].cells <= 50_000_000 and counts["evaluations"] <= 60000
+    assert took < 40, took
 
 
 def test_the_amount_rule_is_one_definition():

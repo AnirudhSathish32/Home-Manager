@@ -342,7 +342,15 @@ What it counts, each against its denominator ("3 split rows of 412 rows"):
   - *Better than one alone.* The whole and the joined pieces must differ by fewer characters than the whole does from any one
     piece with the other pieces left missing (or extra), which is how the grader's own distance would charge that pairing,
     spaces left out. So a row deleted before one that repeats its words ("Tea" before "Tea with lemon $3.95") is missing, not
-    merged, while both really on one line is merged; a truncated row beside a one-character row is still merged.
+    merged, while both really on one line is merged. A truncated row beside a one-character row ("Baguette" and "X" read
+    "Baguet X") is still merged, because the "X" is not in what was read of the first row; but when the short row's
+    character is already there ("Baguette" and "e" read "Baguett e") the two readings tie and it is not merged.
+  - *A tie must fail the case.* An ambiguous reading never passes, so a tie goes to whichever reading fails. A case needs no
+    split, merged or missing row, and no more than that: an extra line does not fail it. For a split (one row, several
+    lines) a tie is a split, because the other reading, one whole row and an extra line, could pass: a row `$` and `3.95`
+    read as `$` and `$3.95` is split, not whole with an extra line. For a merge (several rows, one line) a tie is a missing
+    row, which fails just as a merged row does, and keeps a deleted heading ("Tea" before "Tea with lemon $3.95") missing.
+    An extra line that cannot be a piece of the row, because it lies out of order against it, is still just an extra line.
 
   A misread one- or two-character cell of a split row is not evidence, so that row is read whole with an extra line.
 - **Money.** Each printed amount: read exactly anywhere, and read on its own row's line. Wrong digits are counted apart
