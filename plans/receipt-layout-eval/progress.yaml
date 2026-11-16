@@ -35,7 +35,18 @@ slices:
       handwritten pieces, admits only near-level slopes or ones sharing the margin slope's sign, and treats fewer than 6
       usable pieces as level; margin-slope bands more than 4 character widths right of the median are dropped; spans rescue
       schema name document_text_spans_fallback. SL-04's 24-drawn-case test is the check of these.
-  SL-03: {status: in_progress}
-  SL-04: {status: todo}
+  SL-03:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 74cbbe7
+    end_head: 8b097f5  # code d76d99b, handoff 8b097f5
+    verification: >-
+      Orchestrator rerun 2026-11-16: tests/test_receipt_layouts.py 32 passed, none skipped (recorded hash asserted);
+      font sha256 match the plan; no real receipt values in the generator; src/ unchanged; plan hash matches.
+    notes: >-
+      Accepted: Row.kind and Receipt.checks fields, parse_amounts in receipt_layouts.py (SL-04 must share it with the
+      grader), draw(receipt, only=(row, cell)). Worker's ad-hoc build_rows run on all 24 drawn cases matched; SL-04 commits it.
+  SL-04: {status: in_progress}
   SL-05: {status: todo}
 final_verification: null
