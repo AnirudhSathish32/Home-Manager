@@ -1,0 +1,15 @@
+# plans/<slug>/progress.yaml — execution state, kept out of the hashed plan.
+feature: receipt-layout-eval
+plan_sha256: 28c29cf7d5a15caf0bd8e5b17319ef292cf06dd4e305390889afaf27bd8f434b
+session_plan_hash: 28c29cf7d5a15caf0bd8e5b17319ef292cf06dd4e305390889afaf27bd8f434b
+spec_sha256: b0938b87b74f685f1e5759e4ea5f0298c92dd65a7699d398406b451e2da0f1b1
+checkout: /home/anirudh/Documents/Projects/Home-Manager  # branch receipt-layout-eval, sequential workers in this checkout
+start_head: ab23d5c
+baseline_failures: plans/receipt-layout-eval/baseline-failures.txt
+slices:
+  SL-01: {status: in_progress}
+  SL-02: {status: todo}
+  SL-03: {status: todo}
+  SL-04: {status: todo}
+  SL-05: {status: todo}
+final_verification: null
