@@ -100,6 +100,17 @@ slices:
       Orchestrator rerun 2026-11-16: the seven targeted test files 368 passed, 1 skipped, exit 0; ruff clean on changed
       files; protected artifacts untouched; plan hash unchanged. All four round-2 reproductions rechecked by the
       orchestrator before dispatch.
+  SL-08:
+    status: done
+    title: "SL-08: fixes for code review round 3"
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: a647594
+    end_head: 25d6fc7  # code 4ae7640, handoff 25d6fc7
+    verification: >-
+      Orchestrator rerun 2026-11-16: the seven targeted test files 437 passed, 1 skipped, exit 0; ruff clean;
+      all round-3 reproductions rechecked (split 1 / merged 1 / missing 1 / margin indents 0); protected artifacts
+      untouched; plan hash unchanged.
 code_review:
   round_1:
     reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0707b66, risk HIGH
@@ -130,10 +141,10 @@ code_review:
     task: review-code-receipt-layout-eval-r3
     round_2_status: "R2-4 resolved; R2-1, R2-2, R2-3 fixed for their reproductions but not comprehensively"
     findings:
-      - {id: R3-1, severity: MAJOR, area: "Aligner.find greedy endpoint (exact-first and tie-break) rejects valid split/merge evidence; Tea/Sea split passes as whole", disposition: "open: reproduced by orchestrator, escalated after round 3"}
-      - {id: R3-2, severity: MAJOR, area: "deleted heading that prefixes the next row (Tea / Tea with lemon) still counted merged", disposition: "open: reproduced by orchestrator, escalated after round 3"}
-      - {id: R3-3, severity: MAJOR, area: "short-stray test uses row.text incl. handwriting; margin_rows('x2') + handwritten scribble indents all main rows", disposition: "open: reproduced by orchestrator, escalated after round 3"}
-    status: PENDING HUMAN DECISION (three review rounds used, Codex budget 3/3 spent)
+      - {id: R3-1, severity: MAJOR, area: "Aligner.find greedy endpoint (exact-first and tie-break) rejects valid split/merge evidence; Tea/Sea split passes as whole", disposition: "fixed SL-08 (human chose option A, 2026-11-16)"}
+      - {id: R3-2, severity: MAJOR, area: "deleted heading that prefixes the next row (Tea / Tea with lemon) still counted merged", disposition: "fixed SL-08 (human chose option A, 2026-11-16)"}
+      - {id: R3-3, severity: MAJOR, area: "short-stray test uses row.text incl. handwriting; margin_rows('x2') + handwritten scribble indents all main rows", disposition: "fixed SL-08 (human chose option A, 2026-11-16)"}
+    status: "human authorised one extra fix round and a fourth Codex review (option A)"
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
