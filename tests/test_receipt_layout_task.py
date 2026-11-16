@@ -63,7 +63,7 @@ def exact(case, name):
 
 def test_a_perfect_reading_has_every_count_perfect():
     counts = grade(oracle("receipt_layout", DINING))
-    assert (counts["rows"], counts["whole"], counts["sole"]) == (28, 28, 28)
+    assert (counts["rows"], counts["whole"]) == (28, 28)
     assert counts["split"] == counts["merged"] == counts["missing"] == counts["extra"] == counts["out_of_order"] == 0
     assert (counts["amounts"], counts["amounts_read"], counts["amounts_on_row"]) == (18, 18, 18)
     assert counts["amounts_wrong"] == counts["amounts_missing"] == 0 and counts["cer"] == 0 and counts["evaluations"] == 0
@@ -107,7 +107,7 @@ def test_two_rows_on_one_line_are_one_merged_row():
     indents[at:at + 2] = [0]
     counts = grade(v7(lines=lines, indents=indents))
     assert (counts["merged"], counts["split"], counts["missing"], counts["extra"]) == (1, 0, 0, 0)
-    assert counts["whole"] + counts["split"] + counts["merged"] + counts["missing"] == counts["rows"]
+    assert (counts["whole"], counts["rows"]) == (26, 28)  # Rows alone on a line of their own: the two that share a line are not whole.
     assert not MODULE.grade(DINING, v7(lines=lines, indents=indents))["passed"]
 
 
@@ -164,7 +164,23 @@ def test_extra_lines_and_missing_rows_are_counted():
     indents += [0, 0]
     counts = grade(v7(lines=lines, indents=indents))
     assert (counts["missing"], counts["extra"], counts["split"], counts["merged"]) == (1, 2, 0, 0)
-    assert counts["amounts_missing"] == 1 and counts["amounts_read"] == 17 or counts["amounts_read"] == 18  # 3.95 is printed twice; one copy is read.
+    assert (counts["amounts"], counts["amounts_read"], counts["amounts_missing"], counts["amounts_wrong"]) == (18, 17, 1, 0)  # 3.95 is printed twice; one copy is read.
+
+
+def table(*prices):
+    """A tiny expected case: one row per (name, price), each alone on its line."""
+    rows = [{"cells": [{"text": f"{name} ${price}", "handwritten": False}], "indent": 0, "align": "left"} for name, price in prices]
+    return {"rows": rows}
+
+
+def test_an_amount_read_exactly_on_another_rows_line_is_not_taken_as_that_rows_wrong_digits():
+    """Apple $1.00 and Coffee $2.00 read as $2.00 and $3.00: the $2.00 is Coffee's, read exactly elsewhere, so Apple's line has no spare to call wrong."""
+    expected = table(("Apple", "1.00"), ("Coffee", "2.00"))
+    counts = grade_reading(expected, {"format": "v7-lines", "lines": [["Apple $2.00", 0], ["Coffee $3.00", 0]]})
+    assert (counts["amounts"], counts["amounts_read"], counts["amounts_on_row"], counts["amounts_wrong"], counts["amounts_missing"]) == (2, 1, 0, 0, 1)
+    # A wrong digit still counts as wrong when nothing else reads the row's price exactly.
+    counts = grade_reading(expected, {"format": "v7-lines", "lines": [["Apple $1.50", 0], ["Coffee $2.00", 0]]})
+    assert (counts["amounts_read"], counts["amounts_on_row"], counts["amounts_wrong"], counts["amounts_missing"]) == (1, 1, 1, 0)
 
 
 def test_spaces_tabs_and_pipes_count_as_one_space():
@@ -215,6 +231,62 @@ def test_a_layout_text_table_row_written_with_pipes_grades_its_cells_right():
               "rows": piped, "spans": []}
     counts = grade(output, case)
     assert counts["cells_reported"] and counts["cell_rows_match"] == counts["cell_rows"] == len(rows)
+
+
+def test_a_format_that_reports_indents_but_lost_them_all_does_not_pass():
+    """Spans with every box unusable: no row has an indent, which is unknown (never "not reported") and fails the case."""
+    rows = ROWS
+    pieces = [(cell["text"], [0, 0, 0, 0], cell["handwritten"]) for row in rows for cell in row["cells"]]
+    built, _ = build_rows(pieces)
+    output = {"format": "spans", "lines": [[row.text, row.indent] for row in built],
+              "rows": [{"cells": [{"text": cell.text, "box": cell.box, "handwritten": cell.handwritten} for cell in row.cells], "align": row.align} for row in built],
+              "spans": [{"text": text, "box": box, "handwritten": hw} for text, box, hw in pieces]}
+    assert all(row.indent is None for row in built)
+    counts = grade(output)
+    assert counts["indent_reported"] is True and counts["indented_unknown"] + counts["edge_unknown"] == counts["whole"] > 0
+    graded = MODULE.grade(DINING, output)
+    assert not graded["passed"] and not graded["checks"]["indents_right"]
+    assert grade(v7(indents=[None] * len(ROWS)))["indent_reported"] is True
+    assert grade({**v7(indents=[None] * len(ROWS)), "format": "v6-text"})["indent_reported"] is False
+
+
+def deleting(case, at):
+    rows = case["expected"]["rows"]
+    lines = [[text, row["indent"]] for k, (text, row) in enumerate(zip(texts(rows), rows)) if k != at]
+    return grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+
+
+def test_a_deleted_short_row_is_missing_and_never_merged_into_its_neighbour():
+    counts = deleting(DINING, index_of("14 Orchard Row"))
+    assert (counts["missing"], counts["merged"], counts["split"], counts["extra"]) == (1, 0, 0, 0)
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_deleting_any_one_row_counts_one_missing_row_and_nothing_else(case):
+    for at in range(len(case["expected"]["rows"])):
+        counts = deleting(case, at)
+        assert (counts["missing"], counts["merged"], counts["split"], counts["extra"]) == (1, 0, 0, 0), (case["input"], at)
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_splitting_any_multi_cell_row_into_its_cells_counts_one_split_row_and_nothing_else(case):
+    """Dining's suggested-tip rows have four cells: splits go up to the most cells a row has (MOST_PIECES is 4 at least)."""
+    rows = case["expected"]["rows"]
+    for at, row in enumerate(rows):
+        if len(row["cells"]) < 2:
+            continue
+        lines = [[text, other["indent"]] for text, other in zip(texts(rows), rows)]
+        lines[at:at + 1] = [[cell["text"], row["indent"]] for cell in row["cells"]]
+        counts = grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+        assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0), (case["input"], at)
+
+
+def test_a_row_of_four_cells_split_into_its_four_cells_is_one_split_row():
+    at = index_of("18.00% of sale: $8.79 Total $61.55")
+    cells = [cell["text"] for cell in ROWS[at]["cells"]]
+    assert len(cells) == 4
+    counts = grade(v7(lines=texts(ROWS)[:at] + cells + texts(ROWS)[at + 1:], indents=[row["indent"] for row in ROWS[:at]] + [0] * 4 + [row["indent"] for row in ROWS[at + 1:]]))
+    assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0)
 
 
 def test_the_amount_rule_is_one_definition():
@@ -294,6 +366,7 @@ def test_the_exact_rows_in_each_formats_shape_pass_with_every_count_perfect(loca
     assert (checks["whole"], checks["split"], checks["merged"], checks["missing"], checks["extra"], checks["out_of_order"]) == (28, 0, 0, 0, 0, 0)
     assert checks["amounts_on_row"] == checks["amounts_read"] == checks["amounts"] == 18 and checks["amounts_wrong"] == checks["amounts_missing"] == 0
     assert checks["cer"] == 0
+    assert checks["output_characters"] == len(line["output"]["text"]) > 0  # FR-18: as the transcription task counts it.
     assert checks["indent_reported"] is (name != "v6-text")
     assert (checks["indented_right"], checks["edge_right"]) == ((5, 23) if name != "v6-text" else (0, 0))
     assert checks["cells_reported"] is (name in ("layout-text", "spans")) and checks["position_reported"] is (name == "spans")

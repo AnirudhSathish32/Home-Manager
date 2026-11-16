@@ -13,7 +13,8 @@ USABLE_SHARE = 0.5          # fewer usable boxes than this share of the pieces: 
 SLOPE_LIMIT, SLOPE_STEP = 0.15, 0.0025
 SLOPE_ROW = 0.25            # tighter row tolerance while searching for the slope
 LEVEL_SLOPE, SLANT_MIN = 0.005, 0.01
-MIN_TO_MEASURE = 6          # fewer usable pieces than this are read level
+MIN_TO_MEASURE = 6          # fewer usable pieces than this search only the small slopes below
+FEW_TO_MEASURE, FEW_SLOPE_LIMIT = 4, 0.06  # a few pieces (a two-row receipt) may be tilted up to about 3.4 degrees; fewer are read level
 SAME_ROW = 0.5              # a piece joins the open row within this many text heights of the row's centre
 HANDWRITING_ROW = 1.0       # a handwritten piece joins the nearest printed row within this many text heights
 SAME_CELL = 1.5             # neighbours closer than this many character widths are one cell
@@ -75,7 +76,7 @@ def group(centres, tolerance=SAME_ROW):
     return [members for members, _ in rows]
 
 
-def row_slope(printed, slant=None):
+def row_slope(printed, slant=None, limit=SLOPE_LIMIT):
     """The slope (Y units per X unit) that groups the pieces into the fewest rows. printed maps an index to its centre (X, Y).
 
     slant is the margin's slope (None when unknown). A page turned in its own plane slants its rows and its margin the same
@@ -86,7 +87,7 @@ def row_slope(printed, slant=None):
     The search groups more tightly than the rows do (SLOPE_ROW), so a slope cannot make fewer rows by crowding two real rows
     together. Slopes with the fewest rows tie; the tightest rows (mean distance from the row's centre line) come first, then
     the smallest |slope|."""
-    steps = round(SLOPE_LIMIT / SLOPE_STEP)
+    steps = round(limit / SLOPE_STEP)
     results = []
     for step in range(-steps, steps + 1):
         slope = step * SLOPE_STEP
@@ -135,9 +136,11 @@ def build_rows(pieces):
     cx = {i: (left[i] + right[i]) / 2 for i in placed}
     cy = {i: (pieces[i][1][1] + pieces[i][1][3]) / 2 / h for i in placed}
     printed = [i for i in placed if not pieces[i][2]] or placed
-    # Too few pieces to tell a tilt from a pairing of rows: read them level.
-    slant = margin_slope([(left[i], cy[i]) for i in placed]) if len(placed) >= MIN_TO_MEASURE else None
-    slope = row_slope({i: (cx[i], cy[i]) for i in placed}, slant) if len(placed) >= MIN_TO_MEASURE else 0.0
+    # A few pieces cannot tell a large tilt from a pairing of rows (a title and a price far below it): they search only the small slopes,
+    # and fewer than FEW_TO_MEASURE are read level.
+    measured = len(placed) >= MIN_TO_MEASURE
+    slant = margin_slope([(left[i], cy[i]) for i in placed]) if len(placed) >= FEW_TO_MEASURE else None
+    slope = row_slope({i: (cx[i], cy[i]) for i in placed}, slant, SLOPE_LIMIT if measured else FEW_SLOPE_LIMIT) if len(placed) >= FEW_TO_MEASURE else 0.0
     row_y = {i: cy[i] + slope * cx[i] for i in placed}
     # Row membership: printed pieces by row_y, then each handwritten piece to the nearest printed row, else rows of their own.
     groups = group({i: row_y[i] for i in printed}) if printed else []
@@ -171,7 +174,7 @@ def build_rows(pieces):
         for index in members:
             owner[index] = row
     # Extent, alignment and indent, in character widths.
-    edge_left = percentile([start for start, _ in extents], 0.1)
+    edge_left = min(start for start, _ in extents)  # The leftmost row sets the margin, however few rows sit on it: a margin of 10% of the rows would call a lone main row's followers unindented.
     edge_right = percentile([end for _, end in extents], 0.9)
     middle = (edge_left + edge_right) / 2
     offsets = []

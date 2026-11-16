@@ -317,7 +317,9 @@ def summary(manifest, results, regressions):
                        **{key: stats["tokens"][key] for key in ("model_calls", "prompt_tokens", "completion_tokens")}},
             "regressions": regressions.get(name, {"newly_failing": [], "newly_passing": []}),
         }
-        if candidate.get("reading_format"):  # An allowlisted label (check_summary refuses any other value).
+        if candidate.get("reading_format"):  # Copied only as one of the known format names.
+            if not (isinstance(candidate["reading_format"], str) and candidate["reading_format"] in READING_FORMATS):
+                raise ValueError("A candidate's reading_format is not a known reading format.")
             candidates[name]["reading_format"] = candidate["reading_format"]
         if reader_summary(stats):
             candidates[name]["table_readers"] = reader_summary(stats)
@@ -367,6 +369,9 @@ def check_summary(data):
         return isinstance(value, str) and LABEL.fullmatch(value) is not None and not PATHLIKE.search(value)
 
     def walk(value, key=None, path="summary"):
+        # An enum key holds one allowed string, checked before any recursion (`split` is also a status count, deeper down).
+        if key in ENUM_VALUES and (key == "reading_format" or path.count(".") == 1) and not (isinstance(value, str) and value in ENUM_VALUES[key]):
+            raise ValueError(f"{path}: unexpected value.")
         if isinstance(value, dict):
             for name, item in value.items():
                 if key == "candidates":

@@ -312,10 +312,12 @@ with every result. The same format applies to every vision call in a run: images
 
 `spans` follows the text-PDF engine: `documents/vision_layout.py` `build_rows` puts pieces that sit on one printed row
 together (even on a tilted photo), joins pieces closer than a small gap into one cell, and takes indent from groups of the
-rows' left edges. It uses only relative positions, so pixels and a 0 to 1000 scale build the same rows. A piece whose box
+rows' left edges, measured from the leftmost row. It uses only relative positions, so pixels and a 0 to 1000 scale build the same rows. A piece whose box
 isn't four numbers with right greater than left and bottom greater than top is a row of its own with an unknown indent,
 and the reading notes it (the `vision_positions_unusable` issue). When fewer than half the boxes are usable, rows follow
-the answer's order with unknown indents. The model's positions are its report, never a measurement. The key names (`bbox_2d`,
+the answer's order with unknown indents. Six or more pieces are searched for a tilt of up to about 8.5 degrees; four or five
+(a two-row receipt) only up to about 3.4, and fewer are read level, so a receipt of a title and one price cannot be tilted
+into one row. The model's positions are its report, never a measurement. The key names (`bbox_2d`,
 `text_content`) are the ones grounding-trained models already use.
 
 **The task `receipt_layout`** draws 24 receipts with known rows (`evals/receipt_layouts.py`): prices at the right edge,
@@ -328,11 +330,13 @@ number. The grader is `evals/layout_grading.py`.
 
 What it counts, each against its denominator ("3 split rows of 412 rows"):
 - **Rows.** Read whole (on one line of their own), split (on two lines or more), merged (sharing a line with another
-  row), missing, extra lines and out of order. A misread character inside a row is not a split.
+  row), missing, extra lines and out of order. A misread character inside a row is not a split. A row is split over, or
+  merged into, as many lines as it has cells (four at least), and only when each piece is held by the other side, so a
+  deleted row is missing rather than merged into its neighbour.
 - **Money.** Each printed amount: read exactly anywhere, and read on its own row's line. Wrong digits are counted apart
-  from missing amounts.
-- **Indent**, for rows read whole: right, wrong or unknown, apart for indented rows and edge rows. A format that reports
-  no indent (`v6-text`) shows "not reported".
+  from missing amounts. An amount read exactly on another row's line is that row's, so it is never also a wrong digit.
+- **Indent**, for rows read whole: right, wrong or unknown, apart for indented rows and edge rows. `v6-text` reports no
+  indent and shows "not reported"; the other formats do, so a line without one is "unknown" and fails the case.
 - **Cells, alignment and handwriting**, for the formats that report them: rows whose cells match, rows whose alignment is
   right and precision and recall of the handwritten flags (`spans`).
 - **Positions** (`spans`, reported, never part of passing): the share of boxes that are usable, and the median overlap

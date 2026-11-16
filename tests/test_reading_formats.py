@@ -3,8 +3,11 @@ layout-text and spans read through the same `transcribe` as today's v7-lines, on
 
 Synthetic images and the local model stub only. The v7 captures are SL-01's committed files, never regenerated here."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import threading
+import time
 
 from PIL import Image
 import pytest
@@ -101,6 +104,38 @@ def test_nesting_restores_each_level_and_an_error_leaves_the_default():
                 raise RuntimeError("inside a case")
         assert active_format() == "spans"
     assert active_format() == "v7-lines"
+
+
+def test_scopes_in_two_threads_run_one_after_another_and_leave_the_default():
+    a_inside, b_trying, a_done = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+
+    def first():
+        with reading_format("spans"):
+            a_inside.set()
+            assert b_trying.wait(5)
+            time.sleep(0.2)  # Time for the second thread to enter its own block, if it could.
+            seen["a"] = active_format()
+            with ThreadPoolExecutor(1) as pool:  # A worker started inside the scope still reads the scope's format.
+                seen["worker"] = pool.submit(active_format).result(5)
+        a_done.set()
+
+    def second():
+        assert a_inside.wait(5)
+        b_trying.set()
+        with reading_format("layout-text"):
+            seen["b"] = active_format()
+            assert a_done.wait(5)  # Without the scope lock this is where the first thread's exit would change the format under this block.
+            seen["b_later"] = active_format()
+
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert seen == {"a": "spans", "worker": "spans", "b": "layout-text", "b_later": "layout-text"}
+    assert active_format() == DEFAULT_FORMAT
 
 
 def test_the_prompt_version_labels():

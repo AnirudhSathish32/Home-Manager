@@ -32,7 +32,7 @@ from evals.graders import (
     table_reader,
 )
 from evals.guard import GuardError, _hook, check_server
-from evals.report import case_pass, check_summary, rebuild
+from evals.report import SUMMARY_FORMAT, case_pass, check_summary, rebuild
 from evals.run import load_config, run
 from evals.synthetic import BILL_FILES, BILL_SEED, PAYSTUB_FILES, PAYSTUB_SEED, TOTAL_BILL_FILES, aligned_bill, aligned_paystub, documents, money, write_case
 from evals.synthetic import create as create_synthetic
@@ -1044,7 +1044,8 @@ def test_a_format_run_summary_holds_only_the_format_label_and_never_a_seeded_pri
     summary = json.loads(text)
     assert summary["candidates"]["m@spans"]["reading_format"] == "spans" and "prompt_version" not in text
     # A private string in the format's place is refused, wherever it comes from.
-    for bad in ("SECRETMERCHANT", "P:/Finances/secret.pdf", "spans, v7-lines", ""):
+    nested = {"vision": "SECRETMERCHANT", "amount_due_total": 987654321}
+    for bad in ("SECRETMERCHANT", "P:/Finances/secret.pdf", "spans, v7-lines", "", nested, ["spans"], 7, True, None):
         with pytest.raises(ValueError):
             check_summary({**summary, "candidates": {"m@spans": {**summary["candidates"]["m@spans"], "reading_format": bad}}})
         if bad:  # An empty label is no label.
@@ -1053,6 +1054,18 @@ def test_a_format_run_summary_holds_only_the_format_label_and_never_a_seeded_pri
     with pytest.raises(ValueError):
         check_summary({**summary, "candidates": {"m@spans": {**summary["candidates"]["m@spans"], "prompt_version": "receipt-vision-spans-1"}}})
     assert "SECRETMERCHANT" not in (folder / "summary.json").read_text(encoding="utf-8")  # The refused rebuilds left the file as it was.
+
+
+@pytest.mark.parametrize("bad", [{"vision": "SECRETMERCHANT", "amount_due_total": 987654321}, ["spans"], 7, True, None, "SECRETMERCHANT"])
+def test_an_enum_key_holds_only_one_allowed_string_never_a_nested_value(bad):
+    candidate = {"vision": "v", "reasoning": "r", "reading_format": "spans"}
+    data = {"format": SUMMARY_FORMAT, "candidates": {"m@spans": candidate}}
+    assert check_summary(data) is data
+    for value in ({**candidate, "reading_format": bad}, {**candidate, "reading_format": bad, "vision": "v"}):
+        with pytest.raises(ValueError):
+            check_summary({**data, "candidates": {"m@spans": value}})
+    with pytest.raises(ValueError):
+        check_summary({**data, "split": bad})
 
 
 def rebuild_with_format(corpus, folder, manifest, value):

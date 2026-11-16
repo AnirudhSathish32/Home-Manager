@@ -172,23 +172,28 @@ def parse_lines(raw):
 
 # Reading formats (evals only). The choice is process-wide, like model_client.recording, and never a VisionConfig field:
 # PUT /api/vision-settings saves a whole VisionConfig, so a field there could change every reading.
-_format_lock = threading.Lock()
+_format_lock = threading.Lock()  # Guards reads and writes of _format; active_format() takes only this one.
+_scope_lock = threading.RLock()  # Held for a whole `with reading_format(...)` block, so scopes in different threads run one after another.
 _format = DEFAULT_FORMAT
 
 
 @contextmanager
 def reading_format(name):
-    """Read with this format inside the block (restored on exit, nesting-safe). Raises ValueError for an unknown name."""
+    """Read with this format inside the block (restored on exit, nesting-safe). Raises ValueError for an unknown name.
+
+    The block holds a scope lock, so overlapping blocks in different threads wait for each other instead of restoring one another's
+    format; a thread nested in its own block re-enters, and threads started inside the block still read it through active_format()."""
     global _format
     if name not in READING_FORMATS:
         raise ValueError(f"Unknown reading format: {name}. Choose from: {', '.join(READING_FORMATS)}.")
-    with _format_lock:
-        previous, _format = _format, name
-    try:
-        yield
-    finally:
+    with _scope_lock:
         with _format_lock:
-            _format = previous
+            previous, _format = _format, name
+        try:
+            yield
+        finally:
+            with _format_lock:
+                _format = previous
 
 
 def active_format():

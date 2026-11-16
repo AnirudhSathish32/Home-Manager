@@ -58,13 +58,14 @@ def grade(case, output):
     rows, amounts = counts["rows"], counts["amounts"]
     indent_right = counts["indented_right"] + counts["edge_right"]
     reported = counts["indent_reported"]
-    checks = {**{key: value for key, value in counts.items() if key not in ("sole", "evaluations")},
+    checks = {**{key: value for key, value in counts.items() if key != "evaluations"},
               "no_split_rows": counts["split"] == 0, "no_merged_rows": counts["merged"] == 0, "no_missing_rows": counts["missing"] == 0,
               "amounts_on_their_rows": counts["amounts_on_row"] == amounts,
               "indents_right": not reported or (counts["indented_wrong"] + counts["edge_wrong"] + counts["indented_unknown"] + counts["edge_unknown"] == 0
                                                 and indent_right == counts["indented_rows"] + counts["edge_rows"]),
-              "whole_share": share(counts["sole"], rows), "amounts_on_row_share": share(counts["amounts_on_row"], amounts),
-              "indent_share": share(indent_right, rows) if reported else None, "accuracy": round(max(0.0, 1 - counts["cer"]), 4)}
+              "whole_share": share(counts["whole"], rows), "amounts_on_row_share": share(counts["amounts_on_row"], amounts),
+              "indent_share": share(indent_right, rows) if reported else None, "accuracy": round(max(0.0, 1 - counts["cer"]), 4),
+              "output_characters": len(str((output or {}).get("text") or ""))}
     required = ["no_split_rows", "no_merged_rows", "no_missing_rows", "amounts_on_their_rows", "indents_right"]
     return result(checks, required, ["whole_share", "amounts_on_row_share", "indent_share", "accuracy"])
 

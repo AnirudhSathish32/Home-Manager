@@ -12,6 +12,7 @@ import re
 from statistics import median
 
 from home_manager.documents.vision_layout import usable
+from home_manager.models.vision import READING_FORMATS
 
 # The money rule, one definition for the generator (its answers) and the grader: a number with exactly two decimals, an optional `$`,
 # thousands commas, a leading or trailing minus or parentheses, not followed by `%` or a digit.
@@ -25,7 +26,8 @@ BAND = 15            # Lines either side of the proportional diagonal the alignm
 EXTRA_PIECE = 0.05   # What a split or a merge costs for each piece beyond the first.
 NEAR_LINES = 3       # A missing cell is looked for on unpaired lines this close to its row's line.
 ANCHOR_RUN = 2      # Equal rows and lines in runs this long are paired before the alignment looks at the rest.
-MOST_PIECES = 3      # A row is split over, or merged into, at most this many lines.
+MOST_PIECES = 4      # A row is split over, or merged into, at least this many lines at most (more when a row has more cells; dining's tip rows have four).
+INDENT_FORMATS = ("v7-lines", "layout-text", "spans")  # The formats that report an indent for every line; v6-text reports none.
 
 
 def parse_amounts(text):
@@ -113,19 +115,21 @@ class Aligner:
             self.cache[key] = min(previous) <= limit
         return self.cache[key]
 
-    def align(self, rows, lines):
-        """Groups (row indexes, line indexes) in order: 1:1, 1:k (split) or k:1 (merged). Anything unpaired is missing or extra."""
+    def align(self, rows, lines, most=MOST_PIECES):
+        """Groups (row indexes, line indexes) in order: 1:1, 1:k (split) or k:1 (merged), k up to most. Anything unpaired is missing or extra.
+        A split or a merge needs evidence per piece: the row holds each of its lines (or the line each of its rows), so a deleted row is
+        missing rather than merged into a neighbour, and a split cannot take an unrelated line."""
         matcher = SequenceMatcher(None, rows, lines, autojunk=False)
         # Only runs of at least two equal rows are anchors: a lone equal row may be the left half of a split row that repeats an item's name.
         anchors = [(a + k, b + k) for a, b, size in matcher.get_matching_blocks() if size >= ANCHOR_RUN for k in range(size)]
         groups, row_start, line_start = [], 0, 0
         for i, j in anchors:
-            groups += self.gap(rows, lines, row_start, i, line_start, j)
+            groups += self.gap(rows, lines, row_start, i, line_start, j, most)
             groups.append(((i,), (j,)))
             row_start, line_start = i + 1, j + 1
-        return groups + self.gap(rows, lines, row_start, len(rows), line_start, len(lines))
+        return groups + self.gap(rows, lines, row_start, len(rows), line_start, len(lines), most)
 
-    def gap(self, rows, lines, row0, row1, line0, line1):
+    def gap(self, rows, lines, row0, row1, line0, line1, most=MOST_PIECES):
         n, m = row1 - row0, line1 - line0
         if not n or not m:
             return []
@@ -144,14 +148,16 @@ class Aligner:
                     step = self.near(rows[row0 + i - 1], lines[line0 + j - 1])
                     if step <= PAIRABLE:
                         best = min(best, (cost[(i - 1, j - 1)] + step, (i - 1, j - 1)), key=lambda option: option[0])
-                for k in range(2, MOST_PIECES + 1):
+                for k in range(2, most + 1):
                     if j - k >= 0 and (i - 1, j - k) in cost:
-                        step = self.near(rows[row0 + i - 1], " ".join(lines[line0 + j - k:line0 + j]))
-                        if step <= PAIRABLE and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0]:
+                        row, pieces = rows[row0 + i - 1], lines[line0 + j - k:line0 + j]
+                        step = self.near(row, " ".join(pieces))
+                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and all(self.holds(piece, row) for piece in pieces):
                             best = (cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1), (i - 1, j - k))
                     if i - k >= 0 and (i - k, j - 1) in cost:
-                        step = self.near(" ".join(rows[row0 + i - k:row0 + i]), lines[line0 + j - 1])
-                        if step <= PAIRABLE and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0]:
+                        parts, line = rows[row0 + i - k:row0 + i], lines[line0 + j - 1]
+                        step = self.near(" ".join(parts), line)
+                        if step <= HELD and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0] and all(self.holds(part, line) for part in parts):
                             best = (cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1), (i - k, j - 1))
                 for previous in ((i - 1, j), (i, j - 1)):  # Skip a row, or skip a line: 1.0 each.
                     if previous in cost and cost[previous] + 1.0 < best[0]:
@@ -207,7 +213,7 @@ def grade_reading(expected, output):
     reading = [(position, text, indent) for position, text, indent in reading if normalize(text)]
     line_text = [normalize(text) for _, text, _ in reading]
     aligner = Aligner()
-    groups = aligner.align(row_text, line_text)
+    groups = aligner.align(row_text, line_text, max([MOST_PIECES, *(len(cells) for cells in row_cells)]))
     paired_rows = {i for group in groups for i in group[0]}
     paired_lines = {j for group in groups for j in group[1]}
     # A price printed after a side line: the row's line lacks a cell that an unpaired line near it holds, so the row is split over both.
@@ -250,7 +256,6 @@ def grade_reading(expected, output):
             split += 1
         else:
             merged += len(group_rows) - 1
-    whole = len(sole) + sum(len(group_rows) > 1 for group_rows, _ in groups)  # A shared line stays with the first row that shares it.
 
     # Characters: how far the readings are from the printed text, by the aligned rows.
     distance = sum(aligner.lev(" ".join(row_text[i] for i in group_rows), " ".join(line_text[j] for j in group_lines))
@@ -272,29 +277,31 @@ def grade_reading(expected, output):
                     count -= take
                     found[amount] += take
         own[i] = found
-    pool = Counter()
-    for counter in remaining:
-        pool.update(+counter)
+    placed = {line for lines in lines_of.values() for line in lines}
     elsewhere = wrong = absent = 0
-    for i in range(len(rows)):
+    unmatched = []
+    for i in range(len(rows)):  # Every exact match anywhere is reserved before any wrong digit is allotted, so a spare is never one that another row reads exactly.
         for amount, count in (wanted[i] - own[i]).items():
             for _ in range(count):
-                if pool[amount] > 0:
-                    pool[amount] -= 1
+                holders = [line for line, counter in enumerate(remaining) if counter[amount] > 0]
+                if holders:
+                    remaining[min(holders, key=lambda line: (line in placed, line))][amount] -= 1  # A line that no row owns first.
                     elsewhere += 1
-                    continue
-                spare = next(((line, other) for line in lines_of.get(i, []) for other, left in remaining[line].items() if left > 0), None)
-                if spare:
-                    remaining[spare[0]][spare[1]] -= 1
-                    pool[spare[1]] -= 1
-                    wrong += 1
                 else:
-                    absent += 1
+                    unmatched.append(i)
+    for i in unmatched:
+        spare = next(((line, other) for line in lines_of.get(i, []) for other, left in remaining[line].items() if left > 0), None)
+        if spare:
+            remaining[spare[0]][spare[1]] -= 1
+            wrong += 1
+        else:
+            absent += 1
     amounts = sum(sum(counter.values()) for counter in wanted)
     on_row = sum(sum(own[i].values()) for i in sole)
 
     # Indent (FR-15), cells and alignment and handwriting (FR-16), for rows alone on their line.
-    indent_reported = any(indent is not None for _, _, indent in reading)
+    # The format decides whether an indent is reported: one that should report it and has lost it is "unknown", never "not reported".
+    indent_reported = format_name in INDENT_FORMATS if format_name in READING_FORMATS else any(indent is not None for _, _, indent in reading)
     cells_reported = format_name in CELL_FORMATS and len(output.get("rows") or []) == len(output.get("lines") or [])
     position_reported = cells_reported and format_name in POSITION_FORMATS
     counts = {"indented_rows": 0, "indented_right": 0, "indented_wrong": 0, "indented_unknown": 0,
@@ -327,7 +334,7 @@ def grade_reading(expected, output):
                 if want.get("box") and usable(have.get("box")):
                     pairs.append((list(have["box"]), list(want["box"])))
     pieces = output.get("spans") or []
-    return {"rows": len(rows), "lines": len(reading), "whole": whole, "sole": len(sole), "split": split, "merged": merged,
+    return {"rows": len(rows), "lines": len(reading), "whole": len(sole), "split": split, "merged": merged,
             "missing": len(missing_rows), "extra": len(extra_lines), "out_of_order": out_of_order,
             "amounts": amounts, "amounts_read": sum(sum(counter.values()) for counter in own.values()) + elsewhere,
             "amounts_on_row": on_row, "amounts_wrong": wrong, "amounts_missing": absent,

@@ -266,6 +266,19 @@ def test_a_few_pieces_are_read_level():
     assert [row.text for row in rows] == ["LOCAL TEST CAFE", "14.95"]
 
 
+@pytest.mark.parametrize("degrees", [0, 2.5, -2.5, 3, -3])
+def test_a_two_row_receipt_tilted_a_little_is_still_two_rows(degrees):
+    pieces, expected = receipt([two("Coffee", "$3.50"), two("Total", "$3.50")])
+    assert len(pieces) == 4
+    assert rows_of(transform(pieces, tilt(degrees, centre=(380, 90))))[0] == expected
+
+
+def test_one_main_row_followed_by_side_rows_leaves_the_side_rows_indented():
+    """One row on the margin and ten on the first indent: the margin is the leftmost row's, however few rows sit on it."""
+    got = rows_of(receipt([[Spec("Coffee")]] + [[Spec(f"Side {number}", indent=1)] for number in range(10)])[0])[0]
+    assert [indent for _, indent, _ in got] == [0] + [1] * 10
+
+
 def test_an_unusable_first_piece_comes_first():
     pieces, _ = breakfast()
     broken = [(pieces[0][0], None, False), *pieces[1:]]
