@@ -168,6 +168,16 @@ code_review:
       - {id: R4-1, severity: MAJOR, area: "supported() strict tie rejects noisy short-piece splits/merges; '$' | '3.95' read '$' / '$3.95' is whole + extra and passes", disposition: "fixed SL-09 (human chose option B: ties fail the case, plus a Codex review)"}
       - {id: R4-2, severity: MINOR, area: "stretches enumerates every span; 150 near-duplicate 48-char rows >50 s (was 8.75 s)", disposition: "fixed SL-09 (earliest_end semi-global DP; 48-char case 48.7 s -> 10.1 s)"}
     status: "human chose option B 2026-11-16: tie policy fix plus one more Codex review"
+  round_5:
+    reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0bf7ced (hunks 82145d5..5942a3b), risk HIGH
+    authorisation: human chose option B 2026-11-16
+    task: review-code-receipt-layout-eval-r5
+    round_4_status: "R4-2 resolved; R4-1 resolved inside gap but bypassed by anchors"
+    findings:
+      - {id: R5-1, severity: MAJOR, area: "anchored 1:1 pairs skip the split tie check: 'Tea' before an anchored 'Tea with lemon $3.95' is whole + extra and passes (itemized/clean/0 too; 399 sweep insertions)", disposition: "open: reproduced by orchestrator, escalated"}
+      - {id: R5-2, severity: INFO, area: "earliest_end('', 'a', 0) returns 1 (in_order skips empty parts; no impact)", disposition: open}
+      - {id: R5-3, severity: INFO, area: "trailing duplicated short cell (Pump|11 read 'zump 11' / '11') passes: reviewer judges acceptable under FR-13/FR-19", disposition: "accepted, documented in SL-09 notes"}
+    status: PENDING HUMAN DECISION
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
