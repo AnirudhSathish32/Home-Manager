@@ -19,8 +19,8 @@ bytes are the same on every computer; tests/reading_format_data/** is `-text` in
 
 import hashlib
 import json
-import re
 from pathlib import Path
+import re
 
 from PIL import Image, ImageDraw
 
