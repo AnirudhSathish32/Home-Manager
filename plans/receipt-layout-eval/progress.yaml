@@ -75,6 +75,36 @@ slices:
       Accepted: format variants show "not ranked" on the task leaderboard; run_one takes an optional candidate;
       documents-suite budget_retry counts transcription attempts; extra report lines (budget-retry sentence, "Reading
       format:"); run.json always carries formats.
+  SL-06:
+    status: done
+    title: "SL-06: fixes for code review round 1"
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 0707b66
+    end_head: 5ea7229  # code 73ee882, handoff 5ea7229
+    verification: >-
+      Orchestrator rerun 2026-11-16: the seven targeted test files 309 passed, 1 skipped (capture writer), exit 0;
+      ruff on changed .py files clean; protected artifacts (spec, plan, approvals, progress, reading_format_data)
+      untouched; plan hash unchanged.
+    notes: >-
+      MOST_PIECES 3 -> 4 (grows to the largest cell count), in favour of FR-13 over the plan's constant. Merge/split
+      distance tightened 0.5 -> 0.3 with per-piece evidence. Indent margin is now the leftmost row's start.
+code_review:
+  round_1:
+    reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0707b66, risk HIGH
+    task: review-code-receipt-layout-eval-r1
+    findings:
+      - {id: R1-1, severity: MAJOR, area: "evals/report.py summary reading_format nested values", disposition: fixed SL-06}
+      - {id: R1-2, severity: MAJOR, area: "vision.reading_format overlapping thread scopes", disposition: fixed SL-06}
+      - {id: R1-3, severity: MAJOR, area: "layout_grading money exact-before-wrong allocation", disposition: fixed SL-06}
+      - {id: R1-4, severity: MAJOR, area: "indent capability by format", disposition: fixed SL-06}
+      - {id: R1-5, severity: MAJOR, area: "deleted row counted merged", disposition: fixed SL-06}
+      - {id: R1-6, severity: MAJOR, area: "MOST_PIECES=3 vs four-cell rows", disposition: fixed SL-06}
+      - {id: R1-7, severity: MINOR, area: "whole counted merge groups", disposition: fixed SL-06}
+      - {id: R1-8, severity: MINOR, area: "sparse leftmost margin", disposition: fixed SL-06}
+      - {id: R1-9, severity: MINOR, area: "short tilted receipts", disposition: "fixed SL-06 (4+ pieces up to ~3.4 deg)"}
+      - {id: R1-10, severity: MINOR, area: "output_characters missing", disposition: fixed SL-06}
+      - {id: R1-11, severity: MINOR, area: "test precedence bug", disposition: fixed SL-06}
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
