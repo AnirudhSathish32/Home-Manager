@@ -200,8 +200,9 @@ Choosing Bill again uses its due date (or issue date) for counting. Changing the
   ([family](family.md#sharing-a-bill-by-line)). A rent bill shares by line the same way.
 - **The page.** Records and the document page show a **Bill** tag and the due date; Records adds the period. The
   document page shows the bill's fields at the top (provider, due, issued when printed, period, billed) and the lines
-  table: line, price, category, type, person and what each paid. The person is chosen from the family in the family's
-  inbox; elsewhere it shows who the line is for as printed. A bill with lines for more than one person offers **Ask the
+  table: line, price, category, type, person and what each paid. Paid is the line's price with its part of the taxes
+  and fees ("with taxes and fees"), or the price again when nothing is spread into it, such as a rent line. The
+  person is chosen from the family in the family's inbox; elsewhere it shows who the line is for as printed. A bill with lines for more than one person offers **Ask the
   family to share by line**. A rent line also shows its period and usage, each with Find.
 - **The earlier balance row.** Under a kinded bill's lines (`Ledger.bill_summary`) come the printed previous balance and
   payments received, then one **Amount due** row last, under a rule, with Find and Correct; there is no New charges or

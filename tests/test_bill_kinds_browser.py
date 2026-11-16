@@ -104,6 +104,9 @@ def test_sc48_a_rent_bills_page_its_lines_and_its_kind(tmp_path):
         # 4. Rent: its type and period; Find lights line 4.
         rent = page.locator(".bill-lines tbody tr", has_text="Oct 1 – Oct 31, 2026")
         expect(rent.get_by_label("Type of Rent")).to_have_value("rent")
+        # Paid is never a bare "—" for a priced line: its price again, or its share with taxes and fees.
+        price, paid = (rent.locator("td").nth(index).inner_text() for index in (1, 5))
+        assert paid == price or "with taxes and fees" in paid, (price, paid)
         rent.get_by_role("button", name="Find the period of Rent").click()
         expect(selected(page)).to_contain_text(RENT[RENT_LINE - 1][:20])
         # 5. Amount due is the section's last row; Find lights its printed line and Correct opens the correction form.

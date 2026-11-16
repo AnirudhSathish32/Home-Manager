@@ -268,7 +268,9 @@ function billLines(record, categories, onSaved, find, correctField = null) {
       if (row.person.source === "account") person.append(element("small", row.person.title, "muted block"));
     } else person.textContent = nameOf(row.member_id) || (row.member_id ? "Someone in the family" : row.line_holder ? row.line_holder.replace(/[\d()\-\s]+$/, "") || "—" : "Shared");
     const paid = element("td", "", "numeric");
+    // A line with no taxes or fees spread into it paid its own price, shown again here like a receipt item's Paid.
     if (row.display.share_minor && row.share_minor !== row.line_total_minor) { paid.append(amount(row.display.share_minor, {signed: false}), element("small", "with taxes and fees", "muted block")); }
+    else if (row.display.line_total_minor) paid.append(amount(row.display.line_total_minor, {signed: false}));
     else paid.append(element("span", "—", "muted"));
     const source = document.createElement("td"); if (row.line_ids?.length) source.appendChild(sourceButton(row.line_ids, find));
     tr.append(line, price, category, kind, person, paid, source);
