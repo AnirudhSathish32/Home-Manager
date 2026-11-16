@@ -47,6 +47,19 @@ slices:
     notes: >-
       Accepted: Row.kind and Receipt.checks fields, parse_amounts in receipt_layouts.py (SL-04 must share it with the
       grader), draw(receipt, only=(row, cell)). Worker's ad-hoc build_rows run on all 24 drawn cases matched; SL-04 commits it.
-  SL-04: {status: in_progress}
-  SL-05: {status: todo}
+  SL-04:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: fa898d8
+    end_head: 2ebf20e  # code a2fea83, handoff 2ebf20e
+    verification: >-
+      Orchestrator rerun 2026-11-16: the plan's SL-04 command (5 files) 189 passed, exit 0; the 24-case build_rows test
+      (parametrized over CASES) is committed; plan hash matches.
+    notes: >-
+      Accepted: anchors need a run of two equal rows; merged counts rows beyond the first on a shared line (whole + split +
+      merged + missing = rows); CER from the alignment; parse_amounts/MONEY defined once in layout_grading.py; measured-only
+      tasks also left out of the leaderboard valid count and schema sums; SC-04 reads 49.85 for the printed 48.85.
+      No vision_layout constant tuning was needed.
+  SL-05: {status: in_progress}
 final_verification: null
