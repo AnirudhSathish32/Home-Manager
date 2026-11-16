@@ -111,6 +111,20 @@ slices:
       Orchestrator rerun 2026-11-16: the seven targeted test files 437 passed, 1 skipped, exit 0; ruff clean;
       all round-3 reproductions rechecked (split 1 / merged 1 / missing 1 / margin indents 0); protected artifacts
       untouched; plan hash unchanged.
+  SL-09:
+    status: done
+    title: "SL-09: fixes for code review round 4"
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 82145d5
+    end_head: e83d962  # code 5942a3b, handoff e83d962
+    verification: >-
+      Orchestrator rerun 2026-11-16: the seven targeted test files pass, exit 0; ruff clean; R4-1 reproductions rechecked
+      ('$' | '3.95' -> split 1; Baguette/e -> whole 1 + missing 1; deleted Tea heading -> missing 1; Tea/Sea -> split 1);
+      protected artifacts untouched; plan hash unchanged.
+    notes: >-
+      Test expectation changed by policy: a line repeating a split piece now counts split (a tie must fail).
+      Known: a duplicated trailing short cell read as its own extra line still passes (extra lines are not required).
 code_review:
   round_1:
     reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0707b66, risk HIGH
@@ -151,9 +165,9 @@ code_review:
     task: review-code-receipt-layout-eval-r4
     round_3_status: "R3-1, R3-2, R3-3 resolved"
     findings:
-      - {id: R4-1, severity: MAJOR, area: "supported() strict tie rejects noisy short-piece splits/merges; '$' | '3.95' read '$' / '$3.95' is whole + extra and passes", disposition: "open: reproduced by orchestrator, escalated"}
-      - {id: R4-2, severity: MINOR, area: "stretches enumerates every span; 150 near-duplicate 48-char rows >50 s (was 8.75 s)", disposition: "open: escalated with R4-1"}
-    status: PENDING HUMAN DECISION
+      - {id: R4-1, severity: MAJOR, area: "supported() strict tie rejects noisy short-piece splits/merges; '$' | '3.95' read '$' / '$3.95' is whole + extra and passes", disposition: "fixed SL-09 (human chose option B: ties fail the case, plus a Codex review)"}
+      - {id: R4-2, severity: MINOR, area: "stretches enumerates every span; 150 near-duplicate 48-char rows >50 s (was 8.75 s)", disposition: "fixed SL-09 (earliest_end semi-global DP; 48-char case 48.7 s -> 10.1 s)"}
+    status: "human chose option B 2026-11-16: tie policy fix plus one more Codex review"
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
