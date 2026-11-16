@@ -125,6 +125,21 @@ slices:
     notes: >-
       Test expectation changed by policy: a line repeating a split piece now counts split (a tie must fail).
       Known: a duplicated trailing short cell read as its own extra line still passes (extra lines are not required).
+  SL-10:
+    status: done
+    title: "SL-10: fixes for code review round 5"
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 8a23014
+    end_head: d96bdab  # code 5e4d339, handoff f38105c + d96bdab (first attempt hit an API rate limit with no changes; retried once)
+    verification: >-
+      Orchestrator 2026-11-16: R5-1 reproductions rechecked (anchored Tea -> whole 2 split 1 extra 0; anchored deleted
+      heading -> missing 1; unrelated line -> extra 1); earliest_end('', 'a', 0) == 0; diff read; protected artifacts
+      untouched; plan hash unchanged. Targeted tests covered by the full-suite run below.
+    notes: >-
+      Acceptance sweep: 399 tie insertions all split and fail; 2,550 others whole + extra 1; 3,400 unrelated-line readings
+      whole + extra 1. Accepted deviation: 27 insertions that tie with the neighbouring row also count split (fail),
+      the conservative side of the human's "an ambiguous reading never passes" policy.
 code_review:
   round_1:
     reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0707b66, risk HIGH
@@ -174,10 +189,10 @@ code_review:
     task: review-code-receipt-layout-eval-r5
     round_4_status: "R4-2 resolved; R4-1 resolved inside gap but bypassed by anchors"
     findings:
-      - {id: R5-1, severity: MAJOR, area: "anchored 1:1 pairs skip the split tie check: 'Tea' before an anchored 'Tea with lemon $3.95' is whole + extra and passes (itemized/clean/0 too; 399 sweep insertions)", disposition: "open: reproduced by orchestrator, escalated"}
-      - {id: R5-2, severity: INFO, area: "earliest_end('', 'a', 0) returns 1 (in_order skips empty parts; no impact)", disposition: open}
+      - {id: R5-1, severity: MAJOR, area: "anchored 1:1 pairs skip the split tie check: 'Tea' before an anchored 'Tea with lemon $3.95' is whole + extra and passes (itemized/clean/0 too; 399 sweep insertions)", disposition: "fixed SL-10 (human chose option A: fix, orchestrator verifies, no further review)"}
+      - {id: R5-2, severity: INFO, area: "earliest_end('', 'a', 0) returns 1 (in_order skips empty parts; no impact)", disposition: fixed SL-10}
       - {id: R5-3, severity: INFO, area: "trailing duplicated short cell (Pump|11 read 'zump 11' / '11') passes: reviewer judges acceptable under FR-13/FR-19", disposition: "accepted, documented in SL-09 notes"}
-    status: PENDING HUMAN DECISION
+    status: "human chose option A 2026-11-16: fix, verify without another review, then full suite"
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
