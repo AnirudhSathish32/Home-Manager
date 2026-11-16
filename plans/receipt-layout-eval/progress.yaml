@@ -61,5 +61,18 @@ slices:
       merged + missing = rows); CER from the alignment; parse_amounts/MONEY defined once in layout_grading.py; measured-only
       tasks also left out of the leaderboard valid count and schema sums; SC-04 reads 49.85 for the printed 48.85.
       No vision_layout constant tuning was needed.
-  SL-05: {status: in_progress}
+  SL-05:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 64f249a
+    end_head: 20b7bfc  # code 71af223, handoff 20b7bfc
+    verification: >-
+      Orchestrator rerun 2026-11-16: the plan's SL-05 command (4 files) 168 passed, exit 0 (not piped); both CLIs list
+      --formats; doc diff reviewed against FR-23 (docs/evals.md "Reading formats", task row 18, documents.md bullet,
+      README, open-work); src/ unchanged; plan hash matches.
+    notes: >-
+      Accepted: format variants show "not ranked" on the task leaderboard; run_one takes an optional candidate;
+      documents-suite budget_retry counts transcription attempts; extra report lines (budget-retry sentence, "Reading
+      format:"); run.json always carries formats.
 final_verification: null
