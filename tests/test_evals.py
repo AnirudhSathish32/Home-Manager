@@ -143,8 +143,8 @@ def test_table_reader_counts_exact_rows_and_reconciliation_and_never_values():
 
 
 def test_every_failure_gets_one_kind():
-    def attempt(status="succeeded", category=None, finish="stop"):
-        return {"status": status, "error_category": category, "finish_reason": finish, "follow_up": False}
+    def attempt(status="succeeded", category=None, finish="stop", budget=8192):
+        return {"status": status, "error_category": category, "finish_reason": finish, "follow_up": False, "params": {"max_tokens": budget}}
 
     cases = [("The model server stopped responding while switching models.", [], "load_fail"),
              ("Local model server returned HTTP 500. The server reported insufficient memory.", [attempt("failed", "http_500")], "out_of_memory"),
@@ -158,6 +158,15 @@ def test_every_failure_gets_one_kind():
              ("Extraction output failed validation: total.value: missing.", [attempt()], "schema_fail"),
              ("Model output did not match the full-text schema. No result was published.", [attempt()], "schema_fail"),
              ("Extraction failed validation: total: the amount is not printed in its cited evidence.", [attempt(), attempt()], "validator_fail"),
+             ("The model's final response was incomplete or truncated; it did not return JSON even with a larger output budget.",
+              [attempt("failed", "invalid_or_truncated_output", "length"), attempt("failed", "invalid_or_truncated_output", "length", 16384)], "truncated"),
+             # A rescue call that ran out after the budget retry: the reading rewrites the error, the last attempt still shows it (P13).
+             ("Model output did not contain valid full text after a text-only retry.",
+              [attempt(), attempt("failed", "invalid_or_truncated_output", "length"), attempt("failed", "invalid_or_truncated_output", "length", 16384)],
+              "truncated"),
+             # A stream that ended for another reason, at the first budget, is not a truncation.
+             ("Model response was incomplete or truncated; no extraction was published.", [attempt("failed", "invalid_or_truncated_output", "other")],
+              "other"),
              ("Something else.", [attempt()], "other")]
     assert {kind for *_, kind in cases} == set(FAILURE_KINDS)
     for error, attempts, kind in cases:

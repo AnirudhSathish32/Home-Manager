@@ -70,6 +70,12 @@ def oracle(task, case):
         columns = {"kept": len(expected["columns"]), "blanked": 0} if expected.get("columns") else {}
         return {"fields": {name: value for name, value in expected["fields"].items() if value is not None}, "counted": True, "wrong_column_counted": 0,
                 **columns}
+    if task == "receipt_layout":  # A perfect spans-shaped reading: every cell a piece with its drawn box, every row built whole.
+        cells = [(cell, row) for row in expected["rows"] for cell in row["cells"]]
+        return {"format": "spans", "lines": [[" ".join(cell["text"] for cell in row["cells"]), row["indent"]] for row in expected["rows"]],
+                "rows": [{"cells": [dict(cell) for cell in row["cells"]], "align": row["align"]} for row in expected["rows"]],
+                "spans": [{"text": cell["text"], "box": cell["box"], "handwritten": cell["handwritten"]} for cell, _ in cells],
+                "notes": [], "text": "\n".join(" ".join(cell["text"] for cell in row["cells"]) for row in expected["rows"]), "table_issue": False}
     raise AssertionError(task)
 
 
@@ -131,6 +137,9 @@ def test_graders_catch_wrong_answers():
     planted_claim = next(case for case in TASKS["decisions"].cases() if "planted_error" in case["tags"])
     assert not TASKS["decisions"].grade(planted_claim, {"answer": "true", "probabilities": {"true": .9, "false": .1}})["passed"]
     assert not TASKS["decisions"].grade(planted_claim, {"answer": None, "probabilities": None})["passed"]  # No label is no answer.
+    layout = first["receipt_layout"]
+    graded = TASKS["receipt_layout"].grade(layout, {"format": "v7-lines", "lines": [["nothing like it", 0]], "rows": [], "spans": []})
+    assert not graded["passed"] and graded["checks"]["missing"] == graded["checks"]["rows"] and graded["score"] < 0.1
 
 
 def step(tool, arguments):
@@ -509,3 +518,22 @@ def test_answers_can_be_exported_for_hand_labels(tmp_path, local_model):
     assert export_labels(folder, "describe", tmp_path / "to-label.jsonl") == 3
     first = json.loads((tmp_path / "to-label.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert first["label"] is None and first["rubric"] == "describe" and first["output"]["description"] == "Groceries"
+
+
+def test_a_measured_only_task_never_counts_toward_the_ranking():
+    """P14: every receipt_layout case failing leaves the candidate ranked on the other tasks, from those tasks' runs alone."""
+    from evals.tasks.report import aggregate, decision_rows
+
+    def line(task, case, status, passed, score, latency, **checks):
+        return {"candidate": "model", "task": task, "case_id": case, "run_index": 0, "status": status, "failure": None if status == "ok" else "other",
+                "first_try_valid": status == "ok", "latency_s": latency, "grades": {"passed": passed, "score": score, "checks": checks}}
+
+    assert TASKS["receipt_layout"].MEASURED_ONLY is True
+    kept = [line("transcription", f"t{i}", "ok", True, 1.0, 1.0 + i, money_errors=0) for i in range(4)]
+    layout = [line("receipt_layout", f"r{i}", "failed" if i % 2 else "error", False, 0.0, 30.0, money_errors=5) for i in range(6)]
+    manifest = {"candidates": [{"name": "model"}], "tasks": {"transcription": {}, "receipt_layout": {}}}
+    [alone] = decision_rows(manifest, aggregate(kept), {})
+    [both] = decision_rows(manifest, aggregate(kept + layout), {})
+    assert both == alone and both["runs"] == both["valid"] == 4 and both["money_errors"] == 0
+    assert set(both["scores"]) == set(both["pass_all"]) == {"transcription"} and both["p95"] == alone["p95"] < 30
+    assert decision_rows({"candidates": [{"name": "model"}], "tasks": {"receipt_layout": {}}}, aggregate(layout), {}) == []

@@ -21,10 +21,11 @@ import hashlib
 import io
 from pathlib import Path
 import random
-import re
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from .layout_grading import parse_amounts
 
 FONT_DIR = Path(__file__).with_name("fonts")
 FONTS = {
@@ -138,20 +139,7 @@ def end_of(text, indent=0, style="thermal"):
     return STYLES[style].margin + indent * indent_step(style) + font(STYLES[style].font, STYLES[style].size).getlength(text)
 
 
-# --- Money ----------------------------------------------------------------------------------------------------------------------
-
-MONEY = re.compile(r"(?<![\d.,])(\()?(-)?\$?(-)?(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?![\d%])(-)?(\))?")
-
-
-def parse_amounts(text):
-    """The money amounts of a text in minor units: a number with exactly two decimals, an optional `$`, thousands commas, a leading or trailing
-    minus or parentheses, not followed by `%` or a digit (plan P8)."""
-    found = []
-    for opened, lead, lead_after_dollar, whole, cents, trail, closed in MONEY.findall(text):
-        value = int(whole.replace(",", "")) * 100 + int(cents)
-        found.append(-value if (lead or lead_after_dollar or trail or (opened and closed)) else value)
-    return found
-
+# --- Money (the amount rule is the grader's: evals/layout_grading.parse_amounts) ---------------------------------------------------
 
 def fmt(minor, dollar=False, negative="trail"):
     """An amount as printed. A negative one is `1.20-` (trail), `(1.20)` (paren) or `-1.20` (lead)."""

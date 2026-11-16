@@ -61,11 +61,18 @@ def judge_scores(folder):
     return found
 
 
+def measured_only():
+    """Tasks that are reported but count in no ranking, sum or gate (MEASURED_ONLY): a task a model may fail wholesale must not bar it."""
+    from . import TASKS  # The task modules import the app; report.md for an old run still builds without them.
+    return {name for name, module in TASKS.items() if getattr(module, "MEASURED_ONLY", False)}
+
+
 def decision_rows(manifest, stats, judges):
     rows = []
+    measured = measured_only()
     for candidate in manifest["candidates"]:
         name = candidate["name"]
-        mine = {task: value for (who, task), value in stats.items() if who == name}
+        mine = {task: value for (who, task), value in stats.items() if who == name and task not in measured}
         if not mine or candidate.get("schema_enforced") is False:  # Schema variants (A15) are measured, never ranked.
             continue
         calibrated = []
@@ -138,6 +145,7 @@ def task_extras(task, manifest, lines):
 def markdown(manifest, stats, judges, decision, settings, regressions, previous, lines=()):
     sampling = manifest["sampling"]
     tasks = list(manifest["tasks"])
+    measured = measured_only()
     out = [f"# Task eval run {manifest['run_id']}", "",
            f"Tasks: {', '.join(f'{name} ({task['cases']} cases, {task['version']})' for name, task in manifest['tasks'].items())}; "
            f"repeated {manifest['repeat']}x. Code {manifest['git']}. Sampling: temperature {sampling['temperature']}, "
@@ -149,14 +157,16 @@ def markdown(manifest, stats, judges, decision, settings, regressions, previous,
         if name not in decision["accuracy"]:
             continue
         mine = {task: stats.get((name, task)) for task in tasks}
-        runs = sum(value["runs"] for value in mine.values() if value)
-        valid = sum(value["valid"] for value in mine.values() if value)
+        runs = sum(value["runs"] for task, value in mine.items() if value and task not in measured)
+        valid = sum(value["valid"] for task, value in mine.items() if value and task not in measured)
         cells = [f"{value['score']:.0%} ({value['passed']}/{value['cases']})" if value else "—" for value in mine.values()]
         out.append(f"| {name} | {decision['accuracy'][name]:.1%} | {valid} of {runs} | " + " | ".join(cells) + " |")
     out += ["", "Each task cell is the mean score with the cases passed on the first repeat.", ""]
     out += decision_markdown(decision, settings)
     summaries = {}
-    for (name, _), value in stats.items():
+    for (name, task), value in stats.items():
+        if task in measured:
+            continue
         summary = summaries.setdefault(name, {"runs": 0, "valid": 0, "failures": Counter(), "first_try": (0, 0), "scores": []})
         summary["runs"] += value["runs"]
         summary["valid"] += value["valid"]

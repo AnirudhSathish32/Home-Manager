@@ -23,6 +23,7 @@ from . import (
                payees,
                payment_terms,
                receipt_kinds,
+               receipt_layout,
                receipt_tax_codes,
                reviewer,
                rewards,
@@ -33,4 +34,4 @@ from . import (
 
 TASKS = {module.NAME: module for module in (transcription, identify, describe, rewards, payment_terms, interpretation, reviewer, payees,
                                             checkin, assistant, item_lookup, warranty, tax_table, decisions, receipt_kinds, document_forms,
-                                            receipt_tax_codes)}
+                                            receipt_tax_codes, receipt_layout)}

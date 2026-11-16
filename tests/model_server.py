@@ -125,7 +125,10 @@ def start_model_server(port=0):
             keyed = state.get("by_schema", {}).get(name)
             output = keyed.pop(0) if keyed else state["outputs"].pop(0) if state.get("outputs") else state["output"]
             raw = state["raw_outputs"].pop(0) if state.get("raw_outputs") else json.dumps(output)
-            event = {"choices": [{"finish_reason": state["finish_reason"],
+            # finish_reasons: one per request, popped before the global finish_reason, so a test can end the main call with "stop" and the
+            # rescue with "length" twice.
+            reason = state["finish_reasons"].pop(0) if state.get("finish_reasons") else state["finish_reason"]
+            event = {"choices": [{"finish_reason": reason,
                                   "delta": {"content": raw}}]}
             stream = "data: " + json.dumps(event) + "\n\n"
             if state.get("timings"):

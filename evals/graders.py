@@ -24,6 +24,9 @@ ROW_ERRORS = ("missing_row", "extra_row", "duplicate_row")
 # evidence checks; it was cut off at max_tokens; or the model server failed (loading, memory, context, network).
 FAILURE_KINDS = ("parse_fail", "schema_fail", "validator_fail", "truncated", "context_limit", "out_of_memory", "load_fail",
                  "model_timeout", "model_connection", "model_http", "model_stream", "other")
+# A token-limited answer retried at the larger budget that ran out again (models/model_client.py request_completion).
+TRUNCATED = "final response was incomplete or truncated"
+RETRY_BUDGET = 16384
 # The app's own words for an answer of the wrong shape ("...did not follow the check-in format", "...does not follow the assistant format").
 FORMAT_ERROR = re.compile(r"(?:did not|does not) follow the [\w -]+ format")
 # The app's own checks rejecting a well-formed answer (documents/reasoning.validate_interpretation, documents/reviewer.review).
@@ -126,6 +129,9 @@ def failure_kind(error, attempts=()):
     failed = [attempt for attempt in attempts if attempt["status"] == "failed"]
     if failed:
         category = failed[-1]["error_category"] or ""
+        # Ran out of tokens even after the larger budget: the main call says so; a rescue call's error is reworded, so its last attempt shows it.
+        if TRUNCATED in error or (category == "invalid_or_truncated_output" and (failed[-1].get("params") or {}).get("max_tokens") == RETRY_BUDGET):
+            return "truncated"
         return {"timeout": "model_timeout", "connection": "model_connection", "invalid_stream": "model_stream"}.get(
             category, "model_http" if category.startswith("http_") else "other")
     if attempts and attempts[-1]["finish_reason"] == "length":
