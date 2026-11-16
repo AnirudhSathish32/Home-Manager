@@ -200,8 +200,9 @@ def build_rows(pieces):
     # with no other row starting within INDENT_GROUP_GAP of it. A stray that is long enough, or that shares a row with other printed
     # cells, still sets the margin: it cannot be told from a real main row followed by deeper ones.
     printed = [(start, end, row) for (start, end), row, ink in zip(extents, rows, inked) if ink]
+    # A row's length counts its printed cells only, like its extent: a handwritten note beside a stray does not make it a main row.
     margins = [start for start, end, row in printed
-               if not ((len(row.text) < STRAY_CHARS or end - start < STRAY_WIDTH)
+               if not ((len(" ".join(cell.text for cell in row.cells if not cell.handwritten)) < STRAY_CHARS or end - start < STRAY_WIDTH)
                        and not any(other is not row and abs(other_start - start) < INDENT_GROUP_GAP for other_start, _, other in printed))]
     edge_left = min(margins or [start for start, _, _ in printed] or [start for start, _ in extents])
     edge_right = percentile([end for _, end in extents], 0.9)

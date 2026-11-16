@@ -322,6 +322,15 @@ def test_a_stray_handwritten_word_left_of_the_margin_does_not_set_it_however_lon
     assert [row.indent for row in rows if row.text.startswith("Item")] == [0] * 12
 
 
+@pytest.mark.parametrize("note", ["a", "ok", "scribble", "see manager about this", "a note long enough to be a whole sentence of its own"])
+@pytest.mark.parametrize("stray", ["x", "x2", "-"])
+def test_a_handwritten_note_beside_a_short_stray_does_not_make_the_stray_a_margin(stray, note):
+    """The stray's length is its printed cells', like its extent: a note on its row, of any length, changes no main row's indent."""
+    pieces = margin_rows(stray) + [(note, [100, 520, 100 + 15.6 * len(note), 539], True)]
+    rows, _ = build_rows(pieces)
+    assert [row.indent for row in rows if row.text.startswith("Item")] == [0] * 12
+
+
 def test_a_stray_row_that_is_not_short_still_sets_the_margin():
     """The remaining ambiguity: a printed word left of the margin cannot be told from a main row followed by deeper ones."""
     rows, _ = build_rows(margin_rows("Notes"))

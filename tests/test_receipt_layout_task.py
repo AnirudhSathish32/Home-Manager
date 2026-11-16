@@ -7,7 +7,7 @@ import random
 
 import pytest
 
-from evals.layout_grading import grade_reading, normalize, parse_amounts, split_cells
+from evals.layout_grading import Aligner, grade_reading, normalize, parse_amounts, split_cells
 from evals.tasks import TASKS
 from evals.tasks.runner import run_one
 from home_manager.documents.vision_layout import build_rows
@@ -335,6 +335,110 @@ def test_a_heading_deleted_before_a_row_that_repeats_it_is_missing_and_never_mer
     assert graded_lines(rows, ["Green Tea $3.95"]) == (1, 0, 0, 1, 0)
     assert graded_lines(rows, ["Tea", "Green Tea $3.95"]) == (2, 0, 0, 0, 0)
     assert graded_lines(rows, ["Tea Green Tea $3.95"]) == (0, 0, 1, 0, 0)   # both really on one line, in order: merged
+
+
+def later_twin(pieces, at):
+    """Piece at, misread by one substitution so that it reads exactly like the start of a later piece, when some later piece allows that."""
+    text = normalize(pieces[at])
+    for later in pieces[at + 1:]:
+        for start in range(len(normalize(later)) - len(text) + 1):
+            window = normalize(later)[start:start + len(text)]
+            if len(text) > 2 and sum(a != b for a, b in zip(window, text)) == 1:
+                return window
+    return None
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_a_split_row_whose_misread_piece_reads_like_a_later_piece_is_still_one_split_row(case):
+    """Adversarial duplicates: the misread piece also occurs exactly later in the row, where a first match would take it and strand the rest."""
+    rows = case["expected"]["rows"]
+    for at, row in enumerate(rows):
+        cells = [cell["text"] for cell in row["cells"]]
+        for piece in range(len(cells) - 1):
+            twin = later_twin(cells, piece)
+            if twin is None:
+                continue
+            lines = [[text, other["indent"]] for text, other in zip(texts(rows), rows)]
+            lines[at:at + 1] = [[twin if k == piece else cell, row["indent"]] for k, cell in enumerate(cells)]
+            counts = grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+            assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0), (case["input"], at, piece)
+
+
+def test_a_split_row_with_a_misread_piece_that_reads_exactly_later_is_one_split_row():
+    """Reviewer's example: "Tea" misread "Sea" is also the start of the next cell."""
+    assert graded_lines([row_of("Tea", "Sea $3.95")], ["Sea", "Sea $3.95"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Tea", "Sea $3.95")], ["Tea", "Sea $3.95"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Sea", "Sea", "$3.95")], ["Tea", "Sea", "$3.95"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Tea", "Tea", "Sea $3.95")], ["Sea", "Sea", "Sea $3.95"]) == (0, 1, 0, 0, 0)
+
+
+def test_a_merged_row_with_a_truncated_piece_is_one_merged_row_and_not_a_missing_one():
+    """Reviewer's example: "Baguette" read "Baguet" before the next row's "X" on the same line."""
+    assert graded_lines([row_of("Baguette"), row_of("X")], ["Baguet X"]) == (0, 0, 1, 0, 0)
+    assert graded_lines([row_of("Baguette"), row_of("X")], ["Baguette X"]) == (0, 0, 1, 0, 0)
+    assert graded_lines([row_of("Baguette"), row_of("X")], ["Baguet"]) == (1, 0, 0, 1, 0)   # no "X" anywhere: it is missing
+
+
+def test_a_misread_split_piece_that_reads_exactly_inside_a_later_one_takes_its_own_place():
+    """Reviewer's example, itemized/angled row 10: "9", "Duct Tape", "5.75", "51.75" with the price misread "1.75", which is inside the total."""
+    row = row_of("9", "Duct Tape", "5.75", "51.75")
+    assert graded_lines([row], ["9", "Duct Tape", "1.75", "51.75"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row], ["9", "Duct Tape", "5.75", "5.75"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row], ["9", "Duct Tape", "5.75", "51.7"]) == (0, 1, 0, 0, 0)
+    case = case_of("itemized", "angled", 1)
+    rows = case["expected"]["rows"]
+    at = texts(rows).index("9 Duct Tape 5.75 51.75")
+    lines = [[text, other["indent"]] for text, other in zip(texts(rows), rows)]
+    lines[at:at + 1] = [[text, rows[at]["indent"]] for text in ("9", "duct tape", "1.75", "51.75")]
+    counts = grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+    assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0)
+
+
+def test_random_misread_splits_and_merges_of_repeated_words_are_never_mistaken_for_missing_or_extra():
+    """Seeded fuzz over a small vocabulary full of repeats: every piece of three or more characters has one substitution."""
+    rng = random.Random(8)
+    words = ["Tea", "Sea", "Tee", "Iced Tea", "Tea with lemon", "Green Tea", "$3.95", "3.95", "Latte", "Late", "Total", "Tota"]
+    for _ in range(400):
+        cells = [rng.choice(words) for _ in range(rng.randint(2, 4))]
+        # Pieces that read like another piece's misreading are ambiguous by construction: only those apart by more than one edit are asked about.
+        if any(normalize(a) != normalize(b) and Aligner().lev(normalize(a), normalize(b)) <= 1 for a in cells for b in cells):
+            continue
+        lines = [miswritten(cell) if rng.random() < 0.7 else cell for cell in cells]
+        assert graded_lines([row_of(*cells)], lines) == (0, 1, 0, 0, 0), (cells, lines)
+        assert graded_lines([row_of(cells[0]), row_of(*cells[1:])], [" ".join([lines[0], *lines[1:]])]) == (0, 0, 1, 0, 0), (cells, lines)
+
+
+def test_a_row_deleted_before_a_row_that_repeats_it_is_missing_in_every_position_of_the_repeat():
+    """Reviewer's example and its prefix, suffix and middle variants: the deleted row's text is in the next row, which takes the whole line."""
+    heading = row_of("Tea")
+    for second in (("Tea with lemon", "$3.95"), ("Iced Tea", "$3.95"), ("Green Tea Large", "$3.95"), ("Tea", "$3.95"), ("Sweet Tea",), ("Tea Tea", "$1.00")):
+        line = " ".join(second)
+        assert graded_lines([heading, row_of(*second)], [line]) == (1, 0, 0, 1, 0), second
+        assert graded_lines([heading, row_of(*second)], ["Tea", line]) == (2, 0, 0, 0, 0), second
+        assert graded_lines([heading, row_of(*second)], [f"Tea {line}"]) == (0, 0, 1, 0, 0), second   # both really there on one line: merged
+
+
+def test_a_line_deleted_after_a_split_pieces_that_repeats_it_is_extra_not_a_split():
+    """The mirror: a row of two cells, and a line that repeats its first cell with nothing of the second."""
+    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea with lemon $3.95", "Tea"]) == (1, 0, 0, 0, 1)
+    assert graded_lines([row_of("Tea with lemon $3.95")], ["Tea", "Tea with lemon $3.95"]) == (1, 0, 0, 0, 1)
+
+
+def prefix_pairs(case):
+    """Each adjacent pair of rows made synthetic: the first row's text is a prefix of the second's."""
+    rows = case["expected"]["rows"]
+    for first, second in zip(rows, rows[1:]):
+        head = " ".join(cell["text"] for cell in first["cells"])
+        yield row_of(head), row_of(f"{head} {second['cells'][0]['text']}", *[cell["text"] for cell in second["cells"][1:]])
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_deleting_a_row_that_is_a_prefix_of_the_next_is_missing_and_never_merged_but_really_sharing_a_line_is_merged(case):
+    for first, second in prefix_pairs(case):
+        line = " ".join(cell["text"] for cell in second["cells"])
+        head = first["cells"][0]["text"]
+        assert graded_lines([first, second], [line]) == (1, 0, 0, 1, 0), (head, line)
+        assert graded_lines([first, second], [f"{head} {line}"]) == (0, 0, 1, 0, 0), (head, line)
 
 
 def test_split_pieces_and_merged_rows_may_not_share_characters():

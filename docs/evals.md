@@ -313,8 +313,8 @@ with every result. The same format applies to every vision call in a run: images
 `spans` follows the text-PDF engine: `documents/vision_layout.py` `build_rows` puts pieces that sit on one printed row
 together (even on a tilted photo), joins pieces closer than a small gap into one cell, and takes indent from groups of the
 rows' left edges, measured from the leftmost printed row (handwriting never sets the margin, and nor does a lone printed row of under three
-characters or two character widths with no row starting within a character of it, such as a stray "x"; a longer stray word cannot be
-told from a main row followed by deeper ones, and does set it). It uses only relative positions, so pixels and a 0 to 1000 scale build the same rows. A piece whose box
+printed characters or two character widths with no row starting within a character of it, such as a stray "x", whatever handwriting sits
+beside it; a longer stray word cannot be told from a main row followed by deeper ones, and does set it). It uses only relative positions, so pixels and a 0 to 1000 scale build the same rows. A piece whose box
 isn't four numbers with right greater than left and bottom greater than top is a row of its own with an unknown indent,
 and the reading notes it (the `vision_positions_unusable` issue). When fewer than half the boxes are usable, rows follow
 the answer's order with unknown indents. Six or more pieces are searched for a tilt of up to about 8.5 degrees; four or five
@@ -334,11 +334,17 @@ number. The grader is `evals/layout_grading.py`.
 What it counts, each against its denominator ("3 split rows of 412 rows"):
 - **Rows.** Read whole (on one line of their own), split (on two lines or more), merged (sharing a line with another
   row), missing, extra lines and out of order. A misread character inside a row is not a split. A row is split over, or
-  merged into, as many lines as it has cells (four at least), and only on ordered evidence: each piece is found in the other
-  side one after the other without sharing a character, a piece of three characters or more with at least one misread
-  character allowed and one or two characters exactly. So a deleted row is missing rather than merged into its neighbour (also
-  when its words are repeated in it), and a split row with a misread piece is still one split row. A misread one- or two-character
-  cell of a split row is not evidence, so that row is read whole with an extra line.
+  merged into, as many lines as it has cells (four at least), and only on evidence that the pairing alone cannot explain:
+  - *Ordered and apart.* The pieces must be findable in the other side one after the other without sharing a character. It is
+    a search, not a first match: every stretch within a piece's budget (a piece of three characters or more with at least one
+    misread character allowed, one or two characters exactly) is a candidate and the earliest end of each leaves the most room
+    for the next, so a repeated word, or a misread piece that also reads exactly further on, cannot hide a piece that is there.
+  - *Better than one alone.* The whole and the joined pieces must differ by fewer characters than the whole does from any one
+    piece with the other pieces left missing (or extra), which is how the grader's own distance would charge that pairing,
+    spaces left out. So a row deleted before one that repeats its words ("Tea" before "Tea with lemon $3.95") is missing, not
+    merged, while both really on one line is merged; a truncated row beside a one-character row is still merged.
+
+  A misread one- or two-character cell of a split row is not evidence, so that row is read whole with an extra line.
 - **Money.** Each printed amount: read exactly anywhere, and read on its own row's line. Wrong digits are counted apart
   from missing amounts. An amount read exactly on another row's line is that row's, so it is never also a wrong digit.
 - **Indent**, for rows read whole: right, wrong or unknown, apart for indented rows and edge rows. `v6-text` reports no

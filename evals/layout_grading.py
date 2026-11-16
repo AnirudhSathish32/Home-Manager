@@ -116,37 +116,51 @@ class Aligner:
             self.cache[key] = min(previous) <= limit
         return self.cache[key]
 
-    def find(self, part, text, start=0):
-        """Where the part ends in the text when looked for from start: after its first exact occurrence, else after the closest stretch
-        within its budget (exact for one or two characters, at least one edit from three on). None when it is not there."""
-        at = text.find(part, start)
-        if at >= 0 or not part:
-            return at + len(part) if part else start
-        if len(part) <= SHORT_PIECE:
-            return None
-        allowed = max(1, floor(HELD * len(part)))
-        key = ("find", part, text, start)
+    def stretches(self, part, text):
+        """Every (start, end) of text within the part's budget: exact for one or two characters, at least one edit from three on."""
+        key = ("stretches", part, text)
         if key not in self.cache:
             self.evaluations += 1
-            previous = [0] * (len(text) - start + 1)  # A stretch may begin anywhere from start on.
-            for i, x in enumerate(part, 1):
-                current = [i]
-                for j, y in enumerate(text[start:], 1):
-                    current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
-                previous = current
-            ends = [j for j, distance in enumerate(previous) if distance <= allowed]
-            # The earliest end, then the one of those a budget later that is closest to the part.
-            self.cache[key] = start + min(range(ends[0], min(len(previous), ends[0] + allowed + 1)), key=lambda j: (previous[j], -j)) if ends else None
+            allowed = 0 if len(part) <= SHORT_PIECE else max(1, floor(HELD * len(part)))
+            found = []
+            for start in range(len(text)):
+                previous = list(range(min(len(text) - start, len(part) + allowed) + 1))  # The stretch begins at start; its length is j.
+                for i, x in enumerate(part, 1):
+                    current = [i]
+                    for j in range(1, len(previous)):
+                        current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != text[start + j - 1])))
+                    previous = current
+                    if min(previous) > allowed:
+                        break
+                else:
+                    found += [(start, start + j) for j, distance in enumerate(previous) if distance <= allowed and j]
+            self.cache[key] = found
         return self.cache[key]
 
     def in_order(self, parts, text):
-        """Whether the parts are found in the text one after the other, each after the end of the one before: a character is evidence once."""
+        """Whether the parts can be found in the text one after the other, each after the end of the one before: a character is evidence once.
+        A search, not a first match: every stretch within a part's budget is a candidate, and as only the end of the one before matters to the
+        next, the earliest end of each leaves the most room for the rest. So a repeated word, or a misread piece that also reads exactly
+        further on, cannot make a row's parts look out of order."""
         end = 0
         for part in parts:
-            end = self.find(part, text, end)
-            if end is None:
+            if not part:
+                continue
+            ends = [stop for start, stop in self.stretches(part, text) if start >= end]
+            if not ends:
                 return False
+            end = min(ends)
         return True
+
+    def supported(self, whole, parts):
+        """Whether pieces and whole explain each other better than pairing the whole with any one piece alone, as the grader's own distance
+        would charge that: the other pieces left missing (or extra) cost their length. A merge or a split must rest on characters the
+        1:1 pairing cannot explain, so a row deleted before one that repeats its words is missing, not merged. Spaces do not count, so a
+        lost separator is no evidence."""
+        whole = whole.replace(" ", "")
+        parts = [part.replace(" ", "") for part in parts]
+        together = self.lev(whole, "".join(parts))
+        return together < min(self.lev(whole, part) + sum(map(len, parts)) - len(part) for part in parts)
 
     def align(self, rows, lines, most=MOST_PIECES):
         """Groups (row indexes, line indexes) in order: 1:1, 1:k (split) or k:1 (merged), k up to most. Anything unpaired is missing or extra.
@@ -185,12 +199,12 @@ class Aligner:
                     if j - k >= 0 and (i - 1, j - k) in cost:
                         row, pieces = rows[row0 + i - 1], lines[line0 + j - k:line0 + j]
                         step = self.near(row, " ".join(pieces))
-                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(pieces, row):
+                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(pieces, row) and self.supported(row, pieces):
                             best = (cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1), (i - 1, j - k))
                     if i - k >= 0 and (i - k, j - 1) in cost:
                         parts, line = rows[row0 + i - k:row0 + i], lines[line0 + j - 1]
                         step = self.near(" ".join(parts), line)
-                        if step <= HELD and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(parts, line):
+                        if step <= HELD and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(parts, line) and self.supported(line, parts):
                             best = (cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1), (i - k, j - 1))
                 for previous in ((i - 1, j), (i, j - 1)):  # Skip a row, or skip a line: 1.0 each.
                     if previous in cost and cost[previous] + 1.0 < best[0]:
