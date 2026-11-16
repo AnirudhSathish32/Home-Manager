@@ -145,6 +145,15 @@ code_review:
       - {id: R3-2, severity: MAJOR, area: "deleted heading that prefixes the next row (Tea / Tea with lemon) still counted merged", disposition: "fixed SL-08 (human chose option A, 2026-11-16)"}
       - {id: R3-3, severity: MAJOR, area: "short-stray test uses row.text incl. handwriting; margin_rows('x2') + handwritten scribble indents all main rows", disposition: "fixed SL-08 (human chose option A, 2026-11-16)"}
     status: "human authorised one extra fix round and a fourth Codex review (option A)"
+  round_4:
+    reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 6ac59d2 (hunks a647594..4ae7640), risk HIGH
+    authorisation: human chose option A (one extra fix round, Codex review) 2026-11-16; router budget 3/3 exceeded by that decision
+    task: review-code-receipt-layout-eval-r4
+    round_3_status: "R3-1, R3-2, R3-3 resolved"
+    findings:
+      - {id: R4-1, severity: MAJOR, area: "supported() strict tie rejects noisy short-piece splits/merges; '$' | '3.95' read '$' / '$3.95' is whole + extra and passes", disposition: "open: reproduced by orchestrator, escalated"}
+      - {id: R4-2, severity: MINOR, area: "stretches enumerates every span; 150 near-duplicate 48-char rows >50 s (was 8.75 s)", disposition: "open: escalated with R4-1"}
+    status: PENDING HUMAN DECISION
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
