@@ -89,6 +89,17 @@ slices:
     notes: >-
       MOST_PIECES 3 -> 4 (grows to the largest cell count), in favour of FR-13 over the plan's constant. Merge/split
       distance tightened 0.5 -> 0.3 with per-piece evidence. Indent margin is now the leftmost row's start.
+  SL-07:
+    status: done
+    title: "SL-07: fixes for code review round 2"
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: b80b099
+    end_head: 6fe23a8  # code 96c82cf, handoff 6fe23a8
+    verification: >-
+      Orchestrator rerun 2026-11-16: the seven targeted test files 368 passed, 1 skipped, exit 0; ruff clean on changed
+      files; protected artifacts untouched; plan hash unchanged. All four round-2 reproductions rechecked by the
+      orchestrator before dispatch.
 code_review:
   round_1:
     reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0707b66, risk HIGH
@@ -105,6 +116,15 @@ code_review:
       - {id: R1-9, severity: MINOR, area: "short tilted receipts", disposition: "fixed SL-06 (4+ pieces up to ~3.4 deg)"}
       - {id: R1-10, severity: MINOR, area: "output_characters missing", disposition: fixed SL-06}
       - {id: R1-11, severity: MINOR, area: "test precedence bug", disposition: fixed SL-06}
+  round_2:
+    reviewer: codex/gpt-6.1-sol (high), independence model-family, revision b80b099 (hunks 0707b66..73ee882), risk HIGH
+    task: review-code-receipt-layout-eval-r2
+    round_1_status: "R1-1,2,3,4,6,7,10,11 resolved; R1-5 incomplete; R1-8, R1-9 regressed"
+    findings:
+      - {id: R2-1, severity: MAJOR, area: "noisy split rows pass as whole (holds zero budget for short pieces)", disposition: fixed SL-07}
+      - {id: R2-2, severity: MAJOR, area: "merge evidence reused characters (deleted heading merged)", disposition: fixed SL-07}
+      - {id: R2-3, severity: MAJOR, area: "one stray box sets the margin", disposition: fixed SL-07}
+      - {id: R2-4, severity: MAJOR, area: "sparse tilt pairs title with distant price", disposition: fixed SL-07}
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
