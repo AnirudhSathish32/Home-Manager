@@ -7,8 +7,20 @@ checkout: /home/anirudh/Documents/Projects/Home-Manager  # branch receipt-layout
 start_head: ab23d5c
 baseline_failures: plans/receipt-layout-eval/baseline-failures.txt
 slices:
-  SL-01: {status: in_progress}
-  SL-02: {status: todo}
+  SL-01:
+    status: done
+    provider: claude
+    model: claude-sonnet-5-5
+    start_head: 10f8738
+    end_head: 78874b0  # code 6f009e1, handoff 78874b0
+    verification: >-
+      Orchestrator rerun 2026-11-16: test_reading_format_capture.py 5 passed 1 skipped; CAPTURE_READING_BASELINE=1 rerun
+      6 passed and git diff -- tests/reading_format_data clean (byte-identical); scan.pdf text unset; ports masked; src/ unchanged;
+      plan hash matches.
+    notes: >-
+      No regions are found in the synthetic inputs, so one vision request per page. The PDF request capture hashes pdfium's
+      rendering of scan.pdf (pinned pypdfium2), identical across runs here.
+  SL-02: {status: in_progress}
   SL-03: {status: todo}
   SL-04: {status: todo}
   SL-05: {status: todo}
