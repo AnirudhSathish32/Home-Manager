@@ -125,6 +125,15 @@ code_review:
       - {id: R2-2, severity: MAJOR, area: "merge evidence reused characters (deleted heading merged)", disposition: fixed SL-07}
       - {id: R2-3, severity: MAJOR, area: "one stray box sets the margin", disposition: fixed SL-07}
       - {id: R2-4, severity: MAJOR, area: "sparse tilt pairs title with distant price", disposition: fixed SL-07}
+  round_3:
+    reviewer: codex/gpt-6.1-sol (high), independence model-family, revision 0fcb3c8 (hunks b80b099..96c82cf), risk HIGH
+    task: review-code-receipt-layout-eval-r3
+    round_2_status: "R2-4 resolved; R2-1, R2-2, R2-3 fixed for their reproductions but not comprehensively"
+    findings:
+      - {id: R3-1, severity: MAJOR, area: "Aligner.find greedy endpoint (exact-first and tie-break) rejects valid split/merge evidence; Tea/Sea split passes as whole", disposition: "open: reproduced by orchestrator, escalated after round 3"}
+      - {id: R3-2, severity: MAJOR, area: "deleted heading that prefixes the next row (Tea / Tea with lemon) still counted merged", disposition: "open: reproduced by orchestrator, escalated after round 3"}
+      - {id: R3-3, severity: MAJOR, area: "short-stray test uses row.text incl. handwriting; margin_rows('x2') + handwritten scribble indents all main rows", disposition: "open: reproduced by orchestrator, escalated after round 3"}
+    status: PENDING HUMAN DECISION (three review rounds used, Codex budget 3/3 spent)
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
