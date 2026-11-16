@@ -11,7 +11,7 @@ import re
 import tempfile
 
 from home_manager.documents.vision_tables import validate_tables
-from home_manager.models.vision import VISION_VERSION, transcribe
+from home_manager.models.vision import VISION_VERSION, active_format, transcribe
 
 from ..synthetic import SEED, documents, draw
 from .common import make_case, normal, result, text_lines
@@ -19,6 +19,7 @@ from .common import make_case, normal, result, text_lines
 NAME, ROLE, VERSION, PROMPT_VERSION = "transcription", "vision", "transcription-v2-tables", VISION_VERSION
 KEY_LINE = re.compile(r"\b(?:total|balance|net pay|gross pay|date|period)\b", re.IGNORECASE)
 MAX_CER = 0.02
+NOT_PRODUCED = "not produced"
 
 
 def cases():
@@ -52,7 +53,7 @@ def run(case, config, work):
         path = Path(folder) / "page.png"
         draw(case["input"]["lines"], path, case["input"]["faded"], random.Random(SEED))
         reading = transcribe(config, path, work)
-        return {"text": reading.full_text, "tables": reading.tables, "table_issue": bool(reading.table_issue)}
+        return {"format": active_format(), "text": reading.full_text, "tables": reading.tables, "table_issue": bool(reading.table_issue)}
 
 
 def distance(a, b):
@@ -84,7 +85,9 @@ def grade(case, output):
               "low_error": cer <= MAX_CER, "all_key_lines": found == len(key),
               "no_unreadable": case["input"]["faded"] or "[unreadable]" not in got.lower()}
     required = ["low_error", "all_key_lines", "no_unreadable"]
-    if "tables" in case["expected"]:
+    if "tables" in case["expected"] and (output or {}).get("format") == "spans":
+        checks["tables"] = NOT_PRODUCED  # `spans` asks for no tables (spec OD-4): table cases are graded on their text alone.
+    elif "tables" in case["expected"]:
         checks.update(table_checks(case["expected"]["tables"], output or {}))
         required += ["all_table_cells", "no_wrong_column_values"]
     checks["output_characters"] = len(str((output or {}).get("text") or ""))
@@ -128,6 +131,10 @@ def report_lines(grouped):
            "|---|---|---|---|---|---|---|"]
     for name, rows in grouped.items():
         checks = [row["grades"]["checks"] for row in rows if "table_cells_expected" in row["grades"]["checks"]]
+        if not checks and any(row["grades"]["checks"].get("tables") == NOT_PRODUCED for row in rows):
+            characters = sum(row["grades"]["checks"].get("output_characters", 0) for row in rows if row["grades"]["checks"].get("tables") == NOT_PRODUCED)
+            out.append(f"| {name} | {NOT_PRODUCED} | {NOT_PRODUCED} | {NOT_PRODUCED} | {NOT_PRODUCED} | {NOT_PRODUCED} | {characters} |")
+            continue
         if not checks:
             continue
         total = lambda key, checks=checks: sum(check.get(key, 0) for check in checks)

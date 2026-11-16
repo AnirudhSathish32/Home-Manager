@@ -9,7 +9,7 @@ import statistics
 from ..decision import decide
 from ..decision import markdown as decision_markdown
 from ..decision import rules as decision_rules
-from ..report import percentile, schema_comparison, schema_pairs
+from ..report import format_decision, format_run, percentile, schema_comparison, schema_pairs
 
 
 def read_lines(folder):
@@ -73,7 +73,7 @@ def decision_rows(manifest, stats, judges):
     for candidate in manifest["candidates"]:
         name = candidate["name"]
         mine = {task: value for (who, task), value in stats.items() if who == name and task not in measured}
-        if not mine or candidate.get("schema_enforced") is False:  # Schema variants (A15) are measured, never ranked.
+        if not mine or candidate.get("schema_enforced") is False or candidate.get("reading_format"):  # Schema (A15) and format variants are measured, never ranked.
             continue
         calibrated = []
         for judge in judges.values():
@@ -154,15 +154,16 @@ def markdown(manifest, stats, judges, decision, settings, regressions, previous,
            "| Candidate | Weighted accuracy | Valid answers | " + " | ".join(tasks) + " |", "|---|---|---|" + "---|" * len(tasks)]
     for candidate in manifest["candidates"]:
         name = candidate["name"]
-        if name not in decision["accuracy"]:
-            continue
+        if name not in decision["accuracy"] and not (candidate.get("reading_format") and candidate.get("schema_enforced") is not False):
+            continue  # A schema variant has its own table below.
         mine = {task: stats.get((name, task)) for task in tasks}
         runs = sum(value["runs"] for task, value in mine.items() if value and task not in measured)
         valid = sum(value["valid"] for task, value in mine.items() if value and task not in measured)
         cells = [f"{value['score']:.0%} ({value['passed']}/{value['cases']})" if value else "—" for value in mine.values()]
-        out.append(f"| {name} | {decision['accuracy'][name]:.1%} | {valid} of {runs} | " + " | ".join(cells) + " |")
+        accuracy = f"{decision['accuracy'][name]:.1%}" if name in decision["accuracy"] else "not ranked"  # A format variant is compared, never ranked.
+        out.append(f"| {name} | {accuracy} | {valid} of {runs} | " + " | ".join(cells) + " |")
     out += ["", "Each task cell is the mean score with the cases passed on the first repeat.", ""]
-    out += decision_markdown(decision, settings)
+    out += format_decision() if format_run(manifest) else decision_markdown(decision, settings)
     summaries = {}
     for (name, task), value in stats.items():
         if task in measured:
@@ -191,6 +192,9 @@ def markdown(manifest, stats, judges, decision, settings, regressions, previous,
                        f"{'—' if value['spread'] is None else value['spread']} | {value['first_try'][0]} of {value['first_try'][1]} | {failures} | "
                        f"{percentile(value['latency'], .5)} s / {percentile(value['latency'], .95)} s |")
         for candidate in manifest["candidates"]:
+            retried = sum(bool(line.get("budget_retry")) for line in lines if line["task"] == task and line["candidate"] == candidate["name"])
+            if retried:
+                out.append(f"\n{candidate['name']}: {retried} answers ran out at 8,192 tokens and were asked for again with 16,384.")
             value = stats.get((candidate["name"], task))
             if value and value["failed_cases"]:
                 out.append(f"\n{candidate['name']} did not pass: {', '.join(value['failed_cases'])}.")

@@ -228,6 +228,11 @@ Code: `documents/receipt_service.py`, `documents/receipt_worker.py`, `models/vis
 - **Reading versions.** Images are read under `receipt-vision-v7-indent`. A new reading is never served from an
   older version's run, so **Read again** on an image read before creates a run under the new one; the old reading
   stays under History.
+- **Other reading formats are for the evals.** The app reads every image with the v7 lines above. `v6-text`,
+  `layout-text` and `spans` exist in `models/vision.py` only so the evals can compare them
+  ([evals](evals.md#reading-formats)). Nothing in a setting, the API or a page selects one, and a reading made under
+  another format never reaches your library (the evals read in throwaway ones). Which way the app
+  reads is decided later, from those results.
 - **Server requirements.** It needs a server with streaming chat completions, image input and JSON-schema output. The
   app doesn't download or load weights.
 - **Codes.** QR codes and barcodes are decoded independently, and their payloads are added as inert text with their

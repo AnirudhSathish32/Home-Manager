@@ -26,6 +26,10 @@ case_timeout_seconds = 1800
 # [decision.weights]         # task weights in the weighted accuracy (1 each by default)
 # assistant = 2
 
+# To compare the ways of reading an image (docs/evals.md "Reading formats"), leave this file as it is and add
+# `--formats v7-lines,v6-text,layout-text,spans` to `python -m evals.tasks` or `python -m evals.run`. Each candidate then runs once per
+# format, as baseline@spans and so on. The formats are compared, never ranked.
+
 [[candidate]]
 name = "baseline"
 vision = "qwen2.5-vl-7b-instruct"

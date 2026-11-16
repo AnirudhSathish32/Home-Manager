@@ -47,6 +47,7 @@ All model calls go through one transport, `request_completion` (`models/model_cl
 | 15 | Receipt kind and its form | `ExtractionService.extract` (classify, `receipt_kind`, `RECEIPT_FORMS`), `normalize` | kind, `Receipt<Kind>Summary` | kind cited and listed; details printed in their citation | `receipt_kinds` |
 | 16 | Pay stub, statement and rent bill fields | `ExtractionService.extract`, `normalize`, `review_reasons` | `PaystubSummary`, `PayLines`, statement summaries, `BillRentSummary`, `RentBillLines` | FR-22 guards, hours × rate, splits, summary checks, bill dates and lines | `document_forms` |
 | 17 | Item tax codes and per-code tax lines | `ExtractionService.extract` (the items and `tax_lines` / `tax_legend` of the receipt forms), `normalize` (`tax_codes`) | `Item.tax_code`, `Item.taxed`, `TaxLine`, `TaxCodeMeaning` | a code, rate and amount kept only when printed in the line cited; `taxed` and `tax_source` set from the tax lines or legend | `receipt_tax_codes` |
+| 18 | How an image is read: rows, indents, money and positions (vision, four reading formats) | `models/vision.py` `transcribe` under each reading format | one of four answer shapes | the same as task 1 | `receipt_layout` (measured only) |
 
 `receipt_kinds` reports, per receipt kind, how often the kind was right and how many printed fields were present and
 right (and how many were invented). `document_forms` reports the same per document type and pay stub layout, and per pay
@@ -289,6 +290,96 @@ no model, no network) measure it alone, and its file split is the rule Record us
   `scripts/statement_diagnose.py <pdf> bill` on a bill that reads badly (it prints counts, never text or amounts; documents.md says what it
   shows). Read `exact_share`, `checks_share`, `files_split`, `split_right`, `split_review`, `to_review` and the `guesses` counts to see which
   bills read badly ([open work](open-work.md#pdf-table-engine)). Real-bill accuracy is not measured yet.
+
+## Reading formats
+
+Built by `specs/receipt-layout-eval`. The app reads images with `receipt-vision-v7-indent` (task 1). On real receipts
+that reading splits printed rows: "Bottled Water" and "$3.95" come back as two lines, or a price lands after the side
+line below its item. This section measures four ways of reading an image on the vision model you run, so the change to
+how the app reads is made from numbers. It is measured only. Nothing here changes what the app does.
+
+**The four formats.** They live in `models/vision.py` and only the evals can select them (`reading_format(name)`, a
+process-wide choice like `model_client.recording`). It is never a field of `VisionConfig`, a setting, an API field or a
+page, so no saved setting, run option or stored result changes. Each format has its own prompt version label, written
+with every result. The same format applies to every vision call in a run: images, scanned PDF pages and combined images.
+
+| Format | Prompt version | The model answers | Indent | Tables |
+|---|---|---|---|---|
+| `v7-lines` | `receipt-vision-v7-indent` | `{lines: [{text, indent}], tables}`: today's reading, the default | from the model | asked for |
+| `v6-text` | `receipt-vision-v6-tables` | `{full_text, tables}`: the earlier prompt, word for word, as the control that kept rows whole | none | asked for |
+| `layout-text` | `receipt-vision-layout-text-1` | `{full_text, tables}`: one printed row per line, a tab between pieces printed apart, one leading tab per indent step | from leading tabs (more than two counts as 2) | asked for |
+| `spans` | `receipt-vision-spans-1` | `{spans: [{bbox_2d, text_content, handwritten}]}`: text pieces with boxes, nothing about rows or layout | built in code from the boxes | none |
+
+`spans` follows the text-PDF engine: `documents/vision_layout.py` `build_rows` puts pieces that sit on one printed row
+together (even on a tilted photo), joins pieces closer than a small gap into one cell, and takes indent from groups of the
+rows' left edges. It uses only relative positions, so pixels and a 0 to 1000 scale build the same rows. A piece whose box
+isn't four numbers with right greater than left and bottom greater than top is a row of its own with an unknown indent,
+and the reading notes it (the `vision_positions_unusable` issue). When fewer than half the boxes are usable, rows follow
+the answer's order with unknown indents. The model's positions are its report, never a measurement. The key names (`bbox_2d`,
+`text_content`) are the ones grounding-trained models already use.
+
+**The task `receipt_layout`** draws 24 receipts with known rows (`evals/receipt_layouts.py`): prices at the right edge,
+indented side lines, centred headings, a handwritten tip. There are eight families (grocery, dining, fuel, terminal,
+itemized, long, ereceipt, return) and seven photo conditions (clean, faded, tilted, angled, blurred, small text,
+background), and each case's tags name its family and condition. Fonts are committed in `evals/fonts/` with their
+licences, and a case draws to identical PNG bytes on every computer. Everything printed is invented, and every card,
+terminal, reference and order number starts with `0000`. The dining case is the breakfast fixture with a made-up order
+number. The grader is `evals/layout_grading.py`.
+
+What it counts, each against its denominator ("3 split rows of 412 rows"):
+- **Rows.** Read whole (on one line of their own), split (on two lines or more), merged (sharing a line with another
+  row), missing, extra lines and out of order. A misread character inside a row is not a split.
+- **Money.** Each printed amount: read exactly anywhere, and read on its own row's line. Wrong digits are counted apart
+  from missing amounts.
+- **Indent**, for rows read whole: right, wrong or unknown, apart for indented rows and edge rows. A format that reports
+  no indent (`v6-text`) shows "not reported".
+- **Cells, alignment and handwriting**, for the formats that report them: rows whose cells match, rows whose alignment is
+  right and precision and recall of the handwritten flags (`spans`).
+- **Positions** (`spans`, reported, never part of passing): the share of boxes that are usable, and the median overlap
+  with the drawn boxes after one scale per axis is fitted.
+- **Other measures:** character error rate, output characters, output tokens when the server reports them (`tokens`, with
+  `partial` when an attempt reported none), seconds, first-try and final validity, and truncation.
+
+A case passes when no row is split, merged or missing, every amount is read exactly on its own row, and, for formats that
+report indent, every indent is right.
+
+**Output limit.** Every format gets the same answer limit: 8,192 tokens, then the app's one retry at 16,384.
+`budget_retry` marks a case that needed the retry. A case that runs out again is the failure kind `truncated`. So is a
+rescue call that ran out after the retry, and an empty answer after it. A server that rejected the schema resends without
+it and gets no larger retry, so a rescue that runs out there reads `other`. A stream that ended some other way ("Model
+response was incomplete or truncated") also stays `other`. `spans` answers are several times longer, so watch this on
+long receipts. Reading long receipts in strips belongs to the reading spec.
+
+**Measured only.** `receipt_layout` counts in no ranking, gate or weighted accuracy. Choosing a vision
+model is not what it is for, and today's reading may fail most drawn receipts. The report says so under the task.
+
+**Running it.** `--formats` takes a comma list on both runners and runs each candidate once per format, named
+`<candidate>@<format>`:
+
+```powershell
+python -m evals.tasks --config evals\models.toml --tasks receipt_layout --formats v7-lines,v6-text,layout-text,spans --dry-run
+python -m evals.run --corpus P:\EvalCorpus --config my-models.toml --formats v7-lines,v6-text,layout-text,spans --dry-run
+```
+
+- **Refusals.** An unknown or repeated format is refused with the list of known ones before any request. With
+  `--formats`, `python -m evals.tasks` runs only the vision tasks (`transcription`, `receipt_layout`), and naming a task
+  that reads no image is refused. The guard is unchanged: LM Studio on this computer only, never the GPU relay.
+- **Dry run.** It adds one line per format with the cases and vision calls it would make. The documents suite counts the
+  pages of cases that are not native PDFs, because a text page is never sent to the vision model.
+- **Cost.** Four formats take four times the GPU time. Narrow a run with `--tasks`, `--limit` or `--case` as usual.
+- **Results.** Each result line, and each candidate in `run.json`, carries the format and its prompt version. The
+  documents suite's `summary.json` carries the format as an allowlisted label on each candidate and nothing else new.
+- **No winner.** A comparison of formats names no model winner, like the `@no-schema` variants. The report says "Format
+  comparison: no model is ranked." and a "Reading formats" section sets the formats side by side per family and per photo
+  condition. A group of fewer than 3 cases is marked "few".
+- **Tables.** `spans` asks for none. Its table cases are graded on their text alone, and the table measures show "not
+  produced".
+
+**What decides.** First the corpus run's money accuracy and review counts for receipts, second the synthetic layout
+measures, as the explanation. The choice is recorded in the reading spec, not by the report. Drawn receipts are cleaner
+than photos, which may favour `spans`. So iterate on the prompts with synthetic cases and the dev split only, and make
+one test-split run per format at the end. Iterating while looking at test failures is tuning. On the corpus you run it
+in your own terminal and share only `summary.json`.
 
 ## Donating documents
 

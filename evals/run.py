@@ -1,7 +1,7 @@
 """Run candidate models over the corpus through the app's real pipeline, then grade and report.
 
   python -m evals.run --corpus P:\\EvalCorpus --config evals\\models.toml [--split test] [--repeat 1] [--case ID ...]
-                      [--dry-run] [--keep-outputs] [--compare-schema]
+                      [--dry-run] [--keep-outputs] [--compare-schema] [--formats v7-lines,spans]
 
 Each case is read and extracted from its original exactly as the app does it (capture, reading, extraction), in a
 throwaway library that is deleted afterwards, so no case sees another's accounts or merchants. Inference only on this
@@ -11,6 +11,7 @@ text (private: it holds the documents' contents). --dry-run checks the server, m
 """
 
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -38,7 +39,7 @@ from home_manager.finance.ledger import HouseholdConfig
 from home_manager.library.scanner import ScanLimits
 from home_manager.models.model_client import DEFAULT_TEMPERATURE, check_connection, model_identity, recording
 from home_manager.models.residency import ensure_loaded
-from home_manager.models.vision import VISION_VERSION, Sampling, VisionConfig
+from home_manager.models.vision import DEFAULT_FORMAT, READING_FORMATS, VISION_VERSION, Sampling, VisionConfig, reading_format
 
 from .corpus import Corpus, write_json
 from .decision import rules as decision_rules
@@ -100,6 +101,41 @@ def schema_variants(candidates):
             for variant in (candidate, {**candidate, "name": candidate["name"] + NO_SCHEMA, "schema_enforced": False})]
 
 
+def check_formats(names):
+    """The reading formats named by --formats, as a list: ValueError naming the known ones when a name is unknown or repeated.
+    Called first by both runners, before the guard and any contact with the server."""
+    names = list(names or [])
+    known = ", ".join(READING_FORMATS)
+    unknown = [name for name in names if name not in READING_FORMATS]
+    if unknown:
+        raise ValueError(f"Unknown reading formats: {', '.join(repr(name) for name in unknown)}. Choose from: {known}.")
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(f"Name each reading format once (repeated: {', '.join(repeated)}). Choose from: {known}.")
+    return names
+
+
+def format_variants(candidates, formats):
+    """docs/evals.md "Reading formats": each candidate once per format, named `<name>@<format>`. Variants are compared, never ranked."""
+    if not formats:
+        return candidates
+    return [{**candidate, "name": f"{candidate['name']}@{name}", "reading_format": name} for candidate in candidates for name in formats]
+
+
+def candidate_format(candidate):
+    """The reading format a candidate's reads use: the one its variant names, else the app's own."""
+    return candidate.get("reading_format", DEFAULT_FORMAT)
+
+
+def candidate_prompt_version(candidate):
+    return READING_FORMATS[candidate_format(candidate)]
+
+
+def format_context(candidate):
+    """Read under the candidate's format only when it has one; otherwise nothing is selected and the app reads as it does."""
+    return reading_format(candidate["reading_format"]) if candidate.get("reading_format") else nullcontext()
+
+
 def candidate_sampling(candidate, sampling):
     """The run's sampling with a schema variant's override."""
     return {**(sampling or {}), **({"schema_enforced": False} if candidate.get("schema_enforced") is False else {})}
@@ -135,6 +171,17 @@ def attempt_counts(attempts):
             "truncated": sum(attempt["finish_reason"] == "length" for attempt in attempts)}
 
 
+def completion_tokens(attempts):
+    """{"completion": tokens the server reported, "partial": True when an attempt reported none} (a failed attempt's stream stats are dropped)."""
+    known = [(attempt.get("metrics") or {}).get("completion_tokens") for attempt in attempts]
+    return {"completion": sum(count for count in known if isinstance(count, int)), "partial": any(not isinstance(count, int) for count in known)}
+
+
+def budget_retried(attempts):
+    """True when an attempt was sent with the larger 16,384-token budget: an answer ran out at 8,192 and was asked for again."""
+    return any((attempt.get("params") or {}).get("max_tokens") == 16384 for attempt in attempts)
+
+
 def run_case(case, candidate, base_url, timeout=CASE_TIMEOUT, sampling=None):
     """One case through capture, reading and extraction in a throwaway library, with every model attempt recorded.
 
@@ -143,10 +190,11 @@ def run_case(case, candidate, base_url, timeout=CASE_TIMEOUT, sampling=None):
     answer's text, for --keep-outputs only.
     """
     attempts = []
-    with recording(attempts.append):
+    with recording(attempts.append), format_context(candidate):
         status, record, details = pipeline(case, candidate, base_url, timeout, sampling or {}, attempts)
     stages = {stage: [attempt for attempt in attempts if attempt["task"] == stage] for stage in ("transcription", "extraction")}
     details["attempts"] = {stage: attempt_counts(items) for stage, items in stages.items() if items}
+    details["budget_retry"] = budget_retried(stages["transcription"])
     if status in ("ok", "split"):
         details["first_try_valid"] = not any(attempt["follow_up"] for attempt in attempts)
     elif details.get("failure") in ("parse_fail", "schema_fail", "validator_fail", "truncated"):
@@ -432,8 +480,10 @@ def load_models(candidate, base_url):
 
 
 def run(corpus, config, split="test", repeat=1, case_ids=None, network_guard=True, probe=True, echo=print, dry_run=False, keep_outputs=False,
-        compare_schema=False):
-    """Run every candidate over the chosen cases. Returns the run folder, or None for a dry run."""
+        compare_schema=False, formats=None):
+    """Run every candidate over the chosen cases, once per reading format when formats are named. Returns the run folder, or None for a dry run."""
+    formats = check_formats(formats)  # Before the guard and any model call.
+    config = {**config, "candidates": format_variants(config["candidates"], formats)}
     if compare_schema:
         config = {**config, "candidates": schema_variants(config["candidates"])}
     if network_guard:
@@ -469,6 +519,12 @@ def run(corpus, config, split="test", repeat=1, case_ids=None, network_guard=Tru
              f"Sampling: temperature {sampling['temperature']}, seed {sampling['seed']}, schema enforced {sampling['schema_enforced']}.")
         for candidate in config["candidates"]:
             echo(f"  {candidate['name']}: vision {candidate['vision']}, reasoning {candidate['reasoning']}")
+        for name in formats:
+            # A text page of a PDF is never sent to the vision model (pdf_reader), so only the pages of other cases count.
+            pages = sum(case.info.pages for case in cases if case.info.source_kind != "native_pdf")
+            mine = sum(candidate.get("reading_format") == name for candidate in config["candidates"])
+            echo(f"  {name}: {len(cases)} documents x {mine} candidate{'s' if mine != 1 else ''} x {repeat} repeat{'s' if repeat != 1 else ''}, "
+                 f"about {pages * mine * repeat} vision calls")
         return None
     # Microseconds, so runs started in the same second still sort in order for the regression diff.
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + secrets.token_hex(3)
@@ -476,11 +532,12 @@ def run(corpus, config, split="test", repeat=1, case_ids=None, network_guard=Tru
     folder.mkdir(parents=True)
     manifest = {"format": RUN_FORMAT, "run_id": run_id, "started_at": utc(), "finished_at": None, "split": split, "repeat": repeat,
                 "cases": len(cases), "git": git_revision(), "extraction_version": EXTRACTION_VERSION, "vision_version": VISION_VERSION,
-                "base_url": base_url, "sampling": effective_sampling(config.get("sampling", {})),
+                "base_url": base_url, "sampling": effective_sampling(config.get("sampling", {})), "formats": formats,
                 "decision": config.get("decision") or decision_rules(None), "candidates": []}
     for candidate in config["candidates"]:
-        manifest["candidates"].append({**candidate, "identity": {"vision": identity(base_url, candidate["vision"]),
-                                                                   "reasoning": identity(base_url, candidate["reasoning"])}})
+        manifest["candidates"].append({**candidate, "prompt_version": candidate_prompt_version(candidate),
+                                       "identity": {"vision": identity(base_url, candidate["vision"]),
+                                                    "reasoning": identity(base_url, candidate["reasoning"])}})
     write_json(folder / "run.json", manifest)
     total = len(cases) * len(config["candidates"]) * repeat
     done = 0
@@ -505,7 +562,8 @@ def run(corpus, config, split="test", repeat=1, case_ids=None, network_guard=Tru
                                 status, record, details = "error", None, {"error": type(exc).__name__}
                         answers = case.answers()
                         grades = grade_case(case, answers, record, details) if status in ("ok", "split") else None
-                        line = {"run_id": run_id, "candidate": candidate["name"], "run_index": index, "case_id": case.id, "donor": case.info.donor,
+                        line = {"run_id": run_id, "candidate": candidate["name"], "reading_format": candidate_format(candidate),
+                                "prompt_version": candidate_prompt_version(candidate), "run_index": index, "case_id": case.id, "donor": case.info.donor,
                                 "split": case.info.split, "document_type": case.info.document_type, "source_kind": case.info.source_kind,
                                 "pages": case.info.pages, "tags": list(case.info.tags), "status": status,
                                 "type_correct": details.get("predicted_type") == case.info.document_type if "predicted_type" in details else None,
@@ -538,10 +596,13 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="Check the server, models and cases, print what would run, and stop.")
     parser.add_argument("--keep-outputs", action="store_true", help="Also write outputs.jsonl: every model answer as text. Private.")
     parser.add_argument("--compare-schema", action="store_true", help="Also run each candidate with the JSON schema only in the prompt.")
+    parser.add_argument("--formats", help="Comma-separated reading formats: each candidate runs once per format, as <candidate>@<format>. "
+                        "Known: " + ", ".join(READING_FORMATS) + ". Compared, never ranked.")
     args = parser.parse_args(argv)
     try:
         folder = run(Corpus(args.corpus), load_config(args.config), args.split, args.repeat, args.cases, dry_run=args.dry_run,
-                     keep_outputs=args.keep_outputs, compare_schema=args.compare_schema)
+                     keep_outputs=args.keep_outputs, compare_schema=args.compare_schema,
+                     formats=args.formats.split(",") if args.formats is not None else None)
     except (ValueError, OSError, GuardError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

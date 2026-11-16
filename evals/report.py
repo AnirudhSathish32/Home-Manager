@@ -13,6 +13,7 @@ import re
 import statistics
 
 from home_manager.core.answers import CRITICAL, DOCUMENT_TYPES
+from home_manager.models.vision import READING_FORMATS
 
 from .corpus import CASE_ID, TAGS, write_json
 from .decision import decide
@@ -316,6 +317,8 @@ def summary(manifest, results, regressions):
                        **{key: stats["tokens"][key] for key in ("model_calls", "prompt_tokens", "completion_tokens")}},
             "regressions": regressions.get(name, {"newly_failing": [], "newly_passing": []}),
         }
+        if candidate.get("reading_format"):  # An allowlisted label (check_summary refuses any other value).
+            candidates[name]["reading_format"] = candidate["reading_format"]
         if reader_summary(stats):
             candidates[name]["table_readers"] = reader_summary(stats)
         if pay_reader_summary(stats):
@@ -335,7 +338,7 @@ def summary(manifest, results, regressions):
 
 # The only strings summary.json may hold, by key. Everything else is a number, a boolean, null or an enum key.
 LABEL_KEYS = {"run_id", "git", "extraction_version", "vision_version", "started_at", "finished_at", "vision", "reasoning"}
-ENUM_VALUES = {"format": {SUMMARY_FORMAT}, "split": {"dev", "test", "all"}}
+ENUM_VALUES = {"format": {SUMMARY_FORMAT}, "split": {"dev", "test", "all"}, "reading_format": set(READING_FORMATS)}
 CASE_LISTS = {"newly_failing", "newly_passing"}
 
 
@@ -349,7 +352,7 @@ def allowed_keys():
             "consistent", "attempts", "calls", "follow_ups", "truncated", "tag", "table_readers", "legacy", "engine", "recorded", "exact",
             "reconcilable", "reconciled", "dropped", "unplaced", "failed", "exact_share", "reconciled_share", "pay_readers", "stubs", "values",
             "left_out", "checkable", "checks_held", "to_review", "split_right", "checks_share", "guesses", "made", "right", "bill_readers", "lines", "files_split",
-            "split_review", "account_holder_read", "due_now", "amount_due_total"}
+            "split_review", "account_holder_read", "due_now", "amount_due_total", "reading_format"}
     keys |= set(STATUSES) | set(SOURCE_KINDS) | set(PAGE_BUCKETS) | set(ROW_COUNTS) | set(DOCUMENT_TYPES) | set(FIELD_ERRORS) | CASE_LISTS
     keys |= set(FAILURE_KINDS) | set(TAGS) | set(GUESS_KINDS) | set(BILL_GUESS_KINDS)
     keys |= {field for fields in CRITICAL.values() for field in fields}
@@ -447,11 +450,11 @@ def schema_pairs(manifest, summaries):
 
 def decision_rows(manifest, results):
     """One decision row per candidate for evals.decision: the documents suite counts as a single task. Schema variants
-    (A15) are measurements only: the app always enforces the schema, so they are never ranked."""
+    (A15) and reading-format variants are measurements only: the app always enforces the schema and reads with one format, so they are never ranked."""
     rows = []
     for candidate in manifest["candidates"]:
         stats = results.get(candidate["name"])
-        if stats is None or candidate.get("schema_enforced") is False:
+        if stats is None or candidate.get("schema_enforced") is False or candidate.get("reading_format"):
             continue
         consistency = stats["consistency"]
         share = (consistency["pass_all"] if consistency["repeats"] > 1 else len(stats["passed_cases"])) / consistency["cases"] if consistency["cases"] else 0.0
@@ -460,6 +463,18 @@ def decision_rows(manifest, results):
                      "money_errors": money, "pass_all": {"documents": share}, "scores": {"documents": stats["mean_score"] or 0.0},
                      "p95": percentile(stats["wall"], .95), "judge": None})
     return rows
+
+
+def format_run(manifest):
+    """True when every candidate of the run is a reading-format variant: a format comparison names no model winner (docs/evals.md "Reading formats")."""
+    candidates = manifest["candidates"]
+    return bool(candidates) and all(candidate.get("reading_format") for candidate in candidates)
+
+
+def format_decision():
+    return ["## Decision", "", "**Format comparison: no model is ranked.**", "",
+            "Each candidate ran once per reading format, as <candidate>@<format>. The formats are measured and compared, never ranked: "
+            "the choice is made from the numbers below and recorded in the reading spec.", ""]
 
 
 def leaderboard(manifest, results):
@@ -575,7 +590,7 @@ def markdown(manifest, results, regressions, previous):
                 f"schema {'enforced' if sampling['schema_enforced'] else 'in the prompt only'}.", ""]
     out += leaderboard(manifest, results)
     settings = decision_rules(manifest.get("decision"))  # Runs from before the decision rule used its defaults.
-    out += decision_markdown(decide(decision_rows(manifest, results), settings), settings)
+    out += format_decision() if format_run(manifest) else decision_markdown(decide(decision_rows(manifest, results), settings), settings)
     summaries = {name: {"runs": stats["runs"], "valid": stats["status"]["ok"] + stats["status"]["split"], "failures": stats["failures"],
                         "first_try": (stats["first_try"]["valid"], stats["first_try"]["of"]), "score": stats["mean_score"] or 0.0}
                  for name, stats in results.items()}
@@ -588,6 +603,8 @@ def markdown(manifest, results, regressions, previous):
         out += [f"## {candidate['name']}", "",
                 f"Vision `{candidate['vision']}` ({identity.get('vision', {}).get('quantization', 'unknown')}), reasoning `{candidate['reasoning']}` "
                 f"({identity.get('reasoning', {}).get('quantization', 'unknown')}).", ""]
+        if candidate.get("reading_format"):
+            out += [f"Reading format: {candidate['reading_format']} ({READING_FORMATS[candidate['reading_format']]}).", ""]
         statuses = ", ".join(f"{count} {status}" for status, count in stats["status"].most_common())
         out += [f"- Runs: {stats['runs']} ({statuses}). Document type right in {stats['type']['correct']} of {stats['runs']}.",
                 f"- Fully checked documents: {stats['documents']['fully_checked']}; read perfectly: {stats['documents']['perfect']}."]

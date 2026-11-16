@@ -51,10 +51,12 @@ If you look at a test case's failures to change a prompt, run `tuned CASE_ID`: t
 ## Running
 
 ```powershell
-python -m evals.run --corpus P:\EvalCorpus --config my-models.toml [--split test|dev|all] [--repeat 3] [--case ID] [--dry-run] [--keep-outputs]
+python -m evals.run --corpus P:\EvalCorpus --config my-models.toml [--split test|dev|all] [--repeat 3] [--case ID] [--dry-run] [--keep-outputs] [--formats v7-lines,spans]
 ```
 
 `--dry-run` checks the server, the models and the cases, prints how many documents the run would read, and stops without reading any.
+
+`--formats` runs each candidate once per image reading format, as `<candidate>@<format>` (see [Reading formats](#reading-formats)). The known formats are `v7-lines` (today's), `v6-text`, `layout-text` and `spans`. The dry run adds a line per format with its documents and about how many vision calls (the pages of cases that aren't native PDFs). The summary carries each candidate's format. Formats are compared, never ranked.
 
 What a run does:
 
@@ -122,7 +124,7 @@ Every document grade is computed by code; no model judges anything in this suite
 
 ```powershell
 python -m evals.tasks --config evals\models.toml --dry-run
-python -m evals.tasks --config evals\models.toml [--tasks describe,payees] [--repeat 3] [--limit 5] [--compare-schema] [--judge MODEL]
+python -m evals.tasks --config evals\models.toml [--tasks describe,payees] [--repeat 3] [--limit 5] [--compare-schema] [--formats v7-lines,spans] [--judge MODEL]
 ```
 
 `--compare-schema` (both suites) runs each candidate a second time as `<name>@no-schema`. In that run the server enforces nothing, and the JSON schema is only described in the prompt. The report adds a table comparing the two runs: valid answers, answers that weren't JSON, wrong shape, cut off, and first answers valid. It shows how much a model relies on enforcement. Only the enforced runs are ranked, because the app always enforces the schema.
@@ -144,6 +146,7 @@ Each task calls the app's own function for that job (never a copy of its prompt)
 | `item_lookup` | reasoning | 12 abbreviated receipt lines | The proposed product's name, brand, category and whether it runs out; no proposal for a line no page explains |
 | `warranty` | reasoning | 12 owned items | The manufacturer warranty's length (or lifetime), past traps: another model's page, an accessory's shorter cover, an extended plan for sale; none when no page states it |
 | `tax_table` | reasoning | 10 state and federal tables | The standard deduction, every bracket and, for federal, the FICA figures exactly, past the prior year's page; none for an unpublished year |
+| `receipt_layout` | vision | 24 drawn receipts (8 families, 7 photo conditions) | Rows read whole, split, merged or missing; each amount read and read on its own row; indent; for `spans`, cells, alignment, handwriting and positions. Measured only: it ranks nothing |
 | `decisions` | decision | 40 document classifications and 116 claims, half with a planted wrong value | The document type picked; a true claim supported and a wrong one not (at the app's 0.8 threshold); the report adds calibration error, Brier score and a fitted temperature |
 
 The `decisions` task needs a candidate with a `decision` model (see [decision models](../docs/documents.md "Decision models")); a candidate may
@@ -158,6 +161,23 @@ The report has:
 - the cases that failed, and the cases that changed since the previous run of the same dataset versions.
 
 Bumping a task's `VERSION` starts a fresh comparison.
+
+### Reading formats
+
+`--formats` (on `python -m evals.tasks` and `python -m evals.run`) runs each candidate once per way of reading an image, as `<candidate>@<format>`: `v7-lines` (today's), `v6-text`, `layout-text` and `spans`. They exist for the evals only; the app reads with `v7-lines`. `receipt_layout` is the task that measures them on drawn receipts. [docs/evals.md "Reading formats"](../docs/evals.md#reading-formats) says what each format asks for and what is counted.
+
+```powershell
+# Synthetic receipts, all four formats. A dry run first: it lists each format's cases and vision calls and sends nothing.
+python -m evals.tasks --config evals\models.toml --formats v7-lines,v6-text,layout-text,spans --dry-run
+python -m evals.tasks --config evals\models.toml --formats v7-lines,v6-text,layout-text,spans --repeat 3
+# Your private corpus, in your own terminal. Share only summary.json.
+python -m evals.run --corpus P:\EvalCorpus --config my-models.toml --formats v7-lines,v6-text,layout-text,spans --split dev
+```
+
+- With `--formats`, `python -m evals.tasks` runs only the vision tasks (`transcription`, `receipt_layout`). Naming another task is refused, and so is an unknown or repeated format, before any request.
+- Four formats take four times the GPU time. Narrow the run with `--tasks`, `--limit` and `--case`.
+- The report says "Format comparison: no model is ranked." and sets the formats side by side per family and photo condition.
+- Tune prompts on synthetic cases and the dev split only, then run each format once on the test split.
 
 ## Choosing a model
 
@@ -196,8 +216,9 @@ Calibration:
 ## Tests
 
 These cover the suites and the app's donation export, using synthetic data only:
-- `tests/test_evals.py`: the documents suite, including the synthetic corpus (58 cases, the four `aligned` statements, then the five `aligned` pay stub files and the five `aligned` bill files, each added after the others) and the old reader against the table engine (`-k table_engine`);
-- `tests/test_eval_tasks.py`: the task suite, the decision rule and the judge;
+- `tests/test_evals.py`: the documents suite (and `--formats`, the summary's format label and its leak test), including the synthetic corpus (58 cases, the four `aligned` statements, then the five `aligned` pay stub files and the five `aligned` bill files, each added after the others) and the old reader against the table engine (`-k table_engine`);
+- `tests/test_eval_tasks.py`: the task suite, the decision rule, the judge and `--formats` on the task runner;
+- `tests/test_receipt_layout_task.py`, `tests/test_receipt_layouts.py`, `tests/test_vision_layout.py`, `tests/test_reading_formats.py`: the `receipt_layout` task and grader, the receipt drawing, the row builder and the four reading formats;
 - `tests/test_donations.py`: the donation export.
 
 The task tests check that a perfect answer passes every case of every task.

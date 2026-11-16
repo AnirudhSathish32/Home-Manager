@@ -43,7 +43,7 @@ from home_manager.documents.layout_context import evidence_lines
 from home_manager.documents.pdf_reader import complete_pdf, read_result, worker
 from home_manager.finance.statement_dates import Rebuild
 from home_manager.library.storage import digest_file
-from model_server import vision_answer
+from model_server import spans_answer, vision_answer
 from test_donations import DESCRIBE, extracted  # noqa: F401
 from test_extraction import MISSING, RECEIPT, classification, identity, receipt, receipt_items, receipt_summary  # noqa: F401
 
@@ -926,3 +926,139 @@ def test_the_summary_never_holds_private_values(tmp_path):
                 {**good, "candidates": {"m": {**good["candidates"]["m"], "runs": "SECRETMERCHANT"}}}):
         with pytest.raises(ValueError):
             check_summary(bad)
+
+
+# Reading formats (specs/receipt-layout-eval FR-21, FR-22; SC-12, SC-15) ---------------------------------------------------------
+
+def spans_of(lines):
+    """A spans reading of printed lines: one piece per line, stacked down the page with a common left edge."""
+    return spans_answer([(text, [10, 20 + 40 * number, 10 + 10 * len(text), 50 + 40 * number]) for number, text in enumerate(lines)])
+
+
+def test_a_documents_run_with_formats_runs_each_variant_end_to_end_and_the_summary_carries_the_label(extracted, local_model, tmp_path):  # noqa: F811
+    from evals.report import ENUM_VALUES
+    from home_manager.models.vision import READING_FORMATS
+    manager, receipt_id = extracted
+    corpus = Corpus.create(tmp_path / "corpus")
+    [case_id] = intake.add(corpus, donation_bundle(manager, receipt_id, tmp_path), rng=AlwaysTest())
+    intake.admit(corpus, case_id)
+    spans_run = scripted(receipt_summary())
+    spans_run[0] = spans_of(RECEIPT)
+    local_model["outputs"] = scripted(receipt_summary()) + spans_run
+    folder = run(corpus, config_for(local_model), network_guard=False, echo=lambda _: None, formats=["v7-lines", "spans"])
+    lines = [json.loads(text) for text in (folder / "results.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(line["candidate"], line["reading_format"], line["prompt_version"], line["status"]) for line in lines] == [
+        ("synthetic@v7-lines", "v7-lines", READING_FORMATS["v7-lines"], "ok"), ("synthetic@spans", "spans", READING_FORMATS["spans"], "ok")]
+    assert all(line["grades"]["document"]["perfect"] and line["details"]["budget_retry"] is False for line in lines), lines
+    reads = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"]
+             if "response_format" in request and request["response_format"]["json_schema"]["name"].startswith("document_")]
+    assert reads[-2:] == ["document_transcription", "document_text_spans"]  # The fixture's own reading came first.
+    manifest = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    assert manifest["formats"] == ["v7-lines", "spans"]
+    assert [(candidate["name"], candidate["reading_format"], candidate["prompt_version"]) for candidate in manifest["candidates"]] == [
+        ("synthetic@v7-lines", "v7-lines", READING_FORMATS["v7-lines"]), ("synthetic@spans", "spans", READING_FORMATS["spans"])]
+    text = (folder / "summary.json").read_text(encoding="utf-8")
+    summary = json.loads(text)
+    assert {name: value["reading_format"] for name, value in summary["candidates"].items()} == {"synthetic@v7-lines": "v7-lines", "synthetic@spans": "spans"}
+    assert check_summary(summary) is summary and "prompt_version" not in text and ENUM_VALUES["reading_format"] == set(READING_FORMATS)
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "**Format comparison: no model is ranked.**" in report and "passes the gate" not in report and "| Rank |" not in report
+    assert "Reading format: spans (receipt-vision-spans-1)." in report
+    # The default run still names no format in its summary.
+    local_model["outputs"] = scripted(receipt_summary())
+    plain = run(corpus, config_for(local_model), network_guard=False, echo=lambda _: None)
+    assert "reading_format" not in (plain / "summary.json").read_text(encoding="utf-8")
+    assert json.loads((plain / "run.json").read_text(encoding="utf-8"))["formats"] == []
+    assert "**synthetic is the only candidate that passes the gate.**" in (plain / "report.md").read_text(encoding="utf-8")
+
+
+def test_a_documents_dry_run_with_formats_counts_vision_calls_without_native_pdf_pages(tmp_path, local_model):
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    said = []
+    assert run(corpus, config_for(local_model), repeat=2, network_guard=False, echo=said.append, dry_run=True, formats=["v7-lines", "spans"]) is None
+    cases = corpus.cases(("admitted",), "test")
+    pages = sum(case.info.pages for case in cases if case.info.source_kind != "native_pdf")
+    assert pages == 38 and sum(case.info.pages for case in cases) == 73  # A text page is never sent to the vision model.
+    assert said[0].startswith("Dry run: 59 test cases x 2 candidates x 2 repeats = 236 documents.")
+    assert said[1:] == ["  synthetic@v7-lines: vision synthetic-vision, reasoning synthetic-reasoning",
+                        "  synthetic@spans: vision synthetic-vision, reasoning synthetic-reasoning",
+                        "  v7-lines: 59 documents x 1 candidate x 2 repeats, about 76 vision calls",
+                        "  spans: 59 documents x 1 candidate x 2 repeats, about 76 vision calls"]
+    said.clear()
+    run(corpus, config_for(local_model), network_guard=False, echo=said.append, dry_run=True, formats=["spans"], compare_schema=True)
+    assert said[-1] == "  spans: 59 documents x 2 candidates x 1 repeat, about 76 vision calls" and "  synthetic@spans@no-schema: vision" in said[2]
+    assert local_model["requests"] == [] and not (corpus.root / "results").exists()
+
+
+def test_formats_are_checked_before_any_server_contact_and_a_remote_server_is_refused_as_without_them(tmp_path, local_model, monkeypatch):
+    from evals.tasks.runner import run_tasks
+    corpus = Corpus(tmp_path / "synthetic")
+    create_synthetic(corpus.root)
+    contacted = []
+    monkeypatch.setattr("evals.run.check_server", lambda *args, **kwargs: contacted.append(args))
+    for formats, message in ((["nope"], "Unknown reading formats: 'nope'. Choose from: v7-lines, v6-text, layout-text, spans"), (["spans", "spans"], "once")):
+        with pytest.raises(ValueError, match=message):
+            run(corpus, config_for(local_model), network_guard=False, echo=lambda _: None, formats=formats)
+        with pytest.raises(ValueError, match=message):
+            run_tasks(config_for(local_model), network_guard=False, echo=lambda _: None, formats=formats)
+    assert contacted == [] and local_model["requests"] == [] and not (corpus.root / "results").exists()
+    monkeypatch.undo()
+    # SC-15: the guard's rules are the same with and without formats.
+    remote = {**config_for(local_model), "base_url": "http://192.168.1.5:1234/v1"}
+    for formats in (None, ["spans"], ["v7-lines", "spans"]):
+        with pytest.raises(GuardError, match="this computer only"):
+            run(corpus, remote, network_guard=False, echo=lambda _: None, dry_run=True, formats=formats)
+        with pytest.raises(GuardError, match="this computer only"):
+            run_tasks(remote, network_guard=False, echo=lambda _: None, dry_run=True, formats=formats)
+    relay = {**config_for(local_model), "base_url": "http://127.0.0.1:8766/v1"}
+    with pytest.raises(GuardError, match="relay"):
+        run(corpus, relay, network_guard=False, echo=lambda _: None, dry_run=True, formats=["spans"])
+    assert local_model["requests"] == []
+
+
+def test_a_format_run_summary_holds_only_the_format_label_and_never_a_seeded_private_value(tmp_path):
+    corpus = Corpus(tmp_path / "corpus")
+    create_synthetic(corpus.root)
+    secrets = ["SECRETMERCHANT", "OTHERSECRET", "P:/Finances/secret.pdf", "123-45-6789", "4111111111111111", "987654321"]
+    folder = corpus.root / "results" / "20261003T000000Z-abcdef"
+    folder.mkdir(parents=True)
+    candidate = {"name": "m@spans", "vision": "v", "reasoning": "r", "reading_format": "spans", "prompt_version": "receipt-vision-spans-1",
+                 "identity": {"vision": {"quantization": "Q4_K_M"}, "reasoning": {}}}
+    manifest = {"format": "home-manager-eval-run/1", "run_id": folder.name, "started_at": "2026-10-03T00:00:00Z", "finished_at": "2026-10-03T00:01:00Z",
+                "split": "test", "repeat": 1, "cases": 4, "git": "abc1234", "extraction_version": "typed-extraction-v16",
+                "vision_version": "receipt-vision-v7-indent", "base_url": "http://127.0.0.1:1234/v1", "formats": ["spans"], "candidates": [candidate]}
+    (folder / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
+    lines = []
+    for case in corpus.cases():
+        answers = case.answers()
+        record = {name: answer.value for name, answer in answers.fields.items()}
+        lines.append({"run_id": folder.name, "candidate": "m@spans", "reading_format": "SECRETMERCHANT", "prompt_version": "P:/Finances/secret.pdf",
+                      "run_index": 0, "case_id": case.id, "donor": case.info.donor, "split": "test", "document_type": case.info.document_type,
+                      "source_kind": "scan", "pages": 1, "tags": case.info.tags, "status": "ok", "type_correct": True, "grades": grade(answers, record),
+                      "details": {"wall_seconds": 3.0, "error": "123-45-6789 4111111111111111 987654321", "first_try_valid": True, "budget_retry": False}})
+    (folder / "results.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    rebuild(corpus, folder)
+    text = (folder / "summary.json").read_text(encoding="utf-8")
+    assert not [secret for secret in secrets if secret in text]
+    summary = json.loads(text)
+    assert summary["candidates"]["m@spans"]["reading_format"] == "spans" and "prompt_version" not in text
+    # A private string in the format's place is refused, wherever it comes from.
+    for bad in ("SECRETMERCHANT", "P:/Finances/secret.pdf", "spans, v7-lines", ""):
+        with pytest.raises(ValueError):
+            check_summary({**summary, "candidates": {"m@spans": {**summary["candidates"]["m@spans"], "reading_format": bad}}})
+        if bad:  # An empty label is no label.
+            with pytest.raises(ValueError):
+                rebuild_with_format(corpus, folder, manifest, bad)
+    with pytest.raises(ValueError):
+        check_summary({**summary, "candidates": {"m@spans": {**summary["candidates"]["m@spans"], "prompt_version": "receipt-vision-spans-1"}}})
+    assert "SECRETMERCHANT" not in (folder / "summary.json").read_text(encoding="utf-8")  # The refused rebuilds left the file as it was.
+
+
+def rebuild_with_format(corpus, folder, manifest, value):
+    changed = {**manifest, "candidates": [{**manifest["candidates"][0], "reading_format": value}]}
+    (folder / "run.json").write_text(json.dumps(changed), encoding="utf-8")
+    try:
+        rebuild(corpus, folder)
+    finally:
+        (folder / "run.json").write_text(json.dumps(manifest), encoding="utf-8")

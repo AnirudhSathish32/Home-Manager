@@ -66,6 +66,13 @@ and link here for what isn't. When an item is built, remove it from this list an
   - check the `/v1/responses` log-probability shape against the installed LM Studio;
   - calibrate a chosen model on real documents before it gets any routing role;
   - the documents suite doesn't yet report decision-model calibration.
+- **Choose how the app reads images.** The app still reads with `receipt-vision-v7-indent`, which splits printed rows on
+  real receipts. Run `--formats` on the synthetic receipts and then on the donated corpus
+  ([evals](evals.md#reading-formats)), and write the reading spec from the numbers. It decides the format, whether the
+  model's positions are kept to highlight lines on the image, and how long receipts are read (strips, a zoomed re-read
+  of rows that fail arithmetic).
+- **Tables from positions.** `spans` asks for no tables, so its table measures read "not produced". If `spans` wins,
+  the reading spec adds tables built from positions, as the text-PDF engine does.
 - **Evaluate the vision and reasoning models on real documents** (the donated corpus); accuracy has only been measured
   on synthetic data.
 - **Judge.** No hand labels exist yet, so no judge is calibrated.

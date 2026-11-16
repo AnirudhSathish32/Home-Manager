@@ -537,3 +537,116 @@ def test_a_measured_only_task_never_counts_toward_the_ranking():
     assert both == alone and both["runs"] == both["valid"] == 4 and both["money_errors"] == 0
     assert set(both["scores"]) == set(both["pass_all"]) == {"transcription"} and both["p95"] == alone["p95"] < 30
     assert decision_rows({"candidates": [{"name": "model"}], "tasks": {"receipt_layout": {}}}, aggregate(layout), {}) == []
+
+
+# Reading formats (specs/receipt-layout-eval FR-21, SC-11) --------------------------------------------------------------
+
+FORMAT_NAMES = "v7-lines, v6-text, layout-text, spans"
+
+
+def test_a_dry_run_with_formats_lists_each_format_and_sends_no_request(tmp_path, local_model):
+    said = []
+    assert run_tasks(config_for(local_model), out=tmp_path, network_guard=False, echo=said.append, dry_run=True, formats=["v7-lines", "spans"]) is None
+    assert said[0].startswith("Dry run: transcription (48), receipt_layout (24) x 2 candidates x 1 repeats = 144 cases.")
+    assert said[1:] == ["  v7-lines: 48 transcription cases + 24 receipt_layout cases x 1 candidate x 1 repeat = 72 cases, at least 72 vision calls",
+                        "  spans: 48 transcription cases + 24 receipt_layout cases x 1 candidate x 1 repeat = 72 cases, at least 72 vision calls"]
+    assert local_model["requests"] == [] and not list(tmp_path.iterdir())
+    said.clear()
+    run_tasks(config_for(local_model), ["receipt_layout"], repeat=2, out=tmp_path, network_guard=False, echo=said.append, dry_run=True,
+              formats=["spans"], compare_schema=True, case_limit=3)
+    assert said[1:] == ["  spans: 3 receipt_layout cases x 2 candidates x 2 repeats = 12 cases, at least 12 vision calls"]
+
+
+def test_an_unknown_repeated_or_unreadable_format_is_refused_before_any_request(tmp_path, local_model, capsys):
+    from evals.tasks.runner import main
+    for formats, message in ((["nope"], "Unknown reading formats: 'nope'. Choose from: " + FORMAT_NAMES), (["spans", "spans"], "Name each reading format once"),
+                             (["v7-lines", "nope", "also"], "'nope', 'also'")):
+        with pytest.raises(ValueError, match=message):
+            run_tasks(config_for(local_model), out=tmp_path, network_guard=False, echo=lambda _: None, formats=formats)
+    with pytest.raises(ValueError, match="vision tasks only .*transcription, receipt_layout.*checkin"):
+        run_tasks(config_for(local_model), ["transcription", "checkin"], out=tmp_path, network_guard=False, echo=lambda _: None, formats=["spans"])
+    assert local_model["requests"] == [] and not list(tmp_path.iterdir())
+    assert main(["--formats", "nope", "--out", str(tmp_path)]) == 1
+    assert "Choose from: " + FORMAT_NAMES in capsys.readouterr().err
+    assert main(["--formats", "spans,spans", "--dry-run"]) == 1 and "Name each reading format once" in capsys.readouterr().err
+    assert local_model["requests"] == []
+
+
+def test_a_run_with_formats_names_each_variant_labels_every_result_and_ranks_no_model(tmp_path, local_model):
+    from home_manager.models.vision import READING_FORMATS
+    from test_receipt_layout_task import exact
+    case = TASKS["receipt_layout"].cases()[0]
+    local_model["by_schema"] = {"document_transcription": [exact(case, "v7-lines")], "document_text_spans": [exact(case, "spans")]}
+    local_model["timings"] = {"prompt_n": 100, "prompt_ms": 50.0, "prompt_per_second": 2000.0, "predicted_n": 50, "predicted_ms": 500.0, "predicted_per_second": 100.0}
+    folder = run_tasks(config_for(local_model), ["receipt_layout"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=1,
+                       formats=["v7-lines", "spans"])
+    lines = task_lines(folder)
+    assert [(line["candidate"], line["reading_format"], line["prompt_version"], line["status"], line["grades"]["passed"]) for line in lines] == [
+        ("synthetic@v7-lines", "v7-lines", READING_FORMATS["v7-lines"], "ok", True), ("synthetic@spans", "spans", READING_FORMATS["spans"], "ok", True)]
+    assert all(line["tokens"] == {"completion": 50, "partial": False} and line["budget_retry"] is False for line in lines)
+    assert [line["output"]["format"] for line in lines] == ["v7-lines", "spans"]
+    names = [request["response_format"]["json_schema"]["name"] for request in local_model["requests"] if "response_format" in request]
+    assert names == ["document_transcription", "document_text_spans"]
+    manifest = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    assert manifest["formats"] == ["v7-lines", "spans"]
+    assert [(candidate["name"], candidate["reading_format"], candidate["prompt_version"]) for candidate in manifest["candidates"]] == [
+        ("synthetic@v7-lines", "v7-lines", READING_FORMATS["v7-lines"]), ("synthetic@spans", "spans", READING_FORMATS["spans"])]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "**Format comparison: no model is ranked.**" in report and "passes the gate" not in report and "| Rank |" not in report
+    assert "| synthetic@v7-lines | not ranked |" in report and "| synthetic@spans | not ranked |" in report
+    assert "#### v7-lines (" in report and "#### spans (" in report
+    assert manifest["decision"] and "formats" in manifest
+
+
+def test_no_formats_leave_the_candidates_labels_and_ranking_as_they_were(tmp_path, local_model):
+    case = TASKS["receipt_layout"].cases()[0]
+    local_model["output"] = {"lines": [{"text": "x", "indent": 0}]}
+    folder = run_tasks(config_for(local_model), ["receipt_layout", "transcription"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=1)
+    manifest = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    assert manifest["formats"] == [] and [candidate["name"] for candidate in manifest["candidates"]] == ["synthetic"]
+    assert "reading_format" not in manifest["candidates"][0] and manifest["candidates"][0]["prompt_version"] == "receipt-vision-v7-indent"
+    lines = task_lines(folder)
+    assert {(line["task"], line["reading_format"], line["prompt_version"]) for line in lines} == {
+        ("receipt_layout", "v7-lines", "receipt-vision-v7-indent"), ("transcription", "v7-lines", "receipt-vision-v7-indent")}
+    assert case["id"] in {line["case_id"] for line in lines}
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "Format comparison" not in report and "## Decision" in report
+
+
+def test_a_budget_retry_and_a_failed_attempt_show_in_the_result_line(tmp_path, local_model):
+    from test_receipt_layout_task import exact
+    case = TASKS["receipt_layout"].cases()[0]
+    local_model["output"] = exact(case, "v7-lines")
+    local_model["finish_reasons"] = ["length", "stop"]  # Ran out at 8,192, then answered with the larger budget.
+    local_model["timings"] = {"prompt_n": 100, "prompt_ms": 50.0, "prompt_per_second": 2000.0, "predicted_n": 8192, "predicted_ms": 500.0, "predicted_per_second": 100.0}
+    folder = run_tasks(config_for(local_model), ["receipt_layout"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=1, formats=["v7-lines"])
+    [line] = task_lines(folder)
+    assert line["status"] == "ok" and line["budget_retry"] is True and line["attempts"]["calls"] >= 1
+    assert [request["max_tokens"] for request in local_model["requests"]] == [8192, 16384]
+    assert line["tokens"]["completion"] >= 8192
+    assert "ran out at 8,192 tokens and were asked for again with 16,384" in (folder / "report.md").read_text(encoding="utf-8")
+
+
+def test_formats_with_compare_schema_keep_the_schema_table_and_rank_nothing(tmp_path, local_model):
+    case = TASKS["transcription"].cases()[0]
+    local_model["output"] = {"lines": [{"text": line, "indent": 0} for line in case["input"]["lines"]]}
+    folder = run_tasks(config_for(local_model), ["transcription"], out=tmp_path, network_guard=False, echo=lambda _: None, case_limit=1,
+                       formats=["v7-lines"], compare_schema=True)
+    assert [line["candidate"] for line in task_lines(folder)] == ["synthetic@v7-lines", "synthetic@v7-lines@no-schema"]
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "## Schema enforcement" in report and "| synthetic@v7-lines | enforced |" in report and "| synthetic@v7-lines | prompt only |" in report
+    assert "| synthetic@v7-lines | not ranked |" in report and "synthetic@v7-lines@no-schema | not ranked" not in report
+    assert "**Format comparison: no model is ranked.**" in report
+
+
+def test_spans_asks_for_no_tables_so_table_cases_show_not_produced():
+    module = TASKS["transcription"]
+    case = next(case for case in module.cases() if "tables" in case["expected"])
+    reading = {"text": case["expected"]["text"], "tables": [], "table_issue": False}
+    spans = module.grade(case, {"format": "spans", **reading})
+    assert spans["checks"]["tables"] == "not produced" and "table_cells_expected" not in spans["checks"]
+    assert spans["passed"] is True  # Graded on its text alone.
+    lines = module.grade(case, {"format": "layout-text", **reading})
+    assert "tables" not in lines["checks"] and lines["checks"]["table_cells_expected"] > 0 and lines["passed"] is False
+    text = "\n".join(module.report_lines({"m@spans": [{"grades": spans}], "m@layout-text": [{"grades": lines}]}))
+    assert "| m@spans | not produced | not produced | not produced | not produced | not produced |" in text and "| m@layout-text | 0 / " in text
