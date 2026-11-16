@@ -1,0 +1,18 @@
+{
+  "feature": "receipt-layout-eval",
+  "spec": {
+    "sha256": "b0938b87b74f685f1e5759e4ea5f0298c92dd65a7699d398406b451e2da0f1b1",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-15T19:49:50-05:00",
+    "approved_via": "agent",
+    "permission": "approve then write the plan"
+  },
+  "plan": {
+    "sha256": "28c29cf7d5a15caf0bd8e5b17319ef292cf06dd4e305390889afaf27bd8f434b",
+    "approved_by": "Anirudh Sathish",
+    "approved_at": "2026-11-16T01:25:25-05:00",
+    "approved_via": "agent",
+    "permission": "ok approve the plan then implement the slices",
+    "spec_sha256": "b0938b87b74f685f1e5759e4ea5f0298c92dd65a7699d398406b451e2da0f1b1"
+  }
+}
