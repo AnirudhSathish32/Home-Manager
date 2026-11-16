@@ -15,9 +15,11 @@ SLOPE_ROW = 0.25            # tighter row tolerance while searching for the slop
 LEVEL_SLOPE, SLANT_MIN = 0.005, 0.01
 MIN_TO_MEASURE = 6          # fewer usable pieces than this search only the small slopes below
 FEW_TO_MEASURE, FEW_SLOPE_LIMIT = 4, 0.06  # a few pieces (a two-row receipt) may be tilted up to about 3.4 degrees; fewer are read level
+FEW_ROWS, FEW_SPAN = 2, 10  # ...and only when at least this many rows of two or more pieces, each this many character widths wide, all agree with the slope
 SAME_ROW = 0.5              # a piece joins the open row within this many text heights of the row's centre
 HANDWRITING_ROW = 1.0       # a handwritten piece joins the nearest printed row within this many text heights
 SAME_CELL = 1.5             # neighbours closer than this many character widths are one cell
+STRAY_CHARS, STRAY_WIDTH = 3, 2.0  # a lone printed row with fewer characters, or narrower in character widths, than this is not the margin
 MARGIN_BAND = 3.0           # text heights per band when measuring the margin's slant
 MARGIN_OUTLIER = 4.0        # a band's left edge this many character widths right of the typical one is not the margin
 CENTER_TOLERANCE, EDGE_CLEARANCE = 2.0, 3.0
@@ -100,6 +102,21 @@ def row_slope(printed, slant=None, limit=SLOPE_LIMIT):
     return min(results)[3]
 
 
+def tilt_supported(points, slope):
+    """Whether a slope found among a few pieces is backed by the pieces themselves: at least FEW_ROWS rows of two or more pieces that
+    span FEW_SPAN character widths, in which every neighbouring pair sits within the row tolerance of each other once tilted by it.
+    One row (a title and a price far below it) can be paired by almost any slope and is no evidence of a tilt. points: index -> (X, Y)."""
+    rows = group({index: y + slope * x for index, (x, y) in points.items()}, SLOPE_ROW)
+    evidence = 0
+    for members in rows:
+        ordered = sorted(members, key=lambda index: points[index][0])
+        if len(ordered) < 2 or points[ordered[-1]][0] - points[ordered[0]][0] < FEW_SPAN:
+            continue
+        pairs = zip(ordered, ordered[1:])
+        evidence += all(abs((points[b][1] + slope * points[b][0]) - (points[a][1] + slope * points[a][0])) <= SLOPE_ROW for a, b in pairs)
+    return evidence >= FEW_ROWS
+
+
 def margin_slope(boxes):
     """Theil–Sen slope of the left edge's X against Y, over the smallest left edge in each band (None with fewer than 3 bands)."""
     bands = {}
@@ -137,10 +154,12 @@ def build_rows(pieces):
     cy = {i: (pieces[i][1][1] + pieces[i][1][3]) / 2 / h for i in placed}
     printed = [i for i in placed if not pieces[i][2]] or placed
     # A few pieces cannot tell a large tilt from a pairing of rows (a title and a price far below it): they search only the small slopes,
-    # and fewer than FEW_TO_MEASURE are read level.
+    # keep one only when tilt_supported finds it in at least two rows, and fewer than FEW_TO_MEASURE are read level.
     measured = len(placed) >= MIN_TO_MEASURE
     slant = margin_slope([(left[i], cy[i]) for i in placed]) if len(placed) >= FEW_TO_MEASURE else None
     slope = row_slope({i: (cx[i], cy[i]) for i in placed}, slant, SLOPE_LIMIT if measured else FEW_SLOPE_LIMIT) if len(placed) >= FEW_TO_MEASURE else 0.0
+    if slope and not measured and not tilt_supported({i: (cx[i], cy[i]) for i in placed}, slope):
+        slope = 0.0
     row_y = {i: cy[i] + slope * cx[i] for i in placed}
     # Row membership: printed pieces by row_y, then each handwritten piece to the nearest printed row, else rows of their own.
     groups = group({i: row_y[i] for i in printed}) if printed else []
@@ -156,7 +175,7 @@ def build_rows(pieces):
     shear = slant or 0.0
     shifted_left = {i: left[i] - shear * cy[i] for i in placed}
     shifted_right = {i: right[i] - shear * cy[i] for i in placed}
-    rows, extents, owner = [], [], {}
+    rows, extents, inked, owner = [], [], [], {}
     for members in groups:
         cells = []  # [texts, boxes, handwritten, left, right]
         for index in sorted(members, key=shifted_left.get):
@@ -170,11 +189,21 @@ def build_rows(pieces):
         row = Row([Cell(" ".join(texts), (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)), hw)
                    for texts, boxes, hw, _, _ in cells])
         rows.append(row)
-        extents.append((cells[0][3], cells[-1][4]))
+        ink = [cell for cell in cells if not cell[2]]  # A row's extent is its printed cells': handwriting may sit anywhere.
+        extents.append((ink[0][3], max(cell[4] for cell in ink)) if ink else (cells[0][3], cells[-1][4]))
+        inked.append(bool(ink))
         for index in members:
             owner[index] = row
     # Extent, alignment and indent, in character widths.
-    edge_left = min(start for start, _ in extents)  # The leftmost row sets the margin, however few rows sit on it: a margin of 10% of the rows would call a lone main row's followers unindented.
+    # The margin is the leftmost printed row's start, however few rows sit on it (a margin of 10% of the rows would call a lone main row's
+    # followers unindented). Handwriting never sets it, and nor does a lone printed row too short to be a main row ("x" in the margin)
+    # with no other row starting within INDENT_GROUP_GAP of it. A stray that is long enough, or that shares a row with other printed
+    # cells, still sets the margin: it cannot be told from a real main row followed by deeper ones.
+    printed = [(start, end, row) for (start, end), row, ink in zip(extents, rows, inked) if ink]
+    margins = [start for start, end, row in printed
+               if not ((len(row.text) < STRAY_CHARS or end - start < STRAY_WIDTH)
+                       and not any(other is not row and abs(other_start - start) < INDENT_GROUP_GAP for other_start, _, other in printed))]
+    edge_left = min(margins or [start for start, _, _ in printed] or [start for start, _ in extents])
     edge_right = percentile([end for _, end in extents], 0.9)
     middle = (edge_left + edge_right) / 2
     offsets = []

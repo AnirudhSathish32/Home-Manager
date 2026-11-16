@@ -273,10 +273,65 @@ def test_a_two_row_receipt_tilted_a_little_is_still_two_rows(degrees):
     assert rows_of(transform(pieces, tilt(degrees, centre=(380, 90))))[0] == expected
 
 
+def piece(text, left, top, right, bottom):
+    return (text, [left, top, right, bottom], False)
+
+
+def test_a_title_and_a_price_four_text_heights_below_are_not_one_tilted_row():
+    """Four pieces: the title row has two, so one row could pair its price with almost any slope; no tilt is searched out of that."""
+    pieces = [piece("CAFE", 40, 40, 72, 60), piece("MENU", 80, 40, 112, 60), piece("12.00", 680, 120, 720, 140), piece("THANKS", 350, 200, 398, 220)]
+    assert [row.text for row in build_rows(pieces)[0]] == ["CAFE MENU", "12.00", "THANKS"]
+
+
+def test_a_title_and_a_price_four_text_heights_above_are_not_one_tilted_row():
+    pieces = [piece("12.00", 680, 40, 720, 60), piece("CAFE", 40, 120, 72, 140), piece("MENU", 80, 120, 112, 140), piece("THANKS", 350, 200, 398, 220)]
+    assert [row.text for row in build_rows(pieces)[0]] == ["12.00", "CAFE MENU", "THANKS"]
+
+
+def test_five_pieces_in_one_row_of_two_are_read_level():
+    pieces = [piece("CAFE", 40, 40, 72, 60), piece("MENU", 80, 40, 112, 60), piece("12.00", 680, 120, 720, 140),
+              piece("THANKS", 350, 200, 398, 220), piece("AGAIN", 410, 200, 450, 220)]
+    assert [row.text for row in build_rows(pieces)[0]] == ["CAFE MENU", "12.00", "THANKS AGAIN"]
+
+
 def test_one_main_row_followed_by_side_rows_leaves_the_side_rows_indented():
     """One row on the margin and ten on the first indent: the margin is the leftmost row's, however few rows sit on it."""
     got = rows_of(receipt([[Spec("Coffee")]] + [[Spec(f"Side {number}", indent=1)] for number in range(10)])[0])[0]
     assert [indent for _, indent, _ in got] == [0] + [1] * 10
+
+
+def margin_rows(stray, handwritten=False):
+    """Twelve item rows (name at x 52, amount at x 600), 30 apart, plus one stray piece."""
+    pieces = []
+    for number in range(12):
+        top = 30 + 30 * number
+        pieces += [(f"Item{number}", [52, top, 120, top + 20], False), (f"{number}.00", [600, top, 640, top + 20], False)]
+    return pieces + [(stray, [12, 520, 12 + 15.6 * len(stray), 539], handwritten)]
+
+
+@pytest.mark.parametrize("handwritten", [False, True])
+def test_one_stray_short_box_left_of_the_margin_does_not_indent_every_main_row(handwritten):
+    """A lone "x" in the margin, printed or handwritten, sets no margin: the twelve main rows stay at indent 0."""
+    rows, _ = build_rows(margin_rows("x", handwritten))
+    main = [row for row in rows if row.text.startswith("Item")]
+    assert len(main) == 12 and [row.indent for row in main] == [0] * 12
+
+
+def test_a_stray_handwritten_word_left_of_the_margin_does_not_set_it_however_long():
+    rows, _ = build_rows(margin_rows("scribble", handwritten=True))
+    assert [row.indent for row in rows if row.text.startswith("Item")] == [0] * 12
+
+
+def test_a_stray_row_that_is_not_short_still_sets_the_margin():
+    """The remaining ambiguity: a printed word left of the margin cannot be told from a main row followed by deeper ones."""
+    rows, _ = build_rows(margin_rows("Notes"))
+    assert [row.indent for row in rows if row.text.startswith("Item")] == [1] * 12
+
+
+def test_short_rows_starting_together_in_the_margin_still_set_it():
+    pieces = [(f"{number}", [12, 520 + 30 * number, 20, 540 + 30 * number], False) for number in range(3)]
+    rows, _ = build_rows(margin_rows("x")[:-1] + pieces)
+    assert [row.indent for row in rows if row.text.startswith("Item")] == [1] * 12
 
 
 def test_an_unusable_first_piece_comes_first():

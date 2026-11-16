@@ -281,6 +281,70 @@ def test_splitting_any_multi_cell_row_into_its_cells_counts_one_split_row_and_no
         assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0), (case["input"], at)
 
 
+def miswritten(text):
+    """text with one character substituted: the first that is neither a digit nor a space, else the last digit; one or two characters stay as they are."""
+    if len(text) <= 2:
+        return text
+    at = next((k for k, char in enumerate(text) if not char.isdigit() and char != " "), len(text) - 1)
+    other = str((int(text[at]) + 1) % 10) if text[at].isdigit() else "z" if text[at] != "z" else "y"
+    return text[:at] + other + text[at + 1:]
+
+
+def row_of(*cells):
+    return {"cells": [{"text": cell, "box": None, "handwritten": False} for cell in cells], "indent": 0, "align": "left", "amounts": []}
+
+
+def graded_lines(rows, lines):
+    counts = grade_reading({"rows": rows}, {"format": "v6-text", "lines": [[line, None] for line in lines]})
+    return counts["whole"], counts["split"], counts["merged"], counts["missing"], counts["extra"]
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_splitting_any_multi_cell_row_into_misread_cells_is_still_one_split_row(case):
+    """Each piece of a split row gets one substituted character (not a digit where it can be avoided): the pieces are still found in order."""
+    rows = case["expected"]["rows"]
+    for at, row in enumerate(rows):
+        if len(row["cells"]) < 2:
+            continue
+        lines = [[text, other["indent"]] for text, other in zip(texts(rows), rows)]
+        lines[at:at + 1] = [[miswritten(cell["text"]), row["indent"]] for cell in row["cells"]]
+        counts = grade_reading(case["expected"], {"format": "v7-lines", "lines": lines})
+        assert (counts["split"], counts["missing"], counts["extra"], counts["merged"]) == (1, 0, 0, 0), (case["input"], at, lines[at:at + len(row["cells"])])
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: "/".join(map(str, case["input"].values())))
+def test_deleting_a_row_whose_text_is_inside_another_row_counts_it_missing_and_never_merged(case):
+    """Repeated words: a heading "Tea" and a row "Green Tea $3.95" on one line must not make the heading merged."""
+    rows = case["expected"]["rows"]
+    inside = [at for at, text in enumerate(texts(rows)) if any(normalize(text) in normalize(other) for k, other in enumerate(texts(rows)) if k != at)]
+    for at in inside:
+        counts = deleting(case, at)
+        assert (counts["missing"], counts["merged"], counts["split"], counts["extra"]) == (1, 0, 0, 0), (case["input"], at)
+
+
+def test_a_misread_split_row_is_still_one_split_row_and_not_two_whole_ones():
+    """Reviewer's examples: a three-character piece with one wrong character, a price with one wrong digit-like character."""
+    rows = [row_of("Tea", "$3.95"), row_of("Coffee", "$2.50")]
+    assert graded_lines(rows, ["Tee", "$3.95", "Coffee $2.50"]) == (1, 1, 0, 0, 0)
+    assert graded_lines(rows, ["Tee", "$3.9S", "Coffee $2.50"]) == (1, 1, 0, 0, 0)
+    assert graded_lines(rows, ["Tea", "$3.9S", "Coffee $2.50"]) == (1, 1, 0, 0, 0)
+
+
+def test_a_heading_deleted_before_a_row_that_repeats_it_is_missing_and_never_merged():
+    rows = [row_of("Tea"), row_of("Green Tea", "$3.95")]
+    assert graded_lines(rows, ["Green Tea $3.95"]) == (1, 0, 0, 1, 0)
+    assert graded_lines(rows, ["Tea", "Green Tea $3.95"]) == (2, 0, 0, 0, 0)
+    assert graded_lines(rows, ["Tea Green Tea $3.95"]) == (0, 0, 1, 0, 0)   # both really on one line, in order: merged
+
+
+def test_split_pieces_and_merged_rows_may_not_share_characters():
+    rows = [row_of("Tea", "Tea")]
+    assert graded_lines(rows, ["Tea", "Tea"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Tea", "Tea", "$3.95")], ["Tea", "Tea", "$3.95"]) == (0, 1, 0, 0, 0)
+    assert graded_lines([row_of("Tea", "$3.95")], ["Tea", "Tea"]) == (0, 0, 0, 1, 2)   # the second line holds none of the price
+    assert graded_lines([row_of("Tea"), row_of("Tea")], ["Tea"]) == (1, 0, 0, 1, 0)    # one printed "Tea" cannot be two rows
+
+
 def test_a_row_of_four_cells_split_into_its_four_cells_is_one_split_row():
     at = index_of("18.00% of sale: $8.79 Total $61.55")
     cells = [cell["text"] for cell in ROWS[at]["cells"]]

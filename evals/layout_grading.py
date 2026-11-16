@@ -23,6 +23,7 @@ POSITION_FORMATS = ("spans",)            # The formats that report alignment, ha
 PAIRABLE = 0.5       # Rows and lines further apart than this share of their length are never paired.
 HELD = 0.3           # A cell is held by a line when it sits in it within this share of its length.
 BAND = 15            # Lines either side of the proportional diagonal the alignment looks at.
+SHORT_PIECE = 2      # A split or merged piece this short must be there exactly; longer ones may differ by at least one edit.
 EXTRA_PIECE = 0.05   # What a split or a merge costs for each piece beyond the first.
 NEAR_LINES = 3       # A missing cell is looked for on unpaired lines this close to its row's line.
 ANCHOR_RUN = 2      # Equal rows and lines in runs this long are paired before the alignment looks at the rest.
@@ -115,10 +116,42 @@ class Aligner:
             self.cache[key] = min(previous) <= limit
         return self.cache[key]
 
+    def find(self, part, text, start=0):
+        """Where the part ends in the text when looked for from start: after its first exact occurrence, else after the closest stretch
+        within its budget (exact for one or two characters, at least one edit from three on). None when it is not there."""
+        at = text.find(part, start)
+        if at >= 0 or not part:
+            return at + len(part) if part else start
+        if len(part) <= SHORT_PIECE:
+            return None
+        allowed = max(1, floor(HELD * len(part)))
+        key = ("find", part, text, start)
+        if key not in self.cache:
+            self.evaluations += 1
+            previous = [0] * (len(text) - start + 1)  # A stretch may begin anywhere from start on.
+            for i, x in enumerate(part, 1):
+                current = [i]
+                for j, y in enumerate(text[start:], 1):
+                    current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+                previous = current
+            ends = [j for j, distance in enumerate(previous) if distance <= allowed]
+            # The earliest end, then the one of those a budget later that is closest to the part.
+            self.cache[key] = start + min(range(ends[0], min(len(previous), ends[0] + allowed + 1)), key=lambda j: (previous[j], -j)) if ends else None
+        return self.cache[key]
+
+    def in_order(self, parts, text):
+        """Whether the parts are found in the text one after the other, each after the end of the one before: a character is evidence once."""
+        end = 0
+        for part in parts:
+            end = self.find(part, text, end)
+            if end is None:
+                return False
+        return True
+
     def align(self, rows, lines, most=MOST_PIECES):
         """Groups (row indexes, line indexes) in order: 1:1, 1:k (split) or k:1 (merged), k up to most. Anything unpaired is missing or extra.
-        A split or a merge needs evidence per piece: the row holds each of its lines (or the line each of its rows), so a deleted row is
-        missing rather than merged into a neighbour, and a split cannot take an unrelated line."""
+        A split or a merge needs ordered evidence: the row holds its lines one after the other without sharing a character (or the line
+        its rows), so a deleted row is missing rather than merged into a neighbour, and a split cannot take an unrelated line."""
         matcher = SequenceMatcher(None, rows, lines, autojunk=False)
         # Only runs of at least two equal rows are anchors: a lone equal row may be the left half of a split row that repeats an item's name.
         anchors = [(a + k, b + k) for a, b, size in matcher.get_matching_blocks() if size >= ANCHOR_RUN for k in range(size)]
@@ -152,12 +185,12 @@ class Aligner:
                     if j - k >= 0 and (i - 1, j - k) in cost:
                         row, pieces = rows[row0 + i - 1], lines[line0 + j - k:line0 + j]
                         step = self.near(row, " ".join(pieces))
-                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and all(self.holds(piece, row) for piece in pieces):
+                        if step <= HELD and cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(pieces, row):
                             best = (cost[(i - 1, j - k)] + step + EXTRA_PIECE * (k - 1), (i - 1, j - k))
                     if i - k >= 0 and (i - k, j - 1) in cost:
                         parts, line = rows[row0 + i - k:row0 + i], lines[line0 + j - 1]
                         step = self.near(" ".join(parts), line)
-                        if step <= HELD and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0] and all(self.holds(part, line) for part in parts):
+                        if step <= HELD and cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1) < best[0] and self.in_order(parts, line):
                             best = (cost[(i - k, j - 1)] + step + EXTRA_PIECE * (k - 1), (i - k, j - 1))
                 for previous in ((i - 1, j), (i, j - 1)):  # Skip a row, or skip a line: 1.0 each.
                     if previous in cost and cost[previous] + 1.0 < best[0]:
