@@ -75,4 +75,15 @@ slices:
       Accepted: format variants show "not ranked" on the task leaderboard; run_one takes an optional candidate;
       documents-suite budget_retry counts transcription attempts; extra report lines (budget-retry sentence, "Reading
       format:"); run.json always carries formats.
-final_verification: null
+final_verification:
+  head: 618d0d5
+  command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
+  exit_code: 1
+  counts: 54 failed, 4787 passed, 126 skipped, 1 deselected, 20 errors (49:50)
+  baseline_check: >-
+    Same failed and error counts as the baseline (54 + 20). The 67 baseline ids rerun alone: 54 failed, 20 errors,
+    13 passed-with-errors, exactly as on untouched HEAD; every failure header in the full run is a baseline test name.
+    (-rE overrode -rf, so the summary listed only errors; failed ids were checked through headers and the rerun.)
+  other: >-
+    ruff: the two allowed baseline findings (a third, I001 in tests/reading_format_fixtures.py, fixed in 618d0d5);
+    mypy: 13 errors, all in files this feature did not change; git diff 6f009e1 HEAD -- tests/reading_format_data clean.
