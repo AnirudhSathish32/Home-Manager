@@ -193,6 +193,18 @@ code_review:
       - {id: R5-2, severity: INFO, area: "earliest_end('', 'a', 0) returns 1 (in_order skips empty parts; no impact)", disposition: fixed SL-10}
       - {id: R5-3, severity: INFO, area: "trailing duplicated short cell (Pump|11 read 'zump 11' / '11') passes: reviewer judges acceptable under FR-13/FR-19", disposition: "accepted, documented in SL-09 notes"}
     status: "human chose option A 2026-11-16: fix, verify without another review, then full suite"
+final_verification_after_review:
+  head: 4c9dba9
+  command: .venv/bin/python -m pytest -q -p no:cacheprovider -rfE
+  exit_code: 1
+  counts: 54 failed, 5058 passed, 126 skipped, 1 deselected, 20 errors (50:37)
+  baseline_check: >-
+    The 67 unique failing/erroring ids equal plans/receipt-layout-eval/baseline-failures.txt exactly (none new, none
+    missing). Passed count up from 4787 by the review-fix regression tests.
+  review_summary: >-
+    Five Codex rounds (3 planned + 2 human-authorised). 11 + 4 + 3 + 2 + 2 findings, all fixed in SL-06..SL-10;
+    R5-3 (trailing duplicated short cell passes as extra) accepted per reviewer. SL-10 verified by the orchestrator
+    without a further review, per the human's choice.
 final_verification:
   head: 618d0d5
   command: .venv/bin/python -m pytest -q -p no:cacheprovider -rf -rE
