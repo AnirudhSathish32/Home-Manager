@@ -89,6 +89,8 @@ def complete_pdf(folder, config, digest, work=None):
                 texts.append(transcribe(config, folder / (f"page-{number}-region-{region.number}.png" if region else f"page-{number}.png"), work))
                 if texts[-1].table_issue:
                     issues.append(Issue(code="vision_table_invalid", message=f"Page {number} table structure could not be validated; review table values against the source page."))
+                if texts[-1].notes:
+                    issues.append(Issue(code="vision_positions_unusable", message=f"Page {number}: {' '.join(texts[-1].notes)}"))
         lines = []
         tables = []
         for region, reading in zip(regions or [None], texts):
@@ -133,7 +135,7 @@ def combine_pages(folder, digests, readings):
         pages.append(PDFPage(number=number, method="vision_model", lines=lines, regions=regions,
                              vision_tables=VisionTables(tables=tables)))
     issues = list({issue.code: issue for reading in readings for issue in reading.issues
-                   if issue.code in ("unreadable_text", "unverified_vision", "vision_table_invalid")}.values())
+                   if issue.code in ("unreadable_text", "unverified_vision", "vision_table_invalid", "vision_positions_unusable")}.values())
     write_atomic(folder / "result.json", PDFResult(parser_version=GROUP_VERSION, input_hash=digests[0], page_hashes=list(digests), pages=pages,
                                                    issues=issues).model_dump_json(), limit=4 * 1024**2)
 

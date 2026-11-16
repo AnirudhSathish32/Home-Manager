@@ -20,6 +20,23 @@ def vision_answer(text, indents=None, tables=None):
             **({"tables": tables} if tables is not None else {})}
 
 
+def v6_answer(text, tables=None):
+    """A v6-text vision answer (specs/receipt-layout-eval): {"full_text", "tables"?}. text is one string or a list of lines."""
+    return {"full_text": text if isinstance(text, str) else "\n".join(text), **({"tables": tables} if tables is not None else {})}
+
+
+def layout_text_answer(rows, tables=None):
+    """A layout-text answer: one line per row, a tab per step in at its start and a tab between the parts of one row.
+    rows holds (indent, [cells]) pairs, or ready-made strings."""
+    lines = [row if isinstance(row, str) else "\t" * row[0] + "\t".join(row[1]) for row in rows]
+    return v6_answer(lines, tables)
+
+
+def spans_answer(spans):
+    """A spans answer: {"spans": [{"bbox_2d", "text_content", "handwritten"}]} from (text, box) or (text, box, handwritten) tuples."""
+    return {"spans": [{"bbox_2d": span[1], "text_content": span[0], "handwritten": span[2] if len(span) > 2 else False} for span in spans]}
+
+
 class ModelServer(GracefulHTTPServer):
     """Waits for each client to close before closing (docs/development.md, "Windows loopback resets")."""
 
